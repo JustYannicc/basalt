@@ -1,0 +1,79 @@
+{
+  "scenarios": {
+    "settingsIntentPrefetchDesktop": {
+      "fixtures": "actors",
+      "title": "Hover and focus on Settings read members once and show them on the first frame at 1280px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not share the hosted organization routes."
+        }
+      }
+    },
+    "settingsIntentPrefetchPhone": {
+      "fixtures": "actors",
+      "title": "Touch and focus on Settings read members once and show them on the first frame at 390px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not share the hosted organization routes."
+        }
+      }
+    },
+    "settingsIntentPrefetchMember": {
+      "fixtures": "actors",
+      "title": "Settings intent reads a member's members without invitations or billing at 1280px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not share the hosted organization routes."
+        }
+      }
+    }
+  },
+  "runs": {
+    "settingsIntentPrefetchDesktop": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab",
+      "human-in-the-loop:the-human-in-the-loop-route-while-cloud-code-and-data-load"
+    ],
+    "settingsIntentPrefetchPhone": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab",
+      "human-in-the-loop:the-human-in-the-loop-route-while-cloud-code-and-data-load"
+    ],
+    "settingsIntentPrefetchMember": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab",
+      "human-in-the-loop:the-human-in-the-loop-route-while-cloud-code-and-data-load"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.organization.tsx",
+    ".upstream/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.organization.tsx",
+    ".upstream/apps/hosted/web/src/contracts/organization-reference.ts",
+    ".upstream/apps/hosted/web/src/contracts/organization.ts",
+    ".upstream/apps/hosted/web/src/implementation/components/dashboard-frame.tsx",
+    ".upstream/apps/hosted/web/src/implementation/components/organization-members.tsx",
+    ".upstream/apps/hosted/web/src/implementation/components/organization.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/organization.tsx",
+    ".upstream/packages/dashboard-start/src/implementation/registry.tsx",
+    ".upstream/packages/ui/src/contracts/refresh.ts",
+    ".upstream/e2e/support/settings-touch-intent.ts"
+  ]
+}

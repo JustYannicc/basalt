@@ -1,0 +1,1181 @@
+diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
+--- a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
++++ b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
+@@ -1,12 +1,16 @@
+ import { createFileRoute } from "@tanstack/react-router";
+ import {
+   ApprovalsPage,
++  approvalsIntentReads,
+   approvalsPageReads,
+   preloadApprovalsPage,
+ } from "@executor-js/hosted-web/pages/approvals";
+ export const Route = createFileRoute("/org/$organizationSlug/approvals/")({
+   component: ApprovalsPage,
+-  staticData: { organizationReads: approvalsPageReads },
++  staticData: {
++    organizationReads: approvalsPageReads,
++    organizationIntentReads: approvalsIntentReads,
++  },
+   // Pending stays on the router's skeleton until the queue view loads; see preloadView.
+   loader: preloadApprovalsPage,
+ });
+diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
+--- a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
++++ b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
+@@ -1,12 +1,16 @@
+ import { createFileRoute } from "@tanstack/react-router";
+ import {
+   ApprovalsPage,
++  approvalsIntentReads,
+   approvalsPageReads,
+   preloadApprovalsPage,
+ } from "@executor-js/hosted-web/pages/approvals";
+ export const Route = createFileRoute("/org/$organizationSlug/approvals/")({
+   component: ApprovalsPage,
+-  staticData: { organizationReads: approvalsPageReads },
++  staticData: {
++    organizationReads: approvalsPageReads,
++    organizationIntentReads: approvalsIntentReads,
++  },
+   // Pending stays on the router's skeleton until the queue view loads; see preloadView.
+   loader: preloadApprovalsPage,
+ });
+diff --git a/apps/hosted/web/src/implementation/components/organization.tsx b/apps/hosted/web/src/implementation/components/organization.tsx
+--- a/apps/hosted/web/src/implementation/components/organization.tsx
++++ b/apps/hosted/web/src/implementation/components/organization.tsx
+@@ -1,5 +1,9 @@
+ import { usePreload } from "@executor-js/ui/dashboard/context";
+-import { type RouteReads, useGuardedPreload } from "@executor-js/dashboard-start/registry";
++import {
++  type RouteReads,
++  untilSettled,
++  useGuardedPreload,
++} from "@executor-js/dashboard-start/registry";
+ import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
+ import {
+   OrganizationSlug,
+@@ -314,25 +318,38 @@
+   params: Readonly<Record<string, unknown>>,
+ ) => ReadonlyArray<Atom.Atom<unknown>>;
+ 
++/**
++ * Reads a link to the page starts on intent and holds only until they answer, for a page whose
++ * reads poll or refresh while held. The browser only: a server render never starts them.
++ */
++export type OrganizationIntentReads = (
++  organization: OrganizationReference,
++  params: Readonly<Record<string, unknown>>,
++) => ReadonlyArray<Atom.Atom<AsyncResult.AsyncResult<unknown, unknown>>>;
++
+ declare module "@tanstack/react-router" {
+   interface StaticDataRouteOption {
+     /** Started by the organization boundary together with its access check. */
+     readonly organizationReads?: OrganizationPageReads;
++    readonly organizationIntentReads?: OrganizationIntentReads;
+   }
+ }
+ 
+ /** The reads an organization page declares, for the router to start ahead of its render. */
+ export const organizationRouteReads: RouteReads = ({ staticData, params }, get) => {
+-  if (staticData.organizationReads === undefined) return [];
++  const { organizationReads, organizationIntentReads } = staticData;
++  if (organizationReads === undefined && organizationIntentReads === undefined) return [];
+   return Option.match(Schema.decodeUnknownOption(OrganizationReference)(params.organizationSlug), {
+     onNone: () => [],
+-    onSome: (route) =>
+-      staticData.organizationReads?.(
+-        queryReference(route, get(queryReferenceAtom), (reference) =>
+-          get(organizationTargetAtom(reference)),
+-        ),
+-        params,
+-      ) ?? [],
++    onSome: (route) => {
++      const reference = queryReference(route, get(queryReferenceAtom), (candidate) =>
++        get(organizationTargetAtom(candidate)),
++      );
++      return [
++        ...(organizationReads?.(reference, params) ?? []),
++        ...(organizationIntentReads?.(reference, params) ?? []).map(untilSettled),
++      ];
++    },
+   });
+ };
+ 
+diff --git a/apps/hosted/web/src/implementation/pages/approvals.tsx b/apps/hosted/web/src/implementation/pages/approvals.tsx
+--- a/apps/hosted/web/src/implementation/pages/approvals.tsx
++++ b/apps/hosted/web/src/implementation/pages/approvals.tsx
+@@ -1,14 +1,26 @@
+ import { LazyReview, preloadView } from "@executor-js/ui/dashboard/review-lazy";
+ import { BrowserApprovalCard } from "@executor-js/ui/dashboard/browser-approval";
+ import { scheduledReviewAtoms } from "../../contracts/schedules.ts";
+-import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
++import { approvalsAtom } from "../../contracts/workflow-inputs.ts";
++import {
++  type OrganizationIntentReads,
++  type OrganizationPageReads,
++  useOrganizationRoute,
++} from "../components/organization.tsx";
+ import { ScheduledApprovalFrame } from "../components/page-pending.tsx";
+ 
+ /** Runs waiting for a decision. */
+ export const approvalsPageReads: OrganizationPageReads = () => [];
++/**
++ * The queue a link's intent reads, so following it shows the answer at once. The queue polls
++ * while it is held, so the hold ends with the answer.
++ */
++export const approvalsIntentReads: OrganizationIntentReads = (organization) => [
++  approvalsAtom(organization),
++];
+ 
+ /** Pending runs are reviewed by a signed-in human through the product's normal auth boundary. */
+-// The queue's polling and form contracts are unnecessary until this tab opens.
++// The queue view and forms load when this tab opens; link intent can start its read earlier.
+ const loadApprovals = () =>
+   import.meta.env.SSR
+     ? Promise.reject(new Error("Approvals render only in a browser"))
+diff --git a/e2e/support/hitl-touch-intent.ts b/e2e/support/hitl-touch-intent.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/hitl-touch-intent.ts
+@@ -0,0 +1,109 @@
++/** A real touch context proves intent before the link's click can navigate. */
++import { expect } from "@effect/vitest";
++import { Effect } from "effect";
++import { Browser } from "./browser.ts";
++import { Evidence } from "./evidence.ts";
++import { batchedReads, batchPath } from "./read-batches.ts";
++
++export const checkTouchIntent = (slug: string) =>
++  Effect.gen(function* () {
++    const browser = yield* Browser;
++    const evidence = yield* Evidence;
++    const touch = yield* Effect.acquireRelease(
++      browser.use("Open an authenticated touch context", (page) => {
++        const native = page.context().browser();
++        if (native === null) throw new Error("The scenario has no browser process");
++        return native
++          .newContext({
++            baseURL: new URL(page.url()).origin,
++            hasTouch: true,
++            viewport: { width: 390, height: 844 },
++            ignoreHTTPSErrors: true,
++          })
++          .then((context) =>
++            page
++              .context()
++              .cookies()
++              .then((cookies) => context.addCookies(cookies))
++              .then(() => context.newPage())
++              .then((opened) => ({ context, page: opened }))
++              .catch((error) =>
++                context.close().then(() => {
++                  throw error;
++                }),
++              ),
++          );
++      }),
++      ({ context }) =>
++        browser.use("Close the touch context", () => context.close()).pipe(Effect.orDie),
++    );
++    const endpoints: string[] = [];
++    touch.page.on("request", (request) => {
++      const path = new URL(request.url()).pathname;
++      if (request.method() === "POST" && path === batchPath)
++        for (const read of batchedReads(request.postData()))
++          if (
++            (read.group === "workflowInputs" && read.endpoint === "list") ||
++            (read.group === "schedules" && read.endpoint === "runs")
++          )
++            endpoints.push(`${read.group}.${read.endpoint}`);
++      if (request.method() === "GET" && path.endsWith("/workflow-inputs"))
++        endpoints.push("workflowInputs.list");
++      if (request.method() === "GET" && path.endsWith("/scheduled-runs"))
++        endpoints.push("schedules.runs");
++    });
++    const page = touch.page;
++    yield* browser.use("Open Apps in the touch context", () => page.goto(`/org/${slug}/apps`));
++    yield* browser.use("The touch document has hydrated", () =>
++      page.waitForFunction(
++        () => document.documentElement.hasAttribute("data-hydrated") && !("$_TSR" in window),
++      ),
++    );
++    yield* browser.use("Open the touch navigation", () =>
++      page.getByRole("button", { name: "Menu", exact: true }).click(),
++    );
++    const link = page
++      .getByRole("navigation", { name: "Main navigation" })
++      .getByRole("link", { name: "Human in the loop", exact: true });
++    yield* browser.use("Observe a native touch without following its click", () =>
++      link.evaluate((element) => {
++        element.addEventListener("click", (event) => event.preventDefault(), {
++          once: true,
++          capture: true,
++        });
++        element.addEventListener(
++          "touchstart",
++          (event) => element.setAttribute("data-native-touch", String(event.isTrusted)),
++          { once: true },
++        );
++      }),
++    );
++    expect(endpoints, "The touch context reads no queue before intent").toEqual([]);
++    yield* browser.use("Tap the real link", () =>
++      Promise.all([
++        page.waitForRequest(
++          (request) =>
++            new URL(request.url()).pathname.endsWith("/workflow-inputs") ||
++            (new URL(request.url()).pathname === batchPath &&
++              batchedReads(request.postData()).some((read) => read.group === "workflowInputs")),
++        ),
++        link.tap(),
++      ]),
++    );
++    const trusted = yield* browser.use("The touch event came from the browser", () =>
++      link.getAttribute("data-native-touch"),
++    );
++    expect(trusted).toBe("true");
++    expect(new URL(page.url()).pathname, "The click did not open the queue").toBe(
++      `/org/${slug}/apps`,
++    );
++    expect(endpoints, "A native touch starts the queue before navigation").toContain(
++      "workflowInputs.list",
++    );
++    yield* evidence.json("hitl-native-touch.json", {
++      hasTouch: true,
++      trusted: true,
++      beforeNavigation: true,
++      endpoints,
++    });
++  });
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -6387,6 +6387,50 @@
+       local: na("Local does not share the hosted section router."),
+     },
+   },
++  hitlIntentPrefetchDesktop: {
++    fixtures: "actors",
++    file: "hitl-intent-prefetch.spec.ts",
++    title:
++      "Hover and focus on Human in the loop read the queue once and show it on the first frame at 1280px",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("Local does not share the hosted organization routes."),
++    },
++  },
++  hitlIntentPrefetchPhone: {
++    fixtures: "actors",
++    file: "hitl-intent-prefetch.spec.ts",
++    title:
++      "Touch and focus on Human in the loop read the queue once and show it on the first frame at 390px",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("Local does not share the hosted organization routes."),
++    },
++  },
++  hitlIntentScopeDesktop: {
++    fixtures: "actors",
++    file: "hitl-intent-scope.spec.ts",
++    title:
++      "Human in the loop intent shows a seeded question first, reads only the current organization and person, and leaves nothing running at 1280px",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("Local does not share the hosted organization routes."),
++    },
++  },
++  hitlIntentScopePhone: {
++    fixtures: "actors",
++    file: "hitl-intent-scope.spec.ts",
++    title:
++      "Human in the loop intent shows a seeded question first, reads only the current organization and person, and leaves nothing running at 390px",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("Local does not share the hosted organization routes."),
++    },
++  },
+   dashboardClientLoading: {
+     fixtures: "actors",
+     file: "dashboard-client-loading.spec.ts",
+diff --git a/e2e/tests/hitl-intent-prefetch.spec.ts b/e2e/tests/hitl-intent-prefetch.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/hitl-intent-prefetch.spec.ts
+@@ -0,0 +1,287 @@
++import { expect, layer } from "@effect/vitest";
++import { Deferred, Effect } from "effect";
++import type { Locator, Page, Request } from "playwright";
++import { Actors } from "../support/actors.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Evidence } from "../support/evidence.ts";
++import { openThroughBrowser } from "../support/in-app-navigation.ts";
++import { observeNavigation } from "../support/instant-navigation.ts";
++import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
++import { batchedReads, batchPath } from "../support/read-batches.ts";
++import { scenarios } from "../test-plan.ts";
++
++type QueueRead = "workflowInputs.list" | "schedules.runs";
++const queueEndpoint = /^\/api\/organizations\/[^/]+\/(?:workflow-inputs|scheduled-runs)$/;
++const viewCode = /\/assets\/approvals-list-client-[^/]+\.js$/;
++/** The queue also names apps from the organization's inventory; its answer completes the queue. */
++const inventoryEndpoint = /^\/api\/organizations\/[^/]+\/inventory$/;
++const readsInventory = (request: Request) =>
++  request.method() === "GET" && inventoryEndpoint.test(new URL(request.url()).pathname);
++
++/** The queue's two reads, whether the dashboard batched them or sent them on their own. */
++const queueReads = (request: Request): readonly QueueRead[] => {
++  const path = new URL(request.url()).pathname;
++  if (request.method() === "POST" && path === batchPath)
++    return batchedReads(request.postData()).flatMap((read): QueueRead[] =>
++      read.group === "workflowInputs" && read.endpoint === "list"
++        ? ["workflowInputs.list"]
++        : read.group === "schedules" && read.endpoint === "runs"
++          ? ["schedules.runs"]
++          : [],
++    );
++  if (request.method() !== "GET" || !queueEndpoint.test(path)) return [];
++  return [path.endsWith("/workflow-inputs") ? "workflowInputs.list" : "schedules.runs"];
++};
++
++/**
++ * Intent on the Human in the loop link reads the queue before the click and holds it only until it
++ * answers. The proof is the read itself, its retained answer on the destination's first frame, and
++ * the absence of any later poll or focus read while the link was never followed.
++ */
++layer(HostedLive, { excludeTestServices: true })("Human in the loop intent prefetch", (it) => {
++  for (const width of [1280, 390]) {
++    const phone = width === 390;
++    const scenario = phone
++      ? scenarios.hitlIntentPrefetchPhone
++      : scenarios.hitlIntentPrefetchDesktop;
++    it.effect(scenario.title, (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const actors = yield* Actors;
++          const browser = yield* Browser;
++          const evidence = yield* Evidence;
++          const organization = `/org/${actors.organization.slug}`;
++          const reads: QueueRead[] = [];
++          const answered: QueueRead[] = [];
++          let viewLoaded = yield* Deferred.make<void>();
++          let inventoryInFlight = 0;
++          const record = (request: Request) => {
++            reads.push(...queueReads(request));
++            if (readsInventory(request)) inventoryInFlight += 1;
++          };
++          const finished = (request: Request) => {
++            answered.push(...queueReads(request));
++            if (readsInventory(request)) inventoryInFlight -= 1;
++            if (viewCode.test(new URL(request.url()).pathname))
++              Deferred.doneUnsafe(viewLoaded, Effect.void);
++          };
++          const queueFailed = yield* Deferred.make<void>();
++          const failed = (request: Request) => {
++            if (readsInventory(request)) inventoryInFlight -= 1;
++            if (queueReads(request).length > 0) Deferred.doneUnsafe(queueFailed, Effect.void);
++          };
++          yield* browser.login(actors.owner);
++          yield* Effect.acquireRelease(
++            browser.use("Observe queue reads with the browser clock", (page) =>
++              page.clock
++                .install()
++                .then(() =>
++                  // An active route sends a matching batched read as its own request.
++                  page.route(
++                    (url) =>
++                      queueEndpoint.test(url.pathname) || inventoryEndpoint.test(url.pathname),
++                    (route) => route.fallback(),
++                  ),
++                )
++                .then(() => {
++                  page.on("request", record);
++                  page.on("requestfinished", finished);
++                  page.on("requestfailed", failed);
++                  return page.setViewportSize({ width, height: 844 });
++                }),
++            ),
++            () =>
++              browser
++                .use("Stop observing queue reads", (page) => {
++                  page.off("request", record);
++                  page.off("requestfinished", finished);
++                  page.off("requestfailed", failed);
++                  return Promise.resolve();
++                })
++                .pipe(Effect.orDie),
++          );
++          const settle = (label: string) =>
++            browser.use(label, (page) =>
++              Promise.all([
++                page.evaluate(
++                  () =>
++                    new Promise<void>((resolve) =>
++                      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
++                    ),
++                ),
++                page.clock.runFor(100),
++              ]).then(() => undefined),
++            );
++          // Roles skip the hidden copy: the sidebar at desktop width, the Menu sheet on a phone.
++          const link = (page: Page): Locator =>
++            page
++              .getByRole("navigation", { name: "Main navigation" })
++              .getByRole("link", { name: "Human in the loop", exact: true });
++          const showLink = (label: string) =>
++            phone
++              ? browser.use(label, (page) =>
++                  page
++                    .getByRole("button", { name: "Menu", exact: true })
++                    .click()
++                    .then(() => link(page).waitFor()),
++                )
++              : browser.use(label, (page) => link(page).waitFor());
++          /** A fresh document on Apps that has never read the queue or loaded its view. */
++          const enterApps = (label: string) =>
++            Effect.gen(function* () {
++              viewLoaded = yield* Deferred.make<void>();
++              reads.length = 0;
++              answered.length = 0;
++              yield* openThroughBrowser(label, `${organization}/apps`);
++              yield* browser.use(`${label}: Apps is shown`, (page) =>
++                // The heading also names the app count.
++                page.getByRole("heading", { name: /^Apps/ }).first().waitFor(),
++              );
++              yield* settle(`${label}: entry settles`);
++              expect(reads, "Apps reads no queue before any intent").toEqual([]);
++            });
++          /**
++           * The queue read the intent started. A missing read is reported as an assertion; the
++           * bounded wait only stops a run that would otherwise wait for a read never sent.
++           */
++          const warmed = (label: string, intent: (page: Page) => Promise<void>) =>
++            Effect.gen(function* () {
++              const read = yield* browser.use(label, (page) =>
++                Promise.all([
++                  page
++                    .waitForRequest((request) => queueReads(request).length > 0, {
++                      timeout: 5_000,
++                    })
++                    .catch(() => null),
++                  intent(page).then(() => page.clock.runFor(100)),
++                ]).then(([request]) => request),
++              );
++              expect(read, `${label} reads the queue before the click`).not.toBeNull();
++              yield* browser.use(`${label}: the queue answers`, (page) =>
++                Promise.all(
++                  (["workflowInputs.list", "schedules.runs"] as const).map((endpoint) =>
++                    answered.includes(endpoint)
++                      ? Promise.resolve()
++                      : page
++                          .waitForEvent("requestfinished", (request) =>
++                            queueReads(request).includes(endpoint),
++                          )
++                          .then(() => undefined),
++                  ),
++                ),
++              );
++              // The queue's hold ends once the inventory it joins has answered too.
++              yield* browser.use(`${label}: the inventory answers`, (page) => {
++                const drained = (): Promise<void> =>
++                  inventoryInFlight === 0
++                    ? Promise.resolve()
++                    : page.waitForEvent("requestfinished", readsInventory).then(drained);
++                return drained();
++              });
++              yield* Deferred.await(viewLoaded);
++              yield* settle(`${label}: the answer settles`);
++              expect(
++                yield* browser.use(`${label}: still on Apps`, (page) =>
++                  Promise.resolve(new URL(page.url()).pathname),
++                ),
++              ).toBe(`${organization}/apps`);
++              expect([...reads].sort(), `${label} reads each queue endpoint once`).toEqual([
++                "schedules.runs",
++                "workflowInputs.list",
++              ]);
++            });
++          /**
++           * Following the link renders the retained queue on its first frame: no loading state. A
++           * stale answer is read again behind it; when that read fails the queue stays shown.
++           */
++          const followed = (label: string, key: string, refresh: "fresh" | "stale-fails") =>
++            Effect.gen(function* () {
++              const failing =
++                refresh === "stale-fails" ? yield* holdQuery(queueEndpoint, "fail") : undefined;
++              const observation = yield* observeNavigation(
++                label,
++                { kind: "sidebar", link: "Human in the loop" },
++                { text: "Nothing needs you right now" },
++              );
++              yield* evidence.json(`hitl-intent-${key}-${width}.json`, {
++                label,
++                observation,
++                reads,
++              });
++              expect(observation.contentMs, `${label} shows the queue`).not.toBeNull();
++              expect(observation.contentAtStart).toBe(false);
++              expect(observation.loading, `${label} commits no loading state`).toEqual([]);
++              yield* browser.use(`${label}: the heading is shown`, (page) =>
++                page
++                  .getByRole("main")
++                  .getByRole("heading", { name: "Human in the loop", exact: true })
++                  .waitFor(),
++              );
++              if (failing === undefined) return;
++              yield* failing.requested;
++              yield* failing.release;
++              yield* Deferred.await(queueFailed);
++              yield* settle(`${label}: the failed refresh settles`);
++              const kept = yield* browser.use(
++                `${label}: the queue after its failed refresh`,
++                (page) =>
++                  page
++                    .getByRole("main")
++                    .getByText("Nothing needs you right now", { exact: true })
++                    .isVisible(),
++              );
++              yield* browser.checkpoint(`${label} after a failed refresh at ${width}`);
++              expect(kept, `${label}: a failed refresh keeps the cached queue`).toBe(true);
++            });
++
++          // Pointer hover on desktop, touch on the phone's navigation sheet.
++          yield* enterApps("Enter Apps for the primary intent");
++          yield* showLink("Show the Human in the loop link");
++          const primary = phone
++            ? "Touch the Human in the loop link"
++            : "Hover the Human in the loop link";
++          yield* warmed(primary, (page) =>
++            phone ? link(page).dispatchEvent("touchstart") : link(page).hover(),
++          );
++          // Repeated intent while the answer is fresh starts nothing new.
++          yield* browser.use("Repeat the intent", (page) =>
++            (phone
++              ? link(page).dispatchEvent("touchstart")
++              : page.mouse.move(0, 0).then(() => link(page).hover())
++            ).then(() => page.clock.runFor(100)),
++          );
++          yield* settle("The repeated intent settles");
++          expect(reads.length, "Repeated intent is deduplicated").toBe(2);
++          // A link that was only shown intent must leave no poll or focus refresh behind.
++          if (!phone) yield* browser.use("Move the pointer away", (page) => page.mouse.move(0, 0));
++          const beforeIdle = reads.length;
++          yield* refreshVisiblePage;
++          yield* browser.use("Focus the window after intent", (page) =>
++            page.evaluate(() => {
++              window.dispatchEvent(new Event("focus"));
++            }),
++          );
++          yield* browser.use("Deliver six queue poll intervals", (page) =>
++            page.clock.runFor(31_000),
++          );
++          yield* settle("Flush fetch dispatch after the due timers");
++          const idleReads = reads.slice(beforeIdle);
++          yield* evidence.json(`hitl-intent-idle-${width}.json`, { idleReads });
++          expect(idleReads, "An unfollowed intent keeps no poll or focus read").toEqual([]);
++          yield* browser.checkpoint(`Intent settled without navigating at ${width}`);
++          yield* followed("Follow the warmed link", "intent", "stale-fails");
++          yield* browser.checkpoint(`Queue from the intent's read at ${width}`);
++
++          // Keyboard focus is intent too.
++          yield* enterApps("Enter Apps for keyboard focus");
++          yield* showLink("Show the link for keyboard focus");
++          yield* warmed("Focus the Human in the loop link", (page) => link(page).focus());
++          yield* followed("Follow the focused link", "focus", "fresh");
++          yield* browser.checkpoint(`Queue from the focus read at ${width}`);
++        }),
++      ),
++    );
++  }
++});
+diff --git a/e2e/tests/hitl-intent-scope.spec.ts b/e2e/tests/hitl-intent-scope.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/hitl-intent-scope.spec.ts
+@@ -0,0 +1,510 @@
++import { expect, layer } from "@effect/vitest";
++import { Deferred, Effect, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import type { Locator, Page, Request } from "playwright";
++import { body } from "../support/api.ts";
++import { Target } from "../support/platform.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Evidence } from "../support/evidence.ts";
++import { openThroughBrowser } from "../support/in-app-navigation.ts";
++import { observeNavigation } from "../support/instant-navigation.ts";
++import { checkTouchIntent } from "../support/hitl-touch-intent.ts";
++import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
++import { batchedReads, batchPath } from "../support/read-batches.ts";
++import { workflowInputFixture } from "../support/workflow-input-fixture.ts";
++import { scenarios } from "../test-plan.ts";
++
++type QueueRead = {
++  readonly endpoint: "workflowInputs.list" | "schedules.runs";
++  readonly organization: string;
++};
++const queueEndpoint = /^\/api\/organizations\/([^/]+)\/(?:workflow-inputs|scheduled-runs)$/;
++const inputsEndpoint = /^\/api\/organizations\/[^/]+\/workflow-inputs$/;
++const viewCode = /\/assets\/approvals-list-client-[^/]+\.js$/;
++const inventoryEndpoint = /^\/api\/organizations\/[^/]+\/inventory$/;
++const readsInventory = (request: Request) =>
++  request.method() === "GET" && inventoryEndpoint.test(new URL(request.url()).pathname);
++const question = "Choose a synthetic action";
++const empty = "Nothing needs you right now";
++const Created = Schema.Struct({ id: Schema.String, slug: Schema.String, name: Schema.String });
++
++/** The queue's two reads and the organization each names, batched or on their own. */
++const queueReads = (request: Request): readonly QueueRead[] => {
++  const path = new URL(request.url()).pathname;
++  if (request.method() === "POST" && path === batchPath)
++    return batchedReads(request.postData()).flatMap((read): QueueRead[] =>
++      (read.group === "workflowInputs" && read.endpoint === "list") ||
++      (read.group === "schedules" && read.endpoint === "runs")
++        ? [
++            {
++              endpoint: read.group === "workflowInputs" ? "workflowInputs.list" : "schedules.runs",
++              organization: read.params.organization ?? "",
++            },
++          ]
++        : [],
++    );
++  const match = request.method() === "GET" ? queueEndpoint.exec(path) : null;
++  if (match === null) return [];
++  return [
++    {
++      endpoint: path.endsWith("/workflow-inputs") ? "workflowInputs.list" : "schedules.runs",
++      organization: match[1] ?? "",
++    },
++  ];
++};
++/** Intent and an unfollowed link may only read: no write and no health check. */
++const forbidden = (request: Request): string | null => {
++  const path = new URL(request.url()).pathname;
++  // Browser telemetry records the read itself; these two sinks do not mutate product data.
++  if (request.method() === "POST" && /^\/api\/telemetry\/(traces|logs)$/.test(path)) return null;
++  // The managed Cloud fixture routes analytics and error reports through fixed test channels.
++  if (
++    request.method() === "POST" &&
++    [
++      "/api/fedcba9876543210/submit",
++      "/api/0123456789abcdef/push",
++      "/api/0123456789abcdef/flags/",
++    ].includes(path)
++  )
++    return null;
++  if (/health/i.test(path)) return `${request.method()} ${path}`;
++  if (request.method() === "GET" || (request.method() === "POST" && path === batchPath))
++    return null;
++  return `${request.method()} ${path}`;
++};
++
++/**
++ * Who and where the intent read is for. A warmed queue is shown with its question on the first
++ * frame; switching organization in the same document, or signing in as another person in a new
++ * document, reads that destination's own queue and never paints the first one's question. A read
++ * held past the 10 second intent bound leaves no poll or focus read behind.
++ */
++layer(HostedLive, { excludeTestServices: true })("Human in the loop intent scope", (it) => {
++  for (const width of [1280, 390]) {
++    const phone = width === 390;
++    const scenario = phone ? scenarios.hitlIntentScopePhone : scenarios.hitlIntentScopeDesktop;
++    it.effect(scenario.title, (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const f = yield* workflowInputFixture;
++          const { api, actors } = f;
++          const browser = yield* Browser;
++          const evidence = yield* Evidence;
++          const a = actors.organization;
++          const target = yield* Target;
++
++          // One owner-private question in A.
++          yield* f.share("private");
++          const run = yield* f.start();
++          yield* f.pending(run.id);
++
++          // Self-host has exactly one organization. Cloud exercises the real switcher below.
++          const b =
++            target.metadata.target === "cloud"
++              ? yield* Effect.gen(function* () {
++                  const suffix = randomUUID().slice(0, 8);
++                  const createdResponse = yield* api.request(
++                    actors.owner,
++                    "POST",
++                    "/api/auth/organization/create",
++                    {
++                      name: `Intent scope ${suffix}`,
++                      slug: `intent-scope-${suffix}`,
++                      keepCurrentActiveOrganization: true,
++                    },
++                  );
++                  expect(createdResponse.status, JSON.stringify(createdResponse.body)).toBe(200);
++                  const organization = yield* body(Created, createdResponse);
++                  yield* Effect.addFinalizer(() =>
++                    Effect.gen(function* () {
++                      const removed = yield* api.request(
++                        actors.owner,
++                        "DELETE",
++                        `/api/organizations/${organization.id}`,
++                      );
++                      expect(removed.status, "The scenario removes its second organization").toBe(
++                        200,
++                      );
++                    }).pipe(Effect.orDie),
++                  );
++
++                  return organization;
++                })
++              : undefined;
++
++          const reads: QueueRead[] = [];
++          const answered: QueueRead[] = [];
++          const blocked: string[] = [];
++          let viewLoaded = yield* Deferred.make<void>();
++          let inventoryInFlight = 0;
++          const record = (request: Request) => {
++            reads.push(...queueReads(request));
++            const bad = forbidden(request);
++            if (bad !== null) blocked.push(bad);
++            if (readsInventory(request)) inventoryInFlight += 1;
++          };
++          const finished = (request: Request) => {
++            answered.push(...queueReads(request));
++            if (readsInventory(request)) inventoryInFlight -= 1;
++            if (viewCode.test(new URL(request.url()).pathname))
++              Deferred.doneUnsafe(viewLoaded, Effect.void);
++          };
++          const failed = (request: Request) => {
++            if (readsInventory(request)) inventoryInFlight -= 1;
++          };
++          const endpoints = () => reads.map((read) => read.endpoint).sort();
++
++          yield* browser.login(actors.owner);
++          yield* Effect.acquireRelease(
++            browser.use("Observe queue reads with the browser clock", (page) =>
++              page.clock
++                .install()
++                .then(() =>
++                  // An active route sends a matching batched read as its own request.
++                  page.route(
++                    (url) =>
++                      queueEndpoint.test(url.pathname) || inventoryEndpoint.test(url.pathname),
++                    (route) => route.fallback(),
++                  ),
++                )
++                .then(() => {
++                  page.on("request", record);
++                  page.on("requestfinished", finished);
++                  page.on("requestfailed", failed);
++                  return page.setViewportSize({ width, height: 844 });
++                }),
++            ),
++            () =>
++              browser
++                .use("Stop observing queue reads", (page) => {
++                  page.off("request", record);
++                  page.off("requestfinished", finished);
++                  page.off("requestfailed", failed);
++                  return Promise.resolve();
++                })
++                .pipe(Effect.orDie),
++          );
++          const settle = (label: string, ms = 100) =>
++            browser.use(label, (page) =>
++              Promise.all([
++                page.evaluate(
++                  () =>
++                    new Promise<void>((resolve) =>
++                      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
++                    ),
++                ),
++                page.clock.runFor(ms),
++              ]).then(() => undefined),
++            );
++          const link = (page: Page): Locator =>
++            page
++              .getByRole("navigation", { name: "Main navigation" })
++              .getByRole("link", { name: "Human in the loop", exact: true });
++          const showLink = (label: string) =>
++            phone
++              ? browser.use(label, (page) =>
++                  link(page)
++                    .isVisible()
++                    .then((visible) =>
++                      visible
++                        ? undefined
++                        : page.getByRole("button", { name: "Menu", exact: true }).click(),
++                    )
++                    .then(() => link(page).waitFor()),
++                )
++              : browser.use(label, (page) => link(page).waitFor());
++          // Focus supplies intent in the shared phone context; checkTouchIntent below proves
++          // native touch in its own hasTouch context.
++          const intent = (page: Page) => (phone ? link(page).focus() : link(page).hover());
++          const away = (page: Page) =>
++            phone
++              ? link(page).evaluate((element) => (element as HTMLElement).blur())
++              : page.mouse.move(0, 0);
++          const reset = (newDocument = true) =>
++            Effect.gen(function* () {
++              if (newDocument) viewLoaded = yield* Deferred.make<void>();
++              reads.length = 0;
++              answered.length = 0;
++              blocked.length = 0;
++            });
++          const enterApps = (label: string, slug: string) =>
++            Effect.gen(function* () {
++              yield* reset();
++              yield* openThroughBrowser(label, `/org/${slug}/apps`);
++              yield* browser.use(`${label}: Apps is shown`, (page) =>
++                page.getByRole("heading", { name: /^Apps/ }).first().waitFor(),
++              );
++              yield* settle(`${label}: entry settles`);
++              expect(reads, `${label}: Apps reads no queue before any intent`).toEqual([]);
++            });
++          /** The intent's reads, their answers and the queue view, for both endpoints. */
++          const warm = (label: string) =>
++            Effect.gen(function* () {
++              const read = yield* browser.use(label, (page) =>
++                Promise.all([
++                  page
++                    .waitForRequest((request) => queueReads(request).length > 0, { timeout: 5_000 })
++                    .catch(() => null),
++                  intent(page).then(() => page.clock.runFor(100)),
++                ]).then(([request]) => request),
++              );
++              expect(read, `${label} reads the queue before the click`).not.toBeNull();
++              yield* browser.use(`${label}: the queue answers`, (page) =>
++                Promise.all(
++                  (["workflowInputs.list", "schedules.runs"] as const).map((endpoint) =>
++                    answered.some((done) => done.endpoint === endpoint)
++                      ? Promise.resolve()
++                      : page
++                          .waitForEvent("requestfinished", (request) =>
++                            queueReads(request).some((done) => done.endpoint === endpoint),
++                          )
++                          .then(() => undefined),
++                  ),
++                ),
++              );
++              yield* browser.use(`${label}: the inventory answers`, (page) => {
++                const drained = (): Promise<void> =>
++                  inventoryInFlight === 0
++                    ? Promise.resolve()
++                    : page.waitForEvent("requestfinished", readsInventory).then(drained);
++                return drained();
++              });
++              yield* Deferred.await(viewLoaded);
++              yield* settle(`${label}: the answer settles`);
++            });
++          /** Records whether `main` ever shows the text from now until it is read. */
++          const watchFor = (label: string, text: string) =>
++            browser.use(label, (page) =>
++              page.evaluate((needle) => {
++                const seen = { value: false };
++                const sample = () => {
++                  if (document.querySelector("main")?.textContent?.includes(needle))
++                    seen.value = true;
++                };
++                sample();
++                new MutationObserver(sample).observe(document.body, {
++                  subtree: true,
++                  childList: true,
++                  characterData: true,
++                });
++                const frame = () => {
++                  sample();
++                  requestAnimationFrame(frame);
++                };
++                requestAnimationFrame(frame);
++                (window as unknown as { __intentScopeSeen: typeof seen }).__intentScopeSeen = seen;
++              }, text),
++            );
++          const seen = (label: string) =>
++            browser.use(label, (page) =>
++              page.evaluate(
++                () =>
++                  (window as unknown as { __intentScopeSeen: { value: boolean } }).__intentScopeSeen
++                    .value,
++              ),
++            );
++          const follow = (label: string, key: string, text: string) =>
++            Effect.gen(function* () {
++              const observation = yield* observeNavigation(
++                label,
++                { kind: "sidebar", link: "Human in the loop" },
++                { text },
++              );
++              yield* evidence.json(`hitl-scope-${key}-${width}.json`, {
++                label,
++                observation,
++                reads,
++              });
++              expect(observation.contentMs, `${label} shows the queue`).not.toBeNull();
++              expect(observation.contentAtStart).toBe(false);
++              expect(observation.loading, `${label} commits no loading state`).toEqual([]);
++              return observation;
++            });
++
++          // 1. Populated: the warmed question is the destination's first frame, its refresh held.
++          yield* enterApps("Enter A's Apps", a.slug);
++          yield* showLink("Show A's Human in the loop link");
++          yield* warm("Intent on A's Human in the loop link");
++          expect(endpoints(), "Intent reads each queue endpoint once").toEqual([
++            "schedules.runs",
++            "workflowInputs.list",
++          ]);
++          expect(blocked, "Intent sends no write or health check").toEqual([]);
++          yield* browser.use("Move intent away", away);
++          yield* refreshVisiblePage;
++          yield* browser.use("Focus the window after intent", (page) =>
++            page.evaluate(() => {
++              window.dispatchEvent(new Event("focus"));
++            }),
++          );
++          yield* browser.use("Deliver six queue poll intervals", (page) =>
++            page.clock.runFor(31_000),
++          );
++          yield* settle("Flush fetch dispatch after the due timers");
++          expect(blocked, "An unfollowed intent sends no write or health check").toEqual([]);
++          expect(endpoints(), "An unfollowed intent leaves no queue poll or focus read").toEqual([
++            "schedules.runs",
++            "workflowInputs.list",
++          ]);
++          yield* evidence.json(`hitl-scope-negative-${width}.json`, { reads, blocked });
++          const refresh = yield* holdQuery(inputsEndpoint, "continue");
++          yield* follow("Follow A's warmed link", "populated", question);
++          yield* browser.use("A's question is in the queue", (page) =>
++            page
++              .getByRole("list", { name: "Requests for you" })
++              .getByRole("listitem")
++              .getByRole("heading", { name: question, exact: true })
++              .waitFor(),
++          );
++          // The cached question is shown while its refresh is still held: no request answered it.
++          yield* refresh.requested;
++          yield* browser.checkpoint(`A's populated queue on its first frame at ${width}`);
++          yield* refresh.release;
++
++          // 2. Dedup in flight, and again after the 400 ms hold window.
++          yield* enterApps("Enter A's Apps for dedup", a.slug);
++          yield* showLink("Show the link for dedup");
++          const inflight = yield* holdQuery(queueEndpoint, "continue", { allRequests: true });
++          yield* browser.use("Intent while the queue will be held", (page) =>
++            intent(page).then(() => page.clock.runFor(100)),
++          );
++          yield* inflight.requested;
++          yield* browser.use("Repeat intent while the queue is in flight", (page) =>
++            away(page)
++              .then(() => intent(page))
++              .then(() => page.clock.runFor(100)),
++          );
++          yield* settle("The in-flight repeat settles");
++          expect(endpoints(), "Repeated intent in flight sends no second read").toEqual([
++            "schedules.runs",
++            "workflowInputs.list",
++          ]);
++          yield* inflight.release;
++          yield* browser.use("The held queue answers", (page) =>
++            answered.length >= 2
++              ? Promise.resolve()
++              : page
++                  .waitForEvent("requestfinished", (request) => queueReads(request).length > 0)
++                  .then(() =>
++                    answered.length >= 2
++                      ? undefined
++                      : page
++                          .waitForEvent(
++                            "requestfinished",
++                            (request) => queueReads(request).length > 0,
++                          )
++                          .then(() => undefined),
++                  ),
++          );
++          yield* settle("Pass the 400 ms hold window", 500);
++          const beforeLate = reads.length;
++          yield* browser.use("Repeat intent after the hold window", (page) =>
++            away(page)
++              .then(() => intent(page))
++              .then(() => page.clock.runFor(100)),
++          );
++          yield* settle("The late repeat settles");
++          const late = reads.slice(beforeLate).map((read) => read.endpoint);
++          yield* evidence.json(`hitl-scope-dedup-${width}.json`, { reads, late });
++          // The answer is retained (30 minutes); a late intent may revalidate once, never twice.
++          expect(new Set(late).size, "A late repeat reads each endpoint at most once").toBe(
++            late.length,
++          );
++
++          // 3. A held read is released at the 10 s bound; nothing polls or refreshes afterwards.
++          yield* enterApps("Enter A's Apps for the bound", a.slug);
++          yield* showLink("Show the link for the bound");
++          // Only the inputs read hangs: the queue never settles, so only the bound ends the hold.
++          const hung = yield* holdQuery(inputsEndpoint, "continue");
++          yield* browser.use("Intent on a queue that will not answer", (page) =>
++            intent(page).then(() => page.clock.runFor(100)),
++          );
++          yield* hung.requested;
++          yield* browser.use("Move intent away from the hung queue", away);
++          yield* browser.use("Run past the 10 second intent bound", (page) =>
++            page.clock.runFor(10_100),
++          );
++          const atBound = reads.length;
++          yield* refreshVisiblePage;
++          yield* browser.use("Focus the window after the bound", (page) =>
++            page.evaluate(() => {
++              window.dispatchEvent(new Event("focus"));
++            }),
++          );
++          yield* browser.use("Deliver six poll intervals after the bound", (page) =>
++            page.clock.runFor(31_000),
++          );
++          yield* settle("Flush dispatch after the bound");
++          const afterBound = reads.slice(atBound);
++          yield* hung.release;
++          yield* settle("The released read settles");
++          yield* browser.use("Deliver six poll intervals after release", (page) =>
++            page.clock.runFor(31_000),
++          );
++          yield* settle("Flush dispatch after release");
++          const afterRelease = reads.slice(atBound + afterBound.length);
++          yield* evidence.json(`hitl-scope-bound-${width}.json`, {
++            reads,
++            afterBound,
++            afterRelease,
++            blocked,
++          });
++          expect(afterBound, "The bounded hold leaves no poll or focus read").toEqual([]);
++          expect(afterRelease, "A late answer revives no poll or focus read").toEqual([]);
++          expect(blocked, "The bounded hold sends no write or health check").toEqual([]);
++
++          if (b !== undefined) {
++            // 4. Same document: warm A, switch to B with the real switcher, intent reads B's own queue.
++            yield* enterApps("Enter A's Apps before switching", a.slug);
++            yield* showLink("Show A's link before switching");
++            yield* warm("Warm A's queue before switching");
++            yield* browser.use("Open the organization switcher", (page) =>
++              page.getByRole("button", { name: /^Organization:/ }).click(),
++            );
++            yield* reset(false);
++            yield* browser.use("Switch to B in the same document", (page) =>
++              page
++                .getByRole("menuitemradio", { name: b.name, exact: true })
++                .click()
++                .then(() => page.waitForURL((url) => url.pathname.startsWith(`/org/${b.slug}/`))),
++            );
++            yield* settle("The switch settles");
++            const atSwitch = reads.length;
++            yield* showLink("Show B's Human in the loop link");
++            yield* warm("Intent on B's Human in the loop link");
++            const bReads = reads.slice(atSwitch);
++            expect(bReads.length, "B's intent reads B's queue").toBeGreaterThan(0);
++            expect(
++              bReads.filter((read) => read.organization !== b.id && read.organization !== b.slug),
++              "No intent read after the switch names A",
++            ).toEqual([]);
++            yield* watchFor("Watch B's queue for A's question", question);
++            yield* follow("Follow B's link", "org-switch", empty);
++            expect(yield* seen("Did B ever show A's question"), "B never paints A's question").toBe(
++              false,
++            );
++            yield* browser.checkpoint(`B's own empty queue after switching at ${width}`);
++          }
++
++          // 5. Another person: the member in a new document reads A's queue as themselves.
++          yield* browser.login(actors.member);
++          // login only sets cookies; the new document below is the identity transition proven.
++          yield* enterApps("Enter A's Apps as the member", a.slug);
++          yield* showLink("Show the member's Human in the loop link");
++          yield* warm("Member intent on Human in the loop");
++          expect(blocked, "Member intent sends no write or health check").toEqual([]);
++          yield* watchFor("Watch the member's queue for the owner's question", question);
++          yield* follow("Member follows the link", "member", empty);
++          expect(
++            yield* seen("Did the member ever see the owner's question"),
++            "The member never sees the owner's private question",
++          ).toBe(false);
++          yield* browser.checkpoint(`The member's queue without the owner's question at ${width}`);
++          if (phone) yield* checkTouchIntent(a.slug);
++        }),
++      ),
++    );
++  }
++});
+diff --git a/packages/dashboard-start/src/implementation/registry.tsx b/packages/dashboard-start/src/implementation/registry.tsx
+--- a/packages/dashboard-start/src/implementation/registry.tsx
++++ b/packages/dashboard-start/src/implementation/registry.tsx
+@@ -8,7 +8,7 @@
+  */
+ import { RegistryContext, scheduleTask, useAtomValue } from "@effect/atom-react";
+ import type { AnyRouter, ParsedLocation, StaticDataRouteOption } from "@tanstack/react-router";
+-import { Cause } from "effect";
++import { Cause, Effect } from "effect";
+ import { AsyncResult, Atom, AtomRegistry, Hydration } from "effect/reactivity";
+ import { createContext, useContext, useSyncExternalStore, type ReactNode } from "react";
+ import { nodeKey } from "./loaded-value.ts";
+@@ -357,6 +357,18 @@
+   };
+ };
+ 
++/**
++ * A read held only until it answers, instead of for `prefetchHold`. For a read that polls or
++ * refreshes on focus while it is held, such as a queue: a link that is only hovered must not keep
++ * that running. Its answer then follows the read's own retention.
++ */
++export interface SettledRead {
++  readonly settled: Atom.Atom<AsyncResult.AsyncResult<unknown, unknown>>;
++}
++export const untilSettled = (
++  settled: Atom.Atom<AsyncResult.AsyncResult<unknown, unknown>>,
++): SettledRead => ({ settled });
++
+ /** The reads a matched route declares, from its static data, params and current values. */
+ export type RouteReads = (
+   match: {
+@@ -364,7 +376,7 @@
+     readonly params: Readonly<Record<string, unknown>>;
+   },
+   get: <A>(atom: Atom.Atom<A>) => A,
+-) => ReadonlyArray<Atom.Atom<unknown>>;
++) => ReadonlyArray<Atom.Atom<unknown> | SettledRead>;
+ 
+ /**
+  * Long enough for a slow read to answer. After that the page that uses a read holds it, and a
+@@ -383,10 +395,28 @@
+   registry: AtomRegistry.AtomRegistry,
+   reads: RouteReads,
+ ) => {
++  // Repeated intent, such as hovering a link again, joins the hold already waiting for an answer.
++  const settling = new Set<SettledRead["settled"]>();
++  const hold = (read: Atom.Atom<unknown> | SettledRead) => {
++    if (Atom.isAtom(read)) {
++      setTimeout(registry.mount(read), prefetchHold);
++      return;
++    }
++    const { settled } = read;
++    if (settling.has(settled)) return;
++    settling.add(settled);
++    Effect.runCallback(
++      AtomRegistry.getResult(registry, settled, { suspendOnWaiting: true }).pipe(
++        Effect.timeoutOption(prefetchHold),
++        Effect.ignore,
++        Effect.ensuring(Effect.sync(() => settling.delete(settled))),
++      ),
++    );
++  };
+   const start = (location: ParsedLocation) => {
+     const get = <A,>(atom: Atom.Atom<A>) => registry.get(atom);
+-    for (const atom of router.matchRoutes(location).flatMap((match) => reads(match, get)))
+-      setTimeout(registry.mount(atom), prefetchHold);
++    for (const read of router.matchRoutes(location).flatMap((match) => reads(match, get)))
++      hold(read);
+   };
+   const preload = router.preloadRoute;
+   router.preloadRoute = (options) => {

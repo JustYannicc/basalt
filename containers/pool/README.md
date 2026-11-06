@@ -18,11 +18,12 @@ The Docker build context is this directory:
 
 Required environment:
 
-- <code>POOL_DATABASE_URL</code>: direct PostgreSQL URI for Home's dedicated logical database. The URI is written unchanged into a YAML scalar under /dev/shm; reserved URI characters must already be percent-encoded. Query options such as <code>options=-c%20role%3Dbasalt_pool_owner</code> are preserved.
+- <code>POOL_DATABASE_URL</code>: PostgreSQL URI for Home's dedicated logical database. Direct connections and transaction pooling are supported. Query options are preserved, so pooled connections must omit unsupported startup options such as <code>options=-c%20role%3Dbasalt_pool_owner</code>.
 - <code>POOL_MANAGEMENT_KEY</code>: Home management key. The supervisor maps it to Home's <code>MANAGEMENT_PASSWORD</code> environment override and uses it for local Management API calls and readiness authentication.
 
 Optional environment:
 
+- <code>POOL_DATABASE_SCHEMA_OWNER</code>: an existing role selected with <code>SET LOCAL ROLE</code> inside schema transactions. Signalbox supplies its provisioned stable owner. Standalone containers omit this to migrate as their database login. The login must have permission to select a configured owner; a missing or denied role emits <code>POOL_HOME_SCHEMA_OWNER_UNAVAILABLE</code> and ends startup without an internal retry.
 - <code>POOL_APP_SIGNING_KEY</code>: the parent app supplies its existing pool signing key, 32 bytes encoded as lowercase hex, for native membership projections and request assertions. Native use fails closed without it. <code>POOL_APP_SIGNING_KEY_PREVIOUS</code> accepts the previous key during rotation.
 - <code>POOL_MANAGEMENT_ALLOW_REMOTE</code>: defaults to <code>false</code>. The parent app sets <code>true</code> for Home management over the private controller path. The public router and pool Worker reject direct <code>/v0/management/*</code> and <code>/v8/management/*</code> requests. The Durable Object retains the internal mapping to port 8327; Home still requires the management key.
 

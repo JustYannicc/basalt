@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Container reconciliation ignores runtime instance counts when the declaration omits instances and omits that count from updates; explicit counts, maximum capacity, EU placement and real configuration or image rollouts remain authoritative. Creation retains its initial-count default."
+    }
+  }
+}

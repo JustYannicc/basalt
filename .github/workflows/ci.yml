@@ -1551,6 +1551,13 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Check container Python names and imports
+        run: |
+          python3 -m venv "$RUNNER_TEMP/container-python-lint"
+          "$RUNNER_TEMP/container-python-lint/bin/python" -m pip install --disable-pip-version-check --no-input --no-cache-dir ruff==0.16.1
+          "$RUNNER_TEMP/container-python-lint/bin/ruff" check --isolated --select F \
+            --config 'include = ["*.py"]' --target-version py312 \
+            --no-respect-gitignore --no-cache containers
       - run: npm run prepare:upstream
       - name: Verify every adopted test declares its plan and CI job
         run: bun scripts/ci/check-plans.ts
@@ -1679,12 +1686,12 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17.7-alpine
+        image: postgres:17.7-alpine@sha256:bb377b7239d2774ac8cc76f481596ce96c5a6b5e9d141f6d0a0ee371a6e7c0f2
         env:
           POSTGRES_USER: fixture_root
           POSTGRES_DB: postgres
           POSTGRES_PASSWORD: fixture-only
-        ports: [5432:5432]
+        ports: [5432:5432, 6432:6432]
         options: >-
           --health-cmd "pg_isready -U fixture_root"
           --health-interval 5s
@@ -1725,10 +1732,55 @@ jobs:
           echo "Runner disk before candidate build (bytes)"
           df -B1 /
           docker build --target runtime --tag basalt-1409-pool:test containers/pool
+      - name: Start the isolated transaction pooler
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+          POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
+        run: |
+          docker exec "$POSTGRES_CONTAINER" apk add --no-cache pgbouncer=1.25.1-r0
+          docker exec -i "$POSTGRES_CONTAINER" sh -c 'cat > /tmp/budget-pgbouncer.ini' <<'CONFIG'
+          [databases]
+          * = host=127.0.0.1 port=5432
+          [pgbouncer]
+          listen_addr=0.0.0.0
+          listen_port=6432
+          auth_type=trust
+          auth_file=/tmp/budget-users.txt
+          admin_users=fixture_root
+          pool_mode=transaction
+          default_pool_size=5
+          max_db_connections=5
+          max_client_conn=400
+          max_prepared_statements=200
+          ignore_startup_parameters=extra_float_digits
+          server_lifetime=60
+          server_idle_timeout=15
+          logfile=/tmp/budget-pgbouncer.log
+          pidfile=/tmp/budget-pgbouncer.pid
+          CONFIG
+          docker exec -i "$POSTGRES_CONTAINER" sh -c 'cat > /tmp/budget-users.txt; chown postgres /tmp/budget-pgbouncer.ini /tmp/budget-users.txt' <<'USERS'
+          "fixture_root" "fixture-only"
+          "budget_a" "fixture-only"
+          "budget_b" "fixture-only"
+          USERS
+          docker exec --user postgres "$POSTGRES_CONTAINER" pgbouncer -d /tmp/budget-pgbouncer.ini
+          node scripts/pool-tests/database-budget/setup.ts
       - name: Verify Home connection limits and concurrent liveness on Postgres
+        env:
+          POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
         run: |
           docker build --target home-db-pool-tests --tag basalt-home-db-pool:test containers/pool
-          docker run --rm --network host -e HOME_TEST_POSTGRES_DSN=postgresql://fixture_root:fixture-only@localhost:5432/postgres basalt-home-db-pool:test
+          docker run --rm --network host -e HOME_TEST_POSTGRES_DSN=postgresql://fixture_root:fixture-only@localhost:5432/postgres -e HOME_TEST_POOLED_DSN=postgresql://budget_a:fixture-only@localhost:6432/budget0314_compat basalt-home-db-pool:test
+          proof=$(docker create basalt-home-db-pool:test)
+          docker cp "$proof:/out/home-budget-client" "$RUNNER_TEMP/home-budget-client"
+          docker rm "$proof"
+          node scripts/pool-tests/database-budget/setup.ts cleanup
+      - name: Prove the shared budget across independent Home processes
+        run: node --test --test-concurrency=1 scripts/pool-tests/shared-database-budget.test.ts scripts/pool-tests/database-direct-control.test.ts scripts/pool-tests/database-retirement.test.ts scripts/pool-tests/database-verification.test.ts
+        env:
+          POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
+          POOL_TEST_POOLED_URL: postgresql://fixture_root:fixture-only@localhost:6432/postgres
+          POOL_TEST_HOME_BUDGET_CLIENT: ${{ runner.temp }}/home-budget-client
       - name: Check the pool runtime and database contracts
         run: node --test --test-concurrency=1 scripts/pool-tests/*.test.ts
         env:

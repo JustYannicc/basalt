@@ -1,0 +1,11 @@
+{
+  "identity": "alchemy-declared-container-instances",
+  "file": "0329-declared-container-instances.patch",
+  "content_sha256": "70cd18d0dcdf75c5c68399dc02fa6a066832d3a4b85eaf48cfae6db587bca3f2",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "alchemy-dependency-upgrade",
+  "requires": "A pinned Alchemy release leaves omitted instance counts runtime-owned; remove after source/lib no-op, explicit-zero/count, scaling, placement, image/config drift and rollout regressions pass."
+}

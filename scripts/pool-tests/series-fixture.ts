@@ -1,3 +1,4 @@
+import { historySchemaFixture } from "./history-fixture.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
@@ -42,7 +43,7 @@ export async function seriesFixture(
   const client = new pg.Client({ connectionString: url });
   await client.connect();
   try {
-    await client.query(`CREATE SCHEMA ${schema}`);
+    await historySchemaFixture(client, schema);
     await client.query(`SET search_path TO ${schema}`);
     const db: HistoryDatabase = client;
     await migrateModelHistory(db);

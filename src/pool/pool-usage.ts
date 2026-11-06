@@ -44,6 +44,12 @@ interface Dependencies {
   defer?: (work: Promise<void>) => void;
   now?: () => Date;
   collection?: QuotaCollection;
+  officialSummary?: (input: {
+    pool: string;
+    caller: string;
+    canManage: boolean;
+    summary: UsageSummary;
+  }) => Promise<UsageSummary>;
   appUsage?: (input: {
     pool: string;
     members: readonly string[];
@@ -281,19 +287,23 @@ export class PoolUsage {
       from: summary.from,
       to: summary.to,
     });
-    return apps === undefined
-      ? summary
-      : {
-          ...summary,
-          ...(summary.members === undefined
-            ? { apps: apps.get(caller) ?? [] }
-            : {
-                members: summary.members.map((member) => ({
-                  ...member,
-                  apps: apps.get(member.member) ?? [],
-                })),
-              }),
-        };
+    const result =
+      apps === undefined
+        ? summary
+        : {
+            ...summary,
+            ...(summary.members === undefined
+              ? { apps: apps.get(caller) ?? [] }
+              : {
+                  members: summary.members.map((member) => ({
+                    ...member,
+                    apps: apps.get(member.member) ?? [],
+                  })),
+                }),
+          };
+    return this.deps.officialSummary
+      ? this.deps.officialSummary({ pool, caller, canManage, summary: result })
+      : withoutUsdPrices(result);
   }
 
   /** The caller authorizes management; the recorded owner is never capped. */
@@ -342,4 +352,31 @@ export class PoolUsage {
       return failureResponse(error);
     }
   }
+}
+
+/** Old billing buckets are credits. Without the official-price read, every request stays unpriced. */
+function withoutUsdPrices(summary: UsageSummary): UsageSummary {
+  const clear = <T extends { requests: number; cost: number; unpriced: number }>(value: T): T => ({
+    ...value,
+    cost: 0,
+    unpriced: value.requests,
+  });
+  return {
+    ...summary,
+    total: clear(summary.total),
+    models: summary.models.map(clear),
+    days: summary.days.map((day) => ({ ...clear(day), models: day.models.map(clear) })),
+    accounts: summary.accounts.map(clear),
+    ...(summary.apps ? { apps: summary.apps.map(clear) } : {}),
+    ...(summary.members
+      ? {
+          members: summary.members.map((member) => ({
+            ...clear(member),
+            models: member.models.map(clear),
+            days: member.days.map((day) => ({ ...clear(day), models: day.models.map(clear) })),
+            ...(member.apps ? { apps: member.apps.map(clear) } : {}),
+          })),
+        }
+      : {}),
+  };
 }
