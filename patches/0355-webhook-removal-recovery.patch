@@ -66,7 +66,7 @@ diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/impl
                const common = {
                  name: row.name,
                  config: saved.config,
-@@ -392,6 +406,13 @@
+@@ -392,6 +406,22 @@
                Effect.result,
              );
              const result = yield* work;
@@ -74,13 +74,22 @@ diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/impl
 +            const failedState =
 +              stopping && Result.isFailure(result)
 +                ? yield* credentials
-+                    .encrypt(row.id, Redacted.make({ ...saved, removalFailures: failures }))
++                    .encrypt(
++                      row.id,
++                      Redacted.make({
++                        config: saved.config,
++                        secret: saved.secret,
++                        state: saved.state,
++                        ...(saved.setup === undefined ? {} : { setup: saved.setup }),
++                        removalFailures: failures,
++                      }),
++                    )
 +                    .pipe(Effect.mapError(() => new StorageError()))
 +                : undefined;
              yield* transaction(db, () =>
                Effect.gen(function* () {
                  yield* query(() =>
-@@ -404,6 +425,12 @@
+@@ -404,6 +434,12 @@
                            ? "unregister"
                            : "register"
                          : null,
@@ -93,7 +102,7 @@ diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/impl
                        ...(Result.isSuccess(result)
                          ? refused
                            ? { status: "disabled", failure: null }
-@@ -633,7 +660,7 @@
+@@ -633,7 +669,7 @@
            yield* query(() =>
              db.updateMany("webhooks", {
                where: (b) => b.and(b("id", "=", row.id), b("revision", "=", row.revision)),
@@ -102,7 +111,7 @@ diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/impl
              }),
            );
            const current = yield* read(input);
-@@ -746,7 +773,11 @@
+@@ -746,7 +782,11 @@
              return yield* new WebhookFailed({ reason: "input" });
            return yield* Schema.decodeUnknownEffect(Schema.toType(WebhookSetupView))(
              saved.setup === undefined

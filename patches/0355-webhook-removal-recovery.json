@@ -1,7 +1,7 @@
 {
   "identity": "basalt-webhook-removal-recovery",
   "file": "0355-webhook-removal-recovery.patch",
-  "content_sha256": "5625adc7c7a4e3ccd59ca0c3916a01881a40258fbf97710f90f4e73aa71de79d",
+  "content_sha256": "d973fa4ea836bd0d425d47fc6ac36d33eec60724715a82ffd04e60b0af7761c5",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
