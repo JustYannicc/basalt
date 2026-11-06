@@ -230,7 +230,7 @@ new file mode 100644
 +      ".json",
 +      `${JSON.stringify({
 +        cause: Cause.pretty(cause),
-+        details: Formatter.format(cause, { ignoreToString: true }),
++        details: Formatter.format(Cause.prettyErrors(cause), { ignoreToString: true }),
 +      })}\n`,
 +    );
 +  });

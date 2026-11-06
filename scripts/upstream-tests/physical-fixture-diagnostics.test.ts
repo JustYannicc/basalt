@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promis
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
-import { Effect, Redacted } from "effect";
+import { Data, Effect, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { copyE2eEvidence } from "../e2e-evidence.ts";
@@ -13,6 +13,11 @@ import { productionOpsDatabaseFixture } from "../../.upstream/e2e/support/produc
 import { cloudRuntimeControl } from "../../.upstream/e2e/support/cloud-runtime-control.ts";
 import { cloudLogActivity } from "../../.upstream/e2e/support/cloud-log-activity.ts";
 import { fixtureProcessOutput } from "../../.upstream/e2e/support/fixture-diagnostics.ts";
+
+class FixtureControlError extends Data.TaggedError("FixtureControlError")<{
+  readonly message: string;
+  readonly cause: unknown;
+}> {}
 
 test("a failed readiness child retains both streams, its exit code and the control cause", async (t) => {
   const root = await mkdtemp(join(process.env.RUNNER_TEMP ?? tmpdir(), "physical-diagnostics-"));
@@ -89,9 +94,10 @@ test("a failed readiness child retains both streams, its exit code and the contr
           (binding: string) =>
             binding === "original"
               ? Effect.fail(
-                  new Error("outer fixture error", {
+                  new FixtureControlError({
+                    message: "outer fixture error",
                     cause: new Error("middle fixture error", {
-                      cause: new Error("root fixture error"),
+                      cause: Object.assign(new Error("root fixture error"), { code: "XX000" }),
                     }),
                   }),
                 )
@@ -177,11 +183,11 @@ test("a failed readiness child retains both streams, its exit code and the contr
   );
   assert.ok(
     contents.some((text) =>
-      ["outer fixture error", "middle fixture error", "root fixture error"].every((part) =>
+      ["outer fixture error", "middle fixture error", "root fixture error", "XX000"].every((part) =>
         text.includes(part),
       ),
     ),
-    "the complete nested cause chain must survive collection",
+    "the complete tagged cause chain and SQLSTATE must survive collection",
   );
   assert.ok(
     contents.some((text) => text === "invalid readiness JSON\n"),
