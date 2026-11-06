@@ -1,0 +1,16 @@
+diff --git a/apps/hosted/cloud/scripts/database-pool-budget.ts b/apps/hosted/cloud/scripts/database-pool-budget.ts
+--- a/apps/hosted/cloud/scripts/database-pool-budget.ts
++++ b/apps/hosted/cloud/scripts/database-pool-budget.ts
+@@ -7,7 +7,11 @@
+   message: Schema.String,
+ }) {}
+ const Parameters = Schema.Array(
+-  Schema.Struct({ namespace: Schema.String, name: Schema.String, value: Schema.String }),
++  Schema.Struct({
++    namespace: Schema.String,
++    name: Schema.String,
++    value: Schema.NullOr(Schema.String),
++  }),
+ );
+ const Change = Schema.Struct({ id: Schema.String, state: Schema.String });
+ const Changes = Schema.Struct({ data: Schema.Array(Change) });
