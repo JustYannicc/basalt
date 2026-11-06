@@ -17,3 +17,9 @@ The workflow is the command list. Adding an unsupported action, expression, cond
 This command runs the complete ordinary PR fast lane; it does not establish full-suite merge eligibility. Targeted checks are useful while editing; only a complete successful `ci:fast` run establishes local fast-gate parity. Heavy product suites remain in the full CI lane.
 
 After changing `upstream.json`, fetch its exact commit into `.upstream` and run `node scripts/ci/snapshot-upstream-inputs.ts` to regenerate the input file inventory. The command reads that commit's Git tree; prepared or untracked files do not enter the snapshot. The coverage gate independently checks the snapshot against the pin.
+
+## Keep e2e coverage explicit
+
+`bun scripts/ci/check-e2e-coverage.ts` runs in the fast lane after preparation. It names test calls and standalone checks that no declared runner or workflow reaches. Wire each omission into a CI group or job, or add a reviewed entry to `scripts/ci/e2e-exceptions.json` with a reason and the exact fingerprint from `.generated/ci/e2e-coverage.json`. The fingerprint includes the prepared spec and its plan. Changed fingerprints require renewed review, and selected or deleted entries must be removed. Exceptions never expand automatically to new tests in the same file.
+
+`--no-exceptions` reports the full ungated inventory, including the frozen inherited baseline. A temporary exception for a broken check must name its owning fix. Wiring that check makes the exception fail, so the fix removes both together.

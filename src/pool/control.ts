@@ -1,3 +1,4 @@
+import { poolDependency } from "./dependency-failure.ts";
 import { PoolRuntimeUnhealthy } from "./lifecycle.ts";
 import { HomeTransportFailure } from "./json.ts";
 import { accountsView } from "./accounts-view.ts";
@@ -477,7 +478,7 @@ export class PoolHome {
       );
       if (response.status === 401 || response.status === 403) return unavailable();
       const created = response.ok;
-      await response.body?.cancel();
+      if (response.body) await poolDependency("membership", response.body.cancel());
       const groups = (await this.client.allPoolGroups()).filter(
         (group) => group.channel_name === this.name,
       );

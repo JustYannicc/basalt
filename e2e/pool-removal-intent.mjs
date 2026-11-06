@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Effect, Fiber } from "effect";
+import { removalIntentErrors } from "./recipes/removal-intent-errors.mjs";
 import { waitForHeldCall } from "./recipes/held-call.mjs";
 import { root, runtime, until } from "./recipes/harness.mjs";
 import { poolCloudHarness } from "./recipes/pool-cloud-harness.mjs";
@@ -15,8 +16,10 @@ const checked = (name, actual, expected) => {
   checks.push(name);
 };
 try {
+  await removalIntentErrors(checked);
   await Effect.runPromise(
     Effect.gen(function* () {
+      if (process.argv.includes("--receiver-only")) return;
       const h = yield* poolCloudHarness(directory, { resets: true });
       const identity = yield* h.request("GET", "/api/auth/get-session");
       const apps = yield* until(
