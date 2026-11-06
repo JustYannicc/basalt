@@ -1,0 +1,666 @@
+diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx
+--- a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx
++++ b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx
+@@ -1,11 +1,17 @@
+ import { parseAccountsSearch } from "@executor-js/hosted-web/contracts/navigation";
+ import { createFileRoute } from "@tanstack/react-router";
+-import { AccountsPage, accountsPageReads } from "@executor-js/hosted-web/pages/accounts";
++import {
++  AccountsPage,
++  accountsPageReads,
++  preloadAccountsPage,
++} from "@executor-js/hosted-web/pages/accounts";
+ 
+ /** Hosted account inventory. */
+ export const Route = createFileRoute("/org/$organizationSlug/accounts/")({
+   validateSearch: parseAccountsSearch,
+   staticData: { organizationReads: accountsPageReads },
++  // Pending stays on the router's skeleton until the browser-only views load; see preloadView.
++  loader: preloadAccountsPage,
+   component: Page,
+ });
+ 
+diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
+--- a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
++++ b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
+@@ -1,6 +1,12 @@
+ import { createFileRoute } from "@tanstack/react-router";
+-import { ApprovalsPage, approvalsPageReads } from "@executor-js/hosted-web/pages/approvals";
++import {
++  ApprovalsPage,
++  approvalsPageReads,
++  preloadApprovalsPage,
++} from "@executor-js/hosted-web/pages/approvals";
+ export const Route = createFileRoute("/org/$organizationSlug/approvals/")({
+   component: ApprovalsPage,
+   staticData: { organizationReads: approvalsPageReads },
++  // Pending stays on the router's skeleton until the queue view loads; see preloadView.
++  loader: preloadApprovalsPage,
+ });
+diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx
+--- a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx
++++ b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx
+@@ -1,11 +1,17 @@
+ import { parseAccountsSearch } from "@executor-js/hosted-web/contracts/navigation";
+ import { createFileRoute } from "@tanstack/react-router";
+-import { AccountsPage, accountsPageReads } from "@executor-js/hosted-web/pages/accounts";
++import {
++  AccountsPage,
++  accountsPageReads,
++  preloadAccountsPage,
++} from "@executor-js/hosted-web/pages/accounts";
+ 
+ /** Hosted account inventory. */
+ export const Route = createFileRoute("/org/$organizationSlug/accounts/")({
+   validateSearch: parseAccountsSearch,
+   staticData: { organizationReads: accountsPageReads },
++  // Pending stays on the router's skeleton until the browser-only views load; see preloadView.
++  loader: preloadAccountsPage,
+   component: Page,
+ });
+ 
+diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
+--- a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
++++ b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
+@@ -1,6 +1,12 @@
+ import { createFileRoute } from "@tanstack/react-router";
+-import { ApprovalsPage, approvalsPageReads } from "@executor-js/hosted-web/pages/approvals";
++import {
++  ApprovalsPage,
++  approvalsPageReads,
++  preloadApprovalsPage,
++} from "@executor-js/hosted-web/pages/approvals";
+ export const Route = createFileRoute("/org/$organizationSlug/approvals/")({
+   component: ApprovalsPage,
+   staticData: { organizationReads: approvalsPageReads },
++  // Pending stays on the router's skeleton until the queue view loads; see preloadView.
++  loader: preloadApprovalsPage,
+ });
+diff --git a/apps/hosted/web/src/implementation/pages/accounts.tsx b/apps/hosted/web/src/implementation/pages/accounts.tsx
+--- a/apps/hosted/web/src/implementation/pages/accounts.tsx
++++ b/apps/hosted/web/src/implementation/pages/accounts.tsx
+@@ -1,5 +1,7 @@
+-import { lazy, Suspense } from "react";
++import { Suspense } from "react";
+ import { useHydrated } from "@executor-js/ui/hooks/hydrated";
++import { preloadView, usePreloadedView } from "@executor-js/ui/dashboard/review-lazy";
++import { preloadAccountsView } from "@executor-js/ui/dashboard/accounts";
+ import type { AccountsPage as AccountsClient } from "./accounts-client.tsx";
+ import type { OrganizationPageReads } from "../components/organization.tsx";
+ import { resourceDirectoryAtom } from "../../contracts/resource-access.ts";
+@@ -9,15 +11,29 @@
+   resourceDirectoryAtom(organization),
+ ];
+ 
+-const Client = lazy(() =>
++const loadClient = () =>
+   import.meta.env.SSR
+     ? Promise.reject(new Error("Account controls render only in a browser"))
+-    : import("./accounts-client.tsx").then((module) => ({ default: module.AccountsPage })),
+-);
++    : import("./accounts-client.tsx").then((module) => ({ default: module.AccountsPage }));
++
++/**
++ * The route loader awaits both account layers together. The shared layer is otherwise requested
++ * only after this one evaluates, and either one suspending on first entry delays the reveal.
++ */
++export const preloadAccountsPage = () => {
++  const client = preloadView(loadClient);
++  const view = preloadAccountsView();
++  return client === undefined && view === undefined
++    ? undefined
++    : Promise.all([client, view]).then(() => undefined);
++};
++
+ export function AccountsPage(props: Parameters<typeof AccountsClient>[0]) {
+   const hydrated = useHydrated();
++  const Client = usePreloadedView(loadClient);
+   return hydrated ? (
+     <Suspense fallback={<InventoryPageSkeleton kind="accounts" />}>
++      {/* oxlint-disable-next-line react/static-components -- usePreloadedView returns one component per mount and loader */}
+       <Client {...props} />
+     </Suspense>
+   ) : (
+diff --git a/apps/hosted/web/src/implementation/pages/approvals.tsx b/apps/hosted/web/src/implementation/pages/approvals.tsx
+--- a/apps/hosted/web/src/implementation/pages/approvals.tsx
++++ b/apps/hosted/web/src/implementation/pages/approvals.tsx
+@@ -1,4 +1,4 @@
+-import { LazyReview } from "@executor-js/ui/dashboard/review-lazy";
++import { LazyReview, preloadView } from "@executor-js/ui/dashboard/review-lazy";
+ import { BrowserApprovalCard } from "@executor-js/ui/dashboard/browser-approval";
+ import { scheduledReviewAtoms } from "../../contracts/schedules.ts";
+ import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
+@@ -13,6 +13,8 @@
+   import.meta.env.SSR
+     ? Promise.reject(new Error("Approvals render only in a browser"))
+     : import("./approvals-list-client.tsx").then((module) => ({ default: module.ApprovalsPage }));
++/** The queue route's loader awaits this, so the queue mounts without suspending. */
++export const preloadApprovalsPage = () => preloadView(loadApprovals);
+ export function ApprovalsPage() {
+   return <LazyReview load={loadApprovals} props={{}} />;
+ }
+diff --git a/packages/ui/src/implementation/dashboard/accounts.tsx b/packages/ui/src/implementation/dashboard/accounts.tsx
+--- a/packages/ui/src/implementation/dashboard/accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/accounts.tsx
+@@ -3,7 +3,7 @@
+ import type { AccountsPage as AccountsPageClient } from "./accounts-client.tsx";
+ import { PageFrame, PageHeader } from "./page.tsx";
+ import { AccountRowsSkeleton } from "./loading.tsx";
+-import { retainedLazy } from "./review-lazy.tsx";
++import { preloadView, usePreloadedView } from "./review-lazy.tsx";
+ 
+ // Server-side lazy chunks still upload and compile on every Worker cold start.
+ const load = () =>
+@@ -12,9 +12,12 @@
+     : import("./accounts-client.tsx");
+ const loadView = () => load().then((module) => ({ default: module.AccountsPage }));
+ 
++/** Host routes await this with their own account layer, so the list mounts without suspending. */
++export const preloadAccountsView = () => preloadView(loadView);
++
+ export function AccountsPage<E>(props: Parameters<typeof AccountsPageClient<E>>[0]) {
+   const hydrated = useHydrated();
+-  const View = retainedLazy<Parameters<typeof AccountsPageClient<E>>[0]>(loadView);
++  const View = usePreloadedView<Parameters<typeof AccountsPageClient<E>>[0]>(loadView);
+   return hydrated ? (
+     <Suspense
+       fallback={
+@@ -24,7 +27,7 @@
+         </PageFrame>
+       }
+     >
+-      {/* oxlint-disable-next-line react/static-components -- retainedLazy returns the same component for each module-level loader */}
++      {/* oxlint-disable-next-line react/static-components -- usePreloadedView returns one component per mount and loader */}
+       <View {...props} />
+     </Suspense>
+   ) : (
+diff --git a/packages/ui/src/implementation/dashboard/review-lazy.tsx b/packages/ui/src/implementation/dashboard/review-lazy.tsx
+--- a/packages/ui/src/implementation/dashboard/review-lazy.tsx
++++ b/packages/ui/src/implementation/dashboard/review-lazy.tsx
+@@ -14,6 +14,8 @@
+ 
+ type Loader<P> = () => Promise<{ default: ComponentType<P> }>;
+ const retained = new WeakMap<object, unknown>();
++const preloaded = new WeakMap<object, unknown>();
++const preloading = new WeakMap<object, Promise<void>>();
+ 
+ /**
+  * One lazy component per module-level loader. A new `lazy` suspends on its first render even when
+@@ -34,6 +36,40 @@
+   return View;
+ }
+ 
++/**
++ * Loads a browser-only view before its route renders; the route's `loader` awaits it. React holds
++ * the reveal of a Suspense boundary that resolves after showing its fallback until 300 ms after the
++ * last fallback it showed, so a page whose view suspended on first entry sat on its skeleton long
++ * after the chunk arrived. While this is pending the router shows its own pending page, and the
++ * router's commit is not a Suspense retry, so it is not held. A failed import resolves quietly:
++ * the render path then takes the lazy route, which retries and shows the existing error UI.
++ * Returns nothing once loaded, so a revisit's loader settles synchronously.
++ */
++export function preloadView<P>(load: Loader<P>): Promise<void> | undefined {
++  if (import.meta.env.SSR || preloaded.has(load)) return undefined;
++  const existing = preloading.get(load);
++  if (existing !== undefined) return existing;
++  const started = load()
++    .then(
++      (module) => void preloaded.set(load, module.default),
++      () => undefined,
++    )
++    .finally(() => preloading.delete(load));
++  preloading.set(load, started);
++  return started;
++}
++
++/**
++ * The view one mount renders: the preloaded component when it is ready, so nothing suspends, and
++ * the retained lazy otherwise. The choice is fixed when the component mounts. A preload finishing
++ * later must not change the element type, which would remount the page and drop typed input.
++ */
++export function usePreloadedView<P>(load: Loader<P>): ComponentType<P> {
++  // Entries are stored from their own loader's module, so they have that loader's props.
++  const [ready] = useState(() => preloaded.get(load) as ComponentType<P> | undefined);
++  return ready ?? retainedLazy(load);
++}
++
+ /** Review code loads only when a browser opens the request. */
+ export function LazyReview<P extends object>({
+   load,
+@@ -44,7 +80,7 @@
+ }) {
+   const hydrated = useHydrated();
+   const [attempt, setAttempt] = useState(0);
+-  const Review = retainedLazy(load);
++  const Review = usePreloadedView(load);
+   const pending = (
+     <ApprovalCard>
+       <Spinner />
+@@ -55,7 +91,7 @@
+   ) : (
+     <ReviewBoundary key={attempt} retry={() => setAttempt(attempt + 1)}>
+       <Suspense fallback={pending}>
+-        {/* oxlint-disable-next-line react/static-components -- retainedLazy returns the same component for each module-level loader */}
++        {/* oxlint-disable-next-line react/static-components -- usePreloadedView returns one component per mount and loader */}
+         <Review {...props} />
+       </Suspense>
+     </ReviewBoundary>
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -111,6 +111,55 @@
+ 
+ /** Scenario names and applicability used by both test declarations and test selection. */
+ export const scenarios = plan({
++  firstEntryDesktop: {
++    fixtures: "actors",
++    file: "first-entry-reveal.spec.ts",
++    title: "First-entry route holds one pending view at 1440px",
++    targets: {
++      "self-host": scheduled,
++      cloud: na(
++        "The shared hosted browser views are exercised on self-host and both Worker bundles are checked separately.",
++      ),
++      local: na("Local route loaders are unchanged."),
++    },
++  },
++  firstEntryPhone: {
++    fixtures: "actors",
++    file: "first-entry-reveal.spec.ts",
++    title: "First-entry route holds one pending view at 390px",
++    targets: {
++      "self-host": scheduled,
++      cloud: na(
++        "The shared hosted browser views are exercised on self-host and both Worker bundles are checked separately.",
++      ),
++      local: na("Local route loaders are unchanged."),
++    },
++  },
++  firstEntryBehaviorDesktop: {
++    fixtures: "actors",
++    file: "first-entry-behavior.spec.ts",
++    title: "First-entry document hover and recovery at 1440px",
++    targets: {
++      "self-host": scheduled,
++      cloud: na(
++        "The shared hosted browser views are exercised on self-host and both Worker bundles are checked separately.",
++      ),
++      local: na("Local route loaders are unchanged."),
++    },
++  },
++  firstEntryBehaviorPhone: {
++    fixtures: "actors",
++    file: "first-entry-behavior.spec.ts",
++    title: "First-entry document hover and recovery at 390px",
++    targets: {
++      "self-host": scheduled,
++      cloud: na(
++        "The shared hosted browser views are exercised on self-host and both Worker bundles are checked separately.",
++      ),
++      local: na("Local route loaders are unchanged."),
++    },
++  },
++
+   savedAccountProjection: {
+     fixtures: "actors",
+     legacyStorage: true,
+diff --git a/e2e/tests/first-entry-reveal.spec.ts b/e2e/tests/first-entry-reveal.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/first-entry-reveal.spec.ts
+@@ -0,0 +1,76 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Evidence } from "../support/evidence.ts";
++import { openInApp, openThroughBrowser } from "../support/in-app-navigation.ts";
++import { firstEntryPages, observeFirstEntry } from "../support/first-entry-reveal-probe.ts";
++import { scenarios } from "../test-plan.ts";
++
++/**
++ * A first entry must go from the router's pending page straight to the page itself. A nested
++ * Suspense fallback in between is what React throttles, so its absence is the guarded property;
++ * no wall-clock budget is asserted.
++ */
++layer(HostedLive, { excludeTestServices: true })("First entry reveal", (it) => {
++  for (const width of [1440, 390]) {
++    const scenario = width === 1440 ? scenarios.firstEntryDesktop : scenarios.firstEntryPhone;
++    it.effect(scenario.title, (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const actors = yield* Actors;
++          const browser = yield* Browser;
++          const evidence = yield* Evidence;
++          const organization = `/org/${actors.organization.slug}`;
++          yield* browser.login(actors.owner);
++          yield* browser.use("Set viewport", (page) =>
++            page.setViewportSize({ width, height: 960 }),
++          );
++          // A hydrated document whose route has never loaded either page's view.
++          yield* openThroughBrowser("Enter the apps list", `${organization}/apps`);
++          const results = [];
++          for (const target of firstEntryPages) {
++            const recorded = yield* observeFirstEntry(organization, target);
++            results.push({ width, page: target.page, recorded });
++            yield* evidence.json("first-entry-reveal.json", results);
++            // In-app only: a document load would discard the loaded views the revisits rely on.
++            yield* openInApp("Back to the apps list", `${organization}/apps`);
++          }
++          // Revisits keep their retained views: no chunk request, content without a fallback.
++          for (const target of firstEntryPages) {
++            const requested: string[] = [];
++            const watch = (request: import("playwright").Request) => {
++              const path = new URL(request.url()).pathname;
++              if (target.clientChunks.test(path)) requested.push(path);
++            };
++            yield* Effect.acquireRelease(
++              browser.use(`${target.page}: watch revisit requests`, (page) =>
++                Promise.resolve(void page.on("request", watch)),
++              ),
++              () =>
++                browser
++                  .use(`${target.page}: stop watching`, (page) =>
++                    Promise.resolve(void page.off("request", watch)),
++                  )
++                  .pipe(Effect.orDie),
++            );
++            yield* openInApp(`Revisit ${target.page}`, target.path(organization));
++            yield* browser.use(`${target.page}: revisit content`, (page) =>
++              page.locator("main").getByText(target.marker).first().waitFor(),
++            );
++            expect(requested, `${target.page} revisit loads no view code`).toEqual([]);
++            yield* openInApp("Back to the apps list", `${organization}/apps`);
++          }
++          for (const { page, recorded } of results) {
++            expect(recorded.sawPending, `${page} shows the router's pending page`).toBe(true);
++            expect(recorded.replacedWhileHeld, `${page} keeps one pending page`).toBe(false);
++            expect(recorded.pendingMountsWhileHeld, `${page} mounts no nested fallback`).toBe(1);
++          }
++          yield* browser.checkpoint(`First entry final viewport ${width}`);
++        }),
++      ),
++    );
++  }
++});
+diff --git a/e2e/tests/first-entry-behavior.spec.ts b/e2e/tests/first-entry-behavior.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/first-entry-behavior.spec.ts
+@@ -0,0 +1,132 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Evidence } from "../support/evidence.ts";
++import { openInApp } from "../support/in-app-navigation.ts";
++import { holdQuery } from "../support/query-transition.ts";
++import { scenarios } from "../test-plan.ts";
++
++const pages = [
++  {
++    name: "Accounts",
++    path: "accounts",
++    marker: "No accounts available",
++    code: /\/assets\/accounts-client-[^/]+\.js$/,
++  },
++  {
++    name: "Human in the loop",
++    path: "approvals",
++    marker: "Nothing needs you right now",
++    code: /\/assets\/approvals-list-client-[^/]+\.js$/,
++  },
++];
++layer(HostedLive, { excludeTestServices: true })("First-entry behavior", (it) => {
++  for (const width of [1440, 390]) {
++    const scenario =
++      width === 1440 ? scenarios.firstEntryBehaviorDesktop : scenarios.firstEntryBehaviorPhone;
++    it.effect(scenario.title, (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const actors = yield* Actors;
++          const browser = yield* Browser;
++          const evidence = yield* Evidence;
++          const organization = `/org/${actors.organization.slug}`;
++          const results = [];
++          yield* browser.login(actors.owner);
++          yield* browser.use("Set behavior viewport", (page) =>
++            page.setViewportSize({ width, height: 960 }),
++          );
++          for (const target of pages) {
++            yield* browser.use(`Load ${target.name} as a document`, (page) =>
++              page.goto(`${organization}/${target.path}`),
++            );
++            yield* browser.use(`${target.name} document renders content`, (page) =>
++              page.locator("main").getByText(target.marker, { exact: true }).waitFor(),
++            );
++            const horizontalOverflow = yield* browser.use("Check document width", (page) =>
++              page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
++            );
++            expect(horizontalOverflow).toBe(false);
++            results.push({ width, page: target.name, documentContent: true, horizontalOverflow });
++            if (width === 1440) {
++              yield* browser.use("Start fresh before hover", (page) =>
++                page.goto(`${organization}/connect`),
++              );
++              yield* browser.use("Wait for sidebar", (page) =>
++                page.getByRole("link", { name: target.name, exact: true }).waitFor(),
++              );
++              yield* Effect.scoped(
++                Effect.gen(function* () {
++                  const held = yield* holdQuery(target.code, "continue", { allRequests: true });
++                  yield* browser.use(`Hover ${target.name}`, (page) =>
++                    page.getByRole("link", { name: target.name, exact: true }).hover(),
++                  );
++                  const requested = yield* held.requested;
++                  const pathBeforeClick = yield* browser.use("Hover keeps current route", (page) =>
++                    Promise.resolve(new URL(page.url()).pathname),
++                  );
++                  expect(pathBeforeClick).toBe(`${organization}/connect`);
++                  yield* held.release;
++                  yield* browser.use(`Open preloaded ${target.name}`, (page) =>
++                    page.getByRole("link", { name: target.name, exact: true }).click(),
++                  );
++                  yield* browser.use("Preloaded content renders", (page) =>
++                    page.locator("main").getByText(target.marker, { exact: true }).waitFor(),
++                  );
++                  results.push({ width, page: target.name, hoverStartsViewCode: true, requested });
++                }),
++              );
++            }
++          }
++          yield* browser.use("Start fresh for failed download", (page) =>
++            page.goto(`${organization}/connect`),
++          );
++          yield* browser.use("Wait for the neutral page", (page) =>
++            page.getByRole("heading", { name: "Connect your agent", exact: true }).waitFor(),
++          );
++          yield* Effect.scoped(
++            Effect.gen(function* () {
++              const held = yield* holdQuery(pages[1]!.code, "fail", { allRequests: true });
++              yield* openInApp("Open the queue with its code held", `${organization}/approvals`);
++              yield* held.requested;
++              yield* held.release;
++              yield* browser.use("A failed view offers its existing retry", (page) =>
++                page
++                  .getByText("This page could not load. Try again to refresh its current state.", {
++                    exact: true,
++                  })
++                  .waitFor(),
++              );
++              const retryVisible = yield* browser.use("Retry action remains available", (page) =>
++                page.getByRole("button", { name: "Try again", exact: true }).isEnabled(),
++              );
++              expect(retryVisible).toBe(true);
++              results.push({
++                width,
++                page: "Human in the loop",
++                failureSettles: true,
++                retryVisible,
++              });
++            }),
++          );
++          // A fresh document clears Chromium's failed module map, the existing recovery boundary.
++          yield* browser.use("Reload the failed queue after the network recovers", (page) =>
++            page.reload(),
++          );
++          yield* browser.use("A fresh document recovers the queue", (page) =>
++            page
++              .locator("main")
++              .getByText("Nothing needs you right now", { exact: true })
++              .waitFor(),
++          );
++          results.push({ width, page: "Human in the loop", documentReloadRecovers: true });
++          yield* evidence.json("first-entry-behavior.json", results);
++          yield* browser.checkpoint(`First-entry behavior at ${width}px`);
++        }),
++      ),
++    );
++  }
++});
+diff --git a/e2e/support/first-entry-reveal-probe.ts b/e2e/support/first-entry-reveal-probe.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/first-entry-reveal-probe.ts
+@@ -0,0 +1,113 @@
++import { Effect, Fiber } from "effect";
++import { Browser } from "./browser.ts";
++import { holdQuery } from "./query-transition.ts";
++
++/**
++ * Pages whose first hydrated entry mounted a nested browser-only lazy view. `pending` is the
++ * router's pending markup for that path (PagePending), and `marker` is the existing content marker
++ * from the inventory navigation scenario.
++ */
++export const firstEntryPages = [
++  {
++    page: "Accounts",
++    path: (organization: string) => `${organization}/accounts`,
++    // Both the host layer and the shared layer are named accounts-client.
++    clientChunks: /\/assets\/accounts-client-[^/]+\.js$/,
++    routeChunk: /\/assets\/org\._organizationSlug\.accounts\.index-[^/]+\.js$/,
++    pending: '[role="status"][aria-label="Loading accounts"]',
++    marker: "No accounts available",
++  },
++  {
++    page: "Human in the loop",
++    path: (organization: string) => `${organization}/approvals`,
++    clientChunks: /\/assets\/approvals-list-client-[^/]+\.js$/,
++    routeChunk: /\/assets\/org\._organizationSlug\.approvals\.index-[^/]+\.js$/,
++    pending: '.loading-rows[role="status"]',
++    marker: "Nothing needs you right now",
++  },
++] as const;
++type FirstEntryPage = (typeof firstEntryPages)[number];
++
++interface Recorded {
++  /** The router's pending element left the document while the view's chunks were still held. */
++  readonly replacedWhileHeld: boolean;
++  /** Distinct pending-shaped elements mounted while held; a nested fallback mounts a second one. */
++  readonly pendingMountsWhileHeld: number;
++  readonly sawPending: boolean;
++}
++
++/**
++ * Holds the page's browser-only chunks, enters the page through the hydrated router, and records
++ * whether anything replaced the router's pending element before the hold was released.
++ *
++ * Why this is timing-free for the candidate: with the route loader awaiting the held chunks, the
++ * route cannot render at all until release, so the pending element stays however long we wait.
++ * The two frames after the route chunk only bound how long the baseline gets to show its nested
++ * fallback; too short can only produce a false pass, so a valid RED on the baseline is required.
++ */
++export const observeFirstEntry = (organization: string, target: FirstEntryPage) =>
++  Effect.gen(function* () {
++    const browser = yield* Browser;
++    const held = yield* holdQuery(target.clientChunks, "continue", { allRequests: true });
++    const routeChunk = yield* Effect.forkScoped(
++      browser.use(`${target.page}: route chunk arrives`, (page) =>
++        page
++          .waitForResponse((response) => target.routeChunk.test(new URL(response.url()).pathname))
++          .then((response) => response.finished()),
++      ),
++    );
++    yield* browser.use(`${target.page}: record pending element`, (page) =>
++      page.evaluate((pending) => {
++        const seen = new WeakSet<Element>();
++        const state = {
++          first: null as Element | null,
++          released: false,
++          replacedWhileHeld: false,
++          pendingMountsWhileHeld: 0,
++        };
++        const scan = () => {
++          for (const element of document.querySelectorAll(`main ${pending}`)) {
++            if (seen.has(element)) continue;
++            seen.add(element);
++            state.first ??= element;
++            if (!state.released) state.pendingMountsWhileHeld++;
++          }
++          if (state.first && !state.first.isConnected && !state.released)
++            state.replacedWhileHeld = true;
++        };
++        const observer = new MutationObserver(scan);
++        observer.observe(document.documentElement, { subtree: true, childList: true });
++        Object.assign(window, { __firstEntry: state, __firstEntryObserver: observer });
++      }, target.pending),
++    );
++    yield* browser.use(`${target.page}: enter through the router`, (page) =>
++      page.evaluate(
++        (path) => history.pushState(history.state, "", path),
++        target.path(organization),
++      ),
++    );
++    yield* held.requested;
++    yield* Fiber.join(routeChunk);
++    yield* browser.use(`${target.page}: let the route commit`, (page) =>
++      page.evaluate(
++        () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
++      ),
++    );
++    const recorded = yield* browser.use(`${target.page}: read the held state`, (page) =>
++      page.evaluate((): Recorded => {
++        const state = Reflect.get(window, "__firstEntry");
++        state.released = true;
++        Reflect.get(window, "__firstEntryObserver").disconnect();
++        return {
++          replacedWhileHeld: state.replacedWhileHeld,
++          pendingMountsWhileHeld: state.pendingMountsWhileHeld,
++          sawPending: state.first !== null,
++        };
++      }),
++    );
++    yield* held.release;
++    yield* browser.use(`${target.page}: content after release`, (page) =>
++      page.locator("main").getByText(target.marker).first().waitFor(),
++    );
++    return recorded;
++  }).pipe(Effect.scoped);
+diff --git a/e2e/support/instant-navigation.ts b/e2e/support/instant-navigation.ts
+--- a/e2e/support/instant-navigation.ts
++++ b/e2e/support/instant-navigation.ts
+@@ -148,6 +148,20 @@
+           yield* browser.use("The navigation sheet is visible", (page) =>
+             page.getByRole("dialog", { name: "Menu", exact: true }).waitFor({ state: "visible" }),
+           );
++          // The modal disables page input before its own layer enables input on the next commit.
++          // Check stacking after that layer is ready; a permanently blocked sheet still times out.
++          yield* browser.use("The sheet can take pointer input", (page) =>
++            page
++              .getByRole("dialog", { name: "Menu", exact: true })
++              .elementHandle()
++              .then((sheet) =>
++                page.waitForFunction(
++                  (element) =>
++                    element !== null && getComputedStyle(element).pointerEvents !== "none",
++                  sheet,
++                ),
++              ),
++          );
+           const dialogReceivesInput = yield* browser.use(
+             "The sheet receives input above the frame",
+             (page) =>
