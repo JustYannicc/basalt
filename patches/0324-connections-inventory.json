@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-connections-inventory",
+  "file": "0324-connections-inventory.patch",
+  "content_sha256": "5da735f2f9cd02c9618108421f779ee85a1f3024a395721c55573e26dd8851fc",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}
