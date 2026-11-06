@@ -1,0 +1,26 @@
+{
+  "scenarios": {
+    "localOAuthCallbackFragment": {
+      "title": "Local OAuth completes when the service appends a fragment to the callback",
+      "targets": {
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Hosted rebuilds the callback from its query; this covers the local page."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Hosted rebuilds the callback from its query; this covers the local page."
+        },
+        "local": {
+          "status": "scheduled"
+        }
+      }
+    }
+  },
+  "runs": {
+    "localOAuthCallbackFragment": [
+      "host-managed-accounts-local:shared-identities-and-incremental-consent"
+    ]
+  },
+  "inherited": []
+}

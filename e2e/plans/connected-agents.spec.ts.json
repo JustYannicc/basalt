@@ -1,0 +1,31 @@
+{
+  "scenarios": {
+    "connectedAgents": {
+      "fixtures": "actors",
+      "title": "Members see the agents they connected over OAuth and revoking one ends its MCP access",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no organization members or hosted OAuth consent."
+        }
+      }
+    }
+  },
+  "runs": {
+    "connectedAgents": [
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ]
+  },
+  "inherited": [
+    "connectedAgentsActivity",
+    "connectedAgentsReauthorize",
+    "connectedAgentsIdleExpiry"
+  ]
+}

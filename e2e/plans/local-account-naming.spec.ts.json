@@ -1,0 +1,28 @@
+{
+  "scenarios": {
+    "localOAuthNamedAfterReturn": {
+      "title": "A new local OAuth account is named in a dialog after sign-in returns to its app, and a reconnect from the app keeps its name",
+      "targets": {
+        "local": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Paired local dashboard; hosted OAuth naming has its own scenario."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Paired local dashboard; hosted OAuth naming has its own scenario."
+        }
+      }
+    }
+  },
+  "runs": {
+    "localOAuthNamedAfterReturn": [
+      "host-managed-accounts-local:shared-identities-and-incremental-consent"
+    ]
+  },
+  "inherited": [
+    "localPastedCredentialsNamedAfterSaving"
+  ]
+}

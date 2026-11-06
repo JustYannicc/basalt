@@ -1,0 +1,29 @@
+{
+  "scenarios": {
+    "hostedAppLinkHeldAccess": {
+      "fixtures": "actors",
+      "title": "an app link or unlink waiting for the app's lock is refused when the admin is demoted or the account stops being shared meanwhile, and goes through when nothing changed",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The statement hold is mounted by the self-host test entry point."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no organization roles or account audiences."
+        }
+      }
+    }
+  },
+  "runs": {
+    "hostedAppLinkHeldAccess": [
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ]
+  },
+  "inherited": [
+    "hostedMcpLinkHeldAccess"
+  ]
+}

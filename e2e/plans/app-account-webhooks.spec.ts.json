@@ -1,0 +1,31 @@
+{
+  "scenarios": {
+    "hostedAppAccountWebhookRemoval": {
+      "fixtures": "actors",
+      "title": "unlinking an app link removes its app-account webhook with the account while the app could still use it, and leaves a departed member's for a manager to open and confirm its manual removal",
+      "targets": {
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no organization members to depart."
+        },
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        }
+      }
+    }
+  },
+  "runs": {
+    "hostedAppAccountWebhookRemoval": [
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ]
+  },
+  "inherited": [
+    "hostedAppAccountWebhooks",
+    "hostedUserWebhookRequirements",
+    "hostedAppAccountWebhookManualSetup"
+  ]
+}

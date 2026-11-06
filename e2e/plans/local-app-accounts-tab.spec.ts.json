@@ -1,7 +1,28 @@
 {
-  "scenarios": {},
-  "runs": {},
-  "inherited": ["localAppAccountsBrowser"],
+  "scenarios": {
+    "localAppAccountsBrowser": {
+      "title": "the local Accounts tab links a saved App account with a radio and unlinks it, keeping it saved, clears and checks a many() account, and the Schedules tab enables and pauses the app schedule with no approval choice",
+      "targets": {
+        "local": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Hosted managers and members have their own scenarios."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Hosted managers and members have their own scenarios."
+        }
+      }
+    }
+  },
+  "runs": {
+    "localAppAccountsBrowser": [
+      "host-managed-accounts-local:shared-identities-and-incremental-consent"
+    ]
+  },
+  "inherited": [],
   "inputs": [
     ".upstream/apps/hosted/server/src/contracts/accounts.ts",
     ".upstream/apps/hosted/server/src/contracts/app-accounts.ts",

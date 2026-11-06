@@ -392,6 +392,20 @@
       "runtime": "attached",
       "reason": "Requires a deployed Cloud stage; retained as inherited manual coverage while the self-host counterpart runs in CI.",
       "command": "bun run e2e:deployed --test-name '^Mobile member restrictions keep controls visible and the app overview stable$'"
+    },
+    "accountVersion": {
+      "file": "app-account-links.spec.ts",
+      "target": "cloud",
+      "runtime": "attached",
+      "reason": "Requires a deployed Cloud stage and remains explicit manual coverage; the self-host counterpart runs in the prepared account CI group.",
+      "command": "bun run e2e:deployed --test-name '^open tool tabs follow a version and keep running with the linked accounts$'"
+    },
+    "appAccountOAuth": {
+      "file": "app-account-picker.spec.ts",
+      "target": "cloud",
+      "runtime": "attached",
+      "reason": "Requires a deployed Cloud stage and remains explicit manual coverage; the self-host counterpart runs in the prepared account CI group.",
+      "command": "bun run e2e:deployed --test-name '^App account sign-in starts OAuth without asking for a name and returns cancellation to the same app$'"
     }
   }
 }
