@@ -138,7 +138,7 @@ index 45e7c1cb9cf3eed4f1ceed1b85061f262af1d47f..e3fbe2539c6d35341b5df32fb4167ec3
            sender: httpEventSender(egress),
            authorize: hostedEventAuthority(Effect.succeed(yield* SqlClient.SqlClient)),
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
-index 320bf03c9898675942751b0f39d6aafe62e19ab3..e0ce7b490307e71018c178a07a6d5245b7b8fcba 100644
+index 9a7b3d0e4542648299eb8b6b417e8d9ba0ed201c..197d281fae359ffb6bbff6f575918102214845dd 100644
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
 @@ -4,6 +4,8 @@
@@ -578,7 +578,7 @@ index 0000000000000000000000000000000000000000..189f1523d454d4dfb0e16d9957d8fe0c
 +      ),
 +    );
 diff --git a/e2e/support/managed-server.ts b/e2e/support/managed-server.ts
-index 9e5ebc669a561b9441e5d07def831d9ae30e723b..ba772266cba399953183b13fac67bc1e98683fca 100644
+index bca5c030ff3b6676ead2d52ac14bd91795cb006b..2eabe1042d53c4220ec3e84c822e0e92e6807b89 100644
 --- a/e2e/support/managed-server.ts
 +++ b/e2e/support/managed-server.ts
 @@ -155,6 +155,7 @@ export const startManagedServer = (
@@ -648,24 +648,6 @@ index 9e5ebc669a561b9441e5d07def831d9ae30e723b..ba772266cba399953183b13fac67bc1e
      );
      const services = yield* Layer.build(
        Layer.fresh(
-@@ -635,6 +674,17 @@ export const startDevelopmentServer = (
-     Effect.map(({ origin }) => origin),
-   );
- 
-+/** Development host with its own stop/start control, for held work during graceful shutdown. */
-+export const startControlledDevelopmentServer = (target: typeof Target.Service) =>
-+  startIsolatedSelfHost(target, "development").pipe(
-+    Effect.map(({ origin, controlOrigin, directory }): typeof Target.Service => ({
-+      ...target,
-+      directory,
-+      controlOrigin,
-+      metadata: { ...target.metadata, origin, target: "self-host" },
-+    })),
-+  );
-+
- /** Start an unconfigured product instance; the scenario scope owns its process and fresh data. */
- export const startFreshSelfHost = (
-   target: typeof Target.Service,
 diff --git a/e2e/support/server-control.ts b/e2e/support/server-control.ts
 index fc6fb9ff89dc00e60c222b384074b68776dc8a94..c2208536828192c7fc851e8c0e29eb0f509b0289 100644
 --- a/e2e/support/server-control.ts
@@ -1225,10 +1207,10 @@ index 1f2736af6a2d677a07ba2abf89b5e172ecfcc0c4..effa11eae7e016ddceb9dc764e614604
              safe,
            ),
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index 9a92b5c53dae025848b4cecb84be03bad4cbae5d..09ac88881e9399d162704341b89058384693def9 100644
+index 5770859e582a577b04865216000d9a1868268d22..2c4aa575066c1d30108a3d5d6294a68b51c24611 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
-@@ -411,6 +411,7 @@ export const createExecutor = (
+@@ -413,6 +413,7 @@ export const createExecutor = (
        makeAppConfirmations(db, appConnectionStore, options.appCalls),
        options.toolPolicy,
        accountTargets,
