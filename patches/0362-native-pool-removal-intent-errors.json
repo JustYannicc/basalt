@@ -1,0 +1,9 @@
+{
+  "identity": "executor-native-pool-removal-intent-errors",
+  "file": "0362-native-pool-removal-intent-errors.patch",
+  "content_sha256": "31364c38ecc45355ec6a9ad6a704d78baeb370b5422c8e93251c3f730c5d482d",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": true
+}

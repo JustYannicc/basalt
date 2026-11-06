@@ -1,0 +1,142 @@
+diff --git a/apps/hosted/server/src/implementation/pool-removal-intent.ts b/apps/hosted/server/src/implementation/pool-removal-intent.ts
+--- a/apps/hosted/server/src/implementation/pool-removal-intent.ts
++++ b/apps/hosted/server/src/implementation/pool-removal-intent.ts
+@@ -1,18 +1,22 @@
+ import { AppId, AccountAcquisitionHost, type AccountId, StorageError } from "@executor-js/sdk/core";
+-import { Clock, Config, Context, Effect, Option, Redacted, Schema } from "effect";
+-import { FetchHttpClient, HttpBody, HttpClient } from "effect/http";
++import { Clock, Config, Context, Effect, Redacted, Schema } from "effect";
++import { FetchHttpClient, HttpBody, HttpClient, HttpClientError } from "effect/http";
+ import { HostedExecutor } from "../contracts/executor.ts";
+ import { CurrentUserId } from "../contracts/auth.ts";
+ import { CurrentOrganization } from "../contracts/organization.ts";
+ import { policyDatabase } from "./resource-policy.ts";
+ import { nativePoolMembership } from "./pool-membership.ts";
+-import { signEnvelope } from "./pool-token.ts";
++import { PoolSigningFailure, signEnvelope } from "./pool-token.ts";
+ import { SqlClient } from "effect/sql";
+ 
+ export const PoolRemovalBackend = Context.Reference<
+   { readonly key: Redacted.Redacted<string>; readonly origin: string } | undefined
+ >("hosted/PoolRemovalBackend", { defaultValue: () => undefined });
+ const Pools = Schema.Array(Schema.Struct({ pool: AppId }));
++
++// Driver and transport causes stay local; the public StorageError contract stays unchanged.
++const storageFailure = (cause: unknown) =>
++  Effect.fail(Object.defineProperty(new StorageError(), "cause", { value: cause }));
+ 
+ /** Capture privately before unlink; invoke only after its authorized transaction commits. */
+ export const preparePoolUnlinkIntent = (input: {
+@@ -65,37 +69,48 @@
+       if (current === undefined || current.revision !== revision || current.removal !== null)
+         return;
+       const supplied = yield* PoolRemovalBackend;
+-      const key =
+-        supplied?.key ??
+-        Option.getOrUndefined(yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option));
+-      const origin =
+-        supplied?.origin ??
+-        Option.getOrUndefined(yield* Config.String("BASALT_POOL_ORIGIN").pipe(Config.option));
+-      if (key === undefined || origin === undefined) return yield* new StorageError();
++      const key = supplied?.key ?? (yield* Config.Redacted("POOL_APP_SIGNING_KEY"));
++      const origin = supplied?.origin ?? (yield* Config.String("BASALT_POOL_ORIGIN"));
++      const endpoint = yield* Schema.decodeUnknownEffect(Schema.URLFromString)(origin).pipe(
++        Effect.mapError((cause) => new Config.ConfigError(cause)),
++      );
+       const client = yield* HttpClient.HttpClient;
+       for (const pool of matching) {
+         const at = yield* Clock.currentTimeMillis;
+-        const envelope = yield* Effect.tryPromise(() =>
+-          signEnvelope(Redacted.value(key), "sbrm1", {
+-            audience: "/pool/v1/account-removal-intents",
+-            pool,
+-            reference,
+-            actor,
+-            operation: crypto.randomUUID(),
+-            at,
+-            expiresAt: at + 30_000,
+-          }),
+-        );
++        const envelope = yield* Effect.tryPromise({
++          try: () =>
++            signEnvelope(Redacted.value(key), "sbrm1", {
++              audience: "/pool/v1/account-removal-intents",
++              pool,
++              reference,
++              actor,
++              operation: crypto.randomUUID(),
++              at,
++              expiresAt: at + 30_000,
++            }),
++          catch: (cause) => {
++            if (cause instanceof PoolSigningFailure) return cause;
++            throw cause;
++          },
++        });
+         const response = yield* client.post(
+-          new URL("/pool/v1/account-removal-intents", origin).href,
++          new URL("/pool/v1/account-removal-intents", endpoint).href,
+           { body: HttpBody.jsonUnsafe({ envelope }) },
+         );
+         // The hosted API can deploy before the Pool Worker supports removal intents.
+-        if (response.status !== 204 && response.status !== 404) return yield* new StorageError();
++        if (response.status !== 204 && response.status !== 404)
++          return yield* new HttpClientError.HttpClientError({
++            reason: new HttpClientError.StatusCodeError({ request: response.request, response }),
++          });
+       }
+     }).pipe(
+       Effect.timeout("10 seconds"),
+       Effect.provide(FetchHttpClient.layer),
+-      Effect.catch(() => new StorageError()),
++      Effect.catchTags({
++        ConfigError: storageFailure,
++        PoolSigningFailure: storageFailure,
++        HttpClientError: storageFailure,
++        TimeoutError: storageFailure,
++      }),
+     );
+-  }).pipe(Effect.catch(() => new StorageError()));
++  }).pipe(Effect.catchTags({ SqlError: storageFailure, SchemaError: storageFailure }));
+diff --git a/e2e/tests/native-pool-account-mirrors.spec.ts b/e2e/tests/native-pool-account-mirrors.spec.ts
+--- a/e2e/tests/native-pool-account-mirrors.spec.ts
++++ b/e2e/tests/native-pool-account-mirrors.spec.ts
+@@ -261,6 +261,38 @@
+         const uploadedUse = yield* use(contributed);
+         expect(uploadedUse.status, JSON.stringify(uploadedUse.body)).toBe(200);
+         expect(uploadedUse.body).toEqual([{ id: uploaded, method: "apiKey", fields: ["token"] }]);
++
++        yield* serverControl("stop");
++        yield* legacyStorage([
++          {
++            sql: "update executor_account_acquisitions set driver_revision = 'missing-revision' where account = $1",
++            params: [uploaded],
++          },
++        ]);
++        yield* serverControl("start");
++        try {
++          const unavailable = yield* unlink(actors.member, uploaded, contributed);
++          expect(unavailable.status).toBe(503);
++          expect(unavailable.body).toMatchObject({
++            _tag: "AccountAcquisitionUnavailable",
++            reason: "registration",
++          });
++          expect(
++            (yield* body(
++              Links,
++              yield* api.request(actors.member, "GET", `${contributed.path}/accounts/app`),
++            )).map((row) => row.account.id),
++          ).toContain(uploaded);
++        } finally {
++          yield* serverControl("stop");
++          yield* legacyStorage([
++            {
++              sql: "update executor_account_acquisitions set driver_revision = 'mirror-e2e-r1' where account = $1",
++              params: [uploaded],
++            },
++          ]);
++          yield* serverControl("start");
++        }
+       }),
+     ),
+   );

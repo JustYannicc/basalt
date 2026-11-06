@@ -1,0 +1,7 @@
+model {
+  extend basalt.productionOps {
+    metadata {
+      constraint "Removing abandoned connections deletes a sign-in attempt once, with its last selected connection, and refuses an attempt also named by a connection outside the selection."
+    }
+  }
+}

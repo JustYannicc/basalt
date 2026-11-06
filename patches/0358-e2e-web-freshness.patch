@@ -1,0 +1,140 @@
+diff --git a/scripts/e2e-prepare.ts b/scripts/e2e-prepare.ts
+--- a/scripts/e2e-prepare.ts
++++ b/scripts/e2e-prepare.ts
+@@ -240,32 +240,69 @@
+     fs.rmSync(path.join(directory, old.name), { recursive: true, force: true });
+ };
+ 
+-const started = performance.now();
+-const summary: Array<string> = [];
+-for (const step of steps) {
+-  const stepStarted = performance.now();
+-  const key = useCache ? keyOf(step) : undefined;
+-  if (key !== undefined) keys.set(step.name, key);
+-  const entry = key === undefined ? undefined : path.join(cacheRoot, step.name, key);
+-  if (entry !== undefined && fs.existsSync(entry)) {
+-    restore(step, entry);
+-    // Recently used entries are the last to be removed.
+-    const now = new Date();
+-    fs.utimesSync(entry, now, now);
+-    summary.push(`${step.name}: cached`);
+-  } else {
+-    const [command, ...args] = step.command;
+-    const run = spawnSync(command!, args, { stdio: "inherit" });
+-    if (run.status !== 0) {
+-      console.error(`\n${step.name} failed (${run.signal ?? `exit ${run.status}`}).`);
+-      process.exit(run.status ?? 1);
++const selfHostWeb = steps.find((step) => step.name === "hosted:self-host:web:build")!;
++const selfHostWebStamp = path.join(selfHostWeb.outputs[0]!, ".e2e-inputs.json");
++
++export function assertSelfHostWebFresh() {
++  const inputs = keyOf(selfHostWeb);
++  let stamp: unknown;
++  try {
++    stamp = JSON.parse(fs.readFileSync(selfHostWebStamp, "utf8"));
++  } catch {}
++  if (
++    !stamp ||
++    typeof stamp !== "object" ||
++    !("inputs" in stamp) ||
++    stamp.inputs !== inputs ||
++    !fs.existsSync(path.join(selfHostWeb.outputs[0]!, "server/server.js"))
++  ) {
++    throw new Error(
++      "Self-host web build is stale or missing. Run bun run e2e:prepare before starting the suite.",
++    );
++  }
++}
++
++function prepare() {
++  const started = performance.now();
++  const summary: Array<string> = [];
++  for (const step of steps) {
++    const stepStarted = performance.now();
++    let key = useCache || step === selfHostWeb ? keyOf(step) : undefined;
++    if (key !== undefined) keys.set(step.name, key);
++    let entry = !useCache || key === undefined ? undefined : path.join(cacheRoot, step.name, key);
++    if (step === selfHostWeb) fs.rmSync(selfHostWebStamp, { force: true });
++    const restored = entry !== undefined && fs.existsSync(entry);
++    if (restored) {
++      restore(step, entry);
++      // Recently used entries are the last to be removed.
++      const now = new Date();
++      fs.utimesSync(entry, now, now);
++      summary.push(`${step.name}: cached`);
++    } else {
++      const [command, ...args] = step.command;
++      const run = spawnSync(command!, args, { stdio: "inherit" });
++      if (run.status !== 0) {
++        console.error(`\n${step.name} failed (${run.signal ?? `exit ${run.status}`}).`);
++        process.exit(run.status ?? 1);
++      }
++
++      summary.push(`${step.name}: built`);
+     }
+-    if (entry !== undefined) store(step, entry);
+-    summary.push(`${step.name}: built`);
+-  }
+-  summary[summary.length - 1] += ` in ${((performance.now() - stepStarted) / 1000).toFixed(1)}s`;
++    if (step === selfHostWeb) {
++      // Vite generates route source while building; stamp and cache its completed inputs.
++      fileHashes.clear();
++      key = keyOf(step);
++      keys.set(step.name, key);
++      entry = useCache ? path.join(cacheRoot, step.name, key) : undefined;
++      fs.writeFileSync(selfHostWebStamp, JSON.stringify({ inputs: key }) + "\n");
++    }
++    if (!restored && entry !== undefined) store(step, entry);
++    summary[summary.length - 1] += ` in ${((performance.now() - stepStarted) / 1000).toFixed(1)}s`;
++  }
++  console.log(
++    `\n${summary.join("\n")}\nPrepared in ${((performance.now() - started) / 1000).toFixed(1)}s` +
++      (useCache ? `, cache ${cacheRoot}.` : ", without the cache."),
++  );
+ }
+-console.log(
+-  `\n${summary.join("\n")}\nPrepared in ${((performance.now() - started) / 1000).toFixed(1)}s` +
+-    (useCache ? `, cache ${cacheRoot}.` : ", without the cache."),
+-);
++
++if (import.meta.main) prepare();
+diff --git a/scripts/e2e-check-web.ts b/scripts/e2e-check-web.ts
+new file mode 100644
+--- /dev/null
++++ b/scripts/e2e-check-web.ts
+@@ -0,0 +1,12 @@
++import { assertSelfHostWebFresh } from "./e2e-prepare.ts";
++
++try {
++  assertSelfHostWebFresh();
++} catch (error) {
++  console.error(
++    error instanceof Error
++      ? error.message
++      : "Self-host web build check failed. Run bun run e2e:prepare.",
++  );
++  process.exitCode = 1;
++}
+diff --git a/e2e/sdk/suite.ts b/e2e/sdk/suite.ts
+--- a/e2e/sdk/suite.ts
++++ b/e2e/sdk/suite.ts
+@@ -108,6 +108,19 @@
+           : selected === "hosted"
+             ? (["self-host", "cloud"] as const)
+             : [selected];
++      if (targets.includes("self-host")) {
++        const fresh = yield* processes.exitCode(
++          ChildProcess.make("node", ["scripts/e2e-check-web.ts"], {
++            stdout: "inherit",
++            stderr: "inherit",
++          }),
++        );
++        if (Number(fresh) !== 0)
++          return yield* new RunFailed({
++            message:
++              "Self-host web build is stale or missing. Run bun run e2e:prepare before starting the suite.",
++          });
++      }
+       const cloud =
+         attachment !== undefined
+           ? Option.some(attachment.origin)

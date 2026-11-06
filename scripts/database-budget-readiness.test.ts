@@ -94,3 +94,12 @@ test("readiness body parsing is bounded when response headers arrive but its bod
   }
   assert.equal(disposed, true);
 });
+
+test("an already-aborted bound still handles a rejection from work that triggered abort", async () => {
+  const abort = new AbortController();
+  const work = (async () => {
+    abort.abort();
+    throw new Error("private rejected work");
+  })();
+  await assert.rejects(bounded(work, abort.signal), { name: "AbortError" });
+});
