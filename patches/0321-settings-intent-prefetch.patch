@@ -241,7 +241,7 @@ diff --git a/e2e/tests/settings-intent-prefetch.spec.ts b/e2e/tests/settings-int
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/settings-intent-prefetch.spec.ts
-@@ -0,0 +1,317 @@
+@@ -0,0 +1,350 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Deferred, Effect, Option } from "effect";
 +import type { Locator, Page, Request } from "playwright";
@@ -274,6 +274,19 @@ new file mode 100644
 +  if (path === invitationsPath) return ["invitations"];
 +  return /\/billing(?:\/|$)/.test(path) ? ["billing"] : [];
 +};
++/** The already verified boundary data must not be requested again merely for link intent. */
++const identityReads = (request: Request): readonly string[] => {
++  const path = new URL(request.url()).pathname;
++  if (request.method() === "POST" && path === batchPath)
++    return batchedReads(request.postData()).flatMap((read) =>
++      read.group === "organization" && read.endpoint === "access" ? ["access"] : [],
++    );
++  if (request.method() !== "GET") return [];
++  if (/^\/api\/organizations\/[^/]+\/access$/.test(path)) return ["access"];
++  if (path === "/api/auth/organization/list") return ["organizations"];
++  if (path === "/api/auth/get-session") return ["session"];
++  return [];
++};
 +const count = (reads: readonly SettingsRead[], kind: SettingsRead) =>
 +  reads.filter((read) => read === kind).length;
 +
@@ -303,11 +316,13 @@ new file mode 100644
 +          const session: Session = actors[actor];
 +          const reads: SettingsRead[] = [];
 +          const forbiddenRequests: string[] = [];
++          const identity: string[] = [];
 +          let intentOnly = true;
 +          const answered: SettingsRead[] = [];
 +          let membersFailed = yield* Deferred.make<void>();
 +          const record = (request: Request) => {
 +            reads.push(...settingsReads(request));
++            identity.push(...identityReads(request));
 +            if (!intentOnly) return;
 +            const path = new URL(request.url()).pathname;
 +            const telemetry =
@@ -461,6 +476,7 @@ new file mode 100644
 +          yield* showLink("Show the Settings link");
 +          const held = yield* holdQuery([membersPath], "continue");
 +          const intentStart = count(reads, "billing");
++          const identityBeforeIntent = identity.length;
 +          yield* browser.use(phone ? "Touch Settings" : "Hover Settings", (page) =>
 +            showIntent(page).then(() => page.clock.runFor(100)),
 +          );
@@ -477,6 +493,10 @@ new file mode 100644
 +          yield* answers("The intent's reads answer");
 +          yield* settle("The answer settles");
 +          yield* stillOnApps("Intent alone stays on Apps");
++          expect(
++            identity.slice(identityBeforeIntent),
++            "Intent reuses the verified access, organizations and session",
++          ).toEqual([]);
 +          expect(count(reads, "billing"), "Intent reads no billing").toBe(intentStart);
 +          expect(
 +            reads.filter((read) => read !== "billing").sort(),
@@ -527,6 +547,7 @@ new file mode 100644
 +          // Keyboard focus is intent too, and a fresh answer is shown without reading again.
 +          yield* enterApps("Enter Apps for keyboard focus");
 +          yield* showLink("Show the Settings link for keyboard focus");
++          const identityBeforeFocus = identity.length;
 +          yield* withoutBilling(
 +            "Keyboard focus",
 +            Effect.gen(function* () {
@@ -541,6 +562,10 @@ new file mode 100644
 +          );
 +          yield* stillOnApps("Focus alone stays on Apps");
 +          expect(
++            identity.slice(identityBeforeFocus),
++            "Focus reuses the verified access, organizations and session",
++          ).toEqual([]);
++          expect(
 +            reads.filter((read) => read !== "billing").sort(),
 +            "Focus reads each settings endpoint once",
 +          ).toEqual(expected);
@@ -552,6 +577,14 @@ new file mode 100644
 +          yield* settle("The focused destination settles");
 +          expect(count(reads, "members"), "A fresh answer is not read again").toBe(1);
 +          expect(yield* rowsShown("Members from the focus read")).toBeGreaterThan(0);
++          const membersImage = yield* browser.use("Capture the loaded member rows", (page) =>
++            page.locator(".organization-members").screenshot(),
++          );
++          yield* evidence.attach(
++            `settings-members-${actor}-${width}.png`,
++            "image/png",
++            membersImage,
++          );
 +          yield* browser.checkpoint(`Settings members from the focus read at ${width}`);
 +          if (phone) yield* checkSettingsTouchIntent(actors.organization.slug);
 +        }),

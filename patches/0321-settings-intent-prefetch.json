@@ -1,7 +1,7 @@
 {
   "identity": "basalt-settings-intent-prefetch",
   "file": "0321-settings-intent-prefetch.patch",
-  "content_sha256": "3268a665f1c9d7bb1c8b9f7fb9d78702b2de42f34dc822968ca578fc19d78d9e",
+  "content_sha256": "435b0fa083d3edc2c4d19dc67e72085653370e31ae0f9faa31a33936a71e7bdb",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
