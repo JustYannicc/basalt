@@ -31,7 +31,9 @@
     ".upstream/apps/hosted/server/src/contracts/apps.ts",
     ".upstream/apps/hosted/server/src/implementation/resource-lifecycle.ts",
     ".upstream/apps/local/server/src/contracts/dashboard.ts",
-    ".upstream/apps/hosted/web/src/contracts/errors.ts"
+    ".upstream/apps/hosted/web/src/contracts/errors.ts",
+    ".upstream/packages/mcp/src/implementation/app-assets.ts",
+    ".upstream/packages/mcp/src/implementation/app-asset-paths.ts"
   ],
   "fixture": "pool-setup"
 }
