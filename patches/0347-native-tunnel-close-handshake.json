@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-native-tunnel-close-handshake",
+  "file": "0347-native-tunnel-close-handshake.patch",
+  "content_sha256": "d8cd9f5e9a289904721aac9fe831386f350eb5ad5dad88e822e88cbc445513ed",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
