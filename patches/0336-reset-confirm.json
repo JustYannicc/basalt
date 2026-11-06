@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-reset-confirm",
+  "file": "0336-reset-confirm.patch",
+  "content_sha256": "175f501d94b7a2046f1bd177c8ca53ac56255c0cebb8cc7c0a12cca3d2b626ea",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

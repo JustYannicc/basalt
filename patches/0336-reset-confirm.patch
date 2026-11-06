@@ -1,0 +1,496 @@
+diff --git a/e2e/support/account-observation-fixture.ts b/e2e/support/account-observation-fixture.ts
+index 4b63bad..8fdccd8 100644
+--- a/e2e/support/account-observation-fixture.ts
++++ b/e2e/support/account-observation-fixture.ts
+@@ -100,7 +100,16 @@ export const observationBackend = Effect.gen(function* () {
+ /** Hook changes intentionally leave the provider's declaration identical. */
+ export const observationSource = (
+   origin: string,
+-  options: { observe?: boolean; health?: boolean; family?: object; providerName?: string } = {},
++  options: {
++    observe?: boolean;
++    health?: boolean;
++    family?: object;
++    providerName?: string;
++    /** Credential fields besides `token`, each a string. */
++    fields?: readonly string[];
++    /** A pool app's many() requirement linked for everyone, instead of each user's own account. */
++    pool?: string;
++  } = {},
+ ) => `import { defineApp, defineProvider, secrets, object, string, router, query, ProviderError } from "apps";
+ const read = async (context, path) => {
+   const response = await context.fetch(${JSON.stringify(origin)} + path, {
+@@ -109,11 +118,11 @@ const read = async (context, path) => {
+   if (!response.ok) throw new ProviderError({ reason: response.status === 401 ? "unauthorized" : response.status === 429 ? "rate_limited" : "unavailable", status: response.status });
+   return await response.json();
+ };
+-const service = defineProvider({ name: ${JSON.stringify(options.providerName ?? "Observation service")}, ${options.family === undefined ? "" : `family: ${JSON.stringify(options.family)}, `}auth: { key: secrets({label:"API key",fields:object({token:string()})}) },
++const service = defineProvider({ name: ${JSON.stringify(options.providerName ?? "Observation service")}, ${options.family === undefined ? "" : `family: ${JSON.stringify(options.family)}, `}auth: { key: secrets({label:"API key",fields:object({${["token", ...(options.fields ?? [])].map((field) => `${field}:string()`).join(",")}})}) },
+ ${options.health ? 'health: context => read(context, "/health"),' : ""}
+ ${options.observe ? 'observeAccount: context => read(context, "/observation"),' : ""}
+ });
+-export default defineApp({ user:{accounts:{service}} }, { tools:router({ ping:query({input:object({})},async()=>true) }) });`;
++export default defineApp(${options.pool === undefined ? "{ user:{accounts:{service}} }" : `{ app:{accounts:{${options.pool}:service.many()}} }`}, { tools:router({ ping:query({input:object({})},async()=>true) }) });`;
+ 
+ export const observationFixture = (
+   options: {
+diff --git a/e2e/support/account-reset-pool.ts b/e2e/support/account-reset-pool.ts
+new file mode 100644
+index 0000000..a6a4d6c
+--- /dev/null
++++ b/e2e/support/account-reset-pool.ts
+@@ -0,0 +1,117 @@
++/**
++ * The signed reset routes of a pool that offers banked resets for one account. Only the pool
++ * boundary is synthetic; the product owns every access decision and the browser the confirm step.
++ * The pool app itself is `trafficPool` with a `subscriptions` requirement and `resetReference`.
++ */
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import { Effect, Layer, Ref, Schema } from "effect";
++import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
++import { createHmac, timingSafeEqual } from "node:crypto";
++import { createServer } from "node:http";
++import { poolFixtureSigningKey } from "./cloud-pool-gateway.ts";
++
++/** The pool's private reference for the account, kept in the account's credentials. */
++export const resetReference = "synthetic-reset-reference";
++const Claims = Schema.Struct({
++  pool: Schema.NonEmptyString,
++  owner: Schema.NonEmptyString,
++  organization: Schema.NonEmptyString,
++});
++const Spend = Schema.Struct({ creditId: Schema.NonEmptyString, requestId: Schema.NonEmptyString });
++type Use = typeof Spend.Type & { readonly startedAt: string };
++type Call = { readonly action: "resets" | "attempt" | "use"; readonly pool: string };
++
++/**
++ * The pool's reset routes. Two credits, soonest expiry first; each use spends the first left and
++ * becomes the retained attempt. `reset` returns the pool to two unspent credits and no calls.
++ */
++export const resetPoolBackend = Effect.gen(function* () {
++  const calls = yield* Ref.make<readonly Call[]>([]);
++  const uses = yield* Ref.make<readonly Use[]>([]);
++  const expiries = [27, 28].map((days) => new Date(Date.now() + days * 86_400_000).toISOString());
++  const credits = (spent: number) =>
++    expiries.slice(spent).map((expiresAt, index) => ({
++      id: `credit-${index + spent}`,
++      type: "codex_rate_limits",
++      remaining: 1,
++      expiresAt,
++      usableNow: true,
++      requiresLimit: false,
++      clears: null,
++    }));
++  const result = (spend: Use) => ({
++    requestId: spend.requestId,
++    outcome: "reset",
++    cooldownCleared: false,
++    usageRefreshQueued: true,
++  });
++  const route = (action: Call["action"]) =>
++    Effect.gen(function* () {
++      const request = yield* HttpServerRequest.HttpServerRequest;
++      const [prefix, encoded, signature, extra] = (request.headers.authorization ?? "")
++        .replace(/^Bearer /u, "")
++        .split(".");
++      if (prefix !== "sbp1" || encoded === undefined || signature === undefined || extra)
++        return HttpServerResponse.empty({ status: 401 });
++      const actual = Buffer.from(signature, "base64url");
++      const expected = createHmac("sha256", Buffer.from(poolFixtureSigningKey, "hex"))
++        .update(`${prefix}.${encoded}`)
++        .digest();
++      if (actual.length !== expected.length || !timingSafeEqual(actual, expected))
++        return HttpServerResponse.empty({ status: 401 });
++      const claims = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Claims))(
++        Buffer.from(encoded, "base64url").toString(),
++      );
++      if (request.headers["x-signalbox-caller"] !== claims.owner)
++        return HttpServerResponse.empty({ status: 403 });
++      yield* Ref.update(calls, (items) => [...items, { action, pool: claims.pool }]);
++      const spent = yield* Ref.get(uses);
++      if (action === "resets")
++        return HttpServerResponse.jsonUnsafe({
++          provider: "codex",
++          observedAt: new Date().toISOString(),
++          available: expiries.length - spent.length,
++          credits: credits(spent.length),
++        });
++      if (action === "attempt") {
++        const last = spent.at(-1);
++        return HttpServerResponse.jsonUnsafe(
++          last === undefined
++            ? null
++            : {
++                ...result(last),
++                provider: "codex",
++                creditId: last.creditId,
++                startedAt: last.startedAt,
++                retryUntil: new Date(Date.now() + 600_000).toISOString(),
++                canRetryProvider: false,
++              },
++        );
++      }
++      const spend = {
++        ...(yield* request.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Spend)))),
++        startedAt: new Date().toISOString(),
++      };
++      yield* Ref.update(uses, (items) => [...items, spend]);
++      return HttpServerResponse.jsonUnsafe(result(spend));
++    });
++  const base = `/pool/v1/accounts/${resetReference}`;
++  const services = yield* Layer.build(
++    HttpRouter.serve(
++      Layer.mergeAll(
++        HttpRouter.add("GET", `${base}/resets`, route("resets")),
++        HttpRouter.add("GET", `${base}/resets/attempt`, route("attempt")),
++        HttpRouter.add("POST", `${base}/resets/use`, route("use")),
++      ),
++      { disableLogger: true, disableListenLog: true },
++    ).pipe(Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }))),
++  );
++  const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
++  if (!("port" in server.address)) return yield* Effect.die("Reset pool fixture requires TCP");
++  return {
++    origin: `http://127.0.0.1:${server.address.port}`,
++    calls: Ref.get(calls),
++    uses: Ref.get(uses),
++    reset: Effect.andThen(Ref.set(calls, []), Ref.set(uses, [])),
++  };
++});
+diff --git a/e2e/support/account-traffic.ts b/e2e/support/account-traffic.ts
+index f3d9cb4..2538478 100644
+--- a/e2e/support/account-traffic.ts
++++ b/e2e/support/account-traffic.ts
+@@ -222,20 +222,27 @@ export const trafficPool = (options: {
+   readonly name: string;
+   readonly origin: string;
+   readonly labels: readonly string[];
++  /** The pool's requirement; `service` unless a pool route reads another, such as subscriptions. */
++  readonly requirement?: string;
++  /** Credential fields saved with each account besides its token. */
++  readonly fields?: Readonly<Record<string, string>>;
+ }) =>
+   Effect.gen(function* () {
+     const api = yield* Api,
+       actors = yield* Actors;
+     const prefix = `/api/organizations/${actors.organization.id}`;
++    const requirement = options.requirement ?? "service";
+     const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+       name: options.name,
+       files: [
+         {
+           path: "index.ts",
+-          content: observationSource(options.origin, { observe: true, health: true }).replace(
+-            "{ user:{accounts:{service}} }",
+-            "{ app:{accounts:{service:service.many()}} }",
+-          ),
++          content: observationSource(options.origin, {
++            observe: true,
++            health: true,
++            pool: requirement,
++            fields: Object.keys(options.fields ?? {}),
++          }),
+         },
+         appsManifest,
+       ],
+@@ -255,13 +262,13 @@ export const trafficPool = (options: {
+     for (const label of options.labels) {
+       const pending = yield* body(
+         Resource,
+-        yield* api.request(actors.owner, "POST", connectionsPath(appPath, "app", "service"), {}),
++        yield* api.request(actors.owner, "POST", connectionsPath(appPath, "app", requirement), {}),
+       );
+       const submitted = yield* api.request(
+         actors.owner,
+         "POST",
+         `${prefix}/connections/${pending.id}/submit`,
+-        { method: "key", fields: { token: observationToken } },
++        { method: "key", fields: { token: observationToken, ...options.fields } },
+       );
+       expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
+       const account = (yield* body(Resource, submitted)).id;
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index dc53fe9..4294dfb 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -9825,6 +9825,18 @@ export const scenarios = plan({
+       local: na("Exercises hosted account rows."),
+     },
+   },
++  accountResetConfirm: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "account-usage-cells.spec.ts",
++    title:
++      "a pool owner's banked reset count opens a confirm step; Cancel spends nothing and Use reset spends exactly one",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses runner-owned retained pool records and a signed loopback reset backend."),
++      local: na("Exercises hosted account rows and pool reset routes."),
++    },
++  },
+   accountDialogNaming: {
+     fixtures: "actors",
+     file: "account-dialog-naming.spec.ts",
+diff --git a/e2e/tests/account-usage-cells.spec.ts b/e2e/tests/account-usage-cells.spec.ts
+index eaf4324..ac3ec22 100644
+--- a/e2e/tests/account-usage-cells.spec.ts
++++ b/e2e/tests/account-usage-cells.spec.ts
+@@ -1,12 +1,19 @@
+ /** Usage cells show only the windows an account reports, in color, and nothing for accounts without limits. */
+ import { expect, layer } from "@effect/vitest";
+-import { Clock, Effect } from "effect";
++import { Clock, Effect, Schema } from "effect";
+ import type { Page } from "playwright";
+ import { Browser } from "../support/browser.ts";
+ import { Evidence } from "../support/evidence.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { acquisitionFixture } from "../support/account-acquisition-fixture.ts";
+-import { observationFixture } from "../support/account-observation-fixture.ts";
++import { observationBackend, observationFixture } from "../support/account-observation-fixture.ts";
++import { resetPoolBackend, resetReference } from "../support/account-reset-pool.ts";
++import { trafficPool } from "../support/account-traffic.ts";
++import { poolFixtureSigningKey } from "../support/cloud-pool-gateway.ts";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { serverControl } from "../support/server-control.ts";
+ import {
+   accountRow,
+   openRowDetails,
+@@ -405,4 +412,186 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+       }),
+     ),
+   );
++
++  it.effect(scenarios.accountResetConfirm.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const browser = yield* Browser;
++        const evidence = yield* Evidence;
++        const actors = yield* Actors;
++        const api = yield* Api;
++        const observed = yield* observationBackend;
++        const resets = yield* resetPoolBackend;
++        // A pool whose subscription carries the pool's reference for its reset routes.
++        const pool = yield* trafficPool({
++          name: "Reset pool",
++          origin: observed.origin,
++          labels: ["Pool account"],
++          requirement: "subscriptions",
++          fields: { ref: resetReference },
++        });
++        const accountPath = `/api/organizations/${actors.organization.id}/accounts/${pool.accounts[0]}`;
++        // Record the app as the owner's pool, with the signed loopback reset backend.
++        const viewer = yield* body(
++          Schema.Struct({ userId: Schema.String }),
++          yield* api.request(actors.owner, "GET", "/api/viewer"),
++        );
++        const organization = actors.organization.id;
++        yield* serverControl("stop");
++        yield* legacyStorage([
++          {
++            sql: `update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{basaltPools}', $1::jsonb)::text where id=$2`,
++            params: [
++              JSON.stringify({
++                [viewer.userId]: {
++                  app: pool.app,
++                  version: "retained-version",
++                  authorization: "executor-app-v1",
++                },
++              }),
++              organization,
++            ],
++          },
++        ]);
++        // Removed before the app and account, so their removal changes no recorded pool.
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* serverControl("stop");
++            yield* legacyStorage([
++              {
++                sql: `update organization set metadata = (metadata::jsonb - 'basaltPools')::text where id = $1`,
++                params: [organization],
++              },
++            ]);
++            yield* serverControl("start");
++          }).pipe(Effect.orDie),
++        );
++        yield* serverControl("environment", 200, {
++          POOL_APP_SIGNING_KEY: poolFixtureSigningKey,
++          BASALT_POOL_ORIGIN: resets.origin,
++        });
++        yield* serverControl("start");
++
++        const accounts = `/org/${actors.organization.slug}/accounts`;
++        const row = (page: Page) => accountRow(page, "Pool account");
++        const control = (page: Page) => row(page).locator("[data-reset-control]");
++        const confirm = (page: Page) =>
++          page.getByRole("dialog", { name: "Use a banked reset?", exact: true });
++        yield* browser.login(actors.owner);
++        // Each width starts fresh: two unspent credits, no calls and a new reading of ↻ 2.
++        for (const width of [1280, 390]) {
++          yield* resets.reset;
++          const now = yield* Clock.currentTimeMillis;
++          yield* observed.answer({
++            status: 200,
++            body: subscription(
++              now,
++              [percentWindow("seven_day", "Weekly", 8, 7 * day, 2 * day + hour, now)],
++              [banked(0, now, 27 * day), banked(1, now, 28 * day)],
++            ),
++          });
++          expect(
++            (yield* api.request(actors.owner, "POST", `${accountPath}/observations/refresh`))
++              .status,
++          ).toBe(200);
++          const shown = yield* browser.use(`Open the pool account at ${width}px`, (page) =>
++            page
++              .setViewportSize({ width, height: 900 })
++              .then(() => page.goto(accounts))
++              .then(() => row(page).locator('[data-reset-control="idle"]').waitFor())
++              .then(() =>
++                Promise.all([
++                  control(page).innerText(),
++                  control(page).getAttribute("data-reset-count"),
++                ]),
++              ),
++          );
++          expect(shown, "the reading's banked resets are the one-click control").toEqual([
++            "↻ 2",
++            "2",
++          ]);
++          // Opening only reads the pool; Cancel spends nothing.
++          const offer = yield* browser.use(`Open the confirm step at ${width}px`, (page) =>
++            control(page)
++              .click()
++              .then(() => confirm(page).waitFor())
++              .then(() =>
++                Promise.all([
++                  confirm(page).innerText(),
++                  confirm(page).evaluate((element) => {
++                    const rect = element.getBoundingClientRect();
++                    return rect.left >= 0 && rect.right <= window.innerWidth;
++                  }),
++                  page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
++                  page.evaluate(() => document.activeElement?.hasAttribute("data-reset-cancel")),
++                ]),
++              ),
++          );
++          yield* evidence.attach(
++            `reset-confirm-${width}.png`,
++            "image/png",
++            yield* browser.use("Capture the confirm step", (page) => page.screenshot()),
++          );
++          expect(offer[0]).toContain("Spends 1 of 2 on Pool account");
++          expect(offer[0]).toContain("Codex says it applies now.");
++          expect(offer.slice(1), "the confirm fits the viewport and Cancel holds focus").toEqual([
++            true,
++            true,
++            true,
++          ]);
++          yield* browser.use("Cancel the confirm step", (page) =>
++            confirm(page)
++              .getByRole("button", { name: "Cancel", exact: true })
++              .click()
++              .then(() => confirm(page).waitFor({ state: "hidden" })),
++          );
++          expect(yield* resets.uses, "Cancel spends nothing").toHaveLength(0);
++          expect((yield* resets.calls).map((call) => call.action)).not.toContain("use");
++          // Reopened, "Use reset" spends exactly one and says so.
++          const outcome = yield* browser.use(`Use one banked reset at ${width}px`, (page) =>
++            control(page)
++              .click()
++              .then(() =>
++                confirm(page).getByRole("button", { name: "Use reset", exact: true }).click(),
++              )
++              .then(() => row(page).locator('[data-reset-note="confirmed"]').waitFor())
++              .then(() =>
++                Promise.all([
++                  row(page).locator('[data-reset-note="confirmed"]').innerText(),
++                  control(page).getAttribute("data-reset-control"),
++                  confirm(page).count(),
++                ]),
++              ),
++          );
++          yield* evidence.attach(
++            `reset-confirmed-${width}.png`,
++            "image/png",
++            yield* browser.use("Capture the outcome", (page) => page.screenshot()),
++          );
++          expect(outcome[0]).toContain("Reset went through.");
++          expect(outcome[0]).toContain("Usage refresh queued.");
++          expect(outcome.slice(1), "a confirmed reset disables the control").toEqual([
++            "confirmed",
++            0,
++          ]);
++          const uses = yield* resets.uses;
++          expect(uses, "exactly one use per confirm").toHaveLength(1);
++          expect(uses[0]?.creditId, "the soonest-expiring credit is spent").toBe("credit-0");
++          expect((yield* resets.calls).every((call) => call.pool === pool.app)).toBe(true);
++          // A reload reads the pool's confirmed attempt: still disabled until a newer reading.
++          expect(
++            yield* browser.use(`Reload the confirmed row at ${width}px`, (page) =>
++              page
++                .reload()
++                .then(() => row(page).locator('[data-reset-note="confirmed"]').waitFor())
++                .then(() => control(page).getAttribute("data-reset-control")),
++            ),
++            "a reload keeps the confirmed reset on the same reading",
++          ).toBe("confirmed");
++          expect(yield* resets.uses, "the reload spends nothing").toHaveLength(1);
++        }
++      }),
++    ),
++  );
+ });
+diff --git a/packages/ui/src/implementation/dashboard/account-reset-control.tsx b/packages/ui/src/implementation/dashboard/account-reset-control.tsx
+index ef87cf8..844422f 100644
+--- a/packages/ui/src/implementation/dashboard/account-reset-control.tsx
++++ b/packages/ui/src/implementation/dashboard/account-reset-control.tsx
+@@ -43,6 +43,7 @@ export interface ResetResultView {
+ /** The server's retained attempt; its retry window is the only recovery clock. */
+ export interface ResetAttemptView extends ResetResultView {
+   readonly creditId: string;
++  readonly startedAt: string;
+   readonly retryUntil: string;
+   readonly canRetryProvider: boolean;
+ }
+@@ -232,13 +233,25 @@ export function useResetControl({
+   };
+ 
+   // After a reload or on another device: the server's unknown first, then this tab's IDs. A
+-  // request it settled meanwhile just clears; the row shows that through its usage.
++  // reset confirmed after this reading stays confirmed, as it would have in the tab that sent it.
+   useEffect(() => {
+     let live = true;
+     const remembered = memory.read(key);
+     void readAttempt().then((read) => {
+       if (!live) return;
+-      const spend = read.ok && read.value?.outcome === "unknown" ? spendOf(read.value) : remembered;
++      const attempt = read.ok ? read.value : null;
++      if (
++        attempt !== null &&
++        done.has(attempt.outcome) &&
++        Date.parse(attempt.startedAt) > Date.parse(reading)
++      ) {
++        memory.keep(key, { kind: "idle" });
++        setState((previous) =>
++          previous.kind === "idle" ? { kind: "confirmed", result: attempt, reading } : previous,
++        );
++        return;
++      }
++      const spend = attempt?.outcome === "unknown" ? spendOf(attempt) : remembered;
+       if (spend === undefined) return;
+       const next = settled(spend, read, { replayed: false, reading: "" });
+       memory.keep(key, next);
+@@ -248,7 +261,7 @@ export function useResetControl({
+     return () => {
+       live = false;
+     };
+-  }, [readAttempt, key]);
++  }, [readAttempt, key, reading]);
+ 
+   const reread = (confirming: boolean) =>
+     actions.attempt().then((read) => {
