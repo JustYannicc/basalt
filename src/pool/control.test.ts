@@ -410,30 +410,36 @@ test("GET pool bypasses an in-flight attribution request and never loads its sta
   }
 });
 
-test("pool view starts credentials before membership finishes", async () => {
+test("pool view waits for membership before starting credentials or quota", async () => {
   const f = await fixture();
   f.home.addFile("a");
   f.home.addGroup("pool-a", 10, ["a"]);
   const entered = deferred<void>(),
-    release = deferred<void>(),
-    credentials = deferred<void>();
+    release = deferred<void>();
   f.home.override = async (path) => {
     if (path.endsWith("/channel-groups")) {
       entered.resolve();
       await release.promise;
     }
-    if (path.endsWith("/credentials")) credentials.resolve();
     return undefined;
   };
   const reading = f.call("/pool");
   await entered.promise;
   try {
-    await withoutWaitingForGate(credentials.promise);
-    assert.ok(f.home.calls.some((call) => call.path.endsWith("/credentials")));
+    assert.equal(
+      f.home.calls.some((call) => call.path.endsWith("/credentials")),
+      false,
+    );
+    assert.equal(
+      f.home.calls.some((call) => call.path.includes("/quota/credentials/")),
+      false,
+    );
   } finally {
     release.resolve();
     await reading;
   }
+  assert.ok(f.home.calls.some((call) => call.path.endsWith("/credentials")));
+  assert.ok(f.home.calls.some((call) => call.path.includes("/quota/credentials/")));
 });
 
 test("pool view reads credentials and quota concurrently and reuses cached channel groups", async () => {
