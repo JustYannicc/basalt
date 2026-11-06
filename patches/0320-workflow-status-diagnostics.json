@@ -1,0 +1,9 @@
+{
+  "identity": "executor-workflow-status-diagnostics",
+  "file": "0320-workflow-status-diagnostics.patch",
+  "content_sha256": "476c39219c99b024d0b250eac1f15444494f8f4e9ac2011bc8d184eeda939983",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
