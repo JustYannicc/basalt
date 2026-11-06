@@ -9,7 +9,7 @@ const image = process.env.POOL_TEST_IMAGE;
 function docker(args: string[], input?: string) {
   const result = spawnSync("docker", args, { encoding: "utf8", input, timeout: 60_000 });
   assert.equal(result.status, 0, result.error?.message ?? result.stderr);
-  return result.stdout.trim();
+  return (args[0] === "logs" ? result.stdout + result.stderr : result.stdout).trim();
 }
 
 async function postgresReady(container: string) {
@@ -25,7 +25,20 @@ async function postgresReady(container: string) {
   throw new Error("The isolated startup database did not become ready");
 }
 
-for (const postgres of ["16-alpine", "17.7-alpine"]) {
+for (const { postgres, databaseImage, pgbouncer } of [
+  {
+    postgres: "16-alpine",
+    databaseImage:
+      "postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139",
+    pgbouncer: "1.25.2-r0",
+  },
+  {
+    postgres: "17.7-alpine",
+    databaseImage:
+      "postgres:17.7-alpine@sha256:bb377b7239d2774ac8cc76f481596ce96c5a6b5e9d141f6d0a0ee371a6e7c0f2",
+    pgbouncer: "1.25.1-r0",
+  },
+]) {
   test(
     `Home starts directly and through five-slot transaction pooling on PostgreSQL ${postgres}`,
     {
@@ -50,11 +63,11 @@ for (const postgres of ["16-alpine", "17.7-alpine"]) {
           "POSTGRES_PASSWORD=fixture-only",
           "--env",
           "POSTGRES_DB=postgres",
-          `postgres:${postgres}`,
+          databaseImage,
         ]);
         containers.push(database);
         await postgresReady(database);
-        docker(["exec", database, "apk", "add", "--no-cache", "pgbouncer=1.25.1-r0"]);
+        docker(["exec", database, "apk", "add", "--no-cache", `pgbouncer=${pgbouncer}`]);
         docker(
           [
             "exec",
