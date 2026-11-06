@@ -9,6 +9,7 @@ import type {
 import {
   capacityLabs,
   dailyRows,
+  duration,
   gaps,
   hourMs,
   isOut,
@@ -168,9 +169,12 @@ test("an old exhausted reading does not make a window out now", () => {
   });
   const lab = capacityLabs(history([stalePoint, point(0, 3, { windowSeconds: 18000 })]))[0]!;
   assert.equal(lab.lines.find((line) => line.key === pressing(lab).key)!.label, "Weekly");
-  assert.equal(pressing(lab).text, "Forecast learning; showing Weekly.");
+  assert.equal(pressing(lab).text, "Weekly is more pressing: 0% left at the last reading vs 75%");
   const onceFresh = capacityLabs(history([point(0, 0), point(0, 3, { windowSeconds: 18000 })]))[0]!;
-  assert.equal(pressing(onceFresh, start + hourMs).text, "Forecast learning; showing Weekly.");
+  assert.equal(
+    pressing(onceFresh, start + hourMs).text,
+    "Weekly is more pressing: 0% left at the last reading vs 75%",
+  );
 });
 
 test("the panel opens on whichever projected window runs out first", () => {
@@ -199,22 +203,28 @@ test("the panel does not prefer the smaller remaining share when the other windo
   assert.match(pressing(lab).text!, /^5-hour is more pressing: out ~/);
 });
 
-test("without a projected run-out, the panel keeps Weekly as its default", () => {
+// Mock r2: with no run-out anywhere, the switch opens on the window with less left now.
+test("without a projected run-out, the panel opens on the window with less left", () => {
   const lab = capacityLabs(
     history(
       [point(0, 3), point(0, 0.2, { windowSeconds: 18000 })],
       [forecast(604800, null), forecast(18000, null)],
     ),
   )[0]!;
-  assert.equal(lab.lines.find((line) => line.key === pressing(lab).key)!.label, "Weekly");
-  assert.equal(
-    pressing(lab).text,
-    "No window projects a run-out in the next 72 hours; showing Weekly.",
-  );
+  assert.equal(lab.lines.find((line) => line.key === pressing(lab).key)!.label, "5-hour");
+  assert.equal(pressing(lab).text, "5-hour is more pressing: 5% left now vs 75%");
 });
 
-test("missing forecasts keep Weekly without a remaining-fraction claim", () => {
+test("missing forecasts compare measured balances only, with no forecast claim", () => {
   const lab = capacityLabs(history([point(0, 3), point(0, 0.2, { windowSeconds: 18000 })]))[0]!;
+  assert.equal(lab.lines.find((line) => line.key === pressing(lab).key)!.label, "5-hour");
+  assert.doesNotMatch(pressing(lab).text!, /out ~|doesn't run out|projects/);
+});
+
+test("without measured balances on both windows, Weekly stays the default", () => {
+  const lab = capacityLabs(
+    history([point(0, 3), point(0, 0.2, { windowSeconds: 18000, usable: null })]),
+  )[0]!;
   assert.equal(lab.lines.find((line) => line.key === pressing(lab).key)!.label, "Weekly");
   assert.equal(pressing(lab).text, "Forecast learning; showing Weekly.");
 });
@@ -289,4 +299,43 @@ test("weekly low markers compare remaining units when nominal capacity changes",
   const facts = lineFacts(line, start + 2 * hourMs);
   assert.equal(facts.lowest?.hour, start + hourMs);
   assert.equal(facts.weeklyLows[0]?.hour, start + hourMs);
+});
+
+test("hour counts read as short durations, never raw fractions", () => {
+  assert.equal(duration(16.77989138888889), "16.8h");
+  assert.equal(duration(6), "6h");
+  assert.equal(duration(0.25), "0.3h");
+  assert.equal(duration(60), "2.5d");
+  assert.equal(duration(0.01), "<0.1h");
+});
+
+test("with nothing running out, the window with less left now is the pressing one", () => {
+  const fresh = { ...aggregate(1, 4), observedAt: { from: start, to: start } };
+  const lab = capacityLabs(
+    history([point(0, 3), point(0, 1, { windowSeconds: 18000, minimum: fresh, last: fresh })]),
+  )[0]!;
+  const choice = pressing(lab, start + 60_000);
+  assert.equal(lab.lines.find((line) => line.key === choice.key)!.label, "5-hour");
+  assert.equal(choice.text, "5-hour is more pressing: 25% left now vs 75%");
+});
+
+test("an incomplete read picks a window from measured balances and never blames a forecast", () => {
+  const ready = capacityLabs(
+    history(
+      [point(0, 3), point(0, 1, { windowSeconds: 18000 })],
+      [forecast(604800, null), forecast(18000, start + 30 * hourMs)],
+    ),
+  )[0]!;
+  const choice = pressing(ready, start, { withheld: true });
+  assert.equal(ready.lines.find((line) => line.key === choice.key)!.label, "5-hour");
+  assert.equal(choice.text, "5-hour is more pressing: 25% left now vs 75%");
+  const unmeasured = capacityLabs(
+    history([point(0, 3), point(0, 1, { windowSeconds: 18000, usable: null })]),
+  )[0]!;
+  assert.equal(pressing(unmeasured, start, { withheld: true }).text, null);
+  const outNow = capacityLabs(history([point(0, 3), point(0, 0, { windowSeconds: 18000 })]))[0]!;
+  assert.equal(
+    pressing(outNow, start, { withheld: true }).text,
+    "5-hour is more pressing: out now; weekly forecast withheld",
+  );
 });

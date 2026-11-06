@@ -75,7 +75,7 @@ Redeploy cannot recover a lost or rotated state key; after bootstrap, back up `A
 | `EXECUTOR_OAUTH_TODOIST_CLIENT_SECRET` | Optional hosted Todoist OAuth client secret |
 | `EXECUTOR_OAUTH_TRELLO_CLIENT_ID` | Optional hosted Trello OAuth client |
 | `EXECUTOR_OAUTH_TRELLO_CLIENT_SECRET` | Optional hosted Trello OAuth client secret |
-| `EXECUTOR_OAUTH_ZENDESK_CLIENT_ID` | Optional publisher-owned Zendesk global OAuth client |
+| `EXECUTOR_OAUTH_ZENDESK_CLIENT_ID` | Optional publisher-owned global client; otherwise the tenant public client is used |
 | `EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET` | Optional approved global OAuth client secret |
 | `ZENDESK_MARKETPLACE_ORGANIZATION_ID` | Optional assigned publisher organization ID, paired with app ID |
 | `ZENDESK_MARKETPLACE_APP_ID` | Optional assigned Marketplace app ID, paired with publisher organization ID |

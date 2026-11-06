@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountPresentation {
+    metadata {
+      constraint "A tool call counts once toward each distinct account it used, per UTC hour, with its latest success, once the app's code ran for it: it succeeded unless its result was a tool error, and it failed when the app's code failed or its service refused the account. A refusal of the caller's own request, such as invalid input, a blocked tool or approval, and an interruption count nothing. Counting is best-effort and bounded after the call and never changes its result. The counts live in a derived table created only when a write finds it missing, rather than a schema version, and belong to the runtime storage that request-serving runtime adapters build, so they bring no migration code with them; they keep 31 days, are never read past that and carry no inputs, outputs or identities. One organization read returns 7 days of totals, the recent hours by the server's clock and the latest success only for accounts the caller may inspect, judged per account in one batched policy read and leaving the others out exactly like an account no call used. Account lists merge these counts with pool counts in the same Requests cell, ticks and Details line, naming tool calls as their counter; an account nothing counted shows no number, never zero."
+    }
+  }
+}

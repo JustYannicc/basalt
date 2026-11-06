@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "A member can restore only the exact hosted Routes account retained for their current app and membership. The host rechecks app and account access under its link lock, verifies the persisted personal mapping and current catalog identity, and restores credentials through the host-owned path. Generic provisioned account acquisition remains unavailable; other apps and members cannot borrow the mapping."
+    }
+  }
+}

@@ -33,7 +33,7 @@
     {
       "package": "zendesk",
       "repository": "JustYannicc/signalbox-app-zendesk",
-      "commit": "a233fd61b47b6ae89076e89e9c4440037b3ed071",
+      "commit": "4cb688f16a0aaa9000be232405f4124df4f4e63e",
       "files": [
         "README.md",
         "configuration.ts",

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import type { PoolCapacityHistory } from "../capacity-contract.ts";
 import type { Provider } from "../contract.ts";
 import type { Result } from "../index.ts";
@@ -9,6 +9,7 @@ import {
   capacityLabs,
   dailyRows,
   dayLong,
+  duration,
   forecastReasons,
   lineFacts,
   planChips,
@@ -65,12 +66,15 @@ export function CapacitySection({
   providers,
   days,
   coherent,
+  empty = false,
   onRetry,
 }: {
   result: Result<PoolCapacityHistory> | undefined;
   providers: readonly Provider[];
   days: number;
   coherent: boolean;
+  /** The pool has no accounts now, so there is no capacity to show. */
+  empty?: boolean;
   onRetry: () => void;
 }) {
   const labs = result?.ok ? capacityLabs(result.value) : [];
@@ -86,12 +90,17 @@ export function CapacitySection({
           Do we have enough accounts?
         </h2>
         <p className="max-w-[38rem] text-sm text-muted-foreground text-pretty">
-          Allowance left across each lab's accounts over the last {days} days and the next 72 hours.
-          Five-hour readings count only while that same account still has weekly allowance. Each lab
-          has its own unit; labs never add up.
+          Allowance left across each lab's accounts, last {days} days and the next 3. Where a lab
+          reports a 5-hour window too, it gets its own chart. Each lab has its own unit; they never
+          add up across labs.
         </p>
       </div>
-      {result === undefined ? (
+      {empty ? (
+        <p className="rounded-lg border border-dashed border-input px-6 py-8 text-sm text-muted-foreground text-pretty">
+          No accounts in this pool, so there is no capacity to show. Each lab's chart appears once
+          the pool has an account from it.
+        </p>
+      ) : result === undefined ? (
         <div aria-hidden="true" className="h-60 animate-pulse rounded-md bg-accent" />
       ) : !result.ok ? (
         result.error === "unauthorized" ? (
@@ -151,7 +160,8 @@ function Panel({
   chosen?: string;
   onChoose: (key: string) => void;
 }) {
-  const press = coherent ? pressing(lab, history.to) : { key: lab.lines[0]?.key ?? "", text: null };
+  // An incomplete read keeps its measured readings, so the window choice still uses them.
+  const press = pressing(lab, history.to, { withheld: !coherent });
   const line =
     lab.lines.find((entry) => entry.key === (chosen ?? press.key)) ??
     lab.lines.find((entry) => entry.key === press.key) ??
@@ -279,10 +289,11 @@ function Panel({
             ))}
           </ul>
         )}
-        {coherent ? (
-          <ForecastCaption line={displayLine} onlyReporting={onlyReporting} />
-        ) : (
-          <IncompleteCaption />
+        {!coherent && <IncompleteCaption />}
+        {coherent && onlyReporting && (
+          <p className="col-start-2 col-end-[-1] m-0 text-[13px] text-muted-foreground text-pretty max-[540px]:col-span-full">
+            Only accounts reporting a five-hour window are in this chart.
+          </p>
         )}
       </div>
       <CapacityChart
@@ -296,7 +307,13 @@ function Panel({
       />
       <div className="mt-2 flex flex-wrap items-start justify-between gap-2">
         <Legend color={color} facts={facts} line={displayLine} />
-        <Daily line={displayLine} from={history.from} to={history.to} />
+        {/* The verdict above says what matters; how the forecast got there stays one click down. */}
+        <Daily
+          line={displayLine}
+          from={history.from}
+          to={history.to}
+          forecast={coherent ? <ForecastCaption line={displayLine} /> : null}
+        />
       </div>
     </article>
   );
@@ -311,7 +328,7 @@ function IncompleteCaption() {
   );
 }
 
-function ForecastCaption({ line, onlyReporting }: { line: CapacityLine; onlyReporting: boolean }) {
+function ForecastCaption({ line }: { line: CapacityLine }) {
   const forecast = line.forecast;
   const weekly = line.windowSeconds === 604_800;
   const ordinary = forecast?.ordinary;
@@ -391,7 +408,6 @@ function ForecastCaption({ line, onlyReporting }: { line: CapacityLine; onlyRepo
     forecast?.status === "estimated"
       ? `Banked resets remain unspent${forecast.bankedAvailable === null ? "" : ` (${forecast.bankedAvailable} available)`}.${weekly ? " Recorded use appears as a refill." : ""}`
       : null,
-    onlyReporting ? "Only accounts reporting a five-hour window are included." : null,
     forecast?.status === "estimated"
       ? `Based on ${forecast.history.completedWeeks} completed weeks, ${Math.round(forecast.history.coverage * 100)}% observed exposure.`
       : null,
@@ -406,7 +422,7 @@ function ForecastCaption({ line, onlyReporting }: { line: CapacityLine; onlyRepo
       : null,
   ].filter((value): value is string => value !== null);
   return (
-    <div className="col-start-2 col-end-[-1] mt-2.5 grid gap-1 text-[13px] text-muted-foreground text-pretty max-[540px]:col-span-full">
+    <div className="mt-2 grid gap-1 text-[13px] text-muted-foreground text-pretty">
       <span className="flex items-start gap-1.5">
         <StateIcon
           tone={
@@ -489,7 +505,7 @@ function Legend({ color, facts, line }: { color: string; facts: LineFacts; line:
       {facts.gapHours > 0 && (
         <span className="inline-flex items-center gap-1.5">
           <i className="h-2.5 w-3.5 rounded-[2px] bg-accent outline outline-1 outline-input" />
-          {weekly ? "No readings" : "No weekly-gated readings"} ({facts.gapHours}h)
+          {weekly ? "No readings" : "No weekly-gated readings"} ({duration(facts.gapHours)})
         </span>
       )}
       <span className="sr-only">Unit: {line.unit.label}.</span>
@@ -497,7 +513,17 @@ function Legend({ color, facts, line }: { color: string; facts: LineFacts; line:
   );
 }
 
-function Daily({ line, from, to }: { line: CapacityLine; from: number; to: number }) {
+function Daily({
+  line,
+  from,
+  to,
+  forecast,
+}: {
+  line: CapacityLine;
+  from: number;
+  to: number;
+  forecast: ReactNode;
+}) {
   const [open, setOpen] = useState(false);
   const end = Math.max(to, ...(line.forecast?.points.map((point) => point.at + 3_600_000) ?? []));
   const refills = line.refills.filter((event) => event.at >= from && event.at <= end);
@@ -521,8 +547,9 @@ function Daily({ line, from, to }: { line: CapacityLine; from: number; to: numbe
             strokeLinejoin="round"
           />
         </svg>
-        Measured and projected data
+        Forecast details and daily table
       </summary>
+      {open && forecast}
       {open && (
         <table className="mt-2 w-full border-collapse text-[13px]">
           <caption className="sr-only">
@@ -559,10 +586,10 @@ function Daily({ line, from, to }: { line: CapacityLine; from: number; to: numbe
                     : "—"}
                 </td>
                 <td className="border-b border-border py-2.5 pr-2 text-right">
-                  {row.outHours ? `${row.outHours}h` : "—"}
+                  {row.outHours ? duration(row.outHours) : "—"}
                 </td>
                 <td className="border-b border-border py-2.5 text-right">
-                  {row.missingHours ? `${row.missingHours}h` : "—"}
+                  {row.missingHours ? duration(row.missingHours) : "—"}
                 </td>
               </tr>
             ))}

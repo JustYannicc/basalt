@@ -1,5 +1,7 @@
 # Basalt architecture
 
+Zendesk connections prefer the configured global client. Without it, a host-owned public-client definition derives the identifier from the validated tenant subdomain and uses the existing PKCE, encrypted grant and exact-site placement paths. The public path requests read and write only. An unauthenticated authorization check follows no redirects and submits no consent; a client or callback refusal returns the one-time admin setup step before the browser leaves. Provider outages and rate limits remain separate failures. A tenant admin must register the hosted callback even when a local MCP callback already works. No tenant settings change during connection, and each grant retains its original client for renewal.
+
 This directory holds the hand-written model. It shows Basalt's modules, outside-service calls, current runtime, planned v1 modules, and workflows.
 
 The connector acceptance runner persists its active phase before each step and its latest successful assertion count. CI retains that checkpoint and a bounded child-output tail containing only closed phases, error categories and repository-relative source positions. Raw child output and session files remain private, including after a forced stop.
