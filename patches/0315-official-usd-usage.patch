@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/web/src/implementation/pages/pool-usage-cap.tsx b/apps/hosted/web/src/implementation/pages/pool-usage-cap.tsx
-index f0448ea9e..1bda47a1d 100644
+index f0448ea..1bda47a 100644
 --- a/apps/hosted/web/src/implementation/pages/pool-usage-cap.tsx
 +++ b/apps/hosted/web/src/implementation/pages/pool-usage-cap.tsx
 @@ -95,7 +95,7 @@ export function CapSummary({
@@ -56,7 +56,7 @@ index f0448ea9e..1bda47a1d 100644
            )}
          </div>
 diff --git a/apps/hosted/web/src/implementation/pages/pool-usage-details.tsx b/apps/hosted/web/src/implementation/pages/pool-usage-details.tsx
-index d13c1a95c..cd86d77ba 100644
+index d13c1a9..c6279f1 100644
 --- a/apps/hosted/web/src/implementation/pages/pool-usage-details.tsx
 +++ b/apps/hosted/web/src/implementation/pages/pool-usage-details.tsx
 @@ -112,7 +112,7 @@ function MetricSwitch({
@@ -68,12 +68,13 @@ index d13c1a95c..cd86d77ba 100644
    return (
      <div className="grid gap-2 rounded-md border px-4 py-3">
        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5 text-sm">
-@@ -122,10 +122,10 @@ function CapMeter({ cap, format }: { readonly cap: Cap; readonly format: Formats
+@@ -122,10 +122,11 @@ function CapMeter({ cap, format }: { readonly cap: Cap; readonly format: Formats
              <span className={capText.reached}>Cap reached</span>
            ) : (
              <>
 -              <span className={capText[tone]}>{remaining}</span> of {format.cost(cap.weekly)} left
-+              <span className={capText[tone]}>{remaining}</span> of {format.credits(cap.weekly)} left
++              <span className={capText[tone]}>{remaining}</span> of {format.credits(cap.weekly)}{" "}
++              left
              </>
            )}{" "}
 -          · {format.cost(cap.used)} used · resets{" "}
@@ -81,7 +82,7 @@ index d13c1a95c..cd86d77ba 100644
            <LocalTime value={cap.resetAt} options={resetMoment} />
          </span>
        </div>
-@@ -135,7 +135,7 @@ function CapMeter({ cap, format }: { readonly cap: Cap; readonly format: Formats
+@@ -135,7 +136,7 @@ function CapMeter({ cap, format }: { readonly cap: Cap; readonly format: Formats
          aria-valuemin={0}
          aria-valuemax={100}
          aria-valuenow={Math.round(left * 100)}
@@ -90,12 +91,14 @@ index d13c1a95c..cd86d77ba 100644
          className={`h-1.5 rounded-full ${tone === "reached" ? "bg-destructive/20" : "bg-accent"}`}
        >
          <div className={`h-full rounded-full ${capBar[tone]}`} style={{ width: percent(left) }} />
-@@ -315,10 +315,10 @@ function ModelList({
+@@ -315,10 +316,12 @@ function ModelList({
                  />
                </div>
                <span className="text-right text-xs text-muted-foreground tabular-nums">
 -                <span className="font-medium text-foreground">{format.metric(value, metric)}</span>
-+                <span className="font-medium text-foreground">{metric === "cost" ? format.apiCost(model) : format.metric(value, metric)}</span>
++                <span className="font-medium text-foreground">
++                  {metric === "cost" ? format.apiCost(model) : format.metric(value, metric)}
++                </span>
                  {" · "}
                  {metric === "tokens"
 -                  ? `${format.cost(model.cost)} API cost`
@@ -104,7 +107,7 @@ index d13c1a95c..cd86d77ba 100644
                  {" · "}
                  {format.count(model.requests)} {model.requests === 1 ? "request" : "requests"}
 diff --git a/apps/hosted/web/src/implementation/pages/pool-usage-format.ts b/apps/hosted/web/src/implementation/pages/pool-usage-format.ts
-index 31f939355..aa974ebaf 100644
+index 31f9393..aa974eb 100644
 --- a/apps/hosted/web/src/implementation/pages/pool-usage-format.ts
 +++ b/apps/hosted/web/src/implementation/pages/pool-usage-format.ts
 @@ -50,10 +50,14 @@ export const formats = (format: DisplayFormat) => {
@@ -124,7 +127,7 @@ index 31f939355..aa974ebaf 100644
  };
  export type Formats = ReturnType<typeof formats>;
 diff --git a/apps/hosted/web/src/implementation/pages/pool-usage-row.tsx b/apps/hosted/web/src/implementation/pages/pool-usage-row.tsx
-index 4b7cff3b6..d7561462a 100644
+index 4b7cff3..d756146 100644
 --- a/apps/hosted/web/src/implementation/pages/pool-usage-row.tsx
 +++ b/apps/hosted/web/src/implementation/pages/pool-usage-row.tsx
 @@ -105,7 +105,7 @@ export function PoolMemberRow({
@@ -137,18 +140,20 @@ index 4b7cff3b6..d7561462a 100644
              <span className="block text-xs text-muted-foreground">
                {format.count(member.unpriced)} unpriced
 diff --git a/apps/hosted/web/src/implementation/pages/pool-usage.tsx b/apps/hosted/web/src/implementation/pages/pool-usage.tsx
-index 0cf6177bf..f1ec9f92b 100644
+index 0cf6177..81221f4 100644
 --- a/apps/hosted/web/src/implementation/pages/pool-usage.tsx
 +++ b/apps/hosted/web/src/implementation/pages/pool-usage.tsx
-@@ -113,7 +113,7 @@ export function PoolUsageSection({
+@@ -113,8 +113,8 @@ export function PoolUsageSection({
        </div>
        <p className="mt-2 max-w-xl text-sm text-pretty text-muted-foreground">
          Each person&apos;s requests through this pool. API cost is what the same tokens would cost
 -        at the providers&apos; API prices; unpriced requests used a model without a known price. A
-+        at current official USD API prices; unpriced requests lack a known official price or usable token counts. A
-         weekly cap stops a person&apos;s requests through this pool until it resets.
+-        weekly cap stops a person&apos;s requests through this pool until it resets.
++        at current official USD API prices; unpriced requests lack a known official price or usable
++        token counts. A weekly cap stops a person&apos;s requests through this pool until it resets.
        </p>
        {!canUse &&
+         page !== undefined &&
 @@ -296,7 +296,7 @@ function Totals({
          </>
        )}{" "}
@@ -159,7 +164,7 @@ index 0cf6177bf..f1ec9f92b 100644
      </p>
    );
 diff --git a/e2e/support/pool-usage-backend.ts b/e2e/support/pool-usage-backend.ts
-index 44b7ba558..3235f2ddc 100644
+index 44b7ba5..3235f2d 100644
 --- a/e2e/support/pool-usage-backend.ts
 +++ b/e2e/support/pool-usage-backend.ts
 @@ -22,6 +22,7 @@ export const poolUsageBackend = Effect.gen(function* () {
@@ -192,7 +197,7 @@ index 44b7ba558..3235f2ddc 100644
        rich = true;
      }),
 diff --git a/e2e/tests/pool-usage-ui.spec.ts b/e2e/tests/pool-usage-ui.spec.ts
-index 3e1e3e5c8..a21943050 100644
+index 3e1e3e5..a219430 100644
 --- a/e2e/tests/pool-usage-ui.spec.ts
 +++ b/e2e/tests/pool-usage-ui.spec.ts
 @@ -223,6 +223,17 @@ layer(HostedLive, { excludeTestServices: true })("Native pool usage UI", (it) =>
