@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { checkDatabaseBackends, type DatabaseClient } from "./verify-database-budget.ts";
 import { backendCountSql, backendVisibilitySql } from "./database-budget-verification.ts";
-import { DatabaseBudgetFailure, type BudgetReceipt } from "./database-budget-receipt.ts";
+import {
+  DatabaseBudgetFailure,
+  safeDatabaseError,
+  type BudgetReceipt,
+} from "./database-budget-receipt.ts";
 
 function fixture(
   options: { connect?: string; sql?: string; visible?: boolean; connections?: number } = {},
@@ -120,4 +124,65 @@ test("abort during connect remains abort and releases the connection", async () 
     (error) => error instanceof DatabaseBudgetFailure && error.receipt.outcome === "abort",
   );
   assert.deepEqual(f.actions.slice(-3), ["retain", "destroy", "end"]);
+});
+
+test("unrecognized driver codes and raw messages never enter structured causes", () => {
+  assert.deepEqual(
+    safeDatabaseError(
+      Object.assign(new Error("password=user@private-host"), { code: "TOKEN" }),
+      "read",
+    ),
+    { outcome: "sql-error" },
+  );
+});
+
+test("a stalled end is bounded by one second after retaining the outcome", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let ending!: () => void;
+  const endStarted = new Promise<void>((resolve) => {
+    ending = resolve;
+  });
+  const actions: string[] = [];
+  const client: DatabaseClient = {
+    on() {},
+    async connect() {},
+    connection: {
+      stream: {
+        destroy() {
+          actions.push("destroy");
+        },
+      },
+    },
+    end() {
+      actions.push("end");
+      ending();
+      return new Promise(() => {});
+    },
+    async query(sql) {
+      return {
+        rows:
+          sql === backendVisibilitySql
+            ? [{ visible: true }]
+            : sql === backendCountSql
+              ? [{ database: "pool", connections: 5 }]
+              : [],
+      };
+    },
+  };
+  const work = checkDatabaseBackends({
+    adminUrl: "fixture",
+    runtimeLogins: ["runtime"],
+    databases: ["pool"],
+    client,
+    deadlineMs: 0,
+    now: () => 0,
+    retain: async () => {
+      actions.push("retain");
+    },
+  });
+  await endStarted;
+  assert.deepEqual(actions, ["retain", "destroy", "end"]);
+  // The timer is installed after end() returns its pending promise.
+  t.mock.timers.tick(1000);
+  assert.deepEqual(await work, [{ database: "pool", connections: 5 }]);
 });

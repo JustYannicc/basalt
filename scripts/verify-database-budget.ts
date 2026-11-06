@@ -163,13 +163,17 @@ export async function checkDatabaseBackends(options: {
       options.signal?.removeEventListener("abort", externalAbort);
       client.connection.stream.destroy();
       // Destroy first so end cannot wait for a half-open query or connection handshake.
-      await Promise.race([
-        client.end().catch(() => {}),
-        new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, 1000);
-          timer.unref();
-        }),
-      ]);
+      let teardownTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          client.end().catch(() => {}),
+          new Promise<void>((resolve) => {
+            teardownTimer = setTimeout(resolve, 1000);
+          }),
+        ]);
+      } finally {
+        clearTimeout(teardownTimer);
+      }
     }
   }
   if (failed) throw new DatabaseBudgetFailure(receipt);

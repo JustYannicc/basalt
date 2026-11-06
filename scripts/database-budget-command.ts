@@ -24,9 +24,23 @@ async function save(path: string, value: unknown) {
   await writeFile(path, JSON.stringify(value) + "\n", { mode: 0o600 });
 }
 
-export async function runDatabaseBudgetCommand(source: NodeJS.ProcessEnv, args: string[]) {
+export async function runDatabaseBudgetCommand(
+  source: NodeJS.ProcessEnv,
+  args: string[],
+  adapters: {
+    open?: typeof openDeploymentReadiness;
+    check?: typeof checkDatabaseBackends;
+    now?: () => number;
+    timeout?: (milliseconds: number) => AbortSignal;
+  } = {},
+) {
+  const now = adapters.now ?? Date.now;
+  const timeout = adapters.timeout ?? AbortSignal.timeout;
+  const open = adapters.open ?? openDeploymentReadiness;
+  const check = adapters.check ?? checkDatabaseBackends;
   let readiness: Awaited<ReturnType<typeof openDeploymentReadiness>> | undefined;
-  const startedAt = Date.now();
+  const startedAt = now();
+  let operationStartedAt = startedAt;
   const path = source.DATABASE_BUDGET_RECEIPT ?? "";
   const candidate = source.GITHUB_SHA ?? "unknown";
   const target = {
@@ -46,12 +60,39 @@ export async function runDatabaseBudgetCommand(source: NodeJS.ProcessEnv, args: 
     runtime: null,
     sampleRuntime: null,
   };
+  const contextual = (value: BudgetReceipt): BudgetReceipt => ({
+    ...value,
+    target,
+    operationStartedAt,
+    overallDeadlineMs: databaseVerificationOverallMs,
+    elapsedMs: now() - operationStartedAt,
+  });
   const mode = args.includes("--ready") ? "ready" : "verify";
   try {
     const worker = source.DATABASE_BUDGET_WORKER;
-    const startup = AbortSignal.timeout(180_000);
+    const previous =
+      worker && mode === "verify"
+        ? JSON.parse(await readFile(source.DATABASE_BUDGET_READY_RECEIPT ?? "", "utf8"))
+        : undefined;
+    const initialReady = previous ? decodeRuntimeReady(previous.ready, target) : undefined;
+    if (
+      previous &&
+      (!Number.isSafeInteger(previous.startedAt) ||
+        !Number.isSafeInteger(previous.readyReceivedAt) ||
+        previous.startedAt > previous.readyReceivedAt ||
+        previous.readyReceivedAt > now())
+    )
+      throw new Error("Invalid readiness timing receipt");
+    operationStartedAt = previous?.startedAt ?? startedAt;
+    receipt = contextual({ ...receipt, runtime: initialReady ?? null });
+    const overallDeadline = operationStartedAt + databaseVerificationOverallMs;
+    const remaining = overallDeadline - now();
+    if (!Number.isFinite(remaining) || remaining <= 0)
+      throw new Error("Overall verification bound expired");
+    const operation = timeout(mode === "ready" ? 180_000 : remaining);
+    const startup = mode === "ready" ? operation : AbortSignal.any([operation, timeout(180_000)]);
     if (worker) {
-      const opening = openDeploymentReadiness({
+      const opening = open({
         worker,
         accountId: source.CLOUDFLARE_ACCOUNT_ID ?? "",
         key: source.POOL_DEPLOYMENT_KEY ?? "",
@@ -59,7 +100,7 @@ export async function runDatabaseBudgetCommand(source: NodeJS.ProcessEnv, args: 
       });
       opening.then(
         (connection) => {
-          if (startup.aborted) void connection.close();
+          if (startup.aborted) void bounded(connection.close(), timeout(1000)).catch(() => {});
         },
         () => {},
       );
@@ -72,53 +113,45 @@ export async function runDatabaseBudgetCommand(source: NodeJS.ProcessEnv, args: 
         ...receipt,
         outcome: "converged",
         runtime: ready,
-        elapsedMs: Date.now() - startedAt,
+        elapsedMs: now() - startedAt,
       };
-      await save(path, { startedAt, readyReceivedAt: Date.now(), ready });
+      await save(path, { startedAt, readyReceivedAt: now(), ready });
     } else {
-      const previous = readiness
-        ? JSON.parse(await readFile(source.DATABASE_BUDGET_READY_RECEIPT ?? "", "utf8"))
-        : undefined;
-      const initialReady = previous ? decodeRuntimeReady(previous.ready, target) : undefined;
-      const remaining = previous
-        ? databaseVerificationOverallMs - (Date.now() - previous.startedAt)
-        : databaseVerificationOverallMs;
-      if (
-        (previous &&
-          (!Number.isSafeInteger(previous.startedAt) ||
-            !Number.isSafeInteger(previous.readyReceivedAt))) ||
-        !Number.isFinite(remaining) ||
-        remaining <= 0
-      )
-        throw new Error("Overall verification bound expired");
-      await checkDatabaseBackends({
+      await check({
         adminUrl: source.DATABASE_BUDGET_ADMIN_URL ?? "",
         runtimeLogins: list(source.DATABASE_BUDGET_RUNTIME_LOGINS),
         databases: list(source.DATABASE_BUDGET_DATABASES),
         candidate,
         initialReady,
         readyReceivedAt: previous?.readyReceivedAt,
-        overallDeadline: previous ? previous.startedAt + databaseVerificationOverallMs : undefined,
-        ...(readiness ? { ready: readiness.ready } : {}),
-        signal: AbortSignal.timeout(remaining),
+        overallDeadline,
+        ...(readiness
+          ? {
+              ready: (signal: AbortSignal) =>
+                readiness!.ready(AbortSignal.any([signal, timeout(180_000)])),
+            }
+          : {}),
+        signal: operation,
+        now,
         retain: async (value) => {
-          receipt = value;
-          await save(path, value);
+          receipt = contextual(value);
+          await save(path, receipt);
         },
       });
     }
-    return receipt;
+    return contextual(receipt);
   } catch (error) {
     if (error instanceof DatabaseBudgetFailure) receipt = error.receipt;
     else
       receipt = {
         ...receipt,
         ...safeDatabaseError(error, "readiness"),
-        elapsedMs: Date.now() - startedAt,
+        elapsedMs: now() - startedAt,
       };
+    receipt = contextual(receipt);
     await save(path, receipt);
     throw new DatabaseBudgetFailure(receipt);
   } finally {
-    if (readiness) await bounded(readiness.close(), AbortSignal.timeout(1000)).catch(() => {});
+    if (readiness) await bounded(readiness.close(), timeout(1000)).catch(() => {});
   }
 }

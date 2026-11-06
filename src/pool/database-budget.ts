@@ -68,6 +68,6 @@ export const verifyRuntimeDatabaseBudget = (
         DATABASE_BUDGET_DEPLOYMENT: options.deployment.pipe(Output.map(() => "deployed")),
       },
       memo: false,
-      timeout: target ? "5 minutes" : "2 minutes",
+      timeout: "2 minutes",
     });
   });

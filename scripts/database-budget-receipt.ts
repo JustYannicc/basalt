@@ -17,6 +17,9 @@ export type BudgetOutcome =
   | "incomplete-visibility";
 export interface BudgetReceipt {
   candidate: string;
+  target?: Pick<RuntimeReady, "candidate" | "workerInput" | "imageHash">;
+  operationStartedAt?: number;
+  overallDeadlineMs?: number;
   outcome: BudgetOutcome;
   stage: BudgetStage;
   elapsedMs: number;

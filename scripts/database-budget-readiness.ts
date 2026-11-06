@@ -80,7 +80,7 @@ export async function openDeploymentReadiness(options: {
           signal,
         );
         if (!response.ok) throw new Error("Deployment runtime readiness failed");
-        return decodeRuntimeReady(await response.json(), options.target);
+        return decodeRuntimeReady(await bounded(response.json(), signal), options.target);
       },
     };
   } catch (error) {

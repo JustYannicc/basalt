@@ -52,3 +52,45 @@ test("a bridge ignoring abort still cannot hold verification open", async () => 
   abort.abort();
   await assert.rejects(work, (error) => error instanceof Error && error.name === "AbortError");
 });
+
+test("readiness body parsing is bounded when response headers arrive but its body stalls", async () => {
+  const abort = new AbortController();
+  let disposed = false,
+    parsed = false;
+  const connection = await openDeploymentReadiness({
+    worker: "fixture-worker",
+    accountId: "d".repeat(32),
+    key,
+    target,
+    connect: async () => ({
+      env: {
+        POOL_OPERATIONS: {
+          async fetch() {
+            const response = new Response();
+            Object.defineProperty(response, "json", {
+              value: () => {
+                parsed = true;
+                abort.abort();
+                return new Promise(() => {});
+              },
+            });
+            return response;
+          },
+        },
+      },
+      async dispose() {
+        disposed = true;
+      },
+    }),
+  });
+  try {
+    await assert.rejects(
+      connection.ready(abort.signal),
+      (error) => error instanceof Error && error.name === "AbortError",
+    );
+    assert.equal(parsed, true, "headers must complete before body parsing is aborted");
+  } finally {
+    await connection.close();
+  }
+  assert.equal(disposed, true);
+});

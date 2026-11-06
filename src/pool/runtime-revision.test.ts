@@ -15,6 +15,7 @@ test("the provisioned schema owner changes the runtime revision once and reaches
     POOL_MANAGEMENT_KEY: "fixture-management",
     POOL_IMAGE_HASH: "fixture-image",
     POOL_APP_SIGNING_KEY: "ab".repeat(32),
+    POOL_DEPLOYMENT_KEY: "cd".repeat(32),
   };
   const legacyInput = JSON.stringify([
     env.POOL_DATABASE_URL,
@@ -72,6 +73,7 @@ test("the provisioned schema owner changes the runtime revision once and reaches
   assert.equal(starts, 1);
   assert.equal(stops, 1, "A container on the old owner-less configuration must restart");
   assert.notEqual(values.get("revision"), legacyRevision);
+  env.POOL_DEPLOYMENT_KEY = "ef".repeat(32);
   await (await createPoolLifecycle(context, env)).warm();
   assert.equal(starts, 1, "The unchanged owner configuration must reuse the running container");
   assert.equal(stops, 1);
