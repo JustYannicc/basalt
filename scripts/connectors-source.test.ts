@@ -8,8 +8,9 @@ import test from "node:test";
 import { verifyConnectorsSource } from "./connectors-source.ts";
 import { poolWorkerRevisionPath, poolWorkerRevisionSource } from "./pool-worker-revision.ts";
 import { bundlePoolApp } from "./pool-app-bundle.ts";
+import { prepareTestPlans } from "./ci/declarations.ts";
 
-test("connector source verification accepts the native contract and refuses substituted generated or source bytes", () => {
+function verifyFixture(declaredPlans: boolean) {
   const root = mkdtempSync(join(tmpdir(), "connectors-source-test-"));
   const upstream = join(root, ".upstream");
   const write = (path: string, content: string) => {
@@ -43,7 +44,15 @@ test("connector source verification accepts the native contract and refuses subs
       write(path, content);
     const pin = initialize(upstream);
     write(".upstream/packages/example.ts", "export const carried = true;\n");
+    const requiredSource = ".upstream/packages/required.ts";
+    write(requiredSource, "export const required = true;\n");
+    if (declaredPlans) {
+      write(".upstream/e2e/basalt-plans.json", "{}\n");
+      write(".upstream/e2e/tests/tool-policy-draft.spec.ts", "export {};\n");
+    }
+    git(upstream, "add", "-N", ".");
     write("patches/0001-example.patch", git(upstream, "diff") + "\n");
+    git(upstream, "reset", "--mixed", pin);
     const native = "export const nativeControlPrefix = 'sbn1';\n";
     for (const [path, content] of Object.entries({
       ".gitignore": ".upstream/\n",
@@ -60,6 +69,19 @@ test("connector source verification accepts the native contract and refuses subs
       "src/pool/worker.ts": "export default {};\n",
     }))
       write(path, content);
+    if (declaredPlans) {
+      write("scripts/ci/inherited-tests.json", JSON.stringify({ manualTargets: {} }));
+      write("scripts/ci/e2e-groups.json", "{}");
+      write(
+        "e2e/plans/example.spec.ts.json",
+        JSON.stringify({
+          scenarios: {},
+          runs: {},
+          config: [{ job: "fast", config: "example.config.ts" }],
+        }),
+      );
+      prepareTestPlans(root, upstream);
+    }
     const release = initialize(root);
     bundlePoolApp(root, upstream);
     write(
@@ -76,6 +98,14 @@ test("connector source verification accepts the native contract and refuses subs
       commit: pin,
       patches: ["0001-example.patch"],
     });
+    rmSync(join(root, requiredSource));
+    assert.throws(() => verifyConnectorsSource(root));
+    write(requiredSource, "export const required = true;\n");
+    if (declaredPlans) {
+      write(".upstream/e2e/tests/tool-policy-draft.spec.ts", "export {};\n");
+      assert.throws(() => verifyConnectorsSource(root));
+      rmSync(join(upstream, "e2e/tests/tool-policy-draft.spec.ts"));
+    }
     write(opsRelease, opsSource.replace(release, "0".repeat(40)));
     assert.throws(() => verifyConnectorsSource(root), /Generated production ops release differs/);
     write(opsRelease, opsSource + "export const substituted = true;\n");
@@ -108,4 +138,8 @@ test("connector source verification accepts the native contract and refuses subs
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
+}
+
+for (const declaredPlans of [false, true])
+  test(`connector source verification preserves strict source checks${declaredPlans ? " after retiring a carried test" : ""}`, () =>
+    verifyFixture(declaredPlans));
