@@ -179,11 +179,12 @@ const program = Effect.gen(function* () {
   const latestReading = (view) =>
     Math.max(0, ...view.reports.map((report) => Date.parse(report.result?.observedAt ?? "") || 0));
   // A confirmed reset keeps the count disabled until a reading newer than the reset arrives, also
-  // across a reload. A step that spends again starts from that fresh reading: the refresh interval
-  // is made due, then the account row's own Refresh reads usage again.
+  // across a reload. A step that spends again starts from that fresh reading: the provider reads
+  // usage again, the refresh interval is made due, and the account row's own Refresh fetches it.
   const freshReading = () =>
     Effect.gen(function* () {
       const before = latestReading(yield* h.request("GET", `${account}/observations`));
+      h.fixture.refreshReading(id);
       yield* h.observationsDue(saved.account.id);
       yield* h.request("POST", `${account}/observations/refresh`);
       yield* until(

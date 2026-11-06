@@ -299,6 +299,19 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
     restart() {
       control = new PoolControl(storage, dependencies);
     },
+    /** The provider reads this account's usage again now, as its queued refresh does; credits stay. */
+    refreshReading(id) {
+      const reading = readings.get(id);
+      const observed = new Date(now()).toISOString();
+      reading.collection = {
+        ...reading.collection,
+        observed_at: observed,
+        last_attempt_at: observed,
+        next_probe_at: observed,
+      };
+      reading.windows = reading.windows.map((window) => ({ ...window, observed_at: observed }));
+      if (reading.reset_credits !== null) reading.reset_credits = resets.balances(id);
+    },
     seedReset(pool, id, provider = "codex", count = 2) {
       this.seed(pool, id);
       files.set(id, { id, provider, disabled: false });
