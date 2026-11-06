@@ -94,7 +94,15 @@ diff --git a/apps/hosted/testing/statement-hold-fixture.ts b/apps/hosted/testing
    /** The app whose access check to hold, or the next PAT check inside a tool call. */
    readonly app: string | undefined;
    /** Hold the next answered check of this kind that binds this ID, instead. */
-@@ -94,6 +99,27 @@
+@@ -71,6 +76,7 @@
+   /** Fail the next read of account rows inside a tool call; nothing is held. */
+   readonly failAccounts: boolean;
+   readonly reached: Deferred.Deferred<void>;
++  readonly interruption: Deferred.Deferred<void>;
+   readonly release: Deferred.Deferred<void>;
+ }
+ 
+@@ -94,6 +100,27 @@
          const [strings, ...params] = args;
          const hold = armed;
          if (hold === undefined || !isTemplate(strings)) return Reflect.apply(target, self, args);
@@ -113,7 +121,7 @@ diff --git a/apps/hosted/testing/statement-hold-fixture.ts b/apps/hosted/testing
 +                Effect.onInterrupt(() =>
 +                  Effect.sync(() => {
 +                    hold.interrupted = true;
-+                  }),
++                  }).pipe(Effect.andThen(Deferred.succeed(hold.interruption, undefined))),
 +                ),
 +              );
 +            }),
@@ -122,7 +130,7 @@ diff --git a/apps/hosted/testing/statement-hold-fixture.ts b/apps/hosted/testing
          if (hold.after !== undefined) {
            const statement: Statement.Statement<unknown> = Reflect.apply(target, self, args);
            const [text, bound] = statement.compile();
-@@ -162,6 +188,8 @@
+@@ -162,11 +189,14 @@
          const arm = yield* HttpServerRequest.schemaBodyJson(Arm);
          yield* release;
          armed = current = {
@@ -131,7 +139,13 @@ diff --git a/apps/hosted/testing/statement-hold-fixture.ts b/apps/hosted/testing
            app: "app" in arm ? arm.app : undefined,
            after: "after" in arm ? { check: arm.after, id: arm.id } : undefined,
            toolCall: "app" in arm && arm.toolCall === true,
-@@ -174,11 +202,20 @@
+           failAccounts: "fail" in arm,
+           reached: yield* Deferred.make<void>(),
++          interruption: yield* Deferred.make<void>(),
+           release: yield* Deferred.make<void>(),
+         };
+         return HttpServerResponse.jsonUnsafe({ armed: true });
+@@ -174,11 +204,32 @@
      ),
      HttpRouter.add(
        "GET",
@@ -139,6 +153,18 @@ diff --git a/apps/hosted/testing/statement-hold-fixture.ts b/apps/hosted/testing
 +      Effect.gen(function* () {
 +        if (current !== undefined) yield* Deferred.await(current.reached);
 +        return HttpServerResponse.jsonUnsafe({ held: current !== undefined });
++      }),
++    ),
++    HttpRouter.add(
++      "GET",
++      `${path}/interrupted`,
++      Effect.gen(function* () {
++        const hold = current;
++        if (hold !== undefined) yield* Deferred.await(hold.interruption);
++        return HttpServerResponse.jsonUnsafe({
++          held: hold !== undefined && (yield* Deferred.isDone(hold.reached)),
++          interrupted: hold?.interrupted ?? false,
++        });
 +      }),
 +    ),
 +    HttpRouter.add(
@@ -508,7 +534,7 @@ diff --git a/e2e/tests/statement-batch-deadline.spec.ts b/e2e/tests/statement-ba
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/statement-batch-deadline.spec.ts
-@@ -0,0 +1,186 @@
+@@ -0,0 +1,189 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Clock, Effect, Fiber, Layer, Schema } from "effect";
 +import { body } from "../support/api.ts";
@@ -629,7 +655,7 @@ new file mode 100644
 +                const response = yield* f.api.request(
 +                  f.actors.owner,
 +                  action === "arm" ? "POST" : action === "release" ? "DELETE" : "GET",
-+                  `/api/devtools/statement-hold${action === "held" ? "/reached" : ""}`,
++                  `/api/devtools/statement-hold${action === "held" ? "/reached" : action === "closed" ? "/interrupted" : ""}`,
 +                  action === "arm" ? { prefetch: f.app.id } : undefined,
 +                );
 +                expect(response.status).toBe(200);
@@ -658,7 +684,7 @@ new file mode 100644
 +            expect(failed.failure).not.toMatchObject({ mayHaveWritten: true });
 +            expect(elapsed).toBeLessThan(12_000);
 +            expect(yield* counter.calls).toBe(before);
-+            const state = yield* control(cloud ? "closed" : "state");
++            const state = yield* control("closed");
 +            const guard = cloud
 +              ? Schema.Struct({
 +                  held: Schema.Literal(true),
@@ -680,14 +706,17 @@ new file mode 100644
 +            yield* control("arm");
 +            const cancelled = yield* Effect.forkChild(read());
 +            yield* control("held");
++            const cancellationStarted = yield* Clock.currentTimeMillis;
 +            yield* Fiber.interrupt(cancelled);
-+            const cancelledState = yield* control(cloud ? "closed" : "state");
++            const cancelledState = yield* control("closed").pipe(Effect.timeout("7 seconds"));
++            const cancellationElapsed = (yield* Clock.currentTimeMillis) - cancellationStarted;
 +            yield* Schema.decodeUnknownEffect(guard)(cancelledState);
 +            expect(yield* counter.calls).toBe(before + 1);
 +            expect((yield* read()).value).toBe("author-ran");
 +            expect(yield* counter.calls).toBe(before + 2);
 +            yield* evidence.json("statement-batch-cancellation.json", {
 +              state: cancelledState,
++              cancellationElapsed,
 +              authorCalls: yield* counter.calls,
 +            });
 +          }),
