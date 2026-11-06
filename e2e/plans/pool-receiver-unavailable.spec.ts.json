@@ -1,0 +1,70 @@
+{
+  "scenarios": {
+    "cloudPoolReceiverUnavailable": {
+      "fixtures": "actors",
+      "title": "Cloud pool receiver outages refuse access writes and cleanup until recovery",
+      "targets": {
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The Cloud pool receiver is a hosted dependency."
+        },
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The Cloud pool receiver is a hosted dependency."
+        }
+      }
+    },
+    "cloudPoolReceiverCleanupRecovery": {
+      "fixtures": "actors",
+      "title": "Cloud pool receiver outage holds durable cleanup until receiver recovery",
+      "targets": {
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The Cloud pool receiver is a hosted dependency."
+        },
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The Cloud pool receiver is a hosted dependency."
+        }
+      }
+    }
+  },
+  "runs": {
+    "cloudPoolReceiverUnavailable": ["declared:cloud"],
+    "cloudPoolReceiverCleanupRecovery": ["declared:cloud"]
+  },
+  "inputs": [
+    ".upstream/e2e/support/pool-receiver-faults.ts",
+    ".upstream/e2e/support/cloud-pool-gateway.ts",
+    ".upstream/e2e/tests/pool-receiver-unavailable.spec.ts",
+    ".upstream/packages/sdk/src/contracts/shared.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-receiver.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-membership-hook.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-access-hook.ts",
+    ".upstream/packages/sdk/src/contracts/executor.ts",
+    ".upstream/packages/sdk/src/contracts/apps.ts",
+    ".upstream/packages/sdk/src/contracts/account.ts",
+    ".upstream/apps/hosted/server/src/contracts/resource-access.ts",
+    ".upstream/apps/hosted/server/src/contracts/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/contracts/apps.ts",
+    ".upstream/apps/hosted/server/src/contracts/accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-lifecycle.ts",
+    ".upstream/apps/hosted/web/src/contracts/errors.ts",
+    ".upstream/apps/local/web/src/contracts/errors.ts",
+    ".upstream/packages/sdk/src/contracts/account-connection.ts",
+    ".upstream/packages/sdk/src/implementation/interactive-retirement.ts",
+    ".upstream/apps/hosted/server/src/contracts/mcp-connections.ts",
+    ".upstream/apps/local/server/src/contracts/dashboard.ts",
+    ".upstream/apps/local/server/src/contracts/account-connections.ts",
+    ".upstream/packages/mcp/src/implementation/app-assets.ts",
+    ".upstream/packages/mcp/src/implementation/app-asset-paths.ts"
+  ]
+}
