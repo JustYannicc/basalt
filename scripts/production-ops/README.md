@@ -26,6 +26,14 @@ Dispatch `production-ops.yml` on `main` with `action=inventory`, the public key 
   sign-in providers and email verification.
 - `accounts`, `pools`, `app-links`, `retired-tokens`, `departures`, `workflows`,
   `schedules`, `reporters` or `receipts`.
+- `connections`: the organization's account connections as metadata only: ID,
+  provider, target app and requirement, stored status, whether it has expired,
+  whether it produced an account (new, reconnected or reused), and its created
+  and expiry times. Never the rest of its state, its sign-in attempt or account.
+  A pending connection past its expiry reads `pending` with `expired: true`.
+- `connections-summary`: the same connections counted by status, expiry, target
+  app and provider, with the first and last creation times. Use it when the
+  organization may have more connections than the row bound.
 
 `retired-tokens` uses the same recorded pool-app, personal placement and exact
 provider provenance as host-managed pool-access rows. Labels do not identify

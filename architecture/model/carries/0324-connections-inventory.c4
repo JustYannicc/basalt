@@ -1,0 +1,7 @@
+model {
+  extend basalt.productionOps {
+    metadata {
+      constraint "The connections inventories read one organization's account connections as metadata only: per connection its ID, provider, target app and requirement, stored status, expiry, whether it produced an account and its times; or the same connections counted by status, expiry, target app and provider so an organization above the row bound still gets its numbers. From a connection's state they read only the status, never its sign-in attempt or account, join nothing that holds credentials, and run read-only under the same reviewed dispatch and row bound as every other inventory."
+    }
+  }
+}

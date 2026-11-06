@@ -9,8 +9,11 @@ type Account = {
 };
 
 const contracts = new URL("../../.upstream/packages/ui/src/contracts/", import.meta.url);
-const { accountTitle } = (await import(new URL("account-title.ts", contracts).href)) as {
+const { accountTitle, accountMenuName } = (await import(
+  new URL("account-title.ts", contracts).href
+)) as {
   accountTitle: (account: Account, fallback?: string, kind?: string) => string;
+  accountMenuName: (account: Account, kind?: string, options?: { binding?: boolean }) => string;
 };
 
 const reported = { info: { email: "person@example.test" } };
@@ -91,4 +94,37 @@ test("edge cases keep the provider-and-kind title honest", () => {
   );
   // The app tab's provider-name fallback keeps the number too.
   assert.equal(accountTitle({ label: "Default 2" }, "Codex"), "Codex 2");
+});
+
+test("an account's own menu is named by its given name, else its row title, never Default", () => {
+  const key = { providerName: "Jev", label: "Default" };
+  assert.equal(accountMenuName(key, "API key"), "Jev API key");
+  assert.equal(accountMenuName({ ...key, label: "Default 2" }, "API key"), "Jev API key 2");
+  assert.equal(accountMenuName({ ...key, health: reported }, "API key"), "person@example.test");
+  // A name the person gave stays exactly, even under a verified identity.
+  assert.equal(
+    accountMenuName({
+      ...key,
+      label: "First saved sign-in",
+      identity: { label: "group@example.test" },
+    }),
+    "First saved sign-in",
+  );
+  // A row outside a group is named by its title, a verified identity included.
+  assert.equal(
+    accountMenuName({ ...key, identity: { label: "group@example.test" } }, "API key"),
+    "group@example.test",
+  );
+  // Grouped sign-ins are named only by what is their own, so siblings stay distinct even when
+  // their checks report the group's email.
+  const sibling = { ...key, identity: { label: "group@example.test" }, health: reported };
+  assert.equal(accountMenuName(sibling, "API key", { binding: true }), "Jev API key");
+  assert.equal(
+    accountMenuName({ ...sibling, label: "Default 2" }, "API key", { binding: true }),
+    "Jev API key 2",
+  );
+  assert.equal(
+    accountMenuName({ ...sibling, label: "First saved sign-in" }, "API key", { binding: true }),
+    "First saved sign-in",
+  );
 });
