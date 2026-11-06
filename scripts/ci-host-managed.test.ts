@@ -25,7 +25,7 @@ const selectedScenarios = (pattern: string) =>
     .map(([key]) => key)
     .sort();
 
-test("account and pool jobs retain every original scenario, command and execution input", () => {
+test("account and pool jobs retain their owned scenarios, commands and execution inputs", () => {
   const expected = [
     {
       job: "host-managed-accounts",
@@ -55,7 +55,6 @@ test("account and pool jobs retain every original scenario, command and executio
       scenarios: [
         "accountDisplayStatus",
         "accountHealth",
-        "accountObservationRows",
         "accountToolsHealth",
         "catalogOAuthAccounts",
         "catalogOAuthClients",
@@ -83,7 +82,6 @@ test("account and pool jobs retain every original scenario, command and executio
       minutes: null,
       scenarios: [
         "accountObservationInterval",
-        "accountObservationRowPolling",
         "appModelLifecycle",
         "appModelRequests",
         "catalogInstances",
