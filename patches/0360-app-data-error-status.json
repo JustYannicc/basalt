@@ -1,7 +1,7 @@
 {
   "identity": "basalt-app-data-error-status",
   "file": "0360-app-data-error-status.patch",
-  "content_sha256": "c16c4a005b05ce9376a66a35218a3cace32c533bca96863f65893a3aba77ab1b",
+  "content_sha256": "0b7bd0c0fb59d4f371117e221756ab75003cb5e18b7535dc0ddffcc0bf34c059",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

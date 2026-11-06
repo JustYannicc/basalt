@@ -124,3 +124,27 @@ index 0000000000000000000000000000000000000000..aaac02241078503448c71faf0c9ac58d
 +    ),
 +  );
 +});
+diff --git a/e2e/tests/data-query-batch.spec.ts b/e2e/tests/data-query-batch.spec.ts
+index 92a9ec8598e261d50f5f3712fe67cfcc76b1df21..7b49f5db7b982f4c955ee6cc75739f62159e4bd8 100644
+--- a/e2e/tests/data-query-batch.spec.ts
++++ b/e2e/tests/data-query-batch.spec.ts
+@@ -92,8 +92,7 @@ layer(HostedLive, { excludeTestServices: true })("Data query batch", (it) => {
+           yield* unlinkAccount(actors.member, path, "personal", replacement);
+           expect(yield* linkedAccountIds(actors.member, path)).toEqual([]);
+           const unlinked = yield* read(actors.member, "unlinked");
+-          // Hosted AppDataErrors currently maps its SDK error union to500.
+-          expect(unlinked.response.status, JSON.stringify(unlinked.response.body)).toBe(500);
++          expect(unlinked.response.status, JSON.stringify(unlinked.response.body)).toBe(409);
+           expect(unlinked.response.body).toMatchObject({
+             _tag: "AccountRequired",
+             slot: "personal",
+@@ -150,8 +149,7 @@ layer(HostedLive, { excludeTestServices: true })("Data query batch", (it) => {
+           name: "read",
+           input: { request: "missing-version" },
+         });
+-        // Preserve the current hosted union's wire status while requiring its typed refusal.
+-        expect(stale.response.status, JSON.stringify(stale.response.body)).toBe(500);
++        expect(stale.response.status, JSON.stringify(stale.response.body)).toBe(404);
+         expect(stale.response.body).toMatchObject({
+           _tag: "VersionNotFound",
+           version: "dpl_stale",
