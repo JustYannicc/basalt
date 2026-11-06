@@ -197,10 +197,10 @@ index 44b7ba5..3235f2d 100644
        rich = true;
      }),
 diff --git a/e2e/tests/pool-usage-ui.spec.ts b/e2e/tests/pool-usage-ui.spec.ts
-index 3e1e3e5..a219430 100644
+index 3e1e3e5..868a2ce 100644
 --- a/e2e/tests/pool-usage-ui.spec.ts
 +++ b/e2e/tests/pool-usage-ui.spec.ts
-@@ -223,6 +223,17 @@ layer(HostedLive, { excludeTestServices: true })("Native pool usage UI", (it) =>
+@@ -223,6 +223,29 @@ layer(HostedLive, { excludeTestServices: true })("Native pool usage UI", (it) =>
              page.getByRole("listitem").filter({ hasText: "admin@example.test" }).textContent(),
            ),
          ).toContain("20.50");
@@ -212,9 +212,21 @@ index 3e1e3e5..a219430 100644
 +          page
 +            .getByRole("listitem")
 +            .filter({ hasText: "admin@example.test" })
-+            .getByText("Unpriced", { exact: true })
++            .getByText("API cost", { exact: true })
++            .locator("..")
++            .filter({ hasText: "Unpriced" })
 +            .waitFor(),
 +        );
++        const unpricedCost = yield* browser.use("Read the unknown-price API cost cell", (page) =>
++          page
++            .getByRole("listitem")
++            .filter({ hasText: "admin@example.test" })
++            .getByText("API cost", { exact: true })
++            .locator("..")
++            .textContent(),
++        );
++        expect(unpricedCost).toContain("Unpriced");
++        expect(unpricedCost).not.toContain("$0.00");
        }),
      ),
    );
