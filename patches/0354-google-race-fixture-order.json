@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-google-race-fixture-order",
+  "file": "0354-google-race-fixture-order.patch",
+  "content_sha256": "4b04a7a8b82c940a7381ebefc55417f7ba3614c2e1d66dd61488541372a3008f",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

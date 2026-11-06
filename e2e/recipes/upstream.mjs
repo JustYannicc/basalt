@@ -37,8 +37,10 @@ export async function startRecipeUpstream() {
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
+  const origin = new URL("http://127.0.0.1");
+  origin.port = String(server.address().port);
   return {
-    origin: `http://127.0.0.1:${server.address().port}`,
+    origin: origin.origin,
     sends,
     setHealth(value) {
       health = value;

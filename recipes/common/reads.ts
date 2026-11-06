@@ -84,7 +84,7 @@ export async function readPool(
   provider: string,
 ): Promise<PoolFact | null> {
   try {
-    const result = record(await tool(context, { app, tool: "view", input: {} }));
+    const result = record(await tool(context, { app, tool: "view", input: { fresh: true } }));
     const view = record(result?.value);
     if (
       result?.ok === false &&
