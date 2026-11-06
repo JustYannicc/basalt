@@ -21,7 +21,6 @@ const load = (name) =>
     )
   );
 const { LiveContainerProvider } = await load("Cloudflare/Containers/ContainerProvider");
-const { ContainerPlatform } = await load("Cloudflare/Containers/ContainerPlatform");
 const { CloudflareEnvironment } = await load("Cloudflare/CloudflareEnvironment");
 const { AlchemyContext } = await load("AlchemyContext");
 const { Docker } = await load("Docker/Docker");
@@ -76,11 +75,9 @@ let app = {
 };
 let writes = 0;
 let rollouts = 0;
-let registryReads = 0;
 let applicationExists = false;
 const http = HttpClient.make((request, url) => {
   if (url.hostname === "registry.cloudflare.com") {
-    registryReads++;
     return Effect.succeed(
       Response.fromWeb(
         request,
