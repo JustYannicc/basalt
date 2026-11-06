@@ -5,8 +5,28 @@
       "fixtures": "actors",
       "title": "stalled statement batches fail before dispatch and release their resources on deadline or cancellation",
       "targets": {
-        "self-host": { "status": "scheduled" },
-        "cloud": { "status": "scheduled" },
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "This scenario exercises the hosted StatementBatch consumers and their product database lifetimes."
+        }
+      }
+    },
+    "statementBatchMcpDeadline": {
+      "fixtures": "actors",
+      "title": "stalled MCP statement batches fail before dispatch and release their resources on deadline or cancellation",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
         "local": {
           "status": "not-applicable",
           "reason": "This scenario exercises the hosted StatementBatch consumers and their product database lifetimes."
@@ -15,7 +35,8 @@
     }
   },
   "runs": {
-    "statementBatchDeadline": ["declared:self-host", "declared:cloud"]
+    "statementBatchDeadline": ["declared:self-host", "declared:cloud"],
+    "statementBatchMcpDeadline": ["declared:self-host", "declared:cloud"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/implementation/statement-batch.ts",
@@ -23,6 +44,7 @@
     ".upstream/apps/hosted/server/src/implementation/mcp-http.ts",
     ".upstream/apps/hosted/testing/statement-hold-fixture.ts",
     ".upstream/e2e/support/statement-batch-proxy.ts",
-    ".upstream/e2e/support/app-invocation-counter.ts"
+    ".upstream/e2e/support/app-invocation-counter.ts",
+    ".upstream/e2e/support/statement-batch-fixture.ts"
   ]
 }

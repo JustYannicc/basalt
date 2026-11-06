@@ -65,8 +65,28 @@ diff --git a/apps/hosted/testing/statement-hold-fixture.ts b/apps/hosted/testing
    // `toolCall` holds only a check made inside an MCP tool call, not one made by discovery.
    Schema.Struct({ app: Schema.NonEmptyString, toolCall: Schema.optional(Schema.Literal(true)) }),
    // Holds the next such check that binds `id` once it has answered, outside any transaction.
-@@ -62,6 +63,8 @@
- }).pipe(Effect.orElseSucceed(() => false));
+@@ -52,16 +53,20 @@
+   Array.isArray(value) && "raw" in value;
+ 
+ /** Whether the current span is, or descends from, an MCP tool call. */
+-const inToolCall = Effect.map(Effect.currentParentSpan, (span) => {
+-  let current: Tracer.AnySpan | undefined = span;
+-  while (current !== undefined && current._tag === "Span") {
+-    if (current.name === toolCall) return true;
+-    current = Option.getOrUndefined(current.parent);
+-  }
+-  return false;
+-}).pipe(Effect.orElseSucceed(() => false));
++const inSpan = (name: string) =>
++  Effect.map(Effect.currentParentSpan, (span) => {
++    let current: Tracer.AnySpan | undefined = span;
++    while (current !== undefined && current._tag === "Span") {
++      if (current.name === name) return true;
++      current = Option.getOrUndefined(current.parent);
++    }
++    return false;
++  }).pipe(Effect.orElseSucceed(() => false));
++const inToolCall = inSpan(toolCall);
  
  interface Hold {
 +  readonly prefetch: string | undefined;
@@ -74,7 +94,7 @@ diff --git a/apps/hosted/testing/statement-hold-fixture.ts b/apps/hosted/testing
    /** The app whose access check to hold, or the next PAT check inside a tool call. */
    readonly app: string | undefined;
    /** Hold the next answered check of this kind that binds this ID, instead. */
-@@ -94,6 +97,27 @@
+@@ -94,6 +99,27 @@
          const [strings, ...params] = args;
          const hold = armed;
          if (hold === undefined || !isTemplate(strings)) return Reflect.apply(target, self, args);
@@ -85,8 +105,8 @@ diff --git a/apps/hosted/testing/statement-hold-fixture.ts b/apps/hosted/testing
 +            return statement;
 +          // The first SQL has returned; the same lifecycle leaf still owes its authority read.
 +          return Effect.tap(statement, () =>
-+            Effect.suspend(() => {
-+              if (armed !== hold) return Effect.void;
++            Effect.flatMap(inSpan("sdk.accounts.recheck"), (inside) => {
++              if (!inside || armed !== hold) return Effect.void;
 +              armed = undefined;
 +              return Deferred.succeed(hold.reached, undefined).pipe(
 +                Effect.andThen(Deferred.await(hold.release)),
@@ -102,7 +122,7 @@ diff --git a/apps/hosted/testing/statement-hold-fixture.ts b/apps/hosted/testing
          if (hold.after !== undefined) {
            const statement: Statement.Statement<unknown> = Reflect.apply(target, self, args);
            const [text, bound] = statement.compile();
-@@ -162,6 +186,8 @@
+@@ -162,6 +188,8 @@
          const arm = yield* HttpServerRequest.schemaBodyJson(Arm);
          yield* release;
          armed = current = {
@@ -111,7 +131,7 @@ diff --git a/apps/hosted/testing/statement-hold-fixture.ts b/apps/hosted/testing
            app: "app" in arm ? arm.app : undefined,
            after: "after" in arm ? { check: arm.after, id: arm.id } : undefined,
            toolCall: "app" in arm && arm.toolCall === true,
-@@ -174,11 +200,20 @@
+@@ -174,11 +202,20 @@
      ),
      HttpRouter.add(
        "GET",
@@ -229,6 +249,76 @@ diff --git a/e2e/support/cloud-runtime-control.ts b/e2e/support/cloud-runtime-co
        if (request.url === "/runtime/cloud-log" && request.method === "POST") {
          const input = yield* request.json.pipe(
            Effect.flatMap(Schema.decodeUnknownEffect(CloudLogWait)),
+diff --git a/e2e/support/statement-batch-fixture.ts b/e2e/support/statement-batch-fixture.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/statement-batch-fixture.ts
+@@ -0,0 +1,65 @@
++import { expect } from "@effect/vitest";
++import { Effect, Layer, Schema } from "effect";
++import { Actors } from "./actors.ts";
++import { Api, body, SessionClients } from "./api.ts";
++import { Organization } from "./contracts.ts";
++import { startControlledDevelopmentServer } from "./managed-server.ts";
++import { Target } from "./platform.ts";
++
++/** Only the existing development entry mounts the self-host SQL hold. */
++export const withStatementBatchFixture = <A, E, R>(program: Effect.Effect<A, E, R>) =>
++  Effect.gen(function* () {
++    const target = yield* Target;
++    if (target.metadata.target !== "self-host") return yield* program;
++    const isolated = yield* startControlledDevelopmentServer(target);
++    const runtime = Layer.fresh(SessionClients.layer).pipe(
++      Layer.provideMerge(Layer.succeed(Target, isolated)),
++    );
++    const services = yield* Layer.build(Layer.fresh(Api.layer.pipe(Layer.provideMerge(runtime))));
++    const actors = yield* Effect.gen(function* () {
++      const api = yield* Api;
++      const origin = isolated.metadata.origin;
++      const operator = yield* api.session();
++      expect(
++        (yield* api.request(operator, "POST", "/api/devtools/operator", {}, { origin })).status,
++      ).toBe(200);
++      const users = yield* body(
++        Schema.Struct({
++          users: Schema.Array(Schema.Struct({ id: Schema.String, email: Schema.String })),
++        }),
++        yield* api.request(operator, "GET", "/api/auth/admin/list-users"),
++      );
++      const as = (name: string) =>
++        Effect.gen(function* () {
++          const user = users.users.find((user) => user.email === `agent-${name}@example.test`);
++          if (user === undefined) return yield* Effect.die("Development actor is missing");
++          const session = yield* api.session();
++          expect(
++            (yield* api.request(session, "POST", "/api/devtools/operator", {}, { origin })).status,
++          ).toBe(200);
++          expect(
++            (yield* api.request(
++              session,
++              "POST",
++              "/api/auth/admin/impersonate-user",
++              { userId: user.id },
++              { origin },
++            )).status,
++          ).toBe(200);
++          return session;
++        });
++      const owner = yield* as("agent");
++      const organizations = yield* body(
++        Schema.Array(Organization),
++        yield* api.request(owner, "GET", "/api/auth/organization/list"),
++      );
++      const organization = organizations[0];
++      if (organization === undefined)
++        return yield* Effect.die("Development organization is missing");
++      return { owner, organization, admin: yield* as("admin"), member: yield* as("rhys-member") };
++    }).pipe(Effect.provideContext(services));
++    return yield* program.pipe(
++      Effect.provideService(Actors, actors),
++      Effect.provideContext(services),
++    );
++  });
 diff --git a/e2e/support/statement-batch-proxy.ts b/e2e/support/statement-batch-proxy.ts
 new file mode 100644
 --- /dev/null
@@ -292,7 +382,7 @@ new file mode 100644
 +    incoming.once("close", close);
 +    outgoing.once("close", close);
 +    incoming.on("data", (chunk) => {
-+      front = Buffer.concat([front, chunk]);
++      front = Buffer.concat([front, typeof chunk === "string" ? Buffer.from(chunk) : chunk]);
 +      while (front.length >= (startup ? 4 : 5)) {
 +        const length = startup ? front.readInt32BE(0) : front.readInt32BE(1) + 1;
 +        if (front.length < length) break;
@@ -335,7 +425,7 @@ new file mode 100644
 +      }
 +    });
 +    outgoing.on("data", (chunk) => {
-+      back = Buffer.concat([back, chunk]);
++      back = Buffer.concat([back, typeof chunk === "string" ? Buffer.from(chunk) : chunk]);
 +      while (back.length >= 5) {
 +        const length = back.readInt32BE(1) + 1;
 +        if (back.length < length) break;
@@ -418,104 +508,190 @@ diff --git a/e2e/tests/statement-batch-deadline.spec.ts b/e2e/tests/statement-ba
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/statement-batch-deadline.spec.ts
-@@ -0,0 +1,100 @@
+@@ -0,0 +1,186 @@
 +import { expect, layer } from "@effect/vitest";
-+import { Clock, Effect, Fiber, Schema } from "effect";
++import { Clock, Effect, Fiber, Layer, Schema } from "effect";
++import { body } from "../support/api.ts";
++import { McpClient } from "../support/mcp-client.ts";
 +import { appLinksFixture } from "../support/app-links.ts";
 +import { appInvocationCounter } from "../support/app-invocation-counter.ts";
 +import { HostedLive, withHostedCase } from "../support/case.ts";
-+import { tracedDataQuery, withDataQueryTelemetry } from "../support/data-query-batch.ts";
++import { tracedDataQuery } from "../support/data-query-batch.ts";
++import { withStatementBatchFixture } from "../support/statement-batch-fixture.ts";
 +import { Evidence } from "../support/evidence.ts";
 +import { Target } from "../support/platform.ts";
 +import { fixtureRequest } from "../sdk/fixtures.ts";
 +import { scenarios } from "../test-plan.ts";
 +
 +layer(HostedLive, { excludeTestServices: true })("Statement batch deadline", (it) => {
-+  it.effect(scenarios.statementBatchDeadline.title, (context) =>
-+    withHostedCase(
-+      context,
-+      withDataQueryTelemetry(() =>
-+        Effect.gen(function* () {
-+          const target = yield* Target;
-+          const evidence = yield* Evidence;
-+          const counter = yield* appInvocationCounter;
-+          const source = `import { defineApp, defineProvider, secrets, query, object, string, router } from "apps";
++  for (const [kind, scenario] of [
++    ["data", scenarios.statementBatchDeadline],
++    ["mcp", scenarios.statementBatchMcpDeadline],
++  ] as const)
++    it.effect(scenario.title, (context) =>
++      withHostedCase(
++        context,
++        withStatementBatchFixture(
++          Effect.gen(function* () {
++            const target = yield* Target;
++            const evidence = yield* Evidence;
++            const counter = yield* appInvocationCounter;
++            const source = `import { defineApp, defineProvider, secrets, query, object, string, router } from "apps";
 +const service = defineProvider({ name: "Batch deadline fixture", auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) } });
 +export default defineApp({ app: { accounts: { team: service } } }, { tools: router({
 +  read: query({ input: object({}) }, async () => { await fetch(${JSON.stringify(counter.origin)}); return "author-ran"; })
 +}) });`;
-+          const f = yield* appLinksFixture([{ path: "index.ts", content: source }]);
-+          yield* f.connect(f.actors.owner, "app", "team", "synthetic-team");
-+          const read = () => tracedDataQuery(f.actors.member, f.path, { name: "read", input: {} });
-+          expect((yield* read()).response.status).toBe(200);
-+          expect(yield* counter.calls).toBe(1);
-+          const cloud = target.metadata.target === "cloud";
-+          const control = (action: "arm" | "held" | "closed" | "state" | "release") =>
-+            Effect.gen(function* () {
-+              if (cloud) {
-+                if (target.fixtures === undefined)
-+                  return yield* Effect.die("Cloud fixture control missing");
-+                return yield* fixtureRequest(target.fixtures, "/runtime/statement-batch", {
-+                  action,
-+                  ...(action === "arm" ? { app: f.app.id } : {}),
-+                });
-+              }
-+              const response = yield* f.api.request(
-+                f.actors.owner,
-+                action === "arm" ? "POST" : action === "release" ? "DELETE" : "GET",
-+                `/api/devtools/statement-hold${action === "held" ? "/reached" : ""}`,
-+                action === "arm" ? { prefetch: f.app.id } : undefined,
++            const f = yield* appLinksFixture([{ path: "index.ts", content: source }]);
++            yield* f.connect(f.actors.owner, "app", "team", "synthetic-team");
++            const dataRead = () =>
++              tracedDataQuery(f.actors.member, f.path, { name: "read", input: {} }).pipe(
++                Effect.map(({ response }) => ({
++                  success: response.status === 200,
++                  value: response.body,
++                  failure: response.body,
++                  status: response.status,
++                })),
 +              );
-+              expect(response.status).toBe(200);
-+              return response.body;
++            const mcpRead =
++              kind !== "mcp"
++                ? undefined
++                : yield* Effect.gen(function* () {
++                    const mcp = yield* McpClient.pipe(Effect.provide(Layer.fresh(McpClient.layer)));
++                    const key = yield* body(
++                      Schema.Struct({
++                        id: Schema.String,
++                        key: Schema.RedactedFromValue(Schema.String),
++                      }),
++                      yield* f.api.request(f.actors.member, "POST", "/api/auth/api-key/create", {
++                        name: "Batch deadline fixture",
++                      }),
++                    );
++                    yield* Effect.addFinalizer(() =>
++                      f.api
++                        .request(f.actors.member, "POST", "/api/auth/api-key/delete", {
++                          keyId: key.id,
++                        })
++                        .pipe(Effect.orDie),
++                    );
++                    const client = yield* mcp.connect(key.key, "batch-deadline", {
++                      organization: f.actors.organization.id,
++                    });
++                    const Result = Schema.Struct({
++                      status: Schema.Literal("completed"),
++                      execution: Schema.Struct({
++                        ok: Schema.Boolean,
++                        value: Schema.optional(Schema.Unknown),
++                        error: Schema.optional(
++                          Schema.Struct({ response: Schema.optional(Schema.Unknown) }),
++                        ),
++                      }),
++                    });
++                    return () =>
++                      client
++                        .use("Read through MCP", (client, signal) =>
++                          client.callTool(
++                            {
++                              name: "execute",
++                              arguments: {
++                                code: `return await tools[${JSON.stringify(f.app.slug)}].read({})`,
++                              },
++                            },
++                            undefined,
++                            { signal },
++                          ),
++                        )
++                        .pipe(
++                          Effect.flatMap((result) =>
++                            Schema.decodeUnknownEffect(Result)(result.structuredContent),
++                          ),
++                          Effect.map(({ execution }) => ({
++                            success: execution.ok,
++                            value: execution.value,
++                            failure: execution.error?.response,
++                            status: undefined,
++                          })),
++                        );
++                  });
++            const read = mcpRead ?? dataRead;
++            expect((yield* read()).success).toBe(true);
++            expect(yield* counter.calls).toBe(1);
++            const cloud = target.metadata.target === "cloud";
++            const control = (action: "arm" | "held" | "closed" | "state" | "release") =>
++              Effect.gen(function* () {
++                if (cloud) {
++                  if (target.fixtures === undefined)
++                    return yield* Effect.die("Cloud fixture control missing");
++                  return yield* fixtureRequest(target.fixtures, "/runtime/statement-batch", {
++                    action,
++                    ...(action === "arm" ? { app: f.app.id } : {}),
++                  });
++                }
++                const response = yield* f.api.request(
++                  f.actors.owner,
++                  action === "arm" ? "POST" : action === "release" ? "DELETE" : "GET",
++                  `/api/devtools/statement-hold${action === "held" ? "/reached" : ""}`,
++                  action === "arm" ? { prefetch: f.app.id } : undefined,
++                );
++                expect(response.status).toBe(200);
++                return response.body;
++              });
++            yield* Effect.addFinalizer(() => control("release").pipe(Effect.orDie));
++            const before = yield* counter.calls;
++            yield* control("arm");
++            const start = yield* Clock.currentTimeMillis;
++            const waiting = yield* Effect.forkChild(read());
++            yield* control("held");
++            const failed = yield* Fiber.join(waiting).pipe(
++              Effect.timeout("12 seconds"),
++              Effect.catchTag("TimeoutError", () =>
++                Effect.die("Stalled batch did not return StorageError before the deadline"),
++              ),
++            );
++            const elapsed = (yield* Clock.currentTimeMillis) - start;
++            expect(failed.success, JSON.stringify(failed)).toBe(false);
++            if (kind === "data") expect(failed.status).toBe(500);
++            expect(failed.failure).toMatchObject(
++              kind === "data"
++                ? { _tag: "StorageError" }
++                : { code: "StorageError", status: 500, retryable: true },
++            );
++            expect(failed.failure).not.toMatchObject({ mayHaveWritten: true });
++            expect(elapsed).toBeLessThan(12_000);
++            expect(yield* counter.calls).toBe(before);
++            const state = yield* control(cloud ? "closed" : "state");
++            const guard = cloud
++              ? Schema.Struct({
++                  held: Schema.Literal(true),
++                  closed: Schema.Literal(true),
++                  later: Schema.Number.check(Schema.isGreaterThan(0)),
++                })
++              : Schema.Struct({ held: Schema.Literal(true), interrupted: Schema.Literal(true) });
++            yield* Schema.decodeUnknownEffect(guard)(state);
++            expect((yield* read()).value).toBe("author-ran");
++            expect(yield* counter.calls).toBe(before + 1);
++            yield* evidence.json("statement-batch-deadline.json", {
++              elapsed,
++              failure: failed.failure,
++              state,
++              authorCallsBefore: before,
++              authorCallsAfter: yield* counter.calls,
 +            });
-+          yield* Effect.addFinalizer(() => control("release").pipe(Effect.orDie));
-+          const before = yield* counter.calls;
-+          yield* control("arm");
-+          const start = yield* Clock.currentTimeMillis;
-+          const waiting = yield* Effect.forkChild(read());
-+          yield* control("held");
-+          const failed = yield* Fiber.join(waiting).pipe(Effect.timeout("12 seconds"));
-+          const elapsed = (yield* Clock.currentTimeMillis) - start;
-+          expect(failed.response.status, JSON.stringify(failed.response.body)).toBe(500);
-+          expect(failed.response.body).toMatchObject({ _tag: "StorageError" });
-+          expect(failed.response.body).not.toMatchObject({ mayHaveWritten: true });
-+          expect(elapsed).toBeLessThan(12_000);
-+          expect(yield* counter.calls).toBe(before);
-+          const state = yield* control(cloud ? "closed" : "state");
-+          const guard = cloud
-+            ? Schema.Struct({
-+                held: Schema.Literal(true),
-+                closed: Schema.Literal(true),
-+                later: Schema.Number,
-+              })
-+            : Schema.Struct({ held: Schema.Literal(true), interrupted: Schema.Literal(true) });
-+          yield* Schema.decodeUnknownEffect(guard)(state);
-+          expect((yield* read()).response.body).toBe("author-ran");
-+          expect(yield* counter.calls).toBe(before + 1);
-+          yield* evidence.json("statement-batch-deadline.json", {
-+            elapsed,
-+            failure: failed.response.body,
-+            state,
-+            authorCallsBefore: before,
-+            authorCallsAfter: yield* counter.calls,
-+          });
 +
-+          yield* control("arm");
-+          const cancelled = yield* Effect.forkChild(read());
-+          yield* control("held");
-+          yield* Fiber.interrupt(cancelled);
-+          const cancelledState = yield* control(cloud ? "closed" : "state");
-+          yield* Schema.decodeUnknownEffect(guard)(cancelledState);
-+          expect(yield* counter.calls).toBe(before + 1);
-+          expect((yield* read()).response.body).toBe("author-ran");
-+          expect(yield* counter.calls).toBe(before + 2);
-+          yield* evidence.json("statement-batch-cancellation.json", {
-+            state: cancelledState,
-+            authorCalls: yield* counter.calls,
-+          });
-+        }),
++            yield* control("arm");
++            const cancelled = yield* Effect.forkChild(read());
++            yield* control("held");
++            yield* Fiber.interrupt(cancelled);
++            const cancelledState = yield* control(cloud ? "closed" : "state");
++            yield* Schema.decodeUnknownEffect(guard)(cancelledState);
++            expect(yield* counter.calls).toBe(before + 1);
++            expect((yield* read()).value).toBe("author-ran");
++            expect(yield* counter.calls).toBe(before + 2);
++            yield* evidence.json("statement-batch-cancellation.json", {
++              state: cancelledState,
++              authorCalls: yield* counter.calls,
++            });
++          }),
++        ),
 +      ),
-+    ),
-+  );
++    );
 +});
