@@ -1,31 +1,13 @@
 diff --git a/apps/hosted/server/src/contracts/accounts.ts b/apps/hosted/server/src/contracts/accounts.ts
-index 84cc580..4e638ce 100644
+index 84cc580..c33507c 100644
 --- a/apps/hosted/server/src/contracts/accounts.ts
 +++ b/apps/hosted/server/src/contracts/accounts.ts
-@@ -84,6 +84,22 @@ export const AccountLinkedToApp = UserFacingError.define({
- /** Parsed AccountLinkedToApp failure. */
- export type AccountLinkedToApp = typeof AccountLinkedToApp.Type;
- 
-+/** A row supplies its sign-in IDs; the host checks each distinct ID with its own authority. */
-+export const AccountGroupCheck = Schema.Struct({
-+  accounts: Schema.Array(AccountId).check(Schema.isMinLength(1)),
-+});
-+/** Refused IDs reveal no existence, health, identity or app metadata. */
-+export const AccountGroupCheckResult = Schema.Union([
-+  Schema.Struct({ account: AccountId, status: Schema.Literal("checked"), health: AccountHealth }),
-+  Schema.Struct({ account: AccountId, status: Schema.Literal("refused") }),
-+  Schema.Struct({
-+    account: AccountId,
-+    status: Schema.Literal("failed"),
-+    error: Schema.Union([StorageError, AccountAcquisitionUnavailable]),
-+  }),
-+]);
-+export type AccountGroupCheckResult = typeof AccountGroupCheckResult.Type;
-+
- const params = { organization: OrganizationReference };
- export const AccountLinkRequired = UserFacingError.define({
-   tag: "AccountLinkRequired",
-@@ -252,6 +268,13 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
+@@ -1,3 +1,4 @@
++import { AccountGroupCheck, AccountGroupCheckResult } from "@executor-js/sdk/core";
+ import { ProviderAppConnectionRequired } from "./provider-account-policy.ts";
+ import { AccountRecheckStatus } from "./account-rechecks.ts";
+ import { AccountSelectionInvalid } from "@executor-js/sdk/core";
+@@ -252,6 +253,13 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
        error: [StorageError, CredentialsError, AccountNotFound, OrganizationForbidden],
      }).pipe(requireAccount.use),
    )
@@ -40,47 +22,31 @@ index 84cc580..4e638ce 100644
      HttpApiEndpoint.post("check", `${prefix}/accounts/:account/health`, {
        params: { ...params, account: AccountId },
 diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/server/src/implementation/accounts.ts
-index b078dd8..9043a4c 100644
+index b078dd8..7f8592e 100644
 --- a/apps/hosted/server/src/implementation/accounts.ts
 +++ b/apps/hosted/server/src/implementation/accounts.ts
-@@ -73,7 +73,7 @@ import { HostedExecutor } from "../contracts/executor.ts";
- import { recordUsage } from "../contracts/product-analytics.ts";
- import { currentOwner, ownedConnection } from "./access.ts";
- import { appLinkApps, appLinkedAccounts, callerLinkedAccounts } from "./app-accounts.ts";
--import { AccountLinkedToApp } from "../contracts/accounts.ts";
-+import { AccountLinkedToApp, type AccountGroupCheckResult } from "../contracts/accounts.ts";
- import { requireSeparateNativeAccountLink } from "./pool-account-connection.ts";
- import { requireProviderAccountMethod } from "./provider-account-methods.ts";
- import { RequirementMismatch } from "../contracts/app-accounts.ts";
-@@ -168,6 +168,27 @@ export const checkAccount = Effect.gen(function* () {
+@@ -1,3 +1,4 @@
++import { checkEach, AccountNotFound } from "@executor-js/sdk/core";
+ import { requireProviderConnectionTarget } from "./provider-account-policy.ts";
+ import { accountRecheckStatus } from "./account-rechecks.ts";
+ import { visibleObservationHealth } from "./account-observation-policy.ts";
+@@ -168,6 +169,15 @@ export const checkAccount = Effect.gen(function* () {
      Effect.flatMap(visibleObservationHealth),
    );
  });
 +/** Each sign-in uses the single-account grant and redaction path; one refusal cannot cancel siblings. */
 +export const checkAccountGroup = (accounts: readonly AccountId[]) =>
-+  Effect.forEach(
-+    [...new Set(accounts)],
-+    (account) =>
-+      checkAccount.pipe(
-+        Effect.provideService(AccountTargets.use, { account }),
-+        Effect.map((health): AccountGroupCheckResult => ({ account, status: "checked", health })),
-+        Effect.catchTags({
-+          OrganizationForbidden: () =>
-+            Effect.succeed<AccountGroupCheckResult>({ account, status: "refused" }),
-+          AccountNotFound: () =>
-+            Effect.succeed<AccountGroupCheckResult>({ account, status: "refused" }),
-+          StorageError: (error) =>
-+            Effect.succeed<AccountGroupCheckResult>({ account, status: "failed", error }),
-+          AccountAcquisitionUnavailable: (error) =>
-+            Effect.succeed<AccountGroupCheckResult>({ account, status: "failed", error }),
-+        }),
-+      ),
-+    { concurrency: 2 },
++  checkEach(accounts, (account) =>
++    checkAccount.pipe(
++      Effect.provideService(AccountTargets.use, { account }),
++      // A denied ID has the same answer as an absent one, without exposing its policy or metadata.
++      Effect.catchTag("OrganizationForbidden", () => new AccountNotFound({ account })),
++    ),
 +  );
  /**
   * Check only providers reachable through the caller's app or account access. Lists the registered
   * clients the caller may use, as metadata; never a client secret.
-@@ -418,6 +439,7 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
+@@ -418,6 +428,7 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
        )
        .handle("identify", () => identifyAccount)
        .handle("check", () => checkAccount)
@@ -421,33 +387,15 @@ index 1f7f603..9c3388b 100644
          )}
        />
 diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
-index 9f5d665..e232457 100644
+index 9f5d665..ca1faa1 100644
 --- a/apps/local/server/src/contracts/dashboard.ts
 +++ b/apps/local/server/src/contracts/dashboard.ts
-@@ -135,6 +135,22 @@ import {
-   OpenApi,
- } from "effect/http-api";
- 
-+/** A row supplies its sign-in IDs; the host checks each distinct ID with its own authority. */
-+export const AccountGroupCheck = Schema.Struct({
-+  accounts: Schema.Array(AccountId).check(Schema.isMinLength(1)),
-+});
-+/** Refused IDs reveal no existence, health, identity or app metadata. */
-+export const AccountGroupCheckResult = Schema.Union([
-+  Schema.Struct({ account: AccountId, status: Schema.Literal("checked"), health: AccountHealth }),
-+  Schema.Struct({ account: AccountId, status: Schema.Literal("refused") }),
-+  Schema.Struct({
-+    account: AccountId,
-+    status: Schema.Literal("failed"),
-+    error: Schema.Union([StorageError, AccountAcquisitionUnavailable]),
-+  }),
-+]);
-+export type AccountGroupCheckResult = typeof AccountGroupCheckResult.Type;
-+
- /** Why the last start did not move other owners' records to `local`; see data step 7. */
- export { blockedRecovery, LocalOwnerMigration };
- 
-@@ -917,6 +933,12 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+@@ -1,3 +1,4 @@
++import { AccountGroupCheck, AccountGroupCheckResult } from "@executor-js/sdk/core";
+ import { AccountDeviceOffline, AccountExecutionUnavailable } from "@executor-js/sdk/core";
+ import { InteractiveConnectionFailed } from "@executor-js/sdk/core";
+ import { AccountAcquisitionUnavailable } from "@executor-js/sdk/core";
+@@ -917,6 +918,12 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
          error: [StorageError, AppNotFound, AuthMethodInvalid, AccountFieldsInvalid],
        }),
      )
@@ -462,14 +410,13 @@ index 9f5d665..e232457 100644
          params: { account: AccountId },
 diff --git a/apps/local/server/src/implementation/account-checks.ts b/apps/local/server/src/implementation/account-checks.ts
 new file mode 100644
-index 0000000..fda495d
+index 0000000..df15c47
 --- /dev/null
 +++ b/apps/local/server/src/implementation/account-checks.ts
-@@ -0,0 +1,41 @@
-+import { type AccountId, type Executor } from "@executor-js/sdk/core";
+@@ -0,0 +1,24 @@
++import { checkEach, type AccountId, type Executor } from "@executor-js/sdk/core";
 +import { Effect } from "effect";
 +import type { SqlClient } from "effect/sql";
-+import type { AccountGroupCheckResult } from "../contracts/dashboard.ts";
 +import { accountLinks } from "./app-accounts.ts";
 +
 +/** Local's authenticated dashboard uses its existing executor and links for every sign-in. */
@@ -488,23 +435,7 @@ index 0000000..fda495d
 +        executor.accounts.check({ account, apps: apps.map((app) => app.id) }),
 +      ),
 +    );
-+  const checkGroup = (accounts: readonly AccountId[]) =>
-+    Effect.forEach(
-+      [...new Set(accounts)],
-+      (account) =>
-+        check(account).pipe(
-+          Effect.map((health): AccountGroupCheckResult => ({ account, status: "checked", health })),
-+          Effect.catchTags({
-+            AccountNotFound: () =>
-+              Effect.succeed<AccountGroupCheckResult>({ account, status: "refused" }),
-+            StorageError: (error) =>
-+              Effect.succeed<AccountGroupCheckResult>({ account, status: "failed", error }),
-+            AccountAcquisitionUnavailable: (error) =>
-+              Effect.succeed<AccountGroupCheckResult>({ account, status: "failed", error }),
-+          }),
-+        ),
-+      { concurrency: 2 },
-+    );
++  const checkGroup = (accounts: readonly AccountId[]) => checkEach(accounts, check);
 +  return { linkedApps, check, checkGroup };
 +};
 diff --git a/apps/local/server/src/implementation/dashboard.ts b/apps/local/server/src/implementation/dashboard.ts
@@ -828,6 +759,63 @@ index 4b63bad..62f7ee5 100644
      answer: (value: Answer) => Ref.set(answer, value),
      health: (value: Answer) => Ref.set(health, value),
      hold: Effect.gen(function* () {
+diff --git a/e2e/support/group-account-check-token.ts b/e2e/support/group-account-check-token.ts
+new file mode 100644
+index 0000000..5f10a5c
+--- /dev/null
++++ b/e2e/support/group-account-check-token.ts
+@@ -0,0 +1,51 @@
++import { expect } from "@effect/vitest";
++import { Effect, Redacted } from "effect";
++import { Actors } from "./actors.ts";
++import { Api } from "./api.ts";
++import { Browser } from "./browser.ts";
++import { McpOAuth } from "./mcp-oauth.ts";
++
++/** Check with real delegated API authority, narrower than the owner's account access. */
++export const checkAppLimitedGroup = (input: {
++  readonly path: string;
++  readonly app: string;
++  readonly allowed: string;
++  readonly outside: string;
++  readonly missing: string;
++}) =>
++  Effect.gen(function* () {
++    const api = yield* Api;
++    const actors = yield* Actors;
++    const browser = yield* Browser;
++    const oauth = yield* McpOAuth;
++    yield* browser.login(actors.owner);
++    const grant = yield* oauth.authorizeApi;
++    yield* Effect.addFinalizer(() => oauth.revoke(grant).pipe(Effect.orDie));
++    expect(
++      (yield* api.request(actors.owner, "POST", "/api/auth/mcp/grants/narrow", {
++        id: grant.grantId,
++        policy: {
++          kind: "tools",
++          apps: [{ app: input.app, tools: { kind: "all" } }],
++          approval: "client",
++        },
++      })).status,
++    ).toBe(200);
++    const refreshed = yield* oauth.refresh(grant);
++    const anonymous = yield* api.session();
++    const response = yield* api.request(
++      anonymous,
++      "POST",
++      input.path,
++      {
++        accounts: [input.allowed, input.outside, input.missing],
++      },
++      { authorization: `Bearer ${Redacted.value(refreshed.tokens).access_token}` },
++    );
++    expect(response.status, "app-limited token may run the group action").toBe(200);
++    expect(response.body).toEqual([
++      expect.objectContaining({ account: input.allowed, status: "checked" }),
++      { account: input.outside, status: "refused" },
++      { account: input.missing, status: "refused" },
++    ]);
++  });
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 index 38c9da7..4e56fcf 100644
 --- a/e2e/test-plan.ts
@@ -887,10 +875,10 @@ index 38c9da7..4e56fcf 100644
        cloud: na("Display only; self-host proves the shared rows."),
 diff --git a/e2e/tests/group-account-checks.spec.ts b/e2e/tests/group-account-checks.spec.ts
 new file mode 100644
-index 0000000..69afd23
+index 0000000..49b552e
 --- /dev/null
 +++ b/e2e/tests/group-account-checks.spec.ts
-@@ -0,0 +1,305 @@
+@@ -0,0 +1,332 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { randomUUID } from "node:crypto";
@@ -908,6 +896,8 @@ index 0000000..69afd23
 +import { scenarios } from "../test-plan.ts";
 +import { legacyStorage } from "../support/legacy-storage.ts";
 +import { serverControl } from "../support/server-control.ts";
++import { checkAppLimitedGroup } from "../support/group-account-check-token.ts";
++import { McpOAuth } from "../support/mcp-oauth.ts";
 +
 +const Resource = Schema.Struct({ id: Schema.String });
 +const Revision = Schema.Struct({ revision: Schema.String });
@@ -956,6 +946,13 @@ index 0000000..69afd23
 +        ).toBe(200);
 +        yield* linkAccount(actors.member, shared.appPath, "service", shared.account);
 +        const path = `${prefix}/accounts/health`;
++        const beforeCap = yield* shared.backend.healthCalls;
++        const oversized = yield* api.request(actors.owner, "POST", path, {
++          accounts: Array.from({ length: 33 }, () => shared.account),
++        });
++        expect(oversized.status, "hosted refuses 33 account IDs at decode").toBe(400);
++        expect(yield* shared.backend.healthCalls).toBe(beforeCap);
++
 +        const missing = `acc_${randomUUID()}`;
 +        const accounts = [shared.account, personal.account, missing, shared.account];
 +        const sharedBefore = yield* shared.backend.healthCalls;
@@ -1088,11 +1085,22 @@ index 0000000..69afd23
 +          }),
 +          { account: missing, status: "refused" },
 +        ]);
++        const beforeLimitedShared = yield* shared.backend.healthCalls;
++        const beforeLimitedPrivate = yield* personal.backend.healthCalls;
++        yield* checkAppLimitedGroup({
++          path,
++          app: shared.app.id,
++          allowed: shared.account,
++          outside: personal.account,
++          missing,
++        });
++        expect(yield* shared.backend.healthCalls).toBe(beforeLimitedShared + 1);
++        expect(yield* personal.backend.healthCalls).toBe(beforeLimitedPrivate);
 +        for (const invalid of [[], ["not-an-account-id"]])
 +          expect(
 +            (yield* api.request(actors.owner, "POST", path, { accounts: invalid })).status,
 +          ).toBe(400);
-+      }),
++      }).pipe(Effect.provide(McpOAuth.layer)),
 +    ),
 +  );
 +});
@@ -1137,6 +1145,13 @@ index 0000000..69afd23
 +          accounts.push(account.id);
 +        }
 +        expect(new Set(accounts).size).toBe(2);
++
++        const beforeCap = yield* backend.healthCalls;
++        const oversized = yield* agent.send("POST", "/dashboard/api/accounts/health", {
++          accounts: Array.from({ length: 33 }, () => accounts[0]),
++        });
++        expect(oversized.status, "local refuses 33 account IDs at decode").toBe(400);
++        expect(yield* backend.healthCalls).toBe(beforeCap);
 +        const before = yield* backend.healthCalls;
 +        const missing = `acc_${randomUUID()}`;
 +        const response = yield* agent.send("POST", "/dashboard/api/accounts/health", {
@@ -1754,6 +1769,90 @@ index 3e42608..9af75d5 100644
        }),
      ),
    );
+diff --git a/packages/sdk/src/contracts/account-group-check.ts b/packages/sdk/src/contracts/account-group-check.ts
+new file mode 100644
+index 0000000..7847c52
+--- /dev/null
++++ b/packages/sdk/src/contracts/account-group-check.ts
+@@ -0,0 +1,20 @@
++import { Schema } from "effect";
++import { AccountHealth } from "./account.ts";
++import { AccountAcquisitionUnavailable } from "./account-acquisition-driver.ts";
++import { AccountId, StorageError } from "./shared.ts";
++
++/** Limit a requested row before any grant lookup or credential check starts. */
++export const AccountGroupCheck = Schema.Struct({
++  accounts: Schema.Array(AccountId).check(Schema.isMinLength(1), Schema.isMaxLength(32)),
++});
++/** Refused IDs reveal no existence, health, identity or app metadata. */
++export const AccountGroupCheckResult = Schema.Union([
++  Schema.Struct({ account: AccountId, status: Schema.Literal("checked"), health: AccountHealth }),
++  Schema.Struct({ account: AccountId, status: Schema.Literal("refused") }),
++  Schema.Struct({
++    account: AccountId,
++    status: Schema.Literal("failed"),
++    error: Schema.Union([StorageError, AccountAcquisitionUnavailable]),
++  }),
++]);
++export type AccountGroupCheckResult = typeof AccountGroupCheckResult.Type;
+diff --git a/packages/sdk/src/contracts/index.ts b/packages/sdk/src/contracts/index.ts
+index 5ede3e0..d6f848f 100644
+--- a/packages/sdk/src/contracts/index.ts
++++ b/packages/sdk/src/contracts/index.ts
+@@ -8,6 +8,7 @@ export * from "./account-consumers.ts";
+ export * from "./shared.ts";
+ export * from "./provider.ts";
+ export * from "./account.ts";
++export * from "./account-group-check.ts";
+ export * from "./interactive-accounts.ts";
+ export * from "./interactive-errors.ts";
+ export * from "./account-identity.ts";
+diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
+index 9fa3256..b32c33a 100644
+--- a/packages/sdk/src/core.ts
++++ b/packages/sdk/src/core.ts
+@@ -1,3 +1,4 @@
++export { checkEach } from "./implementation/account-group-check.ts";
+ export { matchesToolPolicyInput, validToolPolicyConstraint } from "./implementation/tool-policy.ts";
+ /** Public Effect-native SDK. The caller owns platform layers and resource lifetimes. */
+ export {
+diff --git a/packages/sdk/src/implementation/account-group-check.ts b/packages/sdk/src/implementation/account-group-check.ts
+new file mode 100644
+index 0000000..26b1459
+--- /dev/null
++++ b/packages/sdk/src/implementation/account-group-check.ts
+@@ -0,0 +1,31 @@
++import { Effect } from "effect";
++import type { AccountGroupCheckResult } from "../contracts/account-group-check.ts";
++import type { AccountHealth, AccountNotFound } from "../contracts/account.ts";
++import type { AccountAcquisitionUnavailable } from "../contracts/account-acquisition-driver.ts";
++import type { AccountId, StorageError } from "../contracts/shared.ts";
++
++/** The product callback keeps its single-account authority; each distinct ID gets one answer. */
++export const checkEach = <R>(
++  accounts: readonly AccountId[],
++  check: (
++    account: AccountId,
++  ) => Effect.Effect<
++    AccountHealth,
++    AccountNotFound | StorageError | AccountAcquisitionUnavailable,
++    R
++  >,
++) =>
++  Effect.forEach(
++    [...new Set(accounts)],
++    (account) =>
++      check(account).pipe(
++        Effect.match({
++          onSuccess: (health): AccountGroupCheckResult => ({ account, status: "checked", health }),
++          onFailure: (error): AccountGroupCheckResult =>
++            error._tag === "AccountNotFound"
++              ? { account, status: "refused" }
++              : { account, status: "failed", error },
++        }),
++      ),
++    { concurrency: 2 },
++  );
 diff --git a/packages/ui/src/implementation/dashboard/account-health-line.tsx b/packages/ui/src/implementation/dashboard/account-health-line.tsx
 index 43b1393..2acc207 100644
 --- a/packages/ui/src/implementation/dashboard/account-health-line.tsx

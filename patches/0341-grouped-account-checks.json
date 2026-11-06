@@ -1,7 +1,7 @@
 {
   "identity": "basalt-grouped-account-checks",
   "file": "0341-grouped-account-checks.patch",
-  "content_sha256": "225587af66002c2f676e368459fd29ffe7facee373bf6dc2fda98ae454cded0b",
+  "content_sha256": "d30e1dbedbfc75c86b23a99f27792615846a11702d1eea4b457ac933d2576cb3",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

@@ -53,6 +53,11 @@
     ".upstream/apps/local/server/src/contracts/dashboard.ts",
     ".upstream/apps/local/server/src/implementation/account-checks.ts",
     ".upstream/apps/local/server/src/implementation/dashboard.ts",
-    ".upstream/apps/local/web/src/contracts/accounts.ts"
+    ".upstream/apps/local/web/src/contracts/accounts.ts",
+    ".upstream/e2e/support/group-account-check-token.ts",
+    ".upstream/packages/sdk/src/contracts/account-group-check.ts",
+    ".upstream/packages/sdk/src/contracts/index.ts",
+    ".upstream/packages/sdk/src/core.ts",
+    ".upstream/packages/sdk/src/implementation/account-group-check.ts"
   ]
 }
