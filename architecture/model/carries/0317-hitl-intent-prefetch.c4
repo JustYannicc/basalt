@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "Intent on a Human in the loop link (hover, keyboard focus or touch) reads the organization's queue through its normal organization-keyed reads and holds that read only until it answers, at most ten seconds; repeated intent joins the waiting hold. A link that is never followed leaves no poll, focus or visibility read. Following it shows the retained queue on the first frame and refreshes in place, and a failed refresh keeps the shown queue. Server rendering never starts intent reads."
+      constraint "Intent on a Human in the loop link (hover, keyboard focus or touch) reads the organization's queue through its normal organization-keyed reads and holds that read only until it answers, at most ten seconds; repeated intent joins the waiting hold. A link that is never followed leaves no poll, focus or visibility read. Organization changes use the destination queue, and a new signed-in document cannot show the previous person's private requests. Following it shows the retained queue on the first frame and refreshes in place, and a failed refresh keeps the shown queue. Server rendering never starts intent reads."
     }
   }
 }
