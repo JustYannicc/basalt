@@ -5,6 +5,7 @@ import {
 } from "../../clients/contracts/tunnel.ts";
 import type { TunnelOutput } from "./flow.ts";
 import type { TunnelSocket } from "./platform.ts";
+import { tunnelFailure, type TunnelFailure } from "./failure.ts";
 
 /** A provider cannot be paused by WebSocket.send; close instead of buffering beyond one window. */
 export class TunnelWebSocket {
@@ -12,7 +13,7 @@ export class TunnelWebSocket {
   private output: TunnelOutput;
   private send: (frame: TunnelServerFrame) => void;
   private id: number;
-  private fail: () => void;
+  private fail: (failure: TunnelFailure) => void;
   private stopped = false;
   private queued: { bytes: Uint8Array; text: boolean }[] = [];
   private queuedBytes = 0;
@@ -28,7 +29,7 @@ export class TunnelWebSocket {
     id: number,
     output: TunnelOutput,
     send: (frame: TunnelServerFrame) => void,
-    fail: () => void,
+    fail: (failure: TunnelFailure) => void,
     ended: () => void,
   ) {
     this.socket = socket;
@@ -49,8 +50,8 @@ export class TunnelWebSocket {
         this.queued.push({ bytes, text });
         this.queuedBytes += Math.max(1, bytes.length);
         void this.flush();
-      } catch {
-        fail();
+      } catch (error) {
+        if (!this.stopped) fail(tunnelFailure(error, "message", "message"));
       }
     });
     socket.addEventListener("close", () => {
@@ -58,7 +59,10 @@ export class TunnelWebSocket {
       this.upstreamClosed = true;
       void this.flush();
     });
-    socket.addEventListener("error", fail);
+    socket.addEventListener("error", (event) => {
+      if (!this.stopped)
+        fail(tunnelFailure("error" in event ? event.error : undefined, "socket", "error"));
+    });
     socket.accept();
   }
   receive(bytes: Uint8Array, text: boolean, more: boolean) {
@@ -125,8 +129,9 @@ export class TunnelWebSocket {
         this.queued.shift();
         this.queuedBytes -= Math.max(1, next.bytes.length);
       }
-    } catch {
-      if (!this.stopped) this.fail();
+    } catch (error) {
+      if (!this.stopped)
+        this.fail(tunnelFailure(error, "flush", this.upstreamClosed ? "close" : "message"));
     } finally {
       this.running = false;
       if (this.upstreamClosed && this.queued.length === 0 && !this.stopped) this.ended();

@@ -1,0 +1,21 @@
+{
+  "scenarios": {
+    "nativeTunnelFailure": {
+      "fixtures": "actors",
+      "title": "Native tunnel retains closed failure evidence after a model peer exceeds its output window",
+      "targets": {
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The self-host fixture drives the complete Basalt router through its public workerd tunnel."
+        },
+        "self-host": { "status": "scheduled" },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no hosted native grants."
+        }
+      }
+    }
+  },
+  "runs": { "nativeTunnelFailure": ["declared:self-host"] },
+  "inputs": [".upstream/packages/mcp-auth/src/implementation/native-grants.ts"]
+}
