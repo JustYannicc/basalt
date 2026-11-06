@@ -1,0 +1,1175 @@
+diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+index f56db9b..5c8673d 100644
+--- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+@@ -194,6 +194,8 @@ export function AppAccounts({
+     readonly method: string;
+     /** Set when replacing this account's credentials rather than adding an account. */
+     readonly account?: AccountSummary | undefined;
++    /** The requirement's title on the tab, which the dialog names. */
++    readonly title?: string | undefined;
+   }>();
+   const [renaming, setRenaming] = useState<AccountSummary>();
+   // Set when the host refused the open connection for good; its form gives way to the destination.
+@@ -256,13 +258,13 @@ export function AppAccounts({
+       requirementChoicesAtom({ organization, app: app.id, scope, requirement: slot }),
+     link: (slot, account) => linkAccountAtom({ ...target(scope), requirement: slot, account }),
+     unlink: (slot, account) => unlinkAccountAtom({ ...target(scope), requirement: slot, account }),
+-    connect: (slot, requirement) => {
++    connect: (slot, requirement, title) => {
+       if (connectionDisabled || !connectsHere(slot)) return;
+       const preferred = methodsOf(requirement).find(
+         ([method]) => methods?.unavailable(slot, method) === undefined,
+       );
+       if (preferred !== undefined)
+-        setConnection({ scope, slot, requirement, method: preferred[0] });
++        setConnection({ scope, slot, requirement, method: preferred[0], title });
+     },
+     // The host imports login files only into app accounts.
+     ...(scope === "app"
+@@ -518,6 +520,7 @@ export function AppAccounts({
+               slot={connection.slot}
+               requirement={connection.requirement}
+               method={connection.method}
++              title={connection.title}
+               connectionNotices={noticesFor(connection.requirement)}
+               oauthDeferrals={catalogEntry?.oauthDeferrals}
+               redirectUri={redirectUri}
+@@ -571,6 +574,7 @@ export function AppConnectionDialogContent({
+   slot,
+   requirement,
+   method,
++  title,
+   connectionNotices = [],
+   oauthDeferrals,
+   redirectUri,
+@@ -581,6 +585,8 @@ export function AppConnectionDialogContent({
+   onSaved,
+ }: {
+   readonly app: App;
++  /** The requirement's title where the app lists it; the service's name when absent. */
++  readonly title?: string | undefined;
+   /** Set when replacing this account's credentials rather than adding an account. */
+   readonly account?: AccountSummary | undefined;
+   readonly initialAccount?: AccountId | undefined;
+@@ -618,6 +624,7 @@ export function AppConnectionDialogContent({
+     <>
+       <ConnectionDialogHeader
+         provider={form.provider}
++        title={title}
+         action={account ? "Reconnect" : "Connect"}
+         notice={account ? `Apps using ${account.label} will use the new credentials.` : undefined}
+       />
+diff --git a/apps/hosted/web/src/implementation/pages/connection-dialog.tsx b/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
+index 69ae42e..9b49b1d 100644
+--- a/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
++++ b/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
+@@ -50,22 +50,26 @@ export function ConnectionModal({
+ /** Use the same provider identity and accessible heading for new accounts and resumed requests. */
+ export function ConnectionDialogHeader({
+   provider,
++  title,
+   action,
+   notice,
+ }: {
+   readonly provider: Provider;
++  /** What the dialog connects, such as an app requirement's title; the service's name otherwise. */
++  readonly title?: string | undefined;
+   readonly action: "Connect" | "Reconnect";
+   readonly notice?: string | undefined;
+ }) {
++  const name = title ?? provider.definition.name;
+   return (
+     <div className="flex items-center gap-3 pr-7">
+       <ProviderIcon name={provider.definition.name} url={providerDisplayUrl(provider.definition)} />
+       <div className="min-w-0">
+         <DialogTitle className="text-base">
+-          {action} {provider.definition.name}
++          {action} {name}
+         </DialogTitle>
+         <DialogDescription className={notice ? "mt-1 text-xs" : "sr-only"}>
+-          {notice ?? `${action} an account for ${provider.definition.name}.`}
++          {notice ?? `${action} an account for ${name}.`}
+         </DialogDescription>
+       </div>
+     </div>
+diff --git a/apps/local/web/src/implementation/pages/app-accounts.tsx b/apps/local/web/src/implementation/pages/app-accounts.tsx
+index 73a2efb..7432b7d 100644
+--- a/apps/local/web/src/implementation/pages/app-accounts.tsx
++++ b/apps/local/web/src/implementation/pages/app-accounts.tsx
+@@ -77,6 +77,8 @@ export function AppAccounts({
+     readonly scope: AccountScope;
+     readonly slot: string;
+     readonly requirement: AccountRequirement;
++    /** The requirement's title on the tab, which the dialog names. */
++    readonly title: string | undefined;
+   }>();
+   const [connecting, setConnecting] = useState(false);
+   // Credentials are replaced here, where the app shows which hosts receive them.
+@@ -109,7 +111,7 @@ export function AppAccounts({
+       link: (slot, account) => linkAccountAtom({ ...target(scope), requirement: slot, account }),
+       unlink: (slot, account) =>
+         unlinkAccountAtom({ ...target(scope), requirement: slot, account }),
+-      connect: (slot, requirement) => setConnection({ scope, slot, requirement }),
++      connect: (slot, requirement, title) => setConnection({ scope, slot, requirement, title }),
+       connecting,
+       onUnlinked: (account) => void unused.check(account),
+     },
+@@ -156,7 +158,9 @@ export function AppAccounts({
+         }}
+       >
+         <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-[560px]">
+-          <DialogTitle>Connect {connection?.requirement.definition.name}</DialogTitle>
++          <DialogTitle>
++            Connect {connection?.title ?? connection?.requirement.definition.name}
++          </DialogTitle>
+           <DialogDescription className="sr-only">
+             Connect an account for {app.name}.
+           </DialogDescription>
+diff --git a/e2e/support/account-choices.ts b/e2e/support/account-choices.ts
+index 2c1623f..1c54d23 100644
+--- a/e2e/support/account-choices.ts
++++ b/e2e/support/account-choices.ts
+@@ -1,30 +1,43 @@
+ /**
+  * The app Accounts tab's choices for one requirement: a list named `<Provider> accounts` with
+  * every account the caller could link, each with a radio (plain requirement) or a checkbox
+- * (many()) named `Use <label> for this app` that is checked while the account is linked.
++ * (many()) named `Use <label> for this app` that is checked while the account is linked. Where
++ * two requirements of a scope share a service, the control and the row ⋯ name the requirement.
+  */
+ import type { Locator, Page } from "playwright";
+ 
+ /** The accessible name of the radio or checkbox that links the account titled `label`. */
+ export const choiceName = (label: string) => `Use ${label} for this app`;
+ 
++/**
++ * `choiceName` where another requirement in the scope shares the requirement's service, so the
++ * control names the requirement by its title instead of the app.
++ */
++export const requirementChoiceName = (label: string, requirement: string) =>
++  `Use ${label} for ${requirement}`;
++
+ /** A section of an app's Accounts tab. */
+ export type AccountsTabSection = "App accounts" | "Your accounts";
+ 
+ /**
+  * The name of an account row's ⋯ on an app's Accounts tab. It names the section, since the same
+- * account can be listed in both.
++ * account can be listed in both, and the requirement where its scope has another of its service.
+  */
+-export const rowMenuName = (label: string, section: AccountsTabSection) =>
+-  `Manage ${label} in ${section}`;
++export const rowMenuName = (label: string, section: AccountsTabSection, requirement?: string) =>
++  `Manage ${label} in ${section}${requirement === undefined ? "" : ` · ${requirement}`}`;
+ 
+ /** Any ⋯ name for the account titled `label`: `rowMenuName` in either section, or unqualified. */
+ export const anyRowMenuName = (label: string) =>
+-  new RegExp(`^Manage ${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}( in (App|Your) accounts)?$`);
++  new RegExp(
++    `^Manage ${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}( in (App|Your) accounts( · .+)?)?$`,
++  );
+ 
+-/** The account title inside a control name from `choiceName`; any other name fails the read. */
++/**
++ * The account title inside a control name from `choiceName` or `requirementChoiceName`; any other
++ * name fails the read. A requirement title always has a ` · `, which ends the account title there.
++ */
+ export const choiceLabel = (name: string) => {
+-  const label = /^Use (.*) for this app$/.exec(name)?.[1];
++  const label = /^Use (.*?) for (?:this app|.+ · .+)$/.exec(name)?.[1];
+   if (label === undefined) throw new Error(`Not an account link control name: ${name}`);
+   return label;
+ };
+diff --git a/e2e/support/app-account-sections.ts b/e2e/support/app-account-sections.ts
+index 72c7969..5983ce3 100644
+--- a/e2e/support/app-account-sections.ts
++++ b/e2e/support/app-account-sections.ts
+@@ -1,5 +1,10 @@
+ /** Shared pieces of the app Accounts tab section and Connect dialog scenarios, hosted and local. */
++import { expect } from "@effect/vitest";
++import { Effect } from "effect";
+ import type { Page } from "playwright";
++import { anyRowMenuName } from "./account-choices.ts";
++import { Browser } from "./browser.ts";
++import { accountNamePrompt, nameConnectedAccount } from "./name-account.ts";
+ 
+ /** An app whose check rejects every key, so saving one needs "Continue anyway". */
+ export const rejectingSource = `
+@@ -45,3 +50,95 @@ export const dialogLeftovers = (page: Page) =>
+         };
+       }),
+     );
++
++/**
++ * Open the rejecting app's Accounts tab at `url`, save a key its check rejects with "Continue
++ * anyway" and name it, then prove the Connect dialog left nothing behind and the next click opens
++ * the new row's menu. `saved` runs once the account is named, such as to note it for cleanup.
++ */
++export const continueAnywayCloses = <E = never, R = never>(
++  url: string,
++  saved?: Effect.Effect<void, E, R>,
++) =>
++  Effect.gen(function* () {
++    const browser = yield* Browser;
++    yield* browser.use("A 1280px screen", (page) =>
++      page.setViewportSize({ width: 1280, height: 900 }),
++    );
++    yield* browser.use("Open the app's accounts", (page) => page.goto(url));
++    yield* browser.use("Connect a new account", (page) =>
++      page.getByRole("button", { name: "Connect new account", exact: true }).click(),
++    );
++    const connect = yield* browser.use("The Connect dialog opens", (page) => {
++      const dialog = page.getByRole("dialog", { name: "Connect Rejecting fixture", exact: true });
++      return dialog.waitFor({ state: "visible" }).then(() => dialog);
++    });
++    yield* browser.use("Validate a key the check rejects", () =>
++      connect
++        .getByLabel("Token", { exact: true })
++        .fill("synthetic-rejected-token")
++        .then(() =>
++          connect.getByRole("button", { name: "Validate Access token", exact: true }).click(),
++        )
++        .then(() =>
++          connect.locator('[data-credential-check="credentials_rejected"]').waitFor({
++            state: "visible",
++          }),
++        ),
++    );
++    yield* browser.checkpoint("The check rejected the key");
++    yield* browser.use("Continue anyway", () =>
++      connect.getByRole("button", { name: "Continue anyway", exact: true }).click(),
++    );
++    // The prompt takes the Connect dialog's place, which unmounts rather than staying behind it,
++    // hidden, until the prompt closes.
++    const behindPrompt = yield* browser.use(
++      "The Connect dialog unmounts behind the prompt",
++      (page) =>
++        accountNamePrompt(page)
++          .then(() =>
++            page
++              .waitForFunction(
++                () => document.querySelectorAll('[data-slot="dialog-content"]').length === 1,
++                undefined,
++                { timeout: 3_000 },
++              )
++              .catch(() => undefined),
++          )
++          .then(() =>
++            page.evaluate(() =>
++              Array.from(document.querySelectorAll('[data-slot="dialog-content"]'), (dialog) =>
++                dialog.getAttribute("data-state"),
++              ),
++            ),
++          ),
++    );
++    yield* browser.checkpoint("The name prompt replaces the Connect dialog");
++    expect(behindPrompt).toEqual(["open"]);
++    yield* browser.use("Name the saved account", (page) =>
++      nameConnectedAccount(page, "Rejected key"),
++    );
++    if (saved !== undefined) yield* saved;
++    // The Connect dialog is gone with its overlay and focus scope, and focus is on the page.
++    const left = yield* browser.use("Nothing of the dialog is left", dialogLeftovers);
++    yield* browser.checkpoint("After Continue anyway");
++    expect(left).toEqual({
++      dialogs: 0,
++      overlays: 0,
++      focusGuards: 0,
++      bodyPointerEvents: "auto",
++      focusOnPage: true,
++    });
++    // The very next click opens the new row's menu without Escape first.
++    yield* browser.use("Open the new row's menu", (page) =>
++      page
++        .getByRole("button", { name: anyRowMenuName("Rejected key") })
++        .click({ timeout: 5_000 })
++        .then(() => page.getByRole("menu").waitFor({ state: "visible", timeout: 5_000 })),
++    );
++    yield* browser.checkpoint("The row menu opens");
++    yield* browser.use("A 390px screen", (page) =>
++      page.setViewportSize({ width: 390, height: 844 }),
++    );
++    yield* browser.checkpoint("The row menu on a phone");
++  });
+diff --git a/e2e/tests/app-account-picker.spec.ts b/e2e/tests/app-account-picker.spec.ts
+index f9d1c75..ead3350 100644
+--- a/e2e/tests/app-account-picker.spec.ts
++++ b/e2e/tests/app-account-picker.spec.ts
+@@ -19,7 +19,12 @@ import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
+ import { scenarios } from "../test-plan.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+ import { enterClientDetails } from "../support/oauth-client-entry.ts";
+-import { choiceLabel, choiceName, rowMenuName } from "../support/account-choices.ts";
++import {
++  choiceLabel,
++  choiceName,
++  requirementChoiceName,
++  rowMenuName,
++} from "../support/account-choices.ts";
+ 
+ layer(HostedLive, { excludeTestServices: true })("App accounts", (it) => {
+   it.effect(scenarios.appAccountPicker.title, (context) =>
+@@ -104,6 +109,9 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+             : slot === "primary"
+               ? "Account fixture · Primary"
+               : "Account fixture · Mailboxes";
++        // Their controls name the requirement too; the calendar's own service keeps the app.
++        const choiceFor = (slot: "primary" | "mailboxes" | "calendar", label: string) =>
++          slot === "calendar" ? choiceName(label) : requirementChoiceName(label, sectionName(slot));
+         const region = (slot: "primary" | "mailboxes") =>
+           browser.use(`Find the ${slot} accounts`, (page) =>
+             Promise.resolve(page.getByRole("region", { name: sectionName(slot), exact: true })),
+@@ -119,7 +127,9 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+           browser.use(step, (page) => {
+             const role = slot === "mailboxes" ? "checkbox" : "radio";
+             const selector = `section[aria-label="${sectionName(slot)}"] [role="${role}"]`;
+-            const named = expected.map(([label, checked]) => [choiceName(label), checked] as const);
++            const named = expected.map(
++              ([label, checked]) => [choiceFor(slot, label), checked] as const,
++            );
+             const read = (args: {
+               readonly selector: string;
+               readonly expected: ReadonlyArray<readonly [string, boolean]>;
+@@ -287,14 +297,14 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+         const linkFailure = yield* holdLink("PUT", "mailboxes", third);
+         yield* browser.use("Check the third mailbox", () =>
+           mailboxes
+-            .getByRole("checkbox", { name: choiceName("Third account"), exact: true })
++            .getByRole("checkbox", { name: choiceFor("mailboxes", "Third account"), exact: true })
+             .click(),
+         );
+         yield* linkFailure.requested;
+         expect(
+           yield* browser.use("The checkbox is disabled while linking", () =>
+             mailboxes
+-              .getByRole("checkbox", { name: choiceName("Third account"), exact: true })
++              .getByRole("checkbox", { name: choiceFor("mailboxes", "Third account"), exact: true })
+               .isDisabled(),
+           ),
+         ).toBe(true);
+@@ -317,7 +327,7 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+                 new URL(response.url()).pathname.endsWith(`/mailboxes/${third}`),
+             ),
+             mailboxes
+-              .getByRole("checkbox", { name: choiceName("Third account"), exact: true })
++              .getByRole("checkbox", { name: choiceFor("mailboxes", "Third account"), exact: true })
+               .click(),
+           ]).then(([response]) => response.status()),
+         );
+@@ -356,7 +366,10 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+           menus.push(
+             yield* browser.use(`Open the ${label} menu`, (page) =>
+               mailboxes
+-                .getByRole("button", { name: rowMenuName(label, "Your accounts"), exact: true })
++                .getByRole("button", {
++                  name: rowMenuName(label, "Your accounts", sectionName("mailboxes")),
++                  exact: true,
++                })
+                 .click()
+                 .then(() => page.getByRole("menu").waitFor({ state: "visible" }))
+                 .then(() =>
+@@ -383,7 +396,7 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+         const unlinkFailure = yield* holdLink("DELETE", "mailboxes", second);
+         yield* browser.use("Clear the second mailbox", () =>
+           mailboxes
+-            .getByRole("checkbox", { name: choiceName("Second account"), exact: true })
++            .getByRole("checkbox", { name: choiceFor("mailboxes", "Second account"), exact: true })
+             .click(),
+         );
+         yield* unlinkFailure.requested;
+@@ -420,7 +433,10 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+                 new URL(response.url()).pathname.endsWith(`/mailboxes/${second}`),
+             ),
+             mailboxes
+-              .getByRole("checkbox", { name: choiceName("Second account"), exact: true })
++              .getByRole("checkbox", {
++                name: choiceFor("mailboxes", "Second account"),
++                exact: true,
++              })
+               .click(),
+           ]).then(([response]) => response.status()),
+         );
+@@ -467,7 +483,12 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+         // Connecting a new account from the app saves it and links it in one step.
+         yield* Effect.gen(function* () {
+           yield* browser.use("Connect a new mailbox from the list", () =>
+-            mailboxes.getByRole("button", { name: "Connect new account", exact: true }).click(),
++            mailboxes
++              .getByRole("button", {
++                name: `Connect new account for ${sectionName("mailboxes")}`,
++                exact: true,
++              })
++              .click(),
+           );
+           const dialog = yield* browser.use("Connect a new mailbox from the list", (page) =>
+             Promise.resolve(page.getByRole("dialog", { name: "Connect Account fixture" })),
+@@ -519,7 +540,7 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+         yield* browser.checkpoint("New account connected and linked");
+         yield* browser.use("Clear the new mailbox", () =>
+           mailboxes
+-            .getByRole("checkbox", { name: choiceName("Fourth account"), exact: true })
++            .getByRole("checkbox", { name: choiceFor("mailboxes", "Fourth account"), exact: true })
+             .click(),
+         );
+         yield* browser.use("Unlinking its last use offers deletion", () =>
+@@ -638,7 +659,7 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+               page.getByRole("radio").count(),
+               page.getByRole("checkbox").count(),
+               page.getByRole("button", { name: /^Manage / }).count(),
+-              page.getByRole("button", { name: "Connect new account", exact: true }).count(),
++              page.getByRole("button", { name: /^Connect new account/ }).count(),
+             ]),
+           ),
+         ).toEqual([0, 0, 0, 0]);
+diff --git a/e2e/tests/app-account-sections.spec.ts b/e2e/tests/app-account-sections.spec.ts
+index 58644cc..f7f3ddb 100644
+--- a/e2e/tests/app-account-sections.spec.ts
++++ b/e2e/tests/app-account-sections.spec.ts
+@@ -1,6 +1,7 @@
+ /**
+- * An app's Accounts tab gives each account requirement one section that reads as its own, and the
+- * Connect dialog closes cleanly after saving a key its check rejected.
++ * An app's Accounts tab gives each account requirement one section that reads as its own, with a
++ * Connect dialog and account controls that name it, and the Connect dialog closes cleanly after
++ * saving a key its check rejected.
+  */
+ import { expect, layer } from "@effect/vitest";
+ import { Effect } from "effect";
+@@ -8,23 +9,30 @@ import { randomUUID } from "node:crypto";
+ import type { Page } from "playwright";
+ import { Actors } from "../support/actors.ts";
+ import { Api, body } from "../support/api.ts";
++import { connectionsPath } from "../support/app-accounts.ts";
+ import { Browser } from "../support/browser.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+-import { App } from "../support/contracts.ts";
+-import { accountNamePrompt, nameConnectedAccount } from "../support/name-account.ts";
++import { App, Resource } from "../support/contracts.ts";
+ import { scenarios } from "../test-plan.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+-import { anyRowMenuName } from "../support/account-choices.ts";
+-import { dialogLeftovers, rejectingSource } from "../support/app-account-sections.ts";
++import { requirementChoiceName, rowMenuName } from "../support/account-choices.ts";
++import { continueAnywayCloses, rejectingSource } from "../support/app-account-sections.ts";
+ 
+-// One service declared twice, as a catalog app keeps API tokens and sign-ins apart: both
+-// requirements carry the service's name and link many accounts for the caller.
++// One service declared twice, as a catalog app keeps API tokens and sign-ins apart, and its key
++// declared once more: every requirement carries the service's name and links many accounts for
++// the caller, and a saved key is offered under both of the key's requirements.
+ const twoRequirements = `
+ import { defineApp, defineProvider, object, oauth2, router, secrets, string } from "apps";
+ const tokens = defineProvider({ name: "Deploy fixture", auth: { apiKey: secrets({ label: "Access token", fields: object({ token: string() }) }) } });
+ const signIn = defineProvider({ name: "Deploy fixture", auth: { oauth: oauth2({ authorizationUrl: "https://oauth.example.test/authorize", tokenUrl: "https://oauth.example.test/token", scopes: ["read"] }) } });
+-export default defineApp({ user: { accounts: { tokens: tokens.many(), signIn: signIn.many() } } }, async () => ({ tools: router({}) }));
++export default defineApp({ user: { accounts: { tokens: tokens.many(), signIn: signIn.many(), previews: tokens.many() } } }, async () => ({ tools: router({}) }));
+ `;
++const titles = {
++  tokens: "Deploy fixture · Tokens",
++  signIn: "Deploy fixture · Sign in",
++  previews: "Deploy fixture · Previews",
++};
++const connectButton = /^Connect new account/;
+ 
+ /** Each requirement section in Your accounts: its accessible name and what its header reads. */
+ const readSections = (page: Page) =>
+@@ -41,6 +49,24 @@ const readSections = (page: Page) =>
+       })),
+     );
+ 
++/**
++ * The name of every control in Your accounts, by the requirement section it sits in: its
++ * `aria-label`, else its text, which is how these controls are named.
++ */
++const readControls = (page: Page) =>
++  page
++    .getByRole("region", { name: "Your accounts", exact: true })
++    .locator('button, a[href], input, [role="checkbox"], [role="radio"]')
++    .evaluateAll((controls) =>
++      controls.map((control) => ({
++        section: control
++          .closest("section[aria-label] section[aria-label]")
++          ?.getAttribute("aria-label"),
++        role: control.getAttribute("role") ?? control.tagName.toLowerCase(),
++        name: control.getAttribute("aria-label") ?? (control as HTMLElement).innerText.trim(),
++      })),
++    );
++
+ layer(HostedLive, { excludeTestServices: true })("App account sections", (it) => {
+   const deploy = (name: string, content: string) =>
+     Effect.gen(function* () {
+@@ -53,13 +79,41 @@ layer(HostedLive, { excludeTestServices: true })("App account sections", (it) =>
+       });
+       expect(deployed.status).toBe(200);
+       const app = yield* body(App, deployed);
++      const accounts: string[] = [];
++      // The app goes first: an account an app still uses cannot be deleted.
+       yield* Effect.addFinalizer(() =>
+-        api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(
+-          Effect.map((response) => expect(response.status).toBe(200)),
+-          Effect.orDie,
+-        ),
++        Effect.gen(function* () {
++          expect(
++            (yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`)).status,
++          ).toBe(200);
++          for (const account of accounts)
++            yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
++        }).pipe(Effect.orDie),
+       );
+-      return app;
++      return { app, accounts };
++    });
++
++  /** Save a key for one of the caller's requirements, which links it there. */
++  const saveKey = (app: string, accounts: string[], requirement: string, label: string) =>
++    Effect.gen(function* () {
++      const actors = yield* Actors;
++      const api = yield* Api;
++      const prefix = `/api/organizations/${actors.organization.id}`;
++      const connection = yield* api.request(
++        actors.owner,
++        "POST",
++        connectionsPath(`${prefix}/apps/${app}`, "user", requirement),
++        { destination: { kind: "personal" } },
++      );
++      expect(connection.status, JSON.stringify(connection.body)).toBe(200);
++      const saved = yield* api.request(
++        actors.owner,
++        "POST",
++        `${prefix}/connections/${(yield* body(Resource, connection)).id}/submit`,
++        { method: "apiKey", label, fields: { token: `synthetic-${randomUUID()}` } },
++      );
++      expect(saved.status, JSON.stringify(saved.body)).toBe(200);
++      accounts.push((yield* body(Resource, saved)).id);
+     });
+ 
+   const distinctSections = (width: number) => (context: Parameters<typeof withHostedCase>[0]) =>
+@@ -68,35 +122,94 @@ layer(HostedLive, { excludeTestServices: true })("App account sections", (it) =>
+       Effect.gen(function* () {
+         const actors = yield* Actors;
+         const browser = yield* Browser;
+-        const app = yield* deploy("Sections", twoRequirements);
++        const { app, accounts } = yield* deploy("Sections", twoRequirements);
++        yield* saveKey(app.id, accounts, "tokens", "Shared key");
+         yield* browser.login(actors.owner);
+         yield* browser.use(`A ${width}px screen`, (page) =>
+           page.setViewportSize({ width, height: width < 600 ? 844 : 900 }),
+         );
+-        yield* browser.use("Open the app's accounts", (page) =>
+-          page
++        yield* browser.use("Open the app's accounts", (page) => {
++          const yours = page.getByRole("region", { name: "Your accounts", exact: true });
++          return page
+             .goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`)
++            .then(() => yours.getByRole("button", { name: connectButton }).nth(2).waitFor())
+             .then(() =>
+-              page
+-                .getByRole("region", { name: "Your accounts", exact: true })
+-                .getByRole("button", { name: "Connect new account", exact: true })
++              yours
++                .getByRole("checkbox", { name: /^Use Shared key for / })
+                 .nth(1)
+                 .waitFor({ state: "visible" }),
+-            ),
+-        );
++            );
++        });
+         const sections = yield* browser.use("Read the requirement sections", readSections);
++        const controls = yield* browser.use("Read the controls", readControls);
+         yield* browser.checkpoint(`Requirement sections at ${width}px`);
+-        expect(sections).toHaveLength(2);
++        // Each section's Connect dialog names its requirement.
++        const dialogs: (string | null)[] = [];
++        for (const section of sections) {
++          dialogs.push(
++            yield* browser.use(`Open the Connect dialog of ${section.name}`, (page) => {
++              const dialog = page.getByRole("dialog");
++              return (
++                page
++                  .getByRole("region", { name: section.name ?? "", exact: true })
++                  .getByRole("button", { name: connectButton })
++                  .click()
++                  .then(() => dialog.waitFor({ state: "visible" }))
++                  // The form has loaded, with a control besides Close, and the dialog stopped moving.
++                  .then(() => dialog.getByRole("button").nth(1).waitFor({ state: "visible" }))
++                  .then(() =>
++                    dialog.evaluate((element) =>
++                      Promise.all(
++                        element
++                          .getAnimations({ subtree: true })
++                          .map((animation) => animation.finished),
++                      ),
++                    ),
++                  )
++                  .then(() =>
++                    dialog.evaluate(
++                      (element) =>
++                        document
++                          .getElementById(element.getAttribute("aria-labelledby") ?? "")
++                          ?.textContent?.trim() ?? null,
++                    ),
++                  )
++              );
++            }),
++          );
++          yield* browser.checkpoint(`Connect dialog of ${section.name} at ${width}px`);
++          yield* browser.use("Close the Connect dialog", (page) =>
++            page.keyboard
++              .press("Escape")
++              .then(() => page.getByRole("dialog").waitFor({ state: "hidden" })),
++          );
++        }
++        expect(sections).toHaveLength(3);
+         // Each section names what it is for, so neither reads as a copy of the other.
+-        expect(new Set(sections.map((section) => section.name)).size).toBe(2);
+-        expect(new Set(sections.map((section) => section.header)).size).toBe(2);
++        expect(new Set(sections.map((section) => section.name)).size).toBe(3);
++        expect(new Set(sections.map((section) => section.header)).size).toBe(3);
+         expect(new Set(sections.flatMap((section) => section.lists)).size).toBe(
+           sections.flatMap((section) => section.lists).length,
+         );
+-        expect(sections.map((section) => section.name).sort()).toEqual([
+-          "Deploy fixture · Access token",
+-          "Deploy fixture · Sign in",
+-        ]);
++        expect(sections.map((section) => section.name).sort()).toEqual(
++          Object.values(titles).sort(),
++        );
++        expect(dialogs).toEqual(sections.map((section) => `Connect ${section.name}`));
++        // The saved key is offered under both of its requirements, and each control names its own.
++        const named = (section: string, role: string) =>
++          controls.flatMap((control) =>
++            control.section === section && control.role === role ? [control.name] : [],
++          );
++        for (const title of [titles.tokens, titles.previews]) {
++          expect(named(title, "checkbox")).toEqual([requirementChoiceName("Shared key", title)]);
++          expect(named(title, "button")).toContain(
++            rowMenuName("Shared key", "Your accounts", title),
++          );
++          expect(named(title, "button")).toContain(`Connect new account for ${title}`);
++        }
++        // No two controls in the section share a name.
++        const names = controls.map((control) => control.name);
++        expect(names.filter((name, index) => names.indexOf(name) !== index)).toEqual([]);
+       }),
+     );
+ 
+@@ -109,91 +222,11 @@ layer(HostedLive, { excludeTestServices: true })("App account sections", (it) =>
+       Effect.gen(function* () {
+         const actors = yield* Actors;
+         const browser = yield* Browser;
+-        const app = yield* deploy("Rejecting", rejectingSource);
++        const { app } = yield* deploy("Rejecting", rejectingSource);
+         yield* browser.login(actors.owner);
+-        yield* browser.use("A 1280px screen", (page) =>
+-          page.setViewportSize({ width: 1280, height: 900 }),
+-        );
+-        yield* browser.use("Open the app's accounts", (page) =>
+-          page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
+-        );
+-        yield* browser.use("Connect a new account", (page) =>
+-          page.getByRole("button", { name: "Connect new account", exact: true }).click(),
+-        );
+-        const connect = yield* browser.use("The Connect dialog opens", (page) => {
+-          const dialog = page.getByRole("dialog", {
+-            name: "Connect Rejecting fixture",
+-            exact: true,
+-          });
+-          return dialog.waitFor({ state: "visible" }).then(() => dialog);
+-        });
+-        yield* browser.use("Validate a key the check rejects", () =>
+-          connect
+-            .getByLabel("Token", { exact: true })
+-            .fill("synthetic-rejected-token")
+-            .then(() =>
+-              connect.getByRole("button", { name: "Validate Access token", exact: true }).click(),
+-            )
+-            .then(() =>
+-              connect
+-                .locator('[data-credential-check="credentials_rejected"]')
+-                .waitFor({ state: "visible" }),
+-            ),
+-        );
+-        yield* browser.checkpoint("The check rejected the key");
+-        yield* browser.use("Continue anyway", () =>
+-          connect.getByRole("button", { name: "Continue anyway", exact: true }).click(),
+-        );
+-        // The prompt takes the Connect dialog's place, which unmounts rather than staying behind
+-        // it, hidden, until the prompt closes.
+-        const behindPrompt = yield* browser.use(
+-          "The Connect dialog unmounts behind the prompt",
+-          (page) =>
+-            accountNamePrompt(page)
+-              .then(() =>
+-                page
+-                  .waitForFunction(
+-                    () => document.querySelectorAll('[data-slot="dialog-content"]').length === 1,
+-                    undefined,
+-                    { timeout: 3_000 },
+-                  )
+-                  .catch(() => undefined),
+-              )
+-              .then(() =>
+-                page.evaluate(() =>
+-                  Array.from(document.querySelectorAll('[data-slot="dialog-content"]'), (dialog) =>
+-                    dialog.getAttribute("data-state"),
+-                  ),
+-                ),
+-              ),
+-        );
+-        yield* browser.checkpoint("The name prompt replaces the Connect dialog");
+-        expect(behindPrompt).toEqual(["open"]);
+-        yield* browser.use("Name the saved account", (page) =>
+-          nameConnectedAccount(page, "Rejected key"),
+-        );
+-        // The Connect dialog is gone with its overlay and focus scope, and focus is on the page.
+-        const left = yield* browser.use("Nothing of the dialog is left", dialogLeftovers);
+-        yield* browser.checkpoint("After Continue anyway");
+-        expect(left).toEqual({
+-          dialogs: 0,
+-          overlays: 0,
+-          focusGuards: 0,
+-          bodyPointerEvents: "auto",
+-          focusOnPage: true,
+-        });
+-        // The very next click opens the new row's menu without Escape first.
+-        yield* browser.use("Open the new row's menu", (page) =>
+-          page
+-            .getByRole("button", { name: anyRowMenuName("Rejected key") })
+-            .click({ timeout: 5_000 })
+-            .then(() => page.getByRole("menu").waitFor({ state: "visible", timeout: 5_000 })),
+-        );
+-        yield* browser.checkpoint("The row menu opens");
+-        yield* browser.use("A 390px screen", (page) =>
+-          page.setViewportSize({ width: 390, height: 844 }),
++        yield* continueAnywayCloses(
++          `/org/${actors.organization.slug}/apps/${app.id}?view=accounts`,
+         );
+-        yield* browser.checkpoint("The row menu on a phone");
+       }),
+     ),
+   );
+diff --git a/e2e/tests/contributed-app-accounts.spec.ts b/e2e/tests/contributed-app-accounts.spec.ts
+index 623bd8a..c5c3fc9 100644
+--- a/e2e/tests/contributed-app-accounts.spec.ts
++++ b/e2e/tests/contributed-app-accounts.spec.ts
+@@ -9,9 +9,16 @@ import { contributedApp } from "../support/contributed-app.ts";
+ import { Resource } from "../support/contracts.ts";
+ import { nameConnectedAccount } from "../support/name-account.ts";
+ import { scenarios } from "../test-plan.ts";
+-import { choiceName, rowMenuName } from "../support/account-choices.ts";
++import { requirementChoiceName, rowMenuName } from "../support/account-choices.ts";
+ 
+ const ordinaryNote = "Only people who can edit this app can change these accounts.";
++const titles = {
++  contributed: "Contributed service · Shared",
++  ordinary: "Contributed service · Ordinary",
++};
++/** Both requirements share a service, so each control names its requirement. */
++const choiceName = (label: string) => requirementChoiceName(label, titles.contributed);
++const connectName = (kind: keyof typeof titles) => `Connect new account for ${titles[kind]}`;
+ 
+ /**
+  * Both app requirements use the same provider, so each section's title adds its requirement after
+@@ -22,7 +29,7 @@ const requirementSection = (page: Page, kind: "contributed" | "ordinary") =>
+   page
+     .getByRole("region", { name: "App accounts", exact: true })
+     .getByRole("region", {
+-      name: kind === "ordinary" ? "Contributed service · Ordinary" : "Contributed service · Shared",
++      name: titles[kind],
+       exact: true,
+     })
+     .filter(kind === "ordinary" ? { hasText: ordinaryNote } : { hasNotText: ordinaryNote });
+@@ -48,7 +55,7 @@ layer(HostedLive, { excludeTestServices: true })("Contributed Accounts tab", (it
+         );
+         yield* browser.use("Members can add an account to the contributed requirement", (page) =>
+           requirementSection(page, "contributed")
+-            .getByRole("button", { name: "Connect new account", exact: true })
++            .getByRole("button", { name: connectName("contributed"), exact: true })
+             .waitFor(),
+         );
+         // Rows stay disabled until the requirement's choices arrive.
+@@ -77,11 +84,11 @@ layer(HostedLive, { excludeTestServices: true })("Contributed Accounts tab", (it
+                 .isDisabled(),
+               contributed
+                 .getByRole("button", {
+-                  name: rowMenuName("Another member's account", "App accounts"),
++                  name: rowMenuName("Another member's account", "App accounts", titles.contributed),
+                   exact: true,
+                 })
+                 .count(),
+-              ordinary.getByRole("button", { name: "Connect new account", exact: true }).count(),
++              ordinary.getByRole("button", { name: connectName("ordinary"), exact: true }).count(),
+             ]);
+           }),
+         ).toEqual([true, true, 0, 0]);
+@@ -101,7 +108,7 @@ layer(HostedLive, { excludeTestServices: true })("Contributed Accounts tab", (it
+         ).toEqual([expect.not.stringContaining("upstream@example.test"), 0]);
+         yield* browser.use("Connect another account as a contributor", (page) =>
+           requirementSection(page, "contributed")
+-            .getByRole("button", { name: "Connect new account", exact: true })
++            .getByRole("button", { name: connectName("contributed"), exact: true })
+             .click(),
+         );
+         yield* browser.use("Enter credentials in the native connection dialog", (page) =>
+@@ -166,7 +173,7 @@ layer(HostedLive, { excludeTestServices: true })("Contributed Accounts tab", (it
+         yield* browser.use("Open my contribution's menu", (page) =>
+           requirementSection(page, "contributed")
+             .getByRole("button", {
+-              name: rowMenuName("My service account", "App accounts"),
++              name: rowMenuName("My service account", "App accounts", titles.contributed),
+               exact: true,
+             })
+             .click(),
+diff --git a/e2e/tests/local-app-account-sections.spec.ts b/e2e/tests/local-app-account-sections.spec.ts
+index b9bcb7f..d4066eb 100644
+--- a/e2e/tests/local-app-account-sections.spec.ts
++++ b/e2e/tests/local-app-account-sections.spec.ts
+@@ -1,15 +1,12 @@
+ /** Local's Connect dialog closes cleanly after saving a key its check rejected. */
+-import { expect, layer } from "@effect/vitest";
++import { layer } from "@effect/vitest";
+ import { Effect, Schema } from "effect";
+ import { randomUUID } from "node:crypto";
+ import { Api, body } from "../support/api.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+-import { anyRowMenuName } from "../support/account-choices.ts";
+-import { dialogLeftovers, rejectingSource } from "../support/app-account-sections.ts";
+-import { Browser } from "../support/browser.ts";
++import { continueAnywayCloses, rejectingSource } from "../support/app-account-sections.ts";
+ import { TestLive, withCase } from "../support/case.ts";
+ import { localAccountLinks, localAgent, pairLocalBrowser } from "../support/local-links.ts";
+-import { accountNamePrompt, nameConnectedAccount } from "../support/name-account.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ const Deployed = Schema.Struct({ app: Schema.Struct({ id: Schema.String }) });
+@@ -19,8 +16,7 @@ layer(TestLive, { excludeTestServices: true })("Local app account sections", (it
+     withCase(
+       context,
+       Effect.gen(function* () {
+-        const api = yield* Api,
+-          browser = yield* Browser;
++        const api = yield* Api;
+         const { agent } = yield* localAgent;
+         const { app } = yield* body(
+           Deployed,
+@@ -36,91 +32,13 @@ layer(TestLive, { excludeTestServices: true })("Local app account sections", (it
+           Effect.forEach(owned, (path) => api.request(agent, "DELETE", path)).pipe(Effect.orDie),
+         );
+         yield* pairLocalBrowser(agent);
+-        yield* browser.use("A 1280px screen", (page) =>
+-          page.setViewportSize({ width: 1280, height: 900 }),
+-        );
+-        yield* browser.use("Open the app's accounts", (page) =>
+-          page.goto(`/apps/${app.id}?view=accounts`),
+-        );
+-        yield* browser.use("Connect a new account", (page) =>
+-          page.getByRole("button", { name: "Connect new account", exact: true }).click(),
+-        );
+-        const connect = yield* browser.use("The Connect dialog opens", (page) => {
+-          const dialog = page.getByRole("dialog", {
+-            name: "Connect Rejecting fixture",
+-            exact: true,
+-          });
+-          return dialog.waitFor({ state: "visible" }).then(() => dialog);
+-        });
+-        yield* browser.use("Validate a key the check rejects", () =>
+-          connect
+-            .getByLabel("Token", { exact: true })
+-            .fill("synthetic-rejected-token")
+-            .then(() =>
+-              connect.getByRole("button", { name: "Validate Access token", exact: true }).click(),
+-            )
+-            .then(() =>
+-              connect
+-                .locator('[data-credential-check="credentials_rejected"]')
+-                .waitFor({ state: "visible" }),
+-            ),
+-        );
+-        yield* browser.checkpoint("The check rejected the key");
+-        yield* browser.use("Continue anyway", () =>
+-          connect.getByRole("button", { name: "Continue anyway", exact: true }).click(),
+-        );
+-        // The prompt takes the Connect dialog's place, which unmounts rather than staying behind
+-        // it, hidden, until the prompt closes.
+-        const behindPrompt = yield* browser.use(
+-          "The Connect dialog unmounts behind the prompt",
+-          (page) =>
+-            accountNamePrompt(page)
+-              .then(() =>
+-                page
+-                  .waitForFunction(
+-                    () => document.querySelectorAll('[data-slot="dialog-content"]').length === 1,
+-                    undefined,
+-                    { timeout: 3_000 },
+-                  )
+-                  .catch(() => undefined),
+-              )
+-              .then(() =>
+-                page.evaluate(() =>
+-                  Array.from(document.querySelectorAll('[data-slot="dialog-content"]'), (dialog) =>
+-                    dialog.getAttribute("data-state"),
+-                  ),
+-                ),
+-              ),
+-        );
+-        yield* browser.checkpoint("The name prompt replaces the Connect dialog");
+-        expect(behindPrompt).toEqual(["open"]);
+-        yield* browser.use("Name the saved account", (page) =>
+-          nameConnectedAccount(page, "Rejected key"),
+-        );
+-        for (const [, account] of yield* localAccountLinks(agent, app.id))
+-          owned.push(`/v1/accounts/${account}`);
+-        // The Connect dialog is gone with its overlay and focus scope, and focus is on the page.
+-        const left = yield* browser.use("Nothing of the dialog is left", dialogLeftovers);
+-        yield* browser.checkpoint("After Continue anyway");
+-        expect(left).toEqual({
+-          dialogs: 0,
+-          overlays: 0,
+-          focusGuards: 0,
+-          bodyPointerEvents: "auto",
+-          focusOnPage: true,
+-        });
+-        // The very next click opens the new row's menu without Escape first.
+-        yield* browser.use("Open the new row's menu", (page) =>
+-          page
+-            .getByRole("button", { name: anyRowMenuName("Rejected key") })
+-            .click({ timeout: 5_000 })
+-            .then(() => page.getByRole("menu").waitFor({ state: "visible", timeout: 5_000 })),
+-        );
+-        yield* browser.checkpoint("The row menu opens");
+-        yield* browser.use("A 390px screen", (page) =>
+-          page.setViewportSize({ width: 390, height: 844 }),
++        yield* continueAnywayCloses(
++          `/apps/${app.id}?view=accounts`,
++          Effect.gen(function* () {
++            for (const [, account] of yield* localAccountLinks(agent, app.id))
++              owned.push(`/v1/accounts/${account}`);
++          }),
+         );
+-        yield* browser.checkpoint("The row menu on a phone");
+       }),
+     ),
+   );
+diff --git a/e2e/tests/provisioned-link-boundary.spec.ts b/e2e/tests/provisioned-link-boundary.spec.ts
+index ea4e985..cad2bb9 100644
+--- a/e2e/tests/provisioned-link-boundary.spec.ts
++++ b/e2e/tests/provisioned-link-boundary.spec.ts
+@@ -12,7 +12,7 @@ import { Api, body } from "../support/api.ts";
+ import { Browser } from "../support/browser.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { scenarios } from "../test-plan.ts";
+-import { choiceName } from "../support/account-choices.ts";
++import { requirementChoiceName } from "../support/account-choices.ts";
+ 
+ const App = Schema.Struct({
+   id: Schema.String,
+@@ -117,7 +117,7 @@ layer(HostedLive, { excludeTestServices: true })("Provisioned link boundary", (i
+         );
+         expect(
+           yield* browser.use("The host account is absent from the mixed-provider picker", (page) =>
+-            page.getByRole("radio", { name: choiceName("Host account"), exact: true }).count(),
++            page.getByRole("radio", { name: /^Use Host account for / }).count(),
+           ),
+         ).toBe(0);
+         const status = yield* browser.use("Try the ordinary account radio", (page) =>
+@@ -132,7 +132,10 @@ layer(HostedLive, { excludeTestServices: true })("Provisioned link boundary", (i
+             // Both requirements use one service, so each section's title adds its requirement.
+             page
+               .getByRole("region", { name: "Host access · Service", exact: true })
+-              .getByRole("radio", { name: choiceName("Ordinary account"), exact: true })
++              .getByRole("radio", {
++                name: requirementChoiceName("Ordinary account", "Host access · Service"),
++                exact: true,
++              })
+               .click(),
+           ]).then(([response]) => response.status()),
+         );
+diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+index e20b063..120fda1 100644
+--- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -136,8 +136,20 @@ const automaticAccount = (requirement: AccountRequirement, account: Account): Ac
+ const accountName = (account: AccountSummary, kind?: string) =>
+   accountTitle(account, account.providerName || "Unnamed account", kind);
+ 
+-/** A row's radio or checkbox says what selecting it does; its checked state says whether it did. */
+-const linkControlName = (name: string) => `Use ${name} for this app`;
++/**
++ * A row's radio or checkbox says what selecting it does; its checked state says whether it did.
++ * Where two requirements of a scope share a service, it names its requirement, since the same
++ * account is offered under both.
++ */
++const linkControlName = (name: string, shared: string | undefined) =>
++  `Use ${name} for ${shared ?? "this app"}`;
++
++/**
++ * The requirement's title when another requirement in its scope shares its service, so its
++ * controls name it; absent otherwise, so they read as before.
++ */
++const sharedServiceTitle = (requirement: AccountRequirement, title: string | undefined) =>
++  title === undefined || title === requirement.definition.name.trim() ? undefined : title;
+ 
+ /** The account's kind as its requirement declares it, which also names an unnamed account. */
+ export const kindIn = (requirement: AccountRequirement, account: AccountSummary) =>
+@@ -546,8 +558,15 @@ export interface LinkEditing<E> {
+   >;
+   readonly link: (slot: string, account: AccountId) => Atom.AtomResultFn<void, unknown, E>;
+   readonly unlink: (slot: string, account: AccountId) => Atom.AtomResultFn<void, unknown, E>;
+-  /** Connect a new account for the requirement; saving it links it. */
+-  readonly connect: (slot: string, requirement: AccountRequirement) => void;
++  /**
++   * Connect a new account for the requirement; saving it links it. `title` is the requirement's
++   * title on the tab, which the dialog names; absent for a service without a name.
++   */
++  readonly connect: (
++    slot: string,
++    requirement: AccountRequirement,
++    title: string | undefined,
++  ) => void;
+   /**
+    * Import an exported login file as a new account for the requirement, for the methods the host
+    * lists as importable here. Hosts without an importer leave it out.
+@@ -767,19 +786,29 @@ function LinkScope<E>({
+           <p className="text-xs text-muted-foreground">{data.readOnly}</p>
+         )}
+         <div className="space-y-5">
+-          {open.map(([slot, requirement]) => (
+-            <RequirementView
+-              key={slot}
+-              {...props}
+-              slot={slot}
+-              requirement={requirement}
+-              title={titles.get(slot)}
+-              linked={data.links.flatMap((link) =>
+-                link.requirement === slot ? [link.account] : [],
+-              )}
+-              readOnlyNote={readOnly ? undefined : data.readOnly}
+-            />
+-          ))}
++          {open.map(([slot, requirement]) => {
++            const shared = sharedServiceTitle(requirement, titles.get(slot));
++            // The same account can be listed under each requirement of a shared service, so its
++            // row ⋯ names the requirement too, such as "in Your accounts · Mail · Sign in".
++            return (
++              <RowSection.Provider
++                key={slot}
++                value={shared === undefined ? title : `${title} · ${shared}`}
++              >
++                <RequirementView
++                  {...props}
++                  slot={slot}
++                  requirement={requirement}
++                  title={titles.get(slot)}
++                  shared={shared}
++                  linked={data.links.flatMap((link) =>
++                    link.requirement === slot ? [link.account] : [],
++                  )}
++                  readOnlyNote={readOnly ? undefined : data.readOnly}
++                />
++              </RowSection.Provider>
++            );
++          })}
+           {closed.length > 0 && (
+             <UnavailableRequirements
+               app={props.app}
+@@ -859,6 +888,7 @@ function RequirementView<E>({
+   slot,
+   requirement,
+   title,
++  shared,
+   linked,
+   readOnlyNote,
+   ...props
+@@ -867,6 +897,8 @@ function RequirementView<E>({
+   readonly requirement: AccountRequirement;
+   /** The requirement's title in its scope; absent for a service without a name. */
+   readonly title: string | undefined;
++  /** The requirement's title when another requirement in its scope shares its service. */
++  readonly shared: string | undefined;
+   /** The requirement's linked accounts, oldest first. */
+   readonly linked: readonly AccountSummary[];
+   /** Why this requirement is read-only when others in its scope are not. */
+@@ -964,6 +996,7 @@ function RequirementView<E>({
+             slot={slot}
+             requirement={requirement}
+             title={title}
++            shared={shared}
+             linked={linked}
+           />
+         )}
+@@ -1210,6 +1243,7 @@ function EditableChoices<E>({
+   slot,
+   requirement,
+   title,
++  shared,
+   linked,
+   data,
+   edit,
+@@ -1222,6 +1256,8 @@ function EditableChoices<E>({
+   readonly slot: string;
+   readonly requirement: AccountRequirement;
+   readonly title: string | undefined;
++  /** The requirement's title when another requirement in its scope shares its service. */
++  readonly shared: string | undefined;
+   readonly linked: readonly AccountSummary[];
+ }) {
+   const brand = useProductBrand();
+@@ -1316,6 +1352,7 @@ function EditableChoices<E>({
+       credentialScope={scopeOf(choice)}
+       saved={accounts.some((item) => item.id === choice.account.id)}
+       selectionOnly={selectionOnly(connection)}
++      shared={shared}
+       Failure={Failure}
+     />
+   ));
+@@ -1384,8 +1421,9 @@ function EditableChoices<E>({
+           className="h-10 w-full justify-start rounded-none px-3.5 text-[13px] text-muted-foreground hover:text-foreground"
+           disabled={edit.connecting === true || (Option.isSome(loaded) && !allowed)}
+           onClick={() =>
+-            bound === undefined ? edit.connect(slot, requirement) : setReplacingWithNew(true)
++            bound === undefined ? edit.connect(slot, requirement, title) : setReplacingWithNew(true)
+           }
++          {...(shared === undefined ? {} : { "aria-label": `Connect new account for ${shared}` })}
+         >
+           <HugeiconsIcon icon={Add01Icon} size={14} aria-hidden />
+           Connect new account
+@@ -1401,6 +1439,7 @@ function EditableChoices<E>({
+               size="sm"
+               disabled={edit.connecting === true || !allowed}
+               onClick={() => edit.importLoginFile?.(slot, requirement, connection.importMethods)}
++              {...(shared === undefined ? {} : { "aria-label": `Import login file for ${shared}` })}
+             >
+               Import login file
+             </Button>
+@@ -1416,7 +1455,7 @@ function EditableChoices<E>({
+           onKeep={() => setReplacingWithNew(false)}
+           onRemove={() => {
+             setReplacingWithNew(false);
+-            edit.connect(slot, requirement);
++            edit.connect(slot, requirement, title);
+           }}
+         />
+       )}
+@@ -1439,7 +1478,10 @@ function ChoiceRow<E>({
+   credentialScope,
+   selectionOnly: selecting,
+   saved,
++  shared,
+ }: {
++  /** The requirement's title when another requirement in its scope shares its service. */
++  readonly shared: string | undefined;
+   /** The account is one of the caller's own, which stays listed after unlinking. */
+   readonly saved: boolean;
+   /** The host's provenance for this account here, when it reports one. */
+@@ -1480,7 +1522,7 @@ function ChoiceRow<E>({
+   const kind = accountMethodKindLabel(requirement.definition, account.method, requirement.provider);
+   const name = accountName(account, kind);
+   // The default credential's title is "Set up automatically", which reads badly after "Use".
+-  const control = linkControlName(automatic ? "the account set up automatically" : name);
++  const control = linkControlName(automatic ? "the account set up automatically" : name, shared);
+   const row = appAccountRow(app, account, data.accountRow);
+   const traffic = data.accountTraffic?.(account);
+   const hostProvisioned = !automatic && provisionedMethod(requirement, account);
