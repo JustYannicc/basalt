@@ -18,10 +18,7 @@
     }
   },
   "runs": {
-    "accountToolCalls": [
-      "declared:self-host",
-      "declared:cloud"
-    ]
+    "accountToolCalls": ["declared:self-host", "declared:cloud"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/package.json",
@@ -40,6 +37,7 @@
     ".upstream/packages/sdk/src/implementation/storage-runtime.ts",
     ".upstream/packages/sdk/src/implementation/storage.ts",
     ".upstream/packages/sdk/src/implementation/tools.ts",
-    ".upstream/packages/ui/src/implementation/dashboard/accounts-client.tsx"
+    ".upstream/packages/ui/src/implementation/dashboard/accounts-client.tsx",
+    ".upstream/e2e/support/account-tool-accounting.ts"
   ]
 }

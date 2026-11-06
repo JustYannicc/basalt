@@ -50,9 +50,18 @@
     }
   },
   "runs": {
-    "dataQueryBatch": ["declared:self-host", "declared:cloud"],
-    "dataQueryBatchSelections": ["declared:self-host", "declared:cloud"],
-    "dataQueryBatchRefusals": ["declared:self-host", "declared:cloud"]
+    "dataQueryBatch": [
+      "declared:self-host",
+      "declared:cloud"
+    ],
+    "dataQueryBatchSelections": [
+      "declared:self-host",
+      "declared:cloud"
+    ],
+    "dataQueryBatchRefusals": [
+      "declared:self-host",
+      "declared:cloud"
+    ]
   },
   "inputs": [
     ".upstream/packages/sdk/src/contracts/app-data.ts",
@@ -67,6 +76,8 @@
     ".upstream/apps/hosted/cloud/src/infrastructure/product-services.ts",
     ".upstream/apps/hosted/cloud/src/infrastructure/invocation-database.ts",
     ".upstream/apps/hosted/self-host/src/implementation/executor-services.ts",
+    ".upstream/e2e/support/data-query-batch.ts",
+    ".upstream/packages/sdk/src/implementation/selection-account-store.ts",
     ".upstream/apps/hosted/server/src/contracts/app-data.ts"
   ]
 }
