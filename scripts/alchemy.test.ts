@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { alchemyArgs } from "./alchemy.ts";
 import { postgresRoleName } from "../src/pool/database-settings.ts";
+import { deployInPhases } from "./release-phases/deploy.ts";
 
 test("Bun runs the workspace's Alchemy bin with every argument and returns its exit code", () => {
   const root = mkdtempSync(join(tmpdir(), "basalt-alchemy-"));
@@ -13,14 +14,20 @@ test("Bun runs the workspace's Alchemy bin with every argument and returns its e
     const cloud = join(root, "apps", "cloud");
     mkdirSync(join(root, "node_modules", ".bin"), { recursive: true });
     mkdirSync(cloud, { recursive: true });
-    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "root", private: true, workspaces: ["apps/*"] }));
+    writeFileSync(
+      join(root, "package.json"),
+      JSON.stringify({ name: "root", private: true, workspaces: ["apps/*"] }),
+    );
     writeFileSync(join(cloud, "package.json"), JSON.stringify({ name: "cloud", private: true }));
     const record = join(root, "argv.json");
     const bin = join(root, "node_modules", ".bin", "alchemy");
-    writeFileSync(bin, `#!/usr/bin/env node
+    writeFileSync(
+      bin,
+      `#!/usr/bin/env node
 require("node:fs").writeFileSync(${JSON.stringify(record)}, JSON.stringify(process.argv.slice(2)));
 process.exit(Number(process.env.FAKE_ALCHEMY_EXIT));
-`);
+`,
+    );
     chmodSync(bin, 0o755);
     const args = ["deploy", "../../../../alchemy.run.ts", "--stage", "production", "--yes"];
     for (const exitCode of [0, 3]) {
@@ -38,10 +45,64 @@ process.exit(Number(process.env.FAKE_ALCHEMY_EXIT));
   }
 });
 
-test("the production entrypoint invokes Alchemy only through alchemyArgs", () => {
-  const source = readFileSync(new URL("./deploy.ts", import.meta.url), "utf8");
-  assert.doesNotMatch(source, /"exec"/);
-  assert.equal(source.match(/alchemyArgs\("deploy"/g)?.length, 2);
+test("production phases reach the workspace Alchemy bin and stop after a failed DB apply", async () => {
+  const root = mkdtempSync(join(tmpdir(), "basalt-release-alchemy-"));
+  try {
+    const cloud = join(root, "apps", "cloud");
+    mkdirSync(join(root, "node_modules", ".bin"), { recursive: true });
+    mkdirSync(cloud, { recursive: true });
+    writeFileSync(
+      join(root, "package.json"),
+      JSON.stringify({ name: "root", private: true, workspaces: ["apps/*"] }),
+    );
+    writeFileSync(join(cloud, "package.json"), JSON.stringify({ name: "cloud", private: true }));
+    const trace = join(root, "alchemy.jsonl");
+    const bin = join(root, "node_modules", ".bin", "alchemy");
+    writeFileSync(
+      bin,
+      `#!/usr/bin/env node
+require("node:fs").appendFileSync(${JSON.stringify(trace)}, JSON.stringify({ args: process.argv.slice(2), attempt: process.env.BASALT_RELEASE_ATTEMPT }) + "\\n");
+if (process.env.FAIL_DATABASE_PHASE === "true" && process.argv.includes("--include")) process.exit(3);
+`,
+    );
+    chmodSync(bin, 0o755);
+    const preflight = async () => ({ observed: 14, ordinarySlots: 22, envelope: 7 });
+    const environment = { PATH: process.env.PATH, ALCHEMY_STAGE: "production" };
+    const reads = () =>
+      readFileSync(trace, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { args: string[]; attempt: string });
+    await deployInPhases({ cloud, environment, sharedFoundation: true, preflight });
+    const calls = reads();
+    const application = ["deploy", "../../../../alchemy.run.ts", "--stage", "production", "--yes"];
+    assert.deepEqual(
+      calls.map((call) => call.args),
+      [
+        [...application, "--include", "PoolDatabase"],
+        ["deploy", "alchemy.app-domains.ts", "--stage", "shared", "--yes"],
+        application,
+      ],
+    );
+    assert.match(calls[0]!.attempt, /^[a-f0-9-]{36}$/);
+    assert.ok(calls.every((call) => call.attempt === calls[0]!.attempt));
+    writeFileSync(trace, "");
+    await assert.rejects(
+      deployInPhases({
+        cloud,
+        environment: { ...environment, FAIL_DATABASE_PHASE: "true" },
+        sharedFoundation: true,
+        preflight,
+      }),
+      /bun failed with exit 3/,
+    );
+    assert.deepEqual(
+      reads().map((call) => call.args),
+      [[...application, "--include", "PoolDatabase"]],
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("stack provisioning jobs run Node scripts without shell quoting", () => {
@@ -49,9 +110,15 @@ test("stack provisioning jobs run Node scripts without shell quoting", () => {
   for (const file of ["../alchemy.run.ts", "../src/pool/database.ts"]) {
     const source = readFileSync(new URL(file, import.meta.url), "utf8");
     const jobs = source.match(/Command\.Exec\(/g)?.length ?? 0;
-    const safe = [...source.matchAll(/command: `node \$\{basename\((\w+)\)\}`,\s*cwd: dirname\((\w+)\)/g)];
+    const safe = [
+      ...source.matchAll(/command: `node \$\{basename\((\w+)\)\}`,\s*cwd: dirname\((\w+)\)/g),
+    ];
     assert.ok(jobs > 0, file);
-    assert.equal(safe.length, jobs, `${file}: every provisioning job runs its script by name from its own directory`);
+    assert.equal(
+      safe.length,
+      jobs,
+      `${file}: every provisioning job runs its script by name from its own directory`,
+    );
     for (const [, name, directory] of safe) assert.equal(name, directory, file);
     for (const [, command] of source.matchAll(/command:\s*([^\n]+)/g))
       assert.doesNotMatch(command!.replace(/^`|`,?$/g, ""), /['"&|;=]/, `${file}: ${command}`);
