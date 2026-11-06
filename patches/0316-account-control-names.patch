@@ -857,3 +857,39 @@ index df2cbf8..f8ac39d 100644
 +  auth !== undefined && "label" in auth && typeof auth.label === "string" && auth.label !== ""
 +    ? auth.label
 +    : undefined;
+diff --git a/e2e/tests/account-observation-row-polling.spec.ts b/e2e/tests/account-observation-row-polling.spec.ts
+index 2bcecde..c13da40 100644
+--- a/e2e/tests/account-observation-row-polling.spec.ts
++++ b/e2e/tests/account-observation-row-polling.spec.ts
+@@ -85,8 +85,14 @@ layer(HostedLive, { excludeTestServices: true })("Account observation row pollin
+             .then((usage) => expect(usage, "nothing retained shows no usage line").toBe(0));
+         });
+ 
++        // An unnamed account's own menu is named by its row title: its provider until the account
++        // reports its identity.
++        const menuName =
++          label === "Unnamed account" || /^Default( \d+)?$/.test(label)
++            ? /Observation service account|Observed identity/
++            : label;
+         yield* browser.use("Keep the row's reading details open", (page) =>
+-          openRowDetails(page, accountRow(page, label), label),
++          openRowDetails(page, accountRow(page, menuName), menuName),
+         );
+ 
+         // Stands in for the server interval: a report is retained while the row stays open.
+diff --git a/e2e/tests/account-usage-cells.spec.ts b/e2e/tests/account-usage-cells.spec.ts
+index d9cb1a6..eaf4324 100644
+--- a/e2e/tests/account-usage-cells.spec.ts
++++ b/e2e/tests/account-usage-cells.spec.ts
+@@ -213,8 +213,10 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+             .then(() => page.goto(accounts))
+             .then(() => ready(page))
+             .then(() => {
++              // Each account's usage group carries its label; a generated "Default" no longer
++              // names the row's menu.
+               const view = (label: string) =>
+-                accountRow(page, label)
++                block(page, label)
+                   .locator("[data-reading]")
+                   .evaluateAll((cells) =>
+                     cells.map((element) => ({
