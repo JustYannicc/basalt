@@ -1189,6 +1189,8 @@ jobs:
         run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts pool-inventory:the-cloud-inventory-and-exact-id-token-retirement-tooling)" --workers 1
       - name: Verify authorized native pool removal intent
         run: node e2e/pool-removal-intent.mjs .generated/pool-removal-intent/ci
+      - name: Verify native pool recipe journeys with synthetic observations
+        run: node e2e/pool-recipe-checks.mjs .generated/pool-recipe-checks/ci
       - name: Verify banked reset recovery with a synthetic provider
         run: node e2e/pool-reset-checks.mjs .generated/pool-reset-checks/ci
       - name: Verify the banked reset control in a browser with a synthetic provider
@@ -1205,6 +1207,11 @@ jobs:
             .generated/pool-removal-intent/**/report.json
             .generated/pool-removal-intent/**/partial-checks.json
             .generated/pool-removal-intent/**/failure.txt
+            .generated/pool-recipe-checks/**/report.json
+            .generated/pool-recipe-checks/**/partial-checks.json
+            .generated/pool-recipe-checks/**/failure.txt
+            .generated/pool-recipe-checks/**/runtime-cloud.log
+            .generated/pool-recipe-checks/**/runtime-diagnostics.json
             .generated/pool-reset-checks/**/report.json
             .generated/pool-reset-checks/**/failure.json
             .generated/pool-reset-checks/**/runtime-cloud.log
