@@ -108,7 +108,7 @@ export class TunnelOperation {
           this.send,
           (failure) => {
             if (!this.stopped) recordTunnelFailure(this.open.id, failure);
-            this.error("limit");
+            this.error(failure.phase === "socket" ? "unavailable" : "limit");
           },
           () => {
             if (!this.stopped) this.send({ v: 1, type: "end", id: this.open.id });

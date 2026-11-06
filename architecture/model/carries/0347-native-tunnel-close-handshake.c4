@@ -1,0 +1,7 @@
+model {
+  extend basalt.nativeTunnel {
+    metadata {
+      constraint "The native tunnel drains received output after an observed provider close even if the socket later reports a disconnect. A socket failure before close remains unavailable with an unknown outcome. The real-workerd fixture withholds output credit until the external provider confirms its close handshake; operation limits and deadlines stay unchanged."
+    }
+  }
+}
