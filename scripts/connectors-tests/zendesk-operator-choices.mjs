@@ -75,10 +75,14 @@ export function proveOperatorChoices({
     assert.equal(hosted.redirectUri, callback);
     assert.equal(
       hosted.setupInstructions,
-      "A Zendesk admin adds this callback URL to the public OAuth client site-a_zendesk with read and write access.",
+      "In Zendesk Admin Center, open Apps and integrations > APIs > OAuth clients. " +
+        "Add this callback URL to the public OAuth client site-a_zendesk with read and write access; no client secret is needed.",
     );
     assert.equal(paste.available, true);
     assert.equal(paste.redirectUri, loopback);
+    assert.equal(hosted.clientId, "site-a_zendesk");
+    assert.equal(paste.clientId, "site-a_zendesk");
+    assert.equal(paste.setupInstructions, hosted.setupInstructions);
     assert.equal(setup.firstParty.label, global ? "Synthetic global Zendesk" : paste.label);
     const automatic = checked(
       yield* start(path),
@@ -213,13 +217,26 @@ export function proveOperatorChoices({
     );
 
     if (global) {
-      fixtures.setAuthorizationStatus(site.id, 503);
-      const available = checked(
-        yield* request(actor, "GET", `${other}/oauth/oauth/setup`),
-        200,
-        "A public-client outage must not hide a configured Marketplace client",
-      );
-      assert.equal(available.firstParty.label, "Synthetic global Zendesk");
+      for (const status of [429, 503]) {
+        fixtures.setAuthorizationStatus(site.id, status);
+        const available = checked(
+          yield* request(actor, "GET", `${other}/oauth/oauth/setup`),
+          200,
+          "A public-client outage must not hide a configured Marketplace client",
+        );
+        assert.equal(available.firstParty.label, "Synthetic global Zendesk");
+        const company = available.operatorClients.filter((choice) => choice.id !== "zendesk-proof");
+        assert.equal(company.length, 2);
+        for (const choice of company) {
+          assert.equal(choice.available, false);
+          assert.equal(
+            choice.setupInstructions,
+            undefined,
+            `A ${status} preflight failure must not suggest registering a different callback`,
+          );
+          assert.equal(choice.clientId, undefined);
+        }
+      }
       fixtures.setAuthorizationStatus(site.id, undefined);
     } else {
       fixtures.setTenantCallback(site.id, "https://unregistered.example.test/callback");

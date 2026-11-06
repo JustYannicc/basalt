@@ -191,6 +191,14 @@ export async function runConnectorsProof({
     home,
     useHeavySlot,
   );
+  await run(
+    "bun",
+    [join(root, "scripts/connectors-tests/zendesk-tenant-runtime.mjs"), "--guidance"],
+    root,
+    join(directory, "zendesk-company-guidance.json"),
+    home,
+    useHeavySlot,
+  );
   const output = await run(
     "bun",
     [
