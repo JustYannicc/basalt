@@ -138,6 +138,9 @@ test("deleted runner steps, disabled steps and disconnected matrices lose covera
     delete step.if;
     step.run = 'echo \'bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"\'';
     assert.match(coverageErrors(inventory(), [])[0]!, /first.spec.ts#first/);
+    step.run =
+      'node --version # bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"';
+    assert.match(coverageErrors(inventory(), [])[0]!, /first.spec.ts#first/);
     step.run = 'bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"';
     for (const condition of [false, "false", "${{ false }}", "${{ 1 == 2 }}"]) {
       job.if = condition;
@@ -195,6 +198,30 @@ test("syntax checks, argv data, comments and type-only imports do not execute a 
       workflow.jobs.recipe = { steps: [{ run }] };
       assert.match(coverageErrors(inventory(), [])[0]!, /Ungated E2E: e2e\/new-recipe-checks.mjs/);
     }
+  }));
+
+test("a config must include the test in executable data rather than a comment", () =>
+  fixture((root, workflow, inventory) => {
+    writeFileSync(
+      join(root, "e2e/plans/config.spec.ts.json"),
+      JSON.stringify({
+        scenarios: {},
+        runs: {},
+        config: [{ job: "fast", config: "guard.config.ts" }],
+      }),
+    );
+    writeFileSync(
+      join(root, ".upstream/e2e/tests/config.spec.ts"),
+      'test("Config case", () => {});',
+    );
+    const config = join(root, ".upstream/e2e/guard.config.ts");
+    writeFileSync(config, "export default { test: { include: [] } }; // e2e/tests/config.spec.ts");
+    workflow.jobs.fast = { steps: [{ run: "bunx vitest run --config e2e/guard.config.ts" }] };
+    assert.ok(
+      coverageErrors(inventory(), []).some((error) => error.includes("config.spec.ts#Config case")),
+    );
+    writeFileSync(config, 'export default { test: { include: ["e2e/tests/config.spec.ts"] } };');
+    assert.deepEqual(coverageErrors(inventory(), []), []);
   }));
 
 test("reviewed exceptions bind source changes and expire as soon as their runner is wired", () =>

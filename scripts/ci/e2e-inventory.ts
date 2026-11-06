@@ -1,6 +1,6 @@
 import ts from "../architecture/typescript.ts";
-import { readdirSync } from "node:fs";
-import { join } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, matchesGlob } from "node:path";
 
 export const codeFiles = (directory: string) =>
   readdirSync(directory, { recursive: true, withFileTypes: true })
@@ -168,4 +168,33 @@ export function testInventory(root: string, plans: Record<string, Plan>) {
     if (!calls) tests.push({ id: `${file}#<dynamic tests>`, file });
   }
   return tests;
+}
+
+export function configIncludes(root: string, config: string, file: string) {
+  const path = join(root, ".upstream/e2e", config);
+  const source = ts.createSourceFile(
+    path,
+    readFileSync(path, "utf8"),
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const patterns = { include: [] as string[], exclude: [] as string[] };
+  const visit = (node: ts.Node) => {
+    if (
+      ts.isPropertyAssignment(node) &&
+      ["include", "exclude"].includes(node.name.getText(source)) &&
+      ts.isArrayLiteralExpression(node.initializer)
+    ) {
+      for (const entry of node.initializer.elements)
+        if (ts.isStringLiteralLike(entry))
+          patterns[node.name.getText(source) as keyof typeof patterns].push(entry.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  const target = `e2e/tests/${file}`;
+  return (
+    patterns.include.some((pattern) => matchesGlob(target, pattern)) &&
+    !patterns.exclude.some((pattern) => matchesGlob(target, pattern))
+  );
 }

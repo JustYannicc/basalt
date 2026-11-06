@@ -73,7 +73,7 @@ export function expandedRuns(run: string, job: Workflow["jobs"][string]) {
   );
 }
 
-export function commandWords(command: string) {
+export function shellWords(command: string) {
   const words: string[] = [];
   let current = "",
     quote = "",
@@ -101,6 +101,11 @@ export function commandWords(command: string) {
   }
   if (quote || escaped) return [];
   if (current) words.push(current);
+  return words;
+}
+
+export function commandWords(command: string) {
+  const words = shellWords(command);
   while (/^[A-Z_][A-Z0-9_]*=/.test(words[0] ?? "")) words.shift();
   return words;
 }
@@ -136,4 +141,31 @@ export function executedArgv(runner: string, argv: string[]) {
     break;
   }
   return paths;
+}
+
+export function selectorReferenced(run: string, group: string) {
+  return run
+    .split("\n")
+    .some((line) =>
+      shellWords(line).some((word) =>
+        ["scripts/ci/e2e-pattern.ts", "../scripts/ci/e2e-pattern.ts"].some(
+          (path) =>
+            word === `$(node ${path} ${group})` ||
+            (/^BASALT_(?:SCOPE|ADOPTION)_PROOF_PATTERN=/.test(word) &&
+              word.endsWith(`=$(node ${path} ${group})`)),
+        ),
+      ),
+    );
+}
+
+export function delegatedCommand(command: string) {
+  const words = commandWords(command);
+  if (
+    !executedPaths(command).some((path) =>
+      ["scripts/ci/run-e2e.ts", "../scripts/ci/run-e2e.ts"].includes(path),
+    )
+  )
+    return words;
+  const delimiter = words.indexOf("--");
+  return delimiter === -1 ? [] : words.slice(delimiter + 1);
 }

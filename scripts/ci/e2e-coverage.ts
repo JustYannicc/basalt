@@ -1,9 +1,18 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { testInventory } from "./e2e-inventory.ts";
+import { testInventory, configIncludes } from "./e2e-inventory.ts";
 import { scriptCoverage } from "./e2e-script-coverage.ts";
-import { activeSteps, shellCommands, expandedRuns, type Workflow } from "./e2e-workflow.ts";
+import {
+  activeSteps,
+  shellCommands,
+  expandedRuns,
+  commandWords,
+  executedArgv,
+  selectorReferenced,
+  delegatedCommand,
+  type Workflow,
+} from "./e2e-workflow.ts";
 import type { readDeclarations } from "./declarations.ts";
 import type { filesForTarget as targetFiles } from "../../.upstream/e2e/test-plan.ts";
 import type { Plan } from "./e2e-inventory.ts";
@@ -31,27 +40,35 @@ export function coverageInventory(
       const invoked = steps.some((step) =>
         expandedRuns(step.run, workflow.jobs[group.job]!).some((run) =>
           shellCommands(run).some((command) => {
+            const words = delegatedCommand(command);
             if (group.matrix)
               return (
-                command.includes(
-                  'bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"',
-                ) &&
+                words[0] === "bun" &&
+                words[1] === "scripts/ci/run-declared.ts" &&
+                words[2] === "${{ matrix.group }}" &&
+                words[3] === "${{ matrix.file }}" &&
                 workflow.jobs[group.job]?.strategy?.matrix ===
                   "${{ fromJSON(needs.select.outputs.matrices)['" + group.job + "'] }}"
               );
-            const pattern =
-              run.includes(`$(node scripts/ci/e2e-pattern.ts ${id})`) ||
-              run.includes(`$(node ../scripts/ci/e2e-pattern.ts ${id})`);
-            if (command.includes(`bun run e2e:${group.target} --test-name`) && pattern) return true;
-            for (const match of command.matchAll(/\bnode (scripts\/[\w./-]+\.ts)/g)) {
+            const pattern = selectorReferenced(run, id);
+            if (
+              words[0] === "bun" &&
+              words[1] === "run" &&
+              words[2] === `e2e:${group.target}` &&
+              words.includes("--test-name") &&
+              pattern
+            )
+              return true;
+            for (const path of executedArgv(words[0] ?? "", words.slice(1))) {
+              if (!/^scripts\/[\w./-]+\.ts$/.test(path)) continue;
               if (step["working-directory"] && step["working-directory"] !== ".") continue;
-              if (!existsSync(join(root, match[1]!))) continue;
-              const source = readFileSync(join(root, match[1]!), "utf8");
+              if (!existsSync(join(root, path))) continue;
+              const source = readFileSync(join(root, path), "utf8");
               if (!source.includes(`"e2e:${group.target}"`) || !source.includes('"--test-name"'))
                 continue;
               if (
                 (group.command &&
-                  command.includes(group.command) &&
+                  group.command.split(" ")[1] === path &&
                   source.includes(`patternForGroup("${id}")`)) ||
                 (pattern && /process\.env\.BASALT_(?:SCOPE|ADOPTION)_PROOF_PATTERN/.test(source))
               )
@@ -71,17 +88,25 @@ export function coverageInventory(
     });
     const config = declaration?.config.some(
       (config) =>
-        (!config.titles.length || config.titles.includes(test.title ?? "")) &&
         activeSteps(workflow.jobs[config.job]).some((step) =>
-          shellCommands(step.run).some(
-            (command) =>
-              /^(?:bunx|bun x) vitest run /.test(command) &&
-              command.includes(`--config e2e/${config.config}`),
-          ),
-        ) &&
-        readFileSync(join(root, ".upstream/e2e", config.config), "utf8").includes(
-          `e2e/tests/${test.file}`,
-        ),
+          shellCommands(step.run).some((command) => {
+            const words = commandWords(command);
+            if (
+              words[0] !== "bunx" ||
+              words[1] !== "vitest" ||
+              words[2] !== "run" ||
+              words[words.indexOf("--config") + 1] !== `e2e/${config.config}`
+            )
+              return false;
+            const filter = words.indexOf("--testNamePattern");
+            if (filter !== -1)
+              return (
+                config.titles.includes(test.title ?? "") &&
+                words[filter + 1] === `$(node ../scripts/ci/e2e-pattern.ts --config ${test.file})`
+              );
+            return filter === -1 && !words.includes("--test-name");
+          }),
+        ) && configIncludes(root, config.config, test.file),
     );
     return {
       ...test,
