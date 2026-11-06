@@ -10,7 +10,7 @@ const runtime = {
   candidate: "a".repeat(40),
   workerInput: "b".repeat(64),
   imageHash: "1234abcd",
-  desiredRevisionMatch: true,
+  desiredRevisionMatch: true as const,
   instanceId: "c".repeat(64),
   bootId: "boot",
   readyAt: 120_000,
