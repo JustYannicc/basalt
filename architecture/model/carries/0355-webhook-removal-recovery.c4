@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Three consecutive webhook removal failures move the subscription to its existing disabled state for manual confirmation. The initial attempt and the existing thirty- and sixty-second retry waits precede the next two-minute wait; the cap adds no configurable budget. A backward-compatible optional count stays in the encrypted registration payload across restarts. Failed removal preserves its provider state, captured accounts and dependency rows. Automatic source reconciliation makes no further provider removal attempt while disabled. An explicit retry resumes removal after account reconnection or service recovery; success or confirmed provider cleanup clears the failure and releases dependencies. Authored failures, provider failures, revoked grants and unreadable account credentials follow the same policy."
+    }
+  }
+}

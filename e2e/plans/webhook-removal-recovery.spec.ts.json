@@ -1,0 +1,97 @@
+{
+  "scenarios": {
+    "webhookRemovalAuthored": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Webhook removal offers manual confirmation after repeated authored failures",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "This scenario uses hosted organizations and account links."
+        }
+      }
+    },
+    "webhookRemovalProvider": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Webhook removal resumes after the provider recovers from repeated failures",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "This scenario uses hosted organizations and account links."
+        }
+      }
+    },
+    "webhookRemovalReconnect": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Webhook removal resumes after reconnecting a revoked OAuth grant",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "This scenario uses hosted organizations and account links."
+        }
+      }
+    },
+    "webhookRemovalUnreadable": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Webhook removal survives restart and recovers after replacing unreadable credentials",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The storage fault uses the stopped self-host database and restart control."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "This scenario uses hosted organizations and account links."
+        }
+      },
+      "legacyStorage": true
+    }
+  },
+  "runs": {
+    "webhookRemovalAuthored": [
+      "declared:self-host",
+      "declared:cloud"
+    ],
+    "webhookRemovalProvider": [
+      "declared:self-host",
+      "declared:cloud"
+    ],
+    "webhookRemovalReconnect": [
+      "declared:self-host",
+      "declared:cloud"
+    ],
+    "webhookRemovalUnreadable": [
+      "declared:self-host"
+    ]
+  },
+  "inputs": [
+    ".upstream/packages/sdk/src/implementation/webhooks.ts",
+    ".upstream/packages/sdk/src/implementation/webhook-sources.ts",
+    ".upstream/e2e/support/webhook-removal-fixture.ts",
+    ".upstream/e2e/support/webhook-registration.ts"
+  ]
+}
