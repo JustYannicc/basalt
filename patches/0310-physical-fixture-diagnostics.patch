@@ -163,12 +163,11 @@ diff --git a/e2e/support/fixture-diagnostics.ts b/e2e/support/fixture-diagnostic
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/fixture-diagnostics.ts
-@@ -0,0 +1,77 @@
+@@ -0,0 +1,70 @@
 +/** Private runner evidence survives generic fixture HTTP errors and subprocess cleanup. */
-+import { Cause, Effect, FileSystem, Stream } from "effect";
++import { Cause, Effect, FileSystem, Formatter, Stream } from "effect";
 +import { ChildProcess, ChildProcessSpawner } from "effect/process";
 +import { randomUUID } from "node:crypto";
-+import { inspect } from "node:util";
 +
 +const diagnosticFiles = (directory: string, name: string) =>
 +  Effect.gen(function* () {
@@ -231,13 +230,7 @@ new file mode 100644
 +      ".json",
 +      `${JSON.stringify({
 +        cause: Cause.pretty(cause),
-+        details: inspect(cause, {
-+          depth: null,
-+          colors: false,
-+          customInspect: false,
-+          maxArrayLength: null,
-+          maxStringLength: null,
-+        }),
++        details: Formatter.format(cause, { ignoreToString: true }),
 +      })}\n`,
 +    );
 +  });
