@@ -1,0 +1,124 @@
+{
+  "scenarios": {
+    "cloudProductionOps": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Cloud production operations encrypt named read-only inventories and backups and refuse unreviewed writes",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Production operations use the Cloud runtime database and deploy secrets."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host production operations."
+        }
+      }
+    },
+    "cloudProductionOpsBinding": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Cloud production operations bind inventories to the runtime database target",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Production operations use the Cloud runtime database and deploy secrets."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host production operations."
+        }
+      }
+    },
+    "cloudProductionOpsScope": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Cloud production operations scope inventories to the requested organization",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Production operations use the Cloud runtime database and deploy secrets."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host production operations."
+        }
+      }
+    }
+  },
+  "runs": {
+    "cloudProductionOps": [
+      "production-ops:encrypted-production-operation-reads-and-backup-refusal-boundaries"
+    ],
+    "cloudProductionOpsBinding": [
+      "production-ops:runtime-database-binding-with-one-isolated-restart"
+    ],
+    "cloudProductionOpsScope": [
+      "production-ops:encrypted-production-operation-reads-and-backup-refusal-boundaries"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/scripts/pool-token-retirement-queries.ts",
+    ".upstream/apps/hosted/cloud/src/implementation/migrations.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/pool-inventory.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/backup.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/body.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/crypto.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/database-identity.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/forward.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/http.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-schema.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/schema.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts",
+    ".upstream/apps/hosted/cloud/src/main.ts",
+    ".upstream/apps/hosted/cloud/src/mcp-server.ts",
+    ".upstream/apps/hosted/server/src/contracts/api.ts",
+    ".upstream/apps/hosted/server/src/contracts/apps.ts",
+    ".upstream/apps/hosted/server/src/contracts/pool-creation.ts",
+    ".upstream/apps/hosted/server/src/contracts/pools.ts",
+    ".upstream/apps/hosted/server/src/implementation/api.ts",
+    ".upstream/apps/hosted/server/src/implementation/apps.ts",
+    ".upstream/apps/hosted/server/src/implementation/catalog.ts",
+    ".upstream/apps/hosted/server/src/implementation/model-bindings.ts",
+    ".upstream/apps/hosted/server/src/implementation/organization-app-write.ts",
+    ".upstream/apps/hosted/server/src/implementation/organization-removals.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-access-hook.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-access-provenance.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-account-recovery.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-app-upgrades.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-catalog.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-defaults.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-records.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-usage.ts",
+    ".upstream/apps/hosted/server/src/implementation/pools.ts",
+    ".upstream/apps/hosted/server/src/implementation/provisioning.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-lifecycle.ts",
+    ".upstream/apps/hosted/web/src/contracts/errors.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/add-app.tsx",
+    ".upstream/apps/local/web/src/implementation/pages/catalog.tsx",
+    ".upstream/packages/catalog/src/index.ts",
+    ".upstream/packages/ui/src/contracts/dashboard.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/catalog-add-another.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/catalog-instances.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/catalog-row-actions.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/catalog.tsx"
+  ]
+}

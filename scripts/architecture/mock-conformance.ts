@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { declaredScenarios, implementsScenario } from "./mock-scenarios.ts";
 import { parseDocument } from "yaml";
+import { patternForGroup, readDeclarations } from "../ci/declarations.ts";
 
 const object = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -92,9 +93,13 @@ export function parseMockContract(value: unknown): Contract {
   };
 }
 
-// Only literal selectors in required steps establish coverage. Indirect or computed
-// commands need an explicit verifier before a contract can rely on them.
-function runsScenario(job: Record<string, unknown>, proof: Proof, title: string) {
+// Computed shell selectors establish coverage only through the verified declaration CLI.
+function runsScenario(
+  root: string,
+  job: Record<string, unknown>,
+  proof: Proof,
+  scenario: { file: string; title: string },
+) {
   if (job["continue-on-error"] !== undefined || !Array.isArray(job.steps)) return false;
   return job.steps.some((step: unknown) => {
     if (
@@ -110,9 +115,24 @@ function runsScenario(job: Record<string, unknown>, proof: Proof, title: string)
         /^\s*bun run e2e:(self-host|local|cloud)\s+--test-name\s+(["'])(.*?)\2(?:\s+--workers\s+[1-9][0-9]*)?\s*$/gs,
       ),
     ].some((match) => {
-      if (match[1] !== proof.target || /\$[a-zA-Z{(]|`/.test(match[3]!)) return false;
+      if (match[1] !== proof.target) return false;
       try {
-        return new RegExp(match[3]!).test(title);
+        const declared = /^\$\(node \.\.\/scripts\/ci\/e2e-pattern\.ts ([a-z0-9:-]+)\)$/.exec(
+          match[3]!,
+        );
+        if (declared) {
+          if (match[2] !== '"') return false;
+          const { files, groups } = readDeclarations(root);
+          const group = groups[declared[1]!];
+          return (
+            group?.job === proof.job &&
+            group.target === proof.target &&
+            files[scenario.file]?.runs[proof.scenario]?.includes(declared[1]!) === true &&
+            new RegExp(patternForGroup(declared[1]!, scenario.file, root)).test(scenario.title)
+          );
+        }
+        if (/\$[a-zA-Z{(]|`/.test(match[3]!)) return false;
+        return new RegExp(match[3]!).test(scenario.title);
       } catch {
         return false;
       }
@@ -153,6 +173,21 @@ export function mockConformanceErrors(root: string, requiredJobs: readonly strin
   const errors: string[] = [],
     identities = new Set<string>();
   const plan = declaredScenarios(readFileSync(join(root, ".upstream/e2e/test-plan.ts"), "utf8"));
+  if (existsSync(join(root, "e2e/plans"))) {
+    try {
+      for (const [file, entry] of Object.entries(readDeclarations(root).files))
+        for (const [key, scenario] of Object.entries(entry.scenarios))
+          plan.set(key, {
+            file,
+            title: scenario.title,
+            targets: Object.entries(scenario.targets).flatMap(([target, value]) =>
+              object(value) && value.status === "scheduled" ? [target] : [],
+            ),
+          });
+    } catch {
+      return ["Invalid per-file CI declarations"];
+    }
+  }
   const workflow = parseDocument(readFileSync(join(root, ".github/workflows/ci.yml"), "utf8"), {
     uniqueKeys: true,
   });
@@ -201,7 +236,7 @@ export function mockConformanceErrors(root: string, requiredJobs: readonly strin
           !gate.includes(proof.job) ||
           !object(job) ||
           job.if !== `contains(fromJSON(needs.select.outputs.hosted_jobs), '${proof.job}')` ||
-          !runsScenario(job, proof, scenario.title)
+          !runsScenario(root, job, proof, scenario)
         )
           errors.push(`${label}: required CI job does not run this scenario`);
       }

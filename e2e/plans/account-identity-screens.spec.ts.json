@@ -1,0 +1,216 @@
+{
+  "scenarios": {
+    "googleIdentityRecipe": {
+      "title": "Existing Google declarations gain verified identity consent without changing app scopes or provider IDs",
+      "targets": {
+        "local": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Shared provider recipe is exercised through local public APIs."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "No real vendor authorization is performed."
+        }
+      }
+    },
+    "accountIdentityRows": {
+      "legacyStorage": true,
+      "title": "Verified account rows retain five app bindings and add a covered app without consent",
+      "targets": {
+        "local": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Local browser proves the shared identity rows; hosted policy is covered separately."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Synthetic OAuth issuer uses loopback."
+        }
+      }
+    },
+    "accountIdentityConsentScreen": {
+      "title": "An existing identity batches additional app permissions and retains the own-client path",
+      "targets": {
+        "local": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Local browser proves shared consent controls; hosted policy is covered separately."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Synthetic OAuth issuer uses loopback."
+        }
+      }
+    },
+    "accountIdentityFamilyMarks": {
+      "legacyStorage": true,
+      "title": "An identity shared by several apps shows its family mark; single-app rows keep theirs",
+      "targets": {
+        "local": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Local browser proves the row marks; hosted policy is covered separately."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Synthetic OAuth issuer uses loopback."
+        }
+      }
+    }
+  },
+  "runs": {
+    "googleIdentityRecipe": [
+      "host-managed-accounts-local:shared-identities-and-incremental-consent"
+    ],
+    "accountIdentityRows": [
+      "host-managed-accounts-local:shared-identities-and-incremental-consent"
+    ],
+    "accountIdentityConsentScreen": [
+      "host-managed-accounts-local:shared-identities-and-incremental-consent"
+    ],
+    "accountIdentityFamilyMarks": ["declared:local"]
+  },
+  "inputs": [
+    ".upstream/.changeset/account-identities-and-grants.md",
+    ".upstream/apps/hosted/cloud/alchemy.run.ts",
+    ".upstream/apps/hosted/cloud/src/contracts/oauth-wire.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/egress.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/executor.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/oauth-protocol.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/oauth-wire-worker.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/oauth-wire.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/product-services.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-account-identity-v1.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-account-proofs.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-identity-records.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/worker-build.ts",
+    ".upstream/apps/hosted/cloud/src/oauth-wire.ts",
+    ".upstream/apps/hosted/server/src/contracts/accounts.ts",
+    ".upstream/apps/hosted/server/src/contracts/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/mcp-connections.ts",
+    ".upstream/apps/hosted/server/src/implementation/oauth-account-connections.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-account-acquisition.ts",
+    ".upstream/apps/hosted/server/src/implementation/provider-account-methods.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-lifecycle.ts",
+    ".upstream/apps/hosted/web/src/contracts/account-projection.ts",
+    ".upstream/apps/hosted/web/src/contracts/accounts.ts",
+    ".upstream/apps/hosted/web/src/contracts/identity-consent.ts",
+    ".upstream/apps/hosted/web/src/implementation/components/connection-status.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/account-actions.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/accounts-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/accounts.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-account-methods.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/oauth-callback.tsx",
+    ".upstream/apps/local/server/src/contracts/account-connections.ts",
+    ".upstream/apps/local/server/src/contracts/dashboard.ts",
+    ".upstream/apps/local/server/src/implementation/app-accounts.ts",
+    ".upstream/apps/local/server/src/implementation/dashboard-oauth-connections.ts",
+    ".upstream/apps/local/server/src/implementation/dashboard.ts",
+    ".upstream/apps/local/web/src/contracts/accounts.ts",
+    ".upstream/apps/local/web/src/contracts/identity-consent.ts",
+    ".upstream/apps/local/web/src/contracts/oauth.ts",
+    ".upstream/apps/local/web/src/implementation/app.tsx",
+    ".upstream/apps/local/web/src/implementation/oauth.ts",
+    ".upstream/apps/local/web/src/implementation/pages/account-actions.tsx",
+    ".upstream/apps/local/web/src/implementation/pages/account-form.tsx",
+    ".upstream/apps/local/web/src/implementation/pages/accounts.tsx",
+    ".upstream/apps/local/web/src/implementation/pages/oauth-fields.tsx",
+    ".upstream/apps/local/web/src/implementation/pages/oauth.tsx",
+    ".upstream/packages/apps/package.json",
+    ".upstream/packages/apps/protocols/23.json",
+    ".upstream/packages/apps/protocols/27.json",
+    ".upstream/packages/apps/src/contracts/account-family.ts",
+    ".upstream/packages/apps/src/contracts/host.ts",
+    ".upstream/packages/apps/src/contracts/protocol-version.ts",
+    ".upstream/packages/apps/src/contracts/protocols/19.ts",
+    ".upstream/packages/apps/src/contracts/protocols/20.ts",
+    ".upstream/packages/apps/src/contracts/protocols/21.ts",
+    ".upstream/packages/apps/src/contracts/protocols/26.ts",
+    ".upstream/packages/apps/src/contracts/protocols/current.ts",
+    ".upstream/packages/apps/src/contracts/protocols/oauth-before-identities.ts",
+    ".upstream/packages/apps/src/contracts/protocols/released.ts",
+    ".upstream/packages/apps/src/contracts/provider.ts",
+    ".upstream/packages/apps/src/implementation/host.ts",
+    ".upstream/packages/apps/src/implementation/provider.ts",
+    ".upstream/packages/apps/src/index.ts",
+    ".upstream/packages/mcp/src/implementation/app-asset-paths.ts",
+    ".upstream/packages/mcp/src/implementation/app-assets.ts",
+    ".upstream/packages/sdk/package.json",
+    ".upstream/packages/sdk/src/contracts/account-acquisition-driver.ts",
+    ".upstream/packages/sdk/src/contracts/account-connection.ts",
+    ".upstream/packages/sdk/src/contracts/account-consumers.ts",
+    ".upstream/packages/sdk/src/contracts/account-family-recipes.ts",
+    ".upstream/packages/sdk/src/contracts/account-identity.ts",
+    ".upstream/packages/sdk/src/contracts/account.ts",
+    ".upstream/packages/sdk/src/contracts/apps.ts",
+    ".upstream/packages/sdk/src/contracts/executor.ts",
+    ".upstream/packages/sdk/src/contracts/index.ts",
+    ".upstream/packages/sdk/src/contracts/oauth-families.ts",
+    ".upstream/packages/sdk/src/contracts/oauth.ts",
+    ".upstream/packages/sdk/src/contracts/provider.ts",
+    ".upstream/packages/sdk/src/contracts/storage.ts",
+    ".upstream/packages/sdk/src/implementation/account-connections.ts",
+    ".upstream/packages/sdk/src/implementation/account-consumer-plan.ts",
+    ".upstream/packages/sdk/src/implementation/account-identification.ts",
+    ".upstream/packages/sdk/src/implementation/account-identities.ts",
+    ".upstream/packages/sdk/src/implementation/accounts.ts",
+    ".upstream/packages/sdk/src/implementation/app-protocols.ts",
+    ".upstream/packages/sdk/src/implementation/apps.ts",
+    ".upstream/packages/sdk/src/implementation/connection-state.ts",
+    ".upstream/packages/sdk/src/implementation/connection-target.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts",
+    ".upstream/packages/sdk/src/implementation/database.ts",
+    ".upstream/packages/sdk/src/implementation/handlers.ts",
+    ".upstream/packages/sdk/src/implementation/oauth-connection-plan.ts",
+    ".upstream/packages/sdk/src/implementation/oauth-consent-state.ts",
+    ".upstream/packages/sdk/src/implementation/oauth-grant-bindings.ts",
+    ".upstream/packages/sdk/src/implementation/oauth-grant-reuse.ts",
+    ".upstream/packages/sdk/src/implementation/oauth-protocol-native.ts",
+    ".upstream/packages/sdk/src/implementation/oauth-protocol-shared.ts",
+    ".upstream/packages/sdk/src/implementation/oauth-protocol.ts",
+    ".upstream/packages/sdk/src/implementation/oauth-scope-evidence.ts",
+    ".upstream/packages/sdk/src/implementation/oauth.ts",
+    ".upstream/packages/sdk/src/implementation/owner-moves.ts",
+    ".upstream/packages/sdk/src/implementation/owners.ts",
+    ".upstream/packages/sdk/src/implementation/promise.ts",
+    ".upstream/packages/sdk/src/implementation/provider.ts",
+    ".upstream/packages/sdk/src/implementation/saved-oauth-clients.ts",
+    ".upstream/packages/sdk/src/implementation/storage-migrations.ts",
+    ".upstream/packages/sdk/src/implementation/storage-schema.ts",
+    ".upstream/packages/sdk/src/implementation/storage.ts",
+    ".upstream/packages/sdk/src/oauth-protocol-contracts.ts",
+    ".upstream/packages/sdk/src/oauth-protocol.ts",
+    ".upstream/packages/ui/src/contracts/account-identities.ts",
+    ".upstream/packages/ui/src/contracts/identity-consent.ts",
+    ".upstream/packages/ui/src/contracts/identity-requests.ts",
+    ".upstream/packages/ui/src/contracts/oauth-scopes.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/account-health.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-row.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/accounts-client.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/accounts.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/identity-app-picker.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/identity-consent-client.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/identity-consent-complete.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/identity-consent.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/oauth-scopes.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/verify-identities-client.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/verify-identities.tsx",
+    ".upstream/playground/sdk/storage.ts"
+  ]
+}

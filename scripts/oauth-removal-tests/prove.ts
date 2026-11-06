@@ -1,3 +1,4 @@
+import { patternForGroup } from "../ci/declarations.ts";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdir, readFile, writeFile, unlink } from "node:fs/promises";
@@ -66,7 +67,7 @@ try {
   assert.equal(checked.status, 0, "Proof-only SQL gates and regression must typecheck");
   const child = spawn(
     "bun",
-    ["run", "e2e:cloud", "--test-name", "^Cloud account removal survives", "--workers", "1"],
+    ["run", "e2e:cloud", "--test-name", patternForGroup("oauth:removal"), "--workers", "1"],
     {
       cwd: upstream,
       stdio: "inherit",

@@ -1,0 +1,42 @@
+{
+  "scenarios": {
+    "poolSharing": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "native pool settings keep audiences separate from management and per-person caps",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses native hosted organization policies."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses runner-owned retained pool records and a signed loopback usage backend."
+        }
+      }
+    }
+  },
+  "runs": {
+    "poolSharing": ["host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/implementation/access-hooks.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/product-services.ts",
+    ".upstream/apps/hosted/self-host/src/implementation/auth-options.ts",
+    ".upstream/apps/hosted/server/package.json",
+    ".upstream/apps/hosted/server/src/contracts/api.ts",
+    ".upstream/apps/hosted/server/src/contracts/pool-usage.ts",
+    ".upstream/apps/hosted/server/src/implementation/api.ts",
+    ".upstream/apps/hosted/server/src/implementation/auth.ts",
+    ".upstream/apps/hosted/server/src/implementation/organization-roles.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-usage.ts",
+    ".upstream/apps/hosted/server/src/index.ts",
+    ".upstream/apps/hosted/web/src/contracts/errors.ts",
+    ".upstream/apps/hosted/web/src/implementation/components/organization-members.tsx",
+    "apps/pool/**",
+    "src/pool/**"
+  ]
+}

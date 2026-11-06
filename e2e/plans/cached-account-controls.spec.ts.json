@@ -1,0 +1,171 @@
+{
+  "scenarios": {
+    "initialCatalogControlsDesktop": {
+      "fixtures": "actors",
+      "title": "Initial catalog failure recovers connection controls 1440",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Hosted read transitions run on self-host."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no hosted connection modal."
+        }
+      }
+    },
+    "initialCatalogControlsPhone": {
+      "fixtures": "actors",
+      "title": "Initial catalog failure recovers connection controls 390",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Hosted read transitions run on self-host."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no hosted connection modal."
+        }
+      }
+    },
+    "initialCatalogDraftDesktop": {
+      "fixtures": "actors",
+      "title": "Initial catalog failure recovers credential form 1440",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Hosted read transitions run on self-host."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no hosted connection modal."
+        }
+      }
+    },
+    "initialCatalogDraftPhone": {
+      "fixtures": "actors",
+      "title": "Initial catalog failure recovers credential form 390",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Hosted read transitions run on self-host."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no hosted connection modal."
+        }
+      }
+    },
+    "cachedMethodsDesktop": {
+      "fixtures": "actors",
+      "title": "Known methods stay usable 1440",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Hosted read transitions run on self-host."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no hosted connection modal."
+        }
+      }
+    },
+    "cachedMethodsPhone": {
+      "fixtures": "actors",
+      "title": "Known methods stay usable 390",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Hosted read transitions run on self-host."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no hosted connection modal."
+        }
+      }
+    },
+    "cachedDraftDesktop": {
+      "fixtures": "actors",
+      "title": "Credential draft survives app refresh 1440",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Hosted read transitions run on self-host."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no hosted connection modal."
+        }
+      }
+    },
+    "cachedDraftPhone": {
+      "fixtures": "actors",
+      "title": "Credential draft survives app refresh 390",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Hosted read transitions run on self-host."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no hosted connection modal."
+        }
+      }
+    }
+  },
+  "runs": {
+    "initialCatalogControlsDesktop": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
+    ],
+    "initialCatalogControlsPhone": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
+    ],
+    "initialCatalogDraftDesktop": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
+    ],
+    "initialCatalogDraftPhone": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
+    ],
+    "cachedMethodsDesktop": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
+    ],
+    "cachedMethodsPhone": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
+    ],
+    "cachedDraftDesktop": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
+    ],
+    "cachedDraftPhone": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/connection-dialog.tsx",
+    ".upstream/packages/ui/src/contracts/app-accounts.ts"
+  ]
+}

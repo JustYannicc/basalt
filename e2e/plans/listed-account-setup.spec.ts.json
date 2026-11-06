@@ -1,0 +1,49 @@
+{
+  "scenarios": {
+    "listedSetupAccount": {
+      "fixtures": "actors",
+      "title": "Setup Edit and Delete use the listed account while the account is read",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Setup uses the same shared form; the synthetic official catalog runs on self-host."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The local dashboard keeps its own account dialogs."
+        }
+      }
+    },
+    "listedSetupAccountMobile": {
+      "fixtures": "actors",
+      "title": "Mobile setup Edit and Delete use the listed account while the account is read",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Setup uses the same shared form; the synthetic official catalog runs on self-host."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The local dashboard keeps its own account dialogs."
+        }
+      }
+    }
+  },
+  "runs": {
+    "listedSetupAccount": ["host-managed-accounts-pool:listed-account-actions"],
+    "listedSetupAccountMobile": ["host-managed-accounts-pool:listed-account-actions"]
+  },
+  "inputs": [
+    ".upstream/packages/ui/src/implementation/dashboard/account-actions.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/account-actions.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/accounts-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/accounts-setup.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx"
+  ]
+}

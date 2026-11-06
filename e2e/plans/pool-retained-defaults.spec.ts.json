@@ -1,0 +1,66 @@
+{
+  "scenarios": {
+    "cloudPoolRetainedDefaults": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Cloud default reconciliation retains legacy versions and recovery policy and refuses unknown declarations",
+      "targets": {
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The Cloud host owns automatic pool defaults."
+        },
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "manual-cron"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted pool defaults."
+        }
+      }
+    }
+  },
+  "runs": {
+    "cloudPoolRetainedDefaults": [
+      "pool-account-recovery:recovery-through-cloud-s-real-provisioning-queue"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/infrastructure/executor.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/product-services.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/product.ts",
+    ".upstream/apps/hosted/server/package.json",
+    ".upstream/apps/hosted/server/src/contracts/accounts.ts",
+    ".upstream/apps/hosted/server/src/contracts/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/contracts/provider-account-policy.ts",
+    ".upstream/apps/hosted/server/src/implementation/account-key-mirror.ts",
+    ".upstream/apps/hosted/server/src/implementation/accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-account-links.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/connection-policy.ts",
+    ".upstream/apps/hosted/server/src/implementation/oauth-account-connections.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-account-acquisition.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-account-registry.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-defaults.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-provider-mirror.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-records.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-retained-subscriptions.ts",
+    ".upstream/apps/hosted/server/src/implementation/provider-account-destination.ts",
+    ".upstream/apps/hosted/server/src/implementation/provider-account-methods.ts",
+    ".upstream/apps/hosted/server/src/implementation/provider-account-policy.ts",
+    ".upstream/apps/hosted/server/src/implementation/provider-app-identity.ts",
+    ".upstream/apps/hosted/server/src/implementation/provider-login-file.ts",
+    ".upstream/apps/hosted/server/src/implementation/requirement-account-creation.ts",
+    ".upstream/apps/hosted/server/src/implementation/requirement-login-file.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-lifecycle.ts",
+    ".upstream/packages/sdk/package.json",
+    ".upstream/packages/sdk/src/account-imports.ts",
+    ".upstream/packages/sdk/src/contracts/account-acquisition-driver.ts",
+    ".upstream/packages/sdk/src/contracts/executor.ts",
+    ".upstream/packages/sdk/src/implementation/account-acquisition-adapter.ts",
+    ".upstream/packages/sdk/src/implementation/account-acquisition-bindings.ts",
+    ".upstream/packages/sdk/src/implementation/account-acquisition-import.ts",
+    ".upstream/packages/sdk/src/implementation/apps.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts"
+  ]
+}

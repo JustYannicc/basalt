@@ -1,0 +1,87 @@
+{
+  "scenarios": {
+    "poolSetupConnect": {
+      "fixtures": "actors",
+      "serverEnvironment": {
+        "EXECUTOR_PRODUCT_NAME": "Signalbox"
+      },
+      "title": "Connect leads Claude Code and Codex with one-click pool setup and lists the person's computers",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The setup service is the deployment's own Worker; self-host covers the page."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no organization members or hosted Connect page."
+        }
+      }
+    },
+    "poolKeysConnect": {
+      "fixtures": "actors",
+      "serverEnvironment": {
+        "EXECUTOR_PRODUCT_NAME": "Signalbox"
+      },
+      "title": "Claude Desktop and the pool endpoint show a pool key once with their setup",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The setup service is the deployment's own Worker; self-host covers the page."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no organization members or hosted Connect page."
+        }
+      }
+    },
+    "poolSetupRetainedReturn": {
+      "fixtures": "actors",
+      "serverEnvironment": {
+        "EXECUTOR_PRODUCT_NAME": "Signalbox"
+      },
+      "title": "Returning to Connect shows the chosen pool and computers at once and refreshes them in the background",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The setup service is the deployment's own Worker; self-host covers the page."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no organization members or hosted Connect page."
+        }
+      }
+    }
+  },
+  "runs": {
+    "poolSetupRetainedReturn": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
+    ],
+    "poolSetupConnect": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
+    ],
+    "poolKeysConnect": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/web/src/implementation/components/organization.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/claude-desktop-setup.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/computer-quick-setup.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/computer-rows.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/connect.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/pool-endpoint.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/pool-setup-retention.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/pool-setup.tsx",
+    "apps/pool/**",
+    "src/pool/**"
+  ]
+}

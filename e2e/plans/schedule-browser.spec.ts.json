@@ -1,0 +1,46 @@
+{
+  "scenarios": {
+    "scheduledBrowser": {
+      "title": "browser schedule controls enable, run, approve and pause a mutation",
+      "targets": {
+        "local": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Shared UI exercised locally; hosted authority covered separately."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Shared UI exercised locally; hosted authority covered separately."
+        }
+      }
+    }
+  },
+  "runs": {
+    "scheduledBrowser": [
+      "human-in-the-loop:local-navigation-custom-displays-and-scheduled-approvals"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/contracts/schedules.ts",
+    ".upstream/apps/hosted/server/src/implementation/schedules.ts",
+    ".upstream/apps/hosted/web/src/contracts/navigation.ts",
+    ".upstream/apps/hosted/web/src/contracts/schedules.ts",
+    ".upstream/apps/hosted/web/src/implementation/components/dashboard-frame.tsx",
+    ".upstream/apps/hosted/web/src/implementation/components/page-pending.tsx",
+    ".upstream/apps/local/server/src/contracts/schedules.ts",
+    ".upstream/apps/local/server/src/implementation/schedules.ts",
+    ".upstream/apps/local/web/src/contracts/navigation.ts",
+    ".upstream/apps/local/web/src/contracts/schedules.ts",
+    ".upstream/apps/local/web/src/implementation/app.tsx",
+    ".upstream/apps/local/web/src/implementation/pages/approvals.tsx",
+    ".upstream/packages/mcp/src/contracts/browser.ts",
+    ".upstream/packages/ui/src/contracts/schedules.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/approvals.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/loading.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/mcp-consent.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/schedules.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/workflow-input.tsx"
+  ]
+}

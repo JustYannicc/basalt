@@ -7,6 +7,7 @@ const accounts = [
   "pool-account-recovery",
   "contributed-accounts",
   "account-acquisition",
+  "account-usage",
   "personal-data-reporting",
   "client-native-product",
   "google-account-recovery",
@@ -44,6 +45,7 @@ export const heavyJobs = [
   ...operations,
   "compiler-diagnostics",
   "human-in-the-loop",
+  "human-in-the-loop-cloud",
   "access-editor-reads",
   "contributed-accounts",
   "personal-data-reporting",
@@ -57,14 +59,23 @@ export const heavyJobs = [
   "elevenlabs-sign-in",
   "mcp-apps",
   "account-acquisition",
+  "account-usage",
   "pool-runtime",
+  "upstream-image",
   "production-build",
+  "declared-self-host",
+  "declared-local",
+  "declared-cloud",
   "docs-build",
   "upstream-contracts",
 ];
 
 // Shared infrastructure changes need every consumer. Feature rules below may overlap deliberately.
 export const sharedInputs = [
+  ".upstream/packages/ui/src/implementation/dashboard/{app-detail,publish-app}.tsx",
+  // Helpers and fixture assets may have consumers outside any one declaration.
+  ".upstream/e2e/support/**",
+  ".upstream/e2e/fixtures/**",
   "upstream.json",
   "brand.ts",
   "alchemy.run.ts",
@@ -179,7 +190,7 @@ export const areas = [
   },
   {
     paths: [".upstream/**/*approval*", ".upstream/**/*workflow*", ".upstream/**/*workflow*/**"],
-    jobs: ["human-in-the-loop"],
+    jobs: ["human-in-the-loop", "human-in-the-loop-cloud"],
   },
   {
     paths: [
@@ -208,11 +219,11 @@ export const areas = [
       ".upstream/**/*route*",
       ".upstream/**/*loading*",
     ],
-    jobs: ["dashboard-batch", "human-in-the-loop"],
+    jobs: ["dashboard-batch", "human-in-the-loop", "human-in-the-loop-cloud"],
   },
   {
     paths: [".upstream/**/*mcp-app*", ".upstream/packages/{apps,sdk}/**"],
-    jobs: ["mcp-apps", ...accounts, "human-in-the-loop", ...operations],
+    jobs: ["mcp-apps", ...accounts, "human-in-the-loop", "human-in-the-loop-cloud", ...operations],
   },
   { paths: [".upstream/**/*migration*", ".upstream/**/*migration*/**"], jobs: heavyJobs },
   {
@@ -232,21 +243,13 @@ export const areas = [
 ];
 
 export const staticInputs = [
-  "architecture/**",
-  "docs/**",
+  "architecture/**/*.c4",
+  "architecture/**/*.md",
+  "docs/**/*.md",
   "README.md",
   "LICENSE",
   "AGENTS.md",
   "CONTRIBUTING.md",
   ".github/pull_request_template.md",
   ".gitignore",
-  "scripts/cpa-*",
-  "scripts/cpa-*/**",
-  "scripts/architecture/**",
-  "scripts/app-lint/**",
-  "scripts/*.{test,spec}.{ts,mjs}",
-  "src/**/*.{test,spec}.{ts,mjs}",
-  "apps/pool/**/*.{test,spec}.{ts,mjs}",
-  "e2e/scale-{test,verdict}.test.mjs",
-  "e2e/slack/*.test.mjs",
 ];

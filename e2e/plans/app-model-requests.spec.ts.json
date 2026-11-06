@@ -1,0 +1,124 @@
+{
+  "scenarios": {
+    "appModelRequests": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "app model bindings delegate one pool with current caller attribution and private display facts",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Pool bindings and access policy belong to the hosted product."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses runner-owned native pool metadata and a signed loopback model peer."
+        }
+      }
+    },
+    "appModelLifecycle": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "app model requests preserve refusals cancellation and callerless schedule attribution without retries",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Pool bindings and access policy belong to the hosted product."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses runner-owned native pool metadata and a signed loopback model peer."
+        }
+      }
+    }
+  },
+  "runs": {
+    "appModelRequests": ["host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"],
+    "appModelLifecycle": ["host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/scripts/pool-token-retirement-queries.ts",
+    ".upstream/apps/hosted/cloud/src/app-data.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/executor.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/pool-inventory.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts",
+    ".upstream/apps/hosted/self-host/src/implementation/executor-services.ts",
+    ".upstream/apps/hosted/server/package.json",
+    ".upstream/apps/hosted/server/src/contracts/api.ts",
+    ".upstream/apps/hosted/server/src/contracts/apps.ts",
+    ".upstream/apps/hosted/server/src/contracts/models.ts",
+    ".upstream/apps/hosted/server/src/contracts/pool-creation.ts",
+    ".upstream/apps/hosted/server/src/contracts/pool-usage.ts",
+    ".upstream/apps/hosted/server/src/contracts/pools.ts",
+    ".upstream/apps/hosted/server/src/implementation/api.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-model-contract.ts",
+    ".upstream/apps/hosted/server/src/implementation/apps.ts",
+    ".upstream/apps/hosted/server/src/implementation/catalog.ts",
+    ".upstream/apps/hosted/server/src/implementation/migrations.ts",
+    ".upstream/apps/hosted/server/src/implementation/model-binding-schema.ts",
+    ".upstream/apps/hosted/server/src/implementation/model-bindings.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-access-hook.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-access-provenance.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-account-recovery.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-app-upgrades.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-catalog.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-defaults.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-models.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-records.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-usage.ts",
+    ".upstream/apps/hosted/server/src/implementation/pools.ts",
+    ".upstream/apps/hosted/server/src/implementation/provisioning.ts",
+    ".upstream/apps/hosted/web/src/contracts/errors.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/add-app.tsx",
+    ".upstream/apps/local/web/src/implementation/pages/catalog.tsx",
+    ".upstream/packages/app-data/src/cloudflare.ts",
+    ".upstream/packages/apps/protocols/26.json",
+    ".upstream/packages/apps/src/contracts/app.ts",
+    ".upstream/packages/apps/src/contracts/context.ts",
+    ".upstream/packages/apps/src/contracts/host.ts",
+    ".upstream/packages/apps/src/contracts/models.ts",
+    ".upstream/packages/apps/src/contracts/protocol-version.ts",
+    ".upstream/packages/apps/src/contracts/protocols/25.ts",
+    ".upstream/packages/apps/src/contracts/protocols/current.ts",
+    ".upstream/packages/apps/src/contracts/protocols/released.ts",
+    ".upstream/packages/apps/src/contracts/workflows.ts",
+    ".upstream/packages/apps/src/host.ts",
+    ".upstream/packages/apps/src/implementation/app.ts",
+    ".upstream/packages/apps/src/implementation/failure-detail.ts",
+    ".upstream/packages/apps/src/implementation/host.ts",
+    ".upstream/packages/apps/src/implementation/models.ts",
+    ".upstream/packages/apps/src/implementation/workflow-context.ts",
+    ".upstream/packages/apps/src/index.ts",
+    ".upstream/packages/catalog/src/index.ts",
+    ".upstream/packages/mcp/src/implementation/app-asset-paths.ts",
+    ".upstream/packages/mcp/src/implementation/app-assets.ts",
+    ".upstream/packages/sdk/src/contracts/apps.ts",
+    ".upstream/packages/sdk/src/contracts/executor.ts",
+    ".upstream/packages/sdk/src/contracts/index.ts",
+    ".upstream/packages/sdk/src/contracts/models.ts",
+    ".upstream/packages/sdk/src/contracts/workerd-host.ts",
+    ".upstream/packages/sdk/src/implementation/app-protocols.ts",
+    ".upstream/packages/sdk/src/implementation/app-runner.ts",
+    ".upstream/packages/sdk/src/implementation/app-runtime.ts",
+    ".upstream/packages/sdk/src/implementation/apps.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts",
+    ".upstream/packages/sdk/src/implementation/models.ts",
+    ".upstream/packages/sdk/src/implementation/remote-app-runner.ts",
+    ".upstream/packages/sdk/src/implementation/worker-bridge.ts",
+    ".upstream/packages/sdk/src/implementation/worker-elicitation.ts",
+    ".upstream/packages/sdk/src/implementation/worker-model-rpc.ts",
+    ".upstream/packages/sdk/src/implementation/workerd-client.ts",
+    ".upstream/packages/sdk/src/implementation/workerd-entry.ts",
+    ".upstream/packages/sdk/src/implementation/workflows.ts",
+    ".upstream/packages/ui/src/contracts/dashboard.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/catalog-add-another.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/catalog-instances.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/catalog-row-actions.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/catalog.tsx"
+  ]
+}

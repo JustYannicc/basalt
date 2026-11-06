@@ -1,17 +1,22 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { matchesGlob } from "node:path";
+import { fileURLToPath } from "node:url";
 import { areas, heavyJobs, sharedInputs, staticInputs } from "./areas.ts";
+import { matchingDeclarations, readDeclarations } from "./declarations.ts";
 import { isEligibleJob } from "../ci-bundles/schedule.ts";
+import { carryTargets, frozenInputMatcher, isRelativeInput } from "./inputs.ts";
+
+export { carryTargets } from "./inputs.ts";
 
 const matches = (file: string, patterns: readonly string[]) =>
   patterns.some((pattern) => matchesGlob(file, pattern));
-const validPath = (file: string) =>
-  file.length > 0 &&
-  !file.startsWith("/") &&
-  !file.split("/").some((part) => part === ".." || part === ".");
 
 export function selectPaths(paths: readonly string[]) {
+  const declarations = readDeclarations();
+  const frozenInput = frozenInputMatcher(fileURLToPath(new URL("../../", import.meta.url)));
   const reasons = new Map<string, Set<string>>();
+  const declaredFiles = new Set<string>();
+  let complete = false;
   const select = (jobs: readonly string[], path: string) => {
     for (const job of jobs) {
       if (!heavyJobs.includes(job)) throw new Error("Unknown CI job in area declaration");
@@ -21,18 +26,34 @@ export function selectPaths(paths: readonly string[]) {
     }
   };
   for (const path of [...new Set(paths)].sort()) {
-    if (!validPath(path)) throw new Error("Changed path escapes the repository");
+    if (!isRelativeInput(path)) throw new Error("Changed path escapes the repository");
+    const declared = matchingDeclarations(path, declarations);
+    for (const entry of declared) {
+      declaredFiles.add(entry.file);
+      select(
+        entry.jobs.filter((job) => job !== "fast"),
+        path,
+      );
+    }
+    if (
+      /^(?:\.upstream\/e2e\/tests\/|e2e\/plans\/)/.test(path) &&
+      declared.some((entry) => entry.jobs.length)
+    )
+      continue;
     if (matches(path, sharedInputs)) {
+      complete = true;
       select(heavyJobs, path);
       continue;
     }
     if (matches(path, staticInputs)) continue;
     const affected = areas.filter((area) => matches(path, area.paths));
-    // A broad build input alone does not establish which product scenarios cover a runtime change.
-    const covered = affected.some((area) => area.jobs.some((job) => job !== "production-build"));
+    // Area heuristics cannot establish that every dependent scenario is declared.
+    const covered = frozenInput(path) && declared.some((entry) => entry.jobs.length);
+    if (!covered) complete = true;
     select(covered ? affected.flatMap((area) => area.jobs) : heavyJobs, path);
   }
   return {
+    declaredFiles: complete ? null : [...declaredFiles].sort(),
     jobs: heavyJobs.filter((job) => reasons.has(job)),
     reasons: Object.fromEntries([...reasons].map(([job, paths]) => [job, [...paths]])),
   };
@@ -61,17 +82,6 @@ function content(root: string, ref: string, path: string) {
   if (result.status === 128) return "";
   if (result.status !== 0) throw new Error("Could not read the changed carry");
   return result.stdout;
-}
-
-export function carryTargets(patch: string) {
-  const diffs = patch.split("\n").filter((line) => line.startsWith("diff --git "));
-  if (!diffs.length) throw new Error("Changed carry has no target files");
-  return diffs.flatMap((line) => {
-    const match = /^diff --git a\/(\S+) b\/(\S+)$/.exec(line);
-    if (!match || !validPath(match[1]!) || !validPath(match[2]!))
-      throw new Error("Unsupported carry target path");
-    return [...new Set([match[1]!, match[2]!])].map((target) => ".upstream/" + target);
-  });
 }
 
 export function changedInputs(root: string, base: string, head: string) {

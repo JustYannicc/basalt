@@ -1,0 +1,34 @@
+{
+  "scenarios": {
+    "cloudPoolMigrationInventory": {
+      "fixtures": "actors",
+      "title": "Cloud pool migration inventory stays private and read-only through the authenticated cron job",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The inventory is an internal Cloud job using the Cloud runtime database."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The inventory is an internal Cloud job using the Cloud runtime database."
+        }
+      }
+    }
+  },
+  "runs": {
+    "cloudPoolMigrationInventory": [
+      "pool-inventory:the-cloud-inventory-and-exact-id-token-retirement-tooling"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/infrastructure/background-jobs.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/pool-inventory.ts",
+    ".upstream/apps/hosted/cloud/src/main.ts",
+    "apps/pool/**",
+    "src/pool/**"
+  ]
+}

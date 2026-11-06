@@ -1,0 +1,48 @@
+{
+  "scenarios": {
+    "navigationIntentReads": {
+      "fixtures": "actors",
+      "title": "Hovering an app link reads the app and its tools before the click, and opening it reuses that read",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "attached"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local pages are not organization routes, which declare these reads."
+        }
+      }
+    }
+  },
+  "runs": {
+    "navigationIntentReads": ["declared:self-host"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/web/src/implementation/router.tsx",
+    ".upstream/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx",
+    ".upstream/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx",
+    ".upstream/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.connect.tsx",
+    ".upstream/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.groups.index.tsx",
+    ".upstream/apps/hosted/self-host/web/src/implementation/router.tsx",
+    ".upstream/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx",
+    ".upstream/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx",
+    ".upstream/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.connect.tsx",
+    ".upstream/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.groups.index.tsx",
+    ".upstream/apps/hosted/web/src/contracts/resource-access.ts",
+    ".upstream/apps/hosted/web/src/implementation/components/organization.tsx",
+    ".upstream/apps/hosted/web/src/implementation/components/page-pending.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/accounts.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-detail.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/approvals.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/connect.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/groups.tsx",
+    ".upstream/packages/dashboard-start/package.json",
+    ".upstream/packages/dashboard-start/src/implementation/loaded-value.ts",
+    ".upstream/packages/dashboard-start/src/implementation/registry.tsx",
+    ".upstream/packages/ui/src/contracts/refresh.ts"
+  ]
+}

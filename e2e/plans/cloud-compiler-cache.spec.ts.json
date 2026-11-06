@@ -1,0 +1,42 @@
+{
+  "scenarios": {
+    "cloudCompilerCache": {
+      "fixtures": "cli",
+      "title": "Production compiler cache reuses only intact output from the same release",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "This scenario runs the Cloud compiler Worker with production settings."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "This scenario runs the Cloud compiler Worker with production settings."
+        }
+      }
+    }
+  },
+  "runs": {
+    "cloudCompilerCache": ["compiler-diagnostics:a-compiler-deadline-retains-its-phase-trail"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/compiler.ts",
+    ".upstream/apps/hosted/cloud/src/implementation/app-build.ts",
+    ".upstream/apps/hosted/cloud/src/implementation/compiler-cache-config.ts",
+    ".upstream/apps/hosted/cloud/src/implementation/compiler-phases.ts",
+    ".upstream/apps/hosted/cloud/src/implementation/compiler-result-cache.ts",
+    ".upstream/apps/hosted/cloud/src/implementation/compiler-runtime.ts",
+    ".upstream/packages/sdk/src/implementation/worker-build.ts",
+    ".upstream/packages/sdk/src/implementation/worker-dependencies.ts",
+    ".upstream/packages/sdk/src/workerd-build.ts",
+    ".upstream/scripts/compiler-cache-proof/deployment.ts",
+    ".upstream/scripts/compiler-cache-proof/driver.ts",
+    ".upstream/scripts/compiler-cache-proof/main.ts",
+    ".upstream/scripts/compiler-cache-proof/runtime.ts",
+    ".upstream/scripts/compiler-cache-proof/storage.ts",
+    ".upstream/scripts/compiler-cache-proof/worker.ts"
+  ]
+}

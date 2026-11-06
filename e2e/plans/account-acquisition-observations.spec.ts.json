@@ -1,0 +1,118 @@
+{
+  "scenarios": {
+    "accountAcquisitionObservations": {
+      "fixtures": "actors",
+      "title": "driver observations coalesce, redact references and retain readings while a registration is unavailable",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The local driver lifecycle scenario covers retained readings across a process restart."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Requires process-owned registration and a loopback credential service."
+        }
+      }
+    },
+    "accountAcquisitionOptional": {
+      "fixtures": "actors",
+      "title": "missing driver hooks do not create health success and a present void check does",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises shared SDK capability handling through the hosted product."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Requires process-owned registration and a loopback credential service."
+        }
+      }
+    }
+  },
+  "runs": {
+    "accountAcquisitionObservations": [
+      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
+    ],
+    "accountAcquisitionOptional": [
+      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/self-host/package.json",
+    ".upstream/apps/hosted/server/src/contracts/accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/interactive-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-account-acquisition.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-access.ts",
+    ".upstream/apps/hosted/web/src/contracts/errors.ts",
+    ".upstream/apps/local/server/src/contracts/account-connections.ts",
+    ".upstream/apps/local/server/src/contracts/dashboard.ts",
+    ".upstream/apps/local/server/src/index.ts",
+    ".upstream/apps/local/web/src/contracts/errors.ts",
+    ".upstream/packages/apps/protocols/20.json",
+    ".upstream/packages/apps/src/contracts/host.ts",
+    ".upstream/packages/apps/src/contracts/protocol-version.ts",
+    ".upstream/packages/apps/src/contracts/protocols/19.ts",
+    ".upstream/packages/apps/src/contracts/protocols/current.ts",
+    ".upstream/packages/apps/src/contracts/protocols/released.ts",
+    ".upstream/packages/apps/src/contracts/provider.ts",
+    ".upstream/packages/apps/src/implementation/connect.ts",
+    ".upstream/packages/apps/src/implementation/host.ts",
+    ".upstream/packages/apps/src/implementation/provider.ts",
+    ".upstream/packages/mcp/src/implementation/app-asset-paths.ts",
+    ".upstream/packages/mcp/src/implementation/app-assets.ts",
+    ".upstream/packages/sdk/src/contracts/account-acquisition-driver.ts",
+    ".upstream/packages/sdk/src/contracts/account-connection.ts",
+    ".upstream/packages/sdk/src/contracts/account-observation.ts",
+    ".upstream/packages/sdk/src/contracts/account.ts",
+    ".upstream/packages/sdk/src/contracts/apps.ts",
+    ".upstream/packages/sdk/src/contracts/executor.ts",
+    ".upstream/packages/sdk/src/contracts/index.ts",
+    ".upstream/packages/sdk/src/contracts/interactive-accounts.ts",
+    ".upstream/packages/sdk/src/core.ts",
+    ".upstream/packages/sdk/src/implementation/account-acquisition-adapter.ts",
+    ".upstream/packages/sdk/src/implementation/account-acquisition-bindings.ts",
+    ".upstream/packages/sdk/src/implementation/account-acquisition-connect.ts",
+    ".upstream/packages/sdk/src/implementation/account-acquisition-output.ts",
+    ".upstream/packages/sdk/src/implementation/account-acquisition-registry.ts",
+    ".upstream/packages/sdk/src/implementation/account-acquisition-retirement.ts",
+    ".upstream/packages/sdk/src/implementation/account-acquisition-runtime.ts",
+    ".upstream/packages/sdk/src/implementation/account-acquisition-schema.ts",
+    ".upstream/packages/sdk/src/implementation/account-driver-check-schema.ts",
+    ".upstream/packages/sdk/src/implementation/account-driver-health.ts",
+    ".upstream/packages/sdk/src/implementation/account-driver-observation-store.ts",
+    ".upstream/packages/sdk/src/implementation/account-driver-observations.ts",
+    ".upstream/packages/sdk/src/implementation/account-driver-source.ts",
+    ".upstream/packages/sdk/src/implementation/account-health.ts",
+    ".upstream/packages/sdk/src/implementation/account-observation-state.ts",
+    ".upstream/packages/sdk/src/implementation/account-observation-store.ts",
+    ".upstream/packages/sdk/src/implementation/account-observations.ts",
+    ".upstream/packages/sdk/src/implementation/accounts.ts",
+    ".upstream/packages/sdk/src/implementation/app-protocols.ts",
+    ".upstream/packages/sdk/src/implementation/apps.ts",
+    ".upstream/packages/sdk/src/implementation/connection-interactive.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts",
+    ".upstream/packages/sdk/src/implementation/database.ts",
+    ".upstream/packages/sdk/src/implementation/handlers.ts",
+    ".upstream/packages/sdk/src/implementation/interactive-accounts.ts",
+    ".upstream/packages/sdk/src/implementation/interactive-attempts.ts",
+    ".upstream/packages/sdk/src/implementation/interactive-runner.ts",
+    ".upstream/packages/sdk/src/implementation/interactive-state.ts",
+    ".upstream/packages/sdk/src/implementation/owner-moves.ts",
+    ".upstream/packages/sdk/src/implementation/owners.ts",
+    ".upstream/packages/sdk/src/implementation/promise.ts",
+    ".upstream/packages/sdk/src/implementation/selection.ts",
+    ".upstream/packages/sdk/src/implementation/storage-migrations.ts",
+    ".upstream/packages/sdk/src/implementation/storage.ts",
+    ".upstream/packages/sdk/src/index.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/account-health-line.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-health.tsx",
+    ".upstream/playground/sdk/storage.ts"
+  ]
+}

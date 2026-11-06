@@ -1,0 +1,47 @@
+{
+  "scenarios": {
+    "nativeAccountCreateBeforeLink": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "native token creation keeps one saved account through mirror failure and a two-pool link retry",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted native pool authorization and account creation."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses process-owned product registrations and synthetic native pool opt-in."
+        }
+      }
+    }
+  },
+  "runs": {
+    "nativeAccountCreateBeforeLink": [
+      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/infrastructure/executor.ts",
+    ".upstream/apps/hosted/server/package.json",
+    ".upstream/apps/hosted/server/src/contracts/accounts.ts",
+    ".upstream/apps/hosted/server/src/contracts/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-account-links.ts",
+    ".upstream/apps/hosted/server/src/implementation/native-pool-account-mirror.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-account-acquisition.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-account-connection.ts",
+    ".upstream/apps/hosted/server/src/implementation/requirement-account-creation.ts",
+    ".upstream/apps/hosted/web/src/contracts/errors.ts",
+    ".upstream/packages/apps/src/host.ts",
+    ".upstream/packages/apps/src/implementation/host.ts",
+    ".upstream/packages/mcp/src/implementation/app-asset-paths.ts",
+    ".upstream/packages/mcp/src/implementation/app-assets.ts",
+    ".upstream/packages/sdk/src/contracts/account.ts",
+    ".upstream/packages/sdk/src/core.ts",
+    ".upstream/packages/sdk/src/implementation/accounts.ts"
+  ]
+}

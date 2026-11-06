@@ -1,0 +1,35 @@
+{
+  "scenarios": {
+    "catalogOAuthAccounts": {
+      "fixtures": "actors",
+      "title": "Catalog OAuth grants keep each person's shared-client account private",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Restarts a runner-owned product against synthetic authorization servers."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local products have no operator OAuth clients."
+        }
+      }
+    }
+  },
+  "runs": {
+    "catalogOAuthAccounts": [
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/implementation/first-party-oauth.ts",
+    ".upstream/apps/hosted/server/src/implementation/shared-catalog-oauth.ts",
+    ".upstream/apps/hosted/web/src/contracts/errors.ts",
+    ".upstream/packages/sdk/src/contracts/oauth-families.ts",
+    ".upstream/packages/sdk/src/contracts/oauth-scopes.ts",
+    ".upstream/packages/sdk/src/contracts/oauth.ts",
+    ".upstream/packages/sdk/src/implementation/oauth.ts"
+  ]
+}

@@ -1,3 +1,4 @@
+import { patternForGroup } from "../ci/declarations.ts";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdir, readFile, writeFile, unlink } from "node:fs/promises";
@@ -102,7 +103,7 @@ try {
   assert.equal(checked.status, 0, "Disposable SQL gates and regression must typecheck");
   const child = spawn(
     "bun",
-    ["run", "e2e:cloud", "--test-name", "^Cloud discards a rotated refresh", "--workers", "1"],
+    ["run", "e2e:cloud", "--test-name", patternForGroup("oauth:discard"), "--workers", "1"],
     {
       cwd: upstream,
       stdio: "inherit",

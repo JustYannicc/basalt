@@ -1,0 +1,87 @@
+{
+  "scenarios": {
+    "embeddedAppUi": {
+      "fixtures": "actors",
+      "appOrigin": true,
+      "title": "embedded app screens sign in on isolated opaque origins and refuse foreign frames",
+      "serverEnvironment": {
+        "EXECUTOR_PRODUCT_NAME": "Signalbox",
+        "BETTER_AUTH_URL": "http://app.fixture.localhost:0",
+        "EXECUTOR_APP_UI_BASE_URL": "http://fixture.localhost:0",
+        "EXECUTOR_APP_UI_ADDRESS_SCHEME": "opaque",
+        "EXECUTOR_APP_UI_EMBEDDED": "true"
+      },
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "This scenario owns a self-host process with opaque addressing and embedding enabled."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host app origins."
+        }
+      }
+    }
+  },
+  "runs": {
+    "embeddedAppUi": ["declared:self-host"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/alchemy.run.ts",
+    ".upstream/apps/hosted/cloud/src/app-domains.ts",
+    ".upstream/apps/hosted/cloud/src/app-ui.ts",
+    ".upstream/apps/hosted/cloud/src/contracts/browser.ts",
+    ".upstream/apps/hosted/cloud/src/contracts/passkey-enrollment.ts",
+    ".upstream/apps/hosted/cloud/src/implementation/auth-options.ts",
+    ".upstream/apps/hosted/cloud/src/implementation/entry.ts",
+    ".upstream/apps/hosted/cloud/src/implementation/product-analytics.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/app-domains.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/auth.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/product-services.ts",
+    ".upstream/apps/hosted/cloud/src/main.ts",
+    ".upstream/apps/hosted/cloud/web/src/contracts/passkey-enrollment.ts",
+    ".upstream/apps/hosted/cloud/web/src/implementation/routeTree.gen.ts",
+    ".upstream/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug_.apps.$appId.window.tsx",
+    ".upstream/apps/hosted/self-host/src/implementation/executor-services.ts",
+    ".upstream/apps/hosted/self-host/src/implementation/routes.ts",
+    ".upstream/apps/hosted/self-host/src/main.ts",
+    ".upstream/apps/hosted/self-host/web/src/implementation/routeTree.gen.ts",
+    ".upstream/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug_.apps.$appId.window.tsx",
+    ".upstream/apps/hosted/server/src/contracts/api.ts",
+    ".upstream/apps/hosted/server/src/contracts/app-ui.ts",
+    ".upstream/apps/hosted/server/src/contracts/apps.ts",
+    ".upstream/apps/hosted/server/src/contracts/browser.ts",
+    ".upstream/apps/hosted/server/src/contracts/organization.ts",
+    ".upstream/apps/hosted/server/src/contracts/resource-access.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-addresses.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-ui.ts",
+    ".upstream/apps/hosted/server/src/implementation/apps.ts",
+    ".upstream/apps/hosted/server/src/implementation/auth.ts",
+    ".upstream/apps/hosted/server/src/implementation/document.ts",
+    ".upstream/apps/hosted/server/src/implementation/organization.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-access.ts",
+    ".upstream/apps/hosted/testing/accounts.ts",
+    ".upstream/apps/hosted/web/src/contracts/app-ui.ts",
+    ".upstream/apps/hosted/web/src/implementation/components/page-pending.tsx",
+    ".upstream/apps/hosted/web/src/implementation/last-organization.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-detail.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-screen.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-sign-in.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-window.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/apps.tsx",
+    ".upstream/apps/marketing/src/content/site-visitor.ts",
+    ".upstream/apps/marketing/src/layouts/Layout.astro",
+    ".upstream/packages/apps/src/implementation/ui-client.ts",
+    ".upstream/packages/apps/src/implementation/ui-serving.ts",
+    ".upstream/packages/dashboard-start/src/implementation/in-process.ts",
+    ".upstream/packages/ui/src/contracts/dashboard.ts",
+    ".upstream/packages/ui/src/contracts/display.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/app-detail.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/app-loading.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/apps.tsx",
+    ".upstream/packages/ui/src/implementation/hooks/display-format.ts"
+  ]
+}

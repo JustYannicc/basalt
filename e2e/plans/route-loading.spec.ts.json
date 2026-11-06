@@ -1,0 +1,47 @@
+{
+  "scenarios": {
+    "routeLoading": {
+      "fixtures": "actors",
+      "title": "Before a route's data or code arrives, it shows that route's own heading and loading shape, never another page's",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local renders complete documents and has no hosted sign-in, accounts or groups."
+        }
+      }
+    }
+  },
+  "runs": {
+    "routeLoading": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab",
+      "human-in-the-loop:the-human-in-the-loop-route-while-cloud-code-and-data-load"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/contracts/schedules.ts",
+    ".upstream/apps/hosted/server/src/implementation/schedules.ts",
+    ".upstream/apps/hosted/web/src/contracts/navigation.ts",
+    ".upstream/apps/hosted/web/src/contracts/schedules.ts",
+    ".upstream/apps/hosted/web/src/implementation/components/dashboard-frame.tsx",
+    ".upstream/apps/hosted/web/src/implementation/components/page-pending.tsx",
+    ".upstream/apps/local/server/src/contracts/schedules.ts",
+    ".upstream/apps/local/server/src/implementation/schedules.ts",
+    ".upstream/apps/local/web/src/contracts/navigation.ts",
+    ".upstream/apps/local/web/src/contracts/schedules.ts",
+    ".upstream/apps/local/web/src/implementation/app.tsx",
+    ".upstream/apps/local/web/src/implementation/pages/approvals.tsx",
+    ".upstream/packages/mcp/src/contracts/browser.ts",
+    ".upstream/packages/ui/src/contracts/schedules.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/approvals.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/loading.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/mcp-consent.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/schedules.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/workflow-input.tsx"
+  ]
+}

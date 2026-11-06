@@ -1,0 +1,39 @@
+{
+  "scenarios": {
+    "cloudRetiredPoolTokenBatch": {
+      "fixtures": "actors",
+      "title": "Cloud retired pool token command resumes a partial batch and recovers exact selected IDs",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "This operator command uses hosted Cloud PostgreSQL."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not provision hosted pool transport tokens."
+        }
+      }
+    }
+  },
+  "runs": {
+    "cloudRetiredPoolTokenBatch": [
+      "pool-inventory:the-cloud-inventory-and-exact-id-token-retirement-tooling"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/scripts/pool-token-retirement-apply.ts",
+    ".upstream/apps/hosted/cloud/scripts/pool-token-retirement-checkpoint.ts",
+    ".upstream/apps/hosted/cloud/scripts/pool-token-retirement-contracts.ts",
+    ".upstream/apps/hosted/cloud/scripts/pool-token-retirement-database.ts",
+    ".upstream/apps/hosted/cloud/scripts/pool-token-retirement-inventory.ts",
+    ".upstream/apps/hosted/cloud/scripts/pool-token-retirement-queries.ts",
+    ".upstream/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts",
+    ".upstream/apps/hosted/cloud/scripts/pool-token-retirement-report.ts",
+    ".upstream/apps/hosted/cloud/scripts/retired-pool-tokens.ts",
+    ".upstream/apps/hosted/server/package.json"
+  ]
+}

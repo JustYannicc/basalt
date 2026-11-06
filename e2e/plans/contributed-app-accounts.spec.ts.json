@@ -1,0 +1,84 @@
+{
+  "scenarios": {
+    "contributedAppAccountsBrowser": {
+      "fixtures": "actors",
+      "title": "the Accounts tab names contributors and lets members add accounts and remove their own contributions while ordinary requirements stay read-only",
+      "targets": {
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has one owner and no organization members."
+        },
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        }
+      }
+    }
+  },
+  "runs": {
+    "contributedAppAccountsBrowser": [
+      "contributed-accounts:contributed-account-authority-and-recovery",
+      "contributed-accounts:contributed-accounts-through-cloud"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/infrastructure/background-jobs.ts",
+    ".upstream/apps/hosted/cloud/src/main.ts",
+    ".upstream/apps/hosted/self-host/src/implementation/routes.ts",
+    ".upstream/apps/hosted/self-host/src/worker.ts",
+    ".upstream/apps/hosted/server/package.json",
+    ".upstream/apps/hosted/server/src/contracts/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/account-identity-schema.ts",
+    ".upstream/apps/hosted/server/src/implementation/account-identity.ts",
+    ".upstream/apps/hosted/server/src/implementation/accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-account-links.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-link-policy.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-ui.ts",
+    ".upstream/apps/hosted/server/src/implementation/connection-policy.ts",
+    ".upstream/apps/hosted/server/src/implementation/contributed-account-departure.ts",
+    ".upstream/apps/hosted/server/src/implementation/contributed-account-policy.ts",
+    ".upstream/apps/hosted/server/src/implementation/contributed-departure-queue.ts",
+    ".upstream/apps/hosted/server/src/implementation/contributed-departure-schema.ts",
+    ".upstream/apps/hosted/server/src/implementation/interactive-retirement.ts",
+    ".upstream/apps/hosted/server/src/implementation/migrations.ts",
+    ".upstream/apps/hosted/server/src/implementation/native-pool-account-mirror.ts",
+    ".upstream/apps/hosted/server/src/implementation/organization-auth.ts",
+    ".upstream/apps/hosted/server/src/implementation/organization.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-account-recovery.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-account.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-membership.ts",
+    ".upstream/apps/hosted/server/src/implementation/provider-account-methods.ts",
+    ".upstream/apps/hosted/server/src/implementation/requirement-account-creation.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-access.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-lifecycle.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-policy.ts",
+    ".upstream/apps/hosted/web/src/contracts/app-accounts.ts",
+    ".upstream/apps/hosted/web/src/contracts/apps.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-detail.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/connect-account.tsx",
+    ".upstream/packages/apps/protocols/25.json",
+    ".upstream/packages/apps/src/contracts/protocol-version.ts",
+    ".upstream/packages/apps/src/contracts/protocols/24.ts",
+    ".upstream/packages/apps/src/contracts/protocols/current.ts",
+    ".upstream/packages/apps/src/contracts/protocols/released.ts",
+    ".upstream/packages/apps/src/contracts/provider.ts",
+    ".upstream/packages/apps/src/implementation/app.ts",
+    ".upstream/packages/apps/src/implementation/host.ts",
+    ".upstream/packages/catalog/src/contracts/catalog.ts",
+    ".upstream/packages/mcp/src/implementation/app-asset-paths.ts",
+    ".upstream/packages/mcp/src/implementation/app-assets.ts",
+    ".upstream/packages/sdk/src/contracts/apps.ts",
+    ".upstream/packages/sdk/src/implementation/app-protocols.ts",
+    ".upstream/packages/sdk/src/implementation/apps.ts",
+    ".upstream/packages/ui/src/contracts/app-accounts.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/account-form.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/common.tsx",
+    ".upstream/packages/ui/src/implementation/lib/provider-brand.ts",
+    ".upstream/packages/ui/src/implementation/styles/dashboard.css"
+  ]
+}

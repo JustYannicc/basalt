@@ -1,0 +1,33 @@
+{
+  "scenarios": {
+    "cloudDashboardBatchResources": {
+      "fixtures": "actors",
+      "title": "Cloud dashboard batches share one SQL pool and executor within each request",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Self-host builds its executor and SQL pool at startup."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The local dashboard does not batch its reads."
+        }
+      }
+    }
+  },
+  "runs": {
+    "cloudDashboardBatchResources": [
+      "dashboard-batch:cloud-resources-stay-within-each-dashboard-batch-request"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/infrastructure/batch-execution.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/executor.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/invocation-database.ts",
+    ".upstream/apps/hosted/cloud/src/main.ts"
+  ]
+}
