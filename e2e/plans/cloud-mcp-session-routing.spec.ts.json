@@ -1,0 +1,27 @@
+{
+  "scenarios": {
+    "cloudMcpSessionRouting": {
+      "fixtures": "actors",
+      "title": "Cloud MCP routes a request inside a session by its signed session id and checks its bearer only in the session object",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Self-host serves MCP sessions in its server process, with no gateway hop."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local serves MCP sessions in its server process, with no gateway hop."
+        }
+      }
+    }
+  },
+  "runs": {
+    "cloudMcpSessionRouting": [
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement"
+    ]
+  }
+}

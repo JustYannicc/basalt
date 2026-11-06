@@ -1,7 +1,29 @@
 {
-  "scenarios": {},
-  "runs": {},
-  "inherited": ["mcpProtocol", "mcpOAuthWithoutResource", "mcpSkills"],
+  "scenarios": {
+    "mcpOAuthWithoutResource": {
+      "fixtures": "actors",
+      "title": "MCP OAuth without a resource parameter grants the plain /mcp URL",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local's consent is covered by localMcpOAuthWithoutResource."
+        }
+      }
+    }
+  },
+  "runs": {
+    "mcpOAuthWithoutResource": [
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior",
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement"
+    ]
+  },
+  "inherited": ["mcpProtocol", "mcpSkills"],
   "inputs": [
     ".upstream/apps/hosted/cloud/scripts/build-site.ts",
     ".upstream/apps/hosted/cloud/src/app-ui.ts",

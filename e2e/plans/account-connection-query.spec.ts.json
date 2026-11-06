@@ -1,7 +1,28 @@
 {
-  "scenarios": {},
-  "runs": {},
-  "inherited": ["accountConnectionQuery"],
+  "scenarios": {
+    "accountConnectionQuery": {
+      "fixtures": "actors",
+      "title": "Account connection stays in the app and loads its tools without a page refresh",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "This journey checks hosted account connection and app query invalidation."
+        }
+      }
+    }
+  },
+  "runs": {
+    "accountConnectionQuery": [
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior",
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement"
+    ]
+  },
   "inputs": [
     ".upstream/apps/docs/content/run/self-host.mdx",
     ".upstream/apps/hosted/cloud/src/infrastructure/product-brand.ts",
