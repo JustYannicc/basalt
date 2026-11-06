@@ -1,16 +1,11 @@
 diff --git a/e2e/support/native-tunnel.ts b/e2e/support/native-tunnel.ts
 --- a/e2e/support/native-tunnel.ts
 +++ b/e2e/support/native-tunnel.ts
-@@ -1,4 +1,5 @@
- import { createServer } from "node:http";
-+import type { Readable } from "node:stream";
- import { expect } from "vitest";
- import { build } from "esbuild";
- import {
-@@ -7,8 +8,10 @@
+@@ -7,8 +7,11 @@
    Response as RuntimeResponse,
    Request as RuntimeRequest,
    WebSocketPair,
++  type RuntimeOptions,
 +  type WorkerdStructuredLog,
  } from "miniflare";
  import { Effect, Path } from "effect";
@@ -40,10 +35,10 @@ diff --git a/e2e/support/native-tunnel.ts b/e2e/support/native-tunnel.ts
        Effect.sync(
          () =>
            new Miniflare({
-+            handleRuntimeStdio: (stdout: Readable, stderr: Readable) => {
++            handleRuntimeStdio: ((stdout, stderr) => {
 +              stdout.pipe(process.stdout, { end: false });
 +              stderr.pipe(process.stderr, { end: false });
-+            },
++            }) satisfies NonNullable<RuntimeOptions["handleRuntimeStdio"]>,
 +            handleStructuredLogs: ({ message }: WorkerdStructuredLog) => {
 +              const prefix = "NATIVE_TUNNEL_FAILURE ";
 +              if (message.startsWith(prefix)) {
