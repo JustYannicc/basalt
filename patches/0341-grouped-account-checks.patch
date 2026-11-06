@@ -55,7 +55,7 @@ index b078dd8..7f8592e 100644
        .handle("update", ({ payload }) => updateAccount(payload))
        .handle("oauthSetup", ({ params }) =>
 diff --git a/apps/hosted/web/src/contracts/accounts.ts b/apps/hosted/web/src/contracts/accounts.ts
-index ff2a29d..852b8bb 100644
+index ff2a29d..4de6f1d 100644
 --- a/apps/hosted/web/src/contracts/accounts.ts
 +++ b/apps/hosted/web/src/contracts/accounts.ts
 @@ -6,7 +6,14 @@ import { linkedAccountIds } from "@executor-js/ui/contracts/app-accounts";
@@ -74,7 +74,7 @@ index ff2a29d..852b8bb 100644
  import type { OrganizationReference } from "@executor-js/hosted-server/organization";
  import { Data, Effect, Option } from "effect";
  import { AsyncResult, Atom } from "effect/reactivity";
-@@ -43,24 +50,24 @@ const updateAccount = Atom.family((key: AccountKey) =>
+@@ -43,24 +50,35 @@ const updateAccount = Atom.family((key: AccountKey) =>
  /** Run the checks of the apps this member can use and show the results where accounts are listed. */
  const runCheck = (get: Atom.FnContext, key: AccountKey) =>
    Effect.flatMap(HostedClient, (client) => client.accounts.check({ params: key })).pipe(
@@ -95,28 +95,39 @@ index ff2a29d..852b8bb 100644
 -        get.refresh(accountObservationsAtom(key));
 -      }),
 -    ),
-+    Effect.tap((health) => Effect.sync(() => acknowledgeCheck(get, key, health))),
++    Effect.tap((health) => Effect.sync(() => acknowledgeChecks(get, key.organization, [health]))),
    );
-+const acknowledgeCheck = (get: Atom.FnContext, key: AccountKey, health: AccountHealth) => {
-+  acknowledge(get, accountAtom(key), (data) => ({ ...data, health }));
++/** Show recorded checks where accounts are listed; the lists reload once for any number. */
++const acknowledgeChecks = (
++  get: Atom.FnContext,
++  organization: OrganizationReference,
++  checked: readonly AccountHealth[],
++) => {
++  if (checked.length === 0) return;
++  const health = new Map(checked.map((entry) => [entry.account, entry]));
++  for (const entry of checked) {
++    const key = { organization, account: entry.account };
++    acknowledge(get, accountAtom(key), (data) => ({ ...data, health: entry }));
++    // An app's check can also report usage, which the row then shows.
++    get.refresh(accountObservationsAtom(key));
++  }
 +  // The account list reads the resource directory; reload it for the recorded results.
-+  get.refresh(resourceDirectoryAtom(key.organization));
-+  get.refresh(resourceDirectoryAtom(key.organization, "managed"));
-+  refreshSavedAccountRows(get, key.organization);
-+  acknowledge(get, inventoryAtom(key.organization), (data) => ({
++  get.refresh(resourceDirectoryAtom(organization));
++  get.refresh(resourceDirectoryAtom(organization, "managed"));
++  refreshSavedAccountRows(get, organization);
++  acknowledge(get, inventoryAtom(organization), (data) => ({
 +    ...data,
-+    accounts: data.accounts.map((current) =>
-+      current.id === key.account ? { ...current, health } : current,
-+    ),
++    accounts: data.accounts.map((current) => {
++      const recorded = health.get(current.id);
++      return recorded === undefined ? current : { ...current, health: recorded };
++    }),
 +  }));
-+  // An app's check can also report usage, which the row then shows.
-+  get.refresh(accountObservationsAtom(key));
 +};
 +
  const checkAccount = Atom.family((key: AccountKey) =>
    HostedClient.runtime.fn((_: void, get) => runCheck(get, key)),
  );
-@@ -69,6 +76,37 @@ export const checkAccountAtom = (key: {
+@@ -69,6 +87,35 @@ export const checkAccountAtom = (key: {
    organization: OrganizationReference;
    account: AccountId;
  }) => checkAccount(new AccountKey(key));
@@ -133,15 +144,13 @@ index ff2a29d..852b8bb 100644
 +      }),
 +    ).pipe(
 +      Effect.tap((results) =>
-+        Effect.sync(() => {
-+          for (const result of results)
-+            if (result.status === "checked")
-+              acknowledgeCheck(
-+                get,
-+                new AccountKey({ organization: key.organization, account: result.account }),
-+                result.health,
-+              );
-+        }),
++        Effect.sync(() =>
++          acknowledgeChecks(
++            get,
++            key.organization,
++            results.flatMap((result) => (result.status === "checked" ? [result.health] : [])),
++          ),
++        ),
 +      ),
 +    ),
 +  ),
@@ -155,21 +164,22 @@ index ff2a29d..852b8bb 100644
    readonly organization: OrganizationReference;
    readonly app: AppId;
 diff --git a/apps/hosted/web/src/implementation/pages/account-observations-client.tsx b/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
-index b016d13..0376b91 100644
+index b016d13..35f9f2d 100644
 --- a/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
-@@ -12,6 +12,10 @@ import {
+@@ -12,6 +12,11 @@ import {
    AccountObservations,
  } from "@executor-js/ui/dashboard/account-observations";
  import type { AccountResetActions } from "@executor-js/ui/dashboard/account-reset-control";
-+import type {
-+  AccountGroupCheckOutcome,
-+  AccountSignIn,
++import {
++  AccountGroupCheckScope,
++  type AccountGroupCheck,
++  type AccountSignIn,
 +} from "@executor-js/ui/dashboard/account-sign-in-checks";
  import { QueryView, useQuery } from "@executor-js/ui/dashboard/context";
  import { DetailSkeleton } from "@executor-js/ui/dashboard/loading";
  import {
-@@ -23,7 +27,11 @@ import {
+@@ -23,7 +28,11 @@ import {
    type ObservationPolicy,
  } from "../../contracts/account-observations.ts";
  import { savedAccountRowsAtom } from "../../contracts/account-projection.ts";
@@ -182,7 +192,7 @@ index b016d13..0376b91 100644
  import { sessionAtom } from "../../contracts/auth.ts";
  import { appError, type HostedError } from "../../contracts/errors.ts";
  import { groupsAtom } from "../../contracts/groups.ts";
-@@ -34,18 +42,21 @@ import { ownedResetPool, useHostedResetActions } from "./account-resets-client.t
+@@ -34,18 +43,21 @@ import { ownedResetPool, useHostedResetActions } from "./account-resets-client.t
  
  /**
   * Usage under an account's row. With `apps`, the block also shows those apps' checks and an inline
@@ -205,15 +215,12 @@ index b016d13..0376b91 100644
    readonly app?: App;
    readonly canReconnect?: (app: App) => boolean;
    /** Footer counts for the account's usage windows, such as its pool's tokens. */
-@@ -64,34 +75,64 @@ export function HostedAccountObservations({
+@@ -64,31 +76,48 @@ export function HostedAccountObservations({
      Option.getOrUndefined(savedRows.data)?.find((row) => row.id === account.id),
      viewer,
    );
 -  const observations = (resets?: AccountResetActions) => (
-+  const observations = (
-+    resets?: AccountResetActions,
-+    group?: { readonly signIns: readonly AccountSignIn[]; readonly check: GroupCheck },
-+  ) => (
++  const observations = (resets?: AccountResetActions, group?: AccountGroupCheck<HostedError>) => (
      <AccountObservations<HostedError>
        account={account}
        query={accountObservationsAtom(key)}
@@ -251,9 +258,16 @@ index b016d13..0376b91 100644
 +    signIns === undefined ? (
 +      observations(resets)
 +    ) : (
-+      <WithGroupCheck accounts={signIns.map((signIn) => signIn.account.id)}>
-+        {(check) => observations(resets, { signIns, check })}
-+      </WithGroupCheck>
++      <AccountGroupCheckScope<HostedError>
++        signIns={signIns}
++        check={checkAccountGroupAtom({
++          organization,
++          accounts: signIns.map((signIn) => signIn.account.id),
++        })}
++        failure={(error) => error}
++      >
++        {(group) => observations(resets, group)}
++      </AccountGroupCheckScope>
 +    );
    return pool === undefined ? (
 -    observations()
@@ -264,26 +278,6 @@ index b016d13..0376b91 100644
    );
  }
  
-+type GroupCheck = () => Promise<Exit.Exit<AccountGroupCheckOutcome<HostedError>, HostedError>>;
-+
-+/** A grouped row's one check of all its sign-ins; only grouped rows mount it. */
-+function WithGroupCheck({
-+  accounts,
-+  children,
-+}: {
-+  readonly accounts: readonly AccountId[];
-+  readonly children: (check: GroupCheck) => ReactNode;
-+}) {
-+  const { organization } = useOrganizationRoute();
-+  const check = useAtomSet(checkAccountGroupAtom({ organization, accounts }), {
-+    mode: "promiseExit",
-+  });
-+  return children(() => check());
-+}
-+
- /** Reset actions need a known pool, so their atoms mount only once one is found. */
- function WithResets({
-   target,
 diff --git a/apps/hosted/web/src/implementation/pages/accounts-client.tsx b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
 index 1f7f603..9c3388b 100644
 --- a/apps/hosted/web/src/implementation/pages/accounts-client.tsx
@@ -485,7 +479,7 @@ index 6540807..c98e57f 100644
          executor.apps.checkCredentials({ ...params, ...payload }),
        )
 diff --git a/apps/local/web/src/contracts/accounts.ts b/apps/local/web/src/contracts/accounts.ts
-index adecd0c..deb6117 100644
+index adecd0c..e5ad178 100644
 --- a/apps/local/web/src/contracts/accounts.ts
 +++ b/apps/local/web/src/contracts/accounts.ts
 @@ -1,7 +1,14 @@
@@ -505,23 +499,29 @@ index adecd0c..deb6117 100644
  import { AsyncResult, Atom } from "effect/reactivity";
  import { acknowledge, acknowledgedQuery, invalidate } from "@executor-js/ui/contracts/mutations";
  import type { AccountToName } from "@executor-js/ui/dashboard/name-account";
-@@ -57,23 +64,40 @@ export const checkAccountAtom = Atom.family((account: AccountId) =>
+@@ -57,23 +64,48 @@ export const checkAccountAtom = Atom.family((account: AccountId) =>
    DashboardClient.runtime.fn((_: void, get) =>
      Effect.flatMap(DashboardClient, (client) =>
        client.dashboard.checkAccount({ params: { account } }),
-+    ).pipe(Effect.tap((health) => Effect.sync(() => acknowledgeCheck(get, account, health)))),
++    ).pipe(Effect.tap((health) => Effect.sync(() => acknowledgeChecks(get, [health])))),
 +  ),
 +);
-+const acknowledgeCheck = (get: Atom.FnContext, account: AccountId, health: AccountHealth) => {
-+  acknowledge(get, accountAtom(account), (data) => ({ ...data, health }));
++/** Show recorded checks where accounts are listed; the overview updates once for any number. */
++const acknowledgeChecks = (get: Atom.FnContext, checked: readonly AccountHealth[]) => {
++  if (checked.length === 0) return;
++  const health = new Map(checked.map((entry) => [entry.account, entry]));
++  for (const entry of checked) {
++    acknowledge(get, accountAtom(entry.account), (data) => ({ ...data, health: entry }));
++    // An app's check can also report usage, which the row then shows.
++    get.refresh(accountObservationsAtom(entry.account));
++  }
 +  acknowledge(get, overviewAtom, (data) => ({
 +    ...data,
-+    accounts: data.accounts.map((current) =>
-+      current.id === account ? { ...current, health } : current,
-+    ),
++    accounts: data.accounts.map((current) => {
++      const recorded = health.get(current.id);
++      return recorded === undefined ? current : { ...current, health: recorded };
++    }),
 +  }));
-+  // An app's check can also report usage, which the row then shows.
-+  get.refresh(accountObservationsAtom(account));
 +};
 +class AccountGroupKey extends Data.Class<{ readonly accounts: readonly AccountId[] }> {}
 +const checkAccountGroup = Atom.family((key: AccountGroupKey) =>
@@ -532,8 +532,7 @@ index adecd0c..deb6117 100644
 +      }),
      ).pipe(
 -      Effect.tap((health) =>
-+      Effect.tap((results) =>
-         Effect.sync(() => {
+-        Effect.sync(() => {
 -          acknowledge(get, accountAtom(account), (data) => ({ ...data, health }));
 -          acknowledge(get, overviewAtom, (data) => ({
 -            ...data,
@@ -543,9 +542,14 @@ index adecd0c..deb6117 100644
 -          }));
 -          // An app's check can also report usage, which the row then shows.
 -          get.refresh(accountObservationsAtom(account));
-+          for (const result of results)
-+            if (result.status === "checked") acknowledgeCheck(get, result.account, result.health);
-         }),
+-        }),
++      Effect.tap((results) =>
++        Effect.sync(() =>
++          acknowledgeChecks(
++            get,
++            results.flatMap((result) => (result.status === "checked" ? [result.health] : [])),
++          ),
++        ),
        ),
      ),
    ),
@@ -557,27 +561,18 @@ index adecd0c..deb6117 100644
  export const accountUsageAtom = DashboardClient.runtime.fn((account: AccountId) =>
    Effect.flatMap(DashboardClient, (client) => client.dashboard.account({ params: { account } })),
 diff --git a/apps/local/web/src/implementation/pages/account-observations-client.tsx b/apps/local/web/src/implementation/pages/account-observations-client.tsx
-index 870fdb4..61f93c6 100644
+index 870fdb4..cb53e2c 100644
 --- a/apps/local/web/src/implementation/pages/account-observations-client.tsx
 +++ b/apps/local/web/src/implementation/pages/account-observations-client.tsx
-@@ -1,6 +1,8 @@
- /** Local account rows show usage with the owner's own authority. */
- import { useAtomSet } from "@effect/atom-react";
--import type { App } from "@executor-js/sdk";
-+import type { AccountId, App } from "@executor-js/sdk";
-+import type { Exit } from "effect";
-+import type { ReactNode } from "react";
- import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
- import {
-   AccountObservationPlan,
-@@ -10,46 +12,81 @@ import {
+@@ -10,46 +10,67 @@ import {
    accountObservationsAtom,
    refreshAccountObservationsAtom,
  } from "../../contracts/account-observations.ts";
 -import { checkAccountAtom } from "../../contracts/accounts.ts";
-+import type {
-+  AccountGroupCheckOutcome,
-+  AccountSignIn,
++import {
++  AccountGroupCheckScope,
++  type AccountGroupCheck,
++  type AccountSignIn,
 +} from "@executor-js/ui/dashboard/account-sign-in-checks";
 +import { checkAccountAtom, checkAccountGroupAtom } from "../../contracts/accounts.ts";
  import type { DashboardError } from "../../contracts/errors.ts";
@@ -605,10 +600,7 @@ index 870fdb4..61f93c6 100644
    const refresh = useAtomSet(refreshAccountObservationsAtom(account.id), { mode: "promiseExit" });
    const check = useAtomSet(checkAccountAtom(account.id), { mode: "promiseExit" });
 -  return (
-+  const observations = (group?: {
-+    readonly signIns: readonly AccountSignIn[];
-+    readonly check: GroupCheck;
-+  }) => (
++  const observations = (group?: AccountGroupCheck<DashboardError>) => (
      <AccountObservations<DashboardError>
        account={account}
        query={accountObservationsAtom(account.id)}
@@ -643,26 +635,14 @@ index 870fdb4..61f93c6 100644
 +  return signIns === undefined ? (
 +    observations()
 +  ) : (
-+    <WithGroupCheck accounts={signIns.map((signIn) => signIn.account.id)}>
-+      {(check) => observations({ signIns, check })}
-+    </WithGroupCheck>
++    <AccountGroupCheckScope<DashboardError>
++      signIns={signIns}
++      check={checkAccountGroupAtom(signIns.map((signIn) => signIn.account.id))}
++      failure={(error) => error}
++    >
++      {observations}
++    </AccountGroupCheckScope>
 +  );
-+}
-+
-+type GroupCheck = () => Promise<
-+  Exit.Exit<AccountGroupCheckOutcome<DashboardError>, DashboardError>
-+>;
-+
-+/** A grouped row's one check of all its sign-ins; only grouped rows mount it. */
-+function WithGroupCheck({
-+  accounts,
-+  children,
-+}: {
-+  readonly accounts: readonly AccountId[];
-+  readonly children: (check: GroupCheck) => ReactNode;
-+}) {
-+  const check = useAtomSet(checkAccountGroupAtom(accounts), { mode: "promiseExit" });
-+  return children(() => check());
  }
  
  /** The reported plan beside the account's other metadata. */
@@ -817,7 +797,7 @@ index 0000000..5f10a5c
 +    ]);
 +  });
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 38c9da7..4e56fcf 100644
+index 38c9da7..5a88d05 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -3686,6 +3686,43 @@ export const scenarios = plan({
@@ -864,7 +844,7 @@ index 38c9da7..4e56fcf 100644
    accountHealth: {
      fixtures: "actors",
      file: "account-health.spec.ts",
-@@ -5307,7 +5344,7 @@ export const scenarios = plan({
+@@ -5307,11 +5344,13 @@ export const scenarios = plan({
      fixtures: "actors",
      file: "listed-account-bindings.spec.ts",
      title:
@@ -872,7 +852,15 @@ index 38c9da7..4e56fcf 100644
 +      "A grouped sign-in row stays one compact row; Check now checks each sign-in the caller may use and Details list every sign-in's checks",
      targets: {
        "self-host": scheduled,
-       cloud: na("Display only; self-host proves the shared rows."),
+-      cloud: na("Display only; self-host proves the shared rows."),
+-      local: na("Local grouped rows are proven by accountIdentityRows."),
++      cloud: na("Each sign-in's check calls a loopback check service."),
++      local: na(
++        "The shared grouped row and its Check now are proven on self-host; local group answers are proven by groupAccountCheckLocal.",
++      ),
+     },
+   },
+   listedAccountDemotion: {
 diff --git a/e2e/tests/group-account-checks.spec.ts b/e2e/tests/group-account-checks.spec.ts
 new file mode 100644
 index 0000000..49b552e
@@ -1212,7 +1200,7 @@ index 0000000..49b552e
 +  );
 +});
 diff --git a/e2e/tests/listed-account-bindings.spec.ts b/e2e/tests/listed-account-bindings.spec.ts
-index 3e42608..9af75d5 100644
+index 3e42608..a78428a 100644
 --- a/e2e/tests/listed-account-bindings.spec.ts
 +++ b/e2e/tests/listed-account-bindings.spec.ts
 @@ -1,4 +1,7 @@
@@ -1472,7 +1460,7 @@ index 3e42608..9af75d5 100644
          const groupTitle = fixture.first.identity?.label ?? fixture.first.label;
          yield* browser.login(actors.owner);
          for (const width of [1280, 390]) {
-@@ -283,42 +318,267 @@ layer(HostedLive, { excludeTestServices: true })("Listed account bindings", (it)
+@@ -283,42 +318,298 @@ layer(HostedLive, { excludeTestServices: true })("Listed account bindings", (it)
            expect(fits, `no horizontal scroll at ${width}px`).toBe(true);
            if (width === 390)
              expect(height, "the grouped row stays compact on a phone").toBeLessThanOrEqual(110);
@@ -1608,11 +1596,7 @@ index 3e42608..9af75d5 100644
 +                  .then(() => row.locator(".requested-access").waitFor())
 +                  // The list reads the recorded checks again after the group check answers.
 +                  .then(() =>
-+                    row
-+                      .locator('[data-sign-in] [data-check-status="healthy"]')
-+                      .nth(1)
-+                      .waitFor({ timeout: 10_000 })
-+                      .catch(() => undefined),
++                    row.locator('[data-sign-in] [data-check-status="healthy"]').nth(1).waitFor(),
 +                  )
 +                  .then(() =>
 +                    Promise.all([
@@ -1715,8 +1699,8 @@ index 3e42608..9af75d5 100644
 +                  .click(),
 +              ]).then(([response]) =>
 +                Promise.all([
-+                  response.json() as Promise<unknown>,
-+                  Promise.resolve(response.request().postDataJSON() as unknown),
++                  response.json().then((answer): unknown => answer),
++                  Promise.resolve(response.request().postDataJSON()).then((sent): unknown => sent),
 +                  row
 +                    .locator("[data-sign-in-check-outcome]")
 +                    .waitFor()
@@ -1731,12 +1715,42 @@ index 3e42608..9af75d5 100644
 +                page.screenshot({ fullPage: true }),
 +              ),
 +            );
++            // The result line stays on the collapsed row, which stays compact on a phone.
++            const collapsed = yield* browser.use(
++              "Collapse the row with its result at 390px",
++              (page) => {
++                const row = accountRow(page, groupTitle);
++                return page
++                  .setViewportSize({ width: 390, height: 900 })
++                  .then(() => openRowMenu(page, row, groupTitle))
++                  .then((menu) =>
++                    menu.getByRole("menuitem", { name: "Hide details", exact: true }).click(),
++                  )
++                  .then(() => row.locator("[data-account-details]").waitFor({ state: "detached" }))
++                  .then(() => row.locator("[data-sign-in-check-outcome]").waitFor())
++                  .then(() =>
++                    Promise.all([
++                      row.evaluate((element) => element.getBoundingClientRect().height),
++                      row.locator("[data-sign-in-check-outcome]").innerText(),
++                      page.evaluate(
++                        () => document.documentElement.scrollWidth <= window.innerWidth,
++                      ),
++                    ]),
++                  );
++              },
++            );
++            yield* evidence.attach(
++              "listed-binding-partial-390.png",
++              "image/png",
++              yield* browser.use("Capture the collapsed result", (page) => page.screenshot()),
++            );
 +            yield* reads.release;
 +            yield* directory.release;
-+            return read;
++            return { read, collapsed };
 +          }),
 +        );
-+        const [answer, sent, outcome] = partial;
++        const [answer, sent, outcome] = partial.read;
++        const [collapsedHeight, collapsedOutcome, collapsedFits] = partial.collapsed;
 +        expect(sent, "the stale row still sends both sign-ins").toEqual({
 +          accounts: expect.arrayContaining([fixture.first.id, fixture.other.id]),
 +        });
@@ -1751,7 +1765,12 @@ index 3e42608..9af75d5 100644
 +          partialAfter.map((calls, index) => calls - (partialBefore[index] ?? 0)),
 +          "only the usable sign-in was checked",
 +        ).toEqual([1, 0]);
-+        expect(outcome).toBe("Checked 1 of 2 sign-ins. 1 wasn't checked because you can't use it.");
++        expect(outcome).toBe("Checked 1 of 2 sign-ins. The other one couldn't be checked.");
++        expect(collapsedOutcome, "the collapsed row keeps the result").toBe(outcome);
++        expect(collapsedFits, "no horizontal scroll with a result at 390px").toBe(true);
++        expect(collapsedHeight, "a row with a result stays compact on a phone").toBeLessThanOrEqual(
++          110,
++        );
 +        expect(outcome, "the outcome never names the refused sign-in").not.toContain(
 +          fixture.other.label,
 +        );
@@ -2011,10 +2030,10 @@ index e31097c..e92c30f 100644
      </div>
    );
 diff --git a/packages/ui/src/implementation/dashboard/account-observations.tsx b/packages/ui/src/implementation/dashboard/account-observations.tsx
-index 7666908..c527ac8 100644
+index 7666908..b5cfbe9 100644
 --- a/packages/ui/src/implementation/dashboard/account-observations.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-observations.tsx
-@@ -25,6 +25,14 @@ import { ObservationReadings } from "./account-observation-readings.tsx";
+@@ -25,6 +25,13 @@ import { ObservationReadings } from "./account-observation-readings.tsx";
  import type { AccountResetActions } from "./account-reset-control.tsx";
  import { useQuery } from "./context.tsx";
  import { useAccountRow } from "./account-row.tsx";
@@ -2023,13 +2042,12 @@ index 7666908..c527ac8 100644
 +  SignInChecks,
 +  partialOutcome,
 +  useSignInChecks,
-+  type AccountGroupCheckOutcome,
-+  type AccountSignIn,
++  type AccountGroupCheck,
 +} from "./account-sign-in-checks.tsx";
  import { brandFill, brandLab } from "../lib/provider-brand.ts";
  
  /** What a product lets the caller see of an account's reported usage. */
-@@ -44,13 +52,16 @@ export interface AccountObservationsView {
+@@ -44,13 +51,16 @@ export interface AccountObservationsView {
   * failure never reads as a sign-in problem. Products own both mutations and their authority.
   *
   * Inside a compact row with a menu, Refresh and Details move into that menu and the band shows
@@ -2047,19 +2065,16 @@ index 7666908..c527ac8 100644
    windowTokens,
    resets,
    Failure,
-@@ -66,6 +77,11 @@ export function AccountObservations<E>({
+@@ -66,6 +76,8 @@ export function AccountObservations<E>({
      readonly showStatus?: boolean;
      readonly canReconnect?: (app: App) => boolean;
    };
 +  /** Every sign-in of a grouped row, which `check` checks together. */
-+  readonly group?: {
-+    readonly signIns: readonly AccountSignIn[];
-+    readonly check: () => Promise<Exit.Exit<AccountGroupCheckOutcome<E>, E>>;
-+  };
++  readonly group?: AccountGroupCheck<E>;
    /** A window's footer count, such as the tokens the account's pool counted in it. */
    readonly windowTokens?: ComponentProps<typeof ObservationReadings>["tokens"];
    /** Only for a caller who may spend this account's banked resets; each spend asks first. */
-@@ -84,6 +100,7 @@ export function AccountObservations<E>({
+@@ -84,6 +96,7 @@ export function AccountObservations<E>({
    const inspected = view?.canInspect === true ? view : undefined;
    const [pending, setPending] = useState(false);
    const [error, setError] = useState<Cause.Cause<E>>();
@@ -2067,7 +2082,7 @@ index 7666908..c527ac8 100644
    const run = async () => {
      if (pending) return;
      setPending(true);
-@@ -104,7 +121,7 @@ export function AccountObservations<E>({
+@@ -104,7 +117,7 @@ export function AccountObservations<E>({
      inspected !== undefined &&
      (inspected.reports.length > 0 || inspected.hasUsageReporter === true);
    const blocked = view === undefined ? undefined : refreshBlocked(view, now, format);
@@ -2076,7 +2091,7 @@ index 7666908..c527ac8 100644
    const setUsage = row?.setUsage;
    useEffect(() => {
      if (setUsage === undefined) return;
-@@ -119,7 +136,7 @@ export function AccountObservations<E>({
+@@ -119,7 +132,7 @@ export function AccountObservations<E>({
      );
    }, [setUsage, hasDetails, reported, pending, blocked]);
    useEffect(() => (setUsage === undefined ? undefined : () => setUsage(undefined)), [setUsage]);
@@ -2085,7 +2100,7 @@ index 7666908..c527ac8 100644
    const fact = (detailsOnly: boolean) => (
      <UsageFact
        result={result}
-@@ -153,14 +170,17 @@ export function AccountObservations<E>({
+@@ -153,14 +166,17 @@ export function AccountObservations<E>({
      queued.length === 0 &&
      !pending &&
      error === undefined &&
@@ -2105,7 +2120,7 @@ index 7666908..c527ac8 100644
        data-account-observations
        className="@container grid min-w-0 grid-cols-[minmax(0,_1fr)] gap-2.5 text-[11px] text-foreground/80"
      >
-@@ -199,6 +219,14 @@ export function AccountObservations<E>({
+@@ -199,6 +215,14 @@ export function AccountObservations<E>({
              </p>
            )}
            {!open && error && <Failure cause={error} layout="compact" />}
@@ -2120,7 +2135,7 @@ index 7666908..c527ac8 100644
            {!open && AsyncResult.isFailure(result) && (
              <Failure
                cause={result.cause}
-@@ -212,7 +240,7 @@ export function AccountObservations<E>({
+@@ -212,7 +236,7 @@ export function AccountObservations<E>({
          <div
            className={cn(
              "grid min-w-0 grid-cols-[minmax(0,_1fr)] items-start gap-x-6 gap-y-1.5 text-muted-foreground",
@@ -2129,7 +2144,7 @@ index 7666908..c527ac8 100644
                ? "@[740px]:grid-cols-[minmax(0,_1fr)_auto]"
                : "@[740px]:grid-cols-[minmax(0,_1fr)_minmax(0,_1fr)_auto]",
            )}
-@@ -220,6 +248,7 @@ export function AccountObservations<E>({
+@@ -220,6 +244,7 @@ export function AccountObservations<E>({
            {health !== undefined && (
              <AccountHealthLine account={account} {...health} Failure={Failure} />
            )}
@@ -2137,7 +2152,7 @@ index 7666908..c527ac8 100644
            {fact(false)}
            {hasDetails ? (
              <Button
-@@ -246,6 +275,7 @@ export function AccountObservations<E>({
+@@ -246,6 +271,7 @@ export function AccountObservations<E>({
            {compact && health !== undefined && (
              <AccountHealthLine account={account} {...health} Failure={Failure} />
            )}
@@ -2145,7 +2160,7 @@ index 7666908..c527ac8 100644
            {compact && fact(false)}
            {fact(true)}
            <ObservationDetails
-@@ -253,6 +283,7 @@ export function AccountObservations<E>({
+@@ -253,6 +279,7 @@ export function AccountObservations<E>({
              reports={inspected?.reports ?? []}
              account={account}
              apps={health?.apps}
@@ -2258,18 +2273,20 @@ index f02d577..53a3e76 100644
      </>
 diff --git a/packages/ui/src/implementation/dashboard/account-sign-in-checks.tsx b/packages/ui/src/implementation/dashboard/account-sign-in-checks.tsx
 new file mode 100644
-index 0000000..2de6368
+index 0000000..849956d
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/account-sign-in-checks.tsx
-@@ -0,0 +1,175 @@
+@@ -0,0 +1,208 @@
 +/**
 + * Checks of every sign-in in a grouped identity row, run together by one host action. The host
 + * checks each sign-in with the caller's own authority. A sign-in it refuses is only counted, never
 + * named, and keeps what the row already showed.
 + */
-+import type { AccountId, App } from "@executor-js/sdk";
++import type { AccountGroupCheckResult, App } from "@executor-js/sdk";
++import { useAtomSet } from "@effect/atom-react";
 +import { Cause, Exit } from "effect";
-+import { useEffect, useRef, useState, type ComponentType } from "react";
++import type { Atom } from "effect/reactivity";
++import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
 +import type { AccountSummary, FailureProps } from "../../contracts/dashboard.ts";
 +import { Button } from "../components/button.tsx";
 +import { AccountHealthLine } from "./account-health-line.tsx";
@@ -2285,11 +2302,37 @@ index 0000000..2de6368
 +  readonly canReconnect?: ((app: App) => boolean) | undefined;
 +}
 +
-+/** The host's answer for each sign-in it was given. */
-+export type AccountGroupCheckOutcome<F> = readonly (
-+  | { readonly account: AccountId; readonly status: "checked" | "refused" }
-+  | { readonly account: AccountId; readonly status: "failed"; readonly error: F }
-+)[];
++/** Why the host could not check one sign-in of the group. */
++export type AccountGroupCheckFailure = Extract<
++  AccountGroupCheckResult,
++  { status: "failed" }
++>["error"];
++
++/** A grouped row's one check of every sign-in, through the host's own group action. */
++export interface AccountGroupCheck<E> {
++  readonly signIns: readonly AccountSignIn[];
++  readonly check: () => Promise<Exit.Exit<readonly AccountGroupCheckResult[], E>>;
++  /** The host's own failure for a sign-in it could not check, shown with its other failures. */
++  readonly failure: (error: AccountGroupCheckFailure) => E;
++}
++
++/**
++ * Mounts the host's group check for a grouped row's sign-ins and hands it to `children`; only
++ * grouped rows render it, so other rows never mount a group check.
++ */
++export function AccountGroupCheckScope<E>({
++  signIns,
++  check,
++  failure,
++  children,
++}: Omit<AccountGroupCheck<E>, "check"> & {
++  /** The host's group check of exactly these sign-ins. */
++  readonly check: Atom.AtomResultFn<void, readonly AccountGroupCheckResult[], E>;
++  readonly children: (group: AccountGroupCheck<E>) => ReactNode;
++}) {
++  const run = useAtomSet(check, { mode: "promiseExit" });
++  return children({ signIns, check: () => run(), failure });
++}
 +
 +const noCheck = "No app that uses these sign-ins defines a check.";
 +
@@ -2305,37 +2348,52 @@ index 0000000..2de6368
 +  readonly signIns: readonly AccountSignIn[];
 +  readonly pending: boolean;
 +  readonly error: Cause.Cause<E> | undefined;
-+  readonly outcome: AccountGroupCheckOutcome<E> | undefined;
++  readonly outcome: readonly AccountGroupCheckResult[] | undefined;
++  /** The first sign-in the last check could not check, as the host's failure. */
++  readonly failure: Cause.Cause<E> | undefined;
 +  readonly disabledReason: string | undefined;
 +  readonly run: () => Promise<void>;
 +}
 +
 +const count = (n: number) => `${n} ${n === 1 ? "sign-in" : "sign-ins"}`;
 +
++/** Sentences that never open on a numeral and hold for refused, gone and failed sign-ins alike. */
++const outcomeText = (checked: number, unchecked: number) =>
++  unchecked === 0
++    ? checked === 1
++      ? "Checked the sign-in."
++      : `Checked all ${count(checked)}.`
++    : checked === 0
++      ? unchecked === 1
++        ? "The sign-in couldn't be checked."
++        : `None of the ${count(unchecked)} could be checked.`
++      : `Checked ${checked} of ${count(checked + unchecked)}. ${
++          unchecked === 1 ? "The other one" : `The other ${unchecked}`
++        } couldn't be checked.`;
++
 +/**
 + * The group check's state. Inside a row with a menu it also offers Check now from that menu, so
 + * the menu item and Details share one pending check and one outcome.
 + */
 +export function useSignInChecks<E>(
-+  group:
-+    | {
-+        readonly signIns: readonly AccountSignIn[];
-+        readonly check: () => Promise<Exit.Exit<AccountGroupCheckOutcome<E>, E>>;
-+      }
-+    | undefined,
++  group: AccountGroupCheck<E> | undefined,
 +): SignInChecksState<E> | undefined {
 +  const [pending, setPending] = useState(false);
 +  const [error, setError] = useState<Cause.Cause<E>>();
-+  const [outcome, setOutcome] = useState<AccountGroupCheckOutcome<E>>();
++  const [outcome, setOutcome] = useState<readonly AccountGroupCheckResult[]>();
++  const [failure, setFailure] = useState<Cause.Cause<E>>();
 +  const run = async () => {
 +    if (pending || group === undefined) return;
 +    setPending(true);
 +    setError(undefined);
 +    setOutcome(undefined);
++    setFailure(undefined);
 +    const exit = await group.check();
 +    setPending(false);
-+    if (Exit.isFailure(exit)) setError(exit.cause);
-+    else setOutcome(exit.value);
++    if (Exit.isFailure(exit)) return setError(exit.cause);
++    setOutcome(exit.value);
++    const failed = exit.value.find((result) => result.status === "failed");
++    if (failed !== undefined) setFailure(Cause.fail(group.failure(failed.error)));
 +  };
 +  // The row menu keeps one stable callback that always runs the latest check.
 +  const latest = useRef(run);
@@ -2352,7 +2410,7 @@ index 0000000..2de6368
 +  useEffect(() => (setCheck === undefined ? undefined : () => setCheck(undefined)), [setCheck]);
 +  return group === undefined
 +    ? undefined
-+    : { signIns: group.signIns, pending, error, outcome, disabledReason, run };
++    : { signIns: group.signIns, pending, error, outcome, failure, disabledReason, run };
 +}
 +
 +/** Whether the last check left a sign-in unchecked, which the collapsed row also says. */
@@ -2360,8 +2418,9 @@ index 0000000..2de6368
 +  state?.outcome?.some((result) => result.status !== "checked") === true;
 +
 +/**
-+ * What the last group check did: how many sign-ins it checked, how many the caller may not use,
-+ * and the first failure. `quiet` leaves a fully checked group to the updated checks.
++ * What the last group check did: how many sign-ins it checked and the first failure. A sign-in the
++ * host refused, because the caller may not use it or it is gone, only counts as unchecked. `quiet`
++ * leaves a fully checked group to the updated checks.
 + */
 +export function SignInCheckOutcome<E>({
 +  state,
@@ -2372,26 +2431,15 @@ index 0000000..2de6368
 +  readonly quiet?: boolean;
 +  readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
 +}) {
-+  const { outcome, error } = state;
-+  const failed = outcome?.flatMap((result) => (result.status === "failed" ? [result] : [])) ?? [];
-+  const refused = outcome?.filter((result) => result.status === "refused").length ?? 0;
++  const { outcome, failure, error } = state;
 +  const checked = outcome?.filter((result) => result.status === "checked").length ?? 0;
-+  const partial = refused > 0 || failed.length > 0;
++  const unchecked = (outcome?.length ?? 0) - checked;
 +  return (
 +    <>
-+      {outcome !== undefined && (partial || !quiet) && (
++      {outcome !== undefined && (unchecked > 0 || !quiet) && (
 +        <div role="status" className="grid min-w-0 gap-0.75" data-sign-in-check-outcome>
-+          <p className="text-muted-foreground">
-+            {partial
-+              ? `Checked ${checked} of ${count(outcome.length)}.`
-+              : `Checked ${count(checked)}.`}
-+            {refused > 0 &&
-+              ` ${refused} ${refused === 1 ? "wasn't" : "weren't"} checked because you can't use ${refused === 1 ? "it" : "them"}.`}
-+            {failed.length > 0 && ` ${failed.length} couldn't be checked.`}
-+          </p>
-+          {failed[0] !== undefined && (
-+            <Failure cause={Cause.fail(failed[0].error)} layout="compact" />
-+          )}
++          <p className="text-muted-foreground">{outcomeText(checked, unchecked)}</p>
++          {failure && <Failure cause={failure} layout="compact" />}
 +        </div>
 +      )}
 +      {error && <Failure cause={error} layout="compact" />}
@@ -2410,7 +2458,7 @@ index 0000000..2de6368
 +  return (
 +    <div className="flex min-w-0 flex-col gap-1.5" data-sign-in-checks>
 +      <div className="flex min-h-6 flex-wrap items-center gap-x-1.5 gap-y-0.5">
-+        <span>Checks of {count(state.signIns.length)}</span>
++        <span>Checks for each sign-in</span>
 +        <Button
 +          variant="outline"
 +          size="xs"

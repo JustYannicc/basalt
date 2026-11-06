@@ -41,11 +41,11 @@
         },
         "cloud": {
           "status": "not-applicable",
-          "reason": "Display only; self-host proves the shared rows."
+          "reason": "Each sign-in's check calls a loopback check service."
         },
         "local": {
           "status": "not-applicable",
-          "reason": "Local grouped rows are proven by accountIdentityRows."
+          "reason": "The shared grouped row and its Check now are proven on self-host; local group answers are proven by groupAccountCheckLocal."
         }
       }
     }
