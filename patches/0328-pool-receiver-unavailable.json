@@ -1,7 +1,7 @@
 {
   "identity": "executor-pool-receiver-unavailable",
   "file": "0328-pool-receiver-unavailable.patch",
-  "content_sha256": "ee8098a479e261dbc614c34cc037eb9743f20cd1401e08aac7b9a6356d0917ce",
+  "content_sha256": "2209761a51e74bd65d4ee11198c74783f07abf2bb69e3f255d222a9fe8270c67",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

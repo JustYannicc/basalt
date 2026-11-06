@@ -483,7 +483,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-receiver.ts b/apps/hoste
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-receiver.ts
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,48 @@
 +import { AccessDependencyUnavailable, StorageError } from "@executor-js/sdk/core";
 +import { Clock, Effect, Redacted, Schedule } from "effect";
 +import { FetchHttpClient, HttpBody, HttpClient } from "effect/http";
@@ -503,11 +503,12 @@ new file mode 100644
 +    const envelope = yield* Effect.tryPromise(() =>
 +      signEnvelope(Redacted.value(key), prefix, {
 +        ...payload,
++        nonce: crypto.randomUUID(),
 +        at,
 +        expiresAt: at + 30_000,
 +      }),
 +    ).pipe(Effect.mapError(() => new StorageError()));
-+    return yield* Effect.gen(function* () {
++    yield* Effect.gen(function* () {
 +      const client = yield* HttpClient.HttpClient;
 +      const response = yield* client.post(new URL(path, origin).href, {
 +        body: HttpBody.jsonUnsafe({ envelope }),
@@ -515,12 +516,22 @@ new file mode 100644
 +      if (response.status < 200 || response.status >= 300)
 +        return yield* new AccessDependencyUnavailable({ dependency: "pool receiver" });
 +    }).pipe(
-+      Effect.retry({ times: retries, schedule: Schedule.spaced("100 millis") }),
-+      Effect.timeout("10 seconds"),
 +      Effect.provide(FetchHttpClient.layer),
 +      Effect.mapError(() => new AccessDependencyUnavailable({ dependency: "pool receiver" })),
 +    );
-+  });
++  }).pipe(
++    Effect.retry({
++      times: retries,
++      schedule: Schedule.spaced("100 millis"),
++      while: (error) => error._tag === "AccessDependencyUnavailable",
++    }),
++    Effect.timeout("10 seconds"),
++    Effect.mapError((error) =>
++      error._tag === "StorageError"
++        ? error
++        : new AccessDependencyUnavailable({ dependency: "pool receiver" }),
++    ),
++  );
 diff --git a/apps/hosted/server/src/implementation/pool-membership-hook.ts b/apps/hosted/server/src/implementation/pool-membership-hook.ts
 --- a/apps/hosted/server/src/implementation/pool-membership-hook.ts
 +++ b/apps/hosted/server/src/implementation/pool-membership-hook.ts

@@ -305,13 +305,17 @@ test("member removal projects the audience without its membership and refuses a 
 import { SqlClient as Sql } from "effect/sql";
 const SqlClient = Sql.SqlClient;
 
-test("no network for organizations without pools or ordinary apps; absent signing key skips", async () => {
+test("no network without pools or for ordinary apps; a recorded pool requires a signing key", async () => {
   await fixture(({ sql, hook, changes, noKey }) =>
     Effect.gen(function* () {
       yield* hook.appAccessChanged({ organization, apps: ["app_ordinary"] });
       yield* hook.appRemoving("app_ordinary");
-      yield* noKey.appAccessChanged({ organization });
+      const missingKey = yield* Effect.result(noKey.appAccessChanged({ organization }));
+      assert.equal(missingKey._tag, "Failure");
+      assert.equal(missingKey.failure._tag, "AccessDependencyUnavailable");
+      assert.equal(missingKey.failure.dependency, "pool receiver");
       yield* sql`update organization set metadata = '{}'`;
+      yield* noKey.appAccessChanged({ organization });
       yield* hook.appAccessChanged({ organization });
       yield* hook.memberRemoving({ organization, member: "m-guest" });
       yield* hook.organizationRemoving(organization);
