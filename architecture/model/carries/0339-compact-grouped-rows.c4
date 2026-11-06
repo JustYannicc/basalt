@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountPresentation {
+    metadata {
+      constraint "Every account row with a menu stays compact, a grouped identity row included: its menu offers Details and usage refresh, and its checks, Check now and requested access open only with Details, so a current sign-in rejection is the row's one inline recovery."
+    }
+  }
+}

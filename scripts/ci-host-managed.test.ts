@@ -113,6 +113,7 @@ test("account and pool jobs retain their owned scenarios, commands and execution
         "listedAccountReadonlyMobile",
         "listedAppAccountEdit",
         "listedAppAccountEditMobile",
+        "listedBindingCompactRow",
         "listedBindingRemove",
         "listedBindingRemoveMobile",
         "listedSetupAccount",

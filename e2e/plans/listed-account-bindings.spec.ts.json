@@ -31,6 +31,23 @@
           "reason": "The local dashboard keeps its own account dialogs."
         }
       }
+    },
+    "listedBindingCompactRow": {
+      "fixtures": "actors",
+      "title": "A grouped sign-in row stays one compact row; its checks and requested access open with Details",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Display only; self-host proves the shared rows."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local grouped rows are proven by accountIdentityRows."
+        }
+      }
     }
   },
   "runs": {
@@ -41,13 +58,17 @@
     "listedBindingRemoveMobile": [
       "host-managed-accounts-pool:listed-account-actions",
       "host-managed-accounts-cloud:listed-account-actions"
-    ]
+    ],
+    "listedBindingCompactRow": ["host-managed-accounts-pool:listed-account-actions"]
   },
   "inputs": [
     ".upstream/packages/ui/src/implementation/dashboard/account-actions.tsx",
     ".upstream/apps/hosted/web/src/implementation/pages/account-actions.tsx",
     ".upstream/apps/hosted/web/src/implementation/pages/accounts-client.tsx",
     ".upstream/apps/hosted/web/src/implementation/pages/accounts-setup.tsx",
-    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx"
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/accounts-client.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-observations.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-row.tsx"
   ]
 }
