@@ -1,0 +1,11 @@
+{
+  "identity": "alchemy-normalized-container-resources",
+  "file": "0309-normalized-container-resources.patch",
+  "content_sha256": "cc92d3b37bec0c41451052d58c5f524d92e5cdbfd741c4e30dac622991f05816",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "alchemy-dependency-upgrade",
+  "requires": "A pinned Alchemy release compares named instance types with expanded resource readback semantically; remove only after source/lib no-op, resource-change and drift-repair regressions pass."
+}
