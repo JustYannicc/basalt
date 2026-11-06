@@ -1,6 +1,6 @@
 import type { RuntimeReady } from "../src/pool/deployment-readiness.ts";
 
-export type BudgetStage = "readiness" | "connect" | "read" | "converge";
+export type BudgetStage = "readiness" | "connect" | "read" | "converge" | "teardown";
 export interface BackendCount {
   database: string;
   connections: number;
@@ -14,7 +14,8 @@ export type BudgetOutcome =
   | "statement-timeout"
   | "abort"
   | "invalid-observation"
-  | "incomplete-visibility";
+  | "incomplete-visibility"
+  | "teardown-error";
 export interface BudgetReceipt {
   candidate: string;
   target?: Pick<RuntimeReady, "candidate" | "workerInput" | "imageHash">;
