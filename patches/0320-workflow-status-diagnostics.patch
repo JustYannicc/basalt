@@ -153,11 +153,9 @@ diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
 diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
 --- a/apps/hosted/web/src/contracts/errors.ts
 +++ b/apps/hosted/web/src/contracts/errors.ts
-@@ -211,3 +211,4 @@
+@@ -211,1 +211,2 @@
 +    WorkflowStatusUnavailable: ({ message }) => message,
      WorkflowFailure: (error) => `Workflow request failed (${error.reason}).`,
-     AppWebhooksActive: () => "Remove this app’s webhook subscriptions before deleting it.",
-     AccountWebhooksActive: () => "Remove this account’s webhook subscriptions before deleting it.",
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
