@@ -258,6 +258,9 @@ export function matchingDeclarations(path: string, declarations = readDeclaratio
     }));
 }
 
+// These journeys use retired product concepts and must be absent from prepared source.
+export const retiredTestPlanSources = ["e2e/tests/tool-policy-draft.spec.ts"] as const;
+
 export function prepareTestPlans(root: string, upstream: string) {
   const { files } = readDeclarations(root);
   const plans: Record<string, unknown> = {};
@@ -269,7 +272,6 @@ export function prepareTestPlans(root: string, upstream: string) {
   const path = join(upstream, "e2e/basalt-plans.json");
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(plans, null, 2) + "\n");
-  // Human in the loop no longer has Rules, so its legacy draft journey must not run.
-  rmSync(join(upstream, "e2e/tests/tool-policy-draft.spec.ts"), { force: true });
+  for (const path of retiredTestPlanSources) rmSync(join(upstream, path), { force: true });
   return Object.keys(plans).length;
 }
