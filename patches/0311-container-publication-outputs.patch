@@ -1,0 +1,79 @@
+diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
+index d36fee8..f39ea4b 100644
+--- a/patches/alchemy@2.0.0-beta.80.patch
++++ b/patches/alchemy@2.0.0-beta.80.patch
+@@ -4537,7 +4537,28 @@ index 41dc9d18..00539245 100644
+            yield* Effect.logInfo(
+              `Cloudflare Container update: ${existing.applicationName} has no effective changes`,
+            );
+-@@ -1182,6 +1181,13 @@ export const LiveContainerProvider = () =>
++@@ -1112,7 +1111,19 @@ export const LiveContainerProvider = () =>
++           newBindings,
++           oldBindings,
++         }) {
++-          if (!isResolved(news) || !isResolved(newBindings)) {
+++          if (!isResolved(news)) {
+++            return undefined;
+++          }
+++          if (!isResolved(newBindings)) {
+++            // A Worker attachment can point back to this application's image.
+++            // Context hashing does not need that attachment, and must report a
+++            // changed image before the planner freezes its downstream outputs.
+++            if (output && typeof news.context === "string") {
+++              const { imageHash } = yield* computeImage(id, news, {});
+++              if (imageHash !== output.hash?.image) {
+++                return { action: "update" } as const;
+++              }
+++            }
++             return undefined;
++           }
++           const { accountId } = yield* yield* CloudflareEnvironment;
++@@ -1182,6 +1193,13 @@ export const LiveContainerProvider = () =>
+              news,
+              makeContainerEnv(news, accountId, newBindings),
+            );
+@@ -4551,7 +4572,7 @@ index 41dc9d18..00539245 100644
+            if (imageHash !== output.hash?.image || !deepEqual(dev, output.dev)) {
+              return { action: "update" } as const;
+            }
+-@@ -1372,29 +1378,25 @@ export const LiveContainerProvider = () =>
++@@ -1372,29 +1390,25 @@ export const LiveContainerProvider = () =>
+                  });
+                }
+              }
+@@ -4652,7 +4673,25 @@ index 690f7a48..eafe3c34 100644
+              yield* Effect.logInfo(`Cloudflare Container update: ${existing.applicationName} has no effective changes`);
+              yield* session.note(`Container application ${existing.applicationName} is unchanged.`);
+              return {
+-@@ -762,7 +770,14 @@ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Ef
++@@ -719,7 +727,16 @@ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Ef
++     return ContainerPlatform.Provider.of({
++         stables: ["accountId", "applicationId"],
++         diff: Effect.fn(function* ({ id, olds = {}, news = {}, output, newBindings, oldBindings, }) {
++-            if (!isResolved(news) || !isResolved(newBindings)) {
+++            if (!isResolved(news)) {
+++                return undefined;
+++            }
+++            if (!isResolved(newBindings)) {
+++                if (output && typeof news.context === "string") {
+++                    const { imageHash } = yield* computeImage(id, news, {});
+++                    if (imageHash !== output.hash?.image) {
+++                        return { action: "update" };
+++                    }
+++                }
++                 return undefined;
++             }
++             const { accountId } = yield* yield* CloudflareEnvironment;
++@@ -762,7 +779,14 @@ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Ef
+                  return { action: "replace" };
+              }
+              const { imageHash, dev } = yield* computeImage(id, news, makeContainerEnv(news, accountId, newBindings));
+@@ -4668,7 +4707,7 @@ index 690f7a48..eafe3c34 100644
+                  return { action: "update" };
+              }
+          }),
+-@@ -888,20 +903,25 @@ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Ef
++@@ -888,20 +912,25 @@ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Ef
+                          });
+                      }
+                  }
