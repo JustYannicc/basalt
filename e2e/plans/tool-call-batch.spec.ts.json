@@ -19,9 +19,7 @@
     }
   },
   "runs": {
-    "toolCallBatch": [
-      "declared:self-host"
-    ]
+    "toolCallBatch": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/implementation/app-link-policy.ts",
@@ -39,6 +37,9 @@
     ".upstream/apps/hosted/server/src/implementation/app-link-schema.ts",
     ".upstream/apps/hosted/server/src/implementation/background-work.ts",
     ".upstream/packages/sdk/src/implementation/account-target-read.ts",
-    ".upstream/packages/sdk/src/implementation/account-tool-traffic.ts"
+    ".upstream/packages/sdk/src/implementation/account-tool-traffic.ts",
+    ".upstream/packages/sdk/src/implementation/selection-account-store.ts",
+    ".upstream/packages/sdk/src/implementation/storage-runtime.ts",
+    ".upstream/packages/sdk/src/implementation/database.ts"
   ]
 }

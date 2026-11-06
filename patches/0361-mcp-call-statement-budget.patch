@@ -238,82 +238,102 @@ index 0000000000000000000000000000000000000000..72463f4580608495dc8170a9e1353b7e
 +    )) satisfies BackgroundWork;
 +});
 diff --git a/apps/hosted/testing/self-host.ts b/apps/hosted/testing/self-host.ts
-index 63d2e5848885e198c4fcc0470443ca1a43107c0f..81f4f56e2fdd6d2396560de430156b9009a6ef1e 100644
+index 63d2e5848885e198c4fcc0470443ca1a43107c0f..30789fd7c851c059344e14082afac74721a831e9 100644
 --- a/apps/hosted/testing/self-host.ts
 +++ b/apps/hosted/testing/self-host.ts
-@@ -54,6 +54,11 @@ const command = Command.make("test-self-host", {
+@@ -54,6 +54,18 @@ const command = Command.make("test-self-host", {
            const development = yield* developmentSignIn(target, organization);
            const statementHold = yield* statementHoldFixture;
            const product = yield* statementHold.provide(selfHostRoutes);
-+          const releaseHeldWrite = () => { Effect.runFork(statementHold.releaseOnShutdown); };
++          const releaseHeldWrite = () => {
++            Effect.runFork(statementHold.releaseOnShutdown);
++          };
 +          yield* Effect.acquireRelease(
-+            Effect.sync(() => { process.on("SIGTERM", releaseHeldWrite); }),
-+            () => Effect.sync(() => { process.removeListener("SIGTERM", releaseHeldWrite); }),
++            Effect.sync(() => {
++              process.on("SIGTERM", releaseHeldWrite);
++            }),
++            () =>
++              Effect.sync(() => {
++                process.removeListener("SIGTERM", releaseHeldWrite);
++              }),
 +          );
            const routes = Layer.mergeAll(
              HttpRouter.add("GET", "/api/devtools", development.status),
              HttpRouter.add("POST", "/api/devtools/operator", development.signIn),
 diff --git a/apps/hosted/testing/statement-hold-fixture.ts b/apps/hosted/testing/statement-hold-fixture.ts
-index 9d292361ae4361ef975b538e7c24387aa6ae667d..1769c6160ec1f91f4c470253e48998e3f181d3ae 100644
+index 9d292361ae4361ef975b538e7c24387aa6ae667d..579ed9ba938fa43a2630737384b1e63ef787c7ee 100644
 --- a/apps/hosted/testing/statement-hold-fixture.ts
 +++ b/apps/hosted/testing/statement-hold-fixture.ts
-@@ -46,6 +46,10 @@ const Arm = Schema.Union([
+@@ -46,6 +46,11 @@ const Arm = Schema.Union([
    Schema.Struct({ authentication: Schema.Literal("tool-call") }),
    // Fails the next read of account rows inside a tool call instead of holding it.
    Schema.Struct({ fail: Schema.Literal("tool-call-accounts") }),
 +  Schema.Struct({
 +    traffic: Schema.NonEmptyString,
 +    releaseOnShutdown: Schema.optional(Schema.Boolean),
++    failure: Schema.optional(Schema.Literal("storage")),
 +  }),
  ]);
  
  const isTemplate = (value: unknown): value is TemplateStringsArray =>
-@@ -70,8 +74,10 @@ interface Hold {
+@@ -70,8 +75,12 @@ interface Hold {
    readonly toolCall: boolean;
    /** Fail the next read of account rows inside a tool call; nothing is held. */
    readonly failAccounts: boolean;
-+  readonly traffic: { readonly account: string; readonly releaseOnShutdown: boolean } | undefined;
++  readonly traffic:
++    | { readonly account: string; readonly releaseOnShutdown: boolean; readonly failure: boolean }
++    | undefined;
    readonly reached: Deferred.Deferred<void>;
    readonly release: Deferred.Deferred<void>;
 +  readonly completed: Deferred.Deferred<void>;
  }
  
  export const statementHoldFixture = Effect.gen(function* () {
-@@ -94,6 +100,19 @@ export const statementHoldFixture = Effect.gen(function* () {
+@@ -94,6 +103,25 @@ export const statementHoldFixture = Effect.gen(function* () {
          const [strings, ...params] = args;
          const hold = armed;
          if (hold === undefined || !isTemplate(strings)) return Reflect.apply(target, self, args);
 +        if (hold.traffic !== undefined) {
 +          const statement: Statement.Statement<unknown> = Reflect.apply(target, self, args);
 +          const [text, bound] = statement.compile();
-+          if (!/^\s*insert into executor_account_tool_calls\b/iu.test(text) ||
-+              !bound.includes(hold.traffic.account)) return statement;
++          if (
++            !/^\s*insert into executor_account_tool_calls\b/iu.test(text) ||
++            !bound.includes(hold.traffic.account)
++          )
++            return statement;
 +          return Effect.suspend(() => {
 +            if (armed !== hold) return statement;
 +            armed = undefined;
-+            return held(hold, statement).pipe(
-+              Effect.ensuring(Deferred.succeed(hold.completed, undefined)),
-+            );
++            return held(
++              hold,
++              hold.traffic?.failure === true
++                ? target`select executor_test_accounting_failure()`
++                : statement,
++            ).pipe(Effect.ensuring(Deferred.succeed(hold.completed, undefined)));
 +          });
 +        }
          if (hold.after !== undefined) {
            const statement: Statement.Statement<unknown> = Reflect.apply(target, self, args);
            const [text, bound] = statement.compile();
-@@ -166,8 +185,13 @@ export const statementHoldFixture = Effect.gen(function* () {
+@@ -166,8 +194,17 @@ export const statementHoldFixture = Effect.gen(function* () {
            after: "after" in arm ? { check: arm.after, id: arm.id } : undefined,
            toolCall: "app" in arm && arm.toolCall === true,
            failAccounts: "fail" in arm,
-+          traffic: "traffic" in arm ? {
-+            account: arm.traffic,
-+            releaseOnShutdown: arm.releaseOnShutdown === true,
-+          } : undefined,
++          traffic:
++            "traffic" in arm
++              ? {
++                  account: arm.traffic,
++                  releaseOnShutdown: arm.releaseOnShutdown === true,
++                  failure: arm.failure === "storage",
++                }
++              : undefined,
            reached: yield* Deferred.make<void>(),
            release: yield* Deferred.make<void>(),
 +          completed: yield* Deferred.make<void>(),
          };
          return HttpServerResponse.jsonUnsafe({ armed: true });
        }).pipe(Effect.orDie),
-@@ -179,9 +203,19 @@ export const statementHoldFixture = Effect.gen(function* () {
+@@ -179,9 +216,19 @@ export const statementHoldFixture = Effect.gen(function* () {
          const hold = current;
          return HttpServerResponse.jsonUnsafe({
            held: hold !== undefined && (yield* Deferred.isDone(hold.reached)),
@@ -333,7 +353,7 @@ index 9d292361ae4361ef975b538e7c24387aa6ae667d..1769c6160ec1f91f4c470253e48998e3
      HttpRouter.add(
        "DELETE",
        path,
-@@ -193,5 +227,9 @@ export const statementHoldFixture = Effect.gen(function* () {
+@@ -193,5 +240,9 @@ export const statementHoldFixture = Effect.gen(function* () {
      provide: <A, E, R>(product: Effect.Effect<A, E, R>) =>
        product.pipe(Effect.updateService(SqlClient.SqlClient, sql)),
      routes,
@@ -343,12 +363,34 @@ index 9d292361ae4361ef975b538e7c24387aa6ae667d..1769c6160ec1f91f4c470253e48998e3
 +    ),
    };
  });
+diff --git a/e2e/support/account-target-sdk-source.ts b/e2e/support/account-target-sdk-source.ts
+index 4962842419ead4407ae76db441ea0eeb0ca110e1..3f31cd9c3125f453991ebb89adf69aee8a62a9e8 100644
+--- a/e2e/support/account-target-sdk-source.ts
++++ b/e2e/support/account-target-sdk-source.ts
+@@ -32,6 +32,9 @@ Runtime.runMain(Effect.scoped(Effect.gen(function* () {
+     git:nativeRepositories(path.join(input.directory,"repositories")),runtime:host.runtime,
+     workflows:host.workflows,registry:memoryRegistry()}).pipe(Effect.provide(NodeCrypto.layer));
+   yield* Deferred.succeed(ready,executor);
++  const withoutMachineHost = yield* createExecutor({database:storage,secret,blobs,
++    git:nativeRepositories(path.join(input.directory,"repositories")),runtime:host.runtime,
++    workflows:host.workflows,registry:memoryRegistry()}).pipe(Effect.provide(NodeCrypto.layer));
+   const setup = Effect.gen(function* () {
+     const existing = yield* executor.apps.list({owner});
+     const app = existing[0] ?? (yield* executor.apps.deploy({owner,name:"Account target fixture",files:[
+@@ -56,6 +59,7 @@ Runtime.runMain(Effect.scoped(Effect.gen(function* () {
+     route("clear",Schema.Struct({account:AccountId,revision:Schema.Number}),value=>executor[AccountTargetsHost].clear({...value,owner}).pipe(Effect.as(null))),
+     route("read",Schema.Struct({account:AccountId}),value=>executor.accounts.get({...value,owner})),
+     route("call",ToolInputs.call,value=>executor.tools.call(value)),
++    route("call-unhosted",ToolInputs.call,value=>withoutMachineHost.tools.call(value)),
+     route("status",Schema.Literals(["online","offline","unavailable"]),value=>Effect.sync(()=>{status=value;return null;})),
+     route("allowed",Schema.Boolean,value=>Effect.sync(()=>{allowed=value;return null;})),
+   );
 diff --git a/e2e/support/account-tool-accounting.ts b/e2e/support/account-tool-accounting.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..8d082e00d5ff5bda42506e89d300898e1113ffd5
+index 0000000000000000000000000000000000000000..189f1523d454d4dfb0e16d9957d8fe0c91764425
 --- /dev/null
 +++ b/e2e/support/account-tool-accounting.ts
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,167 @@
 +import { expect } from "@effect/vitest";
 +import { Effect, Schedule, Schema } from "effect";
 +import { randomBytes, randomUUID } from "node:crypto";
@@ -358,7 +400,10 @@ index 0000000000000000000000000000000000000000..8d082e00d5ff5bda42506e89d300898e
 +import { connectionsPath } from "./app-accounts.ts";
 +import { Telemetry } from "./evidence.ts";
 +
-+const files = [{ path: "index.ts", content: `
++const files = [
++  {
++    path: "index.ts",
++    content: `
 +import { defineApp, defineProvider, secrets, object, string, router, query } from "apps";
 +const service = defineProvider({ name: "Background accounting fixture", auth: {
 +  key: secrets({ label: "API key", fields: object({ token: string() }) }),
@@ -366,75 +411,158 @@ index 0000000000000000000000000000000000000000..8d082e00d5ff5bda42506e89d300898e
 +export default defineApp({ user: { accounts: { service } } }, { tools: router({
 +  ping: query({ input: object({}) }, async () => true),
 +  fail: query({ input: object({}) }, async () => { throw new Error("Synthetic tool failure"); }),
-+}) });` }, appsManifest];
-+const Traffic = Schema.Struct({ accounts: Schema.Array(Schema.Struct({
-+  account: Schema.String, requests: Schema.Number, failed: Schema.Number,
-+  lastSuccessAt: Schema.NullOr(Schema.String),
-+})) });
++}) });`,
++  },
++  appsManifest,
++];
++const Traffic = Schema.Struct({
++  accounts: Schema.Array(
++    Schema.Struct({
++      account: Schema.String,
++      requests: Schema.Number,
++      failed: Schema.Number,
++      lastSuccessAt: Schema.NullOr(Schema.String),
++    }),
++  ),
++});
 +
 +/** A normal deployed app and a linked synthetic key account, with only public operations. */
 +export const accountToolAccounting = (
-+  api: typeof Api.Service, owner: Session, prefix: string, headers: Record<string, string> = {},
-+) => Effect.gen(function* () {
-+  const deployed = yield* api.request(owner, "POST", `${prefix}/apps/deploy`, {
-+    name: `Background accounting ${randomUUID().slice(0,8)}`, files,
-+  }, headers);
-+  expect(deployed.status).toBe(200);
-+  const app = (yield* body(App, deployed)).id;
-+  yield* Effect.addFinalizer(() => api.request(owner, "DELETE", `${prefix}/apps/${app}`, undefined, headers).pipe(
-+    Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))), Effect.orDie,
-+  ));
-+  const pending = yield* api.request(owner, "POST", connectionsPath(`${prefix}/apps/${app}`, "user", "service"), {}, headers);
-+  expect(pending.status).toBe(200);
-+  const saved = yield* api.request(owner, "POST", `${prefix}/connections/${(yield* body(Resource, pending)).id}/submit`, {
-+    method: "key", label: "Background key", fields: { token: "synthetic-background-token" },
-+  }, headers);
-+  expect(saved.status).toBe(200);
-+  const account = (yield* body(Resource, saved)).id;
-+  yield* Effect.addFinalizer(() => api.request(owner, "DELETE", `${prefix}/accounts/${account}`, undefined, headers).pipe(
-+    Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))), Effect.orDie,
-+  ));
-+  return {
-+    account,
-+    call: (tool: "ping" | "fail") => Effect.gen(function* () {
-+      const traceId = randomBytes(16).toString("hex");
-+      const response = yield* api.request(owner, "POST", `${prefix}/apps/${app}/tools/call`, {
-+        tool, kind: "query", input: {},
-+      }, { ...headers, traceparent: `00-${traceId}-${randomBytes(8).toString("hex")}-01` });
-+      expect(response.status)[tool === "ping" ? "toBe" : "toBeGreaterThanOrEqual"](tool === "ping" ? 200 : 400);
-+      return { response, traceId };
-+    }),
-+    read: Effect.gen(function* () {
-+      const response = yield* api.request(owner, "POST", `${prefix}/account-traffic`, { accounts: [account] }, headers);
-+      expect(response.status).toBe(200);
-+      return (yield* body(Traffic, response)).accounts[0] ?? { account, requests: 0, failed: 0, lastSuccessAt: null };
-+    }),
-+  };
-+});
++  api: typeof Api.Service,
++  owner: Session,
++  prefix: string,
++  headers: Record<string, string> = {},
++) =>
++  Effect.gen(function* () {
++    const deployed = yield* api.request(
++      owner,
++      "POST",
++      `${prefix}/apps/deploy`,
++      {
++        name: `Background accounting ${randomUUID().slice(0, 8)}`,
++        files,
++      },
++      headers,
++    );
++    expect(deployed.status).toBe(200);
++    const app = (yield* body(App, deployed)).id;
++    yield* Effect.addFinalizer(() =>
++      api.request(owner, "DELETE", `${prefix}/apps/${app}`, undefined, headers).pipe(
++        Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))),
++        Effect.orDie,
++      ),
++    );
++    const pending = yield* api.request(
++      owner,
++      "POST",
++      connectionsPath(`${prefix}/apps/${app}`, "user", "service"),
++      {},
++      headers,
++    );
++    expect(pending.status).toBe(200);
++    const saved = yield* api.request(
++      owner,
++      "POST",
++      `${prefix}/connections/${(yield* body(Resource, pending)).id}/submit`,
++      {
++        method: "key",
++        label: "Background key",
++        fields: { token: "synthetic-background-token" },
++      },
++      headers,
++    );
++    expect(saved.status).toBe(200);
++    const account = (yield* body(Resource, saved)).id;
++    yield* Effect.addFinalizer(() =>
++      api.request(owner, "DELETE", `${prefix}/accounts/${account}`, undefined, headers).pipe(
++        Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))),
++        Effect.orDie,
++      ),
++    );
++    return {
++      account,
++      call: (tool: "ping" | "fail") =>
++        Effect.gen(function* () {
++          const traceId = randomBytes(16).toString("hex");
++          const response = yield* api.request(
++            owner,
++            "POST",
++            `${prefix}/apps/${app}/tools/call`,
++            {
++              tool,
++              kind: "query",
++              input: {},
++            },
++            { ...headers, traceparent: `00-${traceId}-${randomBytes(8).toString("hex")}-01` },
++          );
++          if (tool === "ping") expect(response.status).toBe(200);
++          else expect(response.status).toBeGreaterThanOrEqual(400);
++          return { response, traceId };
++        }),
++      read: Effect.gen(function* () {
++        const response = yield* api.request(
++          owner,
++          "POST",
++          `${prefix}/account-traffic`,
++          { accounts: [account] },
++          headers,
++        );
++        expect(response.status).toBe(200);
++        return (
++          (yield* body(Traffic, response)).accounts[0] ?? {
++            account,
++            requests: 0,
++            failed: 0,
++            lastSuccessAt: null,
++          }
++        );
++      }),
++    };
++  });
 +
 +/** Wait for an exported completion event, then retain its independently rooted SQL trace. */
-+export const accountingCompleted = (telemetry: typeof Telemetry.Service, traceId: string) =>
-+  telemetry.search("sdk.account_traffic.record", { "executor.account_traffic.call_trace": traceId }).pipe(
-+    Effect.repeat({ schedule: Schedule.spaced("100 millis"), until: (result) => result.data.length > 0 }),
-+    Effect.timeout("10 seconds"),
-+    Effect.flatMap((result) => Effect.gen(function* () {
-+      expect(result.data).toHaveLength(1);
-+      const entry = result.data[0]!;
-+      expect(entry.traceId).not.toBe(traceId);
-+      expect(entry.span.parentSpanId).toBeNull();
-+      expect(entry.span.tags["executor.owner"]).toBe("background");
-+      expect(entry.span.tags["executor.account_traffic.outcome"]).toBe("persisted");
-+      expect(entry.span.tags["executor.account_traffic.call_span"]).toMatch(/^[a-f0-9]{16}$/u);
-+      const trace = yield* telemetry.query(entry.traceId);
-+      expect(trace.data.some(({ span }) => span.operationName === "sql.execute")).toBe(true);
-+      return trace;
-+    })),
-+  );
++export const accountingCompleted = (
++  telemetry: typeof Telemetry.Service,
++  traceId: string,
++  failure?: "storage" | "timeout",
++) =>
++  telemetry
++    .search("sdk.account_traffic.record", { "executor.account_traffic.call_trace": traceId })
++    .pipe(
++      Effect.repeat({
++        schedule: Schedule.spaced("100 millis"),
++        until: (result) => result.data.length > 0,
++      }),
++      Effect.timeout("10 seconds"),
++      Effect.flatMap((result) =>
++        Effect.gen(function* () {
++          expect(result.data).toHaveLength(1);
++          const entry = result.data[0]!;
++          expect(entry.traceId).not.toBe(traceId);
++          expect(entry.span.parentSpanId).toBeNull();
++          expect(entry.span.tags["executor.owner"]).toBe("background");
++          expect(entry.span.tags["executor.account_traffic.outcome"]).toBe(
++            failure === undefined ? "persisted" : "unconfirmed",
++          );
++          if (failure !== undefined) {
++            expect(entry.span.tags["executor.account_traffic.failure"]).toBe(failure);
++            expect(entry.span.tags["executor.account_traffic.accounts"]).toBe("1");
++            if (failure === "storage")
++              expect(entry.span.tags["executor.account_traffic.sqlstate"]).toBe("42883");
++          }
++          expect(entry.span.tags["executor.account_traffic.call_span"]).toMatch(/^[a-f0-9]{16}$/u);
++          const trace = yield* telemetry.query(entry.traceId);
++          if (failure !== "timeout")
++            expect(trace.data.some(({ span }) => span.operationName === "sql.execute")).toBe(true);
++          return trace;
++        }),
++      ),
++    );
 diff --git a/e2e/support/managed-server.ts b/e2e/support/managed-server.ts
-index 9e5ebc669a561b9441e5d07def831d9ae30e723b..141fde2d7f89ee13bf53e11ca6df9ceeedcfce18 100644
+index 9e5ebc669a561b9441e5d07def831d9ae30e723b..546f674854c104a7f13ab72d0f0306c2504b6de6 100644
 --- a/e2e/support/managed-server.ts
 +++ b/e2e/support/managed-server.ts
-@@ -635,6 +635,15 @@ export const startDevelopmentServer = (
+@@ -635,6 +635,17 @@ export const startDevelopmentServer = (
      Effect.map(({ origin }) => origin),
    );
  
@@ -442,7 +570,9 @@ index 9e5ebc669a561b9441e5d07def831d9ae30e723b..141fde2d7f89ee13bf53e11ca6df9cee
 +export const startControlledDevelopmentServer = (target: typeof Target.Service) =>
 +  startIsolatedSelfHost(target, "development").pipe(
 +    Effect.map(({ origin, controlOrigin, directory }): typeof Target.Service => ({
-+      ...target, directory, controlOrigin,
++      ...target,
++      directory,
++      controlOrigin,
 +      metadata: { ...target.metadata, origin, target: "self-host" },
 +    })),
 +  );
@@ -450,12 +580,32 @@ index 9e5ebc669a561b9441e5d07def831d9ae30e723b..141fde2d7f89ee13bf53e11ca6df9cee
  /** Start an unconfigured product instance; the scenario scope owns its process and fresh data. */
  export const startFreshSelfHost = (
    target: typeof Target.Service,
+diff --git a/e2e/tests/account-targets.spec.ts b/e2e/tests/account-targets.spec.ts
+index d0c8a8a4f357b2c3916a51c47eed99b22db17601..718c5e339e22b73d991d08fe1339292c005ecfcf 100644
+--- a/e2e/tests/account-targets.spec.ts
++++ b/e2e/tests/account-targets.spec.ts
+@@ -41,6 +41,15 @@ layer(TestLive, { excludeTestServices: true })("Account execution targets", (it)
+         const unavailable = yield* call(ids.local);
+         expect(unavailable.status).toBe(409);
+         expect(unavailable.body).toEqual({ reason: "host_unavailable" });
++        const withoutHost = yield* sdk.request("call-unhosted", {
++          app: ids.app,
++          tool: "echo",
++          kind: "query",
++          input: { message: "selected" },
++          accounts: { app: {}, user: { local: [ids.local] } },
++        });
++        expect(withoutHost.status).toBe(409);
++        expect(withoutHost.body).toEqual({ reason: "host_unavailable" });
+         yield* sdk.request("status", "offline");
+         expect((yield* call(ids.local)).status).toBe(503);
+         expect((yield* sdk.request("read", { account: ids.local })).body).toMatchObject({
 diff --git a/e2e/tests/account-tool-accounting.spec.ts b/e2e/tests/account-tool-accounting.spec.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..6f801f8cec572a7cd2006456cf21bb70b49402ae
+index 0000000000000000000000000000000000000000..eee5078c85a4d7cb50ce3726820900d5b5a3be9a
 --- /dev/null
 +++ b/e2e/tests/account-tool-accounting.spec.ts
-@@ -0,0 +1,77 @@
+@@ -0,0 +1,133 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Layer, Schema } from "effect";
 +import { Api, SessionClients, body } from "../support/api.ts";
@@ -469,76 +619,132 @@ index 0000000000000000000000000000000000000000..6f801f8cec572a7cd2006456cf21bb70
 +
 +const hold = "/api/devtools/statement-hold";
 +const Held = Schema.Struct({ held: Schema.Boolean, completed: Schema.Boolean });
-+const Users = Schema.Struct({ users: Schema.Array(Schema.Struct({ id: Schema.String, email: Schema.String })) });
++const Users = Schema.Struct({
++  users: Schema.Array(Schema.Struct({ id: Schema.String, email: Schema.String })),
++});
 +const Organizations = Schema.Array(Schema.Struct({ id: Schema.String }));
 +
 +layer(HostedLive, { excludeTestServices: true })("Background account tool accounting", (it) => {
-+  it.effect(scenarios.accountToolAccounting.title, (context) => withHostedCase(context,
-+    Effect.gen(function* () {
-+      const evidence = yield* Evidence;
-+      const target = yield* startControlledDevelopmentServer(yield* Target);
-+      const api = yield* Api.pipe(
-+        Effect.provide(Layer.fresh(Api.layer)), Effect.provide(Layer.fresh(SessionClients.layer)),
-+        Effect.provideService(Target, target),
-+      );
-+      const telemetry = yield* Telemetry.pipe(
-+        Effect.provide(Layer.fresh(Telemetry.layer)), Effect.provideService(Target, target),
-+      );
-+      const owner = yield* api.session();
-+      const headers = { origin: target.metadata.origin };
-+      const send = (method: "GET" | "POST" | "DELETE", path: string, data?: unknown) =>
-+        api.request(owner, method, `${target.metadata.origin}${path}`, data, headers);
-+      expect((yield* send("POST", "/api/devtools/operator", {})).status).toBe(200);
-+      const developer = (yield* body(Users, yield* send("GET", "/api/auth/admin/list-users"))).users
-+        .find((user) => user.email === "agent-agent@example.test");
-+      if (developer === undefined) return yield* Effect.die("Development owner missing");
-+      expect((yield* send("POST", "/api/auth/admin/impersonate-user", { userId: developer.id })).status).toBe(200);
-+      const organization = (yield* body(Organizations, yield* send("GET", "/api/auth/organization/list")))[0];
-+      if (organization === undefined) return yield* Effect.die("Development organization missing");
-+      const fixture = yield* accountToolAccounting(api, owner,
-+        `${target.metadata.origin}/api/organizations/${organization.id}`, headers);
-+      yield* Effect.addFinalizer(() => send("DELETE", hold).pipe(Effect.orDie));
++  it.effect(scenarios.accountToolAccounting.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const evidence = yield* Evidence;
++        const target = yield* startControlledDevelopmentServer(yield* Target);
++        const api = yield* Api.pipe(
++          Effect.provide(Layer.fresh(Api.layer)),
++          Effect.provide(Layer.fresh(SessionClients.layer)),
++          Effect.provideService(Target, target),
++        );
++        const telemetry = yield* Telemetry.pipe(
++          Effect.provide(Layer.fresh(Telemetry.layer)),
++          Effect.provideService(Target, target),
++        );
++        const owner = yield* api.session();
++        const headers = { origin: target.metadata.origin };
++        const send = (method: "GET" | "POST" | "DELETE", path: string, data?: unknown) =>
++          api.request(owner, method, `${target.metadata.origin}${path}`, data, headers);
++        expect((yield* send("POST", "/api/devtools/operator", {})).status).toBe(200);
++        const developer = (yield* body(
++          Users,
++          yield* send("GET", "/api/auth/admin/list-users"),
++        )).users.find((user) => user.email === "agent-agent@example.test");
++        if (developer === undefined) return yield* Effect.die("Development owner missing");
++        expect(
++          (yield* send("POST", "/api/auth/admin/impersonate-user", { userId: developer.id }))
++            .status,
++        ).toBe(200);
++        const organization = (yield* body(
++          Organizations,
++          yield* send("GET", "/api/auth/organization/list"),
++        ))[0];
++        if (organization === undefined)
++          return yield* Effect.die("Development organization missing");
++        const fixture = yield* accountToolAccounting(
++          api,
++          owner,
++          `${target.metadata.origin}/api/organizations/${organization.id}`,
++          headers,
++        );
++        yield* Effect.addFinalizer(() => send("DELETE", hold).pipe(Effect.orDie));
 +
-+      for (const tool of ["ping", "fail"] as const) {
++        for (const tool of ["ping", "fail"] as const) {
++          for (const failure of ["storage", "timeout"] as const) {
++            const before = yield* fixture.read;
++            expect(
++              (yield* send("POST", hold, {
++                traffic: fixture.account,
++                ...(failure === "storage" ? { failure } : {}),
++              })).status,
++            ).toBe(200);
++            const call = yield* fixture.call("ping");
++            expect((yield* send("GET", `${hold}/reached`)).status).toBe(200);
++            if (failure === "storage") expect((yield* send("DELETE", hold)).status).toBe(200);
++            yield* evidence.json(
++              `${failure}-background-trace`,
++              yield* accountingCompleted(telemetry, call.traceId, failure),
++            );
++            expect(yield* fixture.read).toEqual(before);
++            expect((yield* send("DELETE", hold)).status).toBe(200);
++          }
++
++          const before = yield* fixture.read;
++          expect((yield* send("POST", hold, { traffic: fixture.account })).status).toBe(200);
++          const call = yield* fixture.call(tool);
++          expect((yield* send("GET", `${hold}/reached`)).status).toBe(200);
++          const held = yield* body(Held, yield* send("GET", hold));
++          expect(held).toEqual({ held: true, completed: false });
++          expect(yield* fixture.read).toEqual(before);
++          expect((yield* send("DELETE", hold)).status).toBe(200);
++          yield* evidence.json(
++            `${tool}-background-trace`,
++            yield* accountingCompleted(telemetry, call.traceId),
++          );
++          const after = yield* fixture.read;
++          expect(after.requests).toBe(before.requests + 1);
++          expect(after.failed).toBe(before.failed + (tool === "fail" ? 1 : 0));
++          if (tool === "ping") expect(after.lastSuccessAt).not.toBeNull();
++          else expect(after.lastSuccessAt).toBe(before.lastSuccessAt);
++          yield* evidence.json(`${tool}-accounting-order`, {
++            held,
++            before,
++            after,
++            callTrace: call.traceId,
++          });
++        }
++
 +        const before = yield* fixture.read;
-+        expect((yield* send("POST", hold, { traffic: fixture.account })).status).toBe(200);
-+        const call = yield* fixture.call(tool);
++        expect(
++          (yield* send("POST", hold, { traffic: fixture.account, releaseOnShutdown: true })).status,
++        ).toBe(200);
++        const call = yield* fixture.call("ping");
 +        expect((yield* send("GET", `${hold}/reached`)).status).toBe(200);
-+        const held = yield* body(Held, yield* send("GET", hold));
-+        expect(held).toEqual({ held: true, completed: false });
-+        expect(yield* fixture.read).toEqual(before);
-+        expect((yield* send("DELETE", hold)).status).toBe(200);
-+        yield* evidence.json(`${tool}-background-trace`, yield* accountingCompleted(telemetry, call.traceId));
++        expect(yield* body(Held, yield* send("GET", hold))).toEqual({
++          held: true,
++          completed: false,
++        });
++        // The test host releases the real held write on SIGTERM, while its background work drains.
++        yield* serverControl("stop").pipe(Effect.provideService(Target, target));
++        yield* serverControl("start").pipe(Effect.provideService(Target, target));
 +        const after = yield* fixture.read;
 +        expect(after.requests).toBe(before.requests + 1);
-+        expect(after.failed).toBe(before.failed + (tool === "fail" ? 1 : 0));
-+        if (tool === "ping") expect(after.lastSuccessAt).not.toBeNull();
-+        else expect(after.lastSuccessAt).toBe(before.lastSuccessAt);
-+        yield* evidence.json(`${tool}-accounting-order`, { held, before, after, callTrace: call.traceId });
-+      }
-+
-+      const before = yield* fixture.read;
-+      expect((yield* send("POST", hold, { traffic: fixture.account, releaseOnShutdown: true })).status).toBe(200);
-+      const call = yield* fixture.call("ping");
-+      expect((yield* send("GET", `${hold}/reached`)).status).toBe(200);
-+      expect(yield* body(Held, yield* send("GET", hold))).toEqual({ held: true, completed: false });
-+      // The test host releases the real held write on SIGTERM, while its background work drains.
-+      yield* serverControl("stop").pipe(Effect.provideService(Target, target));
-+      yield* serverControl("start").pipe(Effect.provideService(Target, target));
-+      const after = yield* fixture.read;
-+      expect(after.requests).toBe(before.requests + 1);
-+      expect(after.failed).toBe(before.failed);
-+      expect(after.lastSuccessAt).not.toBeNull();
-+      yield* evidence.json("shutdown-accepted-accounting", { before, after, callTrace: call.traceId });
-+    }),
-+  ));
++        expect(after.failed).toBe(before.failed);
++        expect(after.lastSuccessAt).not.toBeNull();
++        yield* evidence.json("shutdown-accepted-accounting", {
++          before,
++          after,
++          callTrace: call.traceId,
++        });
++      }),
++    ),
++  );
 +});
 diff --git a/e2e/tests/cloud-account-tool-accounting.spec.ts b/e2e/tests/cloud-account-tool-accounting.spec.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..b74c5b8333121b9d5bc87501adccd8e1e2939a27
+index 0000000000000000000000000000000000000000..fb986f765e72877d8ee1a2ef268df3f50a5a3211
 --- /dev/null
 +++ b/e2e/tests/cloud-account-tool-accounting.spec.ts
-@@ -0,0 +1,46 @@
+@@ -0,0 +1,73 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schedule } from "effect";
 +import { Actors } from "../support/actors.ts";
@@ -549,48 +755,75 @@ index 0000000000000000000000000000000000000000..b74c5b8333121b9d5bc87501adccd8e1
 +import { accountToolAccounting, accountingCompleted } from "../support/account-tool-accounting.ts";
 +import { scenarios } from "../test-plan.ts";
 +
-+layer(HostedLive, { excludeTestServices: true })("Cloud background account tool accounting", (it) => {
-+  it.effect(scenarios.cloudAccountToolAccounting.title, (context) => withHostedCase(context,
-+    Effect.gen(function* () {
-+      const api = yield* Api, actors = yield* Actors, evidence = yield* Evidence,
-+        telemetry = yield* Telemetry, locks = yield* cloudLocks;
-+      const fixture = yield* accountToolAccounting(api, actors.owner, `/api/organizations/${actors.organization.id}`);
-+      for (const tool of ["ping", "fail"] as const) {
-+        const before = yield* fixture.read;
-+        // This scenario owns its managed Cloud database. A table lock also covers a call that
-+        // opens a new UTC hour, while normal public traffic reads remain possible.
-+        yield* locks.hold({ sql: "lock table executor_account_tool_calls in share mode" });
-+        const [holder] = yield* locks.hold({ sql: "select pg_backend_pid() as pid" });
-+        const pid = holder?.pid;
-+        if (typeof pid !== "number") return yield* Effect.die("Accounting lock holder missing");
-+        const call = yield* fixture.call(tool);
-+        const blocked = yield* locks.run({
-+          sql: `select pid from pg_stat_activity where $1 = any(pg_blocking_pids(pid))
-+            and query ilike '%insert into executor_account_tool_calls%'`, params: [pid],
-+        }).pipe(
-+          Effect.repeat({ schedule: Schedule.spaced("20 millis"), until: (rows) => rows.length === 1 }),
-+          Effect.timeout("1 second"),
-+        );
-+        expect(blocked).toHaveLength(1);
-+        expect(yield* fixture.read).toEqual(before);
-+        yield* locks.release;
-+        yield* evidence.json(`${tool}-background-trace`, yield* accountingCompleted(telemetry, call.traceId));
-+        const after = yield* fixture.read;
-+        expect(after.requests).toBe(before.requests + 1);
-+        expect(after.failed).toBe(before.failed + (tool === "fail" ? 1 : 0));
-+        if (tool === "ping") expect(after.lastSuccessAt).not.toBeNull();
-+        else expect(after.lastSuccessAt).toBe(before.lastSuccessAt);
-+        yield* evidence.json(`${tool}-accounting-order`, { before, after, callTrace: call.traceId, blocked: blocked.length });
-+      }
-+    }),
-+  ));
-+});
++layer(HostedLive, { excludeTestServices: true })(
++  "Cloud background account tool accounting",
++  (it) => {
++    it.effect(scenarios.cloudAccountToolAccounting.title, (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const api = yield* Api,
++            actors = yield* Actors,
++            evidence = yield* Evidence,
++            telemetry = yield* Telemetry,
++            locks = yield* cloudLocks;
++          const fixture = yield* accountToolAccounting(
++            api,
++            actors.owner,
++            `/api/organizations/${actors.organization.id}`,
++          );
++          for (const tool of ["ping", "fail"] as const) {
++            const before = yield* fixture.read;
++            // This scenario owns its managed Cloud database. A table lock also covers a call that
++            // opens a new UTC hour, while normal public traffic reads remain possible.
++            yield* locks.hold({ sql: "lock table executor_account_tool_calls in share mode" });
++            const [holder] = yield* locks.hold({ sql: "select pg_backend_pid() as pid" });
++            const pid = holder?.pid;
++            if (typeof pid !== "number") return yield* Effect.die("Accounting lock holder missing");
++            const call = yield* fixture.call(tool);
++            const blocked = yield* locks
++              .run({
++                sql: `select pid from pg_stat_activity where $1 = any(pg_blocking_pids(pid))
++            and query ilike '%insert into executor_account_tool_calls%'`,
++                params: [pid],
++              })
++              .pipe(
++                Effect.repeat({
++                  schedule: Schedule.spaced("20 millis"),
++                  until: (rows) => rows.length === 1,
++                }),
++                Effect.timeout("1 second"),
++              );
++            expect(blocked).toHaveLength(1);
++            expect(yield* fixture.read).toEqual(before);
++            yield* locks.release;
++            yield* evidence.json(
++              `${tool}-background-trace`,
++              yield* accountingCompleted(telemetry, call.traceId),
++            );
++            const after = yield* fixture.read;
++            expect(after.requests).toBe(before.requests + 1);
++            expect(after.failed).toBe(before.failed + (tool === "fail" ? 1 : 0));
++            if (tool === "ping") expect(after.lastSuccessAt).not.toBeNull();
++            else expect(after.lastSuccessAt).toBe(before.lastSuccessAt);
++            yield* evidence.json(`${tool}-accounting-order`, {
++              before,
++              after,
++              callTrace: call.traceId,
++              blocked: blocked.length,
++            });
++          }
++        }),
++      ),
++    );
++  },
++);
 diff --git a/packages/sdk/src/implementation/account-target-read.ts b/packages/sdk/src/implementation/account-target-read.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..77838a38876a0e5fde1b6ae0f3c6e6d0e27d6c35
+index 0000000000000000000000000000000000000000..84cc77f2b301b40be5b428e39d32b5e7dabdb20c
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-target-read.ts
-@@ -0,0 +1,34 @@
+@@ -0,0 +1,36 @@
 +import { Effect, Schema } from "effect";
 +import { AccountTargetBinding } from "../contracts/account-target.ts";
 +import { StorageError, type AccountId, type OwnerId } from "../contracts/shared.ts";
@@ -613,7 +846,9 @@ index 0000000000000000000000000000000000000000..77838a38876a0e5fde1b6ae0f3c6e6d0
 +});
 +
 +/** Decode at the target gate, after normal selection and app-view binding validation. */
-+export const decodeAccountTarget = (input: unknown) =>
++export const decodeAccountTarget = (
++  input: unknown,
++): Effect.Effect<AccountTargetBinding | undefined, StorageError> =>
 +  input === null
 +    ? Effect.succeed(undefined)
 +    : Schema.decodeUnknownEffect(StoredTarget)(input).pipe(
@@ -626,7 +861,7 @@ index 0000000000000000000000000000000000000000..77838a38876a0e5fde1b6ae0f3c6e6d0
 +        Effect.mapError(() => new StorageError()),
 +      );
 diff --git a/packages/sdk/src/implementation/account-targets.ts b/packages/sdk/src/implementation/account-targets.ts
-index 696dafd155df9cbf458a3a08080fc66226ebe57e..b48f292261619ad8345c745eb207039272f8a8f5 100644
+index 696dafd155df9cbf458a3a08080fc66226ebe57e..9e738a1a9ee6d691110a486ec854cc09cee2ca76 100644
 --- a/packages/sdk/src/implementation/account-targets.ts
 +++ b/packages/sdk/src/implementation/account-targets.ts
 @@ -11,6 +11,7 @@ import {
@@ -651,7 +886,7 @@ index 696dafd155df9cbf458a3a08080fc66226ebe57e..b48f292261619ad8345c745eb2070392
      });
    const authorize = (binding: AccountTargetBinding, managing: boolean) =>
      Effect.gen(function* () {
-@@ -176,11 +172,20 @@ export const makeAccountTargets = (db: Query, host: MachineAccounts | undefined)
+@@ -176,11 +172,27 @@ export const makeAccountTargets = (db: Query, host: MachineAccounts | undefined)
        readonly credentialGeneration: number;
      }[];
      readonly authorize: Effect.Effect<void, StorageError>;
@@ -670,17 +905,24 @@ index 696dafd155df9cbf458a3a08080fc66226ebe57e..b48f292261619ad8345c745eb2070392
 +        );
 +        return joined === undefined
 +          ? read(account.id, account.owner)
-+          : decodeAccountTarget(joined.row);
++          : decodeAccountTarget(joined.row).pipe(
++              Effect.flatMap((binding) =>
++                binding === undefined ||
++                (binding.account === account.id && binding.owner === account.owner)
++                  ? Effect.succeed(binding)
++                  : read(account.id, account.owner),
++              ),
++            );
 +      });
        const local = bindings
          .filter((binding) => binding !== undefined)
          .filter((binding) => binding.mode === "device");
 diff --git a/packages/sdk/src/implementation/account-tool-traffic.ts b/packages/sdk/src/implementation/account-tool-traffic.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..f97a34f44169d38c5e7872ee701b5b8bf09228b5
+index 0000000000000000000000000000000000000000..5e19f9526db661281864bbec7c380756c72cd3f8
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-tool-traffic.ts
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,86 @@
 +import { Cause, Clock, Effect, Exit, Option, Predicate } from "effect";
 +import { currentTraceContext, ownedBy, traceLinks } from "@executor-js/telemetry";
 +import type { BackgroundWork } from "../contracts/declarations.ts";
@@ -730,12 +972,14 @@ index 0000000000000000000000000000000000000000..f97a34f44169d38c5e7872ee701b5b8b
 +              const error = Option.getOrUndefined(Cause.findErrorOption(cause));
 +              const report = Cause.hasInterruptsOnly(cause)
 +                ? accepted
-+                  ? accountTrafficNotCounted("interrupted")
++                  ? accountTrafficNotCounted("interrupted", undefined, accounts.length)
 +                  : Effect.void
 +                : error instanceof StorageError
 +                  ? Effect.void
 +                  : accountTrafficNotCounted(
 +                      Cause.isTimeoutError(error) ? "timeout" : "unexpected",
++                      undefined,
++                      accounts.length,
 +                    );
 +              return Effect.uninterruptible(report);
 +            }),
@@ -760,28 +1004,56 @@ index 0000000000000000000000000000000000000000..f97a34f44169d38c5e7872ee701b5b8b
 +        if (background === undefined) return yield* record(false);
 +        const accepted = yield* background(linked(record(true)));
 +        if (accepted) return;
-+        yield* linked(accountTrafficNotCounted("refused"));
++        yield* linked(accountTrafficNotCounted("refused", undefined, accounts.length));
 +        // A closing host refused ownership; keep the original bounded inline attempt.
 +        yield* record(false);
 +      });
 +    });
 diff --git a/packages/sdk/src/implementation/account-traffic-store.ts b/packages/sdk/src/implementation/account-traffic-store.ts
-index 1f2736af6a2d677a07ba2abf89b5e172ecfcc0c4..7b44c632901db9978cfff630b4804e8130493bad 100644
+index 1f2736af6a2d677a07ba2abf89b5e172ecfcc0c4..effa11eae7e016ddceb9dc764e61460459cb1431 100644
 --- a/packages/sdk/src/implementation/account-traffic-store.ts
 +++ b/packages/sdk/src/implementation/account-traffic-store.ts
-@@ -40,10 +40,11 @@ const sqlState = (error: unknown) => {
+@@ -40,18 +40,23 @@ const sqlState = (error: unknown) => {
   * storage failure, its SQLSTATE, never an account or a call.
   */
  export const accountTrafficNotCounted = (
 -  failure: "storage" | "timeout" | "unexpected",
 +  failure: "storage" | "timeout" | "unexpected" | "interrupted" | "refused",
    state?: string,
++  accounts?: number,
  ) => {
    const annotations = {
-+    "executor.account_traffic.outcome": "unconfirmed",
++    "executor.account_traffic.outcome": failure === "refused" ? "inline_fallback" : "unconfirmed",
      "executor.account_traffic.failure": failure,
      "executor.account_traffic.sqlstate": state ?? "none",
++    ...(accounts === undefined ? {} : { "executor.account_traffic.accounts": accounts }),
    };
+   return Effect.annotateCurrentSpan(annotations).pipe(
+     Effect.andThen(
+-      Effect.logWarning("Account tool calls were not counted").pipe(
+-        Effect.annotateLogs(annotations),
+-      ),
++      Effect.logWarning(
++        failure === "refused"
++          ? "Host refused background account counting; trying inline"
++          : "Account tool call persistence is unconfirmed",
++      ).pipe(Effect.annotateLogs(annotations)),
+     ),
+   );
+ };
+@@ -100,7 +105,11 @@ export const makeAccountTrafficStore = (sql: SqlClient.SqlClient) => {
+                 and hour < ${new Date(input.at - accountTrafficRetention)}`;
+           }).pipe(
+             Effect.tapError((error) =>
+-              accountTrafficNotCounted("storage", sqlState(error) ?? "unknown"),
++              accountTrafficNotCounted(
++                "storage",
++                sqlState(error) ?? "unknown",
++                new Set(input.accounts).size,
++              ),
+             ),
+             safe,
+           ),
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
 index 9a92b5c53dae025848b4cecb84be03bad4cbae5d..09ac88881e9399d162704341b89058384693def9 100644
 --- a/packages/sdk/src/implementation/create.ts
@@ -794,33 +1066,85 @@ index 9a92b5c53dae025848b4cecb84be03bad4cbae5d..09ac88881e9399d162704341b8905838
      );
      const interactiveOperations = makeInteractiveAccounts(
        db,
+diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/implementation/database.ts
+index 14fe074c20a173dfd56b08d0bdc3c0746a86e56d..85599196d709132961561b045e3bb402b2adaedb 100644
+--- a/packages/sdk/src/implementation/database.ts
++++ b/packages/sdk/src/implementation/database.ts
+@@ -9,6 +9,7 @@ export type Query = ReturnType<typeof database>;
+ export const database = (storage: ExecutorRuntimeDatabase) => ({
+   ...storage.orm("4.0.28"),
+   lockAccountObservation: storage.lockAccountObservation,
++  readSelectionAccounts: storage.selectionAccounts,
+ });
+ 
+ /**
+diff --git a/packages/sdk/src/implementation/selection-account-store.ts b/packages/sdk/src/implementation/selection-account-store.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..48ef76c6677f7d5c2f3896bbdee84db0363500fc
+--- /dev/null
++++ b/packages/sdk/src/implementation/selection-account-store.ts
+@@ -0,0 +1,35 @@
++import { Effect, Schema } from "effect";
++import type { SqlClient } from "effect/sql";
++import type { ReactiveStore } from "@executor-js/reactivity";
++import { StorageError, type AccountId } from "../contracts/shared.ts";
++import { currentStorageSchema } from "./storage-current.ts";
++
++const SelectionAccount = Schema.Struct({
++  ...currentStorageSchema.tables.accounts.row.fields,
++  createdAt: Schema.Union([Schema.Date, Schema.DateFromString]),
++  executionTarget: Schema.NullOr(Schema.Record(Schema.String, Schema.Unknown)),
++});
++
++/** The optional target is a read join, with no new foreign key or migration. */
++export const makeSelectionAccountStore =
++  (sql: SqlClient.SqlClient, reactive: ReactiveStore) => (ids: readonly AccountId[]) =>
++    ids.length === 0
++      ? Effect.succeed([])
++      : reactive.read(
++          ["accounts", "accountTargets"],
++          sql`SELECT a.id, a.provider, a.method, a.label, a.description, a.owner, a.site,
++      a.created_at AS "createdAt", a.encrypted_credentials AS "encryptedCredentials",
++      a.credential_generation AS "credentialGeneration", a.allowed_hosts::jsonb AS "allowedHosts",
++      a.identity_id AS "identityId", a.oauth_grant_id AS "oauthGrantId",
++      CASE WHEN target.account IS NULL THEN NULL ELSE jsonb_build_object(
++        'account', target.account, 'owner', target.owner, 'revision', target.revision,
++        'mode', target.mode, 'enabled', target.enabled, 'device', target.device,
++        'deviceName', target.device_name, 'binding', target.binding,
++        'manifestRevision', target.manifest_revision) END AS "executionTarget"
++      FROM "executor_accounts" a LEFT JOIN executor_account_targets target
++        ON target.account = a.id AND target.owner = a.owner
++      WHERE ${sql.in("a.id", ids)}`.pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(SelectionAccount))),
++            Effect.mapError(() => new StorageError()),
++          ),
++        );
 diff --git a/packages/sdk/src/implementation/selection.ts b/packages/sdk/src/implementation/selection.ts
-index 02ec4994aa8ac470a32c36fae6719edf7790edf2..ae5afbf535e427024b5d25cc0462cd189d184850 100644
+index 02ec4994aa8ac470a32c36fae6719edf7790edf2..a47dc5fe79efd9069ad02fdd4436672865b9b470 100644
 --- a/packages/sdk/src/implementation/selection.ts
 +++ b/packages/sdk/src/implementation/selection.ts
-@@ -14,6 +14,7 @@ import { StoredAccount, type StoredVersion } from "../contracts/storage.ts";
+@@ -13,7 +13,8 @@ import { AccountNotFound } from "../contracts/account.ts";
+ import { StoredAccount, type StoredVersion } from "../contracts/storage.ts";
  import { interactiveBinding } from "./interactive-state.ts";
  import { acquisitionBinding, bindingMatchesAccount } from "./account-acquisition-bindings.ts";
- import { query, type Query } from "./database.ts";
+-import { query, type Query } from "./database.ts";
++import type { Query } from "./database.ts";
 +import type { AccountTargetRead } from "./account-target-read.ts";
  
  /** The distinct accounts a selection names, in selection order. */
  export const selectionAccountIds = (selected: SelectedAccounts): readonly AccountId[] => [
-@@ -26,7 +27,12 @@ export const selectionAccountIds = (selected: SelectedAccounts): readonly Accoun
+@@ -24,9 +25,7 @@ export const selectionAccountIds = (selected: SelectedAccounts): readonly Accoun
+ 
+ /** The stored rows of the named accounts, in one statement; none when it names none. */
  export const readSelectionAccounts = (db: Query, ids: readonly AccountId[]) =>
-   ids.length === 0
-     ? Effect.succeed([])
+-  ids.length === 0
+-    ? Effect.succeed([])
 -    : query(() => db.findMany("accounts", { where: (b) => b("id", "in", ids) }));
-+    : query(() =>
-+        db.findMany("accounts", {
-+          join: (b) => b.executionTarget(),
-+          where: (b) => b("id", "in", ids),
-+        }),
-+      );
++  db.readSelectionAccounts(ids);
  
  /** Rows {@link readSelectionAccounts} returned for these IDs, read before the selection was known. */
  export interface SelectionAccountsRead {
-@@ -115,7 +121,16 @@ export const validateSelection = (
+@@ -115,7 +114,16 @@ export const validateSelection = (
          return { slot, required, accounts: resolved };
        }),
      );
@@ -829,7 +1153,7 @@ index 02ec4994aa8ac470a32c36fae6719edf7790edf2..ae5afbf535e427024b5d25cc0462cd18
 +      account: account.id,
 +      owner: account.owner,
 +      credentialGeneration: account.credentialGeneration,
-+      row: rows.find((row) => row.id === account.id)?.executionTarget ?? null,
++      row: rows.find((row) => row.id === account.id)?.executionTarget,
 +    }));
 +    return {
 +      selections: new Map(selections.map((selection) => [selection.slot, selection])),
@@ -838,7 +1162,7 @@ index 02ec4994aa8ac470a32c36fae6719edf7790edf2..ae5afbf535e427024b5d25cc0462cd18
    });
  
  /** The scope accounts named by scope run in: without `user`, the app's, with no caller. */
-@@ -162,17 +177,17 @@ export const chooseAccounts = (
+@@ -162,17 +170,17 @@ export const chooseAccounts = (
      const scoped = Object.entries(requirements).filter(
        ([slot, required]) =>
          (scope === "user" || required.scope === "app") &&
@@ -859,18 +1183,26 @@ index 02ec4994aa8ac470a32c36fae6719edf7790edf2..ae5afbf535e427024b5d25cc0462cd18
    });
  
  /** A selection as the accounts it names, by scope; without a caller it names no `user`. */
-diff --git a/packages/sdk/src/implementation/storage-current.ts b/packages/sdk/src/implementation/storage-current.ts
-index 5a20d953829adfae3bbadc912df4860de3d6bf41..5a8cf62e27c07401ff8980fbf1d6163bd63bf11b 100644
---- a/packages/sdk/src/implementation/storage-current.ts
-+++ b/packages/sdk/src/implementation/storage-current.ts
-@@ -10,6 +10,7 @@ export const currentStorageSchema = schema({
-   relations: {
-     accounts: ({ one }) => ({
-       providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
-+      executionTarget: one("accountTargets", ["id", "account"], ["owner", "owner"]),
-     }),
-     apps: ({ one }) => ({
-       deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
+diff --git a/packages/sdk/src/implementation/storage-runtime.ts b/packages/sdk/src/implementation/storage-runtime.ts
+index c2d0b318383c23cba9cdc68d602e0a89ae96ccb9..f5d0b4c4d1610fd3c797e321f92cc58ebd3b4352 100644
+--- a/packages/sdk/src/implementation/storage-runtime.ts
++++ b/packages/sdk/src/implementation/storage-runtime.ts
+@@ -10,6 +10,7 @@ import { currentStorageSchema } from "./storage-current.ts";
+ import { makeAccountTrafficStore } from "./account-traffic-store.ts";
+ import { makeAppViewStorage } from "./app-view-storage.ts";
+ import { makeToolSearchStore } from "./tool-search-store.ts";
++import { makeSelectionAccountStore } from "./selection-account-store.ts";
+ 
+ const runtimeDatabase = fumadb({ namespace: "executor", schemas: [currentStorageSchema] });
+ 
+@@ -35,6 +36,7 @@ export const makeExecutorRuntimeStorage = (options: { readonly provider: SqlProv
+       appViews: makeAppViewStorage(sql),
+       // Tool-call counts per account; the table creates itself, so it takes no schema version.
+       accountTraffic: makeAccountTrafficStore(sql),
++      selectionAccounts: makeSelectionAccountStore(sql, reactivity),
+     };
+   });
+ 
 diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
 index 716cca47dd2c4175edbac7330acab2739195155e..a126911dd4cf224ca0bd84862238ed6d386c0a5f 100644
 --- a/packages/sdk/src/implementation/tools.ts

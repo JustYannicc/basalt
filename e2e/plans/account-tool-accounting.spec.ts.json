@@ -19,9 +19,7 @@
     }
   },
   "runs": {
-    "accountToolAccounting": [
-      "declared:self-host"
-    ]
+    "accountToolAccounting": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/implementation/app-link-policy.ts",
@@ -43,6 +41,9 @@
     ".upstream/e2e/support/account-tool-accounting.ts",
     ".upstream/apps/hosted/testing/self-host.ts",
     ".upstream/apps/hosted/testing/statement-hold-fixture.ts",
-    ".upstream/e2e/support/managed-server.ts"
+    ".upstream/e2e/support/managed-server.ts",
+    ".upstream/packages/sdk/src/implementation/selection-account-store.ts",
+    ".upstream/packages/sdk/src/implementation/storage-runtime.ts",
+    ".upstream/packages/sdk/src/implementation/database.ts"
   ]
 }
