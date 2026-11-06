@@ -126,6 +126,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/product-services.ts b/apps/hos
        Option.isSome(poolKey) ? { key: poolKey.value, origin: poolOrigin } : undefined,
      ),
 diff --git a/apps/hosted/server/src/implementation/pool-removal-intent.ts b/apps/hosted/server/src/implementation/pool-removal-intent.ts
+new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-removal-intent.ts
 @@ -0,0 +1,100 @@
