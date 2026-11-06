@@ -128,8 +128,8 @@ test(
         });
         try {
           const queued = await waitingClients(pooler, databases[0]!, 10);
-          // Clients can queue while the fifth server connection is still logging in.
-          await waitForBackendCount(admin, [databases[0]!], 5);
+          // PgBouncer retires the previous role's idle server before admitting this burst's fifth.
+          await waitForBackendCount(admin, [databases[0]!], 5, ["budget_a"]);
           assert.equal(await runtimeBackends(admin, [databases[0]!]), 5);
           await control.query("COMMIT");
           const results = await Promise.all(lookups);

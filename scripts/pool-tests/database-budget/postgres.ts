@@ -28,19 +28,28 @@ export function runtimeUrl(base: URL, database: string, role: string) {
   return url.toString();
 }
 
-export async function runtimeBackends(admin: pg.Client, databases: string[]) {
+export async function runtimeBackends(
+  admin: pg.Client,
+  databases: string[],
+  roles = ["budget_a", "budget_b"],
+) {
   const result = await admin.query<{ connections: number }>(
     "SELECT count(*)::int AS connections FROM pg_stat_activity WHERE datname=ANY($1::text[]) AND usename=ANY($2::text[])",
-    [databases, ["budget_a", "budget_b"]],
+    [databases, roles],
   );
   return result.rows[0]!.connections;
 }
 
-export async function waitForBackendCount(admin: pg.Client, databases: string[], expected: number) {
+export async function waitForBackendCount(
+  admin: pg.Client,
+  databases: string[],
+  expected: number,
+  roles = ["budget_a", "budget_b"],
+) {
   const deadline = performance.now() + 2_000;
   let count = 0;
   while (performance.now() < deadline) {
-    count = await runtimeBackends(admin, databases);
+    count = await runtimeBackends(admin, databases, roles);
     if (count >= expected) return count;
   }
   throw new Error(`Expected ${expected} admitted PostgreSQL backends, observed ${count}`);
