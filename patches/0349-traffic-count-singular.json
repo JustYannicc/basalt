@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-traffic-count-singular",
+  "file": "0349-traffic-count-singular.patch",
+  "content_sha256": "3f2750d7f5b6bcc92440e38fe43f23d8d0150fad63a680488dbf49a8072b146d",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
