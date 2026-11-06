@@ -44,7 +44,7 @@ test("the local plan preserves every real CI shell command, in its original orde
       )
       .map((step: { run: string }) => step.run),
   );
-  assert.ok(plan.steps.some((step) => step.command === "node scripts/ci/style.ts"));
+  assert.ok(plan.steps.some((step) => step.command === "node scripts/batch-preflight.ts"));
   const upstream = actual.jobs.fast.steps.find(
     (step: { name?: string }) =>
       step.name === "Typecheck the patched upstream the way upstream checks itself",
@@ -113,6 +113,27 @@ test("pipeline failures cannot be hidden by a successful final command", () => {
     process.env,
   );
   assert.deepEqual(result, { status: 1, failed: "pipeline" });
+});
+
+test("local artifact uploads are explicit skips while their producer and later checks still run", () => {
+  const value = document();
+  const upload = {
+    name: "Upload failure proof",
+    uses: "actions/upload-artifact@v4",
+    if: "always()",
+    with: { path: ".generated/failure-proof" },
+  };
+  const plan = fastPlan(
+    {
+      ...value,
+      jobs: { fast: { steps: [...value.jobs.fast.steps, upload, { run: "echo later" }] } },
+    },
+    context,
+  );
+  assert.deepEqual(plan.skipped, [
+    { name: upload.name, reason: "artifact upload requires GitHub Actions" },
+  ]);
+  assert.equal(plan.steps.at(-1)!.command, "echo later");
 });
 
 test("new workflow semantics fail until the local runner understands them", () => {
