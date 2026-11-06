@@ -1,12 +1,88 @@
 {
-  "scenarios": {},
-  "runs": {},
-  "inherited": [
-    "providerErrorsGraphql",
-    "providerErrorsMcp",
-    "providerErrorsOpenapi",
-    "providerErrorsCustom"
-  ],
+  "scenarios": {
+    "providerErrorsGraphql": {
+      "fixtures": "actors",
+      "title": "Provider failures retain safe reasons and account recovery over GraphQL",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses controlled loopback providers through the shared runtime contract."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Shared error views and SDK are exercised through hosted APIs."
+        }
+      }
+    },
+    "providerErrorsMcp": {
+      "fixtures": "actors",
+      "title": "Provider failures retain safe reasons and account recovery over MCP",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses controlled loopback providers through the shared runtime contract."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Shared error views and SDK are exercised through hosted APIs."
+        }
+      }
+    },
+    "providerErrorsOpenapi": {
+      "fixtures": "actors",
+      "title": "Provider failures retain safe reasons and account recovery over OpenAPI",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses controlled loopback providers through the shared runtime contract."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Shared error views and SDK are exercised through hosted APIs."
+        }
+      }
+    },
+    "providerErrorsCustom": {
+      "fixtures": "actors",
+      "title": "Provider failures retain safe reasons and account recovery from custom providers",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses controlled loopback providers through the shared runtime contract."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Shared error views and SDK are exercised through hosted APIs."
+        }
+      }
+    }
+  },
+  "runs": {
+    "providerErrorsGraphql": [
+      "declared:self-host"
+    ],
+    "providerErrorsMcp": [
+      "declared:self-host"
+    ],
+    "providerErrorsOpenapi": [
+      "declared:self-host"
+    ],
+    "providerErrorsCustom": [
+      "declared:self-host"
+    ]
+  },
   "inputs": [
     ".upstream/apps/hosted/server/src/contracts/auth.ts",
     ".upstream/apps/hosted/server/src/contracts/authorization.ts",
