@@ -42,18 +42,32 @@ diff --git a/apps/hosted/server/src/implementation/statement-batch.ts b/apps/hos
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/statement-batch.ts
-@@ -0,0 +1,11 @@
+@@ -0,0 +1,25 @@
 +import { StorageError } from "@executor-js/sdk/core";
-+import { Effect } from "effect";
++import { Effect, Option } from "effect";
++import { HttpServerRequest } from "effect/http";
 +
 +/** Expired prefetch must fail before callers can retry its reads on the stalled client. */
 +export const boundedStatementBatch = <A>(batch: Effect.Effect<A>) =>
-+  batch.pipe(
-+    Effect.timeoutOrElse({
-+      duration: "10 seconds",
-+      orElse: () => new StorageError(),
-+    }),
-+  );
++  Effect.gen(function* () {
++    const request = yield* Effect.serviceOption(HttpServerRequest.HttpServerRequest);
++    const bounded = batch.pipe(
++      Effect.timeoutOrElse({ duration: "10 seconds", orElse: () => new StorageError() }),
++    );
++    if (Option.isNone(request) || !(request.value.source instanceof Request)) return yield* bounded;
++    const signal = request.value.source.signal;
++    // Alchemy does not interrupt a handler that has not created its response yet.
++    return yield* bounded.pipe(
++      Effect.raceFirst(
++        Effect.callback<never>((resume) => {
++          const abort = () => resume(Effect.interrupt);
++          if (signal.aborted) return abort();
++          signal.addEventListener("abort", abort, { once: true });
++          return Effect.sync(() => signal.removeEventListener("abort", abort));
++        }),
++      ),
++    );
++  });
 diff --git a/apps/hosted/testing/statement-hold-fixture.ts b/apps/hosted/testing/statement-hold-fixture.ts
 --- a/apps/hosted/testing/statement-hold-fixture.ts
 +++ b/apps/hosted/testing/statement-hold-fixture.ts
@@ -279,21 +293,32 @@ diff --git a/e2e/support/statement-batch-fixture.ts b/e2e/support/statement-batc
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/statement-batch-fixture.ts
-@@ -0,0 +1,65 @@
+@@ -0,0 +1,76 @@
 +import { expect } from "@effect/vitest";
 +import { Effect, Layer, Schema } from "effect";
 +import { Actors } from "./actors.ts";
 +import { Api, body, SessionClients } from "./api.ts";
 +import { Organization } from "./contracts.ts";
++import { SpanQuery } from "./contracts.ts";
++import { Telemetry } from "./evidence.ts";
++import { throttlingCollector } from "./throttling-collector.ts";
 +import { startControlledDevelopmentServer } from "./managed-server.ts";
 +import { Target } from "./platform.ts";
 +
 +/** Only the existing development entry mounts the self-host SQL hold. */
-+export const withStatementBatchFixture = <A, E, R>(program: Effect.Effect<A, E, R>) =>
++export const withStatementBatchFixture = <A, E, R>(
++  run: (query: (trace: string) => Effect.Effect<typeof SpanQuery.Type>) => Effect.Effect<A, E, R>,
++) =>
 +  Effect.gen(function* () {
 +    const target = yield* Target;
-+    if (target.metadata.target !== "self-host") return yield* program;
-+    const isolated = yield* startControlledDevelopmentServer(target);
++    if (target.metadata.target !== "self-host") {
++      const telemetry = yield* Telemetry;
++      return yield* run((trace) => telemetry.query(trace).pipe(Effect.orDie));
++    }
++    const collector = yield* throttlingCollector;
++    const isolated = yield* startControlledDevelopmentServer(target, {
++      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `${collector.endpoint}/v1/traces`,
++    });
 +    const runtime = Layer.fresh(SessionClients.layer).pipe(
 +      Layer.provideMerge(Layer.succeed(Target, isolated)),
 +    );
@@ -340,7 +365,7 @@ new file mode 100644
 +        return yield* Effect.die("Development organization is missing");
 +      return { owner, organization, admin: yield* as("admin"), member: yield* as("rhys-member") };
 +    }).pipe(Effect.provideContext(services));
-+    return yield* program.pipe(
++    return yield* run((trace) => collector.query(trace).pipe(Effect.orDie)).pipe(
 +      Effect.provideService(Actors, actors),
 +      Effect.provideContext(services),
 +    );
@@ -349,7 +374,7 @@ diff --git a/e2e/support/statement-batch-proxy.ts b/e2e/support/statement-batch-
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/statement-batch-proxy.ts
-@@ -0,0 +1,180 @@
+@@ -0,0 +1,209 @@
 +import { Deferred, Effect, Exit, Schema } from "effect";
 +import { connect, createServer, type Socket } from "node:net";
 +
@@ -392,7 +417,26 @@ new file mode 100644
 +    let index = 0;
 +    let frozen: Hold | undefined;
 +    let transaction: { matches: boolean } | undefined;
++    type StatementKind = "begin" | "commit" | "query";
++    const statements = new Map<string, StatementKind>();
++    const portals = new Map<string, StatementKind>();
++    let postCommit: Hold | undefined;
 +    const queries: Array<{ commit?: Hold }> = [];
++    const kindOf = (sql: string): StatementKind =>
++      sql === "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY"
++        ? "begin"
++        : sql === "COMMIT"
++          ? "commit"
++          : "query";
++    const execute = (kind: StatementKind) => {
++      const commit = kind === "commit" && transaction?.matches ? armed : undefined;
++      if (postCommit !== undefined) postCommit.later++;
++      queries.push(commit === undefined ? {} : { commit });
++      if (kind === "commit") {
++        transaction = undefined;
++        if (commit !== undefined) postCommit = commit;
++      }
++    };
 +    const close = () => {
 +      sockets.delete(incoming);
 +      sockets.delete(outgoing);
@@ -420,17 +464,19 @@ new file mode 100644
 +          continue;
 +        }
 +        if (frame[0] === 80) {
-+          const offset = frame.indexOf(0, 5) + 1;
-+          const sql = frame.toString("utf8", offset, frame.indexOf(0, offset));
-+          if (sql === "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
-+            transaction = { matches: false };
-+          const commit = sql === "COMMIT" && transaction?.matches ? armed : undefined;
-+          queries.push(commit === undefined ? {} : { commit });
-+          if (sql === "COMMIT") transaction = undefined;
-+          if (frozen !== undefined) frozen.later++;
-+        } else if (frame[0] === 66 && transaction !== undefined && armed !== undefined) {
-+          let offset = frame.indexOf(0, 5) + 1;
-+          offset = frame.indexOf(0, offset) + 1;
++          const nameEnd = frame.indexOf(0, 5);
++          const name = frame.toString("utf8", 5, nameEnd);
++          const offset = nameEnd + 1;
++          statements.set(name, kindOf(frame.toString("utf8", offset, frame.indexOf(0, offset))));
++        } else if (frame[0] === 66) {
++          const portalEnd = frame.indexOf(0, 5);
++          const portal = frame.toString("utf8", 5, portalEnd);
++          const statementEnd = frame.indexOf(0, portalEnd + 1);
++          const statement = frame.toString("utf8", portalEnd + 1, statementEnd);
++          const kind = statements.get(statement) ?? "query";
++          portals.set(portal, kind);
++          if (kind === "begin") transaction = { matches: false };
++          let offset = statementEnd + 1;
 +          const formats = frame.readInt16BE(offset);
 +          offset += 2 + formats * 2;
 +          const count = frame.readInt16BE(offset);
@@ -439,13 +485,21 @@ new file mode 100644
 +            const size = frame.readInt32BE(offset);
 +            offset += 4;
 +            if (size >= 0) {
-+              if (frame.toString("utf8", offset, offset + size) === armed.app)
++              if (
++                transaction !== undefined &&
++                armed !== undefined &&
++                frame.toString("utf8", offset, offset + size) === armed.app
++              )
 +                transaction.matches = true;
 +              offset += size;
 +            }
 +          }
++        } else if (frame[0] === 69) {
++          execute(portals.get(frame.toString("utf8", 5, frame.indexOf(0, 5))) ?? "query");
 +        } else if (frame[0] === 81) {
-+          queries.push({});
++          const kind = kindOf(frame.toString("utf8", 5, frame.length - 1));
++          if (kind === "begin") transaction = { matches: false };
++          execute(kind);
 +        }
 +        outgoing.write(frame);
 +      }
@@ -534,9 +588,9 @@ diff --git a/e2e/tests/statement-batch-deadline.spec.ts b/e2e/tests/statement-ba
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/statement-batch-deadline.spec.ts
-@@ -0,0 +1,189 @@
+@@ -0,0 +1,232 @@
 +import { expect, layer } from "@effect/vitest";
-+import { Clock, Effect, Fiber, Layer, Schema } from "effect";
++import { Clock, Effect, Fiber, Layer, Schedule, Schema } from "effect";
 +import { body } from "../support/api.ts";
 +import { McpClient } from "../support/mcp-client.ts";
 +import { appLinksFixture } from "../support/app-links.ts";
@@ -557,7 +611,7 @@ new file mode 100644
 +    it.effect(scenario.title, (context) =>
 +      withHostedCase(
 +        context,
-+        withStatementBatchFixture(
++        withStatementBatchFixture((query) =>
 +          Effect.gen(function* () {
 +            const target = yield* Target;
 +            const evidence = yield* Evidence;
@@ -571,7 +625,8 @@ new file mode 100644
 +            yield* f.connect(f.actors.owner, "app", "team", "synthetic-team");
 +            const dataRead = () =>
 +              tracedDataQuery(f.actors.member, f.path, { name: "read", input: {} }).pipe(
-+                Effect.map(({ response }) => ({
++                Effect.map(({ response, request }) => ({
++                  traceId: request.traceId,
 +                  success: response.status === 200,
 +                  value: response.body,
 +                  failure: response.body,
@@ -630,16 +685,48 @@ new file mode 100644
 +                          Effect.flatMap((result) =>
 +                            Schema.decodeUnknownEffect(Result)(result.structuredContent),
 +                          ),
-+                          Effect.map(({ execution }) => ({
-+                            success: execution.ok,
-+                            value: execution.value,
-+                            failure: execution.error?.response,
-+                            status: undefined,
-+                          })),
++                          Effect.flatMap(({ execution }) =>
++                            Effect.gen(function* () {
++                              const request = (yield* evidence.requests)
++                                .filter(
++                                  (request) => request.path === "/mcp" && request.method === "POST",
++                                )
++                                .at(-1);
++                              if (request === undefined)
++                                return yield* Effect.die("MCP request evidence missing");
++                              return {
++                                traceId: request.traceId,
++                                success: execution.ok,
++                                value: execution.value,
++                                failure: execution.error?.response,
++                                status: undefined,
++                              };
++                            }),
++                          ),
 +                        );
 +                  });
 +            const read = mcpRead ?? dataRead;
-+            expect((yield* read()).success).toBe(true);
++            const delivered = (trace: string) =>
++              query(trace).pipe(
++                Effect.flatMap((trace) =>
++                  trace.data.some(
++                    ({ span }) =>
++                      span.operationName.startsWith("http.server") &&
++                      span.tags["http.request.method"] === "POST",
++                  )
++                    ? Effect.succeed(trace)
++                    : Effect.fail(new Error("The completed request trace is not delivered")),
++                ),
++                Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 50 }),
++              );
++            const dispatch = kind === "data" ? "sdk.data.query" : "sdk.tools.call";
++            const warm = yield* read();
++            expect(warm.success).toBe(true);
++            expect(
++              (yield* delivered(warm.traceId)).data.some(
++                ({ span }) => span.operationName === dispatch,
++              ),
++            ).toBe(true);
 +            expect(yield* counter.calls).toBe(1);
 +            const cloud = target.metadata.target === "cloud";
 +            const control = (action: "arm" | "held" | "closed" | "state" | "release") =>
@@ -684,7 +771,16 @@ new file mode 100644
 +            expect(failed.failure).not.toMatchObject({ mayHaveWritten: true });
 +            expect(elapsed).toBeLessThan(12_000);
 +            expect(yield* counter.calls).toBe(before);
++            const failureTrace = yield* delivered(failed.traceId);
++            expect(failureTrace.data.some(({ span }) => span.operationName === dispatch)).toBe(
++              false,
++            );
++            yield* evidence.json("statement-batch-dispatch.json", {
++              dispatch,
++              spans: failureTrace.data.map(({ span }) => span.operationName),
++            });
 +            const state = yield* control("closed");
++            yield* evidence.json("statement-batch-deadline-state.json", state);
 +            const guard = cloud
 +              ? Schema.Struct({
 +                  held: Schema.Literal(true),
@@ -709,6 +805,7 @@ new file mode 100644
 +            const cancellationStarted = yield* Clock.currentTimeMillis;
 +            yield* Fiber.interrupt(cancelled);
 +            const cancelledState = yield* control("closed").pipe(Effect.timeout("7 seconds"));
++            yield* evidence.json("statement-batch-cancelled-state.json", cancelledState);
 +            const cancellationElapsed = (yield* Clock.currentTimeMillis) - cancellationStarted;
 +            yield* Schema.decodeUnknownEffect(guard)(cancelledState);
 +            expect(yield* counter.calls).toBe(before + 1);
