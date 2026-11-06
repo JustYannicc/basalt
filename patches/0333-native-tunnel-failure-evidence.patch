@@ -45,6 +45,15 @@ diff --git a/e2e/support/native-tunnel.ts b/e2e/support/native-tunnel.ts
              workers: [
                {
                  name: "router",
+@@ -113,7 +136,7 @@
+                       method: request.method,
+                       headers: Object.fromEntries(request.headers),
+                       body: request.body,
+-                      ...{ duplex: "half" },
++                      duplex: "half",
+                       redirect: "manual",
+                       signal: request.signal,
+                     }).then(
 @@ -156,12 +179,13 @@
        ),
        (runtime) => {
