@@ -14,6 +14,8 @@ import type { CompiledStack } from "alchemy/Stack";
 import { Effect, FileSystem, Path } from "effect";
 import * as Retry from "@distilled.cloud/cloudflare/Retry";
 import { BarrierRefusal } from "./manifest.ts";
+import { admitSourceNamespace, commandPhase, supportedCommand } from "./commands.ts";
+import { cloudflareArtifactsApi } from "../ensure-artifacts.ts";
 
 const workerType = "Cloudflare.Worker";
 const existing = (node: Plan.Apply) =>
@@ -48,18 +50,27 @@ export function assertSupportedPlan(plan: Plan.Plan) {
       // Returning an old image/application attribute would freeze the wrong PoolWorker input.
       refuse("unsupported-resource-update", fqn);
     }
+    if (node.resource.Type === "Command.Exec" && !supportedCommand(node.resource.LogicalId))
+      refuse("unsupported-command", fqn);
     if (node.resource.Type === "Command.Build" && node.resource.LogicalId !== "Site")
       refuse("unsupported-build-command", fqn);
   }
 }
 
-export const preparePlan = (stack: CompiledStack, plan: Plan.Plan) =>
+export const preparePlan = (
+  stack: CompiledStack,
+  plan: Plan.Plan,
+  namespaceApi = cloudflareArtifactsApi,
+) =>
   Effect.gen(function* () {
     assertSupportedPlan(plan);
     const files = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
     const captured = new Map<string, PreparedWorkerUpload>();
     const inputs = new Map<string, { news: unknown; bindings: unknown }>();
     const builds = new Map<string, object>();
+    const checkedCommands = new Map<string, object>();
+    const admissions: (() => Promise<void>)[] = [];
+    const databaseCommands = new Set<string>();
     const resources: Plan.Plan["resources"] = {};
     for (const [fqn, node] of Object.entries(plan.resources)) {
       if (node.action !== "update" && node.action !== "noop")
@@ -91,7 +102,15 @@ export const preparePlan = (stack: CompiledStack, plan: Plan.Plan) =>
         reconcile = (input) =>
           Effect.gen(function* () {
             const news = input.news as ExecProps;
-            return {
+            const phase = commandPhase(node.resource.LogicalId, news);
+            if (phase === "database") databaseCommands.add(fqn);
+            if (phase === "namespace") {
+              const check = () => admitSourceNamespace(news, namespaceApi);
+              yield* Effect.tryPromise({ try: check, catch: (error) => error });
+              admissions.push(check);
+              inputs.set(fqn, { news: input.news, bindings: input.bindings });
+            }
+            const result = {
               hash: {
                 input:
                   news.memo === false
@@ -102,6 +121,8 @@ export const preparePlan = (stack: CompiledStack, plan: Plan.Plan) =>
                       }).pipe(Effect.provideContext(files)),
               },
             };
+            if (phase === "namespace") checkedCommands.set(fqn, result);
+            return result;
           });
       } else if (node.resource.Type === "Command.Build") {
         reconcile = (input) => {
@@ -120,7 +141,8 @@ export const preparePlan = (stack: CompiledStack, plan: Plan.Plan) =>
       }
       const wrapped = { ...provider, precreate: undefined, reconcile };
       resources[fqn] =
-        node.resource.Type === workerType
+        node.resource.Type === workerType ||
+        (node.resource.Type === "Command.Exec" && node.resource.LogicalId === "AppSourceNamespace")
           ? {
               ...node,
               action: "update",
@@ -150,6 +172,9 @@ export const preparePlan = (stack: CompiledStack, plan: Plan.Plan) =>
       captured,
       inputs,
       builds,
+      checkedCommands,
+      admissions,
+      databaseCommands,
       stack: stack.name,
       stage: stack.stage,
       original: plan,
@@ -174,7 +199,11 @@ export const finishPlan = (
         if (!current || !(current.status === "created" || current.status === "updated"))
           refuse("database-state-unsettled", fqn);
         resources[fqn] = { ...node, action: "noop", state: current };
-      } else if (node.resource.Type === workerType || node.resource.Type === "Command.Build") {
+      } else if (
+        node.resource.Type === workerType ||
+        node.resource.Type === "Command.Build" ||
+        prepared.checkedCommands.has(fqn)
+      ) {
         resources[fqn] = {
           ...node,
           provider: {
@@ -182,7 +211,7 @@ export const finishPlan = (
             reconcile: (input) =>
               Effect.sync(() => {
                 if (
-                  node.resource.Type === workerType &&
+                  prepared.inputs.has(fqn) &&
                   havePropsChanged(prepared.inputs.get(fqn), {
                     news: input.news,
                     bindings: input.bindings,
@@ -190,7 +219,9 @@ export const finishPlan = (
                 )
                   refuse("activation-input-drift", fqn);
                 const result =
-                  node.resource.Type === workerType ? activated.get(fqn) : prepared.builds.get(fqn);
+                  node.resource.Type === workerType
+                    ? activated.get(fqn)
+                    : (prepared.builds.get(fqn) ?? prepared.checkedCommands.get(fqn));
                 if (!result) refuse("missing-prepared-output", fqn);
                 return result!;
               }),

@@ -15,11 +15,12 @@ import type { Worker } from "alchemy/Cloudflare";
 import { withReleaseRuntime } from "./runtime.ts";
 import { deployStack } from "./deploy-stack.ts";
 import { attributes, preparedUpload } from "./fixture.ts";
+import { cloudflareArtifactsApi } from "../ensure-artifacts.ts";
 import type { BarrierReceipt } from "./barrier.ts";
 
 interface FixtureWorker extends Resource<
   "Cloudflare.Worker",
-  { revision: string; peer?: string },
+  { revision: string; peer?: string; ready?: string },
   Worker["Attributes"]
 > {}
 const FixtureWorker = Resource<FixtureWorker>("Cloudflare.Worker");
@@ -30,6 +31,9 @@ const fixture = (
     omitCapture?: boolean;
     newResource?: boolean;
     interrupted?: boolean;
+    namespace?: "eu" | "missing" | "wrong" | "drift";
+    unknownCommand?: boolean;
+    orphanedDatabaseCommand?: boolean;
   } = {},
 ) => {
   const events: string[] = [],
@@ -37,6 +41,7 @@ const fixture = (
   let writes = 0;
   let failOrdinary = false;
   let seededStatus: string | undefined;
+  let namespaceReads = 0;
   const workers = Provider.succeed(FixtureWorker, {
     diff: () => Effect.succeed({ action: "update" }),
     reconcile: (input) =>
@@ -97,14 +102,36 @@ const fixture = (
     "fixture",
     { providers: Layer.mergeAll(workers, commands), state },
     Effect.gen(function* () {
-      yield* Command.Exec("PoolDatabase", { command: "database", memo: false });
+      const namespace = options.namespace
+        ? yield* Command.Exec("AppSourceNamespace", {
+            command: "node ensure-artifacts.ts",
+            memo: false,
+            env: {
+              CLOUDFLARE_ACCOUNT_ID: "fixture",
+              CLOUDFLARE_API_TOKEN: "fixture",
+              CLOUD_SOURCE_NAMESPACE: "sources",
+            },
+          })
+        : undefined;
+      if (options.unknownCommand)
+        yield* Command.Exec("UnsupportedProvisioning", {
+          command: "node unmodeled.ts",
+          memo: false,
+        });
+      yield* Command.Exec("PoolDatabase", { command: "node ensure-pool-database.ts", memo: false });
+      if (options.orphanedDatabaseCommand)
+        yield* Command.Exec("Migrations", { command: "node src/migrate.ts", memo: false });
       const api = yield* FixtureWorker("Api", { revision: "candidate" });
       yield* Command.Exec("ToolsBackendBudget", {
-        command: "tools-budget",
+        command: "node verify-database-budget.ts",
         memo: false,
         env: { READY: api.hash.pipe(Output.map((hash) => hash?.input ?? "")) },
       });
-      yield* FixtureWorker("Router", { revision: "candidate", peer: api.workerName });
+      yield* FixtureWorker("Router", {
+        revision: "candidate",
+        peer: api.workerName,
+        ready: namespace?.hash.pipe(Output.map(() => "eu")),
+      });
       return { api: api.workerName };
     }),
   );
@@ -138,6 +165,26 @@ const fixture = (
           },
           manifest: async () => {},
           io: {
+            namespace: (account, token) =>
+              cloudflareArtifactsApi(account, token, async (_input, init) => {
+                assert.equal(init?.method, "GET");
+                namespaceReads++;
+                events.push("namespace:read");
+                const missing =
+                  options.namespace === "missing" ||
+                  (options.namespace === "drift" && namespaceReads > 1);
+                return Response.json({
+                  success: true,
+                  result: missing
+                    ? []
+                    : [
+                        {
+                          namespace: "sources",
+                          jurisdiction: options.namespace === "wrong" ? "global" : "eu",
+                        },
+                      ],
+                });
+              }),
             baseline: () => Effect.succeed([{ versionId: "previous", percentage: 100 }]),
             upload: (worker) =>
               Effect.sync(() => {
@@ -168,10 +215,10 @@ test("real Alchemy graph activates accepted IDs before the Api.hash-dependent li
   assert.deepEqual(proof.events, [
     "validate:Api",
     "validate:Router",
-    "command:database",
+    "command:node ensure-pool-database.ts",
     "activate:Api:accepted-Api",
     "activate:Router:accepted-Router",
-    "command:tools-budget",
+    "command:node verify-database-budget.ts",
   ]);
   assert.ok(proof.writes() > 0);
 });
@@ -198,3 +245,39 @@ for (const reject of [false, true]) {
     } else assert.equal(proof.receipts.at(-1)?.phase, "complete");
   });
 }
+
+for (const namespace of ["missing", "wrong", "drift"] as const) {
+  test(`namespace ${namespace} refuses before any Worker activation or provisioning`, async () => {
+    const proof = fixture({ namespace });
+    await assert.rejects(Effect.runPromise(proof.effect), /source-namespace/);
+    assert.ok(
+      !proof.events.some((event) => event.startsWith("activate:") || event.startsWith("command:")),
+    );
+    if (namespace !== "drift") {
+      assert.ok(!proof.events.some((event) => event.startsWith("validate:")));
+      assert.equal(proof.writes(), 0);
+    }
+  });
+}
+test("existing EU namespace is admitted before uploads and rechecked before activation without running its provisioning Command", async () => {
+  const proof = fixture({ namespace: "eu" });
+  await Effect.runPromise(proof.effect);
+  assert.equal(proof.events[0], "namespace:read");
+  const second = proof.events.indexOf("namespace:read", 1);
+  assert.ok(second > proof.events.indexOf("validate:Router"));
+  assert.ok(second < proof.events.findIndex((event) => event.startsWith("activate:")));
+  assert.ok(!proof.events.some((event) => event.includes("command:node ensure-artifacts.ts")));
+});
+test("an unsupported Command cannot be deferred through preparation", async () => {
+  const proof = fixture({ unknownCommand: true });
+  await assert.rejects(Effect.runPromise(proof.effect), /unsupported-command/);
+  assert.deepEqual(proof.events, []);
+  assert.equal(proof.writes(), 0);
+});
+
+test("database Commands outside the explicit database dependency plan cannot run after activation", async () => {
+  const proof = fixture({ orphanedDatabaseCommand: true });
+  await assert.rejects(Effect.runPromise(proof.effect), /unsafe-database-selection/);
+  assert.deepEqual(proof.events, ["validate:Api", "validate:Router"]);
+  assert.equal(proof.writes(), 0);
+});

@@ -9,13 +9,18 @@ import { preparePlan, finishPlan } from "./alchemy-plan.ts";
 import { readBaseline, uploadVersion } from "./cloudflare.ts";
 import { releaseWorkers, type BarrierReceipt } from "./barrier.ts";
 import { BarrierRefusal, type ReleaseManifest } from "./manifest.ts";
+import { cloudflareArtifactsApi } from "../ensure-artifacts.ts";
 import { freezeUpload } from "./version-request.ts";
 
 export interface DeployStackOptions {
   candidate: string;
   record(receipt: BarrierReceipt): Promise<void>;
   manifest(value: ReleaseManifest): Promise<void>;
-  io?: { baseline: typeof readBaseline; upload: typeof uploadVersion };
+  io?: {
+    baseline: typeof readBaseline;
+    upload: typeof uploadVersion;
+    namespace?: typeof cloudflareArtifactsApi;
+  };
 }
 
 type Services = Effect.Services<ReturnType<typeof readBaseline> | ReturnType<typeof Apply.apply>>;
@@ -24,7 +29,7 @@ type Services = Effect.Services<ReturnType<typeof readBaseline> | ReturnType<typ
 export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =>
   Effect.gen(function* () {
     const plan = yield* Plan.make(stack);
-    const prepared = yield* preparePlan(stack, plan);
+    const prepared = yield* preparePlan(stack, plan, options.io?.namespace);
     const context = yield* Effect.context<Services>();
     const run = <A, E>(effect: Effect.Effect<A, E, Services>) =>
       Effect.runPromise(effect.pipe(Effect.provideContext(context)));
@@ -45,6 +50,8 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
     const activated = new Map<string, Worker["Attributes"]>();
     const databaseFqns = new Set<string>();
     const database = Effect.gen(function* () {
+      for (const admit of prepared.admissions)
+        yield* Effect.tryPromise({ try: admit, catch: (error) => error });
       const state = yield* yield* State;
       const current = yield* Effect.all(
         Object.entries(plan.resources).map(([fqn, node]) =>
@@ -61,7 +68,13 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
           (node) => node.resource.Type === "Cloudflare.Worker",
         ) ||
         Object.keys(databasePlan.deletions).length ||
-        Object.keys(databasePlan.actions).length
+        Object.keys(databasePlan.actions).length ||
+        [...prepared.databaseCommands].some((fqn) => !Object.hasOwn(databasePlan.resources, fqn)) ||
+        Object.entries(databasePlan.resources).some(([fqn, node]) =>
+          node.resource.Type === "Command.Exec"
+            ? !prepared.databaseCommands.has(fqn)
+            : node.action !== "noop",
+        )
       )
         throw new BarrierRefusal("unsafe-database-selection");
       for (const fqn of Object.keys(databasePlan.resources)) databaseFqns.add(fqn);

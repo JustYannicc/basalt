@@ -57,7 +57,7 @@ globalThis.fetch = async (input, init) => {
   throw new Error(`Unexpected fixture API operation ${request.method}:${suffix}`);
 };
 const [
-  { Effect, Layer, ConfigProvider, Context, Exit, Cause },
+  { Effect, ConfigProvider, Context, Exit, Cause },
   Cloudflare,
   { Stack, evalStack },
   { inMemoryState, State },

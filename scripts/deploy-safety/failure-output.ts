@@ -37,7 +37,8 @@ export class OutputTail {
   }
 }
 
-const stripAnsi = (text: string) => text.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, "");
+const stripAnsi = (text: string) =>
+  text.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[A-Za-z]`, "g"), "");
 
 export function redactFailureOutput(output: string, environment: NodeJS.ProcessEnv): string {
   let text = stripAnsi(output);
