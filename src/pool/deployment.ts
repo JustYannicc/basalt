@@ -1,3 +1,5 @@
+import { productionOpsRelease } from "../../.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts";
+import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Output from "alchemy/Output";
 import * as Command from "alchemy/Command";
@@ -43,6 +45,7 @@ export const poolWorker = Effect.gen(function* () {
       PoolContainer: image,
       POOL_DATABASE_URL: database.runtimeUrl,
       POOL_AUTH_DATABASE: workerDatabase,
+      POOL_DEPLOYMENT_KEY: yield* Config.Redacted("POOL_DEPLOYMENT_KEY"),
       POOL_MANAGEMENT_KEY: yield* Config.Redacted("POOL_MANAGEMENT_KEY"),
       TOOLS_SERVICE: yield* Api,
       POOL_APP_SIGNING_KEY: yield* Config.Redacted("POOL_APP_SIGNING_KEY"),
@@ -66,6 +69,11 @@ export const poolWorker = Effect.gen(function* () {
     runtimeLogin: database.runtimeRole,
     databases: ["basalt_pool"],
     deployment: worker.hash,
+    candidate: productionOpsRelease,
+    readiness: { worker: worker.workerName, accountId: application.accountId,
+      key: yield* Config.Redacted("POOL_DEPLOYMENT_KEY"), workerInput: poolWorkerRevision,
+      imageHash: application.hash.pipe(Output.map(hash => hash?.image ?? "")),
+    },
   });
   const receiptPath = yield* Config.String("BASALT_POOL_IMAGE_RECEIPT").pipe(
     Config.withDefault(""),

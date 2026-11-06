@@ -209,3 +209,21 @@ test("explicit recovery waits for the active warm and model calls share its one 
   assert.equal(f.state().starts, 2);
   assert.equal(f.state().stops, 1);
 });
+
+test("deployment readiness adopts the desired revision and unchanged readiness keeps its boot", async () => {
+  const f = fixture();
+  const old = await new PoolLifecycle(f.driver, f.storage, "old", f.clock).deploymentReady();
+  let probes = 0;
+  const status = f.driver.status;
+  f.driver.status = async () => {
+    if (++probes <= 120) throw new Error("waiting for target boot");
+    return status();
+  };
+  const runtime = new PoolLifecycle(f.driver, f.storage, "target", f.clock);
+  const adopted = await runtime.deploymentReady();
+  assert.equal(adopted.readyAt, 120_000);
+  assert.equal(adopted.desiredRevisionMatch, true);
+  assert.notEqual(adopted.bootId, old.bootId);
+  assert.equal((await new PoolLifecycle(f.driver, f.storage, "target", f.clock).deploymentReady()).bootId, adopted.bootId);
+  assert.deepEqual(f.state(), { starts: 2, stops: 1, alarm: 300_000 });
+});

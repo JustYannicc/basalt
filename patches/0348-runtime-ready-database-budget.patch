@@ -1,0 +1,21 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/database-budget-observation.ts b/apps/hosted/cloud/src/infrastructure/database-budget-observation.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/database-budget-observation.ts
+@@ -0,0 +1,16 @@
++/** Count direct and pooled client backends together; no transport filter may weaken this gate. */
++export const backendCountSql = `
++  SELECT datname AS database, count(*)::int AS connections
++  FROM pg_stat_activity
++  WHERE usename = ANY($1::text[]) AND backend_type = 'client backend'
++  GROUP BY datname`;
++
++/** A missing role or a monitor without full statistics visibility is an unknown observation. */
++export const backendVisibilitySql = `
++  SELECT bool_and(r.oid IS NOT NULL AND (
++    current_setting('is_superuser') = 'on'
++    OR pg_has_role(current_user, 'pg_read_all_stats', 'MEMBER')
++    OR pg_has_role(current_user, r.oid, 'MEMBER')
++  )) AS visible
++  FROM unnest($1::text[]) AS expected(name)
++  LEFT JOIN pg_roles r ON r.rolname = expected.name`;
