@@ -193,7 +193,7 @@ export async function runConnectorsProof({
   );
   await run(
     "bun",
-    [join(root, "scripts/connectors-tests/zendesk-tenant-runtime.mjs"), "--guidance"],
+    [join(root, "scripts/connectors-tests/zendesk-tenant-runtime.mjs"), "--guidance", browser],
     root,
     join(directory, "zendesk-company-guidance.json"),
     home,

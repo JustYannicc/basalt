@@ -25,6 +25,10 @@ import { proveCompanyGuidance } from "./zendesk-company-guidance.mjs";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const upstream = join(root, ".upstream");
+const guidance = process.argv.includes("--guidance");
+const browserExecutable = guidance ? process.argv[3] : undefined;
+if (guidance)
+  assert.ok(browserExecutable, "Guidance proof requires the installed browser executable");
 await mkdir(join(root, ".generated/connectors-proof"), { recursive: true, mode: 0o700 });
 const directory = await mkdtemp(join(root, ".generated/connectors-proof/zendesk-tenant-"));
 await writeFile(
@@ -68,7 +72,7 @@ const exactReplace = (text, before, after) => {
 const program = Effect.gen(function* () {
   const base = yield* startEnvironment({ target: "self-host", headless: true });
   const registry = yield* lockedNpmRegistry;
-  for (const global of process.argv.includes("--guidance") ? [false] : [false, true]) {
+  for (const global of guidance ? [false] : [false, true]) {
     step(global ? "global-client-preference" : "tenant-public-client");
     const fixtures = yield* Effect.acquireRelease(
       Effect.promise(() => startZendeskFixtures({ tenantPublicClients: true, expiresIn: 0 })),
@@ -210,7 +214,7 @@ const program = Effect.gen(function* () {
       200,
       "Share the synthetic app",
     );
-    if (process.argv.includes("--guidance")) {
+    if (guidance) {
       const connection = checked(
         yield* request(actors.owner, "POST", `${app.path}/accounts/user/zendesk/connections`, {
           destination: { kind: "personal" },
@@ -222,6 +226,7 @@ const program = Effect.gen(function* () {
       const result = yield* Effect.promise(() =>
         proveCompanyGuidance({
           upstream,
+          browserExecutable,
           directory,
           origin: target.metadata.origin,
           cookies: cliActors.owner.cookies,
@@ -290,7 +295,7 @@ try {
     ),
   );
   console.log(
-    process.argv.includes("--guidance")
+    guidance
       ? "Zendesk company guidance passed: both callbacks at 1280 and 390, exact clipboard values, custom client unchanged, no authorization."
       : "Zendesk tenant proof passed: method order, callback paste, state/redirect/expiry/replay refusal, per-user PKCE, refresh and revocation.",
   );

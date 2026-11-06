@@ -6,6 +6,7 @@ import { join } from "node:path";
 /** Check the real connect form before authorizing, including the values its copy buttons return. */
 export async function proveCompanyGuidance({
   upstream,
+  browserExecutable,
   directory,
   origin,
   cookies,
@@ -17,7 +18,7 @@ export async function proveCompanyGuidance({
   const { chromium } = require("playwright");
   const captures = join(directory, "company-guidance");
   await mkdir(captures, { recursive: true });
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({ headless: true, executablePath: browserExecutable });
   const observations = [];
   try {
     const context = await browser.newContext({
