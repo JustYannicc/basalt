@@ -1,3 +1,4 @@
+import { handleRemovalIntent, removalIntentPath } from "../../src/pool/removal-intent.ts";
 import { resetProvider } from "./reset-provider.mjs";
 import { createServer } from "node:http";
 import { once } from "node:events";
@@ -39,6 +40,17 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
   const accessCalls = [];
   const collections = new Map();
   const removals = new Map();
+  const hold = (key) => {
+    let enter, release;
+    const started = new Promise((resolve) => {
+      enter = resolve;
+    });
+    const released = new Promise((resolve) => {
+      release = resolve;
+    });
+    removals.set(key, { enter, released, release });
+    return { started, release };
+  };
   const timers = new Set();
   const home = async (path, init) => {
     const url = new URL(path, "http://synthetic-home.test");
@@ -118,7 +130,15 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
       });
     }
     if (route.startsWith("/channel-group-details/") && init?.method === "DELETE") {
-      members.delete(Number(route.split("/").at(-1)));
+      const id = Number(route.split("/").at(-1));
+      const key = `membership:${members.get(id)?.auth_id}`;
+      const removal = removals.get(key);
+      if (removal) {
+        removal.enter();
+        await removal.released;
+        removals.delete(key);
+      }
+      members.delete(id);
       return Response.json({ status: "ok" });
     }
     if (route.startsWith("/quota/credentials/")) {
@@ -230,6 +250,30 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
           }),
         );
         response.writeHead(200, { "Content-Type": "application/json" }).end("null");
+        return;
+      }
+      if (request.url === removalIntentPath) {
+        const result = await handleRemovalIntent(
+          new Request(`http://127.0.0.1${request.url}`, {
+            method: request.method,
+            headers: request.headers,
+            body,
+          }),
+          {
+            signingKey,
+            refresh: (pool) => memberships.refresh(pool),
+            selected: async (pool) => {
+              const policy = await memberships.authority(pool);
+              if (!policy) throw new Error("Native pool membership is unavailable");
+              return policy.accounts;
+            },
+            record: (pool, references, actor, operation, issuedAt) =>
+              control.recordRemovalIntent(pool, references, actor, operation, issuedAt),
+          },
+        );
+        response
+          .writeHead(result.status, Object.fromEntries(result.headers))
+          .end(await result.text());
         return;
       }
       const access = request.url === "/pool/v1/access";
@@ -361,15 +405,10 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
       });
     },
     holdRemoval(id) {
-      let enter, release;
-      const started = new Promise((resolve) => {
-        enter = resolve;
-      });
-      const released = new Promise((resolve) => {
-        release = resolve;
-      });
-      removals.set(id, { enter, released, release });
-      return { started, release };
+      return hold(id);
+    },
+    holdUnlink(id) {
+      return hold(`membership:${id}`);
     },
     completeCollectionAt(id, at, complete) {
       collections.set(id, { at, complete });
