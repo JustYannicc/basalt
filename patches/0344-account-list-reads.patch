@@ -1,0 +1,1925 @@
+diff --git a/apps/hosted/server/src/implementation/account-identity.ts b/apps/hosted/server/src/implementation/account-identity.ts
+index aef0bae261cc789392078c9f3b4944332363c5da..6119ee101223f0111ca01e3ee26df3d587d57273 100644
+--- a/apps/hosted/server/src/implementation/account-identity.ts
++++ b/apps/hosted/server/src/implementation/account-identity.ts
+@@ -6,6 +6,7 @@ import {
+   type AccountHealth,
+   AppId,
+ } from "@executor-js/sdk/core";
++import { AccountListReads } from "./account-list-reads.ts";
+ import { Effect, Schema } from "effect";
+ import { CurrentUserId } from "../contracts/auth.ts";
+ import { CurrentOrganization } from "../contracts/organization.ts";
+@@ -30,6 +31,17 @@ const redactAccount = (
+ const acquisitionLabels = (accounts: readonly AccountId[]) =>
+   Effect.gen(function* () {
+     if (accounts.length === 0) return new Map<AccountId, Set<string>>();
++    const reads = yield* AccountListReads;
++    if (
++      reads !== undefined &&
++      accounts.every((id) => reads.snapshot.accounts.some((account) => account.id === id))
++    )
++      return new Map(
++        accounts.flatMap((id) => {
++          const labels = reads.identity.labels.get(id);
++          return labels === undefined ? [] : [[id, labels] as const];
++        }),
++      );
+     const { owner } = yield* CurrentOrganization;
+     const sql = yield* policyDatabase;
+     const rows = yield* sql`select c.state::jsonb -> 'account' ->> 'id' as account,
+@@ -86,6 +98,12 @@ export const redactAccountHealth = (health: AccountHealth): AccountHealth => ({
+ /** Resolve the caller's own accounts once for a whole link list. */
+ export const heldAccounts = (accounts: readonly AccountId[]) =>
+   Effect.gen(function* () {
++    const reads = yield* AccountListReads;
++    if (
++      reads !== undefined &&
++      accounts.every((id) => reads.snapshot.accounts.some((account) => account.id === id))
++    )
++      return new Set(accounts.filter((id) => reads.identity.held.has(id)));
+     const user = yield* CurrentUserId;
+     return new Set(
+       (yield* accountHolders(
+@@ -116,6 +134,17 @@ export const identityAccounts = (accounts: readonly AccountId[]) =>
+ const appScopeLinks = (accounts: readonly AccountId[]) =>
+   Effect.gen(function* () {
+     if (accounts.length === 0) return new Map<AccountId, AppId[]>();
++    const reads = yield* AccountListReads;
++    if (
++      reads !== undefined &&
++      accounts.every((id) => reads.snapshot.accounts.some((account) => account.id === id))
++    )
++      return new Map(
++        accounts.flatMap((id) => {
++          const links = reads.identity.linked.get(id);
++          return links === undefined ? [] : [[id, links] as const];
++        }),
++      );
+     const sql = yield* policyDatabase;
+     const rows = yield* sql`select distinct account, app from hosted_app_account_links
+       where subject is null and account in ${sql.in(accounts)}`;
+@@ -128,6 +157,14 @@ const appScopeLinks = (accounts: readonly AccountId[]) =>
+     return byAccount;
+   }).pipe(Effect.mapError(() => new StorageError()));
+ 
++/** Account-wide retained metadata is shared only while one Accounts response is projected. */
++export const readIdentityMetadata = (accounts: readonly AccountId[]) =>
++  Effect.all({
++    held: heldAccounts(accounts),
++    linked: appScopeLinks(accounts),
++    labels: acquisitionLabels(accounts),
++  });
++
+ /** Batch identity policy for directory reads rather than looking it up once per account. */
+ const visibleStatuses = (health: readonly AccountHealth[], apps: readonly AppId[] = []) =>
+   Effect.gen(function* () {
+diff --git a/apps/hosted/server/src/implementation/account-list-links.ts b/apps/hosted/server/src/implementation/account-list-links.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..4a8921aaeec08abdcaa5e504c9860edf67239517
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/account-list-links.ts
+@@ -0,0 +1,40 @@
++import { AccountId, AppId, StorageError } from "@executor-js/sdk/core";
++import { Effect, Schema } from "effect";
++import { CurrentUserId } from "../contracts/auth.ts";
++import { policyDatabase } from "./resource-policy.ts";
++
++export const AccountLinkRecord = Schema.Struct({
++  requirement: Schema.NonEmptyString,
++  account: AccountId,
++  createdAt: Schema.Date,
++  contributed: Schema.Boolean,
++  linkedBy: Schema.String,
++  linkedByName: Schema.NullOr(Schema.String),
++});
++
++const ListLink = Schema.Struct({
++  ...AccountLinkRecord.fields,
++  app: AppId,
++  subject: Schema.NullOr(Schema.String),
++});
++export type AccountListLink = typeof ListLink.Type;
++
++/** Preserve each scope's native record order while loading visible apps together. */
++export const readAccountListLinks = (apps: readonly AppId[]) =>
++  Effect.gen(function* () {
++    if (apps.length === 0) return [];
++    const sql = yield* policyDatabase;
++    const user = yield* CurrentUserId;
++    return yield* sql`select l.app, l.subject, l.requirement, l.account, l.created_at as "createdAt",
++      l.linked_by as "linkedBy", u.name as "linkedByName",
++      coalesce(d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'scope' = 'app'
++        and d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'contributed' = 'true', false) as contributed
++      from hosted_app_account_links l left join "user" u on u.id = l.linked_by
++      join executor_apps a on a.id = l.app
++      left join executor_deployments d on d.id = a.active_deployment
++      where ${sql.in("l.app", apps)} and (l.subject is null or l.subject = ${user ?? ""})
++      order by l.app, l.requirement, l.created_at, l.account`.pipe(
++      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(ListLink))),
++      Effect.mapError(() => new StorageError()),
++    );
++  });
+diff --git a/apps/hosted/server/src/implementation/account-list-reads.ts b/apps/hosted/server/src/implementation/account-list-reads.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..311e08226d719edcf34d320bf26e931903398a8a
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/account-list-reads.ts
+@@ -0,0 +1,28 @@
++import { Context } from "effect";
++import type { AccountReadSnapshot, App, AppId, AccountId } from "@executor-js/sdk/core";
++import type { AccountAccess, AppAccess } from "../contracts/resource-access.ts";
++import type { ResourceAuthority, LinkedAccount } from "./resource-policy.ts";
++import type { AccountListLink } from "./account-list-links.ts";
++
++/** Only the Accounts GET provides this snapshot; writes and the next request read current policy. */
++export const AccountListReads = Context.Reference<
++  | {
++      readonly owner: string;
++      readonly actor: ResourceAuthority;
++      readonly snapshot: AccountReadSnapshot;
++      readonly apps: ReadonlyMap<AppId, App>;
++      readonly appAccesses: ReadonlyMap<AppId, typeof AppAccess.Type>;
++      readonly accountAccesses: ReadonlyMap<AccountId, typeof AccountAccess.Type>;
++      readonly userLinks: readonly LinkedAccount[];
++      readonly records: readonly AccountListLink[];
++      readonly managed: ReadonlySet<AccountId>;
++      readonly pools: ReadonlySet<AppId>;
++      readonly identity: {
++        readonly held: ReadonlySet<AccountId>;
++        readonly linked: ReadonlyMap<AccountId, readonly AppId[]>;
++        readonly labels: ReadonlyMap<AccountId, ReadonlySet<string>>;
++      };
++      readonly observations: ReadonlyMap<AccountId, boolean>;
++    }
++  | undefined
++>("hosted/AccountListReads", { defaultValue: () => undefined });
+diff --git a/apps/hosted/server/src/implementation/account-list-timing.ts b/apps/hosted/server/src/implementation/account-list-timing.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..c7d74cd416b8e7a6d91290c5df81ab5f5c6e0c34
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/account-list-timing.ts
+@@ -0,0 +1,35 @@
++import { Clock, Effect, Option } from "effect";
++
++type AccountListPhase =
++  | "request"
++  | "snapshot"
++  | "links"
++  | "identity"
++  | "observations"
++  | "projection";
++
++/** Native Worker logs retain phase timing even when child spans export directly to the collector. */
++export const accountListPhase = <A, E, R>(phase: AccountListPhase, work: Effect.Effect<A, E, R>) =>
++  Effect.gen(function* () {
++    const start = yield* Clock.currentTimeNanos;
++    const span = yield* Effect.currentSpan.pipe(Effect.option);
++    return yield* work.pipe(
++      Effect.onExit(() =>
++        Effect.gen(function* () {
++          const durationMs = Math.max(
++            0,
++            Number((yield* Clock.currentTimeNanos) - start) / 1_000_000,
++          );
++          yield* Effect.logInfo("accounts.list.phase").pipe(
++            Effect.annotateLogs({
++              phase,
++              duration_ms: durationMs,
++              ...(Option.isSome(span)
++                ? { "executor.trace_id": span.value.traceId, "executor.span_id": span.value.spanId }
++                : {}),
++            }),
++          );
++        }),
++      ),
++    );
++  }).pipe(Effect.withSpan(`hosted.accounts.${phase}`));
+diff --git a/apps/hosted/server/src/implementation/account-observation-policy.ts b/apps/hosted/server/src/implementation/account-observation-policy.ts
+index be5882b82e37766741f10b1b251b5fb1bc156603..321effed172946db30764a17a944ac4842d8a12e 100644
+--- a/apps/hosted/server/src/implementation/account-observation-policy.ts
++++ b/apps/hosted/server/src/implementation/account-observation-policy.ts
+@@ -1,10 +1,6 @@
+ import { Effect, Schema } from "effect";
+-import {
+-  StorageError,
+-  StorageHost,
+-  type AccountId,
+-  type AccountHealth,
+-} from "@executor-js/sdk/core";
++import { StorageError, StorageHost, AccountId, type AccountHealth } from "@executor-js/sdk/core";
++import { AccountListReads } from "./account-list-reads.ts";
+ import { ObservationAudience, ObservationPolicy } from "../contracts/account-observations.ts";
+ import { OrganizationForbidden } from "../contracts/organization.ts";
+ import { AccessConflict } from "../contracts/resource-access.ts";
+@@ -132,14 +128,75 @@ export const updateObservationPolicy = (account: AccountId, input: ObservationPo
+     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
+   );
+ 
++/** The list needs inspection decisions, not refresh authority or writable observation proofs. */
++export const readObservationInspections = (
++  health: readonly AccountHealth[],
++  actor: ResourceAuthority,
++  accesses: ReadonlyMap<AccountId, { readonly canManage: boolean; readonly canUse: boolean }>,
++) =>
++  Effect.gen(function* () {
++    const ids = health
++      .filter((entry) => entry.apps.some((app) => app.check?.displayStatus !== undefined))
++      .map((entry) => entry.account);
++    if (ids.length === 0) return new Map<AccountId, boolean>();
++    const sql = yield* policyDatabase;
++    const policies = new Map(
++      (yield* sql`select account_id as account, read_audience, refresh_audience, revision
++    from hosted_account_observation_access where organization_id = ${actor.organization}
++      and ${sql.in("account_id", ids)}`.pipe(
++        Effect.flatMap(
++          Schema.decodeUnknownEffect(
++            Schema.Array(Schema.Struct({ account: AccountId, ...PolicyRow.fields })),
++          ),
++        ),
++      )).map((row) => [row.account, row]),
++    );
++    const groups = [
++      ...new Set(
++        [...policies.values()].flatMap((row) =>
++          row.read_audience.kind === "groups" ? row.read_audience.groups : [],
++        ),
++      ),
++    ];
++    const memberships = new Set(
++      groups.length === 0
++        ? []
++        : (yield* sql`select g.id from hosted_group_members m
++    join hosted_groups g on g.id = m.group_id where m.member_id = ${actor.member}
++      and g.organization_id = ${actor.organization} and ${sql.in("g.id", groups)}`.pipe(
++            Effect.flatMap(
++              Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ id: Schema.String }))),
++            ),
++          )).map((row) => row.id),
++    );
++    return new Map(
++      ids.map((account) => {
++        const access = accesses.get(account);
++        const audience = policies.get(account)?.read_audience ?? defaults.read;
++        const granted =
++          audience.kind === "everyone" ||
++          (audience.kind === "groups" && audience.groups.some((group) => memberships.has(group)));
++        return [
++          account,
++          access !== undefined && (access.canManage || (access.canUse && granted)),
++        ] as const;
++      }),
++    );
++  }).pipe(
++    Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
++  );
++
+ /** Legacy displayStatus also contains allowance; keep app health visible without leaking it. */
+ export const visibleObservationHealth = (health: AccountHealth) =>
+   Effect.gen(function* () {
+     if (!health.apps.some((entry) => entry.check?.displayStatus !== undefined)) return health;
+-    const canInspect = yield* observationAccess(health.account).pipe(
+-      Effect.map((access) => access.canInspect),
+-      Effect.catchTag("OrganizationForbidden", () => Effect.succeed(false)),
+-    );
++    const reads = yield* AccountListReads;
++    const canInspect =
++      reads?.observations.get(health.account) ??
++      (yield* observationAccess(health.account).pipe(
++        Effect.map((access) => access.canInspect),
++        Effect.catchTag("OrganizationForbidden", () => Effect.succeed(false)),
++      ));
+     if (canInspect) return health;
+     return {
+       ...health,
+diff --git a/apps/hosted/server/src/implementation/account-projection.ts b/apps/hosted/server/src/implementation/account-projection.ts
+index 38eeea005d2fbdbf2a2a38db6aa3b9f5337efcc0..8c605e7da29c8301b7fba368d8cc0fa70f211145 100644
+--- a/apps/hosted/server/src/implementation/account-projection.ts
++++ b/apps/hosted/server/src/implementation/account-projection.ts
+@@ -1,3 +1,4 @@
++import { AccountListReads } from "./account-list-reads.ts";
+ import { AppId, AppNotFound, StorageError } from "@executor-js/sdk/core";
+ import { Effect, Schema } from "effect";
+ import type { ResourceDirectory, SavedAccountBinding } from "../contracts/resource-access.ts";
+@@ -13,7 +14,9 @@ import {
+ } from "./account-projection-view.ts";
+ 
+ /** Only recorded pool app IDs name pools; provider names and account labels never do. */
+-const recordedPools = Effect.gen(function* () {
++export const recordedPools = Effect.gen(function* () {
++  const reads = yield* AccountListReads;
++  if (reads !== undefined) return reads.pools;
+   const { organization } = yield* CurrentOrganization;
+   const sql = yield* policyDatabase;
+   return new Set(
+@@ -39,7 +42,9 @@ export const projectSavedAccounts = (directory: typeof ResourceDirectory.Type, p
+     const { owner } = yield* CurrentOrganization;
+     const executor = yield* Effect.flatten(HostedExecutor);
+     // The native link reader still applies each app's policy; only its saved-account lookup is shared.
+-    const all = yield* executor.accounts.list({ owner });
++    const reads = yield* AccountListReads;
++    const all =
++      reads?.owner === owner ? reads.snapshot.accounts : yield* executor.accounts.list({ owner });
+     const saved = yield* Effect.forEach(
+       directory.accounts,
+       ({ account, provider, health }) =>
+diff --git a/apps/hosted/server/src/implementation/account-reconnect.ts b/apps/hosted/server/src/implementation/account-reconnect.ts
+index fdc64093089826f87bebeac63ffcb58a779d879f..692775bd5c9bea5bdaab7c576449881ca7a3e37d 100644
+--- a/apps/hosted/server/src/implementation/account-reconnect.ts
++++ b/apps/hosted/server/src/implementation/account-reconnect.ts
+@@ -1,6 +1,5 @@
+ import { permitsAction } from "@executor-js/authorization";
+ import {
+-  InteractiveHost,
+   type Account,
+   type AccountScope,
+   type App,
+@@ -8,6 +7,7 @@ import {
+   type OwnerId,
+ } from "@executor-js/sdk/core";
+ import { Effect } from "effect";
++import { acquiredAccount } from "./account-sign-in.ts";
+ import { AccountTargets } from "../contracts/account-grants.ts";
+ import { CurrentAuthorization } from "../contracts/authorization.ts";
+ import { checkDestination } from "./connection-policy.ts";
+@@ -42,7 +42,7 @@ export const canReconnectAccount = (
+     );
+     yield* requireRequirementAccess({ app: app.id, scope, requirement });
+     yield* requireProviderAccountMethod(app, requirement, account.method);
+-    return (yield* executor[InteractiveHost].binding({ owner, account: account.id })) === undefined;
++    return !(yield* acquiredAccount(executor, owner, account.id));
+   }).pipe(
+     Effect.catchTags({
+       OrganizationForbidden: () => Effect.succeed(false),
+diff --git a/apps/hosted/server/src/implementation/account-sign-in.ts b/apps/hosted/server/src/implementation/account-sign-in.ts
+index c57c3353d24ad33f8bad0deecf70dcf7c7766b0e..5315c1d0626c67940adf6c652fd759f091281dda 100644
+--- a/apps/hosted/server/src/implementation/account-sign-in.ts
++++ b/apps/hosted/server/src/implementation/account-sign-in.ts
+@@ -1,15 +1,33 @@
+-import type { AccountId, Executor, OwnerId } from "@executor-js/sdk/core";
++import {
++  InteractiveHost,
++  type AccountId,
++  type Executor,
++  type OwnerId,
++} from "@executor-js/sdk/core";
++import { AccountListReads } from "./account-list-reads.ts";
+ import { Effect } from "effect";
+ import type { LinkedAccountSignIn } from "../contracts/app-accounts.ts";
+ 
+ /** Sign-in state without the credential fingerprint or saved fields. */
+ export const linkedAccountSignIn = (executor: Executor, owner: OwnerId, account: AccountId) =>
+-  executor.accounts
+-    .signIn({ owner, account })
+-    .pipe(
+-      Effect.map((state): LinkedAccountSignIn =>
+-        state.state === "saved"
+-          ? { state: "saved", reconnectAt: state.reconnectAt }
+-          : { state: state.state },
+-      ),
+-    );
++  Effect.gen(function* () {
++    const reads = yield* AccountListReads;
++    const saved = reads?.owner === owner ? reads.snapshot.signIns.get(account) : undefined;
++    if (saved !== undefined) return saved;
++    return yield* executor.accounts.signIn({ owner, account });
++  }).pipe(
++    Effect.map((state): LinkedAccountSignIn =>
++      state.state === "saved"
++        ? { state: "saved", reconnectAt: state.reconnectAt }
++        : { state: state.state },
++    ),
++  );
++
++/** Acquisition presence controls the displayed scope and reconnectability, never exposes provenance. */
++export const acquiredAccount = (executor: Executor, owner: OwnerId, account: AccountId) =>
++  Effect.gen(function* () {
++    const reads = yield* AccountListReads;
++    if (reads?.owner === owner && reads.snapshot.accounts.some((saved) => saved.id === account))
++      return reads.snapshot.acquired.has(account);
++    return (yield* executor[InteractiveHost].binding({ owner, account })) !== undefined;
++  });
+diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/hosted/server/src/implementation/app-account-links.ts
+index efe93d40997501f8b0d2085773a99b93bdff0cd0..60e52730bcb08dff70b26818cdc5cca88153287f 100644
+--- a/apps/hosted/server/src/implementation/app-account-links.ts
++++ b/apps/hosted/server/src/implementation/app-account-links.ts
+@@ -1,3 +1,5 @@
++import { AccountListReads } from "./account-list-reads.ts";
++import { AccountLinkRecord as LinkRecord } from "./account-list-links.ts";
+ import { canReconnectAccount } from "./account-reconnect.ts";
+ import { contributedDepartures } from "./contributed-departure-reads.ts";
+ import {
+@@ -57,7 +59,7 @@ import { accountOAuthRedirectUri } from "./auth.ts";
+ import { addLink, callerLinkedAccounts, lockedChange, removeLink } from "./app-accounts.ts";
+ import { defaultAccessAccount, hostManagedAccounts } from "./host-managed-accounts.ts";
+ import { restoreHostedRoutesLink } from "./hosted-routes-relink.ts";
+-import { linkedAccountSignIn } from "./account-sign-in.ts";
++import { acquiredAccount, linkedAccountSignIn } from "./account-sign-in.ts";
+ import {
+   policyDatabase,
+   requireAccountAccess,
+@@ -80,14 +82,6 @@ const caller = Effect.gen(function* () {
+   return user;
+ });
+ 
+-const LinkRecord = Schema.Struct({
+-  requirement: Schema.NonEmptyString,
+-  account: Schema.String,
+-  createdAt: Schema.Date,
+-  contributed: Schema.Boolean,
+-  linkedBy: Schema.String,
+-  linkedByName: Schema.NullOr(Schema.String),
+-});
+ type LinkRecord = typeof LinkRecord.Type;
+ 
+ /**
+@@ -106,7 +100,11 @@ const linkViews = (
+ ) =>
+   Effect.gen(function* () {
+     if (records.length === 0) return [];
+-    const target = yield* executor.apps.get({ owner, app });
++    const reads = yield* AccountListReads;
++    const target =
++      reads?.owner === owner
++        ? (reads.apps.get(app) ?? (yield* executor.apps.get({ owner, app })))
++        : yield* executor.apps.get({ owner, app });
+     const accounts = new Map(
+       (savedAccounts ?? (yield* executor.accounts.list({ owner }))).map((account) => [
+         account.id as string,
+@@ -123,23 +121,30 @@ const linkViews = (
+     );
+     const user = yield* CurrentUserId;
+     const visible = yield* identityAccounts(present.map(({ account }) => account.id));
++    const presentIds = new Set(present.map(({ account }) => account.id));
++    const retained =
++      reads?.owner === owner
++        ? reads.snapshot.health.map((health) => ({
++            ...health,
++            apps: health.apps.filter(
++              (entry) => entry.app === app && presentIds.has(health.account),
++            ),
++          }))
++        : yield* executor.accounts.listHealth({
++            owner,
++            links: present.map(({ account }) => ({ app, account: account.id })),
++          });
+     const health = new Map(
+-      (yield* executor.accounts
+-        .listHealth({
+-          owner,
+-          links: present.map(({ account }) => ({ app, account: account.id })),
+-        })
+-        .pipe(Effect.flatMap((health) => Effect.forEach(health, visibleObservationHealth)))).map(
+-        (entry) => [entry.account, entry],
+-      ),
++      (yield* Effect.forEach(retained, visibleObservationHealth)).map((entry) => [
++        entry.account,
++        entry,
++      ]),
+     );
+     const scopes = new Map(
+       yield* Effect.forEach(present, ({ account }) =>
+-        executor[InteractiveHost]
+-          .binding({ owner, account: account.id })
+-          .pipe(
+-            Effect.map((binding) => [account.id, binding === undefined ? "saved" : "app"] as const),
+-          ),
++        acquiredAccount(executor, owner, account.id).pipe(
++          Effect.map((acquired) => [account.id, acquired ? "app" : "saved"] as const),
++        ),
+       ),
+     );
+     const views = yield* Effect.forEach(
+@@ -187,6 +192,14 @@ const linkViews = (
+ /** The app's links in one scope, oldest first per requirement, optionally of one requirement. */
+ const linkRecords = (app: AppId, subject: string | null, requirement?: string) =>
+   Effect.gen(function* () {
++    const reads = yield* AccountListReads;
++    if (reads !== undefined && reads.apps.has(app))
++      return reads.records.filter(
++        (record) =>
++          record.app === app &&
++          record.subject === subject &&
++          (requirement === undefined || record.requirement === requirement),
++      );
+     const sql = yield* policyDatabase;
+     return yield* sql`select l.requirement, l.account, l.created_at as "createdAt",
+         l.linked_by as "linkedBy", u.name as "linkedByName",
+@@ -228,8 +241,10 @@ export const listAppAccountLinks = (
+   Effect.gen(function* () {
+     const owner = yield* currentOwner;
+     const executor = yield* Effect.flatten(HostedExecutor);
++    const reads = yield* AccountListReads;
+     if (scope === "user") {
+-      yield* usableApp(executor, owner, app);
++      if (reads?.owner === owner && reads.apps.has(app)) yield* requireCurrentAppAccess(app, "use");
++      else yield* usableApp(executor, owner, app);
+       return yield* linkViews(
+         executor,
+         owner,
+@@ -241,7 +256,7 @@ export const listAppAccountLinks = (
+       );
+     }
+     const { access } = yield* requireCurrentAppAccess(app, "read");
+-    yield* executor.apps.get({ owner, app });
++    if (!(reads?.owner === owner && reads.apps.has(app))) yield* executor.apps.get({ owner, app });
+     return yield* linkViews(
+       executor,
+       owner,
+diff --git a/apps/hosted/server/src/implementation/app-accounts.ts b/apps/hosted/server/src/implementation/app-accounts.ts
+index 7e40d6603c63f0488ef1e345ebae8b6993889d85..97cfe367473ca196fbd98c803b5f4328a2133b41 100644
+--- a/apps/hosted/server/src/implementation/app-accounts.ts
++++ b/apps/hosted/server/src/implementation/app-accounts.ts
+@@ -1,3 +1,4 @@
++import { AccountListReads } from "./account-list-reads.ts";
+ import { HostedExecutor } from "../contracts/executor.ts";
+ import { HostedRoutesConfiguration } from "../contracts/hosted-routes.ts";
+ import { ensureHostedRoutesAccount, isHostedRoutesApp } from "./hosted-routes-accounts.ts";
+@@ -121,6 +122,9 @@ const permittedLinks = (linked: ReadonlyArray<LinkedAccount>) =>
+ /** The caller's linked accounts for these apps, narrowed to the targets their grant permits. */
+ export const callerLinkedAccounts = (apps: readonly AppId[]) =>
+   Effect.gen(function* () {
++    const reads = yield* AccountListReads;
++    if (reads !== undefined && apps.every((app) => reads.apps.has(app)))
++      return reads.userLinks.filter((link) => apps.includes(link.app));
+     const subject = yield* CurrentUserId;
+     if (subject === undefined) return yield* new OrganizationForbidden();
+     return yield* permittedLinks(yield* linkedAccounts(yield* policyDatabase, { subject, apps }));
+diff --git a/apps/hosted/server/src/implementation/contributed-account-policy.ts b/apps/hosted/server/src/implementation/contributed-account-policy.ts
+index f8fc3779b994729f735554ae732d39a2a7c15eaf..8f8a28b076c2ed612542fc649f7ae08d240fa4cf 100644
+--- a/apps/hosted/server/src/implementation/contributed-account-policy.ts
++++ b/apps/hosted/server/src/implementation/contributed-account-policy.ts
+@@ -1,5 +1,6 @@
+ /** App authors opt in to member contributions; ordinary app requirements need management. */
+ import { AccountId, AppId, StorageError, type AccountScope } from "@executor-js/sdk/core";
++import { AccountListReads } from "./account-list-reads.ts";
+ import { Effect, Schema } from "effect";
+ import type { SqlClient } from "effect/sql";
+ import { CurrentUserId } from "../contracts/auth.ts";
+@@ -14,15 +15,28 @@ import {
+ 
+ /** Read the active deployment again under the link lock. Existing requirements opt out. */
+ export const isContributed = (sql: SqlClient.SqlClient, app: AppId, requirement: string) =>
+-  sql`select 1 from executor_apps a
++  Effect.gen(function* () {
++    const reads = yield* AccountListReads;
++    const target = reads?.apps.get(app);
++    if (target !== undefined) {
++      const slot = target.requirements.accounts[requirement];
++      return (
++        target.activeVersion !== null &&
++        slot !== undefined &&
++        slot.scope === "app" &&
++        slot.contributed === true
++      );
++    }
++    return yield* sql`select 1 from executor_apps a
+     join executor_deployments d on d.id = a.active_deployment
+     where a.id = ${app}
+       and d.requirements::jsonb -> 'accounts' -> ${requirement} ->> 'scope' = 'app'
+       and d.requirements::jsonb -> 'accounts' -> ${requirement} ->> 'cardinality' = 'many'
+       and d.requirements::jsonb -> 'accounts' -> ${requirement} ->> 'contributed' = 'true'`.pipe(
+-    Effect.map((rows) => rows.length === 1),
+-    Effect.catchTag("SqlError", () => new StorageError()),
+-  );
++      Effect.map((rows) => rows.length === 1),
++      Effect.catchTag("SqlError", () => new StorageError()),
++    );
++  });
+ 
+ export const requireRequirementAccessAs = (
+   actor: ResourceAuthority,
+diff --git a/apps/hosted/server/src/implementation/host-managed-accounts.ts b/apps/hosted/server/src/implementation/host-managed-accounts.ts
+index ee8c1abfb2a686eb353acdd7bd953afd9d6d97cc..47fa1f05ac17b4c55067862d5022d00395f9cdc6 100644
+--- a/apps/hosted/server/src/implementation/host-managed-accounts.ts
++++ b/apps/hosted/server/src/implementation/host-managed-accounts.ts
+@@ -9,6 +9,7 @@ import {
+   type Account,
+   type Executor,
+ } from "@executor-js/sdk/core";
++import { AccountListReads } from "./account-list-reads.ts";
+ import { Effect, Schema } from "effect";
+ import type { SqlClient } from "effect/sql";
+ import { HostManagedAccountRecords } from "../contracts/host-managed-accounts.ts";
+@@ -50,6 +51,15 @@ export const hostManagedAccounts = (
+   Effect.gen(function* () {
+     const managed = new Set<AccountId>();
+     if (accounts.length === 0) return managed;
++    const reads = yield* AccountListReads;
++    if (
++      reads !== undefined &&
++      reads.actor.organization === organization &&
++      accounts.every((account) => reads.snapshot.accounts.some((saved) => saved.id === account.id))
++    )
++      return new Set(
++        accounts.filter((account) => reads.managed.has(account.id)).map((account) => account.id),
++      );
+     const definitions = new Map(
+       (yield* executor.accounts.providers({ owner: organizationOwner(organization) })).map(
+         (provider) => [provider.id, provider.definition],
+diff --git a/apps/hosted/server/src/implementation/provider-account-policy.ts b/apps/hosted/server/src/implementation/provider-account-policy.ts
+index 32cf7b11c485feeea625f454573477d19c98165e..da5ad35d4574ccfb82eb8d6794fc9f17af5a3268 100644
+--- a/apps/hosted/server/src/implementation/provider-account-policy.ts
++++ b/apps/hosted/server/src/implementation/provider-account-policy.ts
+@@ -1,3 +1,4 @@
++import { AccountListReads } from "./account-list-reads.ts";
+ import { permitsAction } from "@executor-js/authorization";
+ import {
+   AccountAcquisitionConfiguration,
+@@ -17,6 +18,8 @@ import { providerAppIdentity } from "./provider-app-identity.ts";
+ 
+ export const registeredPool = (app: AppId) =>
+   Effect.gen(function* () {
++    const reads = yield* AccountListReads;
++    if (reads !== undefined && reads.apps.has(app)) return reads.pools.has(app);
+     const sql = yield* policyDatabase;
+     const { organization } = yield* CurrentOrganization;
+     const rows = yield* sql`select a.id from organization o
+diff --git a/apps/hosted/server/src/implementation/resource-access.ts b/apps/hosted/server/src/implementation/resource-access.ts
+index 0374df4e794f3bf345b4c03d41840ad16c9206cc..65d5325b888d98538cc6239e68e8531e82fe657d 100644
+--- a/apps/hosted/server/src/implementation/resource-access.ts
++++ b/apps/hosted/server/src/implementation/resource-access.ts
+@@ -1,198 +1,27 @@
+-import { visibleObservationHealth } from "./account-observation-policy.ts";
+-import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
+-import { visibleAccountStatuses } from "./account-identity.ts";
+-import { CurrentAuthorization } from "../contracts/authorization.ts";
+-import { permittedAppIds } from "@executor-js/authorization";
+-import { AccountGrants } from "./proofs/account-access.ts";
+ /** Sharing writes are atomic; metadata visibility and credential use remain separate. */
+ import { Effect } from "effect";
+ import { SqlClient } from "effect/sql";
+-import { teamAppPending } from "./provisioning.ts";
+ import { HttpApiBuilder } from "effect/http-api";
+-import {
+-  StorageError,
+-  type AccountId,
+-  type AppId,
+-  type Provider,
+-  type ProviderId,
+-} from "@executor-js/sdk/core";
++import { type AppId, StorageError } from "@executor-js/sdk/core";
+ import { HostedApi } from "../contracts/api.ts";
+-import { HostedExecutor } from "../contracts/executor.ts";
+-import { CurrentOrganization } from "../contracts/organization.ts";
++import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
+ import {
+   AccessConflict,
+   type AppAudience,
+   type SharedAudience,
+   type AccessRevision,
+ } from "../contracts/resource-access.ts";
++import { AccountGrants } from "./proofs/account-access.ts";
+ import { requireGroupSharing } from "./group-sharing.ts";
+-import { appLinkedAccounts, callerLinkedAccounts } from "./app-accounts.ts";
+ import {
+   policyDatabase,
+-  currentResourceAuthority,
+   lockCurrentActor as lockActor,
+-  applicationAccesses,
+-  accountAccesses,
+   requireAppAccess,
+   requireAccountAccess,
+ } from "./resource-policy.ts";
+-import { appUiIndicators } from "./app-ui.ts";
+-import { hostManagedAccounts } from "./host-managed-accounts.ts";
+-import { linkedAccountSignIn } from "./account-sign-in.ts";
+-import { projectSavedAccounts } from "./account-projection.ts";
++import { resourceDirectory, savedAccountDirectory } from "./resource-directory.ts";
++export { resourceDirectory } from "./resource-directory.ts";
+ 
+-/** Shared resource listing for the normal app/account lists and an explicit management view. */
+-export const resourceDirectory = (view: "available" | "managed" | "readable" = "available") =>
+-  Effect.gen(function* () {
+-    const actor = yield* currentResourceAuthority;
+-    const executor = yield* Effect.flatten(HostedExecutor);
+-    const { owner } = yield* CurrentOrganization;
+-    const policy = yield* CurrentAuthorization;
+-    const apps = yield* executor.apps.list({ owner, ids: permittedAppIds(policy) });
+-    const appPolicies = new Map(
+-      (yield* applicationAccesses(
+-        apps.map((app) => app.id),
+-        actor,
+-      )).map((access) => [access.app, access]),
+-    );
+-    const visibleApps = apps.flatMap((app) => {
+-      const access = appPolicies.get(app.id);
+-      return access !== undefined &&
+-        (view === "readable"
+-          ? access.canUse || access.canManage
+-          : view === "managed"
+-            ? access.canManage
+-            : access.canUse)
+-        ? [{ app, access }]
+-        : [];
+-    });
+-    const indicated = new Map(
+-      (yield* appUiIndicators(visibleApps.map(({ app }) => app))).map((app) => [app.id, app]),
+-    );
+-    const listedApps = visibleApps.map(({ app, access }) => {
+-      return { app: indicated.get(app.id) ?? app, access };
+-    });
+-    const usableApps = listedApps.filter(({ access }) => access.canUse).map(({ app }) => app.id);
+-    const links = yield* callerLinkedAccounts(usableApps);
+-    const appLinked = yield* appLinkedAccounts(
+-      yield* policyDatabase,
+-      listedApps.map(({ app }) => app.id),
+-    );
+-    const appAccounts = new Map<AppId, Set<AccountId>>();
+-    for (const link of appLinked) {
+-      const accounts = appAccounts.get(link.app) ?? new Set<AccountId>();
+-      accounts.add(link.id);
+-      appAccounts.set(link.app, accounts);
+-    }
+-    const linked = new Set(links.map((link) => link.id));
+-    const all = yield* executor.accounts.list({ owner });
+-    const managed = yield* hostManagedAccounts(
+-      executor,
+-      yield* policyDatabase,
+-      actor.organization,
+-      all,
+-    );
+-    const accounts = all.filter(
+-      (account) =>
+-        !managed.has(account.id) && (policy.tools.kind === "all" || linked.has(account.id)),
+-    );
+-    const providers = new Map<ProviderId, Provider>();
+-    // App-scoped links check the same saved accounts without a caller-specific link.
+-    const health = new Map(
+-      (accounts.length === 0
+-        ? []
+-        : yield* executor.accounts.listHealth({
+-            owner,
+-            links: [...links, ...appLinked].map((link) => ({ account: link.id, app: link.app })),
+-          })
+-      ).map((entry) => [entry.account, entry]),
+-    );
+-    const accountPolicies = new Map(
+-      (yield* accountAccesses(
+-        accounts.map((account) => account.id),
+-        actor,
+-      )).map((access) => [access.account, access]),
+-    );
+-    const accountEntries = yield* Effect.forEach(accounts, (account) =>
+-      Effect.gen(function* () {
+-        const access = accountPolicies.get(account.id);
+-        if (
+-          access === undefined ||
+-          !(view === "readable"
+-            ? access.canUse || access.canManage
+-            : view === "managed"
+-              ? access.canManage
+-              : access.canUse)
+-        )
+-          return [];
+-        let provider = providers.get(account.provider);
+-        if (provider === undefined) {
+-          provider = yield* executor.accounts.provider({ owner, account: account.id });
+-          providers.set(account.provider, provider);
+-        }
+-        const checks = health.get(account.id);
+-        return [
+-          checks === undefined
+-            ? { account, access, provider }
+-            : { account, access, provider, health: yield* visibleObservationHealth(checks) },
+-        ];
+-      }),
+-    );
+-    const listedAccounts = accountEntries.flat();
+-    const listed = new Set(listedAccounts.map(({ account }) => account.id));
+-    const providerOf = new Map(all.map((account) => [account.id, account.provider]));
+-    const managedSignIns = new Map(
+-      yield* Effect.forEach(
+-        all.filter((account) => managed.has(account.id) && linked.has(account.id)),
+-        (account) =>
+-          linkedAccountSignIn(executor, owner, account.id).pipe(
+-            Effect.map((state) => [account.id, state] as const),
+-            Effect.catchTag("AccountNotFound", () =>
+-              Effect.succeed([account.id, { state: "unavailable" as const }] as const),
+-            ),
+-          ),
+-        { concurrency: 8 },
+-      ),
+-    );
+-    const appEntries = listedApps.map(({ app, access }) => {
+-      const shared = [...(appAccounts.get(app.id) ?? [])].filter((id) => !managed.has(id));
+-      const own = [...new Set(links.filter((link) => link.app === app.id).map((link) => link.id))];
+-      // Host credentials satisfy the caller's requirements without being listed as theirs.
+-      const hostManagedLinks = own.flatMap((account) => {
+-        const provider = providerOf.get(account);
+-        const state = managedSignIns.get(account);
+-        return managed.has(account) && provider !== undefined
+-          ? [
+-              {
+-                account,
+-                provider,
+-                ...(state === undefined || state.state === "saved" ? {} : { problem: state.state }),
+-              },
+-            ]
+-          : [];
+-      });
+-      return {
+-        app,
+-        access,
+-        appAccountCount: shared.length,
+-        appLinkedAccounts: shared.filter((id) => listed.has(id)),
+-        linkedAccounts: own.filter((id) => !managed.has(id)),
+-        ...(hostManagedLinks.length === 0 ? {} : { hostManagedLinks }),
+-      };
+-    });
+-    const pendingApp =
+-      policy.tools.kind === "all" && (view === "available" || actor.role !== "member")
+-        ? yield* teamAppPending(
+-            actor.organization,
+-            (yield* executor.apps.list({ owner, name: "Executor" })).length > 0,
+-          ).pipe(Effect.provideService(SqlClient.SqlClient, yield* policyDatabase))
+-        : false;
+-    return {
+-      apps: appEntries,
+-      accounts: yield* visibleAccountStatuses(listedAccounts),
+-      pendingApp,
+-    };
+-  });
+ /** The compare-and-swap revision protects settings and all group grants as one update. */
+ export const shareApp = (
+   app: AppId,
+@@ -268,11 +97,7 @@ export const hostedResourceAccessHandlers = HttpApiBuilder.group(
+   (handlers) =>
+     Effect.gen(function* () {
+       return handlers
+-        .handle("accounts", ({ query }) =>
+-          resourceDirectory("readable").pipe(
+-            Effect.flatMap((directory) => projectSavedAccounts(directory, query.pool)),
+-          ),
+-        )
++        .handle("accounts", ({ query }) => savedAccountDirectory(query.pool))
+         .handle("directory", ({ query }) => resourceDirectory(query.view))
+         .handle("app", ({ params }) => requireAppAccess(params.app, "read"))
+         .handle("shareApp", ({ params, payload }) =>
+diff --git a/apps/hosted/server/src/implementation/resource-directory.ts b/apps/hosted/server/src/implementation/resource-directory.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..f62365081a288f54e95d13ae1bf80cae52d4c994
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/resource-directory.ts
+@@ -0,0 +1,260 @@
++import {
++  AccountReadHost,
++  type AccountId,
++  type AppId,
++  type Provider,
++  type ProviderId,
++} from "@executor-js/sdk/core";
++import { permittedAppIds } from "@executor-js/authorization";
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++import { CurrentAuthorization } from "../contracts/authorization.ts";
++import { HostedExecutor } from "../contracts/executor.ts";
++import { CurrentOrganization } from "../contracts/organization.ts";
++import type { ResourceDirectory } from "../contracts/resource-access.ts";
++import { AccountListReads } from "./account-list-reads.ts";
++import { readAccountListLinks } from "./account-list-links.ts";
++import { accountListPhase } from "./account-list-timing.ts";
++import { readIdentityMetadata, visibleAccountStatuses } from "./account-identity.ts";
++import {
++  readObservationInspections,
++  visibleObservationHealth,
++} from "./account-observation-policy.ts";
++import { appLinkedAccounts, callerLinkedAccounts } from "./app-accounts.ts";
++import { appUiIndicators } from "./app-ui.ts";
++import { hostManagedAccounts } from "./host-managed-accounts.ts";
++import { linkedAccountSignIn } from "./account-sign-in.ts";
++import { recordedPools, projectSavedAccounts } from "./account-projection.ts";
++import { teamAppPending } from "./provisioning.ts";
++import {
++  policyDatabase,
++  currentResourceAuthority,
++  applicationAccesses,
++  accountAccesses,
++} from "./resource-policy.ts";
++
++/** Shared resource listing for the normal app/account lists and an explicit management view. */
++const projectResourceDirectory = <A, E, R>(
++  view: "available" | "managed" | "readable",
++  project: (directory: typeof ResourceDirectory.Type) => Effect.Effect<A, E, R>,
++  batch: boolean,
++) =>
++  Effect.gen(function* () {
++    const actor = yield* currentResourceAuthority;
++    const executor = yield* Effect.flatten(HostedExecutor);
++    const { owner } = yield* CurrentOrganization;
++    const policy = yield* CurrentAuthorization;
++    const apps = yield* executor.apps.list({ owner, ids: permittedAppIds(policy) });
++    const appPolicies = new Map(
++      (yield* applicationAccesses(
++        apps.map((app) => app.id),
++        actor,
++      )).map((access) => [access.app, access]),
++    );
++    const visibleApps = apps.flatMap((app) => {
++      const access = appPolicies.get(app.id);
++      return access !== undefined &&
++        (view === "readable"
++          ? access.canUse || access.canManage
++          : view === "managed"
++            ? access.canManage
++            : access.canUse)
++        ? [{ app, access }]
++        : [];
++    });
++    const indicated = new Map(
++      (yield* appUiIndicators(visibleApps.map(({ app }) => app))).map((app) => [app.id, app]),
++    );
++    const listedApps = visibleApps.map(({ app, access }) => {
++      return { app: indicated.get(app.id) ?? app, access };
++    });
++    const usableApps = listedApps.filter(({ access }) => access.canUse).map(({ app }) => app.id);
++    const links = yield* callerLinkedAccounts(usableApps);
++    const appLinked = yield* appLinkedAccounts(
++      yield* policyDatabase,
++      listedApps.map(({ app }) => app.id),
++    );
++    const appAccounts = new Map<AppId, Set<AccountId>>();
++    for (const link of appLinked) {
++      const accounts = appAccounts.get(link.app) ?? new Set<AccountId>();
++      accounts.add(link.id);
++      appAccounts.set(link.app, accounts);
++    }
++    const linked = new Set(links.map((link) => link.id));
++    const records = batch
++      ? yield* accountListPhase("links", readAccountListLinks(listedApps.map(({ app }) => app.id)))
++      : [];
++    const snapshot = batch
++      ? yield* accountListPhase(
++          "snapshot",
++          executor[AccountReadHost].read({
++            owner,
++            links: [
++              ...[...links, ...appLinked].map((link) => ({ account: link.id, app: link.app })),
++              ...records.map((record) => ({ account: record.account, app: record.app })),
++            ],
++          }),
++        )
++      : undefined;
++    const all = snapshot?.accounts ?? (yield* executor.accounts.list({ owner }));
++    const managed = yield* hostManagedAccounts(
++      executor,
++      yield* policyDatabase,
++      actor.organization,
++      all,
++    );
++    const accounts = all.filter(
++      (account) =>
++        !managed.has(account.id) && (policy.tools.kind === "all" || linked.has(account.id)),
++    );
++    const providers = new Map<ProviderId, Provider>();
++    // App-scoped links check the same saved accounts without a caller-specific link.
++    const directoryLinks = new Set(
++      [...links, ...appLinked].map((link) => `${link.id}\u0000${link.app}`),
++    );
++    const health = new Map(
++      (accounts.length === 0
++        ? []
++        : (snapshot?.health.map((entry) => ({
++            ...entry,
++            apps: entry.apps.filter((app) =>
++              directoryLinks.has(`${entry.account}\u0000${app.app}`),
++            ),
++          })) ??
++          (yield* executor.accounts.listHealth({
++            owner,
++            links: [...links, ...appLinked].map((link) => ({ account: link.id, app: link.app })),
++          })))
++      ).map((entry) => [entry.account, entry]),
++    );
++    const accountPolicies = new Map(
++      (yield* accountAccesses(
++        (snapshot === undefined ? accounts : all).map((account) => account.id),
++        actor,
++      )).map((access) => [access.account, access]),
++    );
++    const finish = Effect.gen(function* () {
++      const accountEntries = yield* Effect.forEach(accounts, (account) =>
++        Effect.gen(function* () {
++          const access = accountPolicies.get(account.id);
++          if (
++            access === undefined ||
++            !(view === "readable"
++              ? access.canUse || access.canManage
++              : view === "managed"
++                ? access.canManage
++                : access.canUse)
++          )
++            return [];
++          let provider = providers.get(account.provider);
++          if (provider === undefined) {
++            provider =
++              snapshot?.providers.get(account.provider) ??
++              (yield* executor.accounts.provider({ owner, account: account.id }));
++            providers.set(account.provider, provider);
++          }
++          const checks = health.get(account.id);
++          return [
++            checks === undefined
++              ? { account, access, provider }
++              : { account, access, provider, health: yield* visibleObservationHealth(checks) },
++          ];
++        }),
++      );
++      const listedAccounts = accountEntries.flat();
++      const listed = new Set(listedAccounts.map(({ account }) => account.id));
++      const providerOf = new Map(all.map((account) => [account.id, account.provider]));
++      const managedSignIns = new Map(
++        yield* Effect.forEach(
++          all.filter((account) => managed.has(account.id) && linked.has(account.id)),
++          (account) =>
++            linkedAccountSignIn(executor, owner, account.id).pipe(
++              Effect.map((state) => [account.id, state] as const),
++              Effect.catchTag("AccountNotFound", () =>
++                Effect.succeed([account.id, { state: "unavailable" as const }] as const),
++              ),
++            ),
++          { concurrency: 8 },
++        ),
++      );
++      const appEntries = listedApps.map(({ app, access }) => {
++        const shared = [...(appAccounts.get(app.id) ?? [])].filter((id) => !managed.has(id));
++        const own = [
++          ...new Set(links.filter((link) => link.app === app.id).map((link) => link.id)),
++        ];
++        // Host credentials satisfy the caller's requirements without being listed as theirs.
++        const hostManagedLinks = own.flatMap((account) => {
++          const provider = providerOf.get(account);
++          const state = managedSignIns.get(account);
++          return managed.has(account) && provider !== undefined
++            ? [
++                {
++                  account,
++                  provider,
++                  ...(state === undefined || state.state === "saved"
++                    ? {}
++                    : { problem: state.state }),
++                },
++              ]
++            : [];
++        });
++        return {
++          app,
++          access,
++          appAccountCount: shared.length,
++          appLinkedAccounts: shared.filter((id) => listed.has(id)),
++          linkedAccounts: own.filter((id) => !managed.has(id)),
++          ...(hostManagedLinks.length === 0 ? {} : { hostManagedLinks }),
++        };
++      });
++      const pendingApp =
++        policy.tools.kind === "all" && (view === "available" || actor.role !== "member")
++          ? yield* teamAppPending(
++              actor.organization,
++              (yield* executor.apps.list({ owner, name: "Executor" })).length > 0,
++            ).pipe(Effect.provideService(SqlClient.SqlClient, yield* policyDatabase))
++          : false;
++      return yield* project({
++        apps: appEntries,
++        accounts: yield* visibleAccountStatuses(listedAccounts),
++        pendingApp,
++      });
++    });
++    if (snapshot === undefined) return yield* finish;
++    const ids = all.map((account) => account.id);
++    const identity = yield* accountListPhase("identity", readIdentityMetadata(ids));
++    const pools = yield* recordedPools;
++    const observations = yield* accountListPhase(
++      "observations",
++      readObservationInspections(snapshot.health, actor, accountPolicies),
++    );
++    return yield* finish.pipe(
++      Effect.provideService(AccountListReads, {
++        owner,
++        actor,
++        snapshot,
++        apps: new Map(apps.map((app) => [app.id, app])),
++        appAccesses: appPolicies,
++        accountAccesses: accountPolicies,
++        userLinks: links,
++        records,
++        managed,
++        pools,
++        identity,
++        observations,
++      }),
++    );
++  });
++
++export const resourceDirectory = (view: "available" | "managed" | "readable" = "available") =>
++  projectResourceDirectory(view, (directory) => Effect.succeed(directory), false);
++
++export const savedAccountDirectory = (pool?: AppId) =>
++  accountListPhase(
++    "request",
++    projectResourceDirectory(
++      "readable",
++      (directory) => accountListPhase("projection", projectSavedAccounts(directory, pool)),
++      true,
++    ),
++  );
+diff --git a/apps/hosted/server/src/implementation/resource-policy.ts b/apps/hosted/server/src/implementation/resource-policy.ts
+index 2dfc27efe2b4f686dc555ce6bb41320553222d19..dce1a1b9152434dbdb2092ceab25073dfcab795b 100644
+--- a/apps/hosted/server/src/implementation/resource-policy.ts
++++ b/apps/hosted/server/src/implementation/resource-policy.ts
+@@ -11,6 +11,7 @@ import {
+ import type { OAuthClientAccess } from "../contracts/oauth-clients.ts";
+ import { Effect, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
++import { AccountListReads } from "./account-list-reads.ts";
+ import { GroupDatabase, GroupId, GroupMemberId } from "../contracts/groups.ts";
+ import { CurrentUserId, Principal } from "../contracts/auth.ts";
+ import {
+@@ -59,7 +60,11 @@ export const resourceAuthority = (organization: OrganizationId, user: string | u
+   membership(organization, user, false);
+ /** Derive the actor exclusively from the authenticated request context. */
+ export const currentResourceAuthority = Effect.gen(function* () {
+-  return yield* resourceAuthority((yield* CurrentOrganization).organization, yield* CurrentUserId);
++  const organization = (yield* CurrentOrganization).organization;
++  const user = yield* CurrentUserId;
++  const reads = yield* AccountListReads;
++  if (reads?.actor.organization === organization && reads.actor.user === user) return reads.actor;
++  return yield* resourceAuthority(organization, user);
+ });
+ export type ResourceAuthority = Effect.Success<ReturnType<typeof resourceAuthority>>;
+ /**
+@@ -82,6 +87,12 @@ export const lockCurrentActor = Effect.gen(function* () {
+ export const applicationAccesses = (apps: readonly AppId[], actor: ResourceAuthority) =>
+   Effect.gen(function* () {
+     if (apps.length === 0) return [];
++    const reads = yield* AccountListReads;
++    if (reads !== undefined && reads.actor === actor && apps.every((app) => reads.apps.has(app)))
++      return [...new Set(apps)].flatMap((app) => {
++        const access = reads.appAccesses.get(app);
++        return access === undefined ? [] : [access];
++      });
+     const sql = yield* policyDatabase;
+     const rows = yield* sql`select p.id as app, p.creator_id as creator, p.audience, p.revision,
+     array(select g.group_id from hosted_app_groups g where g.app_id = p.id order by g.group_id) as groups,
+@@ -127,6 +138,20 @@ export const resourceAuthorityForApps = (
+ ) =>
+   Effect.gen(function* () {
+     if (user === undefined) return yield* new OrganizationForbidden();
++    const reads = yield* AccountListReads;
++    if (
++      reads !== undefined &&
++      reads.actor.organization === organization &&
++      reads.actor.user === user &&
++      apps.every((app) => reads.apps.has(app))
++    )
++      return {
++        actor: reads.actor,
++        access: [...new Set(apps)].flatMap((app) => {
++          const access = reads.appAccesses.get(app);
++          return access === undefined ? [] : [access];
++        }),
++      };
+     const sql = yield* policyDatabase;
+     const rows = yield* sql`select m.id, m.role, p.id as app, p.creator_id as creator, p.audience,
+     p.revision,
+@@ -328,6 +353,16 @@ const accountAccessOf = (found: typeof AccountPolicy.Type, actor: ResourceAuthor
+ export const accountAccesses = (accounts: readonly AccountId[], actor: ResourceAuthority) =>
+   Effect.gen(function* () {
+     if (accounts.length === 0) return [];
++    const reads = yield* AccountListReads;
++    if (
++      reads !== undefined &&
++      reads.actor === actor &&
++      accounts.every((account) => reads.snapshot.accounts.some((saved) => saved.id === account))
++    )
++      return [...new Set(accounts)].flatMap((account) => {
++        const access = reads.accountAccesses.get(account);
++        return access === undefined ? [] : [access];
++      });
+     const sql = yield* policyDatabase;
+     const rows = yield* sql`select p.account_id as account, p.creator_id as creator, p.kind,
+     p.personal_user_id as "personalUser", p.audience, p.revision,
+diff --git a/e2e/support/managed-server.ts b/e2e/support/managed-server.ts
+index 9e5ebc669a561b9441e5d07def831d9ae30e723b..bca5c030ff3b6676ead2d52ac14bd91795cb006b 100644
+--- a/e2e/support/managed-server.ts
++++ b/e2e/support/managed-server.ts
+@@ -635,6 +635,20 @@ export const startDevelopmentServer = (
+     Effect.map(({ origin }) => origin),
+   );
+ 
++/** Development fixtures and their telemetry use this instance's own target and collector. */
++export const startControlledDevelopmentServer = (
++  target: typeof Target.Service,
++  environment: Readonly<Record<string, string>> = {},
++) =>
++  startIsolatedSelfHost(target, "development", environment).pipe(
++    Effect.map(({ origin, controlOrigin, directory }): typeof Target.Service => ({
++      ...target,
++      directory,
++      controlOrigin,
++      metadata: { ...target.metadata, origin, target: "self-host" },
++    })),
++  );
++
+ /** Start an unconfigured product instance; the scenario scope owns its process and fresh data. */
+ export const startFreshSelfHost = (
+   target: typeof Target.Service,
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index e834c01502bfdf1575d2c6c5943e0f0ee8de0618..1862cdcfab87be4ab20b509ffdf0d3f2a589b687 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -542,6 +542,15 @@ export const scenarios = plan({
+       cloud: na("The synthetic authorization server listens on loopback."),
+     },
+   },
++  accountListTotalBudget: {
++    file: "account-list-total-budget.spec.ts",
++    title: "Accounts GET bounds total SQL reads for 35 saved accounts across app scopes",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Statement counting is confined to the local test host."),
++      local: na("Hosted saved-account projection owns this read contract."),
++    },
++  },
+   accountHealthQueryBudget: {
+     file: "account-health-query-budget.spec.ts",
+     title: "account lists use constant SQL statements for one and six saved identities",
+diff --git a/e2e/tests/account-list-total-budget.spec.ts b/e2e/tests/account-list-total-budget.spec.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..1d1718ffddbf9899b43a448c254b9a38860ffa96
+--- /dev/null
++++ b/e2e/tests/account-list-total-budget.spec.ts
+@@ -0,0 +1,231 @@
++import { expect, layer } from "@effect/vitest";
++import { Clock, Effect, Layer, Schedule, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { Api, SessionClients, body } from "../support/api.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { TestLive, withCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { Evidence, Telemetry } from "../support/evidence.ts";
++import { startControlledDevelopmentServer } from "../support/managed-server.ts";
++import { Target } from "../support/platform.ts";
++import { scenarios } from "../test-plan.ts";
++
++const source = `import { defineApp, defineProvider, secrets, object, string, router } from "apps";
++const service = defineProvider({ name: "Account list budget", auth: {
++  key: secrets({ label: "API key", fields: object({ token: string() }) })
++} });
++export default defineApp({ app: { accounts: { shared: service.many() } },
++  user: { accounts: { own: service.many() } } }, async () => ({ tools: router({}) }));`;
++
++const Rows = Schema.Array(
++  Schema.Struct({
++    id: Schema.String,
++    label: Schema.String,
++    bindings: Schema.Array(
++      Schema.Struct({ app: Schema.String, scope: Schema.String, requirement: Schema.String }),
++    ),
++  }),
++);
++const Counts = Schema.Struct({
++  operations: Schema.Array(Schema.Struct({ name: Schema.String, statements: Schema.Number })),
++});
++
++layer(TestLive, { excludeTestServices: true })("Accounts total query budget", (it) => {
++  it.effect(scenarios.accountListTotalBudget.title, (context) =>
++    withCase(
++      context,
++      Effect.gen(function* () {
++        const target = yield* Target;
++        const development = yield* startControlledDevelopmentServer(target);
++        const origin = development.metadata.origin;
++        const raw = yield* Api.pipe(
++          Effect.provide(Layer.fresh(Api.layer)),
++          Effect.provide(Layer.fresh(SessionClients.layer)),
++          Effect.provideService(Target, development),
++        );
++        const api = {
++          ...raw,
++          request: (...args: Parameters<typeof raw.request>) =>
++            raw.request(args[0], args[1], `${origin}${args[2]}`, args[3], {
++              origin,
++              ...args[4],
++            }),
++        };
++        const owner = yield* api.session();
++        expect((yield* api.request(owner, "POST", "/api/devtools/operator", {})).status).toBe(200);
++        const users = yield* body(
++          Schema.Struct({
++            users: Schema.Array(Schema.Struct({ id: Schema.String, email: Schema.String })),
++          }),
++          yield* api.request(owner, "GET", "/api/auth/admin/list-users"),
++        );
++        const developer = users.users.find((user) => user.email === "agent-agent@example.test");
++        if (developer === undefined) return yield* Effect.die("Development owner is missing");
++        expect(
++          (yield* api.request(owner, "POST", "/api/auth/admin/impersonate-user", {
++            userId: developer.id,
++          })).status,
++        ).toBe(200);
++        const organization = (yield* body(
++          Schema.Array(Schema.Struct({ id: Schema.String })),
++          yield* api.request(owner, "GET", "/api/auth/organization/list"),
++        ))[0];
++        if (organization === undefined)
++          return yield* Effect.die("Development organization is missing");
++        const prefix = `/api/organizations/${organization.id}`;
++        const apps: string[] = [];
++        const accounts: { id: string; label: string; app: string; scope: string }[] = [];
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* api.request(owner, "POST", "/api/devtools/statement-count", { within: [] });
++            for (const app of apps) yield* api.request(owner, "DELETE", `${prefix}/apps/${app}`);
++            for (const account of accounts)
++              yield* api.request(owner, "DELETE", `${prefix}/accounts/${account.id}`);
++          }).pipe(Effect.orDie),
++        );
++        for (let index = 0; index < 7; index++) {
++          const response = yield* api.request(owner, "POST", `${prefix}/apps/deploy`, {
++            name: `Budget app ${index}`,
++            files: [{ path: "index.ts", content: source }, appsManifest],
++          });
++          expect(response.status).toBe(200);
++          apps.push((yield* body(Resource, response)).id);
++        }
++        const create = (index: number) =>
++          Effect.gen(function* () {
++            const app = apps[index % apps.length]!;
++            const scope = index % 2 === 0 ? "user" : "app";
++            const requirement = scope === "user" ? "own" : "shared";
++            const started = yield* api.request(
++              owner,
++              "POST",
++              `${prefix}/apps/${app}/accounts/${scope}/${requirement}/connections`,
++              scope === "app"
++                ? { destination: { kind: "shared", audience: { kind: "everyone" } } }
++                : {},
++            );
++            expect(started.status, JSON.stringify(started.body)).toBe(200);
++            const connection = yield* body(Resource, started);
++            const label = `Synthetic account ${index}`;
++            const saved = yield* api.request(
++              owner,
++              "POST",
++              `${prefix}/connections/${connection.id}/submit`,
++              {
++                method: "key",
++                label,
++                fields: { token: `synthetic-${index}` },
++              },
++            );
++            expect(saved.status, JSON.stringify(saved.body)).toBe(200);
++            accounts.push({ id: (yield* body(Resource, saved)).id, label, app, scope });
++          });
++        const measure = Effect.gen(function* () {
++          expect(
++            (yield* api.request(owner, "POST", "/api/devtools/statement-count", {
++              within: ["http.server GET"],
++            })).status,
++          ).toBe(200);
++          const traceId = randomUUID().replaceAll("-", "");
++          const started = yield* Clock.currentTimeNanos;
++          const response = yield* api.request(
++            owner,
++            "GET",
++            `${prefix}/resources/accounts`,
++            undefined,
++            {
++              traceparent: `00-${traceId}-1234567890abcdef-01`,
++            },
++          );
++          const durationMs = Number((yield* Clock.currentTimeNanos) - started) / 1_000_000;
++          expect(response.status).toBe(200);
++          const rows = yield* body(Rows, response);
++          for (const account of accounts) {
++            const row = rows.find((row) => row.id === account.id);
++            expect(row?.label).toBe(account.label);
++            expect(row?.bindings).toEqual(
++              expect.arrayContaining([
++                expect.objectContaining({ app: account.app, scope: account.scope }),
++              ]),
++            );
++          }
++          const counts = yield* body(
++            Counts,
++            yield* api.request(owner, "GET", "/api/devtools/statement-count"),
++          );
++          return {
++            durationMs,
++            statements: counts.operations.reduce((sum, row) => sum + row.statements, 0),
++            operations: counts.operations,
++            accountCount: accounts.length,
++            traceId,
++          };
++        });
++        yield* create(0);
++        const small = yield* Effect.forEach([0, 1, 2], () => measure);
++        for (let index = 1; index < 35; index++) yield* create(index);
++        expect(accounts).toHaveLength(35);
++        const large = yield* Effect.forEach([0, 1, 2], () => measure);
++        const evidence = yield* Evidence;
++        yield* evidence.json("account-list-total-budget.json", { small, large });
++        const first = accounts[0]!;
++        const renamed = "Renamed after the list was read";
++        expect(
++          (yield* api.request(owner, "PATCH", `${prefix}/accounts/${first.id}`, {
++            label: renamed,
++            description: null,
++          })).status,
++        ).toBe(200);
++        const requirement = first.scope === "user" ? "own" : "shared";
++        expect(
++          (yield* api.request(
++            owner,
++            "DELETE",
++            `${prefix}/apps/${first.app}/accounts/${first.scope}/${requirement}/${first.id}`,
++          )).status,
++        ).toBe(200);
++        const after = yield* body(
++          Rows,
++          yield* api.request(owner, "GET", `${prefix}/resources/accounts`),
++        );
++        const changed = after.find((row) => row.id === first.id);
++        expect(changed?.label).toBe(renamed);
++        expect(changed?.bindings.some((binding) => binding.app === first.app)).toBe(false);
++        for (const sample of [...small, ...large]) expect(sample.statements).toBeGreaterThan(0);
++        expect(
++          Math.max(...large.map((sample) => sample.statements)),
++          "the complete 35-account GET stays within its query budget",
++        ).toBeLessThanOrEqual(100);
++        expect(
++          Math.max(...large.map((sample) => sample.statements)),
++          "account growth does not repeat reads for each row or app scope",
++        ).toBeLessThanOrEqual(Math.max(...small.map((sample) => sample.statements)) + 10);
++        const phases = ["request", "snapshot", "links", "identity", "observations", "projection"];
++        const telemetry = yield* Telemetry.pipe(
++          Effect.provide(Layer.fresh(Telemetry.layer)),
++          Effect.provideService(Target, development),
++        );
++        const trace = yield* telemetry.query(large[2]!.traceId).pipe(
++          Effect.flatMap((trace) =>
++            phases.every((phase) =>
++              trace.data.some(({ span }) => span.operationName === `hosted.accounts.${phase}`),
++            )
++              ? Effect.succeed(trace)
++              : Effect.fail(new Error("Accounts phase spans have not arrived")),
++          ),
++          Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 100 }),
++        );
++        yield* evidence.json(
++          "account-list-phases.json",
++          trace.data
++            .filter(({ span }) => span.operationName.startsWith("hosted.accounts."))
++            .map(({ span }) => ({
++              name: span.operationName,
++              durationMs: span.durationMs,
++              status: span.status,
++            })),
++        );
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/account-observation-access.spec.ts b/e2e/tests/account-observation-access.spec.ts
+index 90977d411092a0f243ef72a331b8fd1e2cdb199a..1ca35c2fe0d58209a89779b4e8311249beab15d2 100644
+--- a/e2e/tests/account-observation-access.spec.ts
++++ b/e2e/tests/account-observation-access.spec.ts
+@@ -68,6 +68,17 @@ layer(HostedLive, { excludeTestServices: true })("Observation access", (it) => {
+           });
+           expect(health.apps[0]?.check?.displayStatus).toBeUndefined();
+         };
++        const savedHealth = Effect.gen(function* () {
++          const rows = yield* body(
++            Schema.Array(Schema.Struct({ id: Schema.String, health: Schema.optionalKey(Health) })),
++            yield* member("GET", `${f.prefix}/resources/accounts`),
++          );
++          const health = rows.find((row) => row.id === f.account)?.health;
++          expect(health).toBeDefined();
++          if (health === undefined) return yield* Effect.die("Shared account health is missing");
++          return health;
++        });
++        stripped(yield* savedHealth);
+         stripped((yield* body(Detail, yield* member("GET", f.accountPath))).health);
+         stripped(yield* body(Health, yield* member("POST", `${f.accountPath}/health`)));
+         const inventory = yield* body(
+@@ -138,6 +149,7 @@ layer(HostedLive, { excludeTestServices: true })("Observation access", (it) => {
+           health: { apps: [{ check: { displayStatus: { ...legacy, badges: [] } } }] },
+         });
+         const revision = (yield* body(Revision, readable)).revision;
++        stripped(yield* savedHealth);
+         const canRefresh = yield* f.api.request(f.actors.owner, "PUT", path, {
+           revision,
+           read: { kind: "everyone" },
+@@ -186,6 +198,7 @@ layer(HostedLive, { excludeTestServices: true })("Observation access", (it) => {
+         ).toEqual([]);
+         expect((yield* member("POST", `${f.accountPath}/observations/refresh`)).status).toBe(403);
+         stripped((yield* body(Detail, yield* member("GET", f.accountPath))).health);
++        stripped(yield* savedHealth);
+         expect(
+           (yield* f.api.request(f.actors.owner, "PUT", path, {
+             revision,
+diff --git a/e2e/tests/contributed-app-access.spec.ts b/e2e/tests/contributed-app-access.spec.ts
+index 7fb0ff6d213556ccc07e587fff46974065c1bf68..92109eb8a0036d0eeb41d95faba10ad3a869060b 100644
+--- a/e2e/tests/contributed-app-access.spec.ts
++++ b/e2e/tests/contributed-app-access.spec.ts
+@@ -29,6 +29,21 @@ layer(RuntimeLive, { excludeTestServices: true })("Contributed account access",
+             Effect.tap(ok),
+             Effect.flatMap((response) => body(Schema.Array(Contribution), response)),
+           );
++        const savedRows = () =>
++          api.request(actors.member, "GET", `${prefix}/resources/accounts`).pipe(
++            Effect.tap(ok),
++            Effect.flatMap((response) =>
++              body(
++                Schema.Array(
++                  Schema.Struct({
++                    id: Schema.String,
++                    bindings: Schema.Array(Schema.Struct({ app: Schema.String })),
++                  }),
++                ),
++                response,
++              ),
++            ),
++          );
+         const ordinary = yield* f.connect(
+           actors.owner,
+           "app",
+@@ -62,6 +77,11 @@ layer(RuntimeLive, { excludeTestServices: true })("Contributed account access",
+         );
+         yield* group.set([ids.owner]);
+         yield* f.waitForLinks([ordinary]);
++        expect(
++          (yield* savedRows())
++            .find((row) => row.id === personal)
++            ?.bindings.some((binding) => binding.app === f.app.id) ?? false,
++        ).toBe(false);
+         yield* ok(yield* api.request(actors.member, "GET", `${prefix}/access`));
+         yield* ok(yield* api.request(actors.member, "GET", `${prefix}/accounts/${personal}`));
+         expect((yield* otherCall()).body).toMatchObject({ shared: [personal] });
+@@ -80,6 +100,7 @@ layer(RuntimeLive, { excludeTestServices: true })("Contributed account access",
+         yield* ok(yield* otherLink(shared));
+         yield* accountGroup.set([ids.owner]);
+         yield* f.waitForLinks([ordinary, personal]);
++        expect((yield* savedRows()).some((row) => row.id === shared)).toBe(false);
+         expect((yield* otherCall()).body).toMatchObject({ shared: [personal] });
+         expect(
+           (yield* api.request(actors.member, "GET", `${prefix}/accounts/${shared}`)).status,
+@@ -87,6 +108,11 @@ layer(RuntimeLive, { excludeTestServices: true })("Contributed account access",
+         yield* ok(yield* api.request(actors.owner, "GET", `${prefix}/accounts/${shared}`));
+         yield* accountGroup.set([ids.owner, ids.member]);
+         yield* ok(yield* f.link(actors.member, "shared", shared));
++        expect(
++          (yield* savedRows())
++            .find((row) => row.id === shared)
++            ?.bindings.some((binding) => binding.app === f.app.id),
++        ).toBe(true);
+         expect((yield* f.call(actors.owner, "accounts")).body).toMatchObject({
+           shared: [personal, shared],
+         });
+diff --git a/packages/sdk/src/contracts/account-read.ts b/packages/sdk/src/contracts/account-read.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..77b9c28e1dbaf5620573ea3f00663bcebe40c8d1
+--- /dev/null
++++ b/packages/sdk/src/contracts/account-read.ts
+@@ -0,0 +1,27 @@
++import type { Effect } from "effect";
++import type { Account, AccountHealth } from "./account.ts";
++import type { Provider } from "./provider.ts";
++import type { AccountId, AppId, OwnerId, ProviderId, StorageError } from "./shared.ts";
++
++export type AccountListSignIn =
++  | { readonly state: "saved"; readonly reconnectAt: Date | null }
++  | { readonly state: "reconnect" | "unavailable" };
++
++/** Request-owned account metadata. Products authorize and redact every outward view. */
++export interface AccountReadSnapshot {
++  readonly accounts: readonly Account[];
++  readonly providers: ReadonlyMap<ProviderId, Provider>;
++  readonly signIns: ReadonlyMap<AccountId, AccountListSignIn>;
++  readonly acquired: ReadonlySet<AccountId>;
++  readonly health: readonly AccountHealth[];
++}
++
++export const AccountReadHost = Symbol("executor.AccountReadHost");
++
++/** Host-only collection reads; no credentials or acquisition references leave the SDK. */
++export interface AccountReadHost {
++  readonly read: (input: {
++    readonly owner: OwnerId;
++    readonly links: readonly { readonly account: AccountId; readonly app: AppId }[];
++  }) => Effect.Effect<AccountReadSnapshot, StorageError>;
++}
+diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
+index 6fad4ec671aa131ca8cf9ab2ace1d18b9f4c11c9..da868f0e4b0cd0cbe86257c796046c7317375026 100644
+--- a/packages/sdk/src/contracts/executor.ts
++++ b/packages/sdk/src/contracts/executor.ts
+@@ -16,6 +16,7 @@ import type { LegacyVersionEndpoints } from "./apps.ts";
+ import { StorageHost, type Credentials } from "./storage.ts";
+ import { AppViewsHost, AppSourceHost } from "./app-views.ts";
+ import { AccountTrafficHost } from "./account-traffic.ts";
++import { AccountReadHost } from "./account-read.ts";
+ import { PrefetchHost } from "./tools.ts";
+ import { SavedOAuthClientsHost } from "./oauth-clients.ts";
+ import { OwnerMovesHost } from "./owner.ts";
+@@ -577,6 +578,7 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
+   readonly [PrefetchHost]: PrefetchHost;
+   readonly [AppViewsHost]: AppViewsHost;
+   readonly [AccountTrafficHost]: AccountTrafficHost;
++  readonly [AccountReadHost]: AccountReadHost;
+   readonly [AppSourceHost]: AppSourceHost;
+   readonly [SavedOAuthClientsHost]: import("./oauth-clients.ts").SavedOAuthClients;
+   readonly [OwnerMovesHost]: import("./owner.ts").OwnerMoves;
+@@ -612,6 +614,7 @@ export type PromiseExecutor = Promisify<
+     | typeof PrefetchHost
+     | typeof AppViewsHost
+     | typeof AccountTrafficHost
++    | typeof AccountReadHost
+     | typeof AppSourceHost
+     | typeof SavedOAuthClientsHost
+     | typeof OwnerMovesHost
+diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
+index 9fa3256e68b3ac4bb427bbcea7f2dcdb0764277a..ebcb779f5a74dd01d304d3c34af6b92241d645ed 100644
+--- a/packages/sdk/src/core.ts
++++ b/packages/sdk/src/core.ts
+@@ -74,3 +74,5 @@ export {
+   AcquisitionFailureReceipt,
+   InteractiveConnectionFailed,
+ } from "./contracts/interactive-accounts.ts";
++
++export * from "./contracts/account-read.ts";
+diff --git a/packages/sdk/src/implementation/account-read.ts b/packages/sdk/src/implementation/account-read.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..0a09cbf00a4fc6544a490df6748a446219dadee3
+--- /dev/null
++++ b/packages/sdk/src/implementation/account-read.ts
+@@ -0,0 +1,127 @@
++import { Effect, Schema } from "effect";
++import type { AccountListSignIn, AccountReadHost } from "../contracts/account-read.ts";
++import { AccountTargetBinding, type MachineAccounts } from "../contracts/account-target.ts";
++import type { Executor } from "../contracts/executor.ts";
++import { Provider } from "../contracts/provider.ts";
++import { StorageError, type AccountId, type ProviderId } from "../contracts/shared.ts";
++import { StoredAccount, type Credentials } from "../contracts/storage.ts";
++import { accountGrantId } from "./account-identities.ts";
++import { accountSignInState } from "./account-sign-in.ts";
++import { query, type Query } from "./database.ts";
++import { interactiveBindings } from "./interactive-state.ts";
++
++/** Collection reads stay on the existing Query and retain no state beyond this request. */
++export const makeAccountRead = (
++  db: Query,
++  credentials: Credentials,
++  accounts: Pick<Executor["accounts"], "list" | "listHealth">,
++  machines: MachineAccounts | undefined,
++): AccountReadHost => ({
++  read: (input) =>
++    Effect.gen(function* () {
++      const listed = yield* accounts.list({ owner: input.owner });
++      if (listed.length === 0)
++        return {
++          accounts: [],
++          providers: new Map<ProviderId, Provider>(),
++          signIns: new Map<AccountId, AccountListSignIn>(),
++          acquired: new Set<AccountId>(),
++          health: [],
++        };
++      const ids = listed.map((account) => account.id);
++      const stored = yield* query(() =>
++        db.findMany("accounts", {
++          where: (b) => b.and(b("owner", "=", input.owner), b("id", "in", ids)),
++          orderBy: ["id", "asc"],
++        }),
++      ).pipe(
++        Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(StoredAccount))),
++        Effect.mapError(() => new StorageError()),
++      );
++      const present = new Set(stored.map((account) => account.id));
++      const providerIds = [...new Set(stored.map((account) => account.provider))];
++      const providers = new Map(
++        (yield* query(() =>
++          db.findMany("providers", {
++            where: (b) => b("id", "in", providerIds),
++            orderBy: ["id", "asc"],
++          }),
++        ).pipe(
++          Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Provider))),
++          Effect.mapError(() => new StorageError()),
++        )).map((provider) => [provider.id, provider]),
++      );
++      const grantIds = [
++        ...new Set(
++          stored.flatMap((account) => {
++            const method = providers.get(account.provider)?.definition.auth[account.method];
++            return method === undefined ||
++              method.type === "secrets" ||
++              method.type === "interactive"
++              ? []
++              : [accountGrantId(account)];
++          }),
++        ),
++      ];
++      const grants = new Map(
++        (grantIds.length === 0
++          ? []
++          : yield* query(() =>
++              db.findMany("oauthGrants", { where: (b) => b("id", "in", grantIds) }),
++            )
++        ).map((grant) => [grant.id, grant]),
++      );
++      const signIns = new Map(
++        yield* Effect.forEach(stored, (account) =>
++          accountSignInState(
++            account,
++            providers.get(account.provider),
++            grants.get(accountGrantId(account)),
++            credentials,
++          ).pipe(Effect.map((state) => [account.id, state] as const)),
++        ),
++      );
++      const acquired = new Set(
++        (yield* interactiveBindings(db, { owner: input.owner, accounts: [...present] })).keys(),
++      );
++      const targets = new Map(
++        (yield* query(() =>
++          db.findMany("accountTargets", {
++            where: (b) => b.and(b("owner", "=", input.owner), b("account", "in", ids)),
++          }),
++        )).map((target) => [target.account, target]),
++      );
++      const publicAccounts = yield* Effect.forEach(
++        listed.filter((account) => present.has(account.id)),
++        (account) =>
++          Effect.gen(function* () {
++            const row = targets.get(account.id);
++            if (row === undefined) return account;
++            const { device, deviceName, binding, manifestRevision, ...identity } = row;
++            const target = yield* Schema.decodeUnknownEffect(AccountTargetBinding)({
++              ...identity,
++              target: { device, deviceName, binding, manifestRevision },
++            }).pipe(Effect.mapError(() => new StorageError()));
++            if (target.mode === "cloud") return account;
++            const allowed =
++              machines !== undefined && (yield* machines.authorize({ ...target, managing: false }));
++            const status = !target.enabled
++              ? ("disabled" as const)
++              : !allowed || machines === undefined
++                ? ("unavailable" as const)
++                : yield* machines.availability(target);
++            return {
++              ...account,
++              execution: {
++                kind: "device" as const,
++                device: target.target.device,
++                deviceName: target.target.deviceName,
++                status,
++              },
++            };
++          }),
++      );
++      const health = yield* accounts.listHealth(input);
++      return { accounts: publicAccounts, providers, signIns, acquired, health };
++    }).pipe(Effect.withSpan("sdk.accounts.readSnapshot")),
++});
+diff --git a/packages/sdk/src/implementation/account-sign-in.ts b/packages/sdk/src/implementation/account-sign-in.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..59465f2611f7742aaf72919b8f9fba50a8d49151
+--- /dev/null
++++ b/packages/sdk/src/implementation/account-sign-in.ts
+@@ -0,0 +1,44 @@
++import { Clock, Effect, Redacted, Schema } from "effect";
++import type { AccountListSignIn } from "../contracts/account-read.ts";
++import { OAuthGrant } from "../contracts/oauth.ts";
++import type { Provider } from "../contracts/provider.ts";
++import type { Credentials, StoredAccount } from "../contracts/storage.ts";
++import { accountGrantId } from "./account-identities.ts";
++
++export interface SignInGrant {
++  readonly encrypted: Uint8Array;
++  readonly status: string;
++}
++
++/** Interpret retained sign-in state without renewing a grant or checking saved fields. */
++export const accountSignInState = (
++  account: Pick<StoredAccount, "id" | "oauthGrantId" | "method">,
++  provider: Provider | undefined,
++  grant: SignInGrant | undefined,
++  credentials: Credentials,
++): Effect.Effect<AccountListSignIn> =>
++  Effect.gen(function* () {
++    const method = provider?.definition.auth[account.method];
++    if (method === undefined) return { state: "unavailable" } as const;
++    if (method.type === "secrets" || method.type === "interactive")
++      return { state: "saved", reconnectAt: null } as const;
++    if (grant === undefined || grant.status === "reconnect") return { state: "reconnect" } as const;
++    const decoded = yield* credentials
++      .decrypt(accountGrantId(account), Redacted.make(grant.encrypted))
++      .pipe(
++        Effect.flatMap((value) => Schema.decodeUnknownEffect(OAuthGrant)(Redacted.value(value))),
++        Effect.option,
++      );
++    if (decoded._tag === "None") return { state: "unavailable" } as const;
++    const saved = decoded.value;
++    const reconnectAt =
++      saved.grant !== "client_credentials" &&
++      saved.refreshToken === undefined &&
++      saved.expiresAt !== undefined
++        ? new Date(saved.expiresAt)
++        : null;
++    const now = yield* Clock.currentTimeMillis;
++    return reconnectAt !== null && reconnectAt.getTime() <= now
++      ? ({ state: "reconnect" } as const)
++      : ({ state: "saved", reconnectAt } as const);
++  });
+diff --git a/packages/sdk/src/implementation/accounts.ts b/packages/sdk/src/implementation/accounts.ts
+index dbf3789d8ead81f06084eb1dc4548032439651ed..05ffe342a58461599b3434bde4a10a032f68f4fe 100644
+--- a/packages/sdk/src/implementation/accounts.ts
++++ b/packages/sdk/src/implementation/accounts.ts
+@@ -18,6 +18,7 @@ import { query, transaction, type Query } from "./database.ts";
+ import { accountGrantId, accountIdentities, accountIdentity } from "./account-identities.ts";
+ import { releaseAccountGrant } from "./oauth-grant-bindings.ts";
+ import { validateFields } from "./provider.ts";
++import { accountSignInState } from "./account-sign-in.ts";
+ 
+ /** A stable digest of stored ciphertext; any credential write changes it. */
+ const fingerprint = (bytes: Uint8Array) =>
+@@ -399,39 +400,21 @@ export const makeAccounts = (
+         Effect.mapError(() => new StorageError()),
+       );
+       const method = provider.definition.auth[account.method];
+-      if (method === undefined) return unavailable;
+-      if (method.type === "secrets" || method.type === "interactive")
+-        return {
+-          state: "saved",
+-          reconnectAt: null,
+-          credentialsFingerprint,
+-        } satisfies AccountSignIn;
+-      const grant = yield* query(() =>
+-        db.findFirst("oauthGrants", { where: (b) => b("id", "=", accountGrantId(account)) }),
+-      );
+-      if (grant !== null) credentialsFingerprint = yield* fingerprint(grant.encrypted);
+-      if (grant === null || grant.status === "reconnect")
+-        return { state: "reconnect", credentialsFingerprint } satisfies AccountSignIn;
+-      // A grant claimed by a renewal, including one a stopped process abandoned, still carries
+-      // the grant it started from; the next live resolve settles it.
+-      const decoded = yield* credentials
+-        .decrypt(accountGrantId(account), Redacted.make(grant.encrypted))
+-        .pipe(
+-          Effect.flatMap((value) => Schema.decodeUnknownEffect(OAuthGrant)(Redacted.value(value))),
+-          Effect.option,
+-        );
+-      if (decoded._tag === "None") return unavailable;
+-      const saved = decoded.value;
+-      const reconnectAt =
+-        saved.grant !== "client_credentials" &&
+-        saved.refreshToken === undefined &&
+-        saved.expiresAt !== undefined
+-          ? new Date(saved.expiresAt)
+-          : null;
+-      const now = yield* Clock.currentTimeMillis;
+-      return reconnectAt !== null && reconnectAt.getTime() <= now
+-        ? ({ state: "reconnect", credentialsFingerprint } satisfies AccountSignIn)
+-        : ({ state: "saved", reconnectAt, credentialsFingerprint } satisfies AccountSignIn);
++      const grant =
++        method === undefined || method.type === "secrets" || method.type === "interactive"
++          ? undefined
++          : ((yield* query(() =>
++              db.findFirst("oauthGrants", { where: (b) => b("id", "=", accountGrantId(account)) }),
++            )) ?? undefined);
++      if (grant !== undefined) credentialsFingerprint = yield* fingerprint(grant.encrypted);
++      const state = yield* accountSignInState(account, provider, grant, credentials);
++      return {
++        ...state,
++        credentialsFingerprint:
++          state.state === "unavailable"
++            ? unavailable.credentialsFingerprint
++            : credentialsFingerprint,
++      } satisfies AccountSignIn;
+     }).pipe(Effect.withSpan("sdk.accounts.signIn")),
+ });
+ 
+diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+index 9a92b5c53dae025848b4cecb84be03bad4cbae5d..5770859e582a577b04865216000d9a1868268d22 100644
+--- a/packages/sdk/src/implementation/create.ts
++++ b/packages/sdk/src/implementation/create.ts
+@@ -31,6 +31,8 @@ import { StorageHost } from "../contracts/storage.ts";
+ import { makeAppViews } from "./app-views.ts";
+ import { AppViewsHost, AppSourceHost } from "../contracts/app-views.ts";
+ import { AccountTrafficHost } from "../contracts/account-traffic.ts";
++import { AccountReadHost } from "../contracts/account-read.ts";
++import { makeAccountRead } from "./account-read.ts";
+ import { PrefetchHost } from "../contracts/tools.ts";
+ import { OAuthGrantImport } from "../contracts/oauth.ts";
+ import { gitSourceStorage } from "./git-sources.ts";
+@@ -602,6 +604,12 @@ export const createExecutor = (
+       [PrefetchHost]: { invocation: tools.prefetchInvocation },
+       [AppViewsHost]: makeAppViews(options.database.appViews, credentials, crypto),
+       [AccountTrafficHost]: { read: options.database.accountTraffic.read },
++      [AccountReadHost]: makeAccountRead(
++        db,
++        credentials,
++        { list: accountOperations.list, listHealth: accountHealth.listHealth },
++        options.machineAccounts,
++      ),
+       [AppSourceHost]: { dispatch: tools.mcpAppSource },
+       [SavedOAuthClientsHost]: makeSavedOAuthClients(db, credentials, crypto, options.hooks, [
+         ...(options.oauth?.savedClientCallbacks ?? []),
