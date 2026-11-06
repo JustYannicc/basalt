@@ -1,0 +1,339 @@
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -9993,6 +9993,17 @@
+       local: na("The hosted Google Routes proxy is Cloud-only."),
+     },
+   },
++  cloudPoolAppRemovalFailure: {
++    fixtures: "actors",
++    file: "pool-app-removal.spec.ts",
++    title:
++      "Cloud pool app removal reports unavailable revocation and recovers without losing accounts",
++    targets: {
++      "self-host": na("Cloud pool membership acknowledgements are hosted dependencies."),
++      cloud: { status: "scheduled", runtime: "managed" },
++      local: na("Cloud pool membership acknowledgements are hosted dependencies."),
++    },
++  },
+   cloudPoolAccountEventualRepair: {
+     fixtures: "actors",
+     managementApps: ["owner"],
+diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.ts
+--- a/e2e/support/cloud-pool-gateway.ts
++++ b/e2e/support/cloud-pool-gateway.ts
+@@ -66,6 +66,7 @@
+       }[]
+     >([]);
+     const retirementReference = yield* Ref.make("present");
++    const membershipRefused = yield* Ref.make<ReadonlySet<string>>(new Set());
+     const retirementReadEntered = yield* Deferred.make<void>();
+     const retirementReadReleased = yield* Deferred.make<void>();
+     const backend = (url: string) =>
+@@ -93,15 +94,26 @@
+         if (timing.at > now || timing.expiresAt <= now || timing.expiresAt > timing.at + 30_000)
+           return HttpServerResponse.empty({ status: 401 });
+         if (url === membership) {
+-          yield* Schema.decodeUnknownEffect(Schema.fromJsonString(SignedMembership))(text);
+-          const event = { path: url, action: "membership", provider: undefined, refused: false };
++          const member = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(SignedMembership))(
++            text,
++          );
++          const refused = (yield* Ref.get(membershipRefused)).has(member.pool);
++          const event = {
++            path: url,
++            action: "membership",
++            pool: member.pool,
++            provider: undefined,
++            refused,
++          };
+           yield* Ref.update(events, (previous) => [...previous, event]);
+           yield* fs.writeFileString(
+             path.join(directory, "pool-backend.ndjson"),
+             JSON.stringify(event) + "\n",
+             { flag: "a", mode: 0o600 },
+           );
+-          return HttpServerResponse.jsonUnsafe(null);
++          return refused
++            ? HttpServerResponse.empty({ status: 503 })
++            : HttpServerResponse.jsonUnsafe(null);
+         }
+         const input = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Signed))(text);
+         const refused =
+@@ -182,6 +194,22 @@
+           Effect.as(HttpServerResponse.jsonUnsafe({ observed: true })),
+         ),
+       ),
++      HttpRouter.add(
++        "POST",
++        "/native-provider-fixture/membership-refusal",
++        Effect.gen(function* () {
++          const input = yield* HttpServerRequest.schemaBodyJson(
++            Schema.Struct({ pool: Schema.String, refused: Schema.Boolean }),
++          );
++          yield* Ref.update(membershipRefused, (current) => {
++            const next = new Set(current);
++            if (input.refused) next.add(input.pool);
++            else next.delete(input.pool);
++            return next;
++          });
++          return HttpServerResponse.jsonUnsafe({ configured: true });
++        }),
++      ),
+       HttpRouter.add("POST", access, backend(access)),
+       HttpRouter.add("POST", acquisition, backend(acquisition)),
+       HttpRouter.add("POST", membership, backend(membership)),
+diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/apps.ts
+--- a/packages/sdk/src/contracts/apps.ts
++++ b/packages/sdk/src/contracts/apps.ts
+@@ -466,6 +466,15 @@
+ });
+ export type AppWorkflowsActive = typeof AppWorkflowsActive.Type;
+ 
++/** External revocation must acknowledge before the app's removal can commit. */
++export const AppRemovalUnavailable = ApiError.define({
++  tag: "AppRemovalUnavailable",
++  status: 503,
++  fields: { app: AppId },
++  message: "App access could not be revoked. The app was not deleted. Try again.",
++});
++export type AppRemovalUnavailable = typeof AppRemovalUnavailable.Type;
++
+ /** Canonical operation inputs; Promise and HTTP callers use the same validators. */
+ export const AppInputs = {
+   /** Credentials to check with the app's check for their provider; never saved. */
+@@ -695,6 +704,7 @@
+           InteractiveRetirementFailed,
+           AppWebhooksActive,
+           AppWorkflowsActive,
++          AppRemovalUnavailable,
+         ],
+       }).annotate(
+         OpenApi.Description,
+diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
+--- a/packages/sdk/src/contracts/executor.ts
++++ b/packages/sdk/src/contracts/executor.ts
+@@ -34,7 +34,7 @@
+   ToolSearchPage,
+   ToolSearchUnavailable,
+ } from "./tools.ts";
+-import type { AccountScope, App, AppRequirements } from "./apps.ts";
++import type { AppRemovalUnavailable, AccountScope, App, AppRequirements } from "./apps.ts";
+ import type {
+   BuildBusy,
+   BuildMemoryExceeded,
+@@ -284,7 +284,7 @@
+   /** Called once after inserting a new configured app, before its transaction commits. */
+   readonly appCreated: (app: App) => Effect.Effect<void, StorageError>;
+   /** Called after active-work checks, before deleting the app in the same transaction. */
+-  readonly appRemoving: (app: AppId) => Effect.Effect<void, StorageError>;
++  readonly appRemoving: (app: AppId) => Effect.Effect<void, StorageError | AppRemovalUnavailable>;
+   /**
+    * Called when a connection started for an app requirement saves its account, in the same
+    * transaction, so the product can link the account to the requirement in its `scope`: for the
+diff --git a/apps/hosted/server/src/contracts/apps.ts b/apps/hosted/server/src/contracts/apps.ts
+--- a/apps/hosted/server/src/contracts/apps.ts
++++ b/apps/hosted/server/src/contracts/apps.ts
+@@ -7,7 +7,7 @@
+   SourceDisplayFileQuery,
+ } from "@executor-js/app-management/contracts/source-display";
+ import { RequiredAction } from "./authorization.ts";
+-import { AppWorkflowsActive } from "@executor-js/sdk/core";
++import { AppRemovalUnavailable, AppWorkflowsActive } from "@executor-js/sdk/core";
+ import { AppWebhooksActive } from "@executor-js/sdk/core";
+ /** App installation and configuration. Owners always come from authenticated organization context. */
+ import {
+@@ -185,6 +185,7 @@
+         InteractiveRetirementFailed,
+         AppWebhooksActive,
+         AppWorkflowsActive,
++        AppRemovalUnavailable,
+         OrganizationForbidden,
+       ],
+     }).annotate(RequiredAction, "manage"),
+diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+--- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
++++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+@@ -13,6 +13,7 @@
+ /** Product metadata commits with SDK resources using the same SQL transaction context. */
+ import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
+ import {
++  AppRemovalUnavailable,
+   AccountConnectionRefused,
+   AccountProvisioned,
+   AccountConnectionTargetChanged,
+@@ -803,9 +804,11 @@
+           yield* removeServiceInstall(sql, app);
+           yield* (accessLifecycle.appAccountLinksChanged?.({ apps: [app] }) ?? Effect.void).pipe(
+             Effect.provideService(SqlClient.SqlClient, sql),
++            Effect.mapError(() => new AppRemovalUnavailable({ app })),
+           );
+           yield* (accessLifecycle.appRemoving?.(app) ?? Effect.void).pipe(
+             Effect.provideService(SqlClient.SqlClient, sql),
++            Effect.mapError(() => new AppRemovalUnavailable({ app })),
+           );
+           yield* sql`delete from hosted_app_account_links where app = ${app}`;
+         }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
+diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
+--- a/apps/local/server/src/contracts/dashboard.ts
++++ b/apps/local/server/src/contracts/dashboard.ts
+@@ -22,7 +22,11 @@
+ import { DashboardAppBrowser } from "./app-browser.ts";
+ import { DashboardWorkflows, DashboardWebhooks } from "./resources.ts";
+ import { AccountChoiceUnsupported, ToolKind, ToolKindMismatch } from "@executor-js/sdk/core";
+-import { AppWorkflowsActive, AccountWorkflowsActive } from "@executor-js/sdk/core";
++import {
++  AppRemovalUnavailable,
++  AppWorkflowsActive,
++  AccountWorkflowsActive,
++} from "@executor-js/sdk/core";
+ import { DashboardSchedules } from "./schedules.ts";
+ import { DashboardMcpConnections } from "./mcp-connections.ts";
+ import { AccountWebhooksActive } from "@executor-js/sdk/core";
+@@ -706,6 +710,7 @@
+           StorageError,
+           AppWebhooksActive,
+           AppWorkflowsActive,
++          AppRemovalUnavailable,
+           AppDeletionBlocked,
+         ],
+       }),
+diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
+--- a/apps/hosted/web/src/contracts/errors.ts
++++ b/apps/hosted/web/src/contracts/errors.ts
+@@ -209,6 +209,7 @@
+     AccountWorkflowsActive: () =>
+       "Wait for this account’s workflows to finish or terminate them before deleting it.",
+     WorkflowFailure: (error) => `Workflow request failed (${error.reason}).`,
++    AppRemovalUnavailable: ({ message }) => message,
+     AppWebhooksActive: () => "Remove this app’s webhook subscriptions before deleting it.",
+     AccountWebhooksActive: () => "Remove this account’s webhook subscriptions before deleting it.",
+     WebhookNotFound: () => "This webhook subscription is no longer available.",
+diff --git a/e2e/tests/pool-app-removal.spec.ts b/e2e/tests/pool-app-removal.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/pool-app-removal.spec.ts
+@@ -0,0 +1,123 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schedule, Schema } from "effect";
++import { HttpClient, HttpBody } from "effect/http";
++import { Api, body } from "../support/api.ts";
++import { Actors } from "../support/actors.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { Evidence } from "../support/evidence.ts";
++import { RuntimeLive, Target } from "../support/platform.ts";
++import { scenarios } from "../test-plan.ts";
++
++const App = Schema.Struct({ id: Schema.String });
++const Account = Schema.Struct({ account: Schema.Struct({ id: Schema.String }) });
++class StillListed extends Schema.TaggedError<StillListed>()("StillListed", {}) {}
++
++layer(RuntimeLive, { excludeTestServices: true })("Pool app removal", (it) => {
++  it.effect(scenarios.cloudPoolAppRemovalFailure.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          evidence = yield* Evidence;
++        const target = yield* Target,
++          http = yield* HttpClient.HttpClient;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const created = yield* api.request(actors.owner, "POST", `${prefix}/pools`, {
++          name: "Removal recovery pool",
++          requestId: crypto.randomUUID(),
++          newInstance: true,
++        });
++        expect(created.status, JSON.stringify(created.body)).toBe(200);
++        const app = yield* body(App, created);
++        const refuse = (refused: boolean) =>
++          Effect.scoped(
++            http
++              .post(`${target.metadata.origin}/native-provider-fixture/membership-refusal`, {
++                body: HttpBody.jsonUnsafe({ pool: app.id, refused }),
++              })
++              .pipe(Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200)))),
++          );
++        yield* Effect.addFinalizer(() => refuse(false).pipe(Effect.orDie));
++        const path = `${prefix}/apps/${app.id}`;
++        const choices = () =>
++          api
++            .request(actors.owner, "GET", `${path}/accounts/app/pool`)
++            .pipe(
++              Effect.flatMap((response) =>
++                body(Schema.Struct({ accounts: Schema.Array(Account) }), response),
++              ),
++            );
++        const accounts = yield* choices();
++        expect(accounts.accounts.length).toBeGreaterThan(0);
++        yield* refuse(true);
++        const refused = yield* api.request(actors.owner, "DELETE", path);
++        yield* evidence.json("pool-delete-refused.json", {
++          status: refused.status,
++          body: refused.body,
++        });
++        const observed = yield* Effect.scoped(
++          http.get(`${target.metadata.origin}/native-provider-fixture/backend-events`).pipe(
++            Effect.flatMap((response) => response.json),
++            Effect.flatMap(
++              Schema.decodeUnknownEffect(
++                Schema.Array(
++                  Schema.Struct({
++                    action: Schema.String,
++                    pool: Schema.optionalKey(Schema.String),
++                    refused: Schema.Boolean,
++                  }),
++                ),
++              ),
++            ),
++          ),
++        );
++        expect(
++          observed.some(
++            (event) => event.action === "membership" && event.pool === app.id && event.refused,
++          ),
++        ).toBe(true);
++        expect(refused.status, JSON.stringify(refused.body)).toBe(503);
++        expect(refused.body).toMatchObject({ _tag: "AppRemovalUnavailable", app: app.id });
++        expect((yield* api.request(actors.owner, "GET", path)).status).toBe(200);
++        expect(yield* choices()).toEqual(accounts);
++        yield* refuse(false);
++        const removed = yield* api.request(actors.owner, "DELETE", path);
++        expect(removed.status, JSON.stringify(removed.body)).toBe(200);
++        expect((yield* api.request(actors.owner, "GET", path)).status).toBe(403);
++        const remaining = yield* body(
++          Schema.Array(App),
++          yield* api.request(actors.owner, "GET", `${prefix}/apps`),
++        );
++        expect(remaining.some((entry) => entry.id === app.id)).toBe(false);
++        for (const entry of accounts.accounts) {
++          expect(
++            (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${entry.account.id}`))
++              .status,
++          ).toBe(200);
++        }
++        const deletion = yield* api.request(actors.owner, "DELETE", prefix);
++        expect(deletion.status, JSON.stringify(deletion.body)).toBe(200);
++        expect((yield* api.request(actors.owner, "GET", `${prefix}/access`)).status).toBe(403);
++        expect((yield* api.request(actors.owner, "GET", path)).status).toBe(403);
++        yield* api.request(actors.owner, "GET", "/api/auth/organization/list").pipe(
++          Effect.flatMap((response) =>
++            body(Schema.Array(Schema.Struct({ id: Schema.String })), response),
++          ),
++          Effect.flatMap((remaining) =>
++            remaining.some((org) => org.id === actors.organization.id)
++              ? Effect.fail(new StillListed())
++              : Effect.void,
++          ),
++          Effect.retry({ while: Schema.is(StillListed), schedule: Schedule.spaced("250 millis") }),
++          Effect.timeout("20 seconds"),
++        );
++        yield* evidence.json("pool-delete-recovered.json", {
++          app: app.id,
++          accountsPreserved: true,
++          organizationGone: true,
++        });
++      }),
++    ),
++  );
++});

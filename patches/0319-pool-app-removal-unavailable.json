@@ -1,0 +1,9 @@
+{
+  "identity": "executor-pool-app-removal-unavailable",
+  "file": "0319-pool-app-removal-unavailable.patch",
+  "content_sha256": "a24563f383cdddb8506c1f76e2fa0cbe102341b21f16a31872b3d109759e5a07",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
