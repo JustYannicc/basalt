@@ -1,0 +1,589 @@
+diff --git a/e2e/tests/account-identities.spec.ts b/e2e/tests/account-identities.spec.ts
+index f182db3..b7b6870 100644
+--- a/e2e/tests/account-identities.spec.ts
++++ b/e2e/tests/account-identities.spec.ts
+@@ -89,6 +89,46 @@ layer(TestLive, { excludeTestServices: true })("Verified account identities", (i
+           ids.push(account.identity.id);
+           bindings.push(account.id);
+           expect((yield* product.read(app)).status).toBe(200);
++          if (index === 0) {
++            expect(
++              (yield* product.request("PATCH", `/v1/accounts/${account.id}`, { label: "Work" }))
++                .status,
++            ).toBe(200);
++            const source = yield* body(
++              Schema.Struct({
++                files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
++              }),
++              yield* product.request("GET", `/v1/apps/${app}/source`),
++            );
++            const deployed = yield* product.request("POST", "/v1/apps/deploy", {
++              owner: "local",
++              app,
++              files: source.files.map((file) =>
++                file.path === "index.ts"
++                  ? {
++                      ...file,
++                      content: file.content
++                        .replace("query, object,", "query, ProviderError, object,")
++                        .replace(
++                          "tools: router({",
++                          'tools: router({ refuse: query({ input: object({}) }, async () => { throw new ProviderError({ reason: "forbidden", status: 403, accountId: accounts.service.id }); }),',
++                        ),
++                    }
++                  : file,
++              ),
++            });
++            expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++            const refusal = yield* product.request("POST", "/v1/tools/call", {
++              app,
++              tool: "refuse",
++              input: {},
++            });
++            expect(refusal.status).toBe(502);
++            expect(refusal.body).toMatchObject({
++              _tag: "AppProviderFailed",
++              account: { id: account.id, label: "same@example.test" },
++            });
++          }
+         }
+         expect(new Set(ids).size).toBe(1);
+         expect(new Set(bindings).size).toBe(5);
+diff --git a/e2e/tests/provider-errors.spec.ts b/e2e/tests/provider-errors.spec.ts
+index 11d2138..53ad217 100644
+--- a/e2e/tests/provider-errors.spec.ts
++++ b/e2e/tests/provider-errors.spec.ts
+@@ -111,7 +111,7 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
+       }).pipe(Effect.orDie),
+     );
+     // Connecting from the app links each account; the account array uses every linked one.
+-    const connect = (label: string) =>
++    const connect = (label: string, savedLabel = label) =>
+       Effect.gen(function* () {
+         const connection = yield* body(
+           Resource,
+@@ -121,12 +121,13 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
+           actors.owner,
+           "POST",
+           `${prefix}/connections/${connection.id}/submit`,
+-          { method: "apiKey", label, fields: { token: `synthetic-${label}` } },
++          { method: "apiKey", label: savedLabel, fields: { token: `synthetic-${label}` } },
+         );
+         expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+         accounts.push((yield* body(Resource, saved)).id);
+       });
+-    for (const label of ["work", "personal"]) yield* connect(label);
++    yield* connect("work", "Default");
++    yield* connect("personal", "Default 2");
+     const affected = accounts[1];
+     if (affected === undefined) return yield* Effect.die("Missing second account");
+     const tool =
+@@ -160,7 +161,11 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
+         expect(parsed).toMatchObject({
+           reason,
+           status,
+-          account: { id: affected, label: "personal" },
++          account: {
++            id: affected,
++            label:
++              kind === "custom" ? "Custom service API key 2" : `${kind} provider errors API key 2`,
++          },
+           ...(phase === undefined ? {} : { phase }),
+         });
+         expect(JSON.stringify(response.body)).not.toMatch(
+@@ -315,6 +320,9 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
+     }
+     yield* browser.login(actors.owner);
+     const url = `/org/${actors.organization.slug}/apps/${app.id}?view=tools`;
++    yield* browser.use("Desktop error", (page) =>
++      page.setViewportSize({ width: 1280, height: 900 }),
++    );
+     yield* browser.use("Open authentication failure", (page) =>
+       page
+         .goto(url)
+@@ -322,7 +330,7 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
+     );
+     expect(
+       yield* browser.use("Account is named", (page) => page.getByRole("alert").textContent()),
+-    ).toContain("personal");
++    ).toContain("graphql provider errors API key 2");
+     expect(
+       yield* browser.use("No blind auth retry", (page) =>
+         page.getByRole("button", { name: "Try again", exact: true }).count(),
+diff --git a/packages/sdk/package.json b/packages/sdk/package.json
+index cf8749c..489c524 100644
+--- a/packages/sdk/package.json
++++ b/packages/sdk/package.json
+@@ -8,6 +8,7 @@
+     "./node": "./src/node.ts",
+     "./node/build": "./src/node-build.ts",
+     "./core": "./src/core.ts",
++    "./account-title": "./src/contracts/account-title.ts",
+     "./account-imports": "./src/account-imports.ts",
+     "./blobs": "./src/blobs.ts",
+     "./ui-build": "./src/ui-build.ts",
+diff --git a/packages/sdk/src/contracts/account-title.ts b/packages/sdk/src/contracts/account-title.ts
+new file mode 100644
+index 0000000..fdb9747
+--- /dev/null
++++ b/packages/sdk/src/contracts/account-title.ts
+@@ -0,0 +1,87 @@
++import type { Account, AccountHealth } from "./account.ts";
++import type { ProviderDefinition } from "./provider.ts";
++
++/** The label the SDK gives an account saved without a name: "Default", then "Default 2", … */
++const generated = /^Default( \d+)?$/;
++
++/** A label the person gave the account; a generated or blank one is not a name. */
++export const authoredLabel = (label: string) => {
++  const trimmed = label.trim();
++  return trimmed === "" || generated.test(trimmed) ? undefined : label;
++};
++
++/** A generated or blank label's number, such as " 2" for "Default 2"; undefined for a name. */
++const generatedNumber = (label: string) => {
++  const trimmed = label.trim();
++  if (trimmed === "") return "";
++  const match = generated.exec(trimmed);
++  return match === null ? undefined : (match[1] ?? "");
++};
++
++/**
++ * A generated or blank label read as what the account is: its provider and kind, such as
++ * "ElevenLabs API key", keeping the generated number so "Default 2" reads "ElevenLabs API key 2".
++ * A combined kind such as "API key · Metered API" names the row by its first part.
++ */
++const describedLabel = (
++  label: string,
++  providerName: string | undefined,
++  kind: string | undefined,
++) => {
++  const number = generatedNumber(label);
++  const provider = providerName?.trim();
++  if (number === undefined || !provider) return undefined;
++  return `${provider} ${kind?.split(" · ")[0]?.trim() || "account"}${number}`;
++};
++
++/**
++ * What names an account's row on every account list: its verified identity, else the name the
++ * person gave it, else what its own check reported (an email first), else its provider and `kind`
++ * in place of a generated label ("Default 2" stays distinct), else `fallback`. A reported value
++ * never earns the verified mark and never groups rows; only `account.identity` does. A generated
++ * label never titles a row.
++ */
++export const accountTitle = (
++  account: Pick<Account, "label"> & {
++    readonly identity?: Account["identity"] | undefined;
++    readonly health?: AccountHealth | undefined;
++    readonly providerName?: string | undefined;
++  },
++  fallback = "Unnamed account",
++  /** The account's declared kind, such as "API key", when the caller knows it. */
++  kind?: string,
++) =>
++  account.identity?.label ??
++  authoredLabel(account.label) ??
++  (account.health?.info?.email ||
++    account.health?.info?.displayName ||
++    account.health?.info?.username ||
++    describedLabel(account.label, account.providerName, kind) ||
++    `${fallback}${generatedNumber(account.label) ?? ""}`);
++
++/**
++ * What names one saved account's own controls, such as its "Manage" menu: the name the person gave
++ * it, else its row title, so a generated "Default" is never announced. A `binding`, one sign-in
++ * inside a grouped identity row, is named only by what is its own (provider, kind and number),
++ * never by the identity or a value its check reported, so sibling sign-ins keep distinct names.
++ */
++export const accountMenuName = (
++  account: Parameters<typeof accountTitle>[0],
++  /** The account's declared kind, such as "API key", when the caller knows it. */
++  kind?: string,
++  { binding = false }: { readonly binding?: boolean } = {},
++) =>
++  authoredLabel(account.label) ??
++  (binding
++    ? accountTitle({ label: account.label, providerName: account.providerName }, undefined, kind)
++    : accountTitle(account, undefined, kind));
++
++/** The account's row title using its provider's own sign-in method label. */
++export const providerAccountTitle = (
++  account: Parameters<typeof accountTitle>[0] & Pick<Account, "method">,
++  provider: Pick<ProviderDefinition, "name" | "auth">,
++) => {
++  const method = provider.auth[account.method];
++  const kind = method !== undefined && "label" in method ? method.label : undefined;
++  return accountTitle({ ...account, providerName: provider.name }, undefined, kind);
++};
+diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
+index 0ca0086..dcb5053 100644
+--- a/packages/sdk/src/contracts/account.ts
++++ b/packages/sdk/src/contracts/account.ts
+@@ -17,6 +17,7 @@ import type { App, AppAccounts } from "./apps.ts";
+ import { AccountId, AppId, JsonObject, OwnerId, ProviderId } from "./shared.ts";
+ import { AuthMethodInvalid, AuthMethodName, Provider, ProviderNotFound } from "./provider.ts";
+ import { SiteOrigin } from "@executor-js/utils/account-site";
++import { providerAccountTitle } from "./account-title.ts";
+ import { AccountIdentity } from "./account-identity.ts";
+ 
+ /**
+@@ -160,7 +161,16 @@ export const accountProblems = (
+         return [];
+       // App pages show tools that failed to load as an advisory failed check.
+       const reason = check.status === "tools_unavailable" ? "check_failed" : check.status;
+-      return [{ provider, account: entry.account.label, reason }];
++      return [
++        {
++          provider,
++          account: providerAccountTitle(
++            { ...entry.account, health: entry.health },
++            requirement.definition,
++          ),
++          reason,
++        },
++      ];
+     });
+   });
+ 
+diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+index 9a92b5c..7a9046e 100644
+--- a/packages/sdk/src/implementation/create.ts
++++ b/packages/sdk/src/implementation/create.ts
+@@ -793,7 +793,7 @@ export const createExecutor = (
+       appConnections: appConnectionStore.operations,
+       publications: catalog.publications,
+       registry: catalog.registry,
+-      skills: makeSkills(db, runtime, crypto, declarations, options.blobs),
++      skills: makeSkills(db, runtime, crypto, declarations, options.blobs, options.hooks),
+       webhooks: {
+         ...webhooks.webhooks,
+         sources: webhookSources.sources,
+diff --git a/packages/sdk/src/implementation/provider-error.ts b/packages/sdk/src/implementation/provider-error.ts
+index c9e8b85..a0dadf2 100644
+--- a/packages/sdk/src/implementation/provider-error.ts
++++ b/packages/sdk/src/implementation/provider-error.ts
+@@ -1,6 +1,7 @@
+ import type { Effect } from "effect";
+ import type { ProviderError } from "apps/contracts";
+ import { AppProviderFailed, type RenewalFailure } from "../contracts/tools.ts";
++import { providerAccountTitle } from "../contracts/account-title.ts";
+ import type { snapshot } from "./tools.ts";
+ 
+ /**
+@@ -14,7 +15,7 @@ export function appProviderFailure(
+   renewal?: "renewed" | RenewalFailure,
+ ) {
+   const selected = state.selections.flatMap(({ required, accounts }) =>
+-    accounts.map((account) => ({ account, provider: required.definition.name })),
++    accounts.map((account) => ({ account, provider: required.definition })),
+   );
+   const match = selected.find(({ account }) => account.id === error.accountId);
+   return new AppProviderFailed({
+@@ -32,7 +33,11 @@ export function appProviderFailure(
+     ...(match === undefined
+       ? {}
+       : {
+-          account: { id: match.account.id, label: match.account.label, provider: match.provider },
++          account: {
++            id: match.account.id,
++            label: providerAccountTitle(match.account, match.provider),
++            provider: match.provider.name,
++          },
+         }),
+   });
+ }
+diff --git a/packages/sdk/src/implementation/skills.ts b/packages/sdk/src/implementation/skills.ts
+index 9219302..db29a5a 100644
+--- a/packages/sdk/src/implementation/skills.ts
++++ b/packages/sdk/src/implementation/skills.ts
+@@ -1,5 +1,6 @@
+ import { storedApp, storedVersion } from "./apps.ts";
+ import { snapshot as invocation } from "./tools.ts";
++import type { ResourceLifecycle } from "../contracts/executor.ts";
+ import { appProviderFailure } from "./provider-error.ts";
+ import { AppSkills, ProviderError } from "apps/contracts";
+ import { AppEvaluationFailed, evaluationFailure } from "../contracts/tools.ts";
+@@ -63,6 +64,7 @@ export const makeSkills = (
+   crypto: Crypto.Crypto,
+   declarations: Declarations,
+   blobs: BlobStorage,
++  lifecycle?: ResourceLifecycle,
+ ) => {
+   const snapshot = (input: typeof AppSkillInputs.list.Type, read: CatalogReadOptions = {}) =>
+     Effect.gen(function* () {
+@@ -88,7 +90,7 @@ export const makeSkills = (
+       const live =
+         capabilities?.skills === true
+           ? yield* Effect.gen(function* () {
+-              const state = yield* invocation(db, { ...input, version });
++              const state = yield* invocation(db, { ...input, version }, undefined, lifecycle);
+               const sources = capabilities.skillSources === true;
+               const known = input.revision;
+               const catalog = yield* declarations.read(
+diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
+index 716cca4..8574700 100644
+--- a/packages/sdk/src/implementation/tools.ts
++++ b/packages/sdk/src/implementation/tools.ts
+@@ -6,6 +6,7 @@ import { observeToolLoad, toolsFailure, toolsProblem } from "./account-tools-hea
+ import { McpAppViewSink, McpToolResult, type McpAppViewObservation } from "apps/contracts";
+ import { McpAppUiProfile, ProviderError } from "apps/contracts";
+ import { appProviderFailure } from "./provider-error.ts";
++import { accountIdentities } from "./account-identities.ts";
+ import { invocationAccount } from "./provider.ts";
+ import type { FirstPartyOAuthClient } from "../contracts/oauth.ts";
+ import type { UrlPolicy } from "@executor-js/utils/url-policy";
+@@ -177,6 +178,7 @@ export function snapshot(
+     connecting?: string;
+   },
+   ahead?: SnapshotReads,
++  lifecycle?: ResourceLifecycle,
+ ) {
+   return Effect.gen(function* () {
+     const row =
+@@ -212,7 +214,25 @@ export function snapshot(
+       ahead?.accounts,
+       input.connecting,
+     );
+-    return { app, version, scope, selections, accounts, actor: yield* CurrentActor };
++    const identities = yield* accountIdentities(
++      db,
++      selections.flatMap((selection) => selection.accounts),
++      lifecycle,
++    );
++    return {
++      app,
++      version,
++      scope,
++      accounts,
++      actor: yield* CurrentActor,
++      selections: selections.map((selection) => ({
++        ...selection,
++        accounts: selection.accounts.map((account) => {
++          const identity = identities.get(account.id);
++          return identity === undefined ? account : { ...account, identity };
++        }),
++      })),
++    };
+   });
+ }
+ 
+@@ -797,6 +817,8 @@ export const makeTools = (
+   >,
+ ) => {
+   const db = database(storage);
++  const readSnapshot = (input: Parameters<typeof snapshot>[1], ahead?: SnapshotReads) =>
++    snapshot(db, input, ahead, lifecycle);
+   const toolControls = (state: InvocationSnapshot) => {
+     const controls = workflows?.(state);
+     return controls === undefined
+@@ -1245,7 +1267,7 @@ export const makeTools = (
+     ) => Effect.Effect<A, Effect.Error<ReturnType<typeof runtime.index>>, R>,
+   ) =>
+     Effect.gen(function* () {
+-      const state = yield* snapshot(db, input).pipe(Effect.withSpan("sdk.invocation.snapshot"));
++      const state = yield* readSnapshot(input).pipe(Effect.withSpan("sdk.invocation.snapshot"));
+       yield* (
+         accountTargets?.requireCloud(distinctSelection(state).map(({ account }) => account)) ??
+           Effect.void
+@@ -1263,7 +1285,7 @@ export const makeTools = (
+   /** The invocation state a listing is read for, annotated on the caller's span. */
+   const listed = (input: Parameters<typeof snapshot>[1]) =>
+     Effect.gen(function* () {
+-      const state = yield* snapshot(db, input).pipe(Effect.withSpan("sdk.invocation.snapshot"));
++      const state = yield* readSnapshot(input).pipe(Effect.withSpan("sdk.invocation.snapshot"));
+       yield* (
+         accountTargets?.requireCloud(distinctSelection(state).map(({ account }) => account)) ??
+           Effect.void
+@@ -1379,7 +1401,7 @@ export const makeTools = (
+      */
+     accountNeedingReconnect: (input: { app: AppId; accounts: AppAccounts }) =>
+       Effect.gen(function* () {
+-        const state = yield* snapshot(db, input);
++        const state = yield* readSnapshot(input);
+         for (const { required, accounts } of state.selections)
+           for (const account of accounts) {
+             const usable = yield* oauth.usable(account, required.definition).pipe(Effect.result);
+@@ -1548,7 +1570,7 @@ export const makeTools = (
+     mcpAppSource: ((observed, action) =>
+       Effect.gen(function* () {
+         const saved = observed.invocation;
+-        const state = yield* snapshot(db, {
++        const state = yield* readSnapshot({
+           app: saved.app,
+           version: saved.version,
+           accounts: invocationAccounts(saved),
+@@ -1615,7 +1637,7 @@ export const makeTools = (
+         );
+         const { ahead, state } = yield* Effect.gen(function* () {
+           const ahead = yield* readAhead(parsed);
+-          const state = yield* snapshot(db, parsed, ahead?.reads);
++          const state = yield* readSnapshot(parsed, ahead?.reads);
+           return { ahead, state };
+         }).pipe(Effect.withSpan("sdk.invocation.snapshot"));
+         if (options?.appViewBinding !== undefined) {
+@@ -1821,7 +1843,7 @@ export const makeTools = (
+             approvals.resume(input, options?.issuer, (saved, originalInput) =>
+               Effect.gen(function* () {
+                 // The saved identities name the accounts; their credentials are resolved again.
+-                const checked = yield* snapshot(db, {
++                const checked = yield* readSnapshot({
+                   app: saved.app,
+                   version: saved.version,
+                   accounts: invocationAccounts(saved),
+diff --git a/packages/sdk/src/implementation/webhook-sources.ts b/packages/sdk/src/implementation/webhook-sources.ts
+index ce37f95..1be7cf6 100644
+--- a/packages/sdk/src/implementation/webhook-sources.ts
++++ b/packages/sdk/src/implementation/webhook-sources.ts
+@@ -188,11 +188,16 @@ export const makeWebhookSources = (
+               }
+               const version = app.activeVersion;
+               const accounts = yield* accountsOf(current);
+-              const state: InvocationSnapshot = yield* snapshot(db, {
+-                app: app.id,
+-                version,
+-                accounts,
+-              });
++              const state: InvocationSnapshot = yield* snapshot(
++                db,
++                {
++                  app: app.id,
++                  version,
++                  accounts,
++                },
++                undefined,
++                lifecycle,
++              );
+               const source = yield* storedAccount(db, current.account);
+               const definitions = yield* resources.liveDefinitions(state);
+               const desired = new Set<string>();
+diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/implementation/webhooks.ts
+index a77a303..c43b598 100644
+--- a/packages/sdk/src/implementation/webhooks.ts
++++ b/packages/sdk/src/implementation/webhooks.ts
+@@ -116,6 +116,8 @@ export const makeWebhooks = (
+   lifecycle?: ResourceLifecycle,
+ ) => {
+   const db = database(storage);
++  const readSnapshot = (input: Parameters<typeof snapshot>[1]) =>
++    snapshot(db, input, undefined, lifecycle);
+   const next = crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()));
+   const metadata = (row: typeof StoredWebhook.Type) =>
+     Schema.decodeUnknownEffect(WebhookSubscription)(row).pipe(
+@@ -147,7 +149,7 @@ export const makeWebhooks = (
+         actor: row.actor ?? undefined,
+         source: row.sourceAccount,
+       });
+-      return yield* snapshot(db, { app: row.app, version: row.version, accounts });
++      return yield* readSnapshot({ app: row.app, version: row.version, accounts });
+     }).pipe(Effect.provideService(CurrentActor, row.actor ?? undefined));
+   /**
+    * The registration's pinned version and the accounts it ran with, as the actor it ran as.
+@@ -155,7 +157,7 @@ export const makeWebhooks = (
+    * actor's current links may no longer resolve every requirement.
+    */
+   const removalState = (row: typeof StoredWebhook.Type, registration: Registration) =>
+-    snapshot(db, {
++    readSnapshot({
+       app: row.app,
+       version: row.version,
+       // Only an app-account webhook's registration runs without an actor, and without a caller.
+@@ -474,7 +476,7 @@ export const makeWebhooks = (
+         actor,
+         source: sourceAccount,
+       }).pipe(
+-        Effect.flatMap((accounts) => snapshot(db, { app: app.id, version: version.id, accounts })),
++        Effect.flatMap((accounts) => readSnapshot({ app: app.id, version: version.id, accounts })),
+         Effect.provideService(CurrentActor, actor),
+       );
+       const context = yield* resolve(state, resolveAccount).pipe(
+@@ -645,7 +647,7 @@ export const makeWebhooks = (
+         }),
+       ),
+     definitions: (input: typeof WebhookDefinitionsInput.Type) =>
+-      snapshot(db, input).pipe(Effect.flatMap((state) => definitions(state))),
++      readSnapshot(input).pipe(Effect.flatMap((state) => definitions(state))),
+     list: (input: typeof WebhookApp.Type) =>
+       Effect.gen(function* () {
+         yield* storedApp(db, input);
+diff --git a/packages/ui/src/contracts/account-title.ts b/packages/ui/src/contracts/account-title.ts
+index 36e6f8f..c8b33ea 100644
+--- a/packages/ui/src/contracts/account-title.ts
++++ b/packages/ui/src/contracts/account-title.ts
+@@ -1,76 +1 @@
+-import type { AccountSummary } from "./dashboard.ts";
+-
+-/** The label the SDK gives an account saved without a name: "Default", then "Default 2", … */
+-const generated = /^Default( \d+)?$/;
+-
+-/** A label the person gave the account; a generated or blank one is not a name. */
+-export const authoredLabel = (label: string) => {
+-  const trimmed = label.trim();
+-  return trimmed === "" || generated.test(trimmed) ? undefined : label;
+-};
+-
+-/** A generated or blank label's number, such as " 2" for "Default 2"; undefined for a name. */
+-const generatedNumber = (label: string) => {
+-  const trimmed = label.trim();
+-  if (trimmed === "") return "";
+-  const match = generated.exec(trimmed);
+-  return match === null ? undefined : (match[1] ?? "");
+-};
+-
+-/**
+- * A generated or blank label read as what the account is: its provider and kind, such as
+- * "ElevenLabs API key", keeping the generated number so "Default 2" reads "ElevenLabs API key 2".
+- * A combined kind such as "API key · Metered API" names the row by its first part.
+- */
+-const describedLabel = (
+-  label: string,
+-  providerName: string | undefined,
+-  kind: string | undefined,
+-) => {
+-  const number = generatedNumber(label);
+-  const provider = providerName?.trim();
+-  if (number === undefined || !provider) return undefined;
+-  return `${provider} ${kind?.split(" · ")[0]?.trim() || "account"}${number}`;
+-};
+-
+-/**
+- * What names an account's row on every account list: its verified identity, else the name the
+- * person gave it, else what its own check reported (an email first), else its provider and `kind`
+- * in place of a generated label ("Default 2" stays distinct), else `fallback`. A reported value
+- * never earns the verified mark and never groups rows; only `account.identity` does. A generated
+- * label never titles a row.
+- */
+-export const accountTitle = (
+-  account: Pick<AccountSummary, "label"> & {
+-    readonly identity?: AccountSummary["identity"] | undefined;
+-    readonly health?: AccountSummary["health"] | undefined;
+-    readonly providerName?: string | undefined;
+-  },
+-  fallback = "Unnamed account",
+-  /** The account's declared kind, such as "API key", when the caller knows it. */
+-  kind?: string,
+-) =>
+-  account.identity?.label ??
+-  authoredLabel(account.label) ??
+-  (account.health?.info?.email ||
+-    account.health?.info?.displayName ||
+-    account.health?.info?.username ||
+-    describedLabel(account.label, account.providerName, kind) ||
+-    `${fallback}${generatedNumber(account.label) ?? ""}`);
+-
+-/**
+- * What names one saved account's own controls, such as its "Manage" menu: the name the person gave
+- * it, else its row title, so a generated "Default" is never announced. A `binding`, one sign-in
+- * inside a grouped identity row, is named only by what is its own (provider, kind and number),
+- * never by the identity or a value its check reported, so sibling sign-ins keep distinct names.
+- */
+-export const accountMenuName = (
+-  account: Parameters<typeof accountTitle>[0],
+-  /** The account's declared kind, such as "API key", when the caller knows it. */
+-  kind?: string,
+-  { binding = false }: { readonly binding?: boolean } = {},
+-) =>
+-  authoredLabel(account.label) ??
+-  (binding
+-    ? accountTitle({ label: account.label, providerName: account.providerName }, undefined, kind)
+-    : accountTitle(account, undefined, kind));
++export { accountTitle, accountMenuName, authoredLabel } from "@executor-js/sdk/account-title";

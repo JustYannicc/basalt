@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-provider-error-account-title",
+  "file": "0350-provider-error-account-title.patch",
+  "content_sha256": "5d4547e6364becde0d0d42f5b0fb48f622662b82a3947fdeeaa1f688f6e571bf",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

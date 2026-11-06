@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountPresentation {
+    metadata {
+      constraint "Provider failures and app account warnings name selected accounts by the shared row title rule, resolving verified identity at the account's current placement and preferring it to authored and check-reported names before the provider and the sign-in method's own label, preserving generated account numbers without displaying generated or blank labels across dashboards, MCP and CLI."
+    }
+  }
+}

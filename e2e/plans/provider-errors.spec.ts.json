@@ -1,0 +1,21 @@
+{
+  "scenarios": {},
+  "runs": {},
+  "inherited": [
+    "providerErrorsGraphql",
+    "providerErrorsMcp",
+    "providerErrorsOpenapi",
+    "providerErrorsCustom"
+  ],
+  "inputs": [
+    ".upstream/packages/sdk/package.json",
+    ".upstream/packages/sdk/src/contracts/account*.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts",
+    ".upstream/packages/sdk/src/implementation/provider-error.ts",
+    ".upstream/packages/sdk/src/implementation/skills.ts",
+    ".upstream/packages/sdk/src/implementation/tools.ts",
+    ".upstream/packages/sdk/src/implementation/webhook-sources.ts",
+    ".upstream/packages/sdk/src/implementation/webhooks.ts",
+    ".upstream/packages/ui/src/contracts/account-title.ts"
+  ]
+}
