@@ -1,0 +1,2563 @@
+diff --git a/apps/hosted/server/src/contracts/accounts.ts b/apps/hosted/server/src/contracts/accounts.ts
+index 1aad88b..cf3e272 100644
+--- a/apps/hosted/server/src/contracts/accounts.ts
++++ b/apps/hosted/server/src/contracts/accounts.ts
+@@ -1,3 +1,4 @@
++import { AccountGroupCheck, AccountGroupCheckResult } from "@executor-js/sdk/core";
+ import { ProviderAppConnectionRequired } from "./provider-account-policy.ts";
+ import { AccountRecheckStatus } from "./account-rechecks.ts";
+ import { AccountSelectionInvalid } from "@executor-js/sdk/core";
+@@ -254,6 +255,13 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
+       error: [StorageError, CredentialsError, AccountNotFound, OrganizationForbidden],
+     }).pipe(requireAccount.use),
+   )
++  .add(
++    HttpApiEndpoint.post("checkGroup", `${prefix}/accounts/health`, {
++      params,
++      payload: AccountGroupCheck,
++      success: Schema.Array(AccountGroupCheckResult),
++    }).annotate(RequiredAction, "run"),
++  )
+   .add(
+     HttpApiEndpoint.post("check", `${prefix}/accounts/:account/health`, {
+       params: { ...params, account: AccountId },
+diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/server/src/implementation/accounts.ts
+index 65b6821..367304b 100644
+--- a/apps/hosted/server/src/implementation/accounts.ts
++++ b/apps/hosted/server/src/implementation/accounts.ts
+@@ -1,3 +1,4 @@
++import { checkEach, AccountNotFound } from "@executor-js/sdk/core";
+ import { requireAccountAccess } from "./resource-policy.ts";
+ import { requireProviderConnectionTarget } from "./provider-account-policy.ts";
+ import { accountRecheckStatus } from "./account-rechecks.ts";
+@@ -169,6 +170,15 @@ export const checkAccount = Effect.gen(function* () {
+     Effect.flatMap(visibleObservationHealth),
+   );
+ });
++/** Each sign-in uses the single-account grant and redaction path; one refusal cannot cancel siblings. */
++export const checkAccountGroup = (accounts: readonly AccountId[]) =>
++  checkEach(accounts, (account) =>
++    checkAccount.pipe(
++      Effect.provideService(AccountTargets.use, { account }),
++      // A denied ID has the same answer as an absent one, without exposing its policy or metadata.
++      Effect.catchTag("OrganizationForbidden", () => new AccountNotFound({ account })),
++    ),
++  );
+ /**
+  * Check only providers reachable through the caller's app or account access. Lists the registered
+  * clients the caller may use, as metadata; never a client secret.
+@@ -466,6 +476,7 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
+       )
+       .handle("identify", () => identifyAccount)
+       .handle("check", () => checkAccount)
++      .handle("checkGroup", ({ payload }) => checkAccountGroup(payload.accounts))
+       .handle("disconnect", () => disconnectAccount)
+       .handle("update", ({ payload }) => updateAccount(payload))
+       .handle("oauthSetup", ({ params }) =>
+diff --git a/apps/hosted/web/src/contracts/accounts.ts b/apps/hosted/web/src/contracts/accounts.ts
+index ff2a29d..4de6f1d 100644
+--- a/apps/hosted/web/src/contracts/accounts.ts
++++ b/apps/hosted/web/src/contracts/accounts.ts
+@@ -6,7 +6,14 @@ import { linkedAccountIds } from "@executor-js/ui/contracts/app-accounts";
+ import { acknowledgeResourceAccount, resourceDirectoryAtom } from "./resource-access.ts";
+ import { protectedQuery } from "./protected-query.ts";
+ /** Account queries remain independent across organizations, including OAuth returns. */
+-import type { Account, AccountFieldsInput, AccountId, AppId, ProviderId } from "@executor-js/sdk";
++import type {
++  Account,
++  AccountHealth,
++  AccountFieldsInput,
++  AccountId,
++  AppId,
++  ProviderId,
++} from "@executor-js/sdk";
+ import type { OrganizationReference } from "@executor-js/hosted-server/organization";
+ import { Data, Effect, Option } from "effect";
+ import { AsyncResult, Atom } from "effect/reactivity";
+@@ -43,24 +50,35 @@ const updateAccount = Atom.family((key: AccountKey) =>
+ /** Run the checks of the apps this member can use and show the results where accounts are listed. */
+ const runCheck = (get: Atom.FnContext, key: AccountKey) =>
+   Effect.flatMap(HostedClient, (client) => client.accounts.check({ params: key })).pipe(
+-    Effect.tap((health) =>
+-      Effect.sync(() => {
+-        acknowledge(get, accountAtom(key), (data) => ({ ...data, health }));
+-        // The account list reads the resource directory; reload it for the recorded results.
+-        get.refresh(resourceDirectoryAtom(key.organization));
+-        get.refresh(resourceDirectoryAtom(key.organization, "managed"));
+-        refreshSavedAccountRows(get, key.organization);
+-        acknowledge(get, inventoryAtom(key.organization), (data) => ({
+-          ...data,
+-          accounts: data.accounts.map((current) =>
+-            current.id === key.account ? { ...current, health } : current,
+-          ),
+-        }));
+-        // An app's check can also report usage, which the row then shows.
+-        get.refresh(accountObservationsAtom(key));
+-      }),
+-    ),
++    Effect.tap((health) => Effect.sync(() => acknowledgeChecks(get, key.organization, [health]))),
+   );
++/** Show recorded checks where accounts are listed; the lists reload once for any number. */
++const acknowledgeChecks = (
++  get: Atom.FnContext,
++  organization: OrganizationReference,
++  checked: readonly AccountHealth[],
++) => {
++  if (checked.length === 0) return;
++  const health = new Map(checked.map((entry) => [entry.account, entry]));
++  for (const entry of checked) {
++    const key = { organization, account: entry.account };
++    acknowledge(get, accountAtom(key), (data) => ({ ...data, health: entry }));
++    // An app's check can also report usage, which the row then shows.
++    get.refresh(accountObservationsAtom(key));
++  }
++  // The account list reads the resource directory; reload it for the recorded results.
++  get.refresh(resourceDirectoryAtom(organization));
++  get.refresh(resourceDirectoryAtom(organization, "managed"));
++  refreshSavedAccountRows(get, organization);
++  acknowledge(get, inventoryAtom(organization), (data) => ({
++    ...data,
++    accounts: data.accounts.map((current) => {
++      const recorded = health.get(current.id);
++      return recorded === undefined ? current : { ...current, health: recorded };
++    }),
++  }));
++};
++
+ const checkAccount = Atom.family((key: AccountKey) =>
+   HostedClient.runtime.fn((_: void, get) => runCheck(get, key)),
+ );
+@@ -69,6 +87,35 @@ export const checkAccountAtom = (key: {
+   organization: OrganizationReference;
+   account: AccountId;
+ }) => checkAccount(new AccountKey(key));
++class AccountGroupKey extends Data.Class<{
++  readonly organization: OrganizationReference;
++  readonly accounts: readonly AccountId[];
++}> {}
++const checkAccountGroup = Atom.family((key: AccountGroupKey) =>
++  HostedClient.runtime.fn((_: void, get) =>
++    Effect.flatMap(HostedClient, (client) =>
++      client.accounts.checkGroup({
++        params: { organization: key.organization },
++        payload: { accounts: key.accounts },
++      }),
++    ).pipe(
++      Effect.tap((results) =>
++        Effect.sync(() =>
++          acknowledgeChecks(
++            get,
++            key.organization,
++            results.flatMap((result) => (result.status === "checked" ? [result.health] : [])),
++          ),
++        ),
++      ),
++    ),
++  ),
++);
++/** One pending call per grouped row; only checked accounts update their retained health. */
++export const checkAccountGroupAtom = (key: {
++  readonly organization: OrganizationReference;
++  readonly accounts: readonly AccountId[];
++}) => checkAccountGroup(new AccountGroupKey(key));
+ class AppAccountKey extends Data.Class<{
+   readonly organization: OrganizationReference;
+   readonly app: AppId;
+diff --git a/apps/hosted/web/src/implementation/pages/account-observations-client.tsx b/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
+index b016d13..35f9f2d 100644
+--- a/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
+@@ -12,6 +12,11 @@ import {
+   AccountObservations,
+ } from "@executor-js/ui/dashboard/account-observations";
+ import type { AccountResetActions } from "@executor-js/ui/dashboard/account-reset-control";
++import {
++  AccountGroupCheckScope,
++  type AccountGroupCheck,
++  type AccountSignIn,
++} from "@executor-js/ui/dashboard/account-sign-in-checks";
+ import { QueryView, useQuery } from "@executor-js/ui/dashboard/context";
+ import { DetailSkeleton } from "@executor-js/ui/dashboard/loading";
+ import {
+@@ -23,7 +28,11 @@ import {
+   type ObservationPolicy,
+ } from "../../contracts/account-observations.ts";
+ import { savedAccountRowsAtom } from "../../contracts/account-projection.ts";
+-import { checkAccountAtom, checkAppAccountAtom } from "../../contracts/accounts.ts";
++import {
++  checkAccountAtom,
++  checkAccountGroupAtom,
++  checkAppAccountAtom,
++} from "../../contracts/accounts.ts";
+ import { sessionAtom } from "../../contracts/auth.ts";
+ import { appError, type HostedError } from "../../contracts/errors.ts";
+ import { groupsAtom } from "../../contracts/groups.ts";
+@@ -34,18 +43,21 @@ import { ownedResetPool, useHostedResetActions } from "./account-resets-client.t
+ 
+ /**
+  * Usage under an account's row. With `apps`, the block also shows those apps' checks and an inline
+- * Check now, which runs the same checks as the Check health dialog. When the caller owns a pool
++ * Check now, which runs the same checks as the Check health dialog. With `signIns`, a grouped
++ * row's, it shows each sign-in's checks and checks them all at once. When the caller owns a pool
+  * the account is bound to, its banked reset count becomes the one-click control with a confirm.
+  */
+ export function HostedAccountObservations({
+   account,
+   apps,
++  signIns,
+   app,
+   canReconnect,
+   windowTokens,
+ }: {
+   readonly account: AccountSummary;
+   readonly apps?: readonly App[];
++  readonly signIns?: readonly AccountSignIn[] | undefined;
+   readonly app?: App;
+   readonly canReconnect?: (app: App) => boolean;
+   /** Footer counts for the account's usage windows, such as its pool's tokens. */
+@@ -64,31 +76,48 @@ export function HostedAccountObservations({
+     Option.getOrUndefined(savedRows.data)?.find((row) => row.id === account.id),
+     viewer,
+   );
+-  const observations = (resets?: AccountResetActions) => (
++  const observations = (resets?: AccountResetActions, group?: AccountGroupCheck<HostedError>) => (
+     <AccountObservations<HostedError>
+       account={account}
+       query={accountObservationsAtom(key)}
+       refresh={() => refresh()}
+       windowTokens={windowTokens}
+-      {...(app === undefined
+-        ? apps === undefined
+-          ? {}
+-          : {
+-              health: {
+-                apps,
+-                check: () => check(),
+-                ...(canReconnect === undefined ? {} : { canReconnect }),
+-              },
+-            }
+-        : { health: { apps: [app], check: () => check(), showStatus: false } })}
++      {...(group !== undefined
++        ? { group }
++        : app === undefined
++          ? apps === undefined
++            ? {}
++            : {
++                health: {
++                  apps,
++                  check: () => check(),
++                  ...(canReconnect === undefined ? {} : { canReconnect }),
++                },
++              }
++          : { health: { apps: [app], check: () => check(), showStatus: false } })}
+       resets={resets}
+       Failure={HostedFailure}
+     />
+   );
++  const grouped = (resets?: AccountResetActions) =>
++    signIns === undefined ? (
++      observations(resets)
++    ) : (
++      <AccountGroupCheckScope<HostedError>
++        signIns={signIns}
++        check={checkAccountGroupAtom({
++          organization,
++          accounts: signIns.map((signIn) => signIn.account.id),
++        })}
++        failure={(error) => error}
++      >
++        {(group) => observations(resets, group)}
++      </AccountGroupCheckScope>
++    );
+   return pool === undefined ? (
+-    observations()
++    grouped()
+   ) : (
+-    <WithResets target={{ ...key, pool }}>{observations}</WithResets>
++    <WithResets target={{ ...key, pool }}>{grouped}</WithResets>
+   );
+ }
+ 
+diff --git a/apps/hosted/web/src/implementation/pages/accounts-client.tsx b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
+index 1f7f603..9c3388b 100644
+--- a/apps/hosted/web/src/implementation/pages/accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
+@@ -5,7 +5,8 @@ import { IdentityAppPicker } from "@executor-js/ui/dashboard/identity-app-picker
+ import { AppConnectionDialogContent } from "./app-accounts.tsx";
+ import { useState } from "react";
+ import { catalogAtom } from "../../contracts/api.ts";
+-import type { AccountId } from "@executor-js/sdk";
++import type { AccountId, App } from "@executor-js/sdk";
++import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
+ import {
+   HostedAccountActions,
+   HostedAccountDialog,
+@@ -62,6 +63,38 @@ export function AccountsPage({
+     binding: boolean;
+     listed: ListedRow;
+   }>();
++  /** Whether this page may offer Reconnect for `account` in `app`, from a current rejection. */
++  const canReconnect = (account: AccountSummary) => (app: App) => {
++    if (
++      account.hostManaged === true ||
++      app.activeVersion === null ||
++      !Option.isSome(directory.data) ||
++      !Option.isSome(inventory.data)
++    )
++      return false;
++    const saved = inventory.data.value;
++    const listed = directory.data.value.apps.find((entry) => entry.app.id === app.id);
++    const usable = directory.data.value.accounts.some(
++      (entry) => entry.account.id === account.id && entry.access.canUse,
++    );
++    if (listed === undefined || !usable) return false;
++    return Object.values(app.requirements.accounts).some((requirement) => {
++      const method = requirement.definition.auth[account.method];
++      if (
++        requirement.provider !== account.provider ||
++        method === undefined ||
++        method.type === "interactive" ||
++        (method.type === "secrets" && method.provisioned === true)
++      )
++        return false;
++      return requirement.scope === "user"
++        ? listed.access.canUse && listed.linkedAccounts.includes(account.id)
++        : listed.access.canManage &&
++            (saved.appLinks ?? []).some(
++              (link) => link.app === app.id && link.account === account.id,
++            );
++    });
++  };
+   const role = useOrganizationDetails()?.role;
+   const admin = role !== undefined && role !== "member";
+   const manageClients = admin && (
+@@ -166,42 +199,16 @@ export function AccountsPage({
+           return saved === undefined ? undefined : accountRowFromSaved(saved);
+         }}
+         accountTraffic={traffic.traffic}
+-        accountDetails={(account, apps) => (
++        accountDetails={(account, apps, signIns) => (
+           <HostedAccountObservations
+             account={account}
+             apps={apps}
++            signIns={signIns?.map((signIn) => ({
++              ...signIn,
++              canReconnect: canReconnect(signIn.account),
++            }))}
+             windowTokens={traffic.windowTokens(account)}
+-            canReconnect={(app) => {
+-              if (
+-                account.hostManaged === true ||
+-                app.activeVersion === null ||
+-                !Option.isSome(directory.data) ||
+-                !Option.isSome(inventory.data)
+-              )
+-                return false;
+-              const saved = inventory.data.value;
+-              const listed = directory.data.value.apps.find((entry) => entry.app.id === app.id);
+-              const usable = directory.data.value.accounts.some(
+-                (entry) => entry.account.id === account.id && entry.access.canUse,
+-              );
+-              if (listed === undefined || !usable) return false;
+-              return Object.values(app.requirements.accounts).some((requirement) => {
+-                const method = requirement.definition.auth[account.method];
+-                if (
+-                  requirement.provider !== account.provider ||
+-                  method === undefined ||
+-                  method.type === "interactive" ||
+-                  (method.type === "secrets" && method.provisioned === true)
+-                )
+-                  return false;
+-                return requirement.scope === "user"
+-                  ? listed.access.canUse && listed.linkedAccounts.includes(account.id)
+-                  : listed.access.canManage &&
+-                      (saved.appLinks ?? []).some(
+-                        (link) => link.app === app.id && link.account === account.id,
+-                      );
+-              });
+-            }}
++            canReconnect={canReconnect(account)}
+           />
+         )}
+       />
+diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
+index 2a1729b..5f8924a 100644
+--- a/apps/local/server/src/contracts/dashboard.ts
++++ b/apps/local/server/src/contracts/dashboard.ts
+@@ -1,3 +1,4 @@
++import { AccountGroupCheck, AccountGroupCheckResult } from "@executor-js/sdk/core";
+ import { AccountDeviceOffline, AccountExecutionUnavailable } from "@executor-js/sdk/core";
+ import { InteractiveConnectionFailed } from "@executor-js/sdk/core";
+ import { AccountAcquisitionUnavailable } from "@executor-js/sdk/core";
+@@ -954,6 +955,12 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+         error: [StorageError, AppNotFound, AuthMethodInvalid, AccountFieldsInvalid],
+       }),
+     )
++    .add(
++      HttpApiEndpoint.post("checkAccountGroup", "/dashboard/api/accounts/health", {
++        payload: AccountGroupCheck,
++        success: Schema.Array(AccountGroupCheckResult),
++      }),
++    )
+     .add(
+       HttpApiEndpoint.post("checkAccount", "/dashboard/api/accounts/:account/health", {
+         params: { account: AccountId },
+diff --git a/apps/local/server/src/implementation/account-checks.ts b/apps/local/server/src/implementation/account-checks.ts
+new file mode 100644
+index 0000000..df15c47
+--- /dev/null
++++ b/apps/local/server/src/implementation/account-checks.ts
+@@ -0,0 +1,24 @@
++import { checkEach, type AccountId, type Executor } from "@executor-js/sdk/core";
++import { Effect } from "effect";
++import type { SqlClient } from "effect/sql";
++import { accountLinks } from "./app-accounts.ts";
++
++/** Local's authenticated dashboard uses its existing executor and links for every sign-in. */
++export const localAccountChecks = (executor: Executor, sql: SqlClient.SqlClient) => {
++  const linkedApps = (account: AccountId) =>
++    Effect.gen(function* () {
++      const found = yield* executor.accounts.get({ account });
++      const linked = new Set(
++        (yield* accountLinks(sql, executor, found.id)).map((link) => link.app),
++      );
++      return (yield* executor.apps.list()).filter((app) => linked.has(app.id));
++    });
++  const check = (account: AccountId) =>
++    linkedApps(account).pipe(
++      Effect.flatMap((apps) =>
++        executor.accounts.check({ account, apps: apps.map((app) => app.id) }),
++      ),
++    );
++  const checkGroup = (accounts: readonly AccountId[]) => checkEach(accounts, check);
++  return { linkedApps, check, checkGroup };
++};
+diff --git a/apps/local/server/src/implementation/dashboard.ts b/apps/local/server/src/implementation/dashboard.ts
+index 637278a..2df7325 100644
+--- a/apps/local/server/src/implementation/dashboard.ts
++++ b/apps/local/server/src/implementation/dashboard.ts
+@@ -1,3 +1,4 @@
++import { localAccountChecks } from "./account-checks.ts";
+ import { dashboardOAuthConnections } from "./dashboard-oauth-connections.ts";
+ import { sourceDisplay, sourceDisplayFile } from "@executor-js/app-management/source-display";
+ import { connectOptions, connectionClient } from "./oauth-clients.ts";
+@@ -364,15 +365,11 @@ export const dashboard = (
+         versions,
+       };
+     });
+-  /** The apps an account is linked to, in either scope. */
+-  const linkedApps = (account: AccountId) =>
+-    Effect.gen(function* () {
+-      const found = yield* executor.accounts.get({ account });
+-      const linked = new Set(
+-        (yield* accountLinks(sql, executor, found.id)).map((link) => link.app),
+-      );
+-      return (yield* executor.apps.list()).filter((app) => linked.has(app.id));
+-    });
++  const {
++    linkedApps,
++    check: checkAccount,
++    checkGroup: checkAccountGroup,
++  } = localAccountChecks(executor, sql);
+   /** The app and the accounts a call or listing runs with. */
+   const resolved = (appId: AppId) =>
+     Effect.gen(function* () {
+@@ -688,13 +685,8 @@ export const dashboard = (
+           ),
+         ),
+       )
+-      .handle("checkAccount", ({ params }) =>
+-        linkedApps(params.account).pipe(
+-          Effect.flatMap((apps) =>
+-            executor.accounts.check({ ...params, apps: apps.map((app) => app.id) }),
+-          ),
+-        ),
+-      )
++      .handle("checkAccount", ({ params }) => checkAccount(params.account))
++      .handle("checkAccountGroup", ({ payload }) => checkAccountGroup(payload.accounts))
+       .handle("checkCredentials", ({ params, payload }) =>
+         executor.apps.checkCredentials({ ...params, ...payload }),
+       )
+diff --git a/apps/local/web/src/contracts/accounts.ts b/apps/local/web/src/contracts/accounts.ts
+index adecd0c..e5ad178 100644
+--- a/apps/local/web/src/contracts/accounts.ts
++++ b/apps/local/web/src/contracts/accounts.ts
+@@ -1,7 +1,14 @@
+ /** Typed account management; successful responses contain metadata only. */
+-import type { Account, AccountId, AccountFieldsInput, AppId, ProviderId } from "@executor-js/sdk";
++import type {
++  Account,
++  AccountHealth,
++  AccountId,
++  AccountFieldsInput,
++  AppId,
++  ProviderId,
++} from "@executor-js/sdk";
+ import { DashboardAccountDetail } from "@executor-js/local-server/contracts";
+-import { Effect, Option } from "effect";
++import { Data, Effect, Option } from "effect";
+ import { AsyncResult, Atom } from "effect/reactivity";
+ import { acknowledge, acknowledgedQuery, invalidate } from "@executor-js/ui/contracts/mutations";
+ import type { AccountToName } from "@executor-js/ui/dashboard/name-account";
+@@ -57,23 +64,48 @@ export const checkAccountAtom = Atom.family((account: AccountId) =>
+   DashboardClient.runtime.fn((_: void, get) =>
+     Effect.flatMap(DashboardClient, (client) =>
+       client.dashboard.checkAccount({ params: { account } }),
++    ).pipe(Effect.tap((health) => Effect.sync(() => acknowledgeChecks(get, [health])))),
++  ),
++);
++/** Show recorded checks where accounts are listed; the overview updates once for any number. */
++const acknowledgeChecks = (get: Atom.FnContext, checked: readonly AccountHealth[]) => {
++  if (checked.length === 0) return;
++  const health = new Map(checked.map((entry) => [entry.account, entry]));
++  for (const entry of checked) {
++    acknowledge(get, accountAtom(entry.account), (data) => ({ ...data, health: entry }));
++    // An app's check can also report usage, which the row then shows.
++    get.refresh(accountObservationsAtom(entry.account));
++  }
++  acknowledge(get, overviewAtom, (data) => ({
++    ...data,
++    accounts: data.accounts.map((current) => {
++      const recorded = health.get(current.id);
++      return recorded === undefined ? current : { ...current, health: recorded };
++    }),
++  }));
++};
++class AccountGroupKey extends Data.Class<{ readonly accounts: readonly AccountId[] }> {}
++const checkAccountGroup = Atom.family((key: AccountGroupKey) =>
++  DashboardClient.runtime.fn((_: void, get) =>
++    Effect.flatMap(DashboardClient, (client) =>
++      client.dashboard.checkAccountGroup({
++        payload: { accounts: key.accounts },
++      }),
+     ).pipe(
+-      Effect.tap((health) =>
+-        Effect.sync(() => {
+-          acknowledge(get, accountAtom(account), (data) => ({ ...data, health }));
+-          acknowledge(get, overviewAtom, (data) => ({
+-            ...data,
+-            accounts: data.accounts.map((current) =>
+-              current.id === account ? { ...current, health } : current,
+-            ),
+-          }));
+-          // An app's check can also report usage, which the row then shows.
+-          get.refresh(accountObservationsAtom(account));
+-        }),
++      Effect.tap((results) =>
++        Effect.sync(() =>
++          acknowledgeChecks(
++            get,
++            results.flatMap((result) => (result.status === "checked" ? [result.health] : [])),
++          ),
++        ),
+       ),
+     ),
+   ),
+ );
++/** One pending call per grouped row; only checked accounts update their retained health. */
++export const checkAccountGroupAtom = (accounts: readonly AccountId[]) =>
++  checkAccountGroup(new AccountGroupKey({ accounts }));
+ /** A fresh read of which apps select an account, taken after a selection change commits. */
+ export const accountUsageAtom = DashboardClient.runtime.fn((account: AccountId) =>
+   Effect.flatMap(DashboardClient, (client) => client.dashboard.account({ params: { account } })),
+diff --git a/apps/local/web/src/implementation/pages/account-observations-client.tsx b/apps/local/web/src/implementation/pages/account-observations-client.tsx
+index 870fdb4..cb53e2c 100644
+--- a/apps/local/web/src/implementation/pages/account-observations-client.tsx
++++ b/apps/local/web/src/implementation/pages/account-observations-client.tsx
+@@ -10,46 +10,67 @@ import {
+   accountObservationsAtom,
+   refreshAccountObservationsAtom,
+ } from "../../contracts/account-observations.ts";
+-import { checkAccountAtom } from "../../contracts/accounts.ts";
++import {
++  AccountGroupCheckScope,
++  type AccountGroupCheck,
++  type AccountSignIn,
++} from "@executor-js/ui/dashboard/account-sign-in-checks";
++import { checkAccountAtom, checkAccountGroupAtom } from "../../contracts/accounts.ts";
+ import type { DashboardError } from "../../contracts/errors.ts";
+ import { Failure } from "../components/common.tsx";
+ 
+ /**
+  * Usage under an account's row. With `apps`, the block also shows those apps' checks and an inline
+- * Check now, which runs the same checks as the Check health dialog.
++ * Check now, which runs the same checks as the Check health dialog. With `signIns`, a grouped
++ * row's, it shows each sign-in's checks and checks them all at once.
+  */
+ export function LocalAccountObservations({
+   account,
+   apps,
++  signIns,
+   app,
+   canReconnect,
+ }: {
+   readonly account: AccountSummary;
+   readonly apps?: readonly App[];
++  readonly signIns?: readonly AccountSignIn[] | undefined;
+   readonly app?: App;
+   readonly canReconnect?: (app: App) => boolean;
+ }) {
+   const refresh = useAtomSet(refreshAccountObservationsAtom(account.id), { mode: "promiseExit" });
+   const check = useAtomSet(checkAccountAtom(account.id), { mode: "promiseExit" });
+-  return (
++  const observations = (group?: AccountGroupCheck<DashboardError>) => (
+     <AccountObservations<DashboardError>
+       account={account}
+       query={accountObservationsAtom(account.id)}
+       refresh={() => refresh()}
+-      {...(app === undefined
+-        ? apps === undefined
+-          ? {}
+-          : {
+-              health: {
+-                apps,
+-                check: () => check(),
+-                ...(canReconnect === undefined ? {} : { canReconnect }),
+-              },
+-            }
+-        : { health: { apps: [app], check: () => check(), showStatus: false } })}
++      {...(group !== undefined
++        ? { group }
++        : app === undefined
++          ? apps === undefined
++            ? {}
++            : {
++                health: {
++                  apps,
++                  check: () => check(),
++                  ...(canReconnect === undefined ? {} : { canReconnect }),
++                },
++              }
++          : { health: { apps: [app], check: () => check(), showStatus: false } })}
+       Failure={Failure}
+     />
+   );
++  return signIns === undefined ? (
++    observations()
++  ) : (
++    <AccountGroupCheckScope<DashboardError>
++      signIns={signIns}
++      check={checkAccountGroupAtom(signIns.map((signIn) => signIn.account.id))}
++      failure={(error) => error}
++    >
++      {observations}
++    </AccountGroupCheckScope>
++  );
+ }
+ 
+ /** The reported plan beside the account's other metadata. */
+diff --git a/apps/local/web/src/implementation/pages/accounts.tsx b/apps/local/web/src/implementation/pages/accounts.tsx
+index 87d7a5b..bbe1c1f 100644
+--- a/apps/local/web/src/implementation/pages/accounts.tsx
++++ b/apps/local/web/src/implementation/pages/accounts.tsx
+@@ -9,7 +9,8 @@ import { AccountsPage as SharedPage } from "@executor-js/ui/dashboard/accounts";
+ import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
+ import { Button } from "@executor-js/ui/components/button";
+ import { Link } from "@tanstack/react-router";
+-import type { AccountId } from "@executor-js/sdk";
++import type { AccountId, App } from "@executor-js/sdk";
++import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
+ import { useState } from "react";
+ import {
+   LocalAccountActions,
+@@ -17,6 +18,20 @@ import {
+   type AccountDialogKind,
+ } from "./account-actions.tsx";
+ import { LocalAccountObservations, LocalAccountPlan } from "./account-observations.tsx";
++/** Whether the page may offer Reconnect for `account` in `app`. */
++const canReconnect = (account: AccountSummary) => (app: App) =>
++  account.hostManaged !== true &&
++  app.activeVersion !== null &&
++  Object.values(app.requirements.accounts).some((requirement) => {
++    const method = requirement.definition.auth[account.method];
++    return (
++      requirement.provider === account.provider &&
++      method !== undefined &&
++      method.type !== "interactive" &&
++      !(method.type === "secrets" && method.provisioned === true)
++    );
++  });
++
+ /** Local product supplies its own action and typed route. */
+ export function AccountsPage({ highlight }: { readonly highlight?: AccountId | undefined }) {
+   const identify = useAtomSet(identifyAccountsAtom, { mode: "promiseExit" });
+@@ -77,23 +92,15 @@ export function AccountsPage({ highlight }: { readonly highlight?: AccountId | u
+           />
+         )}
+         accountPlan={(account) => <LocalAccountPlan account={account} />}
+-        accountDetails={(account, apps) => (
++        accountDetails={(account, apps, signIns) => (
+           <LocalAccountObservations
+             account={account}
+             apps={apps}
+-            canReconnect={(app) =>
+-              account.hostManaged !== true &&
+-              app.activeVersion !== null &&
+-              Object.values(app.requirements.accounts).some((requirement) => {
+-                const method = requirement.definition.auth[account.method];
+-                return (
+-                  requirement.provider === account.provider &&
+-                  method !== undefined &&
+-                  method.type !== "interactive" &&
+-                  !(method.type === "secrets" && method.provisioned === true)
+-                );
+-              })
+-            }
++            signIns={signIns?.map((signIn) => ({
++              ...signIn,
++              canReconnect: canReconnect(signIn.account),
++            }))}
++            canReconnect={canReconnect(account)}
+           />
+         )}
+       />
+diff --git a/e2e/support/account-observation-fixture.ts b/e2e/support/account-observation-fixture.ts
+index 8fdccd8..3c402e2 100644
+--- a/e2e/support/account-observation-fixture.ts
++++ b/e2e/support/account-observation-fixture.ts
+@@ -48,6 +48,7 @@ export const observationBackend = Effect.gen(function* () {
+     body: { accountInfo: { displayName: "Observed identity" } },
+   });
+   const calls = yield* Ref.make(0);
++  const healthCalls = yield* Ref.make(0);
+   const held = yield* Ref.make<
+     { entered: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | undefined
+   >(undefined);
+@@ -67,6 +68,7 @@ export const observationBackend = Effect.gen(function* () {
+             yield* Deferred.await(gate.release);
+           }
+         }
++        if (path === "/health") yield* Ref.update(healthCalls, (count) => count + 1);
+         const result = yield* Ref.get(path === "/health" ? health : answer);
+         return yield* HttpServerResponse.json(result.body, { status: result.status });
+       }),
+@@ -82,6 +84,7 @@ export const observationBackend = Effect.gen(function* () {
+   return {
+     origin: `http://127.0.0.1:${server.address.port}`,
+     calls: Ref.get(calls),
++    healthCalls: Ref.get(healthCalls),
+     answer: (value: Answer) => Ref.set(answer, value),
+     health: (value: Answer) => Ref.set(health, value),
+     hold: Effect.gen(function* () {
+diff --git a/e2e/support/group-account-check-token.ts b/e2e/support/group-account-check-token.ts
+new file mode 100644
+index 0000000..5f10a5c
+--- /dev/null
++++ b/e2e/support/group-account-check-token.ts
+@@ -0,0 +1,51 @@
++import { expect } from "@effect/vitest";
++import { Effect, Redacted } from "effect";
++import { Actors } from "./actors.ts";
++import { Api } from "./api.ts";
++import { Browser } from "./browser.ts";
++import { McpOAuth } from "./mcp-oauth.ts";
++
++/** Check with real delegated API authority, narrower than the owner's account access. */
++export const checkAppLimitedGroup = (input: {
++  readonly path: string;
++  readonly app: string;
++  readonly allowed: string;
++  readonly outside: string;
++  readonly missing: string;
++}) =>
++  Effect.gen(function* () {
++    const api = yield* Api;
++    const actors = yield* Actors;
++    const browser = yield* Browser;
++    const oauth = yield* McpOAuth;
++    yield* browser.login(actors.owner);
++    const grant = yield* oauth.authorizeApi;
++    yield* Effect.addFinalizer(() => oauth.revoke(grant).pipe(Effect.orDie));
++    expect(
++      (yield* api.request(actors.owner, "POST", "/api/auth/mcp/grants/narrow", {
++        id: grant.grantId,
++        policy: {
++          kind: "tools",
++          apps: [{ app: input.app, tools: { kind: "all" } }],
++          approval: "client",
++        },
++      })).status,
++    ).toBe(200);
++    const refreshed = yield* oauth.refresh(grant);
++    const anonymous = yield* api.session();
++    const response = yield* api.request(
++      anonymous,
++      "POST",
++      input.path,
++      {
++        accounts: [input.allowed, input.outside, input.missing],
++      },
++      { authorization: `Bearer ${Redacted.value(refreshed.tokens).access_token}` },
++    );
++    expect(response.status, "app-limited token may run the group action").toBe(200);
++    expect(response.body).toEqual([
++      expect.objectContaining({ account: input.allowed, status: "checked" }),
++      { account: input.outside, status: "refused" },
++      { account: input.missing, status: "refused" },
++    ]);
++  });
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index ca8548a..ecd6484 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -3686,6 +3686,43 @@ export const scenarios = plan({
+       local: na("The shared OpenAPI and MCP error path is covered on self-host."),
+     },
+   },
++  groupAccountCheckPolicy: {
++    legacyStorage: true,
++    file: "group-account-checks.spec.ts",
++    fixtures: "actors",
++    title: "group account checks answer per account and preserve account use policy",
++    targets: {
++      "self-host": {
++        status: "scheduled",
++      },
++      local: {
++        status: "not-applicable",
++        reason: "Hosted authorization owns membership and account policy.",
++      },
++      cloud: {
++        status: "not-applicable",
++        reason: "Uses a loopback check service.",
++      },
++    },
++  },
++  groupAccountCheckLocal: {
++    legacyStorage: true,
++    file: "group-account-checks.spec.ts",
++    title: "local group account checks reuse single checks and answer per account",
++    targets: {
++      "self-host": {
++        status: "not-applicable",
++        reason: "Exercises the local dashboard contract.",
++      },
++      local: {
++        status: "scheduled",
++      },
++      cloud: {
++        status: "not-applicable",
++        reason: "Exercises the local dashboard contract.",
++      },
++    },
++  },
+   accountHealth: {
+     fixtures: "actors",
+     file: "account-health.spec.ts",
+@@ -5307,11 +5344,13 @@ export const scenarios = plan({
+     fixtures: "actors",
+     file: "listed-account-bindings.spec.ts",
+     title:
+-      "A grouped sign-in row stays one compact row; its checks and requested access open with Details",
++      "A grouped sign-in row stays one compact row; Check now checks each sign-in the caller may use and Details list every sign-in's checks",
+     targets: {
+       "self-host": scheduled,
+-      cloud: na("Display only; self-host proves the shared rows."),
+-      local: na("Local grouped rows are proven by accountIdentityRows."),
++      cloud: na("Each sign-in's check calls a loopback check service."),
++      local: na(
++        "The shared grouped row and its Check now are proven on self-host; local group answers are proven by groupAccountCheckLocal.",
++      ),
+     },
+   },
+   listedAccountDemotion: {
+diff --git a/e2e/tests/group-account-checks.spec.ts b/e2e/tests/group-account-checks.spec.ts
+new file mode 100644
+index 0000000..49b552e
+--- /dev/null
++++ b/e2e/tests/group-account-checks.spec.ts
+@@ -0,0 +1,332 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { body } from "../support/api.ts";
++import { HostedLive, TestLive, withHostedCase, withCase } from "../support/case.ts";
++import {
++  observationBackend,
++  observationFixture,
++  observationSource,
++  observationToken,
++} from "../support/account-observation-fixture.ts";
++import { connectLocalAccount, linkAccount } from "../support/app-accounts.ts";
++import { localAgent } from "../support/local-links.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { scenarios } from "../test-plan.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { serverControl } from "../support/server-control.ts";
++import { checkAppLimitedGroup } from "../support/group-account-check-token.ts";
++import { McpOAuth } from "../support/mcp-oauth.ts";
++
++const Resource = Schema.Struct({ id: Schema.String });
++const Revision = Schema.Struct({ revision: Schema.String });
++const Health = Schema.Struct({
++  account: Schema.String,
++  apps: Schema.Array(
++    Schema.Struct({
++      app: Schema.String,
++      check: Schema.NullOr(Schema.Struct({ status: Schema.String, checkedAt: Schema.String })),
++    }),
++  ),
++});
++const Results = Schema.Array(
++  Schema.Union([
++    Schema.Struct({ account: Schema.String, status: Schema.Literal("checked"), health: Health }),
++    Schema.Struct({ account: Schema.String, status: Schema.Literal("refused") }),
++    Schema.Struct({
++      account: Schema.String,
++      status: Schema.Literal("failed"),
++      error: Schema.Struct({ _tag: Schema.String }),
++    }),
++  ]),
++);
++
++layer(HostedLive, { excludeTestServices: true })("Group account check policy", (it) => {
++  it.effect(scenarios.groupAccountCheckPolicy.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const shared = yield* observationFixture({
++          health: true,
++          shared: true,
++          name: "Shared check",
++        });
++        const personal = yield* observationFixture({ health: true, name: "Private check" });
++        const { api, actors, prefix } = shared;
++        const revision = yield* body(
++          Revision,
++          yield* api.request(actors.owner, "GET", `${shared.appPath}/access`),
++        );
++        expect(
++          (yield* api.request(actors.owner, "PATCH", `${shared.appPath}/access`, {
++            revision: revision.revision,
++            audience: { kind: "everyone" },
++          })).status,
++        ).toBe(200);
++        yield* linkAccount(actors.member, shared.appPath, "service", shared.account);
++        const path = `${prefix}/accounts/health`;
++        const beforeCap = yield* shared.backend.healthCalls;
++        const oversized = yield* api.request(actors.owner, "POST", path, {
++          accounts: Array.from({ length: 33 }, () => shared.account),
++        });
++        expect(oversized.status, "hosted refuses 33 account IDs at decode").toBe(400);
++        expect(yield* shared.backend.healthCalls).toBe(beforeCap);
++
++        const missing = `acc_${randomUUID()}`;
++        const accounts = [shared.account, personal.account, missing, shared.account];
++        const sharedBefore = yield* shared.backend.healthCalls;
++        const personalBefore = yield* personal.backend.healthCalls;
++        // The member may use the shared account only. Private and absent IDs have identical answers.
++        const member = yield* api.request(actors.member, "POST", path, { accounts });
++        expect(member.status, "group check route accepts the account list").toBe(200);
++        const checked = yield* body(Results, member);
++        expect(checked.map(({ account, status }) => ({ account, status }))).toEqual([
++          { account: shared.account, status: "checked" },
++          { account: personal.account, status: "refused" },
++          { account: missing, status: "refused" },
++        ]);
++        expect(member.body).toEqual([
++          expect.objectContaining({
++            account: shared.account,
++            status: "checked",
++            health: expect.objectContaining({
++              account: shared.account,
++              apps: [
++                expect.objectContaining({
++                  app: shared.app.id,
++                  check: expect.objectContaining({ status: "healthy" }),
++                }),
++              ],
++            }),
++          }),
++          { account: personal.account, status: "refused" },
++          { account: missing, status: "refused" },
++        ]);
++        expect(Object.keys(checked[1]!).sort()).toEqual(["account", "status"]);
++        expect(yield* shared.backend.healthCalls).toBe(sharedBefore + 1);
++        expect(yield* personal.backend.healthCalls).toBe(personalBefore);
++        expect(
++          (yield* api.request(actors.member, "POST", `${personal.accountPath}/health`)).status,
++        ).toBe(403);
++        const owner = yield* api.request(actors.owner, "POST", path, { accounts });
++        expect(owner.status).toBe(200);
++        expect(
++          (yield* body(Results, owner)).map(({ account, status }) => ({ account, status })),
++        ).toEqual([
++          { account: shared.account, status: "checked" },
++          { account: personal.account, status: "checked" },
++          { account: missing, status: "refused" },
++        ]);
++        expect(yield* shared.backend.healthCalls).toBe(sharedBefore + 2);
++        expect(yield* personal.backend.healthCalls).toBe(personalBefore + 1);
++        // Managing a shared account does not grant use after its audience is removed.
++        const access = yield* body(
++          Revision,
++          yield* api.request(actors.owner, "GET", `${shared.accountPath}/access`),
++        );
++        expect(
++          (yield* api.request(actors.owner, "PATCH", `${shared.accountPath}/access`, {
++            revision: access.revision,
++            audience: { kind: "groups", groups: [] },
++          })).status,
++        ).toBe(200);
++        expect(
++          (yield* api.request(actors.owner, "POST", `${shared.accountPath}/health`)).status,
++        ).toBe(403);
++        yield* personal.backend.health({ status: 503, body: {} });
++        const narrowed = yield* api.request(actors.owner, "POST", path, { accounts });
++        expect(narrowed.status).toBe(200);
++        expect(
++          (yield* body(Results, narrowed)).map(({ account, status }) => ({ account, status })),
++        ).toEqual([
++          { account: shared.account, status: "refused" },
++          { account: personal.account, status: "checked" },
++          { account: missing, status: "refused" },
++        ]);
++        expect(narrowed.body).toEqual([
++          { account: shared.account, status: "refused" },
++          expect.objectContaining({
++            health: expect.objectContaining({
++              apps: [
++                expect.objectContaining({
++                  check: expect.objectContaining({ status: "upstream_unavailable" }),
++                }),
++              ],
++            }),
++          }),
++          { account: missing, status: "refused" },
++        ]);
++        expect(yield* shared.backend.healthCalls).toBe(sharedBefore + 2);
++        expect(yield* personal.backend.healthCalls).toBe(personalBefore + 2);
++        // A storage failure answers for that account without cancelling a usable sibling.
++        const narrowedAccess = yield* body(
++          Revision,
++          yield* api.request(actors.owner, "GET", `${shared.accountPath}/access`),
++        );
++        expect(
++          (yield* api.request(actors.owner, "PATCH", `${shared.accountPath}/access`, {
++            revision: narrowedAccess.revision,
++            audience: { kind: "everyone" },
++          })).status,
++        ).toBe(200);
++        if (!/^acc_[A-Za-z0-9_-]+$/.test(personal.account))
++          return yield* Effect.die("Expected a synthetic account ID");
++        yield* legacyStorage([
++          {
++            sql: "CREATE FUNCTION e2e_group_check_fault() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'Synthetic account check write failure'; END $$",
++          },
++          {
++            sql: `CREATE TRIGGER e2e_group_check_fault BEFORE INSERT OR UPDATE ON executor_account_checks FOR EACH ROW WHEN (NEW.account = '${personal.account}') EXECUTE FUNCTION e2e_group_check_fault()`,
++          },
++        ]);
++        yield* serverControl("start");
++        const failed = yield* api.request(actors.owner, "POST", path, { accounts });
++        expect(failed.status).toBe(200);
++        expect(
++          (yield* body(Results, failed)).map(({ account, status }) => ({ account, status })),
++        ).toEqual([
++          { account: shared.account, status: "checked" },
++          { account: personal.account, status: "failed" },
++          { account: missing, status: "refused" },
++        ]);
++        const singleFailure = yield* api.request(
++          actors.owner,
++          "POST",
++          `${personal.accountPath}/health`,
++        );
++        expect(singleFailure.status).toBe(500);
++        expect(failed.body).toEqual([
++          expect.objectContaining({ account: shared.account, status: "checked" }),
++          expect.objectContaining({
++            account: personal.account,
++            status: "failed",
++            error: singleFailure.body,
++          }),
++          { account: missing, status: "refused" },
++        ]);
++        const beforeLimitedShared = yield* shared.backend.healthCalls;
++        const beforeLimitedPrivate = yield* personal.backend.healthCalls;
++        yield* checkAppLimitedGroup({
++          path,
++          app: shared.app.id,
++          allowed: shared.account,
++          outside: personal.account,
++          missing,
++        });
++        expect(yield* shared.backend.healthCalls).toBe(beforeLimitedShared + 1);
++        expect(yield* personal.backend.healthCalls).toBe(beforeLimitedPrivate);
++        for (const invalid of [[], ["not-an-account-id"]])
++          expect(
++            (yield* api.request(actors.owner, "POST", path, { accounts: invalid })).status,
++          ).toBe(400);
++      }).pipe(Effect.provide(McpOAuth.layer)),
++    ),
++  );
++});
++
++layer(TestLive, { excludeTestServices: true })("Local group account checks", (it) => {
++  it.effect(scenarios.groupAccountCheckLocal.title, (context) =>
++    withCase(
++      context,
++      Effect.gen(function* () {
++        const { agent } = yield* localAgent;
++        const backend = yield* observationBackend;
++        const created = yield* agent.send("POST", "/v1/apps/deploy", {
++          owner: "local",
++          name: "Group checks",
++          files: [
++            appsManifest,
++            {
++              path: "index.ts",
++              content: observationSource(backend.origin, { health: true }).replace(
++                "accounts:{service}",
++                "accounts:{service:service.many()}",
++              ),
++            },
++          ],
++        });
++        expect(created.status).toBe(200);
++        const { app } = yield* body(Schema.Struct({ app: Resource }), created);
++        const accounts: string[] = [];
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* agent.send("DELETE", `/v1/apps/${app.id}`);
++            for (const account of accounts) yield* agent.send("DELETE", `/v1/accounts/${account}`);
++          }).pipe(Effect.orDie),
++        );
++        for (let i = 0; i < 2; i++) {
++          const account = yield* connectLocalAccount(agent, {
++            app: app.id,
++            requirement: "service",
++            method: "key",
++            fields: { token: observationToken },
++          });
++          accounts.push(account.id);
++        }
++        expect(new Set(accounts).size).toBe(2);
++
++        const beforeCap = yield* backend.healthCalls;
++        const oversized = yield* agent.send("POST", "/dashboard/api/accounts/health", {
++          accounts: Array.from({ length: 33 }, () => accounts[0]),
++        });
++        expect(oversized.status, "local refuses 33 account IDs at decode").toBe(400);
++        expect(yield* backend.healthCalls).toBe(beforeCap);
++        const before = yield* backend.healthCalls;
++        const missing = `acc_${randomUUID()}`;
++        const response = yield* agent.send("POST", "/dashboard/api/accounts/health", {
++          accounts: [...accounts, missing, accounts[0]],
++        });
++        expect(response.status, "local group check route accepts the account list").toBe(200);
++        const results = yield* body(Results, response);
++        expect(results.map(({ account, status }) => ({ account, status }))).toEqual([
++          ...accounts.map((account) => ({ account, status: "checked" })),
++          { account: missing, status: "refused" },
++        ]);
++        expect(yield* backend.healthCalls).toBe(before + 2);
++        for (const result of results)
++          if (result.status === "checked") {
++            expect(result.health.apps).toHaveLength(1);
++            expect(result.health.apps[0]?.check?.status).toBe("healthy");
++            expect(result.health.account).toBe(result.account);
++            const single = yield* agent.send(
++              "POST",
++              `/dashboard/api/accounts/${result.account}/health`,
++            );
++            expect(single.status).toBe(200);
++            expect((yield* body(Health, single)).apps.map(({ app }) => app)).toEqual(
++              result.health.apps.map(({ app }) => app),
++            );
++          }
++        expect(yield* backend.healthCalls).toBe(before + 4);
++        const [first, second] = accounts;
++        if (first === undefined || second === undefined)
++          return yield* Effect.die("Expected two accounts");
++        if (!/^acc_[A-Za-z0-9_-]+$/.test(first))
++          return yield* Effect.die("Expected a synthetic account ID");
++        yield* legacyStorage([
++          {
++            sql: "CREATE FUNCTION e2e_group_check_fault() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'Synthetic account check write failure'; END $$",
++          },
++          {
++            sql: `CREATE TRIGGER e2e_group_check_fault BEFORE INSERT OR UPDATE ON executor_account_checks FOR EACH ROW WHEN (NEW.account = '${first}') EXECUTE FUNCTION e2e_group_check_fault()`,
++          },
++        ]);
++        yield* serverControl("start");
++        const failed = yield* agent.send("POST", "/dashboard/api/accounts/health", { accounts });
++        expect(failed.status).toBe(200);
++        expect(
++          (yield* body(Results, failed)).map(({ account, status }) => ({ account, status })),
++        ).toEqual([
++          { account: first, status: "failed" },
++          { account: second, status: "checked" },
++        ]);
++        const singleFailure = yield* agent.send("POST", `/dashboard/api/accounts/${first}/health`);
++        expect(singleFailure.status).toBe(500);
++        expect(failed.body).toEqual([
++          { account: first, status: "failed", error: singleFailure.body },
++          expect.objectContaining({ account: second, status: "checked" }),
++        ]);
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/listed-account-bindings.spec.ts b/e2e/tests/listed-account-bindings.spec.ts
+index 3e42608..a78428a 100644
+--- a/e2e/tests/listed-account-bindings.spec.ts
++++ b/e2e/tests/listed-account-bindings.spec.ts
+@@ -1,4 +1,7 @@
+-/** Removing one verified sign-in opens on that binding and preserves its sibling. */
++/**
++ * Removing one verified sign-in opens on that binding and preserves its sibling. The grouped row
++ * stays compact, and its ⋯ Check now checks every sign-in the caller may use.
++ */
+ import { expect, layer } from "@effect/vitest";
+ import { Effect, Schema } from "effect";
+ import { FetchHttpClient, HttpClient } from "effect/http";
+@@ -7,6 +10,7 @@ import { Api, body } from "../support/api.ts";
+ import { Browser } from "../support/browser.ts";
+ import { Evidence } from "../support/evidence.ts";
+ import { accountRow, openRowMenu } from "../support/account-rows.ts";
++import { observationBackend, observationToken } from "../support/account-observation-fixture.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { Resource } from "../support/contracts.ts";
+ import { accountIdentityIssuer } from "../support/account-identity-issuer.ts";
+@@ -16,98 +20,128 @@ import { appsManifest } from "../support/apps-release.ts";
+ import { holdQuery } from "../support/query-transition.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+-const verifiedBindings = Effect.gen(function* () {
+-  const api = yield* Api;
+-  const actors = yield* Actors;
+-  const issuer = yield* accountIdentityIssuer;
+-  const http = yield* HttpClient.HttpClient;
+-  const prefix = `/api/organizations/${actors.organization.id}`;
+-  const apps: string[] = [];
+-  const accounts = new Set<string>();
+-  yield* Effect.addFinalizer(() =>
+-    Effect.gen(function* () {
+-      for (const app of apps)
+-        expect((yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`)).status).toBe(
+-          200,
+-        );
+-      for (const account of accounts)
+-        expect(
+-          (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`)).status,
+-        ).toBe(200);
+-    }).pipe(Effect.orDie),
+-  );
+-  const bindings = [];
+-  for (const label of ["First saved sign-in", "Other saved sign-in"]) {
+-    const config = {
+-      authorizationUrl: issuer.origin + "/authorize",
+-      tokenUrl: issuer.origin + "/token",
+-      scopes: ["read"],
+-      tokenEndpointAuthMethod: "none",
+-      identity: { issuer: issuer.origin, name: "Fixture identity" },
+-    };
+-    const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+-      name: `App for ${label}`,
+-      files: [
+-        appsManifest,
+-        {
+-          path: "index.ts",
+-          content: `import {defineApp,defineProvider,oauth2,router} from "apps";
+-const service=defineProvider({name:${JSON.stringify(`Provider for ${label}`)},auth:{oauth:oauth2(${JSON.stringify(config)})}});
++/**
++ * Two saved sign-ins of one verified identity, each in its own app. With `checks`, each app checks
++ * its sign-in through its own check service, and both are shared with everyone, so one's audience
++ * can later be removed while its manager keeps seeing it.
++ */
++const verifiedBindings = (options: { readonly checks?: boolean } = {}) =>
++  Effect.gen(function* () {
++    const api = yield* Api;
++    const actors = yield* Actors;
++    const issuer = yield* accountIdentityIssuer;
++    const http = yield* HttpClient.HttpClient;
++    const prefix = `/api/organizations/${actors.organization.id}`;
++    const apps: string[] = [];
++    const accounts = new Set<string>();
++    yield* Effect.addFinalizer(() =>
++      Effect.gen(function* () {
++        for (const app of apps)
++          expect((yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`)).status).toBe(
++            200,
++          );
++        for (const account of accounts)
++          expect(
++            (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`)).status,
++          ).toBe(200);
++      }).pipe(Effect.orDie),
++    );
++    const bindings = [];
++    const backends = [];
++    for (const label of ["First saved sign-in", "Other saved sign-in"]) {
++      const backend = options.checks === true ? yield* observationBackend : undefined;
++      // An empty answer is a healthy check that reports no identity, so the row title stays put.
++      if (backend !== undefined) yield* backend.health({ status: 200, body: {} });
++      const health =
++        backend === undefined
++          ? ""
++          : `,health:async(context)=>{const response=await context.fetch(${JSON.stringify(`${backend.origin}/health`)},{signal:context.signal,headers:{authorization:${JSON.stringify(`Bearer ${observationToken}`)}}});if(!response.ok)throw new ProviderError({reason:"unavailable",status:response.status});return await response.json();}`;
++      const config = {
++        authorizationUrl: issuer.origin + "/authorize",
++        tokenUrl: issuer.origin + "/token",
++        scopes: ["read"],
++        tokenEndpointAuthMethod: "none",
++        identity: { issuer: issuer.origin, name: "Fixture identity" },
++      };
++      const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++        name: `App for ${label}`,
++        files: [
++          appsManifest,
++          {
++            path: "index.ts",
++            content: `import {defineApp,defineProvider,oauth2,router,ProviderError} from "apps";
++const service=defineProvider({name:${JSON.stringify(`Provider for ${label}`)},auth:{oauth:oauth2(${JSON.stringify(config)})}${health}});
+ export default defineApp({user:{accounts:{service}}},{tools:router({})});`,
+-        },
+-      ],
+-    });
+-    expect(deployed.status).toBe(200);
+-    const app = (yield* body(Resource, deployed)).id;
+-    apps.push(app);
+-    const connection = yield* body(
+-      Resource,
+-      yield* api.request(
++          },
++        ],
++      });
++      expect(deployed.status).toBe(200);
++      const app = (yield* body(Resource, deployed)).id;
++      apps.push(app);
++      const connection = yield* body(
++        Resource,
++        yield* api.request(
++          actors.owner,
++          "POST",
++          connectionsPath(`${prefix}/apps/${app}`, "user", "service"),
++          options.checks === true
++            ? { destination: { kind: "shared", audience: { kind: "everyone" } } }
++            : {},
++        ),
++      );
++      const started = yield* api.request(
+         actors.owner,
+         "POST",
+-        connectionsPath(`${prefix}/apps/${app}`, "user", "service"),
+-        {},
+-      ),
+-    );
+-    const started = yield* api.request(
+-      actors.owner,
+-      "POST",
+-      `${prefix}/connections/${connection.id}/oauth/start`,
+-      { method: "oauth", client: { clientId: "listed-bindings-client" } },
+-    );
+-    expect(started.status).toBe(200);
+-    const authorization = yield* body(Schema.Struct({ authorizationUrl: Schema.String }), started);
+-    const callbackUrl = yield* Effect.scoped(
+-      Effect.gen(function* () {
+-        const response = yield* HttpClient.withScope(http).get(authorization.authorizationUrl);
+-        const location = response.headers.location;
+-        if (location === undefined) return yield* Effect.die("Fixture issuer omitted callback");
+-        return location;
+-      }),
+-    ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
+-    const completed = yield* api.request(
+-      actors.owner,
+-      "POST",
+-      `${prefix}/connections/${connection.id}/oauth/complete`,
+-      { callbackUrl },
+-    );
+-    expect(completed.status).toBe(200);
+-    const account = yield* body(IdentityAccount, completed);
+-    expect(account.identity).toBeDefined();
+-    accounts.add(account.id);
+-    expect(
+-      (yield* api.request(actors.owner, "PATCH", `${prefix}/accounts/${account.id}`, { label }))
+-        .status,
+-    ).toBe(200);
+-    bindings.push({ ...account, label });
+-  }
+-  const [first, other] = bindings;
+-  if (first === undefined || other === undefined)
+-    return yield* Effect.die("Fixture did not create both bindings");
+-  expect(first.id).not.toBe(other.id);
+-  expect(first.identity?.id).toBe(other.identity?.id);
+-  return { first, other, prefix, removed: (account: string) => accounts.delete(account) };
+-});
++        `${prefix}/connections/${connection.id}/oauth/start`,
++        { method: "oauth", client: { clientId: "listed-bindings-client" } },
++      );
++      expect(started.status).toBe(200);
++      const authorization = yield* body(
++        Schema.Struct({ authorizationUrl: Schema.String }),
++        started,
++      );
++      const callbackUrl = yield* Effect.scoped(
++        Effect.gen(function* () {
++          const response = yield* HttpClient.withScope(http).get(authorization.authorizationUrl);
++          const location = response.headers.location;
++          if (location === undefined) return yield* Effect.die("Fixture issuer omitted callback");
++          return location;
++        }),
++      ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
++      const completed = yield* api.request(
++        actors.owner,
++        "POST",
++        `${prefix}/connections/${connection.id}/oauth/complete`,
++        { callbackUrl },
++      );
++      expect(completed.status).toBe(200);
++      const account = yield* body(IdentityAccount, completed);
++      expect(account.identity).toBeDefined();
++      accounts.add(account.id);
++      expect(
++        (yield* api.request(actors.owner, "PATCH", `${prefix}/accounts/${account.id}`, { label }))
++          .status,
++      ).toBe(200);
++      bindings.push({ ...account, label });
++      if (backend !== undefined) backends.push(backend);
++    }
++    const [first, other] = bindings;
++    if (first === undefined || other === undefined)
++      return yield* Effect.die("Fixture did not create both bindings");
++    expect(first.id).not.toBe(other.id);
++    expect(first.identity?.id).toBe(other.identity?.id);
++    return {
++      first,
++      other,
++      prefix,
++      /** Each sign-in's check calls, first then other; empty without `checks`. */
++      checkCalls: Effect.forEach(backends, (backend) => backend.healthCalls),
++      removed: (account: string) => accounts.delete(account),
++    };
++  });
++
++const Revision = Schema.Struct({ revision: Schema.String });
++const groupCheckPath = /^\/api\/organizations\/[^/]+\/accounts\/health$/;
+ 
+ layer(HostedLive, { excludeTestServices: true })("Listed account bindings", (it) => {
+   for (const [scenario, width] of [
+@@ -121,7 +155,7 @@ layer(HostedLive, { excludeTestServices: true })("Listed account bindings", (it)
+           const api = yield* Api;
+           const actors = yield* Actors;
+           const browser = yield* Browser;
+-          const fixture = yield* verifiedBindings;
++          const fixture = yield* verifiedBindings();
+           const paths = [actors.organization.id, actors.organization.slug].map(
+             (organization) => `/api/organizations/${organization}/accounts/${fixture.first.id}`,
+           );
+@@ -245,10 +279,11 @@ layer(HostedLive, { excludeTestServices: true })("Listed account bindings", (it)
+     withHostedCase(
+       context,
+       Effect.gen(function* () {
++        const api = yield* Api;
+         const actors = yield* Actors;
+         const browser = yield* Browser;
+         const evidence = yield* Evidence;
+-        const fixture = yield* verifiedBindings;
++        const fixture = yield* verifiedBindings({ checks: true });
+         const groupTitle = fixture.first.identity?.label ?? fixture.first.label;
+         yield* browser.login(actors.owner);
+         for (const width of [1280, 390]) {
+@@ -283,42 +318,298 @@ layer(HostedLive, { excludeTestServices: true })("Listed account bindings", (it)
+           expect(fits, `no horizontal scroll at ${width}px`).toBe(true);
+           if (width === 390)
+             expect(height, "the grouped row stays compact on a phone").toBeLessThanOrEqual(110);
++          const before = yield* fixture.checkCalls;
++          const offered = yield* Effect.scoped(
++            Effect.gen(function* () {
++              // Holding the group check shows its pending state in the menu and on the row.
++              const held = yield* holdQuery(groupCheckPath, "continue", { method: "POST" });
++              const items = yield* browser.use(
++                `Open the grouped row's menu at ${width}px`,
++                (page) =>
++                  openRowMenu(page, accountRow(page, groupTitle), groupTitle).then((menu) =>
++                    // The menu fades in; capture it once it has settled.
++                    menu
++                      .evaluate((element) =>
++                        Promise.all(element.getAnimations().map((animation) => animation.finished)),
++                      )
++                      .then(() => menu.getByRole("menuitem").allInnerTexts()),
++                  ),
++              );
++              yield* evidence.attach(
++                `listed-binding-menu-${width}.png`,
++                "image/png",
++                yield* browser.use("Capture the open menu", (page) => page.screenshot()),
++              );
++              expect
++                .soft(items, "the grouped row's ⋯ offers Check now beside Details")
++                .toEqual(expect.arrayContaining(["Details", "Check now", "Manage apps"]));
++              if (!items.includes("Check now")) {
++                yield* browser.use("Close the menu", (page) => page.keyboard.press("Escape"));
++                return undefined;
++              }
++              const sent = yield* browser.use("Check every sign-in from the menu", (page) =>
++                Promise.all([
++                  page.waitForRequest(
++                    (request) =>
++                      request.method() === "POST" &&
++                      groupCheckPath.test(new URL(request.url()).pathname),
++                  ),
++                  page.getByRole("menuitem", { name: "Check now", exact: true }).click(),
++                ]).then(([request]): unknown => request.postDataJSON()),
++              );
++              yield* held.requested;
++              const pending = yield* browser.use("Read the pending check", (page) => {
++                const row = accountRow(page, groupTitle);
++                return row
++                  .getByRole("status")
++                  .filter({ hasText: "Checking sign-ins…" })
++                  .waitFor()
++                  .then(() => openRowMenu(page, row, groupTitle))
++                  .then((menu) =>
++                    menu
++                      .getByRole("menuitem", { name: "Checking…", exact: true })
++                      .isDisabled()
++                      .then((disabled) => page.keyboard.press("Escape").then(() => disabled)),
++                  );
++              });
++              const answered = yield* browser.use("Await the group check's answer", (page) =>
++                Promise.resolve({
++                  response: page.waitForResponse(
++                    (response) =>
++                      response.request().method() === "POST" &&
++                      groupCheckPath.test(new URL(response.url()).pathname),
++                  ),
++                }),
++              );
++              // The row stays busy until the held check answers.
++              yield* browser.use("The row is still checking", (page) =>
++                accountRow(page, groupTitle)
++                  .locator('[data-account-observations][aria-busy="true"]')
++                  .waitFor(),
++              );
++              yield* held.release;
++              yield* browser.use("The group check finishes", (page) =>
++                answered.response.then(() =>
++                  accountRow(page, groupTitle)
++                    .locator('[data-account-observations][aria-busy="true"]')
++                    .waitFor({ state: "detached" }),
++                ),
++              );
++              return { sent, pending };
++            }),
++          );
++          const after = yield* fixture.checkCalls;
++          expect
++            .soft(offered?.sent, "Check now sends every sign-in of the group at once")
++            .toEqual({ accounts: expect.arrayContaining([fixture.first.id, fixture.other.id]) });
++          expect
++            .soft(offered?.pending, "the menu item waits while the group is checked")
++            .toBe(true);
++          expect
++            .soft(
++              after.map((calls, index) => calls - (before[index] ?? 0)),
++              "each sign-in's own check ran once",
++            )
++            .toEqual([1, 1]);
+           const opened = yield* browser.use(
+             `Open the grouped row's Details at ${width}px`,
+             (page) => {
+               const row = accountRow(page, groupTitle);
+-              return openRowMenu(page, row, groupTitle)
+-                .then((menu) =>
+-                  menu
+-                    .getByRole("menuitem")
+-                    .allInnerTexts()
+-                    .then((items) =>
+-                      menu
+-                        .getByRole("menuitem", { name: "Details", exact: true })
+-                        .click()
+-                        .then(() => items),
+-                    ),
+-                )
+-                .then((items) =>
+-                  row
+-                    .locator(".requested-access")
+-                    .waitFor()
+-                    .then(() =>
+-                      Promise.all([
+-                        Promise.resolve(items),
+-                        row.locator("[data-account-health]").count(),
+-                        row
+-                          .locator("[data-account-health]")
+-                          .getByRole("button", { name: "Check now", exact: true })
+-                          .count(),
+-                      ]),
+-                    ),
+-                );
++              return (
++                openRowMenu(page, row, groupTitle)
++                  .then((menu) =>
++                    menu.getByRole("menuitem", { name: "Details", exact: true }).click(),
++                  )
++                  .then(() => row.locator(".requested-access").waitFor())
++                  // The list reads the recorded checks again after the group check answers.
++                  .then(() =>
++                    row.locator('[data-sign-in] [data-check-status="healthy"]').nth(1).waitFor(),
++                  )
++                  .then(() =>
++                    Promise.all([
++                      row.locator("[data-sign-in]").allInnerTexts(),
++                      row
++                        .locator("[data-sign-in]")
++                        .evaluateAll((blocks) =>
++                          blocks.map((block) =>
++                            [...block.querySelectorAll("[data-check-status]")].map((status) =>
++                              status.getAttribute("data-check-status"),
++                            ),
++                          ),
++                        ),
++                      row
++                        .locator('[data-observation-details] td[data-label="Sign-in"]')
++                        .allInnerTexts(),
++                      row.getByRole("button", { name: "Check now", exact: true }).count(),
++                      page.evaluate(
++                        () => document.documentElement.scrollWidth <= window.innerWidth,
++                      ),
++                    ]),
++                  )
++              );
+             },
+           );
+-          expect(opened[0]).toEqual(expect.arrayContaining(["Details", "Manage apps"]));
+-          expect(opened.slice(1), "Details hold the checks and Check now").toEqual([1, 1]);
++          yield* evidence.attach(
++            `listed-binding-details-${width}.png`,
++            "image/png",
++            yield* browser.use("Capture the open Details", (page) =>
++              page.screenshot({ fullPage: true }),
++            ),
++          );
++          const [blocks, statuses, tableSignIns, buttons, detailsFit] = opened;
++          expect
++            .soft(
++              blocks.map((text) => text.split("\n")[0]),
++              "Details list every sign-in by name",
++            )
++            .toEqual([fixture.first.label, fixture.other.label]);
++          expect
++            .soft(statuses, "each sign-in shows its own fresh check")
++            .toEqual([["healthy"], ["healthy"]]);
++          expect
++            .soft(new Set(tableSignIns), "the Checks table names each sign-in")
++            .toEqual(new Set([fixture.first.label, fixture.other.label]));
++          expect.soft(buttons, "Details hold one Check now for the whole group").toBe(1);
++          expect(detailsFit, `no horizontal scroll with Details open at ${width}px`).toBe(true);
+         }
++        // The list was read while both sign-ins were usable. Managing a shared sign-in does not
++        // grant its use, so removing its audience before Check now leaves only the other to check.
++        const shown = yield* browser.use("Open the group's Details on a fresh list", (page) => {
++          const row = accountRow(page, groupTitle);
++          return page
++            .setViewportSize({ width: 1280, height: 900 })
++            .then(() => page.goto(`/org/${actors.organization.slug}/accounts`))
++            .then(() => openRowMenu(page, row, groupTitle))
++            .then((menu) => menu.getByRole("menuitem", { name: "Details", exact: true }).click())
++            .then(() => row.locator("[data-sign-in]").nth(1).waitFor())
++            .then(() => row.locator("[data-sign-in]").count());
++        });
++        expect(shown, "both sign-ins are listed before their use changes").toBe(2);
++        const access = yield* body(
++          Revision,
++          yield* api.request(
++            actors.owner,
++            "GET",
++            `${fixture.prefix}/accounts/${fixture.other.id}/access`,
++          ),
++        );
++        expect(
++          (yield* api.request(
++            actors.owner,
++            "PATCH",
++            `${fixture.prefix}/accounts/${fixture.other.id}/access`,
++            { revision: access.revision, audience: { kind: "groups", groups: [] } },
++          )).status,
++        ).toBe(200);
++        const partialBefore = yield* fixture.checkCalls;
++        const partial = yield* Effect.scoped(
++          Effect.gen(function* () {
++            // The list's own reload would drop the unusable sign-in; hold it to read the outcome.
++            const reads = yield* holdQuery(/^\/api\/dashboard\/batch$/, "continue", {
++              method: "POST",
++              allRequests: true,
++            });
++            const directory = yield* holdQuery(/\/resources$/, "continue", { allRequests: true });
++            const read = yield* browser.use("Check the group from Details", (page) => {
++              const row = accountRow(page, groupTitle);
++              return Promise.all([
++                page.waitForResponse(
++                  (response) =>
++                    response.request().method() === "POST" &&
++                    groupCheckPath.test(new URL(response.url()).pathname),
++                ),
++                row
++                  .locator("[data-sign-in-checks]")
++                  .getByRole("button", { name: "Check now", exact: true })
++                  .click(),
++              ]).then(([response]) =>
++                Promise.all([
++                  response.json().then((answer): unknown => answer),
++                  Promise.resolve(response.request().postDataJSON()).then((sent): unknown => sent),
++                  row
++                    .locator("[data-sign-in-check-outcome]")
++                    .waitFor()
++                    .then(() => row.locator("[data-sign-in-check-outcome]").innerText()),
++                ]),
++              );
++            });
++            yield* evidence.attach(
++              "listed-binding-partial-1280.png",
++              "image/png",
++              yield* browser.use("Capture the partial check", (page) =>
++                page.screenshot({ fullPage: true }),
++              ),
++            );
++            // The result line stays on the collapsed row, which stays compact on a phone.
++            const collapsed = yield* browser.use(
++              "Collapse the row with its result at 390px",
++              (page) => {
++                const row = accountRow(page, groupTitle);
++                return page
++                  .setViewportSize({ width: 390, height: 900 })
++                  .then(() => openRowMenu(page, row, groupTitle))
++                  .then((menu) =>
++                    menu.getByRole("menuitem", { name: "Hide details", exact: true }).click(),
++                  )
++                  .then(() => row.locator("[data-account-details]").waitFor({ state: "detached" }))
++                  .then(() => row.locator("[data-sign-in-check-outcome]").waitFor())
++                  .then(() =>
++                    Promise.all([
++                      row.evaluate((element) => element.getBoundingClientRect().height),
++                      row.locator("[data-sign-in-check-outcome]").innerText(),
++                      page.evaluate(
++                        () => document.documentElement.scrollWidth <= window.innerWidth,
++                      ),
++                    ]),
++                  );
++              },
++            );
++            yield* evidence.attach(
++              "listed-binding-partial-390.png",
++              "image/png",
++              yield* browser.use("Capture the collapsed result", (page) => page.screenshot()),
++            );
++            yield* reads.release;
++            yield* directory.release;
++            return { read, collapsed };
++          }),
++        );
++        const [answer, sent, outcome] = partial.read;
++        const [collapsedHeight, collapsedOutcome, collapsedFits] = partial.collapsed;
++        expect(sent, "the stale row still sends both sign-ins").toEqual({
++          accounts: expect.arrayContaining([fixture.first.id, fixture.other.id]),
++        });
++        expect(answer, "the host refuses the unusable sign-in without its metadata").toEqual(
++          expect.arrayContaining([
++            expect.objectContaining({ account: fixture.first.id, status: "checked" }),
++            { account: fixture.other.id, status: "refused" },
++          ]),
++        );
++        const partialAfter = yield* fixture.checkCalls;
++        expect(
++          partialAfter.map((calls, index) => calls - (partialBefore[index] ?? 0)),
++          "only the usable sign-in was checked",
++        ).toEqual([1, 0]);
++        expect(outcome).toBe("Checked 1 of 2 sign-ins. The other one couldn't be checked.");
++        expect(collapsedOutcome, "the collapsed row keeps the result").toBe(outcome);
++        expect(collapsedFits, "no horizontal scroll with a result at 390px").toBe(true);
++        expect(collapsedHeight, "a row with a result stays compact on a phone").toBeLessThanOrEqual(
++          110,
++        );
++        expect(outcome, "the outcome never names the refused sign-in").not.toContain(
++          fixture.other.label,
++        );
++        const settled = yield* browser.use(
++          "The reloaded list shows only the usable sign-in",
++          (page) =>
++            page
++              .reload()
++              .then(() => page.locator(".inventory-row [data-account-name]").first().waitFor())
++              .then(() => page.locator(".inventory").innerText()),
++        );
++        expect(settled, "nothing of the refused sign-in is shown").not.toContain(
++          fixture.other.label,
++        );
+       }),
+     ),
+   );
+diff --git a/packages/sdk/src/contracts/account-group-check.ts b/packages/sdk/src/contracts/account-group-check.ts
+new file mode 100644
+index 0000000..7847c52
+--- /dev/null
++++ b/packages/sdk/src/contracts/account-group-check.ts
+@@ -0,0 +1,20 @@
++import { Schema } from "effect";
++import { AccountHealth } from "./account.ts";
++import { AccountAcquisitionUnavailable } from "./account-acquisition-driver.ts";
++import { AccountId, StorageError } from "./shared.ts";
++
++/** Limit a requested row before any grant lookup or credential check starts. */
++export const AccountGroupCheck = Schema.Struct({
++  accounts: Schema.Array(AccountId).check(Schema.isMinLength(1), Schema.isMaxLength(32)),
++});
++/** Refused IDs reveal no existence, health, identity or app metadata. */
++export const AccountGroupCheckResult = Schema.Union([
++  Schema.Struct({ account: AccountId, status: Schema.Literal("checked"), health: AccountHealth }),
++  Schema.Struct({ account: AccountId, status: Schema.Literal("refused") }),
++  Schema.Struct({
++    account: AccountId,
++    status: Schema.Literal("failed"),
++    error: Schema.Union([StorageError, AccountAcquisitionUnavailable]),
++  }),
++]);
++export type AccountGroupCheckResult = typeof AccountGroupCheckResult.Type;
+diff --git a/packages/sdk/src/contracts/index.ts b/packages/sdk/src/contracts/index.ts
+index 5ede3e0..d6f848f 100644
+--- a/packages/sdk/src/contracts/index.ts
++++ b/packages/sdk/src/contracts/index.ts
+@@ -8,6 +8,7 @@ export * from "./account-consumers.ts";
+ export * from "./shared.ts";
+ export * from "./provider.ts";
+ export * from "./account.ts";
++export * from "./account-group-check.ts";
+ export * from "./interactive-accounts.ts";
+ export * from "./interactive-errors.ts";
+ export * from "./account-identity.ts";
+diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
+index 9fa3256..b32c33a 100644
+--- a/packages/sdk/src/core.ts
++++ b/packages/sdk/src/core.ts
+@@ -1,3 +1,4 @@
++export { checkEach } from "./implementation/account-group-check.ts";
+ export { matchesToolPolicyInput, validToolPolicyConstraint } from "./implementation/tool-policy.ts";
+ /** Public Effect-native SDK. The caller owns platform layers and resource lifetimes. */
+ export {
+diff --git a/packages/sdk/src/implementation/account-group-check.ts b/packages/sdk/src/implementation/account-group-check.ts
+new file mode 100644
+index 0000000..26b1459
+--- /dev/null
++++ b/packages/sdk/src/implementation/account-group-check.ts
+@@ -0,0 +1,31 @@
++import { Effect } from "effect";
++import type { AccountGroupCheckResult } from "../contracts/account-group-check.ts";
++import type { AccountHealth, AccountNotFound } from "../contracts/account.ts";
++import type { AccountAcquisitionUnavailable } from "../contracts/account-acquisition-driver.ts";
++import type { AccountId, StorageError } from "../contracts/shared.ts";
++
++/** The product callback keeps its single-account authority; each distinct ID gets one answer. */
++export const checkEach = <R>(
++  accounts: readonly AccountId[],
++  check: (
++    account: AccountId,
++  ) => Effect.Effect<
++    AccountHealth,
++    AccountNotFound | StorageError | AccountAcquisitionUnavailable,
++    R
++  >,
++) =>
++  Effect.forEach(
++    [...new Set(accounts)],
++    (account) =>
++      check(account).pipe(
++        Effect.match({
++          onSuccess: (health): AccountGroupCheckResult => ({ account, status: "checked", health }),
++          onFailure: (error): AccountGroupCheckResult =>
++            error._tag === "AccountNotFound"
++              ? { account, status: "refused" }
++              : { account, status: "failed", error },
++        }),
++      ),
++    { concurrency: 2 },
++  );
+diff --git a/packages/ui/src/implementation/dashboard/account-health-line.tsx b/packages/ui/src/implementation/dashboard/account-health-line.tsx
+index 43b1393..2acc207 100644
+--- a/packages/ui/src/implementation/dashboard/account-health-line.tsx
++++ b/packages/ui/src/implementation/dashboard/account-health-line.tsx
+@@ -35,7 +35,8 @@ const states = {
+  * The latest check of each app and of the account's sign-in driver, one line per result, worst
+  * first. The driver's result stands on its own line and is never attributed to an app. Only a
+  * current rejection in an app offers Reconnect, in the app that reported it; a failed or timed-out
+- * check makes no claim about the sign-in.
++ * check makes no claim about the sign-in. Without `check`, the line has no Check now of its own,
++ * as in a grouped row whose sign-ins are checked together.
+  */
+ export function AccountHealthLine<E>({
+   account,
+@@ -47,9 +48,9 @@ export function AccountHealthLine<E>({
+ }: {
+   readonly account: AccountSummary;
+   readonly apps: readonly App[];
+-  readonly check: () => Promise<Exit.Exit<unknown, E>>;
++  readonly check?: (() => Promise<Exit.Exit<unknown, E>>) | undefined;
+   readonly showStatus?: boolean;
+-  readonly canReconnect?: (app: App) => boolean;
++  readonly canReconnect?: ((app: App) => boolean) | undefined;
+   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
+ }) {
+   const brand = useProductBrand();
+@@ -86,14 +87,14 @@ export function AccountHealthLine<E>({
+     ),
+   );
+   const run = async () => {
+-    if (pending) return;
++    if (pending || check === undefined) return;
+     setPending(true);
+     setError(undefined);
+     const exit = await check();
+     setPending(false);
+     if (Exit.isFailure(exit)) setError(exit.cause);
+   };
+-  const action = (
++  const action = check !== undefined && (
+     <Button
+       variant="outline"
+       size="xs"
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-details.tsx b/packages/ui/src/implementation/dashboard/account-observation-details.tsx
+index e31097c..e92c30f 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-details.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observation-details.tsx
+@@ -4,6 +4,7 @@ import type { AccountSummary } from "../../contracts/dashboard.ts";
+ import type { DisplayFormat } from "../../contracts/display.ts";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+ import { useProductBrand } from "../hooks/product-brand.ts";
++import type { AccountSignIn } from "./account-sign-in-checks.tsx";
+ import { describeAccountCheck } from "./account-health.tsx";
+ import {
+   age,
+@@ -79,13 +80,15 @@ const checkReasons = {
+ 
+ /**
+  * Every reading with its own read time, where each report came from and how its last refresh
+- * went, and every app's latest check with its reason. Shown only on request.
++ * went, and every app's latest check with its reason. A grouped row's `signIns` list each
++ * sign-in's checks under its name instead. Shown only on request.
+  */
+ export function ObservationDetails({
+   id,
+   reports,
+   account,
+   apps,
++  signIns,
+   now,
+   format,
+ }: {
+@@ -93,10 +96,32 @@ export function ObservationDetails({
+   readonly reports: readonly AccountObservationRecord[];
+   readonly account: AccountSummary;
+   readonly apps?: readonly App[] | undefined;
++  readonly signIns?: readonly AccountSignIn[] | undefined;
+   readonly now: number;
+   readonly format: DisplayFormat;
+ }) {
+   const brand = useProductBrand();
++  /** An app's latest check of `account`: result, time and reason. */
++  const checkCells = (account: AccountSummary, app: App): ReactNode[] => {
++    const entry = account.health?.apps.find((item) => item.app === app.id);
++    const check = entry?.check ?? null;
++    const result =
++      check === null ? (entry?.checkable === true ? "Not checked" : "No check") : undefined;
++    const { label } = check === null ? { label: "" } : describeAccountCheck(check.status);
++    return [
++      appDisplayName(app, brand),
++      result ?? (check?.current === false ? `${label} · outdated` : label),
++      check === null ? "—" : moment(check.checkedAt.toISOString(), now, format),
++      check?.message ??
++        (check?.reason === undefined ? (
++          <span key="reason" className="text-muted-foreground">
++            None
++          </span>
++        ) : (
++          checkReasons[check.reason]
++        )),
++    ];
++  };
+   const read = (value: string, stale: boolean) => (
+     <>
+       <span className={stale ? "text-sign-in-warning" : undefined}>{age(value, now)}</span>{" "}
+@@ -177,34 +202,26 @@ export function ObservationDetails({
+           </div>
+         );
+       })}
+-      {apps !== undefined && apps.length > 0 && (
++      {signIns !== undefined ? (
+         <Table
+           caption="Checks"
+-          columns={["App", "Result", "Checked", "Reason"]}
+-          rows={apps.map((app) => {
+-            const entry = account.health?.apps.find((item) => item.app === app.id);
+-            const check = entry?.check ?? null;
+-            const result =
+-              check === null ? (entry?.checkable === true ? "Not checked" : "No check") : undefined;
+-            const { label } = check === null ? { label: "" } : describeAccountCheck(check.status);
+-            return {
+-              key: app.id,
+-              cells: [
+-                appDisplayName(app, brand),
+-                result ?? (check?.current === false ? `${label} · outdated` : label),
+-                check === null ? "—" : moment(check.checkedAt.toISOString(), now, format),
+-                check?.message ??
+-                  (check?.reason === undefined ? (
+-                    <span key="reason" className="text-muted-foreground">
+-                      None
+-                    </span>
+-                  ) : (
+-                    checkReasons[check.reason]
+-                  )),
+-              ],
+-            };
+-          })}
++          columns={["Sign-in", "App", "Result", "Checked", "Reason"]}
++          rows={signIns.flatMap((signIn) =>
++            signIn.apps.map((app) => ({
++              key: `${signIn.account.id}:${app.id}`,
++              cells: [signIn.name, ...checkCells(signIn.account, app)],
++            })),
++          )}
+         />
++      ) : (
++        apps !== undefined &&
++        apps.length > 0 && (
++          <Table
++            caption="Checks"
++            columns={["App", "Result", "Checked", "Reason"]}
++            rows={apps.map((app) => ({ key: app.id, cells: checkCells(account, app) }))}
++          />
++        )
+       )}
+     </div>
+   );
+diff --git a/packages/ui/src/implementation/dashboard/account-observations.tsx b/packages/ui/src/implementation/dashboard/account-observations.tsx
+index 7666908..b5cfbe9 100644
+--- a/packages/ui/src/implementation/dashboard/account-observations.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observations.tsx
+@@ -25,6 +25,13 @@ import { ObservationReadings } from "./account-observation-readings.tsx";
+ import type { AccountResetActions } from "./account-reset-control.tsx";
+ import { useQuery } from "./context.tsx";
+ import { useAccountRow } from "./account-row.tsx";
++import {
++  SignInCheckOutcome,
++  SignInChecks,
++  partialOutcome,
++  useSignInChecks,
++  type AccountGroupCheck,
++} from "./account-sign-in-checks.tsx";
+ import { brandFill, brandLab } from "../lib/provider-brand.ts";
+ 
+ /** What a product lets the caller see of an account's reported usage. */
+@@ -44,13 +51,16 @@ export interface AccountObservationsView {
+  * failure never reads as a sign-in problem. Products own both mutations and their authority.
+  *
+  * Inside a compact row with a menu, Refresh and Details move into that menu and the band shows
+- * only the usage cells; the source, its age and the checks open as the row's details.
++ * only the usage cells; the source, its age and the checks open as the row's details. A grouped
++ * row passes `group` instead of `health`: Details list each sign-in's checks, and one Check now,
++ * also in the row's menu, checks them all.
+  */
+ export function AccountObservations<E>({
+   account,
+   query,
+   refresh,
+   health,
++  group,
+   windowTokens,
+   resets,
+   Failure,
+@@ -66,6 +76,8 @@ export function AccountObservations<E>({
+     readonly showStatus?: boolean;
+     readonly canReconnect?: (app: App) => boolean;
+   };
++  /** Every sign-in of a grouped row, which `check` checks together. */
++  readonly group?: AccountGroupCheck<E>;
+   /** A window's footer count, such as the tokens the account's pool counted in it. */
+   readonly windowTokens?: ComponentProps<typeof ObservationReadings>["tokens"];
+   /** Only for a caller who may spend this account's banked resets; each spend asks first. */
+@@ -84,6 +96,7 @@ export function AccountObservations<E>({
+   const inspected = view?.canInspect === true ? view : undefined;
+   const [pending, setPending] = useState(false);
+   const [error, setError] = useState<Cause.Cause<E>>();
++  const checks = useSignInChecks(group);
+   const run = async () => {
+     if (pending) return;
+     setPending(true);
+@@ -104,7 +117,7 @@ export function AccountObservations<E>({
+     inspected !== undefined &&
+     (inspected.reports.length > 0 || inspected.hasUsageReporter === true);
+   const blocked = view === undefined ? undefined : refreshBlocked(view, now, format);
+-  const hasDetails = reported || health !== undefined;
++  const hasDetails = reported || health !== undefined || checks !== undefined;
+   const setUsage = row?.setUsage;
+   useEffect(() => {
+     if (setUsage === undefined) return;
+@@ -119,7 +132,7 @@ export function AccountObservations<E>({
+     );
+   }, [setUsage, hasDetails, reported, pending, blocked]);
+   useEffect(() => (setUsage === undefined ? undefined : () => setUsage(undefined)), [setUsage]);
+-  if (!reported && health === undefined && !AsyncResult.isFailure(result)) return null;
++  if (!reported && !hasDetails && !AsyncResult.isFailure(result)) return null;
+   const fact = (detailsOnly: boolean) => (
+     <UsageFact
+       result={result}
+@@ -153,14 +166,17 @@ export function AccountObservations<E>({
+     queued.length === 0 &&
+     !pending &&
+     error === undefined &&
++    checks?.pending !== true &&
++    checks?.error === undefined &&
++    !partialOutcome(checks) &&
+     !AsyncResult.isFailure(result)
+   )
+     return null;
+   return (
+     <div
+       role="group"
+-      aria-label={`${health === undefined ? "Usage" : "Usage and health"} of ${label}`}
+-      aria-busy={pending}
++      aria-label={`${health === undefined && checks === undefined ? "Usage" : "Usage and health"} of ${label}`}
++      aria-busy={pending || checks?.pending === true}
+       data-account-observations
+       className="@container grid min-w-0 grid-cols-[minmax(0,_1fr)] gap-2.5 text-[11px] text-foreground/80"
+     >
+@@ -199,6 +215,14 @@ export function AccountObservations<E>({
+             </p>
+           )}
+           {!open && error && <Failure cause={error} layout="compact" />}
++          {!open && checks?.pending === true && (
++            <p role="status" className="text-muted-foreground">
++              Checking sign-ins…
++            </p>
++          )}
++          {!open && checks !== undefined && (
++            <SignInCheckOutcome state={checks} quiet Failure={Failure} />
++          )}
+           {!open && AsyncResult.isFailure(result) && (
+             <Failure
+               cause={result.cause}
+@@ -212,7 +236,7 @@ export function AccountObservations<E>({
+         <div
+           className={cn(
+             "grid min-w-0 grid-cols-[minmax(0,_1fr)] items-start gap-x-6 gap-y-1.5 text-muted-foreground",
+-            health === undefined
++            health === undefined && checks === undefined
+               ? "@[740px]:grid-cols-[minmax(0,_1fr)_auto]"
+               : "@[740px]:grid-cols-[minmax(0,_1fr)_minmax(0,_1fr)_auto]",
+           )}
+@@ -220,6 +244,7 @@ export function AccountObservations<E>({
+           {health !== undefined && (
+             <AccountHealthLine account={account} {...health} Failure={Failure} />
+           )}
++          {checks !== undefined && <SignInChecks state={checks} Failure={Failure} />}
+           {fact(false)}
+           {hasDetails ? (
+             <Button
+@@ -246,6 +271,7 @@ export function AccountObservations<E>({
+           {compact && health !== undefined && (
+             <AccountHealthLine account={account} {...health} Failure={Failure} />
+           )}
++          {compact && checks !== undefined && <SignInChecks state={checks} Failure={Failure} />}
+           {compact && fact(false)}
+           {fact(true)}
+           <ObservationDetails
+@@ -253,6 +279,7 @@ export function AccountObservations<E>({
+             reports={inspected?.reports ?? []}
+             account={account}
+             apps={health?.apps}
++            signIns={checks?.signIns}
+             now={now}
+             format={format}
+           />
+diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages/ui/src/implementation/dashboard/account-row.tsx
+index f02d577..53a3e76 100644
+--- a/packages/ui/src/implementation/dashboard/account-row.tsx
++++ b/packages/ui/src/implementation/dashboard/account-row.tsx
+@@ -138,6 +138,14 @@ export interface AccountRowUsage {
+   readonly disabledReason?: string | undefined;
+ }
+ 
++/** Checking every sign-in of a grouped identity row together, offered from the row's menu. */
++export interface AccountRowCheck {
++  readonly run: () => void;
++  readonly pending: boolean;
++  /** Why nothing can be checked, such as no app defining a check. */
++  readonly disabledReason?: string | undefined;
++}
++
+ /** A row-level action a host control offers through the row's menu, such as adding an app. */
+ export interface AccountRowMenuAction {
+   readonly label: string;
+@@ -162,6 +170,8 @@ interface AccountRowState {
+   readonly setDetails: (open: boolean) => void;
+   readonly usage: AccountRowUsage | undefined;
+   readonly setUsage: (usage: AccountRowUsage | undefined) => void;
++  readonly check: AccountRowCheck | undefined;
++  readonly setCheck: (check: AccountRowCheck | undefined) => void;
+   /** Row content that only Details shows, such as requested access or the description. */
+   readonly extra: boolean;
+   readonly setExtra: (present: boolean) => void;
+@@ -179,6 +189,7 @@ export function AccountRowProvider({ children }: { readonly children: ReactNode
+   const [menu, setMenu] = useState(false);
+   const [details, setDetails] = useState(false);
+   const [usage, setUsage] = useState<AccountRowUsage>();
++  const [check, setCheck] = useState<AccountRowCheck>();
+   const [extra, setExtra] = useState(false);
+   const [identity, setIdentity] = useState<AccountRowMenuAction>();
+   const value = useMemo(
+@@ -189,12 +200,14 @@ export function AccountRowProvider({ children }: { readonly children: ReactNode
+       setDetails,
+       usage,
+       setUsage,
++      check,
++      setCheck,
+       extra,
+       setExtra,
+       identity,
+       setIdentity,
+     }),
+-    [menu, details, usage, extra, identity],
++    [menu, details, usage, check, extra, identity],
+   );
+   return <AccountRowContext.Provider value={value}>{children}</AccountRowContext.Provider>;
+ }
+@@ -204,9 +217,9 @@ export function OutsideAccountRow({ children }: { readonly children: ReactNode }
+   return <AccountRowContext.Provider value={undefined}>{children}</AccountRowContext.Provider>;
+ }
+ 
+-/** Whether the row has actions of its own (usage, Details, adding an app) for its menu. */
++/** Whether the row has actions of its own (usage, checks, Details, adding an app) for its menu. */
+ export const accountRowHasActions = (row: AccountRowState) =>
+-  row.usage !== undefined || row.extra || row.identity !== undefined;
++  row.usage !== undefined || row.check !== undefined || row.extra || row.identity !== undefined;
+ 
+ /**
+  * Rendered by a row's menu so the row knows its actions have a home there. Set before paint, so
+@@ -255,14 +268,15 @@ function AccountRowIdentityItem() {
+ }
+ 
+ /**
+- * The row's own actions at the top of its menu: refreshing usage, details and adding an app. The
+- * separator divides them from the menu's other items, when there are any.
++ * The row's own actions at the top of its menu: refreshing usage, details, checking its sign-ins
++ * and adding an app. The separator divides them from the menu's other items, when there are any.
+  */
+ export function AccountRowMenuItems({ separator = true }: { readonly separator?: boolean }) {
+   const row = useAccountRow();
+   if (row === undefined || !accountRowHasActions(row)) return null;
+-  const details = row.usage !== undefined || row.extra;
++  const details = row.usage !== undefined || row.check !== undefined || row.extra;
+   const { refresh, pending = false, disabledReason } = row.usage ?? {};
++  const check = row.check;
+   return (
+     <>
+       {refresh !== undefined && (
+@@ -283,6 +297,19 @@ export function AccountRowMenuItems({ separator = true }: { readonly separator?:
+           {row.details ? "Hide details" : "Details"}
+         </DropdownMenuItem>
+       )}
++      {check !== undefined && (
++        <DropdownMenuItem
++          disabled={check.pending || check.disabledReason !== undefined}
++          onSelect={() => check.run()}
++        >
++          <span className="flex min-w-0 flex-col">
++            <span>{check.pending ? "Checking…" : "Check now"}</span>
++            {!check.pending && check.disabledReason !== undefined && (
++              <span className="text-[11px] text-muted-foreground">{check.disabledReason}</span>
++            )}
++          </span>
++        </DropdownMenuItem>
++      )}
+       <AccountRowIdentityItem />
+       {separator && <DropdownMenuSeparator />}
+     </>
+diff --git a/packages/ui/src/implementation/dashboard/account-sign-in-checks.tsx b/packages/ui/src/implementation/dashboard/account-sign-in-checks.tsx
+new file mode 100644
+index 0000000..849956d
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/account-sign-in-checks.tsx
+@@ -0,0 +1,208 @@
++/**
++ * Checks of every sign-in in a grouped identity row, run together by one host action. The host
++ * checks each sign-in with the caller's own authority. A sign-in it refuses is only counted, never
++ * named, and keeps what the row already showed.
++ */
++import type { AccountGroupCheckResult, App } from "@executor-js/sdk";
++import { useAtomSet } from "@effect/atom-react";
++import { Cause, Exit } from "effect";
++import type { Atom } from "effect/reactivity";
++import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
++import type { AccountSummary, FailureProps } from "../../contracts/dashboard.ts";
++import { Button } from "../components/button.tsx";
++import { AccountHealthLine } from "./account-health-line.tsx";
++import { driverCanCheck } from "./account-health.tsx";
++import { useAccountRow } from "./account-row.tsx";
++
++/** One saved sign-in of a grouped row, with the apps it serves. */
++export interface AccountSignIn {
++  readonly account: AccountSummary;
++  /** What the sign-in's own menu announces, such as its given name. */
++  readonly name: string;
++  readonly apps: readonly App[];
++  readonly canReconnect?: ((app: App) => boolean) | undefined;
++}
++
++/** Why the host could not check one sign-in of the group. */
++export type AccountGroupCheckFailure = Extract<
++  AccountGroupCheckResult,
++  { status: "failed" }
++>["error"];
++
++/** A grouped row's one check of every sign-in, through the host's own group action. */
++export interface AccountGroupCheck<E> {
++  readonly signIns: readonly AccountSignIn[];
++  readonly check: () => Promise<Exit.Exit<readonly AccountGroupCheckResult[], E>>;
++  /** The host's own failure for a sign-in it could not check, shown with its other failures. */
++  readonly failure: (error: AccountGroupCheckFailure) => E;
++}
++
++/**
++ * Mounts the host's group check for a grouped row's sign-ins and hands it to `children`; only
++ * grouped rows render it, so other rows never mount a group check.
++ */
++export function AccountGroupCheckScope<E>({
++  signIns,
++  check,
++  failure,
++  children,
++}: Omit<AccountGroupCheck<E>, "check"> & {
++  /** The host's group check of exactly these sign-ins. */
++  readonly check: Atom.AtomResultFn<void, readonly AccountGroupCheckResult[], E>;
++  readonly children: (group: AccountGroupCheck<E>) => ReactNode;
++}) {
++  const run = useAtomSet(check, { mode: "promiseExit" });
++  return children({ signIns, check: () => run(), failure });
++}
++
++const noCheck = "No app that uses these sign-ins defines a check.";
++
++const checkable = ({ account, apps }: AccountSignIn) =>
++  (account.health?.apps.some(
++    (entry) => entry.checkable && apps.some((app) => app.id === entry.app),
++  ) ??
++    false) ||
++  driverCanCheck(account.health?.driver);
++
++/** A grouped row's shared check: one pending run and the last outcome. */
++export interface SignInChecksState<E> {
++  readonly signIns: readonly AccountSignIn[];
++  readonly pending: boolean;
++  readonly error: Cause.Cause<E> | undefined;
++  readonly outcome: readonly AccountGroupCheckResult[] | undefined;
++  /** The first sign-in the last check could not check, as the host's failure. */
++  readonly failure: Cause.Cause<E> | undefined;
++  readonly disabledReason: string | undefined;
++  readonly run: () => Promise<void>;
++}
++
++const count = (n: number) => `${n} ${n === 1 ? "sign-in" : "sign-ins"}`;
++
++/** Sentences that never open on a numeral and hold for refused, gone and failed sign-ins alike. */
++const outcomeText = (checked: number, unchecked: number) =>
++  unchecked === 0
++    ? checked === 1
++      ? "Checked the sign-in."
++      : `Checked all ${count(checked)}.`
++    : checked === 0
++      ? unchecked === 1
++        ? "The sign-in couldn't be checked."
++        : `None of the ${count(unchecked)} could be checked.`
++      : `Checked ${checked} of ${count(checked + unchecked)}. ${
++          unchecked === 1 ? "The other one" : `The other ${unchecked}`
++        } couldn't be checked.`;
++
++/**
++ * The group check's state. Inside a row with a menu it also offers Check now from that menu, so
++ * the menu item and Details share one pending check and one outcome.
++ */
++export function useSignInChecks<E>(
++  group: AccountGroupCheck<E> | undefined,
++): SignInChecksState<E> | undefined {
++  const [pending, setPending] = useState(false);
++  const [error, setError] = useState<Cause.Cause<E>>();
++  const [outcome, setOutcome] = useState<readonly AccountGroupCheckResult[]>();
++  const [failure, setFailure] = useState<Cause.Cause<E>>();
++  const run = async () => {
++    if (pending || group === undefined) return;
++    setPending(true);
++    setError(undefined);
++    setOutcome(undefined);
++    setFailure(undefined);
++    const exit = await group.check();
++    setPending(false);
++    if (Exit.isFailure(exit)) return setError(exit.cause);
++    setOutcome(exit.value);
++    const failed = exit.value.find((result) => result.status === "failed");
++    if (failed !== undefined) setFailure(Cause.fail(group.failure(failed.error)));
++  };
++  // The row menu keeps one stable callback that always runs the latest check.
++  const latest = useRef(run);
++  useEffect(() => {
++    latest.current = run;
++  });
++  const grouped = group !== undefined;
++  const disabledReason = group?.signIns.some(checkable) === true ? undefined : noCheck;
++  const setCheck = useAccountRow()?.setCheck;
++  useEffect(() => {
++    if (setCheck === undefined) return;
++    setCheck(grouped ? { run: () => void latest.current(), pending, disabledReason } : undefined);
++  }, [setCheck, grouped, pending, disabledReason]);
++  useEffect(() => (setCheck === undefined ? undefined : () => setCheck(undefined)), [setCheck]);
++  return group === undefined
++    ? undefined
++    : { signIns: group.signIns, pending, error, outcome, failure, disabledReason, run };
++}
++
++/** Whether the last check left a sign-in unchecked, which the collapsed row also says. */
++export const partialOutcome = <E,>(state: SignInChecksState<E> | undefined) =>
++  state?.outcome?.some((result) => result.status !== "checked") === true;
++
++/**
++ * What the last group check did: how many sign-ins it checked and the first failure. A sign-in the
++ * host refused, because the caller may not use it or it is gone, only counts as unchecked. `quiet`
++ * leaves a fully checked group to the updated checks.
++ */
++export function SignInCheckOutcome<E>({
++  state,
++  quiet = false,
++  Failure,
++}: {
++  readonly state: SignInChecksState<E>;
++  readonly quiet?: boolean;
++  readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
++}) {
++  const { outcome, failure, error } = state;
++  const checked = outcome?.filter((result) => result.status === "checked").length ?? 0;
++  const unchecked = (outcome?.length ?? 0) - checked;
++  return (
++    <>
++      {outcome !== undefined && (unchecked > 0 || !quiet) && (
++        <div role="status" className="grid min-w-0 gap-0.75" data-sign-in-check-outcome>
++          <p className="text-muted-foreground">{outcomeText(checked, unchecked)}</p>
++          {failure && <Failure cause={failure} layout="compact" />}
++        </div>
++      )}
++      {error && <Failure cause={error} layout="compact" />}
++    </>
++  );
++}
++
++/** Each sign-in's latest checks under its name, with one Check now for the whole group. */
++export function SignInChecks<E>({
++  state,
++  Failure,
++}: {
++  readonly state: SignInChecksState<E>;
++  readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
++}) {
++  return (
++    <div className="flex min-w-0 flex-col gap-1.5" data-sign-in-checks>
++      <div className="flex min-h-6 flex-wrap items-center gap-x-1.5 gap-y-0.5">
++        <span>Checks for each sign-in</span>
++        <Button
++          variant="outline"
++          size="xs"
++          className="ml-1"
++          loading={state.pending}
++          disabledReason={state.disabledReason}
++          onClick={() => void state.run()}
++        >
++          Check now
++        </Button>
++      </div>
++      <SignInCheckOutcome state={state} Failure={Failure} />
++      {state.signIns.map((signIn) => (
++        <div key={signIn.account.id} className="grid min-w-0 gap-0.5" data-sign-in>
++          <span className="font-medium text-foreground wrap-anywhere">{signIn.name}</span>
++          <AccountHealthLine<E>
++            account={signIn.account}
++            apps={signIn.apps}
++            canReconnect={signIn.canReconnect}
++            Failure={Failure}
++          />
++        </div>
++      ))}
++    </div>
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+index 42551ec..1d94857 100644
+--- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
++++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+@@ -35,6 +35,7 @@ import { useAtomValue } from "@effect/atom-react";
+ import { cn } from "../lib/utils.ts";
+ import { useEffect, useRef, useState, type ReactNode } from "react";
+ import { AccountActionsMenu } from "./account-actions.tsx";
++import type { AccountSignIn } from "./account-sign-in-checks.tsx";
+ import { QueryResult, useQuery, useDashboard } from "./context.tsx";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
+@@ -112,8 +113,15 @@ export function AccountsPage<E>({
+   readonly accountTraffic?:
+     | ((accounts: readonly AccountSummary[]) => AccountRowTraffic | undefined)
+     | undefined;
+-  /** A full-width block under the row, such as the account's usage, given the apps using it. */
+-  readonly accountDetails?: (account: AccountSummary, apps: readonly App[]) => ReactNode;
++  /**
++   * A full-width block under the row, such as the account's usage, given the apps using it. A
++   * grouped identity row also gives each of its sign-ins, whose checks Details list.
++   */
++  readonly accountDetails?: (
++    account: AccountSummary,
++    apps: readonly App[],
++    signIns?: readonly AccountSignIn[],
++  ) => ReactNode;
+   /** A linked account is scrolled into view and marked, since accounts have no page of their own. */
+   readonly highlight?: AccountId | undefined;
+ }) {
+@@ -195,7 +203,11 @@ function AccountsList({
+   readonly accountTraffic?:
+     | ((accounts: readonly AccountSummary[]) => AccountRowTraffic | undefined)
+     | undefined;
+-  readonly accountDetails?: (account: AccountSummary, apps: readonly App[]) => ReactNode;
++  readonly accountDetails?: (
++    account: AccountSummary,
++    apps: readonly App[],
++    signIns?: readonly AccountSignIn[],
++  ) => ReactNode;
+   readonly highlight?: AccountId | undefined;
+ }) {
+   const brand = useProductBrand();
+@@ -451,7 +463,19 @@ function AccountsList({
+                   )}
+                   {accountDetails !== undefined && (
+                     <div className={cn(accountRowBand(false), "empty:hidden")}>
+-                      {accountDetails(account, apps)}
++                      {bindings.length > 1
++                        ? accountDetails(
++                            account,
++                            apps,
++                            bindings.map((binding) => ({
++                              account: binding,
++                              name: accountMenuName(binding, accountKindLabel(data, binding), {
++                                binding: true,
++                              }),
++                              apps: bindingApps(data, [binding]),
++                            })),
++                          )
++                        : accountDetails(account, apps)}
+                     </div>
+                   )}
+                 </div>
+@@ -466,8 +490,9 @@ function AccountsList({
+ 
+ /**
+  * The ⋯ for a row the host gives no menu of its own, such as a grouped identity: the row's own
+- * actions (usage, Details, adding an app for the identity), and each grouped sign-in's own actions
+- * in a dialog. Like every row with a menu, its checks and requested access open with Details.
++ * actions (usage, Details, checking every sign-in, adding an app for the identity), and each
++ * grouped sign-in's own actions in a dialog. Like every row with a menu, its checks and requested
++ * access open with Details.
+  */
+ function IdentityRowMenu({
+   title,
