@@ -1,0 +1,150 @@
+diff --git a/apps/hosted/server/src/contracts/app-data.ts b/apps/hosted/server/src/contracts/app-data.ts
+index ebcb6fec67cf63e3a4bdb7cd05b0f1c534167b5e..ab194cf63635532c3f3455bf6251a36a3983efbb 100644
+--- a/apps/hosted/server/src/contracts/app-data.ts
++++ b/apps/hosted/server/src/contracts/app-data.ts
+@@ -17,8 +17,9 @@ const payload = Schema.Struct({
+   name: Schema.NonEmptyString,
+   input: Json,
+ }).pipe(withLegacyKeys({ version: "deployment" }));
++// HttpApi assigns one status per error entry; the union's members carry their own annotations.
+ const errors = [
+-  AppDataErrors,
++  ...AppDataErrors.members,
+   OrganizationForbidden,
+   AuthenticationUnavailable,
+   Unauthorized,
+diff --git a/e2e/tests/app-data-error-status.spec.ts b/e2e/tests/app-data-error-status.spec.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..aaac02241078503448c71faf0c9ac58d8c6ea312
+--- /dev/null
++++ b/e2e/tests/app-data-error-status.spec.ts
+@@ -0,0 +1,105 @@
++/** Expected app data failures keep their status and typed details on both hosted transports. */
++import { expect, layer } from "@effect/vitest";
++import { Effect } from "effect";
++import { appLinksFixture } from "../support/app-links.ts";
++import { linkAccount, unlinkAccount } from "../support/app-accounts.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { scenarios } from "../test-plan.ts";
++
++const source = `import { defineApp, defineProvider, secrets, mutation, query, router, object, string, type QueryContext, type MutationContext } from "apps";
++const provider = defineProvider({ name: "App data status fixture", auth: {
++  key: secrets({ label: "Key", fields: object({ token: string() }) })
++} });
++const requirements = { user: { accounts: { personal: provider } } };
++export default defineApp(requirements, {
++  tools: router({
++    read: query({ input: object({ request: string() }) }, async (ctx: QueryContext<typeof requirements>, input) =>
++      ({ request: input.request, account: ctx.user.accounts.personal.id })),
++    write: mutation({ input: object({ request: string() }) }, async (ctx: MutationContext<typeof requirements>, input) =>
++      ({ request: input.request, account: ctx.user.accounts.personal.id })),
++  }),
++});`;
++
++layer(HostedLive, { excludeTestServices: true })("Hosted app data statuses", (it) => {
++  it.effect(scenarios.appDataErrorStatuses.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const { api, actors, path, connect } = yield* appLinksFixture([
++          { path: "index.ts", content: source },
++        ]);
++        const account = yield* connect(actors.owner, "user", "personal", "synthetic-key");
++        const operations = [
++          { endpoint: "query", name: "read" },
++          { endpoint: "mutate", name: "write" },
++        ];
++        const statuses: Array<{ endpoint: string; error: string; status: number }> = [];
++        for (const { endpoint, name } of operations) {
++          const response = yield* api.request(actors.owner, "POST", `${path}/data/${endpoint}`, {
++            name,
++            input: { request: "allowed" },
++          });
++          expect(response.status, JSON.stringify(response.body)).toBe(200);
++          expect(response.body).toEqual({ request: "allowed", account });
++        }
++
++        yield* unlinkAccount(actors.owner, path, "personal", account);
++        for (const { endpoint, name } of operations) {
++          const response = yield* api.request(actors.owner, "POST", `${path}/data/${endpoint}`, {
++            name,
++            input: { request: "unlinked" },
++          });
++          expect(response.body).toMatchObject({
++            _tag: "AccountRequired",
++            slot: "personal",
++            scope: "user",
++          });
++          statuses.push({ endpoint, error: "AccountRequired", status: response.status });
++        }
++
++        yield* linkAccount(actors.owner, path, "personal", account);
++        for (const { endpoint, name } of operations) {
++          const missingVersion = yield* api.request(
++            actors.owner,
++            "POST",
++            `${path}/data/${endpoint}`,
++            { version: "dpl_missing", name, input: { request: "missing-version" } },
++          );
++          expect(missingVersion.body).toMatchObject({
++            _tag: "VersionNotFound",
++            version: "dpl_missing",
++          });
++          statuses.push({ endpoint, error: "VersionNotFound", status: missingVersion.status });
++
++          const missingOperation = yield* api.request(
++            actors.owner,
++            "POST",
++            `${path}/data/${endpoint}`,
++            { name: "missing", input: { request: "missing-operation" } },
++          );
++          expect(missingOperation.body).toMatchObject({ _tag: "AppDataNotFound", name: "missing" });
++          statuses.push({ endpoint, error: "AppDataNotFound", status: missingOperation.status });
++
++          const invalidInput = yield* api.request(
++            actors.owner,
++            "POST",
++            `${path}/data/${endpoint}`,
++            { name, input: { request: 123 } },
++          );
++          expect(invalidInput.body).toMatchObject({ _tag: "AppDataFailed", name });
++          statuses.push({ endpoint, error: "AppDataFailed", status: invalidInput.status });
++        }
++        expect(statuses).toEqual([
++          { endpoint: "query", error: "AccountRequired", status: 409 },
++          { endpoint: "mutate", error: "AccountRequired", status: 409 },
++          { endpoint: "query", error: "VersionNotFound", status: 404 },
++          { endpoint: "query", error: "AppDataNotFound", status: 404 },
++          { endpoint: "query", error: "AppDataFailed", status: 422 },
++          { endpoint: "mutate", error: "VersionNotFound", status: 404 },
++          { endpoint: "mutate", error: "AppDataNotFound", status: 404 },
++          { endpoint: "mutate", error: "AppDataFailed", status: 422 },
++        ]);
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/data-query-batch.spec.ts b/e2e/tests/data-query-batch.spec.ts
+index 92a9ec8598e261d50f5f3712fe67cfcc76b1df21..7b49f5db7b982f4c955ee6cc75739f62159e4bd8 100644
+--- a/e2e/tests/data-query-batch.spec.ts
++++ b/e2e/tests/data-query-batch.spec.ts
+@@ -92,8 +92,7 @@ layer(HostedLive, { excludeTestServices: true })("Data query batch", (it) => {
+           yield* unlinkAccount(actors.member, path, "personal", replacement);
+           expect(yield* linkedAccountIds(actors.member, path)).toEqual([]);
+           const unlinked = yield* read(actors.member, "unlinked");
+-          // Hosted AppDataErrors currently maps its SDK error union to500.
+-          expect(unlinked.response.status, JSON.stringify(unlinked.response.body)).toBe(500);
++          expect(unlinked.response.status, JSON.stringify(unlinked.response.body)).toBe(409);
+           expect(unlinked.response.body).toMatchObject({
+             _tag: "AccountRequired",
+             slot: "personal",
+@@ -150,8 +149,7 @@ layer(HostedLive, { excludeTestServices: true })("Data query batch", (it) => {
+           name: "read",
+           input: { request: "missing-version" },
+         });
+-        // Preserve the current hosted union's wire status while requiring its typed refusal.
+-        expect(stale.response.status, JSON.stringify(stale.response.body)).toBe(500);
++        expect(stale.response.status, JSON.stringify(stale.response.body)).toBe(404);
+         expect(stale.response.body).toMatchObject({
+           _tag: "VersionNotFound",
+           version: "dpl_stale",
