@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-connect-form-no-write",
+  "file": "0323-connect-form-no-write.patch",
+  "content_sha256": "189bbc314e1e795eca8e6ba9abaf669a96365d0d3bed784c4ca6405ba7396e39",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
