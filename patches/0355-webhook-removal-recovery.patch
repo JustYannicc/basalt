@@ -183,7 +183,7 @@ diff --git a/e2e/support/webhook-removal-fixture.ts b/e2e/support/webhook-remova
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/webhook-removal-fixture.ts
-@@ -0,0 +1,140 @@
+@@ -0,0 +1,145 @@
 +import { expect } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { FetchHttpClient, HttpClient } from "effect/http";
@@ -233,7 +233,12 @@ new file mode 100644
 +      Effect.gen(function* () {
 +        const connection = yield* body(
 +          Resource,
-+          yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), account === undefined ? {} : { account }),
++          yield* api.request(
++            actors.owner,
++            "POST",
++            connectionsPath(path, "user", "service"),
++            account === undefined ? {} : { account },
++          ),
 +        );
 +        if (kind !== "oauth") {
 +          const saved = yield* api.request(
