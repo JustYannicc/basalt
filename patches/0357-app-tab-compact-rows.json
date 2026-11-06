@@ -1,7 +1,7 @@
 {
   "identity": "basalt-app-tab-compact-rows",
   "file": "0357-app-tab-compact-rows.patch",
-  "content_sha256": "a562e65a6c266247fde1dcc95b58bac31607356b00ed1e73fe757989b65c19af",
+  "content_sha256": "28bedc3afd511ccf61bf819c54cf6a4d7b1ea29d20b05bf4f35901d787fab628",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

@@ -155,6 +155,21 @@ index e16c564..ba38d58 100644
 +    ),
 +  );
  });
+diff --git a/e2e/tests/contributed-app-accounts.spec.ts b/e2e/tests/contributed-app-accounts.spec.ts
+index 7420f1c..4c86e62 100644
+--- a/e2e/tests/contributed-app-accounts.spec.ts
++++ b/e2e/tests/contributed-app-accounts.spec.ts
+@@ -149,7 +149,9 @@ layer(HostedLive, { excludeTestServices: true })("Contributed Accounts tab", (it
+           page.setViewportSize({ width: 1440, height: 960 }),
+         );
+         yield* browser.use("Open my contribution's menu", (page) =>
+-          page.getByRole("button", { name: "Manage My service account", exact: true }).click(),
++          requirementSection(page, "contributed")
++            .getByRole("button", { name: "Manage My service account", exact: true })
++            .click(),
+         );
+         yield* browser.use("Remove the contribution I added", (page) =>
+           page.getByRole("menuitem", { name: "Unlink", exact: true }).click(),
 diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/packages/ui/src/implementation/dashboard/account-actions.tsx
 index 757f1f8..9da7754 100644
 --- a/packages/ui/src/implementation/dashboard/account-actions.tsx
