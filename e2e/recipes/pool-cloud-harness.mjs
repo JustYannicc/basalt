@@ -276,5 +276,19 @@ export const poolCloudHarness = (directory, { resets = false } = {}) =>
       connect: (...args) => connectAs("owner", ...args),
       fixture: setup.fixture,
       runtimeDirectory: target.directory,
+      /**
+       * Make an account's next usage refresh due now, standing in for the server's refresh
+       * interval passing, so the account row's own Refresh reads usage again at once.
+       */
+      observationsDue: (account) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const database = yield* cloudLocks.pipe(Effect.provideService(Target, target));
+            yield* database.run({
+              sql: "update executor_account_observations set next_allowed_at = now() where account = $1",
+              params: [account],
+            });
+          }),
+        ),
     };
   });

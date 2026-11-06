@@ -176,6 +176,22 @@ const program = Effect.gen(function* () {
     ),
   );
   const consumes = () => h.fixture.resets.calls.filter((call) => call.action === "consume");
+  const latestReading = (view) =>
+    Math.max(0, ...view.reports.map((report) => Date.parse(report.result?.observedAt ?? "") || 0));
+  // A confirmed reset keeps the count disabled until a reading newer than the reset arrives, also
+  // across a reload. A step that spends again starts from that fresh reading: the refresh interval
+  // is made due, then the account row's own Refresh reads usage again.
+  const freshReading = () =>
+    Effect.gen(function* () {
+      const before = latestReading(yield* h.request("GET", `${account}/observations`));
+      yield* h.observationsDue(saved.account.id);
+      yield* h.request("POST", `${account}/observations/refresh`);
+      yield* until(
+        h.request("GET", `${account}/observations`),
+        (view) => latestReading(view) > before,
+        "no fresh reading after the confirmed reset",
+      );
+    });
 
   const browser = yield* Effect.acquireRelease(
     Effect.promise(() => chromium.launch({ headless: true })),
@@ -263,6 +279,7 @@ const program = Effect.gen(function* () {
   yield* page(() => shot("reset-confirmed"));
 
   // A definite refusal shows its reason and spends nothing.
+  yield* freshReading();
   h.fixture.resets.mode(id, "refused");
   yield* page(() =>
     load()
@@ -334,6 +351,7 @@ const program = Effect.gen(function* () {
   checked("the dropped request spent one credit", h.fixture.resets.remaining(id), 3);
 
   // A lost answer is unknown; a reload restores the same request, and Retry replays it exactly.
+  yield* freshReading();
   h.fixture.resets.mode(id, "unknown");
   const held = h.fixture.resets.hold();
   yield* page(() =>
@@ -390,6 +408,7 @@ const program = Effect.gen(function* () {
   checked("the replay spent no second credit", h.fixture.resets.remaining(id), 2);
 
   // Past the server's retry window, the retained unknown blocks a new spend and offers no retry.
+  yield* freshReading();
   yield* page(() =>
     load()
       .then(() => control.click())
