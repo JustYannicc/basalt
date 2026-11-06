@@ -6,7 +6,7 @@
       "targets": {
         "local": {
           "status": "not-applicable",
-          "reason": "Hosted app Accounts tab; Local has a separate implementation."
+          "reason": "Hosted app accounts wrapper."
         },
         "self-host": {
           "status": "scheduled"
@@ -22,7 +22,7 @@
       "targets": {
         "local": {
           "status": "not-applicable",
-          "reason": "Hosted app Accounts tab; Local has a separate implementation."
+          "reason": "Hosted app accounts wrapper."
         },
         "self-host": {
           "status": "scheduled"
