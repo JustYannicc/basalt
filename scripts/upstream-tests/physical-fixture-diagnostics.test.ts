@@ -91,20 +91,20 @@ test("a failed readiness child retains both streams, its exit code and the contr
         const control = yield* cloudRuntimeControl(
           { origin: "http://unused.invalid", token: Redacted.make("fixture-control-only") },
           yield* cloudLogActivity,
-          (binding: string) =>
-            binding === "original"
-              ? Effect.fail(
-                  new FixtureControlError({
-                    message: "outer fixture error",
-                    cause: new Error("middle fixture error", {
-                      cause: Object.assign(new Error("root fixture error"), { code: "XX000" }),
-                    }),
+          (binding) =>
+            Effect.gen(function* () {
+              if (binding === "original")
+                return yield* new FixtureControlError({
+                  message: "outer fixture error",
+                  cause: new Error("middle fixture error", {
+                    cause: Object.assign(new Error("root fixture error"), { code: "XX000" }),
                   }),
-                )
-              : fixture.provisioned.pipe(
-                  Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-                  Effect.as({ ready: true }),
-                ),
+                });
+              return yield* fixture.provisioned.pipe(
+                Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+                Effect.as({ ready: true }),
+              );
+            }),
           directory,
         );
         const request = (binding: string) =>
