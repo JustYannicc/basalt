@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-readiness-trigger-install",
+  "file": "0331-readiness-trigger-install.patch",
+  "content_sha256": "061d9c2ebf378fdade24ff38f4ce53eb3de49bc5855d5f548b0592bc49a92ab9",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
