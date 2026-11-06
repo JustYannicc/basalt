@@ -213,7 +213,7 @@ diff --git a/e2e/tests/pool-app-removal.spec.ts b/e2e/tests/pool-app-removal.spe
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/pool-app-removal.spec.ts
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,127 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schedule, Schema } from "effect";
 +import { HttpClient, HttpBody } from "effect/http";
@@ -225,7 +225,10 @@ new file mode 100644
 +import { scenarios } from "../test-plan.ts";
 +
 +const App = Schema.Struct({ id: Schema.String });
-+const Account = Schema.Struct({ account: Schema.Struct({ id: Schema.String }) });
++const Account = Schema.Struct({
++  account: Schema.Struct({ id: Schema.String }),
++  linked: Schema.Boolean,
++});
 +class StillListed extends Schema.TaggedError<StillListed>()("StillListed", {}) {}
 +
 +layer(RuntimeLive, { excludeTestServices: true })("Pool app removal", (it) => {
@@ -266,6 +269,7 @@ new file mode 100644
 +            );
 +        const accounts = yield* choices();
 +        expect(accounts.accounts.length).toBeGreaterThan(0);
++        expect(accounts.accounts.some((entry) => entry.linked)).toBe(true);
 +        yield* refuse(true);
 +        const refused = yield* api.request(actors.owner, "DELETE", path);
 +        yield* evidence.json("pool-delete-refused.json", {
