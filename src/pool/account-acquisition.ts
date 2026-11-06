@@ -1,3 +1,4 @@
+import { removeHomeAccount, type AcknowledgedRemoval } from "./account-acquisition-removal.ts";
 import { acquisitionReceipt, acquisitionStep } from "./account-acquisition-failure.ts";
 import { callbackOrigin } from "./account-acquisition-urls.ts";
 import providers from "./providers.json" with { type: "json" };
@@ -38,6 +39,7 @@ interface Storage {
 interface Attribution {
   begin(): Promise<string>;
   settle(marker: string, ids: readonly string[]): Promise<void>;
+  removalAcknowledged?(input: AcknowledgedRemoval): Promise<void>;
 }
 
 /** Runs inside PoolControl's queue, including its legacy attribution writes. No pool is attached. */
@@ -89,7 +91,12 @@ export class HomeAccountAcquisitions {
         const ref = text(value.reference);
         if (!ref) return unavailable();
         // This action comes only from the host's authorized saved-binding retirement.
-        await this.remove(ref, request.signal);
+        await this.remove(
+          ref,
+          request.signal,
+          text(value.actor) ?? undefined,
+          String(value.operation),
+        );
         return this.reply(null);
       }
       if (value.action === "start") {
@@ -358,26 +365,18 @@ export class HomeAccountAcquisitions {
       await acquisitionStep("state", () => this.storage.setAlarm(next));
   }
 
-  private async remove(ref: string, signal?: AbortSignal): Promise<void> {
-    const refs = homeReferences(ref);
-    for (const id of refs) {
-      const response = await this.home.response(`/credentials?id=${encodeURIComponent(id)}`, {
-        method: "DELETE",
-        signal,
-      });
-      await response.body?.cancel();
-      if (!response.ok && response.status !== 404) return unavailable();
-    }
-    for (const member of (await this.home.allMembership(signal)).members.filter((member) =>
-      refs.includes(member.auth_id),
-    )) {
-      const removed = await this.home.response(`/channel-group-details/${member.id}`, {
-        method: "DELETE",
-        signal,
-      });
-      await removed.body?.cancel();
-      if (!removed.ok && removed.status !== 404) return unavailable();
-    }
+  private remove(
+    ref: string,
+    signal?: AbortSignal,
+    actor?: string,
+    operation?: string,
+  ): Promise<void> {
+    return removeHomeAccount(this.home, ref, {
+      signal,
+      actor,
+      operation,
+      acknowledged: this.attribution.removalAcknowledged,
+    });
   }
 
   private reply(value: unknown): Response {

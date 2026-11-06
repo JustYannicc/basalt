@@ -1,0 +1,241 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/product-services.ts b/apps/hosted/cloud/src/infrastructure/product-services.ts
+index 4de966b..4c2df0a 100644
+--- a/apps/hosted/cloud/src/infrastructure/product-services.ts
++++ b/apps/hosted/cloud/src/infrastructure/product-services.ts
+@@ -1,3 +1,4 @@
++import { PoolRemovalBackend } from "@executor-js/hosted-server/pool-removal-intent";
+ import { AccountResetBackend } from "@executor-js/hosted-server/account-resets";
+ import { cloudHostedRoutes } from "./hosted-routes.ts";
+ import { HostedRoutesConfiguration } from "@executor-js/hosted-server/hosted-routes/contracts";
+@@ -77,6 +78,10 @@ export const cloudProductServices = Effect.fn(function* (
+     Layer.succeed(HostedRoutesConfiguration, routes.configuration),
+     Layer.succeed(AccountAcquisitionConfiguration, acquisition),
+     Layer.succeed(AccessLifecycle, accessLifecycle),
++    Layer.succeed(
++      PoolRemovalBackend,
++      Option.isSome(poolKey) ? { key: poolKey.value, origin: poolOrigin } : undefined,
++    ),
+     Layer.succeed(
+       AccountResetBackend,
+       Option.isSome(poolKey) ? { key: poolKey.value, origin: poolOrigin } : undefined,
+diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+index 320bf03..9a7b3d0 100644
+--- a/apps/hosted/server/package.json
++++ b/apps/hosted/server/package.json
+@@ -60,7 +60,8 @@
+     "./hosted-routes/contracts": "./src/contracts/hosted-routes.ts",
+     "./pool-models": "./src/implementation/pool-models.ts",
+     "./tool-policies": "./src/contracts/tool-policies.ts",
+-    "./tool-policy-schema": "./src/implementation/tool-policy-schema.ts"
++    "./tool-policy-schema": "./src/implementation/tool-policy-schema.ts",
++    "./pool-removal-intent": "./src/implementation/pool-removal-intent.ts"
+   },
+   "dependencies": {
+     "@better-auth/api-key": "1.7.5",
+diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/hosted/server/src/implementation/app-account-links.ts
+index 60e5273..bc076ae 100644
+--- a/apps/hosted/server/src/implementation/app-account-links.ts
++++ b/apps/hosted/server/src/implementation/app-account-links.ts
+@@ -1,5 +1,6 @@
+ import { AccountListReads } from "./account-list-reads.ts";
+ import { AccountLinkRecord as LinkRecord } from "./account-list-links.ts";
++import { preparePoolUnlinkIntent } from "./pool-removal-intent.ts";
+ import { canReconnectAccount } from "./account-reconnect.ts";
+ import { contributedDepartures } from "./contributed-departure-reads.ts";
+ import {
+@@ -458,6 +459,7 @@ const unlink = (
+     const records = yield* linkRecords(params.app, subject, params.requirement);
+     if (!records.some((row) => row.account === params.account))
+       return yield* new AccountNotFound({ account: params.account });
++    const receipt = yield* preparePoolUnlinkIntent(params);
+     const binding = yield* executor[InteractiveHost].binding({ owner, account: params.account });
+     const interactive = binding?.app === params.app && (yield* canDeleteAccount(params.account));
+     const remove = (sql: SqlClient.SqlClient) =>
+@@ -474,6 +476,7 @@ const unlink = (
+       { owner, accounts: interactive ? [params.account] : [] },
+       change,
+     );
++    yield* receipt;
+     yield* wake;
+     return { requirement: params.requirement, account: params.account };
+   });
+@@ -611,6 +614,7 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
+           });
+           if (legacy !== undefined)
+             return yield* new RequirementMismatch({ ...params, scope: "app", reason: "legacy" });
++          const receipt = yield* preparePoolUnlinkIntent(params);
+           const removed = yield* lockedChange(executor, { ...params, access: "remove" }, (sql) =>
+             removeLink(sql, executor.webhooks, {
+               app: params.app,
+@@ -620,6 +624,7 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
+             }),
+           );
+           if (!removed) return yield* new AccountNotFound({ account: params.account });
++          yield* receipt;
+           yield* wake;
+           return { requirement: params.requirement, account: params.account };
+         }),
+diff --git a/apps/hosted/server/src/implementation/pool-account-registry.ts b/apps/hosted/server/src/implementation/pool-account-registry.ts
+index 1269ab8..72795db 100644
+--- a/apps/hosted/server/src/implementation/pool-account-registry.ts
++++ b/apps/hosted/server/src/implementation/pool-account-registry.ts
+@@ -73,6 +73,7 @@ export const poolAccountRegistry = (
+           operation: context.operation,
+           action,
+           provider: capability.backend,
++          ...(action === "remove" && context.actor !== undefined ? { actor: context.actor } : {}),
+           at,
+           expiresAt: Math.min(context.deadline, at + 30_000),
+           ...input,
+diff --git a/apps/hosted/server/src/implementation/pool-removal-intent.ts b/apps/hosted/server/src/implementation/pool-removal-intent.ts
+new file mode 100644
+index 0000000..2e911b9
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-removal-intent.ts
+@@ -0,0 +1,100 @@
++import { AppId, AccountAcquisitionHost, type AccountId, StorageError } from "@executor-js/sdk/core";
++import { Clock, Config, Context, Effect, Option, Redacted, Schema } from "effect";
++import { FetchHttpClient, HttpBody, HttpClient } from "effect/http";
++import { HostedExecutor } from "../contracts/executor.ts";
++import { CurrentUserId } from "../contracts/auth.ts";
++import { CurrentOrganization } from "../contracts/organization.ts";
++import { policyDatabase } from "./resource-policy.ts";
++import { nativePoolMembership } from "./pool-membership.ts";
++import { signEnvelope } from "./pool-token.ts";
++import { SqlClient } from "effect/sql";
++
++export const PoolRemovalBackend = Context.Reference<
++  { readonly key: Redacted.Redacted<string>; readonly origin: string } | undefined
++>("hosted/PoolRemovalBackend", { defaultValue: () => undefined });
++const Pools = Schema.Array(Schema.Struct({ pool: AppId }));
++
++/** Capture privately before unlink; invoke only after its authorized transaction commits. */
++export const preparePoolUnlinkIntent = (input: {
++  readonly app: AppId;
++  readonly account: AccountId;
++}) =>
++  Effect.gen(function* () {
++    const actor = yield* CurrentUserId;
++    if (actor === undefined) return Effect.void;
++    const { organization } = yield* CurrentOrganization;
++    const sql = yield* policyDatabase;
++    const person =
++      yield* sql`select id from member where "organizationId" = ${organization} and "userId" = ${actor}`;
++    if (person.length !== 1) return Effect.void;
++    const pools = yield* Schema.decodeUnknownEffect(Pools)(
++      yield* sql`
++      select app.id as pool from organization o
++      cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
++      join executor_apps app on app.id = entry.value ->> 'app' and app.owner = 'organization:' || o.id
++      join hosted_app_account_links l on l.app = app.id and l.subject is null and l.account = ${input.account}
++      where o.id = ${organization} and app.id = ${input.app}
++        and entry.value ->> 'membership' = 'executor-links-v1'`,
++    );
++    if (!pools.length) return Effect.void;
++    const executor = yield* Effect.flatten(HostedExecutor);
++    const source = yield* executor[AccountAcquisitionHost].source({ account: input.account });
++    if (
++      source === undefined ||
++      source.hostReference === undefined ||
++      source.source.id !== "basalt-home"
++    )
++      return Effect.void;
++    const reference = Redacted.value(source.hostReference);
++    const matching: AppId[] = [];
++    for (const { pool } of pools) {
++      const membership = yield* nativePoolMembership(organization, pool, executor).pipe(
++        Effect.provideService(SqlClient.SqlClient, sql),
++      );
++      if (
++        membership.accounts.some(
++          (account) => account.account === input.account && account.homeReference === reference,
++        )
++      )
++        matching.push(pool);
++    }
++    if (!matching.length) return Effect.void;
++    const revision = source.binding.revision;
++    return Effect.gen(function* () {
++      const current = yield* source.current;
++      if (current === undefined || current.revision !== revision || current.removal !== null)
++        return;
++      const supplied = yield* PoolRemovalBackend;
++      const key =
++        supplied?.key ??
++        Option.getOrUndefined(yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option));
++      const origin =
++        supplied?.origin ??
++        Option.getOrUndefined(yield* Config.String("BASALT_POOL_ORIGIN").pipe(Config.option));
++      if (key === undefined || origin === undefined) return yield* new StorageError();
++      const client = yield* HttpClient.HttpClient;
++      for (const pool of matching) {
++        const at = yield* Clock.currentTimeMillis;
++        const envelope = yield* Effect.tryPromise(() =>
++          signEnvelope(Redacted.value(key), "sbrm1", {
++            audience: "/pool/v1/account-removal-intents",
++            pool,
++            reference,
++            actor,
++            operation: crypto.randomUUID(),
++            at,
++            expiresAt: at + 30_000,
++          }),
++        );
++        const response = yield* client.post(
++          new URL("/pool/v1/account-removal-intents", origin).href,
++          { body: HttpBody.jsonUnsafe({ envelope }) },
++        );
++        if (response.status !== 204) return yield* new StorageError();
++      }
++    }).pipe(
++      Effect.timeout("10 seconds"),
++      Effect.provide(FetchHttpClient.layer),
++      Effect.catch(() => new StorageError()),
++    );
++  }).pipe(Effect.catch(() => new StorageError()));
+diff --git a/packages/sdk/src/contracts/account-acquisition-driver.ts b/packages/sdk/src/contracts/account-acquisition-driver.ts
+index 3ac0fa1..17776a0 100644
+--- a/packages/sdk/src/contracts/account-acquisition-driver.ts
++++ b/packages/sdk/src/contracts/account-acquisition-driver.ts
+@@ -44,6 +44,8 @@ export type AccountAcquisitionBinding = typeof AccountAcquisitionBinding.Type;
+ 
+ /** Product code registers drivers; app declarations cannot choose their implementation. */
+ export interface AccountAcquisitionContext {
++  /** Authenticated host actor; absent for background operations without a person. */
++  readonly actor?: string | undefined;
+   readonly owner: OwnerId;
+   readonly provider: ProviderId;
+   readonly method: string;
+diff --git a/packages/sdk/src/implementation/account-acquisition-runtime.ts b/packages/sdk/src/implementation/account-acquisition-runtime.ts
+index 4caabe8..683aadb 100644
+--- a/packages/sdk/src/implementation/account-acquisition-runtime.ts
++++ b/packages/sdk/src/implementation/account-acquisition-runtime.ts
+@@ -1,3 +1,4 @@
++import { CurrentActor } from "../contracts/executor.ts";
+ import { Clock, Effect, Redacted, Schema, type Crypto } from "effect";
+ import { HostOperationFailed, HostOperationNotFound } from "apps/contracts";
+ import type {
+@@ -19,7 +20,7 @@ import {
+   acquisitionObservationOutput,
+ } from "./account-acquisition-output.ts";
+ 
+-type ContextInput = Omit<AccountAcquisitionContext, "signal" | "fetch">;
++type ContextInput = Omit<AccountAcquisitionContext, "signal" | "fetch" | "actor">;
+ 
+ /** The enclosing effect owns cancellation, including host-supplied fetches inside Promise adapters. */
+ export const invokeAcquisitionDriver = <A, E>(
+@@ -28,12 +29,13 @@ export const invokeAcquisitionDriver = <A, E>(
+   invoke: (context: AccountAcquisitionContext) => Effect.Effect<A, E>,
+ ) =>
+   Effect.gen(function* () {
++    const actor = yield* CurrentActor;
+     const remaining = input.deadline - (yield* Clock.currentTimeMillis);
+     if (remaining <= 0) return yield* Effect.fail(new HostOperationFailed({}));
+     return yield* Effect.acquireUseRelease(
+       Effect.sync(() => new AbortController()),
+       (controller) =>
+-        invoke({ ...input, signal: controller.signal, fetch: registration.fetch }).pipe(
++        invoke({ ...input, actor, signal: controller.signal, fetch: registration.fetch }).pipe(
+           Effect.mapError((error) =>
+             Schema.is(HostOperationNotFound)(error) ? new HostOperationFailed({}) : error,
+           ),

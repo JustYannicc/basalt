@@ -104,6 +104,9 @@ export class PoolControl implements ControlAttribution {
           await this.save();
           return marker;
         },
+        removalAcknowledged: async ({ pool, references, actor, operation }) => {
+          await this.removals.recordMany(pool, references, actor, new Date(this.now()), operation);
+        },
         settle: async (marker, ids) => {
           if (ids.length) await this.invalidateViews();
           // A native account stays globally saved. An older legacy sign-in must never claim it.
@@ -258,6 +261,26 @@ export class PoolControl implements ControlAttribution {
     } catch (error) {
       return failureResponse(error);
     }
+  }
+  async recordRemovalIntent(
+    pool: string,
+    references: readonly string[],
+    actor: string,
+    operation: string,
+    issuedAt: number,
+  ): Promise<boolean> {
+    return (
+      await this.run(() =>
+        this.removals.recordMany(
+          pool,
+          references,
+          actor,
+          new Date(this.now()),
+          operation,
+          issuedAt,
+        ),
+      )
+    ).value;
   }
   async invalidateViews(pool?: string): Promise<void> {
     this.client.invalidateGroups();
