@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway.accountPresentation {
     metadata {
-      constraint "An app's Accounts tab lists accounts that are not linked beside linked ones, so each section's line says whom its accounts serve, and that picking one links it where the viewer can change them, never that its accounts are linked. A row the viewer can change has a radio or checkbox named for using that account in the app, with an unselected outline that contrasts with the row; a read-only row's indicator names only the account. The same account can be listed in both sections, so each row's account menu names its section too."
+      constraint "An app's Accounts tab lists accounts that are not linked beside linked ones, so each section's line says whom its accounts serve, and that picking one links it where the viewer can change them, never that its accounts are linked. A row the viewer can change has a radio or checkbox named for using that account in the app, with an unselected outline that contrasts with the row; a read-only row's indicator names only the account. The same account can be listed in both sections, so each row's account menu names its section too. Hosted connector proofs select the exact account menu name within its section."
     }
   }
 }

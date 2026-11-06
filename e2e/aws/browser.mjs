@@ -25,7 +25,10 @@ export async function proveAwsPasteUi({
   const accountName = "AWS browser account";
   const appPath = `/org/${actors.organization.slug}/apps/${app.id}`;
 
-  const nextCallback = () => new Promise((resolve) => { callbackWaiter = resolve; });
+  const nextCallback = () =>
+    new Promise((resolve) => {
+      callbackWaiter = resolve;
+    });
   const capture = async (name, page) => {
     const path = join(directory, name);
     await page.screenshot({ path, animations: "disabled" });
@@ -35,8 +38,9 @@ export async function proveAwsPasteUi({
   const startPasteFlow = async (dialog, buttonName, page) => {
     const callbackPromise = nextCallback();
     const popupPromise = context.waitForEvent("page");
-    const startedPromise = page.waitForResponse((response) =>
-      response.request().method() === "POST" && response.url().endsWith("/oauth/start"),
+    const startedPromise = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" && response.url().endsWith("/oauth/start"),
     );
     await dialog.getByRole("button", { name: buttonName, exact: true }).click();
     const [started, popup, returned] = await Promise.all([
@@ -46,14 +50,24 @@ export async function proveAwsPasteUi({
     ]);
     check(started.status() === 200, `${buttonName} did not start the hosted OAuth flow`);
     const response = await started.json();
-    equal(response.redirectUri, fixture.expectedCallback,
-      "The hosted form must use AWS's provider-owned loopback callback");
-    check(typeof response.authorizationUrl === "string"
-      && response.authorizationUrl.startsWith(`${fixture.origin}/authorize?`),
-    "The hosted form did not open the controlled AWS authorization fixture");
-    check(returned.summary.hasCode && returned.summary.hasState,
-      "The provider callback must carry its code and state");
-    const address = dialog.getByRole("textbox", { name: "Address of the page you landed on", exact: true });
+    equal(
+      response.redirectUri,
+      fixture.expectedCallback,
+      "The hosted form must use AWS's provider-owned loopback callback",
+    );
+    check(
+      typeof response.authorizationUrl === "string" &&
+        response.authorizationUrl.startsWith(`${fixture.origin}/authorize?`),
+      "The hosted form did not open the controlled AWS authorization fixture",
+    );
+    check(
+      returned.summary.hasCode && returned.summary.hasState,
+      "The provider callback must carry its code and state",
+    );
+    const address = dialog.getByRole("textbox", {
+      name: "Address of the page you landed on",
+      exact: true,
+    });
     await address.waitFor({ state: "visible" });
     return { address, popup, callbackUrl: returned.url, callback: returned.summary };
   };
@@ -80,8 +94,12 @@ export async function proveAwsPasteUi({
       }
       if (requested === callbackOrigin || requested.startsWith(`${callbackOrigin}/`))
         return route.abort("connectionrefused");
-      if (requested === target.metadata.origin || requested.startsWith(`${target.metadata.origin}/`)
-        || requested === fixture.origin || requested.startsWith(`${fixture.origin}/`))
+      if (
+        requested === target.metadata.origin ||
+        requested.startsWith(`${target.metadata.origin}/`) ||
+        requested === fixture.origin ||
+        requested.startsWith(`${fixture.origin}/`)
+      )
         return route.continue();
       outsideRequests++;
       return route.abort();
@@ -100,7 +118,9 @@ export async function proveAwsPasteUi({
     await capture("aws-paste-step.png", page);
     await connectDialog.getByRole("button", { name: "Cancel", exact: true }).click();
     await first.address.waitFor({ state: "detached" });
-    await connectDialog.getByRole("button", { name: "Connect AWS", exact: true }).waitFor({ state: "visible" });
+    await connectDialog
+      .getByRole("button", { name: "Connect AWS", exact: true })
+      .waitFor({ state: "visible" });
     await capture("aws-paste-cancel-return.png", page);
     await first.popup.close();
     first.callbackUrl = "";
@@ -111,7 +131,11 @@ export async function proveAwsPasteUi({
         completionRequests++;
     });
     const second = await startPasteFlow(connectDialog, "Connect AWS", page);
-    equal(await second.address.inputValue(), "", "Restarting sign-in must return an empty paste field");
+    equal(
+      await second.address.inputValue(),
+      "",
+      "Restarting sign-in must return an empty paste field",
+    );
     await second.address.fill(`${callbackOrigin}/not-a-callback`);
     await connectDialog.getByRole("button", { name: "Connect account", exact: true }).click();
     const invalidMessage = connectDialog.getByText(
@@ -124,12 +148,17 @@ export async function proveAwsPasteUi({
 
     await second.address.fill(second.callbackUrl);
     second.callbackUrl = "";
-    const completedPromise = page.waitForResponse((response) =>
-      response.request().method() === "POST" && response.url().endsWith("/oauth/complete"),
+    const completedPromise = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" && response.url().endsWith("/oauth/complete"),
     );
     await connectDialog.getByRole("button", { name: "Connect account", exact: true }).click();
     const completedResponse = await completedPromise;
-    equal(completedResponse.status(), 200, "The pasted provider callback must complete successfully");
+    equal(
+      completedResponse.status(),
+      200,
+      "The pasted provider callback must complete successfully",
+    );
     const saved = await completedResponse.json();
     check(typeof saved.id === "string", "The pasted callback did not save an AWS account");
     await connectDialog.waitFor({ state: "hidden" });
@@ -140,7 +169,10 @@ export async function proveAwsPasteUi({
     await nameField.fill(accountName);
     await nameDialog.getByRole("button", { name: "Save name", exact: true }).click();
     await nameDialog.waitFor({ state: "hidden" });
-    const manageAccount = page.getByRole("button", { name: `Manage ${accountName}`, exact: true });
+    const manageAccount = yourAccounts.getByRole("button", {
+      name: `Manage ${accountName} in Your accounts`,
+      exact: true,
+    });
     await manageAccount.waitFor({ state: "visible" });
     await capture("aws-paste-completed.png", page);
 
@@ -154,8 +186,9 @@ export async function proveAwsPasteUi({
     let reconnectCallbackUrl = reconnect.callbackUrl;
     await reconnect.address.fill(reconnectCallbackUrl);
     reconnectCallbackUrl = "";
-    const reconnectedPromise = page.waitForResponse((response) =>
-      response.request().method() === "POST" && response.url().endsWith("/oauth/complete"),
+    const reconnectedPromise = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" && response.url().endsWith("/oauth/complete"),
     );
     await reconnectDialog.getByRole("button", { name: "Connect account", exact: true }).click();
     const reconnectedResponse = await reconnectedPromise;
@@ -163,9 +196,12 @@ export async function proveAwsPasteUi({
     const reconnected = await reconnectedResponse.json();
     equal(reconnected.id, saved.id, "Hosted reconnect must preserve the existing AWS account ID");
     await reconnectDialog.waitFor({ state: "hidden" });
-    equal(await page.getByRole("dialog", { name: "Name this account", exact: true }).count(), 0,
-      "Reconnect must not reopen account naming");
-    await page.getByRole("button", { name: `Manage ${accountName}`, exact: true }).waitFor({ state: "visible" });
+    equal(
+      await page.getByRole("dialog", { name: "Name this account", exact: true }).count(),
+      0,
+      "Reconnect must not reopen account naming",
+    );
+    await manageAccount.waitFor({ state: "visible" });
     await capture("aws-reconnect-preserved-name.png", page);
     equal(outsideRequests, 0, "The hosted paste flow must not make outside network requests");
 
