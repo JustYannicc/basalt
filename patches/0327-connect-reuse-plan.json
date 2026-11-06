@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-connect-reuse-plan",
+  "file": "0327-connect-reuse-plan.patch",
+  "content_sha256": "98dcf49b37125af2d05d8cd67ededa2b94e479c5388d59cc050e8262fd398d24",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

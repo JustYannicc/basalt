@@ -193,16 +193,16 @@ jobs:
       - run: bun run --cwd .upstream e2e:prepare
       - name: Verify Vercel sign-in, retained tokens and both tool transports
         run: bun e2e/vercel-sign-in.mjs .generated/vercel-sign-in/ci
+      - name: Collect sanitized connector diagnostics
+        if: always()
+        run: node scripts/ci/collect-connector-evidence.mjs vercel-sign-in "$RUNNER_TEMP/connector-evidence.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: vercel-sign-in
-          path: |
-            .generated/vercel-sign-in/ci/report.json
-            .generated/vercel-sign-in/ci/partial-results.json
-            .generated/vercel-sign-in/ci/upstream-calls.json
-            .generated/vercel-sign-in/ci/failure.txt
-          if-no-files-found: warn
+          name: vercel-sign-in-evidence
+          path: ${{ runner.temp }}/connector-evidence.json
+          if-no-files-found: error
+
   elevenlabs-sign-in:
     needs: select
     if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'elevenlabs-sign-in')
@@ -220,16 +220,16 @@ jobs:
       - run: bun run --cwd .upstream e2e:prepare
       - name: Verify ElevenLabs client metadata sign-in, retained tokens and audio approval
         run: bun e2e/elevenlabs-sign-in.mjs .generated/elevenlabs-sign-in/ci
+      - name: Collect sanitized connector diagnostics
+        if: always()
+        run: node scripts/ci/collect-connector-evidence.mjs elevenlabs-sign-in "$RUNNER_TEMP/connector-evidence.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: elevenlabs-sign-in
-          path: |
-            .generated/elevenlabs-sign-in/ci/report.json
-            .generated/elevenlabs-sign-in/ci/partial-results.json
-            .generated/elevenlabs-sign-in/ci/upstream-calls.json
-            .generated/elevenlabs-sign-in/ci/failure.txt
-          if-no-files-found: warn
+          name: elevenlabs-sign-in-evidence
+          path: ${{ runner.temp }}/connector-evidence.json
+          if-no-files-found: error
+
   slack-health:
     needs: select
     if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'slack-health')
@@ -252,15 +252,16 @@ jobs:
           mkdir -p .generated/slack-health
           git show "${{ needs.select.outputs.base_sha }}:src/catalog/slack.json" > .generated/slack-before-health.json
           bun e2e/slack-health.mjs .generated/slack-health/ci .generated/slack-before-health.json
+      - name: Collect sanitized connector diagnostics
+        if: always()
+        run: node scripts/ci/collect-connector-evidence.mjs slack-health "$RUNNER_TEMP/connector-evidence.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: slack-health
-          path: |
-            .generated/slack-health/ci/report.json
-            .generated/slack-health/ci/partial-results.json
-            .generated/slack-health/ci/failure.txt
-          if-no-files-found: warn
+          name: slack-health-evidence
+          path: ${{ runner.temp }}/connector-evidence.json
+          if-no-files-found: error
+
   catalog-compat:
     needs: select
     if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'catalog-compat')
@@ -280,19 +281,16 @@ jobs:
         run: bun e2e/catalog-compat.mjs .generated/catalog-compat/ci all 8
       - name: Verify ElevenLabs tools load as the catalog serves it, with dropped routes
         run: bun e2e/elevenlabs-discovery.mjs .generated/elevenlabs-discovery/ci
+      - name: Collect sanitized connector diagnostics
+        if: always()
+        run: node scripts/ci/collect-connector-evidence.mjs catalog-compat "$RUNNER_TEMP/connector-evidence.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: catalog-compat
-          # Only these files: session files under .generated stay private.
-          path: |
-            .generated/catalog-compat/ci/report.json
-            .generated/catalog-compat/ci/partial-results.json
-            .generated/catalog-compat/ci/failure.txt
-            .generated/elevenlabs-discovery/ci/result.json
-            .generated/elevenlabs-discovery/ci/failure.txt
-          include-hidden-files: true
-          if-no-files-found: warn
+          name: catalog-compat-evidence
+          path: ${{ runner.temp }}/connector-evidence.json
+          if-no-files-found: error
+
   host-managed-accounts:
     needs: select
     if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'host-managed-accounts')
@@ -1342,13 +1340,16 @@ jobs:
         env:
           CONNECTORS_PROOF_DIRECT: "1"
           CONNECTORS_PROOF_SKIP_CLAUDE: "1"
+      - name: Collect sanitized connector diagnostics
+        if: always()
+        run: node scripts/ci/collect-connector-evidence.mjs gitlab-connectors "$RUNNER_TEMP/connector-evidence.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: gitlab-account-site-ui
-          path: .generated/connectors-proof/run-*/gitlab-account-site-*.png
+          name: gitlab-connectors-evidence
+          path: ${{ runner.temp }}/connector-evidence.json
           if-no-files-found: error
-          include-hidden-files: true
+
   mcp-apps:
     needs: select
     if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'mcp-apps')
@@ -1414,15 +1415,18 @@ jobs:
         uses: ./.github/actions/setup-browser
       - name: Run this file's declared scenarios
         run: bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: declared-self-host-${{ matrix.file }}-${{ matrix.key }}
           path: |
-            .upstream/.local/e2e/**/results.json
-            .upstream/.local/e2e/**/server.log
-            .upstream/.local/e2e/**/cloud.log
-            .upstream/.local/e2e/**/report/**
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   declared-local:
     needs: select
@@ -1448,15 +1452,18 @@ jobs:
         uses: ./.github/actions/setup-browser
       - name: Run this file's declared scenarios
         run: bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: declared-local-${{ matrix.file }}-${{ matrix.key }}
           path: |
-            .upstream/.local/e2e/**/results.json
-            .upstream/.local/e2e/**/server.log
-            .upstream/.local/e2e/**/cloud.log
-            .upstream/.local/e2e/**/report/**
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   declared-cloud:
     needs: select
@@ -1482,15 +1489,18 @@ jobs:
         uses: ./.github/actions/setup-browser
       - name: Run this file's declared scenarios
         run: bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: declared-cloud-${{ matrix.file }}-${{ matrix.key }}
           path: |
-            .upstream/.local/e2e/**/results.json
-            .upstream/.local/e2e/**/server.log
-            .upstream/.local/e2e/**/cloud.log
-            .upstream/.local/e2e/**/report/**
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   upstream-image:
     needs: select
@@ -1541,11 +1551,42 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Check container Python names and imports
+        run: |
+          python3 -m venv "$RUNNER_TEMP/container-python-lint"
+          "$RUNNER_TEMP/container-python-lint/bin/python" -m pip install --disable-pip-version-check --no-input --no-cache-dir ruff==0.16.1
+          "$RUNNER_TEMP/container-python-lint/bin/ruff" check --isolated --select F \
+            --config 'include = ["*.py"]' --target-version py312 \
+            --no-respect-gitignore --no-cache containers
       - run: npm run prepare:upstream
       - name: Verify every adopted test declares its plan and CI job
         run: bun scripts/ci/check-plans.ts
       - name: Check workflow syntax
         run: node scripts/ci/check-workflows.ts
+      - name: Prove failed E2E evidence reaches artifact inputs
+        env:
+          BASALT_E2E_UPLOAD_PROOF_DIR: .generated/ci-evidence-proof
+        run: node --test scripts/ci/collect-e2e-evidence.test.mjs scripts/ci/declared-e2e-evidence.test.mjs
+      - name: Upload forced-failure evidence proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: declared-e2e-failure-evidence-proof
+          path: .generated/ci-evidence-proof
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Prove connector failure diagnostics reach artifact inputs
+        env:
+          BASALT_CONNECTOR_UPLOAD_PROOF_DIR: .generated/ci-connector-evidence-proof
+        run: node --test scripts/ci/connector-evidence.test.mjs
+      - name: Upload sanitized connector failure proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: connector-failure-evidence-proof
+          path: .generated/ci-connector-evidence-proof
+          include-hidden-files: true
+          if-no-files-found: error
       - name: Check app conventions
         run: |
           node scripts/app-lint/prepare-host.mjs
@@ -1645,12 +1686,12 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17.7-alpine
+        image: postgres:17.7-alpine@sha256:bb377b7239d2774ac8cc76f481596ce96c5a6b5e9d141f6d0a0ee371a6e7c0f2
         env:
           POSTGRES_USER: fixture_root
           POSTGRES_DB: postgres
           POSTGRES_PASSWORD: fixture-only
-        ports: [5432:5432]
+        ports: [5432:5432, 6432:6432]
         options: >-
           --health-cmd "pg_isready -U fixture_root"
           --health-interval 5s
@@ -1691,10 +1732,55 @@ jobs:
           echo "Runner disk before candidate build (bytes)"
           df -B1 /
           docker build --target runtime --tag basalt-1409-pool:test containers/pool
+      - name: Start the isolated transaction pooler
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+          POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
+        run: |
+          docker exec "$POSTGRES_CONTAINER" apk add --no-cache pgbouncer=1.25.1-r0
+          docker exec -i "$POSTGRES_CONTAINER" sh -c 'cat > /tmp/budget-pgbouncer.ini' <<'CONFIG'
+          [databases]
+          * = host=127.0.0.1 port=5432
+          [pgbouncer]
+          listen_addr=0.0.0.0
+          listen_port=6432
+          auth_type=trust
+          auth_file=/tmp/budget-users.txt
+          admin_users=fixture_root
+          pool_mode=transaction
+          default_pool_size=5
+          max_db_connections=5
+          max_client_conn=400
+          max_prepared_statements=200
+          ignore_startup_parameters=extra_float_digits
+          server_lifetime=60
+          server_idle_timeout=15
+          logfile=/tmp/budget-pgbouncer.log
+          pidfile=/tmp/budget-pgbouncer.pid
+          CONFIG
+          docker exec -i "$POSTGRES_CONTAINER" sh -c 'cat > /tmp/budget-users.txt; chown postgres /tmp/budget-pgbouncer.ini /tmp/budget-users.txt' <<'USERS'
+          "fixture_root" "fixture-only"
+          "budget_a" "fixture-only"
+          "budget_b" "fixture-only"
+          USERS
+          docker exec --user postgres "$POSTGRES_CONTAINER" pgbouncer -d /tmp/budget-pgbouncer.ini
+          node scripts/pool-tests/database-budget/setup.ts
       - name: Verify Home connection limits and concurrent liveness on Postgres
+        env:
+          POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
         run: |
           docker build --target home-db-pool-tests --tag basalt-home-db-pool:test containers/pool
-          docker run --rm --network host -e HOME_TEST_POSTGRES_DSN=postgresql://fixture_root:fixture-only@localhost:5432/postgres basalt-home-db-pool:test
+          docker run --rm --network host -e HOME_TEST_POSTGRES_DSN=postgresql://fixture_root:fixture-only@localhost:5432/postgres -e HOME_TEST_POOLED_DSN=postgresql://budget_a:fixture-only@localhost:6432/budget0314_compat basalt-home-db-pool:test
+          proof=$(docker create basalt-home-db-pool:test)
+          docker cp "$proof:/out/home-budget-client" "$RUNNER_TEMP/home-budget-client"
+          docker rm "$proof"
+          node scripts/pool-tests/database-budget/setup.ts cleanup
+      - name: Prove the shared budget across independent Home processes
+        run: node --test --test-concurrency=1 scripts/pool-tests/shared-database-budget.test.ts scripts/pool-tests/database-direct-control.test.ts scripts/pool-tests/database-retirement.test.ts scripts/pool-tests/database-verification.test.ts
+        env:
+          POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
+          POOL_TEST_POOLED_URL: postgresql://fixture_root:fixture-only@localhost:6432/postgres
+          POOL_TEST_HOME_BUDGET_CLIENT: ${{ runner.temp }}/home-budget-client
       - name: Check the pool runtime and database contracts
         run: node --test --test-concurrency=1 scripts/pool-tests/*.test.ts
         env:

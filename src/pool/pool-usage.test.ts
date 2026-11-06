@@ -174,8 +174,9 @@ async function fixture(
 const slice = (n: number, requests: number): UsageSlice => ({
   requests,
   tokens: { input: 7 * n, cacheRead: 2 * n, cacheWrite: n, output: 3 * n, total: 13 * n },
-  cost: Math.round((n / 128) * 1e6) / 1e6,
-  unpriced: 0,
+  // This fixture has Home credit charges but no official USD price reader.
+  cost: 0,
+  unpriced: requests,
 });
 function own(result: UsageSummary, x: number, y: number) {
   assert.equal(result.scope, "you");

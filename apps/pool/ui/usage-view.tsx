@@ -9,7 +9,7 @@ import {
   advice,
   columns,
   modelKey,
-  cost,
+  credits,
   dayLabel,
   dayRange,
   format,
@@ -156,12 +156,12 @@ function Headline({ summary, metric }: { summary: UsageSummary; metric: Metric }
   const { total } = summary;
   const other =
     metric === "tokens"
-      ? `${cost(total.cost)} at API prices`
+      ? `${format(total.cost, "cost", total)} at API prices`
       : `${tokens(total.tokens.total)} tokens`;
   return (
     <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
       <span className="text-3xl font-semibold tracking-[-0.03em] tabular-nums">
-        {metric === "tokens" ? tokens(total.tokens.total) : cost(total.cost)}
+        {metric === "tokens" ? tokens(total.tokens.total) : format(total.cost, "cost", total)}
       </span>
       <span className="text-sm text-muted-foreground tabular-nums">
         {metric === "tokens" ? "tokens · " : ""}
@@ -201,7 +201,11 @@ export function Chart({ summary, metric }: { summary: Breakdown; metric: Metric 
           <div
             key={column.day}
             className="flex h-full flex-col-reverse rounded-t-[2px] [@media(pointer:fine)]:hover:bg-accent/60"
-            title={`${dayLabel(column.day)}: ${format(column.total, metric)}`}
+            title={`${dayLabel(column.day)}: ${format(
+              column.total,
+              metric,
+              summary.days.find((day) => day.day === column.day),
+            )}`}
           >
             {column.parts.map((part) => (
               <div
@@ -250,7 +254,13 @@ export function Chart({ summary, metric }: { summary: Breakdown; metric: Metric 
             .map((column) => (
               <tr key={column.day}>
                 <th scope="row">{dayLabel(column.day)}</th>
-                <td>{format(column.total, metric)}</td>
+                <td>
+                  {format(
+                    column.total,
+                    metric,
+                    summary.days.find((day) => day.day === column.day),
+                  )}
+                </td>
               </tr>
             ))}
         </tbody>
@@ -298,9 +308,11 @@ export function Models({
                 />
               </div>
               <span className="text-right text-xs tabular-nums text-muted-foreground">
-                <span className="font-medium text-foreground">{format(amount, metric)}</span>
+                <span className="font-medium text-foreground">{format(amount, metric, model)}</span>
                 {" · "}
-                {metric === "tokens" ? cost(model.cost) : `${tokens(model.tokens.total)} tokens`}
+                {metric === "tokens"
+                  ? format(model.cost, "cost", model)
+                  : `${tokens(model.tokens.total)} tokens`}
                 {metric === "cost" && model.unpriced > 0 && model.cost === 0 && " · no price"}
               </span>
             </li>
@@ -326,9 +338,9 @@ function CapLine({ cap, now }: { cap: Cap; now: number }) {
         <span className="font-medium">Your weekly cap</span>
         <span className="text-xs text-muted-foreground tabular-nums">
           <span className={out ? "font-medium text-destructive" : "font-medium text-foreground"}>
-            {cost(cap.remaining)}
+            {credits(cap.remaining)}
           </span>{" "}
-          of {cost(cap.weekly)} left{reset && <> · {reset}</>}
+          of {credits(cap.weekly)} left{reset && <> · {reset}</>}
         </span>
       </div>
       <div

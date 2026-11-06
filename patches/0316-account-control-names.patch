@@ -1,0 +1,895 @@
+diff --git a/apps/hosted/web/src/implementation/pages/account-actions.tsx b/apps/hosted/web/src/implementation/pages/account-actions.tsx
+index a3592ee..2174816 100644
+--- a/apps/hosted/web/src/implementation/pages/account-actions.tsx
++++ b/apps/hosted/web/src/implementation/pages/account-actions.tsx
+@@ -9,6 +9,7 @@ import { Option } from "effect";
+ import { AsyncResult } from "effect/reactivity";
+ import {
+   AccountActionsMenu,
++  accountDialogDescriptions,
+   AccountDialog,
+   AccountDialogIdentity,
+   DisconnectAccountForm,
+@@ -48,18 +49,21 @@ export interface ListedRow {
+  */
+ export function HostedAccountActions({
+   account,
++  name,
+   access,
+   open,
+   binding = false,
+ }: {
+   readonly account: AccountSummary;
++  /** What the menu's button announces, as the list names this account. */
++  readonly name?: string | undefined;
+   readonly access: typeof AccountAccess.Type | undefined;
+   readonly open: (dialog: AccountDialogKind) => void;
+   /** One sign-in of a grouped identity row; removing it leaves the row's other sign-ins. */
+   readonly binding?: boolean | undefined;
+ }) {
+   return (
+-    <AccountActionsMenu account={account}>
++    <AccountActionsMenu account={account} name={name}>
+       <DropdownMenuItem onSelect={() => open("edit")}>Edit details</DropdownMenuItem>
+       <DropdownMenuItem onSelect={() => open("health")}>Check health</DropdownMenuItem>
+       {access?.ownership.kind === "shared" && (
+@@ -100,7 +104,11 @@ export function HostedAccountDialog({
+   return (
+     <AccountDialog
+       title={title}
+-      description={`${title} for this saved account.`}
++      description={
++        binding && dialog === "delete"
++          ? accountDialogDescriptions.binding
++          : accountDialogDescriptions[dialog]
++      }
+       busy={busy}
+       onClose={onClose}
+     >
+diff --git a/apps/hosted/web/src/implementation/pages/accounts-client.tsx b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
+index 35be7f1..1f7f603 100644
+--- a/apps/hosted/web/src/implementation/pages/accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
+@@ -125,13 +125,14 @@ export function AccountsPage({
+             )
+           );
+         }}
+-        accountActions={(account, { binding }) => {
++        accountActions={(account, { binding, name }) => {
+           const entry = Option.isSome(directory.data)
+             ? directory.data.value.accounts.find((item) => item.account.id === account.id)
+             : undefined;
+           return (
+             <HostedAccountActions
+               account={account}
++              name={name}
+               access={entry?.access}
+               binding={binding}
+               open={(kind) =>
+diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+index 9da79d8..42180b9 100644
+--- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+@@ -14,12 +14,14 @@ import { appAccessAtom, resourceDirectoryAtom } from "../../contracts/resource-a
+ import type { Provider, AccountRequirement, AccountScope, App } from "@executor-js/sdk";
+ import type { CatalogConnectionNotice, CatalogOAuthDeferral } from "@executor-js/catalog/contracts";
+ import type { AccountSubmission } from "@executor-js/ui/contracts/credentials";
++import { accountMenuName } from "@executor-js/ui/contracts/account-title";
+ import {
+   AppAccounts as SharedAccounts,
+   LinkedAccountMenu,
+   useUnusedAccountPrompt,
+   type LinkEditing,
+   type ScopeAccounts,
++  kindIn,
+ } from "@executor-js/ui/dashboard/app-accounts";
+ import {
+   retiresOnUnlink,
+@@ -317,7 +319,7 @@ export function AppAccounts({
+             linked &&
+             (usable(account) || removable(links, slot, account)) && (
+               <LinkedAccountMenu
+-                label={account.label || "Unnamed account"}
++                label={accountMenuName(account, kindIn(requirement, account))}
+                 bound={appBound(links, slot, requirement, account) ? { app: app.name } : undefined}
+                 unlink={
+                   removable(links, slot, account)
+diff --git a/apps/hosted/web/src/implementation/pages/computer-rows.tsx b/apps/hosted/web/src/implementation/pages/computer-rows.tsx
+index c318096..0cb1dbf 100644
+--- a/apps/hosted/web/src/implementation/pages/computer-rows.tsx
++++ b/apps/hosted/web/src/implementation/pages/computer-rows.tsx
+@@ -84,7 +84,7 @@ function ComputerRow({
+           </p>
+         )}
+       </div>
+-      <AccountActionsMenu account={{ label: computer.name }}>
++      <AccountActionsMenu account={{ label: computer.name }} name={computer.name}>
+         <DropdownMenuItem
+           onSelect={() => {
+             setName(computer.name);
+diff --git a/apps/local/web/src/implementation/pages/account-actions.tsx b/apps/local/web/src/implementation/pages/account-actions.tsx
+index e14f75b..070fc48 100644
+--- a/apps/local/web/src/implementation/pages/account-actions.tsx
++++ b/apps/local/web/src/implementation/pages/account-actions.tsx
+@@ -2,6 +2,7 @@ import type { DashboardError } from "../../contracts/errors.ts";
+ import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
+ import {
+   AccountActionsMenu,
++  accountDialogDescriptions,
+   AccountDialog,
+   DisconnectAccountForm,
+   EditAccountForm,
+@@ -33,16 +34,19 @@ const managed = "This account is managed by the local server.";
+  */
+ export function LocalAccountActions({
+   account,
++  name,
+   open,
+   binding = false,
+ }: {
+   readonly account: AccountSummary;
++  /** What the menu's button announces, as the list names this account. */
++  readonly name?: string | undefined;
+   readonly open: (dialog: AccountDialogKind) => void;
+   /** One sign-in of a grouped identity row; removing it leaves the row's other sign-ins. */
+   readonly binding?: boolean | undefined;
+ }) {
+   return (
+-    <AccountActionsMenu account={account}>
++    <AccountActionsMenu account={account} name={name}>
+       <DropdownMenuItem onSelect={() => open("edit")}>Edit details</DropdownMenuItem>
+       <DropdownMenuItem onSelect={() => open("health")}>Check health</DropdownMenuItem>
+       <DropdownMenuSeparator />
+@@ -77,7 +81,11 @@ export function LocalAccountDialog({
+   return (
+     <AccountDialog
+       title={title}
+-      description={`${title} for this saved account.`}
++      description={
++        binding && dialog === "disconnect"
++          ? accountDialogDescriptions.binding
++          : accountDialogDescriptions[dialog]
++      }
+       busy={busy}
+       onClose={onClose}
+     >
+diff --git a/apps/local/web/src/implementation/pages/accounts.tsx b/apps/local/web/src/implementation/pages/accounts.tsx
+index d940efb..87d7a5b 100644
+--- a/apps/local/web/src/implementation/pages/accounts.tsx
++++ b/apps/local/web/src/implementation/pages/accounts.tsx
+@@ -68,9 +68,10 @@ export function AccountsPage({ highlight }: { readonly highlight?: AccountId | u
+             )}
+           </IdentityAppPicker>
+         )}
+-        accountActions={(account, { binding }) => (
++        accountActions={(account, { binding, name }) => (
+           <LocalAccountActions
+             account={account}
++            name={name}
+             binding={binding}
+             open={(kind) => setDialog({ account: account.id, kind, binding })}
+           />
+diff --git a/apps/local/web/src/implementation/pages/app-accounts.tsx b/apps/local/web/src/implementation/pages/app-accounts.tsx
+index 93ec966..73a2efb 100644
+--- a/apps/local/web/src/implementation/pages/app-accounts.tsx
++++ b/apps/local/web/src/implementation/pages/app-accounts.tsx
+@@ -32,9 +32,11 @@ import {
+   LinkedAccountMenu,
+   useUnusedAccountPrompt,
+   type ScopeAccounts,
++  kindIn,
+ } from "@executor-js/ui/dashboard/app-accounts";
+ import type { RequirementLink } from "@executor-js/ui/contracts/app-accounts";
+ import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
++import { accountMenuName } from "@executor-js/ui/contracts/account-title";
+ import type { AccountId, AccountScope, App, AccountRequirement } from "@executor-js/sdk";
+ import type { DashboardError } from "../../contracts/errors.ts";
+ 
+@@ -114,7 +116,7 @@ export function AppAccounts({
+     accountMenu: (account, slot, requirement, linked) =>
+       linked && (
+         <LinkedAccountMenu
+-          label={account.label || "Unnamed account"}
++          label={accountMenuName(account, kindIn(requirement, account))}
+           unlink={unlinkAccountAtom({ ...target(scope), requirement: slot, account: account.id })}
+           Failure={Failure}
+           onUnlinked={() => void unused.check(account.id)}
+diff --git a/e2e/support/account-rows.ts b/e2e/support/account-rows.ts
+index 9e6303a..9c249f0 100644
+--- a/e2e/support/account-rows.ts
++++ b/e2e/support/account-rows.ts
+@@ -2,30 +2,33 @@
+ import type { Locator, Page } from "playwright";
+ 
+ /**
+- * The Accounts list row of the account saved as `label`, found by its ⋯ menu, which names the
+- * saved label whatever the row's title shows. An account saved without a label is "unnamed
+- * account".
++ * The ⋯ menu's name for `label`: the name the account was given, or, for an account saved without
++ * one, its row title. A pattern matches a title that changes as the account reports an identity.
+  */
+-export const accountRow = (page: Page, label: string) =>
+-  page
+-    .locator(".inventory-row")
+-    .filter({ has: page.getByRole("button", { name: `Manage ${label}`, exact: true }) });
++const menuName = (label: string | RegExp) =>
++  typeof label === "string"
++    ? { name: `Manage ${label}`, exact: true }
++    : { name: new RegExp(`^Manage (?:${label.source})$`, label.flags) };
+ 
+-/** The row's ⋯ menu, opened; `label` is the saved label the menu button names. */
+-export const openRowMenu = (page: Page, row: Locator, label: string) =>
++/** The Accounts list row of the account its ⋯ menu names `label` (see `menuName`). */
++export const accountRow = (page: Page, label: string | RegExp) =>
++  page.locator(".inventory-row").filter({ has: page.getByRole("button", menuName(label)) });
++
++/** The row's ⋯ menu, opened; `label` is what the menu button names (see `menuName`). */
++export const openRowMenu = (page: Page, row: Locator, label: string | RegExp) =>
+   row
+-    .getByRole("button", { name: `Manage ${label}`, exact: true })
++    .getByRole("button", menuName(label))
+     .click()
+     .then(() => page.getByRole("menu"));
+ 
+ /** Opens the row's details: usage source and age, checks, balances and unlimited windows. */
+-export const openRowDetails = (page: Page, row: Locator, label: string) =>
++export const openRowDetails = (page: Page, row: Locator, label: string | RegExp) =>
+   openRowMenu(page, row, label)
+     .then((menu) => menu.getByRole("menuitem", { name: "Details", exact: true }).click())
+     .then(() => row.locator("[data-account-details]").waitFor());
+ 
+ /** Collects usage again from the row's menu, as a keyboard or pointer user would. */
+-export const refreshRowUsage = (page: Page, row: Locator, label: string) =>
++export const refreshRowUsage = (page: Page, row: Locator, label: string | RegExp) =>
+   openRowMenu(page, row, label).then((menu) =>
+     menu.getByRole("menuitem", { name: "Refresh usage", exact: true }).click(),
+   );
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index d9eb4ae..55c4eb7 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -9813,6 +9813,17 @@ export const scenarios = plan({
+       local: na("Exercises hosted account rows."),
+     },
+   },
++  accountDialogNaming: {
++    fixtures: "actors",
++    file: "account-dialog-naming.spec.ts",
++    title:
++      "an unnamed API key's menu, dialog description and kind name it as its row does, never as Default or a method key",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses a loopback observation service."),
++      local: na("Exercises hosted account rows."),
++    },
++  },
+   accountCompactRows: {
+     fixtures: "actors",
+     file: "account-compact-rows.spec.ts",
+diff --git a/e2e/tests/account-compact-rows.spec.ts b/e2e/tests/account-compact-rows.spec.ts
+index 6a5ef57..e16c564 100644
+--- a/e2e/tests/account-compact-rows.spec.ts
++++ b/e2e/tests/account-compact-rows.spec.ts
+@@ -317,10 +317,12 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+             accountRow(page, "New reporter").locator("[data-usage-unread]").waitFor(),
+             accountRow(page, "Verified mail").locator("[data-account-verified]").first().waitFor(),
+             accountRow(page, "Many apps mail").locator("[data-used-by-more]").waitFor(),
+-            accountRow(page, "Default")
++            accountRow(page, "generated@example.test")
+               .locator("[data-account-name]", { hasText: "generated@example.test" })
+               .waitFor(),
+-            accountRow(page, "Default 2").locator("[data-account-name]").waitFor(),
++            accountRow(page, "Unreported service API key 2")
++              .locator("[data-account-name]")
++              .waitFor(),
+           ]);
+         yield* browser.login(plain.actors.owner);
+         const surfaces = [
+@@ -460,9 +462,15 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+                 expect(
+                   yield* browser.use(`Read the row titles at ${width}px`, (page) =>
+                     Promise.all([
+-                      accountRow(page, "Default").locator("[data-account-name]").innerText(),
+-                      accountRow(page, "Default").locator("[data-account-verified]").count(),
+-                      accountRow(page, "Default 2").locator("[data-account-name]").innerText(),
++                      accountRow(page, "generated@example.test")
++                        .locator("[data-account-name]")
++                        .innerText(),
++                      accountRow(page, "generated@example.test")
++                        .locator("[data-account-verified]")
++                        .count(),
++                      accountRow(page, "Unreported service API key 2")
++                        .locator("[data-account-name]")
++                        .innerText(),
+                       accountRow(page, "Plain mail").locator("[data-account-name]").innerText(),
+                       accountRow(page, "Verified mail")
+                         .locator("[data-account-name][data-account-verified]")
+@@ -525,7 +533,12 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+             const name = page
+               .getByRole("region", { name: "Your accounts", exact: true })
+               .locator("li")
+-              .filter({ has: page.getByRole("button", { name: "Manage Default", exact: true }) })
++              .filter({
++                has: page.getByRole("button", {
++                  name: "Manage generated@example.test",
++                  exact: true,
++                }),
++              })
+               .locator("[data-account-name]");
+             return page
+               .setViewportSize({ width, height: 900 })
+@@ -562,7 +575,10 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+                 .getByRole("region", { name: "Your accounts", exact: true })
+                 .locator("li")
+                 .filter({
+-                  has: page.getByRole("button", { name: "Manage Default 2", exact: true }),
++                  has: page.getByRole("button", {
++                    name: "Manage Unreported service API key 2",
++                    exact: true,
++                  }),
+                 })
+                 .locator("[data-account-name]");
+               return page
+diff --git a/e2e/tests/account-dialog-naming.spec.ts b/e2e/tests/account-dialog-naming.spec.ts
+new file mode 100644
+index 0000000..4e14353
+--- /dev/null
++++ b/e2e/tests/account-dialog-naming.spec.ts
+@@ -0,0 +1,109 @@
++/** An unnamed API key's own controls name it as its row does, never by its generated label. */
++import { expect, layer } from "@effect/vitest";
++import { Effect } from "effect";
++import { Browser } from "../support/browser.ts";
++import { Evidence } from "../support/evidence.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { observationFixture } from "../support/account-observation-fixture.ts";
++import { scenarios } from "../test-plan.ts";
++
++const title = "Unnamed key service API key";
++
++layer(HostedLive, { excludeTestServices: true })("Account dialog naming", (it) => {
++  it.effect(scenarios.accountDialogNaming.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const browser = yield* Browser;
++        const evidence = yield* Evidence;
++        // Saved without a name and reporting nothing, as most keys are: its label is "Default".
++        const key = yield* observationFixture({
++          name: "Unnamed key fixture",
++          providerName: "Unnamed key service",
++          observe: false,
++          health: false,
++          family: {
++            id: "dialog-naming-key",
++            name: "Dialog naming key",
++            methods: { key: { mechanism: "api-key" } },
++          },
++        });
++        yield* browser.login(key.actors.owner);
++        const accounts = `/org/${key.actors.organization.slug}/accounts`;
++        const appTab = `/org/${key.actors.organization.slug}/apps/${key.app.id}?view=accounts`;
++        for (const width of [1280, 390]) {
++          // Found by its visible title rather than its menu, whose name is what this reads.
++          const read = yield* browser.use(
++            `Read the key's menu and dialog at ${width}px`,
++            (page) => {
++              const row = page.locator(".inventory-row").filter({ hasText: title });
++              const menu = row.getByRole("button", { name: /^Manage / });
++              const dialog = page.getByRole("dialog", { name: "Delete account?", exact: true });
++              const kind = dialog.getByText(/^Unnamed key service · /);
++              return page
++                .setViewportSize({ width, height: 900 })
++                .then(() => page.goto(accounts))
++                .then(() => menu.waitFor())
++                .then(() =>
++                  Promise.all([
++                    menu.getAttribute("aria-label"),
++                    page.getByRole("button", { name: /^Manage Default( \d+)?$/ }).count(),
++                  ]),
++                )
++                .then(([name, generated]) =>
++                  menu
++                    .click()
++                    .then(() =>
++                      page.getByRole("menuitem", { name: "Delete account", exact: true }).click(),
++                    )
++                    .then(() => kind.waitFor())
++                    .then(() =>
++                      Promise.all([
++                        dialog.evaluate(
++                          (node) =>
++                            document.getElementById(node.getAttribute("aria-describedby") ?? "")
++                              ?.textContent ?? "",
++                        ),
++                        kind.innerText(),
++                      ]),
++                    )
++                    .then(([description, method]) => ({ name, generated, description, method })),
++                );
++            },
++          );
++          // Captured before the check, so a failing run still shows the dialog it read.
++          yield* evidence.attach(
++            `dialog-naming-delete-${width}.png`,
++            "image/png",
++            yield* browser.use("Capture the key's Delete dialog", (page) =>
++              page.screenshot({ fullPage: true }),
++            ),
++          );
++          expect(read).toEqual({
++            name: `Manage ${title}`,
++            generated: 0,
++            description: "Delete this saved account and its credentials.",
++            method: "Unnamed key service · API key",
++          });
++          yield* browser.use("Cancel without deleting", (page) =>
++            page
++              .getByRole("dialog", { name: "Delete account?", exact: true })
++              .getByRole("button", { name: "Cancel", exact: true })
++              .click(),
++          );
++          // The key's app tab names its menu the same way.
++          const tabbed = yield* browser.use(`Read the key's app tab menu at ${width}px`, (page) => {
++            const menu = page
++              .getByRole("region", { name: "Your accounts", exact: true })
++              .getByRole("button", { name: /^Manage / });
++            return page
++              .goto(appTab)
++              .then(() => menu.first().waitFor())
++              .then(() => menu.first().getAttribute("aria-label"));
++          });
++          expect(tabbed).toBe(`Manage ${title}`);
++        }
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/account-health.spec.ts b/e2e/tests/account-health.spec.ts
+index 52ba9b6..34e2f70 100644
+--- a/e2e/tests/account-health.spec.ts
++++ b/e2e/tests/account-health.spec.ts
+@@ -236,11 +236,13 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
+         yield* browser.use("Open the accounts with a failed check", (page) =>
+           page
+             .goto(`/org/${actors.organization.slug}/accounts`)
+-            .then(() => accountRow(page, "Default").locator("[data-account-name]").waitFor()),
++            .then(() =>
++              accountRow(page, "Synthetic Person").locator("[data-account-name]").waitFor(),
++            ),
+         );
+         yield* browser.use("Open the failed account's health", (page) =>
+           page
+-            .getByRole("button", { name: "Manage Default" })
++            .getByRole("button", { name: "Manage Synthetic Person" })
+             .click()
+             .then(() => page.getByRole("menuitem", { name: "Check health" }).click()),
+         );
+@@ -329,14 +331,16 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
+         yield* browser.use("Open the accounts", (page) =>
+           page
+             .goto(`/org/${actors.organization.slug}/accounts`)
+-            .then(() => accountRow(page, "Default").locator("[data-account-name]").waitFor()),
++            .then(() =>
++              accountRow(page, "Synthetic Person").locator("[data-account-name]").waitFor(),
++            ),
+         );
+         yield* browser.use("Open the account's individual check results", (page) =>
+-          openRowDetails(page, accountRow(page, "Default"), "Default"),
++          openRowDetails(page, accountRow(page, "Synthetic Person"), "Synthetic Person"),
+         );
+         expect(
+           yield* browser.use("Outdated result is marked", (page) =>
+-            accountRow(page, "Default")
++            accountRow(page, "Synthetic Person")
+               .locator(
+                 '[data-account-health] [data-check-status="healthy"][data-check-current="false"]',
+               )
+@@ -344,14 +348,14 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
+           ),
+         ).toBe(1);
+         yield* browser.use("Close the individual check results", (page) =>
+-          openRowMenu(page, accountRow(page, "Default"), "Default").then((menu) =>
++          openRowMenu(page, accountRow(page, "Synthetic Person"), "Synthetic Person").then((menu) =>
+             menu.getByRole("menuitem", { name: "Hide details", exact: true }).click(),
+           ),
+         );
+         // Opening the account's health rechecks it and lists each app's result.
+         yield* browser.use("Open account health", (page) =>
+           page
+-            .getByRole("button", { name: "Manage Default" })
++            .getByRole("button", { name: "Manage Synthetic Person" })
+             .click()
+             .then(() => page.getByRole("menuitem", { name: "Check health" }).click()),
+         );
+@@ -372,7 +376,7 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
+           page.getByRole("button", { name: "Close", exact: true }).first().click(),
+         );
+         yield* browser.use("The list shows the new result", (page) =>
+-          accountRow(page, "Default")
++          accountRow(page, "Synthetic Person")
+             .locator(
+               '[data-account-health-cell][data-check-status="healthy"][data-check-current="true"]',
+             )
+@@ -381,14 +385,18 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
+         // The compact row keeps the reported photo as its logo.
+         expect(
+           yield* browser.use("The list shows the reported photo", (page) => {
+-            const photo = accountRow(page, "Default").locator("[data-slot='account-avatar'] img");
++            const photo = accountRow(page, "Synthetic Person").locator(
++              "[data-slot='account-avatar'] img",
++            );
+             return photo.waitFor({ state: "visible" }).then(() => photo.getAttribute("src"));
+           }),
+         ).toBe(avatar);
+         // The light tile keeps a black mark visible in both themes.
+         for (const scheme of ["dark", "light"] as const) {
+           const logo = yield* browser.use(`Read the row logo in ${scheme} mode`, (page) => {
+-            const image = accountRow(page, "Default").locator("[data-slot='account-avatar'] img");
++            const image = accountRow(page, "Synthetic Person").locator(
++              "[data-slot='account-avatar'] img",
++            );
+             return page
+               .emulateMedia({ colorScheme: scheme })
+               .then(() => image.waitFor())
+@@ -413,7 +421,7 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
+             yield* held.requested;
+             const providerVisible = () =>
+               browser.use("Read the row's provider fallback", (page) =>
+-                accountRow(page, "Default")
++                accountRow(page, "Synthetic Person")
+                   .locator("[data-slot='account-avatar'] .provider-icon")
+                   .isVisible(),
+               );
+@@ -431,7 +439,9 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
+           page
+             .reload()
+             .then(() =>
+-              accountRow(page, "Default").locator("[data-slot='account-avatar'] img").waitFor(),
++              accountRow(page, "Synthetic Person")
++                .locator("[data-slot='account-avatar'] img")
++                .waitFor(),
+             ),
+         );
+ 
+@@ -457,8 +467,10 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
+           yield* browser.use("The account row shows the reported photo", (page) => {
+             const photo = page
+               .locator(".accounts-section li")
+-              // Found by its saved label; the title is what the account's check reported.
+-              .filter({ has: page.getByRole("button", { name: "Manage Default", exact: true }) })
++              // Found by its title, what the account's check reported, as its menu names it.
++              .filter({
++                has: page.getByRole("button", { name: "Manage Synthetic Person", exact: true }),
++              })
+               .locator("[data-slot='account-avatar'] [data-slot='avatar-image']");
+             return photo.waitFor({ state: "visible" }).then(() => photo.getAttribute("src"));
+           }),
+@@ -466,7 +478,9 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
+         yield* browser.use("The outdated result is checked again on view", (page) =>
+           page
+             .locator(".accounts-section li")
+-            .filter({ has: page.getByRole("button", { name: "Manage Default", exact: true }) })
++            .filter({
++              has: page.getByRole("button", { name: "Manage Synthetic Person", exact: true }),
++            })
+             .locator('[data-check-status="healthy"][data-check-current="true"]')
+             .waitFor(),
+         );
+diff --git a/e2e/tests/account-observation-rows.spec.ts b/e2e/tests/account-observation-rows.spec.ts
+index 1b20234..458fbf3 100644
+--- a/e2e/tests/account-observation-rows.spec.ts
++++ b/e2e/tests/account-observation-rows.spec.ts
+@@ -52,6 +52,12 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+         ).toBe(200);
+         yield* linkAccount(f.actors.member, f.appPath, "service", f.account);
+         const label = (yield* body(Detail, yield* f.detail())).account.label || "Unnamed account";
++        // An unnamed account's own menu is named by its row title: its provider until the account
++        // reports its identity.
++        const menuName =
++          label === "Unnamed account" || /^Default( \d+)?$/.test(label)
++            ? /Observation service account|Observed identity/
++            : label;
+         const accounts = `/org/${f.actors.organization.slug}/accounts`;
+         const block = (page: Page) =>
+           page.getByRole("group", { name: `Usage and health of ${label}`, exact: true });
+@@ -59,9 +65,9 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+           block(page).getByRole("button", { name: "Refresh", exact: true });
+         const reading = (page: Page) => block(page).locator('[data-reading="requests"]');
+         // The plan sits in the row's Plan column, outside the usage block.
+-        const plan = (page: Page) => accountRow(page, label).locator("[data-account-plan]");
++        const plan = (page: Page) => accountRow(page, menuName).locator("[data-account-plan]");
+         // The checks, the usage source and Refresh open from the row's menu as its details.
+-        const show = (page: Page) => openRowDetails(page, accountRow(page, label), label);
++        const show = (page: Page) => openRowDetails(page, accountRow(page, menuName), menuName);
+ 
+         yield* browser.login(f.actors.owner);
+         const unread = yield* browser.use("Open Accounts before anything was reported", (page) =>
+@@ -215,7 +221,11 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+         yield* browser.use("Let members see usage from Manage access", (page) =>
+           page
+             .goto(accounts)
+-            .then(() => page.getByRole("button", { name: `Manage ${label}`, exact: true }).click())
++            .then(() =>
++              accountRow(page, menuName)
++                .getByRole("button", { name: /^Manage / })
++                .click(),
++            )
+             .then(() => page.getByRole("menuitem", { name: "Manage access", exact: true }).click())
+             .then(() => page.getByRole("combobox", { name: "Who can see usage?" }).click())
+             .then(() => page.getByRole("option", { name: "Everyone in the organization" }).click())
+diff --git a/e2e/tests/listed-account-actions.spec.ts b/e2e/tests/listed-account-actions.spec.ts
+index 90fa7f9..48caefc 100644
+--- a/e2e/tests/listed-account-actions.spec.ts
++++ b/e2e/tests/listed-account-actions.spec.ts
+@@ -326,7 +326,8 @@ layer(HostedLive, { excludeTestServices: true })("Listed account actions", (it)
+             yield* browser.use("Read the dialog after the account arrives", (page) =>
+               Promise.all([
+                 deleteState(deleteDialog(page), label),
+-                deleteDialog(page).getByText(`${provider} · key`, { exact: true }).count(),
++                // The method as people read it, its own label "Key", never its method key.
++                deleteDialog(page).getByText(`${provider} · Key`, { exact: true }).count(),
+               ]),
+             ),
+             "The account read adds the provider's method and what deleting does, then allows it",
+diff --git a/e2e/tests/native-subscription-health.spec.ts b/e2e/tests/native-subscription-health.spec.ts
+index 5251260..9a92713 100644
+--- a/e2e/tests/native-subscription-health.spec.ts
++++ b/e2e/tests/native-subscription-health.spec.ts
+@@ -88,8 +88,12 @@ layer(HostedLive, { excludeTestServices: true })("Native subscription health", (
+         const label =
+           (yield* body(Detail, yield* api.request(actors.owner, "GET", accountPath))).account
+             .label || "Unnamed account";
+-        // The row's checks open from its menu as details.
+-        const menuLabel = label === "Unnamed account" ? "unnamed account" : label;
++        // The row's checks open from its menu as details. An unnamed account's menu is named by its
++        // row title: what its check reported.
++        const menuLabel =
++          label === "Unnamed account" || /^Default( \d+)?$/.test(label)
++            ? "Synthetic subscriber"
++            : label;
+         const show = (page: Page) => openRowDetails(page, accountRow(page, menuLabel), menuLabel);
+         const line = (page: Page) =>
+           page
+diff --git a/packages/ui/src/contracts/account-title.ts b/packages/ui/src/contracts/account-title.ts
+index 60f8bd9..36e6f8f 100644
+--- a/packages/ui/src/contracts/account-title.ts
++++ b/packages/ui/src/contracts/account-title.ts
+@@ -57,3 +57,20 @@ export const accountTitle = (
+     account.health?.info?.username ||
+     describedLabel(account.label, account.providerName, kind) ||
+     `${fallback}${generatedNumber(account.label) ?? ""}`);
++
++/**
++ * What names one saved account's own controls, such as its "Manage" menu: the name the person gave
++ * it, else its row title, so a generated "Default" is never announced. A `binding`, one sign-in
++ * inside a grouped identity row, is named only by what is its own (provider, kind and number),
++ * never by the identity or a value its check reported, so sibling sign-ins keep distinct names.
++ */
++export const accountMenuName = (
++  account: Parameters<typeof accountTitle>[0],
++  /** The account's declared kind, such as "API key", when the caller knows it. */
++  kind?: string,
++  { binding = false }: { readonly binding?: boolean } = {},
++) =>
++  authoredLabel(account.label) ??
++  (binding
++    ? accountTitle({ label: account.label, providerName: account.providerName }, undefined, kind)
++    : accountTitle(account, undefined, kind));
+diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/packages/ui/src/implementation/dashboard/account-actions.tsx
+index 57e451e..530b805 100644
+--- a/packages/ui/src/implementation/dashboard/account-actions.tsx
++++ b/packages/ui/src/implementation/dashboard/account-actions.tsx
+@@ -26,7 +26,8 @@ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { AccountRowMenuItems, AccountRowMenuPresence } from "./account-row.tsx";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+ import { accountMethodKindLabel, accountTitle } from "../../contracts/account-identities.ts";
+-import { authoredLabel } from "../../contracts/account-title.ts";
++import { accountMenuName } from "../../contracts/account-title.ts";
++import { ownMethodLabel } from "./method-labels.ts";
+ 
+ /**
+  * Account management lives on its list row; products supply the menu items they support. The row's
+@@ -35,10 +36,13 @@ import { authoredLabel } from "../../contracts/account-title.ts";
+  */
+ export function AccountActionsMenu({
+   account,
++  name,
+   children,
+   rowActions = true,
+ }: {
+-  readonly account: Pick<AccountSummary, "label">;
++  readonly account: Pick<AccountSummary, "label"> & Partial<Pick<AccountSummary, "providerName">>;
++  /** What the menu's button announces; by default the account's own name (`accountMenuName`). */
++  readonly name?: string | undefined;
+   readonly children: ReactNode;
+   readonly rowActions?: boolean;
+ }) {
+@@ -49,7 +53,7 @@ export function AccountActionsMenu({
+         <Button
+           variant="ghost"
+           size="icon-sm"
+-          aria-label={`Manage ${account.label || "unnamed account"}`}
++          aria-label={`Manage ${name ?? accountMenuName(account)}`}
+         >
+           <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={2} aria-hidden />
+         </Button>
+@@ -120,6 +124,28 @@ export interface ListedAccount {
+   readonly providerUrl?: string | null | undefined;
+ }
+ 
++/**
++ * The account's sign-in method as people read it: its declared kind, such as "API key", else
++ * OAuth or the method's own label; the method key only when nothing names it.
++ */
++const methodName = ({ provider, account }: Pick<AccountDetail, "provider" | "account">) => {
++  const method = provider.definition.auth[account.method];
++  const kind = accountMethodKindLabel(provider.definition, account.method, account.provider);
++  if (kind !== undefined) return kind;
++  if (method?.type === "oauth2") return "OAuth";
++  return ownMethodLabel(method) ?? account.method;
++};
++
++/** What each account dialog does, read out with its title. */
++export const accountDialogDescriptions = {
++  edit: "Rename this saved account or change its description.",
++  health: "Check whether this saved account still signs in.",
++  access: "Choose who can use this saved account.",
++  delete: "Delete this saved account and its credentials.",
++  disconnect: "Disconnect this saved account and delete its credentials.",
++  binding: "Remove this saved sign-in and its credentials.",
++} as const;
++
+ /** The account a dialog acts on, shown the same way in every action. */
+ export function AccountDialogIdentity({
+   data,
+@@ -146,7 +172,7 @@ export function AccountDialogIdentity({
+       )
+     : // While the account is read, the dialog names the exact binding the person picked: its saved
+       // name, else what its row reads without the group's verified identity.
+-      listed && (authoredLabel(listed.label) ?? accountTitle({ ...listed, identity: undefined }));
++      listed && accountMenuName({ ...listed, identity: undefined });
+   // The sign-in method's kind is the provider's to say, so it waits for the account read.
+   return (
+     <div className="flex items-center gap-3 min-w-0">
+@@ -169,10 +195,7 @@ export function AccountDialogIdentity({
+         <div className="text-xs text-muted-foreground">
+           {data ? (
+             <>
+-              {data.provider.definition.name} ·{" "}
+-              {data.provider.definition.auth[data.account.method]?.type === "oauth2"
+-                ? "OAuth"
+-                : data.account.method}
++              {data.provider.definition.name} · {methodName(data)}
+             </>
+           ) : (
+             (name ?? <Skeleton className="my-0.5 h-3 w-24" />)
+diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+index f37e098..e478a9e 100644
+--- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
++++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+@@ -50,6 +50,7 @@ import {
+   bindingApps,
+   bindingFamily,
+ } from "../../contracts/account-identities.ts";
++import { accountMenuName } from "../../contracts/account-title.ts";
+ import { RequestedAccess } from "./oauth-scopes.tsx";
+ import { Button } from "../components/button.tsx";
+ import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.tsx";
+@@ -85,7 +86,11 @@ export function AccountsPage<E>({
+   /** `binding` marks one sign-in inside a grouped identity row, not the whole account. */
+   readonly accountActions?: (
+     account: AccountSummary,
+-    context: { readonly binding: boolean },
++    context: {
++      readonly binding: boolean;
++      /** What the account's own menu announces: its given name, else its row's title. */
++      readonly name: string;
++    },
+   ) => ReactNode;
+   readonly identityActions?: (
+     bindings: readonly AccountSummary[],
+@@ -174,7 +179,11 @@ function AccountsList({
+   /** `binding` marks one sign-in inside a grouped identity row, not the whole account. */
+   readonly accountActions?: (
+     account: AccountSummary,
+-    context: { readonly binding: boolean },
++    context: {
++      readonly binding: boolean;
++      /** What the account's own menu announces: its given name, else its row's title. */
++      readonly name: string;
++    },
+   ) => ReactNode;
+   readonly identityActions?: (
+     bindings: readonly AccountSummary[],
+@@ -378,7 +387,14 @@ function AccountsList({
+                                       binding.providerName ||
+                                       "Saved sign-in"}
+                                   </span>
+-                                  {accountActions?.(binding, { binding: true })}
++                                  {accountActions?.(binding, {
++                                    binding: true,
++                                    name: accountMenuName(
++                                      binding,
++                                      accountKindLabel(data, binding),
++                                      { binding: true },
++                                    ),
++                                  })}
+                                 </div>
+                               ))}
+                             </div>
+@@ -390,7 +406,10 @@ function AccountsList({
+                         title={accountTitle(account, undefined, accountKindLabel(data, account))}
+                       />
+                     ) : (
+-                      accountActions(account, { binding: false })
++                      accountActions(account, {
++                        binding: false,
++                        name: accountMenuName(account, accountKindLabel(data, account)),
++                      })
+                     )}
+                   </AccountRowMenu>
+                   {family !== undefined && (
+diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+index c0a5370..e50fafe 100644
+--- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -125,7 +125,7 @@ const accountName = (account: AccountSummary, kind?: string) =>
+   accountTitle(account, account.providerName || "Unnamed account", kind);
+ 
+ /** The account's kind as its requirement declares it, which also names an unnamed account. */
+-const kindIn = (requirement: AccountRequirement, account: AccountSummary) =>
++export const kindIn = (requirement: AccountRequirement, account: AccountSummary) =>
+   accountMethodKindLabel(requirement.definition, account.method, requirement.provider);
+ 
+ /**
+diff --git a/packages/ui/src/implementation/dashboard/method-labels.ts b/packages/ui/src/implementation/dashboard/method-labels.ts
+index df2cbf8..f8ac39d 100644
+--- a/packages/ui/src/implementation/dashboard/method-labels.ts
++++ b/packages/ui/src/implementation/dashboard/method-labels.ts
+@@ -49,3 +49,9 @@ export const methodLabels = (
+     ]),
+   );
+ };
++
++/** A method's own label, such as "API key" for a key method; undefined when it declares none. */
++export const ownMethodLabel = (auth: object | undefined) =>
++  auth !== undefined && "label" in auth && typeof auth.label === "string" && auth.label !== ""
++    ? auth.label
++    : undefined;
+diff --git a/e2e/tests/account-observation-row-polling.spec.ts b/e2e/tests/account-observation-row-polling.spec.ts
+index 2bcecde..c13da40 100644
+--- a/e2e/tests/account-observation-row-polling.spec.ts
++++ b/e2e/tests/account-observation-row-polling.spec.ts
+@@ -85,8 +85,14 @@ layer(HostedLive, { excludeTestServices: true })("Account observation row pollin
+             .then((usage) => expect(usage, "nothing retained shows no usage line").toBe(0));
+         });
+ 
++        // An unnamed account's own menu is named by its row title: its provider until the account
++        // reports its identity.
++        const menuName =
++          label === "Unnamed account" || /^Default( \d+)?$/.test(label)
++            ? /Observation service account|Observed identity/
++            : label;
+         yield* browser.use("Keep the row's reading details open", (page) =>
+-          openRowDetails(page, accountRow(page, label), label),
++          openRowDetails(page, accountRow(page, menuName), menuName),
+         );
+ 
+         // Stands in for the server interval: a report is retained while the row stays open.
+diff --git a/e2e/tests/account-usage-cells.spec.ts b/e2e/tests/account-usage-cells.spec.ts
+index d9cb1a6..eaf4324 100644
+--- a/e2e/tests/account-usage-cells.spec.ts
++++ b/e2e/tests/account-usage-cells.spec.ts
+@@ -213,8 +213,10 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+             .then(() => page.goto(accounts))
+             .then(() => ready(page))
+             .then(() => {
++              // Each account's usage group carries its label; a generated "Default" no longer
++              // names the row's menu.
+               const view = (label: string) =>
+-                accountRow(page, label)
++                block(page, label)
+                   .locator("[data-reading]")
+                   .evaluateAll((cells) =>
+                     cells.map((element) => ({

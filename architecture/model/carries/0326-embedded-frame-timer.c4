@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The embedded-app failure fixture holds the location read, observes the matching frame's real thirty-second browser timer being registered, then advances the existing clock by 30001 milliseconds. Every recovery, retry, isolation assertion and scenario deadline remains unchanged; no product timer, retry or timeout is changed."
+    }
+  }
+}

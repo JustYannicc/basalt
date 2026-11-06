@@ -1,0 +1,84 @@
+diff --git a/apps/hosted/testing/production-ops-provisioning-fixture.ts b/apps/hosted/testing/production-ops-provisioning-fixture.ts
+index 5a67b15..83d6d4b 100644
+--- a/apps/hosted/testing/production-ops-provisioning-fixture.ts
++++ b/apps/hosted/testing/production-ops-provisioning-fixture.ts
+@@ -7,6 +7,10 @@ import { dirname } from "node:path";
+ import { inspect } from "node:util";
+ import { Cause, Config, Data, Effect, FileSystem, Redacted, Schema } from "effect";
+ import { LocalDatabaseUrl } from "../cloud/src/contracts/database.ts";
++import {
++  dropReadinessTriggers,
++  installReadinessTriggers,
++} from "./provisioning-readiness-triggers.ts";
+ 
+ class ProvisioningFixtureFailed extends Data.TaggedError("ProvisioningFixtureFailed")<{
+   readonly cause?: unknown;
+@@ -68,9 +72,7 @@ NodeRuntime.runMain(
+         (client) =>
+           Effect.promise(async () => {
+             try {
+-              await client.query(
+-                "drop trigger if exists e2e_provisioning_completed on hosted_provisioning; drop trigger if exists e2e_defaults_completed on organization; drop trigger if exists e2e_pool_apps_completed on executor_apps; drop trigger if exists e2e_pool_accounts_completed on executor_accounts; drop trigger if exists e2e_pool_links_completed on hosted_app_account_links; drop function if exists e2e_provisioning_completed()",
+-              );
++              await dropReadinessTriggers(client);
+             } finally {
+               await client.end();
+             }
+@@ -133,18 +135,7 @@ NodeRuntime.runMain(
+             // LISTEN precedes both trigger installation and the first read. Notifications are
+             // delivered on commit, and the revision also covers commits during a status query.
+             await client.query("set statement_timeout = '5s'; listen e2e_provisioning_completed");
+-            await client.query(`create function e2e_provisioning_completed() returns trigger language plpgsql as $$
+-            begin perform pg_notify('e2e_provisioning_completed', ''); return null; end $$;
+-            create trigger e2e_provisioning_completed after insert or update or delete on hosted_provisioning
+-            for each statement execute function e2e_provisioning_completed();
+-            create trigger e2e_defaults_completed after insert or update or delete on organization
+-            for each statement execute function e2e_provisioning_completed();
+-            create trigger e2e_pool_apps_completed after insert or update or delete on executor_apps
+-            for each statement execute function e2e_provisioning_completed();
+-            create trigger e2e_pool_accounts_completed after insert or update or delete on executor_accounts
+-            for each statement execute function e2e_provisioning_completed();
+-            create trigger e2e_pool_links_completed after insert or update or delete on hosted_app_account_links
+-            for each statement execute function e2e_provisioning_completed()`);
++            await installReadinessTriggers(client);
+             for (;;) {
+               if (signal.aborted || disconnected)
+                 throw new ProvisioningFixtureFailed({
+diff --git a/apps/hosted/testing/provisioning-readiness-triggers.ts b/apps/hosted/testing/provisioning-readiness-triggers.ts
+new file mode 100644
+index 0000000..93a7660
+--- /dev/null
++++ b/apps/hosted/testing/provisioning-readiness-triggers.ts
+@@ -0,0 +1,32 @@
++/**
++ * Statement triggers that wake the provisioning readiness wait whenever one of its inputs commits.
++ *
++ * Provisioning jobs write these tables in their own orders while the triggers are installed and
++ * removed. Every statement here commits on its own, so this connection holds at most the one table
++ * lock it is waiting for and can never complete a deadlock cycle with those jobs.
++ */
++import type { Client } from "pg";
++
++const triggers = [
++  ["e2e_provisioning_completed", "hosted_provisioning"],
++  ["e2e_defaults_completed", "organization"],
++  ["e2e_pool_apps_completed", "executor_apps"],
++  ["e2e_pool_accounts_completed", "executor_accounts"],
++  ["e2e_pool_links_completed", "hosted_app_account_links"],
++] as const;
++
++/** Remove the triggers and their function; safe when none, or only some, are installed. */
++export const dropReadinessTriggers = async (client: Pick<Client, "query">) => {
++  for (const [name, table] of triggers)
++    await client.query(`drop trigger if exists ${name} on ${table}`);
++  await client.query("drop function if exists e2e_provisioning_completed()");
++};
++
++/** Install the function and one trigger per input table; the caller has already run LISTEN. */
++export const installReadinessTriggers = async (client: Pick<Client, "query">) => {
++  await client.query(`create function e2e_provisioning_completed() returns trigger language plpgsql as $$
++begin perform pg_notify('e2e_provisioning_completed', ''); return null; end $$`);
++  for (const [name, table] of triggers)
++    await client.query(`create trigger ${name} after insert or update or delete on ${table}
++for each statement execute function e2e_provisioning_completed()`);
++};

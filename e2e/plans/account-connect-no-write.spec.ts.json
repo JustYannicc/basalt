@@ -1,0 +1,43 @@
+{
+  "scenarios": {
+    "accountConnectNoWrite": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "opening an app's Connect new account form and closing it writes nothing and leaves no pending connection",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Counts the runner-owned product database."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises hosted app account forms."
+        }
+      }
+    }
+  },
+  "runs": {
+    "accountConnectNoWrite": [
+      "declared:self-host"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/contracts/accounts.ts",
+    ".upstream/apps/hosted/server/src/contracts/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-account-links.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-lifecycle.ts",
+    ".upstream/apps/hosted/web/src/contracts/apps.ts",
+    ".upstream/apps/hosted/web/src/contracts/identity-consent.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/connect-account.tsx",
+    ".upstream/apps/local/web/src/contracts/oauth.ts",
+    ".upstream/apps/local/web/src/implementation/pages/oauth-fields.tsx",
+    ".upstream/packages/sdk/src/implementation/oauth-connection-plan.ts",
+    ".upstream/packages/sdk/src/implementation/oauth.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/identity-consent-client.tsx"
+  ]
+}

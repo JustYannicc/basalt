@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import pathlib
 import signal
 import subprocess
@@ -256,7 +257,10 @@ def main(stop: threading.Event | None = None) -> int:
         for signum in (signal.SIGTERM, signal.SIGINT):
             original_signals[signum] = signal.signal(signum, request_stop)
 
-        atomic_write(ROOT / "cluster.yaml", cluster_yaml(database_url))
+        atomic_write(
+            ROOT / "cluster.yaml",
+            cluster_yaml(database_url, os.environ.get("POOL_DATABASE_SCHEMA_OWNER", "").strip()),
+        )
 
         def launch_generation(recovering: bool = False) -> str:
             """Reuse boot, child capture and health gates; import only on first boot."""

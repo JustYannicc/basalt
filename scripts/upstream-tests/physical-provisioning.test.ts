@@ -100,13 +100,27 @@ test("clone readiness still accepts deliberately synthetic pool metadata after t
 });
 
 test("committed app, account and link writes wake the provisioning readiness reader", async () => {
-  const notifications = source.match(/await client\.query\(`(create function[\s\S]*?)`\);/u)?.[1];
-  assert.ok(notifications, "use the fixture's actual notification setup");
+  // The fixture installs its notifications through this module; the test runs the same install.
+  assert.match(
+    source,
+    /import \{[^}]*\binstallReadinessTriggers\b[^}]*\} from "\.\/provisioning-readiness-triggers\.ts"/u,
+  );
+  assert.match(
+    source,
+    /await installReadinessTriggers\(client\)/u,
+    "use the fixture's actual notification setup",
+  );
+  const { installReadinessTriggers } = (await import(
+    new URL(
+      "../../.upstream/apps/hosted/testing/provisioning-readiness-triggers.ts",
+      import.meta.url,
+    ).href
+  )) as typeof import("../../.upstream/apps/hosted/testing/provisioning-readiness-triggers.ts");
   const { database } = await fixture();
   let observed = 0;
   const unlisten = await database.listen("e2e_provisioning_completed", () => observed++);
   try {
-    await database.exec(notifications);
+    await installReadinessTriggers(database);
     for (const sql of [
       "insert into executor_apps values ('pool', 'organization:team', 'version')",
       "insert into executor_accounts values ('token', 'organization:team', 'token')",

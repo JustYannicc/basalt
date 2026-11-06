@@ -23,6 +23,12 @@ import { requestCount } from "./series-coverage.ts";
 import { HistoryInputError, historyObject, timestamp } from "./record.ts";
 import { brand } from "../../../brand.ts";
 import { homeAccountMappingProven } from "./series-mapping.ts";
+import {
+  officialCosts,
+  officialCostMetric,
+  officialCostTargets,
+  officialCostSlices,
+} from "./official-cost.ts";
 import { priceQuery, percentileSql } from "./overview-sql.ts";
 
 const homeSource = "home-local-v1";
@@ -30,7 +36,6 @@ const gatewaySource = "pool-gateway-v1";
 const maxPages = 10;
 const maxDimensionRows = 500;
 const maxUsageSlices = 500;
-const maxPriceTargets = 100;
 const hourMs = 3_600_000;
 const dayMs = 86_400_000;
 const maxSafeCount = Number.MAX_SAFE_INTEGER;
@@ -233,7 +238,7 @@ function safePrices(raw: readonly OverviewApiPrice[]): readonly OverviewApiPrice
   return prices;
 }
 
-/** Fetch only known provider/model targets for accounts the signed authority permits inspecting. */
+/** A signed pool manager can price retained request totals even after an account is disconnected. */
 export async function overviewTargets(
   db: HistoryDatabase,
   input: PoolOverviewSignedInput,
@@ -246,34 +251,8 @@ export async function overviewTargets(
     bucket: "day",
     by: ["provider"],
   });
-  const authority = baseAuthority(input.authority);
-  if (!authority.mappingProven) return { targets: [] };
-  const refs = [
-    ...new Set(
-      authority.accounts.flatMap((entry) => (entry.account === null ? [] : entry.history)),
-    ),
-  ];
-  if (!refs.length) return { targets: [] };
-  const pool = (await digest(input.pool)).slice(0, 16);
-  const result = await db.query(
-    `SELECT DISTINCT provider, model FROM basalt_model_requests
-    WHERE pool=$1 AND source=$2 AND account=ANY($3::character(64)[])
-      AND timestamp_exact >= $4 AND timestamp_exact < $5
-      AND provider IS NOT NULL AND model IS NOT NULL
-    ORDER BY provider,model LIMIT ${maxPriceTargets + 1}`,
-    [pool, await digest(homeSource), refs, timestamp(input.from), timestamp(input.to)],
-  );
-  if (result.rows.length > maxPriceTargets)
-    return {
-      targets: [],
-      unavailableReason: `More than ${maxPriceTargets} provider/model pairs need prices; money estimates are unavailable.`,
-    };
-  return {
-    targets: result.rows.map((row) => ({
-      provider: String(row.provider),
-      model: String(row.model),
-    })),
-  };
+  baseAuthority(input.authority);
+  return officialCostTargets(db, input);
 }
 
 /** Price targets use only the caller's inspectable history references and own requests. */
@@ -282,42 +261,7 @@ export async function personalOverviewTargets(
   raw: PoolPersonalOverviewSignedInput,
 ): Promise<{ readonly targets: OverviewPricesTarget[]; readonly unavailableReason?: string }> {
   const input = personalInput(raw);
-  const offerings = input.offerings;
-  const refs = [
-    ...new Set(
-      offerings
-        .filter((entry) => entry.offering === "subscription" || entry.offering === "metered_api")
-        .map((entry) => entry.history),
-    ),
-  ];
-  if (!refs.length) return { targets: [] };
-  const pool = (await digest(input.pool)).slice(0, 16);
-  const result = await db.query(
-    `SELECT DISTINCT provider, model FROM basalt_model_requests
-    WHERE pool=$1 AND source=$2 AND account=ANY($3::character(64)[]) AND person=$4
-      AND attribution IS DISTINCT FROM 'import-owner' AND timestamp_exact >= $5 AND timestamp_exact < $6
-      AND provider IS NOT NULL AND model IS NOT NULL
-    ORDER BY provider,model LIMIT ${maxPriceTargets + 1}`,
-    [
-      pool,
-      await digest(homeSource),
-      refs,
-      input.person,
-      timestamp(input.from),
-      timestamp(input.to),
-    ],
-  );
-  if (result.rows.length > maxPriceTargets)
-    return {
-      targets: [],
-      unavailableReason: `More than ${maxPriceTargets} provider/model pairs need prices; money estimates are unavailable.`,
-    };
-  return {
-    targets: result.rows.map((row) => ({
-      provider: String(row.provider),
-      model: String(row.model),
-    })),
-  };
+  return officialCostTargets(db, input);
 }
 
 function personalInput(raw: unknown): PoolPersonalOverviewSignedInput {
@@ -580,14 +524,8 @@ export async function poolPersonalOverview(
     const price = priceProvenance(prices);
     const noKindReason =
       "Some of your requests could not be classified from inspectable account history, so separate estimates are incomplete.";
-    const apiBilled = personalMoney(
-      totals.apiAmount,
-      totals.apiPriced,
-      totals.apiRequests,
-      excluded(totals.apiUnpriced),
-      price,
-      unknownKind ? noKindReason : noPrices,
-    );
+    const official = await officialCosts(db, input, prices);
+    const apiBilled = officialCostMetric(official, prices, pricesUnavailableReason);
     const subscriptionValue = personalMoney(
       totals.subscriptionAmount,
       totals.subscriptionPriced,
@@ -624,7 +562,22 @@ export async function poolPersonalOverview(
       asOf: seriesResult.asOf,
       consistency: "consistent",
       series: seriesResult,
-      metrics: { requestTokens, apiBilled, subscriptionValue, usageSlices },
+      metrics: {
+        requestTokens,
+        apiBilled,
+        subscriptionValue,
+        usageSlices: officialCostSlices(official, prices, [input.person]).map((slice) => {
+          const known = usageSlices.find(
+            (entry) => entry.provider === slice.provider && entry.model === slice.model,
+          );
+          return {
+            ...slice,
+            subscriptionValue: known?.subscriptionValue ?? null,
+            subscriptionPricedRequests: known?.subscriptionPricedRequests ?? 0,
+            subscriptionUnpriced: known?.subscriptionUnpriced ?? 0,
+          };
+        }),
+      },
       partial,
     };
     if (transaction === "owned") await db.query("COMMIT");
@@ -910,10 +863,14 @@ export async function poolUsageOverview(
       byModel: [],
       byModelPerson: [],
     };
-    let apiBilled = unavailableMoney("No current official USD model prices were available.");
-    let subscriptionValue = unavailableMoney(
-      "No current official USD model prices were available.",
-    );
+    const accountReason =
+      authority.accounts.length === 0
+        ? "No accounts in this pool yet."
+        : !authority.mappingProven
+          ? "Usage account mapping is not verified."
+          : "No pool accounts have inspectable usage history.";
+    let apiBilled = unavailableMoney(accountReason);
+    let subscriptionValue = unavailableMoney(accountReason);
     let usageSlices: PoolOverviewResult["metrics"]["usageSlices"] = [];
     let perActivePersonPerDay: PoolOverviewResult["metrics"]["perActivePersonPerDay"] = {
       status: "unavailable",
@@ -1194,6 +1151,34 @@ export async function poolUsageOverview(
           completeDays: 0,
         };
     }
+    const official = await officialCosts(db, raw, prices);
+    apiBilled = officialCostMetric(official, prices, raw.pricesUnavailableReason);
+    const apiSlices = officialCostSlices(official, prices, hashes);
+    const oldSlices = usageSlices;
+    usageSlices =
+      apiSlices.length > maxUsageSlices
+        ? []
+        : apiSlices.map((slice) => {
+            const known = oldSlices.find(
+              (entry) =>
+                entry.person === slice.person &&
+                entry.provider === slice.provider &&
+                entry.model === slice.model,
+            );
+            return {
+              ...slice,
+              subscriptionValue: known?.subscriptionValue ?? null,
+              subscriptionPricedRequests: known?.subscriptionPricedRequests ?? 0,
+              subscriptionUnpriced: known?.subscriptionUnpriced ?? 0,
+            };
+          });
+    if (apiSlices.length > maxUsageSlices) partial = true;
+    if (
+      authority.accounts.length === 0 &&
+      apiBilled.pricedRequests === 0 &&
+      apiBilled.excluded.unpriced === 0
+    )
+      apiBilled = unavailableMoney("No accounts in this pool yet.");
     if (failureP95 !== null)
       failureShareWorstHourP95 = {
         status: "available",

@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-app-accounts-first-entry-reveal",
+  "file": "0322-app-accounts-first-entry-reveal.patch",
+  "content_sha256": "26cc9c379445f32faf86ef76caff19e4258a78523333b4c51c5d51ac2a03d135",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

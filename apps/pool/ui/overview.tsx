@@ -13,7 +13,7 @@ import {
 import { StateIcon } from "./controls.tsx";
 import { LabMark } from "./lab.tsx";
 import { seriesRead, type Overview, type RangeDays } from "./overview-data.ts";
-import { moneyList, rows, total } from "./series-model.ts";
+import { rows, total } from "./series-model.ts";
 import { Money, WhoUses } from "./usage-groups.tsx";
 import { accountProblems, accountsNeedingSomeone, bankedResetCount } from "./overview-attention.ts";
 import { currentCapacity } from "./overview-snapshot.ts";
@@ -261,17 +261,7 @@ function Answers({
     usage?.metrics.apiBilled.status === "available" && usage.metrics.apiBilled.amount !== null
       ? usage.metrics.apiBilled.amount
       : null;
-  const subscription =
-    usage?.metrics.subscriptionValue.status === "available" &&
-    usage.metrics.subscriptionValue.amount !== null
-      ? usage.metrics.subscriptionValue.amount
-      : null;
-  const unpriced = usage
-    ? usage.metrics.apiBilled.excluded.unpriced + usage.metrics.subscriptionValue.excluded.unpriced
-    : 0;
-  // Without a billed estimate, the price recorded with each request is the one figure that exists;
-  // Settings shows the same total. It is labelled as recorded because it includes flat-rate use.
-  const recorded = billed === null && sum && sum.imported.length ? moneyList(sum.imported) : null;
+  const unpriced = usage ? usage.metrics.apiBilled.excluded.unpriced : 0;
   return (
     <nav
       aria-label="At a glance"
@@ -315,17 +305,15 @@ function Answers({
           !usage
             ? "Reading…"
             : billed !== null
-              ? `${usd(billed)} billed est.`
-              : recorded
-                ? `${recorded} recorded API price`
-                : "Estimate unavailable"
+              ? `${usd(billed)} API price est.`
+              : "Estimate unavailable"
         }
       >
         {sum && (
           <span className="text-[13px] text-muted-foreground text-pretty tabular-nums">
-            {billed === null && recorded
-              ? "Priced with each request, as in Settings; includes flat-rate requests. No billed estimate yet."
-              : `Separate: ${subscription === null ? "subscription value unavailable" : `${usd(subscription)} subscription value at API prices`}${unpriced ? ` · ${unpriced.toLocaleString()} requests unpriced` : ""}`}
+            {billed === null
+              ? (usage?.metrics.apiBilled.reason ?? "Official USD estimate unavailable.")
+              : `Current official USD prices${unpriced ? ` · ${unpriced.toLocaleString()} requests unpriced` : ""}`}
           </span>
         )}
       </Answer>
