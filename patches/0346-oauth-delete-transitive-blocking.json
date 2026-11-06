@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-oauth-delete-transitive-blocking",
+  "file": "0346-oauth-delete-transitive-blocking.patch",
+  "content_sha256": "ac113cab61936ba35ddb3b88073bb23c94ac7f100170fc0ff2cfa3c423197942",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
