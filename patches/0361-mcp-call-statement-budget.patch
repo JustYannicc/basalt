@@ -57,7 +57,7 @@ index 3df7ef9b517d87aabc759f27c2b2573a6a19d7ae..88b5470b51f73071e96aea9c8e230c01
          // SDK owners include a namespace; dashboard routes resolve the organization ID itself.
          workflowInputUrl: ({ owner, app, id }) =>
 diff --git a/apps/hosted/cloud/src/infrastructure/invocation-database.ts b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
-index a0d67956954d32667af89a211ac722febb2fb93b..3f8335aa660469687d6b96c04259a6aa1a420b2a 100644
+index 177741ec2d78a45d740be54afa077d210095395b..0c7401d92e8ae1cd527df908049ec987e9b376a4 100644
 --- a/apps/hosted/cloud/src/infrastructure/invocation-database.ts
 +++ b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
 @@ -13,6 +13,7 @@ import {
@@ -68,7 +68,7 @@ index a0d67956954d32667af89a211ac722febb2fb93b..3f8335aa660469687d6b96c04259a6aa
  
  /**
   * Connections one Worker event may hold. The pool opens them on demand and reuses an idle one,
-@@ -50,7 +51,15 @@ export const cloudInvocationDatabase = Layer.effect(
+@@ -54,7 +55,15 @@ export const cloudInvocationDatabase = Layer.effect(
            scope: reservations,
            retire: Effect.void,
          });
@@ -108,10 +108,10 @@ index 5a3051ad690220d4692d85159a57701375da05b6..93a448399c5ddf61a6599c26c025279b
    }),
  );
 diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
-index 45e7c1cb9cf3eed4f1ceed1b85061f262af1d47f..e3fbe2539c6d35341b5df32fb4167ec3b51d6b09 100644
+index 7ebe7ac3ecf4384cbde87d92b92226129a885e8a..9b6eefeb0675b46c3aab8cfc9508d820b0c46c40 100644
 --- a/apps/hosted/self-host/src/implementation/executor-services.ts
 +++ b/apps/hosted/self-host/src/implementation/executor-services.ts
-@@ -43,6 +43,7 @@ import {
+@@ -44,6 +44,7 @@ import {
  } from "@executor-js/hosted-server";
  import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
  import { hostedEventAuthority } from "@executor-js/hosted-server/events";
@@ -119,7 +119,7 @@ index 45e7c1cb9cf3eed4f1ceed1b85061f262af1d47f..e3fbe2539c6d35341b5df32fb4167ec3
  import { deliverEvents } from "@executor-js/sdk/scheduling";
  import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
  import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui/contracts";
-@@ -53,7 +54,7 @@ import {
+@@ -54,7 +55,7 @@ import {
    type BlobStorage,
    type WorkflowRuntime,
  } from "@executor-js/sdk/core";
@@ -128,7 +128,7 @@ index 45e7c1cb9cf3eed4f1ceed1b85061f262af1d47f..e3fbe2539c6d35341b5df32fb4167ec3
  import { GroupDatabase } from "@executor-js/hosted-server/groups";
  import {
    retainConnections,
-@@ -103,11 +104,11 @@ export const selfHostExecutorServices = <E, R>(
+@@ -105,11 +106,11 @@ export const selfHostExecutorServices = <E, R>(
        });
        const storage = yield* makeExecutorStorage({ provider: "postgresql" });
        const evaluation = yield* declarationConfig;
@@ -141,7 +141,7 @@ index 45e7c1cb9cf3eed4f1ceed1b85061f262af1d47f..e3fbe2539c6d35341b5df32fb4167ec3
        const registry = remoteRegistry(
          yield* Config.String("EXECUTOR_REGISTRY_URL").pipe(
            Config.withDefault(hostedExecutorOrigin),
-@@ -159,8 +160,7 @@ export const selfHostExecutorServices = <E, R>(
+@@ -161,8 +162,7 @@ export const selfHostExecutorServices = <E, R>(
            durable: declarations,
            toolListings: evaluation.toolListings,
          },
@@ -591,6 +591,24 @@ index 0000000000000000000000000000000000000000..189f1523d454d4dfb0e16d9957d8fe0c
 +        }),
 +      ),
 +    );
+diff --git a/e2e/support/data-query-batch.ts b/e2e/support/data-query-batch.ts
+index f457ce49f318f7be398de680d468430fe9cea2cb..0bf3be3642a3d7d3f2ad20963d0e6c8d7ffc5bbc 100644
+--- a/e2e/support/data-query-batch.ts
++++ b/e2e/support/data-query-batch.ts
+@@ -150,7 +150,12 @@ export const assertDataQueryBatch = (
+       "The batched snapshot reads the app and its active version once",
+     ).toHaveLength(1);
+     expect(
+-      reads.filter(({ under }) => under.some(({ name }) => name === "FumaDB.SqlQuery.findMany")),
++      // Joined target reads select account rows without creating an ORM span.
++      reads.filter(
++        ({ text }) =>
++          /\bFROM\s+"executor_accounts"(?:\s|$)/i.test(text) &&
++          text.includes('"encryptedCredentials"'),
++      ),
+       "The selection's account rows are read once",
+     ).toHaveLength(1);
+     expect(
 diff --git a/e2e/support/managed-server.ts b/e2e/support/managed-server.ts
 index bca5c030ff3b6676ead2d52ac14bd91795cb006b..2eabe1042d53c4220ec3e84c822e0e92e6807b89 100644
 --- a/e2e/support/managed-server.ts
@@ -1221,7 +1239,7 @@ index 1f2736af6a2d677a07ba2abf89b5e172ecfcc0c4..effa11eae7e016ddceb9dc764e614604
              safe,
            ),
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index 5770859e582a577b04865216000d9a1868268d22..2c4aa575066c1d30108a3d5d6294a68b51c24611 100644
+index 38f5f95fa16a7aa40c4ae48aead676a35f23d77c..a7c100863730b86ef22f58ebab6eeacd0d0de761 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
 @@ -413,6 +413,7 @@ export const createExecutor = (
@@ -1370,7 +1388,7 @@ index c2d0b318383c23cba9cdc68d602e0a89ae96ccb9..f5d0b4c4d1610fd3c797e321f92cc58e
    });
  
 diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
-index 716cca47dd2c4175edbac7330acab2739195155e..a126911dd4cf224ca0bd84862238ed6d386c0a5f 100644
+index 54a941708a93f2d975f142d3c91d9c5547f17394..cce4b1947bff64157d5b66766082a7e771ac0bff 100644
 --- a/packages/sdk/src/implementation/tools.ts
 +++ b/packages/sdk/src/implementation/tools.ts
 @@ -19,7 +19,6 @@ import {
@@ -1391,7 +1409,7 @@ index 716cca47dd2c4175edbac7330acab2739195155e..a126911dd4cf224ca0bd84862238ed6d
  import {
    Cursor,
    ToolName,
-@@ -198,7 +198,7 @@ export function snapshot(
+@@ -207,7 +207,7 @@ export function snapshot(
            : yield* Schema.decodeUnknownEffect(StoredVersion)(row.deployment).pipe(
                Effect.mapError(() => new StorageError()),
              );
@@ -1400,7 +1418,7 @@ index 716cca47dd2c4175edbac7330acab2739195155e..a126911dd4cf224ca0bd84862238ed6d
        db,
        app.id,
        version,
-@@ -212,7 +212,7 @@ export function snapshot(
+@@ -221,7 +221,7 @@ export function snapshot(
        ahead?.accounts,
        input.connecting,
      );
@@ -1409,7 +1427,7 @@ index 716cca47dd2c4175edbac7330acab2739195155e..a126911dd4cf224ca0bd84862238ed6d
    });
  }
  
-@@ -767,14 +767,6 @@ const summarizeTool = ({
+@@ -776,14 +776,6 @@ const summarizeTool = ({
    ...summary
  }: Tool): ToolSummary => summary;
  
@@ -1424,7 +1442,7 @@ index 716cca47dd2c4175edbac7330acab2739195155e..a126911dd4cf224ca0bd84862238ed6d
  /** Live calls return completion or a durable approval request. Resume trusts the supplied SDK decision. */
  export const makeTools = (
    storage: ExecutorRuntimeDatabase,
-@@ -795,6 +787,7 @@ export const makeTools = (
+@@ -804,6 +796,7 @@ export const makeTools = (
      ReturnType<typeof import("./account-targets.ts").makeAccountTargets>,
      "requireCloudCall" | "requireCloud"
    >,
@@ -1432,7 +1450,7 @@ index 716cca47dd2c4175edbac7330acab2739195155e..a126911dd4cf224ca0bd84862238ed6d
  ) => {
    const db = database(storage);
    const toolControls = (state: InvocationSnapshot) => {
-@@ -810,51 +803,7 @@ export const makeTools = (
+@@ -819,51 +812,7 @@ export const makeTools = (
    };
    const resolveAccount = oauth.resolveSelected;
    const approvals = makeToolApprovals(db, credentials, crypto, storage.reactivity.inTransaction);
@@ -1485,7 +1503,7 @@ index 716cca47dd2c4175edbac7330acab2739195155e..a126911dd4cf224ca0bd84862238ed6d
    /** Renew an account the service refused without repeating what it refused; undefined when none was. */
    const renewOnce = (state: InvocationSnapshot, context: InvocationContext, error: unknown) =>
      renewRefused(oauth, clients, sitePolicy, state, context, error).pipe(
-@@ -1642,6 +1591,7 @@ export const makeTools = (
+@@ -1665,6 +1614,7 @@ export const makeTools = (
          // Machine-bound accounts never enter cloud app code or credential resolution.
          yield* (
            accountTargets?.requireCloudCall({
@@ -1493,7 +1511,7 @@ index 716cca47dd2c4175edbac7330acab2739195155e..a126911dd4cf224ca0bd84862238ed6d
              accounts: distinctSelection(state).map(({ account }) => ({
                id: account.id,
                owner: account.owner,
-@@ -1801,7 +1751,10 @@ export const makeTools = (
+@@ -1823,7 +1773,10 @@ export const makeTools = (
                  ),
            ),
            Effect.provideService(AppCodeEntered, appCode),
@@ -1505,7 +1523,7 @@ index 716cca47dd2c4175edbac7330acab2739195155e..a126911dd4cf224ca0bd84862238ed6d
          );
        }).pipe(Effect.withSpan("sdk.tools.call")),
      pruneApprovals: (input: Parameters<Executor["tools"]["pruneApprovals"]>[0] = {}) =>
-@@ -2000,7 +1953,10 @@ export const makeTools = (
+@@ -2022,7 +1975,10 @@ export const makeTools = (
                          enteredApp = true;
                        },
                      }),
