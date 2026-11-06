@@ -99,11 +99,11 @@ export interface PoolView {
   readonly reading?: {
     readonly source: "snapshot" | "live";
     readonly revalidationFailed: boolean;
-    /** Completion of each Home read. Provider observations retain their own original timestamps. */
+    /** Completion of each Home read; skipped reads are absent. Provider timestamps stay original. */
     readonly readAt: {
       readonly membership: string;
-      readonly credentials: string;
-      readonly quota: string;
+      readonly credentials?: string;
+      readonly quota?: string;
     };
   };
   /** Native removal intent is visible to the owner only. `since` bounds retained history. */

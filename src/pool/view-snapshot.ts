@@ -3,7 +3,7 @@ import { ChunkStorage, type UsageStorage } from "./usage-storage.ts";
 
 export interface HomeViewData {
   accounts: Account[];
-  readAt: { membership: string; credentials: string; quota: string };
+  readAt: { membership: string; credentials?: string; quota?: string };
 }
 type Storage = Pick<UsageStorage, "get" | "put"> & Partial<Omit<UsageStorage, "get" | "put">>;
 interface Revision { all: number; pools: Record<string, number> }

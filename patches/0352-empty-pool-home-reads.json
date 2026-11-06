@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-empty-pool-home-reads",
+  "file": "0352-empty-pool-home-reads.patch",
+  "content_sha256": "e19e2696aa1418f8b0356af5dbf24447c69bb2cd6ddb84b0b9037bd58543fc3a",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

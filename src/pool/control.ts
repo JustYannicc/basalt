@@ -504,17 +504,17 @@ export class PoolHome {
     }
   }
   async readView(now: () => Date): Promise<HomeViewData> {
-    const readAt = { membership: "", credentials: "", quota: "" };
-    const membership = timePoolRead(
+    const members = await timePoolRead(
       "membership",
       () => this.membership(),
       (value) => value.members.length,
     );
+    const readAt: HomeViewData["readAt"] = { membership: now().toISOString() };
+    // Home's credential inventory is global. An empty pool has nothing to project from it.
+    if (!members.members.length) return { accounts: [], readAt };
+    const ids = [...new Set(members.members.map((member) => member.auth_id))].sort();
+    for (const id of ids) this.client.dropQuotaDetail(id);
     const reads = [
-      membership.then((value) => {
-        readAt.membership = now().toISOString();
-        return value;
-      }),
       timePoolRead(
         "credentials",
         () => this.credentials(),
@@ -523,23 +523,17 @@ export class PoolHome {
         readAt.credentials = now().toISOString();
         return value;
       }),
-      membership
-        .then(({ members }) => {
-          const ids = [...new Set(members.map((member) => member.auth_id))].sort();
-          for (const id of ids) this.client.dropQuotaDetail(id);
-          return timePoolRead(
-            "quota_detail",
-            () => this.client.quota(ids, true),
-            (value) => value.length,
-          );
-        })
-        .then((value) => {
-          readAt.quota = now().toISOString();
-          return value;
-        }),
+      timePoolRead(
+        "quota_detail",
+        () => this.client.quota(ids, true),
+        (value) => value.length,
+      ).then((value) => {
+        readAt.quota = now().toISOString();
+        return value;
+      }),
     ] as const;
     await Promise.allSettled(reads);
-    const [members, files, usage] = await Promise.all(reads);
+    const [files, usage] = await Promise.all(reads);
     return {
       accounts: accountsView(
         files,

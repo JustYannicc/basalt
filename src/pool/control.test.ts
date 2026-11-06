@@ -230,8 +230,6 @@ test("only GET pool is available to a non-owner; empty reads create no Home reso
       revalidationFailed: false,
       readAt: {
         membership: f.deps.now().toISOString(),
-        credentials: f.deps.now().toISOString(),
-        quota: f.deps.now().toISOString(),
       },
     },
   });
@@ -247,7 +245,7 @@ test("only GET pool is available to a non-owner; empty reads create no Home reso
   }
   assert.deepEqual(
     f.home.calls.map((call) => call.path),
-    ["/v8/management/channel-groups", "/v8/management/credentials"],
+    ["/v8/management/channel-groups"],
   );
 });
 
