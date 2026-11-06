@@ -54,7 +54,7 @@ index 89ba6e6..4024187 100644
      });
 +    // A pending connection for the organization's app, as an opened Connect form leaves one.
 +    yield* database.run({
-+      sql: `insert into executor_account_connections (id, owner, provider, reconnect_account, state, revision, oauth_attempt, created_at, expires_at, target) select $1, $2, provider, null, '{"status":"pending"}', 'fixture', null, now(), now() + interval '30 minutes', jsonb_build_object('app', $3::text, 'requirement', 'service', 'name', 'Scope proof', 'owner', $2::text, 'scope', 'user') from executor_accounts where id = $4`,
++      sql: `insert into executor_account_connections (id, owner, provider, reconnect_account, state, revision, oauth_attempt, created_at, expires_at, target) select $1, $2::text, provider, null, '{"status":"pending"}', 'fixture', null, now(), now() + interval '30 minutes', jsonb_build_object('app', $3::text, 'requirement', 'service', 'name', 'Scope proof', 'owner', $2::text, 'scope', 'user') from executor_accounts where id = $4`,
 +      params: [row.connection, owner, row.app, row.account],
 +    });
      yield* database.run({
