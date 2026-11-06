@@ -1,0 +1,353 @@
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index dc53fe9..38c9da7 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -5303,6 +5303,17 @@ export const scenarios = plan({
+       local: na("The local dashboard keeps its own account dialogs."),
+     },
+   },
++  listedBindingCompactRow: {
++    fixtures: "actors",
++    file: "listed-account-bindings.spec.ts",
++    title:
++      "A grouped sign-in row stays one compact row; its checks and requested access open with Details",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Display only; self-host proves the shared rows."),
++      local: na("Local grouped rows are proven by accountIdentityRows."),
++    },
++  },
+   listedAccountDemotion: {
+     fixtures: "actors",
+     file: "listed-account-authority.spec.ts",
+diff --git a/e2e/tests/account-identity-screens.spec.ts b/e2e/tests/account-identity-screens.spec.ts
+index 308bb3a..e247bd6 100644
+--- a/e2e/tests/account-identity-screens.spec.ts
++++ b/e2e/tests/account-identity-screens.spec.ts
+@@ -7,6 +7,7 @@ import { accountFamilyProduct } from "../support/account-family-product.ts";
+ import { accountIdentityIssuer } from "../support/account-identity-issuer.ts";
+ import { accountIdentityProduct, IdentityAccount } from "../support/account-identity-product.ts";
+ import { Browser } from "../support/browser.ts";
++import { openRowDetails } from "../support/account-rows.ts";
+ import { body } from "../support/api.ts";
+ import { dismissAccountName } from "../support/name-account.ts";
+ import { Target } from "../support/platform.ts";
+@@ -323,14 +324,26 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+               .count(),
+           ),
+         ).toBe(0);
+-        yield* browser.use("Inspect each app's requested access", (page) =>
+-          page
++        // Requested access opens with the grouped row's Details, never as its own line.
++        expect(
++          yield* browser.use("The collapsed grouped row hides requested access", (page) =>
++            page
++              .locator(".inventory-row")
++              .filter({ hasText: "same@example.test" })
++              .first()
++              .locator(".requested-access")
++              .count(),
++          ),
++        ).toBe(0);
++        yield* browser.use("Inspect each app's requested access", (page) => {
++          const row = page
+             .locator(".inventory-row")
+             .filter({ hasText: "same@example.test" })
+-            .first()
+-            .getByText("Requested access", { exact: true })
+-            .click(),
+-        );
++            .first();
++          return openRowDetails(page, row, /.+/).then(() =>
++            row.getByText("Requested access", { exact: true }).click(),
++          );
++        });
+         yield* browser.use("Show declared permissions without claiming a grant", (page) =>
+           page
+             .locator(".inventory-row")
+diff --git a/e2e/tests/listed-account-bindings.spec.ts b/e2e/tests/listed-account-bindings.spec.ts
+index 1bc2f3e..3e42608 100644
+--- a/e2e/tests/listed-account-bindings.spec.ts
++++ b/e2e/tests/listed-account-bindings.spec.ts
+@@ -5,6 +5,8 @@ import { FetchHttpClient, HttpClient } from "effect/http";
+ import { Actors } from "../support/actors.ts";
+ import { Api, body } from "../support/api.ts";
+ import { Browser } from "../support/browser.ts";
++import { Evidence } from "../support/evidence.ts";
++import { accountRow, openRowMenu } from "../support/account-rows.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { Resource } from "../support/contracts.ts";
+ import { accountIdentityIssuer } from "../support/account-identity-issuer.ts";
+@@ -238,4 +240,86 @@ layer(HostedLive, { excludeTestServices: true })("Listed account bindings", (it)
+         }),
+       ),
+     );
++
++  it.effect(scenarios.listedBindingCompactRow.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors;
++        const browser = yield* Browser;
++        const evidence = yield* Evidence;
++        const fixture = yield* verifiedBindings;
++        const groupTitle = fixture.first.identity?.label ?? fixture.first.label;
++        yield* browser.login(actors.owner);
++        for (const width of [1280, 390]) {
++          const collapsed = yield* browser.use(`Read the grouped row at ${width}px`, (page) => {
++            const row = accountRow(page, groupTitle);
++            return page
++              .setViewportSize({ width, height: 900 })
++              .then(() => page.goto(`/org/${actors.organization.slug}/accounts`))
++              .then(() => row.locator("[data-account-name]").waitFor())
++              .then(() =>
++                Promise.all([
++                  row.evaluate((element) => element.getBoundingClientRect().height),
++                  row.locator(".requested-access").count(),
++                  row.locator("[data-account-health]").count(),
++                  row.getByRole("button", { name: /^Check now$|^Details$/ }).count(),
++                  page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
++                ]),
++              );
++          });
++          yield* evidence.attach(
++            `listed-binding-compact-${width}.png`,
++            "image/png",
++            yield* browser.use("Capture the grouped row", (page) =>
++              page.screenshot({ fullPage: true }),
++            ),
++          );
++          const [height, access, health, inline, fits] = collapsed;
++          expect(
++            { access, health, inline },
++            "requested access, checks, Check now and Details wait behind the row's menu",
++          ).toEqual({ access: 0, health: 0, inline: 0 });
++          expect(fits, `no horizontal scroll at ${width}px`).toBe(true);
++          if (width === 390)
++            expect(height, "the grouped row stays compact on a phone").toBeLessThanOrEqual(110);
++          const opened = yield* browser.use(
++            `Open the grouped row's Details at ${width}px`,
++            (page) => {
++              const row = accountRow(page, groupTitle);
++              return openRowMenu(page, row, groupTitle)
++                .then((menu) =>
++                  menu
++                    .getByRole("menuitem")
++                    .allInnerTexts()
++                    .then((items) =>
++                      menu
++                        .getByRole("menuitem", { name: "Details", exact: true })
++                        .click()
++                        .then(() => items),
++                    ),
++                )
++                .then((items) =>
++                  row
++                    .locator(".requested-access")
++                    .waitFor()
++                    .then(() =>
++                      Promise.all([
++                        Promise.resolve(items),
++                        row.locator("[data-account-health]").count(),
++                        row
++                          .locator("[data-account-health]")
++                          .getByRole("button", { name: "Check now", exact: true })
++                          .count(),
++                      ]),
++                    ),
++                );
++            },
++          );
++          expect(opened[0]).toEqual(expect.arrayContaining(["Details", "Manage apps"]));
++          expect(opened.slice(1), "Details hold the checks and Check now").toEqual([1, 1]);
++        }
++      }),
++    ),
++  );
+ });
+diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/packages/ui/src/implementation/dashboard/account-actions.tsx
+index 530b805..757f1f8 100644
+--- a/packages/ui/src/implementation/dashboard/account-actions.tsx
++++ b/packages/ui/src/implementation/dashboard/account-actions.tsx
+@@ -1,7 +1,7 @@
+ import { EmptyState } from "./empty-state.tsx";
+ import type { Account, App } from "@executor-js/sdk";
+ import { Exit, type Cause } from "effect";
+-import { useState, type ComponentType, type ReactNode } from "react";
++import { Children, useState, type ComponentType, type ReactNode } from "react";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { ArrowUpRight01Icon, MoreHorizontalIcon } from "@hugeicons/core-free-icons";
+ import type { AccountDetail, AccountSummary, FailureProps } from "../../contracts/dashboard.ts";
+@@ -31,24 +31,21 @@ import { ownMethodLabel } from "./method-labels.ts";
+ 
+ /**
+  * Account management lives on its list row; products supply the menu items they support. The row's
+- * own actions (usage, details, adding an app) come first. A menu with `rowActions` false, such as a
+- * grouped identity row's, leaves the row's details in view and lists only its children.
++ * own actions (usage, details, adding an app) come first.
+  */
+ export function AccountActionsMenu({
+   account,
+   name,
+   children,
+-  rowActions = true,
+ }: {
+   readonly account: Pick<AccountSummary, "label"> & Partial<Pick<AccountSummary, "providerName">>;
+   /** What the menu's button announces; by default the account's own name (`accountMenuName`). */
+   readonly name?: string | undefined;
+-  readonly children: ReactNode;
+-  readonly rowActions?: boolean;
++  readonly children?: ReactNode;
+ }) {
+   return (
+     <DropdownMenu>
+-      {rowActions && <AccountRowMenuPresence />}
++      <AccountRowMenuPresence />
+       <DropdownMenuTrigger asChild>
+         <Button
+           variant="ghost"
+@@ -60,7 +57,7 @@ export function AccountActionsMenu({
+       </DropdownMenuTrigger>
+       {/* Long labels, such as an identity's app name, wrap within a phone's width. */}
+       <DropdownMenuContent align="end" collisionPadding={16} className="min-w-44 max-w-72">
+-        {rowActions && <AccountRowMenuItems />}
++        <AccountRowMenuItems separator={Children.toArray(children).length > 0} />
+         {children}
+       </DropdownMenuContent>
+     </DropdownMenu>
+diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages/ui/src/implementation/dashboard/account-row.tsx
+index 233f2a0..f02d577 100644
+--- a/packages/ui/src/implementation/dashboard/account-row.tsx
++++ b/packages/ui/src/implementation/dashboard/account-row.tsx
+@@ -6,7 +6,14 @@
+ import type { AccountAppHealth, AccountId, AppId } from "@executor-js/sdk";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { Tick02Icon } from "@hugeicons/core-free-icons";
+-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
++import {
++  createContext,
++  useContext,
++  useLayoutEffect,
++  useMemo,
++  useState,
++  type ReactNode,
++} from "react";
+ import { authoredLabel } from "../../contracts/account-title.ts";
+ import type { AccountSummary, Inventory } from "../../contracts/dashboard.ts";
+ import { DropdownMenuItem, DropdownMenuSeparator } from "../components/dropdown-menu.tsx";
+@@ -197,10 +204,17 @@ export function OutsideAccountRow({ children }: { readonly children: ReactNode }
+   return <AccountRowContext.Provider value={undefined}>{children}</AccountRowContext.Provider>;
+ }
+ 
+-/** Rendered by a row's menu so the row knows its actions have a home there. */
++/** Whether the row has actions of its own (usage, Details, adding an app) for its menu. */
++export const accountRowHasActions = (row: AccountRowState) =>
++  row.usage !== undefined || row.extra || row.identity !== undefined;
++
++/**
++ * Rendered by a row's menu so the row knows its actions have a home there. Set before paint, so
++ * content that waits for Details never shows inline for a frame.
++ */
+ export function AccountRowMenuPresence() {
+   const setMenu = useAccountRow()?.setMenu;
+-  useEffect(() => {
++  useLayoutEffect(() => {
+     if (setMenu === undefined) return;
+     setMenu(true);
+     return () => setMenu(false);
+@@ -221,7 +235,7 @@ export function AccountRowDetails({
+ }) {
+   const row = useAccountRow();
+   const setExtra = row?.setExtra;
+-  useEffect(() => {
++  useLayoutEffect(() => {
+     if (setExtra === undefined) return;
+     setExtra(true);
+     return () => setExtra(false);
+@@ -231,7 +245,7 @@ export function AccountRowDetails({
+ }
+ 
+ /** The identity action as a menu item; the label wraps rather than truncating on a phone. */
+-export function AccountRowIdentityItem() {
++function AccountRowIdentityItem() {
+   const identity = useAccountRow()?.identity;
+   return identity === undefined ? null : (
+     <DropdownMenuItem onSelect={(event) => identity.open(menuTrigger(event.target))}>
+@@ -240,12 +254,14 @@ export function AccountRowIdentityItem() {
+   );
+ }
+ 
+-/** The row's own actions at the top of its menu: refreshing usage, details and adding an app. */
+-export function AccountRowMenuItems() {
++/**
++ * The row's own actions at the top of its menu: refreshing usage, details and adding an app. The
++ * separator divides them from the menu's other items, when there are any.
++ */
++export function AccountRowMenuItems({ separator = true }: { readonly separator?: boolean }) {
+   const row = useAccountRow();
+-  if (row === undefined) return null;
++  if (row === undefined || !accountRowHasActions(row)) return null;
+   const details = row.usage !== undefined || row.extra;
+-  if (!details && row.identity === undefined) return null;
+   const { refresh, pending = false, disabledReason } = row.usage ?? {};
+   return (
+     <>
+@@ -268,7 +284,7 @@ export function AccountRowMenuItems() {
+         </DropdownMenuItem>
+       )}
+       <AccountRowIdentityItem />
+-      <DropdownMenuSeparator />
++      {separator && <DropdownMenuSeparator />}
+     </>
+   );
+ }
+diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+index e478a9e..42551ec 100644
+--- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
++++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+@@ -7,7 +7,6 @@ import {
+   AccountRowDescription,
+   AccountRowDetails,
+   AccountRowHeader,
+-  AccountRowIdentityItem,
+   AccountRowLogo,
+   AccountRowMenu,
+   AccountRowName,
+@@ -18,6 +17,7 @@ import {
+   accountRowGroup,
+   type AccountRowInput,
+   accountRowGrid,
++  accountRowHasActions,
+   accountRowType,
+   accountRowsContainer,
+   menuTrigger,
+@@ -465,8 +465,9 @@ function AccountsList({
+ }
+ 
+ /**
+- * The ⋯ for a row the host gives no menu of its own, such as a grouped identity: adding an app for
+- * the identity, and each grouped sign-in's own actions in a dialog. The row's details stay in view.
++ * The ⋯ for a row the host gives no menu of its own, such as a grouped identity: the row's own
++ * actions (usage, Details, adding an app for the identity), and each grouped sign-in's own actions
++ * in a dialog. Like every row with a menu, its checks and requested access open with Details.
+  */
+ function IdentityRowMenu({
+   title,
+@@ -475,14 +476,13 @@ function IdentityRowMenu({
+   readonly title: string;
+   readonly manage?: ReactNode;
+ }) {
+-  const identity = useAccountRow()?.identity;
++  const row = useAccountRow();
+   const [managing, setManaging] = useState(false);
+   const returnFocus = useRef<HTMLElement | null>(null);
+-  if (identity === undefined && manage === undefined) return null;
++  if (manage === undefined && (row === undefined || !accountRowHasActions(row))) return null;
+   return (
+     <>
+-      <AccountActionsMenu account={{ label: title }} rowActions={false}>
+-        <AccountRowIdentityItem />
++      <AccountActionsMenu account={{ label: title }}>
+         {manage !== undefined && (
+           <DropdownMenuItem
+             onSelect={(event) => {
