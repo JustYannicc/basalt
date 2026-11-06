@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The managed test Cloud's Worker logs in to its disposable database as a runtime role shaped like production's: it inherits read-all and write-all data, owns no objects, is not a superuser and may not create in the public schema. Migrations and test fixtures keep the schema owner. Every disposable database, a cloned target included, creates that role first so it keeps one catalog identity, and credential, role and target bindings rotate, trust or clone the runtime login instead of the owner, so a runtime query that needs schema ownership fails in the scenarios."
+    }
+  }
+}

@@ -1,0 +1,273 @@
+diff --git a/apps/hosted/cloud/scripts/preview-runtime-role.ts b/apps/hosted/cloud/scripts/preview-runtime-role.ts
+index 1ea6a9d..51c1027 100644
+--- a/apps/hosted/cloud/scripts/preview-runtime-role.ts
++++ b/apps/hosted/cloud/scripts/preview-runtime-role.ts
+@@ -1,4 +1,4 @@
+-/** Give preview Workers data access without branch administration or schema ownership. */
++/** Give preview and local Workers data access without branch administration or schema ownership. */
+ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
+ import { Config, Effect, Redacted, Schema } from "effect";
+ import { Client } from "pg";
+diff --git a/apps/hosted/cloud/src/contracts/database.ts b/apps/hosted/cloud/src/contracts/database.ts
+index 9cc959e..035f9de 100644
+--- a/apps/hosted/cloud/src/contracts/database.ts
++++ b/apps/hosted/cloud/src/contracts/database.ts
+@@ -1,9 +1,13 @@
+ import { Redacted, Schema } from "effect";
+ 
+-/** The local database URL is shared by migrations and the development web process. */
+-export const cloudDevelopmentDatabaseUrl = (password: Redacted.Redacted<string>, port: number) =>
++/** The local database URL: the owner's for migrations and the development web process. */
++export const cloudDevelopmentDatabaseUrl = (
++  password: Redacted.Redacted<string>,
++  port: number,
++  user = "executor",
++) =>
+   Redacted.make(
+-    `postgresql://executor:${encodeURIComponent(Redacted.value(password))}@127.0.0.1:${port}/executor?sslmode=disable`,
++    `postgresql://${user}:${encodeURIComponent(Redacted.value(password))}@127.0.0.1:${port}/executor?sslmode=disable`,
+   );
+ 
+ /** Local cloud development accepts an explicit loopback Postgres origin only. */
+diff --git a/apps/hosted/cloud/src/infrastructure/development.ts b/apps/hosted/cloud/src/infrastructure/development.ts
+index 4a61670..0dbc8db 100644
+--- a/apps/hosted/cloud/src/infrastructure/development.ts
++++ b/apps/hosted/cloud/src/infrastructure/development.ts
+@@ -9,7 +9,12 @@ import { cloudDevelopment } from "../contracts/development.ts";
+ import { billingSettings } from "./billing.ts";
+ import { cloudDevelopmentDatabaseUrl } from "../contracts/database.ts";
+ 
+-/** Own a persistent local Postgres instance and apply schemas before the Worker connects to it. */
++/**
++ * Own a persistent local Postgres instance and apply schemas before the Worker connects to it.
++ * With `CLOUD_DEV_RUNTIME_DATABASE_PASSWORD`, the Worker logs in as production's runtime role
++ * does: it reads and writes all data but owns nothing and may not create in `public`. Only
++ * migrations use the owner.
++ */
+ export const developmentDatabase = Effect.gen(function* () {
+   const configuration = yield* cloudDevelopment;
+   const password = yield* Config.Redacted("CLOUD_DEV_DATABASE_PASSWORD").pipe(
+@@ -57,9 +62,31 @@ export const developmentDatabase = Effect.gen(function* () {
+     memo: false,
+     timeout: "2 minutes",
+   });
++  const runtimePassword = yield* Config.Redacted("CLOUD_DEV_RUNTIME_DATABASE_PASSWORD").pipe(
++    Config.option,
++  );
++  if (Option.isNone(runtimePassword))
++    return {
++      url: migrations.hash.pipe(Output.map(() => url)),
++      origin: migrations.hash.pipe(Output.map(() => origin)),
++    };
++  const runtime = { ...origin, user: "executor_runtime", password: runtimePassword.value };
++  const role = yield* Command.Exec("DevelopmentRuntimeRole", {
++    command: "node scripts/preview-runtime-role.ts",
++    env: {
++      DATABASE_URL: migrations.hash.pipe(Output.map(() => url)),
++      RUNTIME_PASSWORD: runtime.password,
++    },
++    memo: false,
++    timeout: "1 minute",
++  });
+   return {
+-    url: migrations.hash.pipe(Output.map(() => url)),
+-    origin: migrations.hash.pipe(Output.map(() => origin)),
++    url: role.hash.pipe(
++      Output.map(() =>
++        cloudDevelopmentDatabaseUrl(runtime.password, configuration.databasePort, runtime.user),
++      ),
++    ),
++    origin: role.hash.pipe(Output.map(() => runtime)),
+   };
+ });
+ 
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+index f908f6f..c511191 100644
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -21,6 +21,7 @@ import { randomBytes } from "node:crypto";
+ import { createEmulatorFixture, EmulatorFixture, provisionEmulatorRequest } from "./emulators.ts";
+ import {
+   createV1Database,
++  cloudRuntimeDatabaseRole,
+   startCloudPostgres,
+   v1DatabaseReader,
+   v1DatabaseWriter,
+@@ -273,6 +274,8 @@ export const startCloudEnvironment = (input: {
+     // Every scenario of this Cloud exports to these collectors; see `serveShardedOtlpCollector`.
+     const collector = yield* serveShardedOtlpCollector(directory, collectorShards);
+     const databasePassword = randomBytes(24).toString("hex");
++    // The Worker logs in as the runtime role; migrations and fixtures keep the owner's login.
++    const runtimePassword = randomBytes(24).toString("hex");
+     const operatorOAuth = OperatorOAuthFixture.make({
+       port: yield* freePort,
+       clientId: "first-party-client",
+@@ -420,6 +423,7 @@ export const startCloudEnvironment = (input: {
+       ...(input.npmRegistry === undefined ? {} : { EXECUTOR_NPM_REGISTRY: input.npmRegistry }),
+       CLOUD_DEV_DATABASE_PORT: String(databasePort),
+       CLOUD_DEV_DATABASE_PASSWORD: databasePassword,
++      CLOUD_DEV_RUNTIME_DATABASE_PASSWORD: runtimePassword,
+       CLOUD_DEV_EXTERNAL_DATABASE: "true",
+       EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(fixture).services),
+       ...(mapsRoutes === undefined
+@@ -551,6 +555,7 @@ export const startCloudEnvironment = (input: {
+       databasePort: databaseBackendPort,
+       ...(alternatePort === undefined ? {} : { alternatePort }),
+       databasePassword,
++      runtimePassword,
+       dockerEnv,
+       log: `${directory}/postgres.log`,
+     });
+@@ -721,6 +726,7 @@ export const startCloudEnvironment = (input: {
+         : yield* productionOpsDatabaseFixture({
+             container,
+             databasePassword,
++            runtimePassword,
+             directory,
+             dockerEnv,
+           });
+@@ -728,8 +734,8 @@ export const startCloudEnvironment = (input: {
+       CLOUD_DEV_DATABASE_PORT: String(next === "alternate" ? alternatePort : databasePort),
+       BASALT_E2E_DATABASE_ORIGIN: next,
+       BASALT_E2E_OPS_RELEASE: next === "release" ? "replacement-release" : "reviewed-release",
+-      CLOUD_DEV_DATABASE_PASSWORD:
+-        next === "credentials" ? "hyperdrive-invocation-password-two" : databasePassword,
++      CLOUD_DEV_RUNTIME_DATABASE_PASSWORD:
++        next === "credentials" ? "hyperdrive-invocation-password-two" : runtimePassword,
+     });
+     const prepareBinding = (next: string) =>
+       Effect.gen(function* () {
+@@ -744,7 +750,7 @@ export const startCloudEnvironment = (input: {
+                 container,
+                 "sh",
+                 "-c",
+-                `sed -i '1i host all executor 0.0.0.0/0 trust' "$PGDATA/pg_hba.conf" && psql -U executor -d executor -c 'select pg_reload_conf()'`,
++                `sed -i '1i host all ${cloudRuntimeDatabaseRole} 0.0.0.0/0 trust' "$PGDATA/pg_hba.conf" && psql -U executor -d executor -c 'select pg_reload_conf()'`,
+               ],
+               { env: dockerEnv, extendEnv: false, stdout: "ignore", stderr: "ignore" },
+             ),
+diff --git a/e2e/support/cloud-postgres.ts b/e2e/support/cloud-postgres.ts
+index 2c9c62e..3680956 100644
+--- a/e2e/support/cloud-postgres.ts
++++ b/e2e/support/cloud-postgres.ts
+@@ -12,6 +12,12 @@ import { Clock, Console, Effect, FileSystem, Schedule, Schema, Stream } from "ef
+ import { ChildProcess, ChildProcessSpawner } from "effect/process";
+ 
+ const role = "executor.e2e.role=cloud-postgres";
++/**
++ * The Worker's login, shaped like production's runtime role: it inherits `pg_read_all_data` and
++ * `pg_write_all_data`, owns nothing and may not create in `public`. Migrations and fixtures keep
++ * the owner, `executor`.
++ */
++export const cloudRuntimeDatabaseRole = "executor_runtime";
+ const namespaceLabel = "executor.e2e.pid-namespace";
+ const pidLabel = "executor.e2e.pid";
+ /** A container younger than this is never removed by another run, whatever its owner's state. */
+@@ -139,6 +145,11 @@ export const startCloudPostgres = (input: {
+   /** A second runner-owned endpoint for binding-change proof against the same retained database. */
+   readonly alternatePort?: number;
+   readonly databasePassword: string;
++  /**
++   * Create the runtime role before anything else, so every fresh container, a cloned target
++   * included, gives it the same catalog OID. Cloud's own setup grants and rotates it.
++   */
++  readonly runtimePassword?: string;
+   readonly dockerEnv: DockerEnv;
+   /** Receives the server's output. */
+   readonly log: string;
+@@ -252,6 +263,24 @@ export const startCloudPostgres = (input: {
+         ),
+         Effect.retry({ schedule: Schedule.spaced("1 second"), times: 90 }),
+       );
++    if (input.runtimePassword === undefined) return;
++    const runtimeRole = yield* processes.exitCode(
++      docker([
++        "exec",
++        container,
++        "psql",
++        "-v",
++        "ON_ERROR_STOP=1",
++        "-U",
++        "executor",
++        "-d",
++        "executor",
++        "-c",
++        `create role ${cloudRuntimeDatabaseRole} login password '${input.runtimePassword}'; grant pg_read_all_data, pg_write_all_data to ${cloudRuntimeDatabaseRole}`,
++      ]),
++    );
++    if (runtimeRole !== 0)
++      return yield* new CloudPostgresFailed({ operation: "Create the runtime database role" });
+   });
+ 
+ /**
+diff --git a/e2e/support/production-ops-credentials-proof.ts b/e2e/support/production-ops-credentials-proof.ts
+index e211857..db13d24 100644
+--- a/e2e/support/production-ops-credentials-proof.ts
++++ b/e2e/support/production-ops-credentials-proof.ts
+@@ -4,6 +4,7 @@ import { Effect, Schema } from "effect";
+ import { createHash } from "node:crypto";
+ import { body } from "./api.ts";
+ import { Target } from "./platform.ts";
++import { cloudRuntimeDatabaseRole } from "./cloud-postgres.ts";
+ import { fixtureRequest } from "../sdk/fixtures.ts";
+ import { Inventory, Response } from "./production-ops-client.ts";
+ import { Applied, productionMigrationProof } from "./production-ops-migration-proof.ts";
+@@ -49,13 +50,18 @@ export const productionOpsCredentialsProof = Effect.gen(function* () {
+     ),
+   )(
+     yield* p.database.run({
+-      sql: "select current_database() as name, d.oid::text as oid, r.oid::text as role, i.id::text as identity, (pg_control_system()).system_identifier::text as server from pg_database d cross join pg_roles r cross join production_ops_database_identity i where d.datname = current_database() and r.rolname = session_user",
++      // The fixture logs in as the owner; the Worker's identity is its runtime role's.
++      sql: "select current_database() as name, d.oid::text as oid, r.oid::text as role, i.id::text as identity, case when has_function_privilege(r.oid, 'pg_catalog.pg_control_system()', 'execute') then (pg_control_system()).system_identifier::text end as server from pg_database d cross join pg_roles r cross join production_ops_database_identity i where d.datname = current_database() and r.rolname = $1",
++      params: [cloudRuntimeDatabaseRole],
+     }),
+   );
++  const [observedRow] = observedDatabase;
++  if (observedRow === undefined) return yield* Effect.die("Database identity row missing");
++  const { server, ...observedIdentity } = observedRow;
+   const independentHashInput = {
+     context: "basalt-production-database-v3",
+     origin: configured.origin,
+-    observed: observedDatabase[0],
++    observed: server === null ? observedIdentity : { ...observedIdentity, server },
+   };
+   const expectedTarget = createHash("sha256")
+     .update(
+diff --git a/e2e/support/production-ops-database-fixture.ts b/e2e/support/production-ops-database-fixture.ts
+index 38ec762..2974e93 100644
+--- a/e2e/support/production-ops-database-fixture.ts
++++ b/e2e/support/production-ops-database-fixture.ts
+@@ -10,7 +10,7 @@ import {
+   type Cause,
+ } from "effect";
+ import { ChildProcess, ChildProcessSpawner } from "effect/process";
+-import { startCloudPostgres } from "./cloud-postgres.ts";
++import { cloudRuntimeDatabaseRole, startCloudPostgres } from "./cloud-postgres.ts";
+ import { freePort } from "./ports.ts";
+ import { fixtureProcessOutput } from "./fixture-diagnostics.ts";
+ 
+@@ -29,6 +29,7 @@ class ProductionDatabaseFixtureFailed extends Data.TaggedError("ProductionDataba
+ export const productionOpsDatabaseFixture = (input: {
+   readonly container: string;
+   readonly databasePassword: string;
++  readonly runtimePassword: string;
+   readonly directory: string;
+   readonly dockerEnv: {
+     readonly PATH: string;
+@@ -56,6 +57,7 @@ export const productionOpsDatabaseFixture = (input: {
+       container: targetContainer,
+       databasePort: targetPort,
+       databasePassword: input.databasePassword,
++      runtimePassword: input.runtimePassword,
+       dockerEnv: input.dockerEnv,
+       log: `${input.directory}/target-postgres.log`,
+     });
+@@ -286,7 +288,7 @@ export const productionOpsDatabaseFixture = (input: {
+       query(
+         target,
+         `select json_build_object('name', current_database(), 'oid', d.oid::text,
+-      'role', (select oid::text from pg_roles where rolname = session_user),
++      'role', (select oid::text from pg_roles where rolname = '${cloudRuntimeDatabaseRole}'),
+       'identity', (select id::text from production_ops_database_identity),
+       'snapshotStartedAt', statement_timestamp(),
+       'rowDigests', (select json_agg(json_build_object('idHash', md5(a.id), 'rowHash', md5(to_jsonb(a)::text),
