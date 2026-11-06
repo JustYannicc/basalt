@@ -16,7 +16,7 @@ const names = new Set([
 const markers = new Set(["missing-executable", "sandbox", "missing-library", "timeout", "other"]);
 
 /** Ignore arbitrary error names and markers at the reporting boundary. */
-export function parseClosedErrorClass(text) {
+export function parseClosedErrorClass(text: string) {
   const match = / error=([A-Za-z]+) marker=([a-z-]+)$/.exec(text);
   return match && names.has(match[1]) && markers.has(match[2])
     ? { errorName: match[1], marker: match[2] }
@@ -24,7 +24,7 @@ export function parseClosedErrorClass(text) {
 }
 
 /** Failure messages can contain connection data; only publicLine may leave the private capture. */
-export function describeGuidanceFailure(error, phase) {
+export function describeGuidanceFailure(error: unknown, phase: string) {
   const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
   const failurePhase = [
     "initialization",

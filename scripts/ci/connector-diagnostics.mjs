@@ -1,4 +1,4 @@
-import { parseClosedErrorClass } from "../connectors-tests/guidance-failure.mjs";
+import { parseClosedErrorClass } from "../connectors-tests/guidance-failure.ts";
 
 const phases = new Set([
   "unknown",

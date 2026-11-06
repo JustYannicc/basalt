@@ -22,7 +22,7 @@ import { startZendeskCatalogWorker } from "./zendesk-catalog.mjs";
 import { proveTenantPublic } from "./zendesk-tenant-public.mjs";
 import { proveOperatorChoices } from "./zendesk-operator-choices.mjs";
 import { proveCompanyGuidance } from "./zendesk-company-guidance.mjs";
-import { describeGuidanceFailure } from "./guidance-failure.mjs";
+import { describeGuidanceFailure } from "./guidance-failure.ts";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const upstream = join(root, ".upstream");

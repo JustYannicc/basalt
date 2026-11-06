@@ -3,7 +3,7 @@ import { access, copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/p
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { createRequire } from "node:module";
-import { parseClosedErrorClass } from "./guidance-failure.mjs";
+import { parseClosedErrorClass } from "./guidance-failure.ts";
 
 type ConnectorsProofInput = {
   readonly root: string;

@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { collectConnectorEvidence } from "./collect-connector-evidence.mjs";
 import { connectorDiagnostic } from "./connector-diagnostics.mjs";
-import { describeGuidanceFailure } from "../connectors-tests/guidance-failure.mjs";
+import { describeGuidanceFailure } from "../connectors-tests/guidance-failure.ts";
 
 const credential = "private-credential-sentinel";
 const tenant = "private-tenant-sentinel";
