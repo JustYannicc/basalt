@@ -207,20 +207,23 @@ snapshot of the connection, sign-in attempt and connection access tables, across
 all organizations, bounded at 10,000 rows per table and 8 MB. A large backlog can
 therefore refuse at the dry run; check the row counts with the
 `connections-summary` inventory first. The dry run lists each selected
-connection with its sign-in attempt and access row, by exact ID and row checksum.
-An attempt shared only by selected connections appears once in the plan. An
-attempt also named by a connection outside the selection refuses.
-Apply, with GO for that exact plan, removes each access row before its connection
-and each attempt once, after its last selected connection. It refuses if any
-reviewed row changed or the selection differs.
+connection and its access row by exact ID and row checksum. A shared sign-in
+attempt is listed once, on its last selected connection. The other selected
+connections sharing it show `attempt: null`; this means the attempt is listed
+on that last connection, not that they have no attempt. An attempt also named by
+a connection outside the selection refuses.
+Apply, with GO for that exact plan, removes the listed attempt, then the access
+row, then the connection. Each shared attempt is deleted once, with its last
+selected connection. Apply refuses if any reviewed row changed or the selection
+differs.
 Completed connections and every account stay.
 
 The same rule can run daily on its own. Setting the server's
 `EXECUTOR_ACCOUNT_CONNECTION_RETENTION` to `true` turns it on; unset, nothing
 runs. When on, it removes up to 500 such connections a day across all
-organizations, each more than a day past its expiry, then removes unreferenced
-sign-in attempts. An attempt that a remaining connection still names stays with
-that connection; the reviewed operation refuses the same shared attempt.
+organizations, each more than a day past its expiry, sign-in attempts first. An
+attempt also named by a connection outside that daily batch stays with that
+connection; the reviewed operation refuses the same shared attempt.
 
 ## Apply the reviewed plan
 

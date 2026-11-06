@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/account-connection-retention-v1.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/account-connection-retention-v1.ts
-index 471aefa..5361856 100644
+index 471aefa..abcc8f8 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/account-connection-retention-v1.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/account-connection-retention-v1.ts
 @@ -41,13 +41,25 @@ const read = (input: Json) =>
@@ -31,64 +31,17 @@ index 471aefa..5361856 100644
          if (sharing.length !== 0) return yield* refuse("A sign-in attempt is shared");
          attempt = one(
            (yield* readRows("executor_oauth_attempts", "id = $1", [connection.oauth_attempt])).map(
-@@ -67,9 +79,9 @@ const read = (input: Json) =>
+@@ -67,7 +79,7 @@ const read = (input: Json) =>
        });
      }
      return {
 -      // Attempts and access rows go before the connection that names them.
-+      // Each attempt follows its last selected connection; access rows precede connections.
++      // Each attempt is listed only on its last selected connection, before access and connection.
        changes: removed.flatMap((item) =>
--        [item.attempt, item.access, item.connection].flatMap((row) =>
-+        [item.access, item.connection, item.attempt].flatMap((row) =>
+         [item.attempt, item.access, item.connection].flatMap((row) =>
            row === null
-             ? []
-             : [
-@@ -113,7 +125,7 @@ export const accountConnectionRetentionV1: ProductionMigration = {
-       const data = yield* Schema.decodeUnknownEffect(Data)(plan.data),
-         sql = yield* SqlClient.SqlClient;
-       for (const item of data.removed)
--        for (const row of [item.attempt, item.access, item.connection]) {
-+        for (const row of [item.access, item.connection, item.attempt]) {
-           if (row === null) continue;
-           const { predicate, params } = whereKey(row);
-           yield* sql.unsafe(`delete from "${row.table}" where ${predicate}`, params);
-diff --git a/apps/hosted/server/src/implementation/connection-retention.ts b/apps/hosted/server/src/implementation/connection-retention.ts
-index 247ac49..4a75cad 100644
---- a/apps/hosted/server/src/implementation/connection-retention.ts
-+++ b/apps/hosted/server/src/implementation/connection-retention.ts
-@@ -35,8 +35,8 @@ const Candidates = Schema.Array(
- );
- 
- /**
-- * Delete up to one batch of abandoned connections, each sign-in attempt before its connection, as
-- * owner removal does. An attempt another connection still names stays with it. Access rows
-+ * Delete up to one batch of abandoned connections, then their unreferenced sign-in attempts.
-+ * An attempt another connection still names stays with it. Access rows
-  * cascade with their connection; accounts are never touched. Returns the connections removed.
-  */
- export const retainConnections = Effect.gen(function* () {
-@@ -53,14 +53,14 @@ export const retainConnections = Effect.gen(function* () {
-         .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Candidates)));
-       if (rows.length === 0) return 0;
-       const ids = rows.map((row) => row.id);
--      const attempts = rows.flatMap((row) =>
--        row.oauth_attempt === null ? [] : [row.oauth_attempt],
--      );
-+      const attempts = [
-+        ...new Set(rows.flatMap((row) => (row.oauth_attempt === null ? [] : [row.oauth_attempt]))),
-+      ];
-+      yield* sql`delete from executor_account_connections where ${sql.in("id", ids)}`;
-       if (attempts.length > 0)
-         yield* sql`delete from executor_oauth_attempts a where ${sql.in("a.id", attempts)}
-           and not exists (select 1 from executor_account_connections other
--            where other.oauth_attempt = a.id and not ${sql.in("other.id", ids)})`;
--      yield* sql`delete from executor_account_connections where ${sql.in("id", ids)}`;
-+            where other.oauth_attempt = a.id)`;
-       return ids.length;
-     }),
-   );
 diff --git a/e2e/support/production-ops-connection-rows.ts b/e2e/support/production-ops-connection-rows.ts
-index c8e6649..fa1f10e 100644
+index c8e6649..e50a77e 100644
 --- a/e2e/support/production-ops-connection-rows.ts
 +++ b/e2e/support/production-ops-connection-rows.ts
 @@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
@@ -100,7 +53,7 @@ index c8e6649..fa1f10e 100644
   * since expiry; only the own organization's abandoned ones are older than the reviewed cutoff.
   */
  export const productionOpsConnectionRows = Effect.gen(function* () {
-@@ -11,37 +11,45 @@ export const productionOpsConnectionRows = Effect.gen(function* () {
+@@ -11,19 +11,27 @@ export const productionOpsConnectionRows = Effect.gen(function* () {
    const id = {
      pending: randomUUID(),
      cancelled: randomUUID(),
@@ -129,21 +82,8 @@ index c8e6649..fa1f10e 100644
 +    attempts = [...new Set(rows.map((row) => row.attempt))];
    yield* Effect.addFinalizer(() =>
      Effect.gen(function* () {
--      yield* p.database.run({
--        sql: "delete from executor_oauth_attempts where id in (select jsonb_array_elements_text($1::jsonb))",
--        params: [JSON.stringify(attempts)],
--      });
        yield* p.database.run({
-         sql: "delete from executor_account_connections where id in (select jsonb_array_elements_text($1::jsonb))",
-         params: [JSON.stringify(ids)],
-       });
-+      yield* p.database.run({
-+        sql: "delete from executor_oauth_attempts where id in (select jsonb_array_elements_text($1::jsonb))",
-+        params: [JSON.stringify(attempts)],
-+      });
-     }).pipe(Effect.orDie),
-   );
-   for (const row of rows) {
+@@ -40,8 +48,8 @@ export const productionOpsConnectionRows = Effect.gen(function* () {
      const owner = `organization:${row.side.organization}`;
      yield* p.database.run({
        sql: `insert into executor_oauth_attempts (id, encrypted, expires_at, status)
@@ -172,7 +112,7 @@ index c8e6649..fa1f10e 100644
      attempts: present("executor_oauth_attempts", "id"),
      access: present("hosted_connection_access", "connection_id"),
 diff --git a/e2e/tests/production-ops-migrations.spec.ts b/e2e/tests/production-ops-migrations.spec.ts
-index dcfca6b..653035a 100644
+index dcfca6b..adf2403 100644
 --- a/e2e/tests/production-ops-migrations.spec.ts
 +++ b/e2e/tests/production-ops-migrations.spec.ts
 @@ -213,7 +213,8 @@ layer(HostedLive, { excludeTestServices: true })("Production migration scope", (
@@ -185,7 +125,7 @@ index dcfca6b..653035a 100644
          // The retention request is its own shape, so this proof sends it without the scope-proof
          // operation helpers.
          const operation = {
-@@ -249,15 +250,16 @@ layer(HostedLive, { excludeTestServices: true })("Production migration scope", (
+@@ -249,12 +250,12 @@ layer(HostedLive, { excludeTestServices: true })("Production migration scope", (
              }),
            }),
          )(p.decrypt(dry.artifact));
@@ -194,21 +134,13 @@ index dcfca6b..653035a 100644
          expect(
            plan.plan.changes.map((change) => [change.table, Object.values(change.key)[0]]),
          ).toEqual(
--          removed.flatMap((connection) => [
+           removed.flatMap((connection) => [
 -            ["executor_oauth_attempts", `attempt-${connection}`],
--            ["hosted_connection_access", connection],
--            ["executor_account_connections", connection],
--          ]),
-+          removed
-+            .flatMap((connection) => [
-+              ["hosted_connection_access", connection],
-+              ["executor_account_connections", connection],
-+            ])
-+            .concat([["executor_oauth_attempts", sharedAttempt]]),
-         );
-         // A reviewed connection that changed refuses without removing anything.
-         const revise = (revision: string) =>
-@@ -279,7 +281,7 @@ layer(HostedLive, { excludeTestServices: true })("Production migration scope", (
++            ...(connection === removed.at(-1) ? [["executor_oauth_attempts", sharedAttempt]] : []),
+             ["hosted_connection_access", connection],
+             ["executor_account_connections", connection],
+           ]),
+@@ -279,7 +280,7 @@ layer(HostedLive, { excludeTestServices: true })("Production migration scope", (
          expect(yield* connections).toEqual(kept);
          expect(yield* access).toEqual(kept);
          expect(yield* attempts).toEqual(

@@ -77,27 +77,29 @@ const fixture = (rows: readonly Seed[]) =>
       yield* sql`insert into organization values (${org}, ${org}, '{}')`;
     const now = Date.now();
     const attempts = new Set<string>();
-    for (const row of rows) {
-      const owner = `organization:${row.org}`;
-      const attempt = attemptOf(row);
-      const expires = new Date(now - row.expired * hour);
-      if (attempt !== null && !attempts.has(attempt)) {
-        attempts.add(attempt);
-        yield* sql`insert into executor_oauth_attempts (id, encrypted, expires_at, status)
+    const insert = (row: Seed) =>
+      Effect.gen(function* () {
+        const owner = `organization:${row.org}`;
+        const attempt = attemptOf(row);
+        const expires = new Date(now - row.expired * hour);
+        if (attempt !== null && !attempts.has(attempt)) {
+          attempts.add(attempt);
+          yield* sql`insert into executor_oauth_attempts (id, encrypted, expires_at, status)
           values (${attempt}, ${new Uint8Array([1, 2, 3])}, ${expires}, 'pending')`;
-      }
-      const state =
-        row.status === "completed"
-          ? { status: "completed", account: { id: "acc" } }
-          : { status: row.status };
-      yield* sql`insert into executor_account_connections
+        }
+        const state =
+          row.status === "completed"
+            ? { status: "completed", account: { id: "acc" } }
+            : { status: row.status };
+        yield* sql`insert into executor_account_connections
         (id, owner, provider, reconnect_account, state, revision, oauth_attempt, created_at, expires_at, target)
         values (${row.id}, ${owner}, 'prv_fixture', null, ${JSON.stringify(state)}, 'r1', ${attempt},
           ${new Date(expires.getTime() - 30 * 60_000)}, ${expires},
           ${JSON.stringify({ app: "app_fixture", requirement: "service", name: "Fixture", owner, scope: "user" })})`;
-      yield* sql`insert into hosted_connection_access (connection_id, organization_id, creator_id, destination)
+        yield* sql`insert into hosted_connection_access (connection_id, organization_id, creator_id, destination)
         values (${row.id}, ${row.org}, 'usr_fixture', '{}'::jsonb)`;
-    }
+      });
+    for (const row of rows) yield* insert(row);
     const ids = (table: string, column: string) =>
       sql.unsafe(`select ${column} as id from ${table} order by 1`).pipe(
         Effect.flatMap(
@@ -107,6 +109,7 @@ const fixture = (rows: readonly Seed[]) =>
       );
     return {
       sql,
+      insert,
       connections: ids("executor_account_connections", "id"),
       attempts: ids("executor_oauth_attempts", "id"),
       access: ids("hosted_connection_access", "connection_id"),
@@ -196,7 +199,7 @@ const operations = async () => {
   return { request, operation, open };
 };
 
-test("account connection retention removes exactly the reviewed abandoned connections, attempts last", async () => {
+test("account connection retention removes exactly the reviewed abandoned connections, attempts first", async () => {
   const { request, operation, open } = await operations();
   await run(
     Effect.gen(function* () {
@@ -225,7 +228,7 @@ test("account connection retention removes exactly the reviewed abandoned connec
         "The dry run lists exactly the abandoned connections",
       );
       assert.ok(changes.every((change) => change.action === "delete"));
-      // Access rows precede connections; attempts follow their last connection.
+      // Each connection's attempt and access row come before it.
       for (const id of removedByMigration) {
         const at = (table: string, key: string) =>
           changes.findIndex(
@@ -235,8 +238,8 @@ test("account connection retention removes exactly the reviewed abandoned connec
         assert.ok(at("hosted_connection_access", id) < connection, `access before ${id}`);
         if (id !== "conn_own_pending_no_attempt")
           assert.ok(
-            at("executor_oauth_attempts", `attempt_${id}`) > connection,
-            `attempt after ${id}`,
+            at("executor_oauth_attempts", `attempt_${id}`) < connection,
+            `attempt before ${id}`,
           );
       }
       assert.equal(changes.length, removedByMigration.length * 3 - 1);
@@ -375,13 +378,11 @@ test("account connection retention removes three selected connections sharing on
       );
       assert.deepEqual(
         changes.map((row) => [row.table, row.key]),
-        [
-          ...shared.flatMap((id) => [
-            ["hosted_connection_access", { connection_id: id }],
-            ["executor_account_connections", { id }],
-          ]),
-          ["executor_oauth_attempts", { id: "attempt_shared" }],
-        ],
+        shared.flatMap((id) => [
+          ...(id === shared.at(-1) ? [["executor_oauth_attempts", { id: "attempt_shared" }]] : []),
+          ["hosted_connection_access", { connection_id: id }],
+          ["executor_account_connections", { id }],
+        ]),
       );
       const apply = () =>
         operation("apply", {
@@ -413,25 +414,90 @@ test("account connection retention removes three selected connections sharing on
   );
 });
 
-test("account connection retention refuses a shared sign-in attempt and more than one plan's bound", async () => {
+for (const sharer of [
+  { id: "conn_shared_live", org: "org_own", status: "pending", expired: -0.3 },
+  { id: "conn_shared_completed", org: "org_own", status: "completed", expired: 72 },
+  { id: "conn_shared_other_org", org: "org_other", status: "pending", expired: 72 },
+])
+  test(`account connection retention refuses an outside-plan sharer: ${sharer.id}`, async () => {
+    const { operation } = await operations();
+    await run(
+      Effect.gen(function* () {
+        const { connections, attempts, access } = yield* fixture([
+          {
+            id: "conn_shared_old",
+            org: "org_own",
+            status: "pending",
+            expired: 72,
+            attempt: "attempt_shared",
+          },
+          { ...sharer, attempt: "attempt_shared" },
+        ]);
+        assert.equal(
+          yield* refusal(operation("dry-run"), "ProductionOperationRefused"),
+          "A sign-in attempt is shared",
+        );
+        const unchanged = ["conn_shared_old", sharer.id].sort();
+        assert.deepEqual(yield* connections, unchanged);
+        assert.deepEqual(yield* attempts, ["attempt_shared"]);
+        assert.deepEqual(yield* access, unchanged);
+      }),
+    );
+  });
+
+test("account connection retention refuses a new outside-plan sharer inserted after review", async () => {
   const { operation } = await operations();
-  const old = { org: "org_own", status: "pending", expired: 72 };
-  // Another connection, even a live one, still names the attempt.
   await run(
     Effect.gen(function* () {
-      const { connections, attempts, access } = yield* fixture([
-        { ...old, id: "conn_shared_old", attempt: "attempt_shared" },
-        { ...old, id: "conn_shared_live", expired: -0.3, attempt: "attempt_shared" },
-      ]);
+      const { sql, insert, connections, attempts, access } = yield* fixture(
+        ["conn_shared_1", "conn_shared_2", "conn_shared_3"].map((id) => ({
+          id,
+          org: "org_own",
+          status: "pending",
+          expired: 72,
+          attempt: "attempt_shared",
+        })),
+      );
+      const dry = yield* operation("dry-run");
+      yield* insert({
+        id: "conn_new_sharer",
+        org: "org_own",
+        status: "pending",
+        expired: -0.3,
+        attempt: "attempt_shared",
+      });
+      const before = {
+        connections: yield* connections,
+        attempts: yield* attempts,
+        access: yield* access,
+      };
       assert.equal(
-        yield* refusal(operation("dry-run"), "ProductionOperationRefused"),
+        yield* refusal(
+          operation("apply", {
+            artifact: dry.artifact,
+            planSha256: dry.artifact.sha256,
+            backupSha256: dry.backupSha256,
+            go: `GO ${dry.artifact.sha256}`,
+          }),
+          "ProductionOperationRefused",
+        ),
         "A sign-in attempt is shared",
       );
-      assert.deepEqual(yield* connections, ["conn_shared_live", "conn_shared_old"]);
-      assert.deepEqual(yield* attempts, ["attempt_shared"]);
-      assert.deepEqual(yield* access, ["conn_shared_live", "conn_shared_old"]);
+      assert.deepEqual(
+        { connections: yield* connections, attempts: yield* attempts, access: yield* access },
+        before,
+      );
+      assert.deepEqual(
+        yield* sql`select plan_sha256 from private_production_ops_receipts where plan_sha256 = ${dry.artifact.sha256}`,
+        [],
+      );
     }),
   );
+});
+
+test("account connection retention refuses more than one plan's bound", async () => {
+  const { operation } = await operations();
+  const old = { org: "org_own", status: "pending", expired: 72 };
   // Above the plan bound, and above the row reads' own bound, the operator gets the same advice.
   for (const length of [201, 1001])
     await run(
@@ -505,9 +571,7 @@ test("the daily connection retention rule is off by default and applies the same
   const InventoryRow = Schema.Struct({ id: Schema.String, produced_account: Schema.Boolean });
   await run(
     Effect.gen(function* () {
-      const { sql, connections, attempts, access } = yield* fixture(all);
-      yield* sql`alter table executor_account_connections add constraint attempt_delete_order
-        foreign key (oauth_attempt) references executor_oauth_attempts(id)`;
+      const { connections, attempts, access } = yield* fixture(all);
       // The inventory's own `produced_account` decides which connections never produced one.
       const unproduced = new Set<string>();
       for (const org of ["org_own", "org_other"]) {
