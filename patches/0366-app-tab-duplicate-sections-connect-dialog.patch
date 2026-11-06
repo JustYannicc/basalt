@@ -1,0 +1,653 @@
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index df7afa5..d81521b 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -8935,6 +8935,37 @@ export const scenarios = plan({
+       cloud: scheduled,
+     },
+   },
++  appAccountSectionsDistinctDesktop: {
++    fixtures: "actors",
++    file: "app-account-sections.spec.ts",
++    title: "Two requirements of one service each read as their own section at 1280px",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Display only; self-host proves the shared requirement sections."),
++      local: na("Display only; the shared requirement sections are proven on self-host."),
++    },
++  },
++  appAccountSectionsDistinctPhone: {
++    fixtures: "actors",
++    file: "app-account-sections.spec.ts",
++    title: "Two requirements of one service each read as their own section at 390px",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Display only; self-host proves the shared requirement sections."),
++      local: na("Display only; the shared requirement sections are proven on self-host."),
++    },
++  },
++  appAccountContinueAnywayCloses: {
++    fixtures: "actors",
++    file: "app-account-sections.spec.ts",
++    title:
++      "Continue anyway saves a rejected key, closes the Connect dialog and the next click opens the new row's menu",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("The hosted Connect dialog is the same on cloud; self-host proves it."),
++      local: na("The local dashboard keeps its own Connect dialog."),
++    },
++  },
+   hostedAppAccountsManagerBrowser: {
+     fixtures: "actors",
+     file: "app-accounts-tab.spec.ts",
+diff --git a/e2e/tests/app-account-sections.spec.ts b/e2e/tests/app-account-sections.spec.ts
+new file mode 100644
+index 0000000..48f6639
+--- /dev/null
++++ b/e2e/tests/app-account-sections.spec.ts
+@@ -0,0 +1,241 @@
++/**
++ * An app's Accounts tab gives each account requirement one section that reads as its own, and the
++ * Connect dialog closes cleanly after saving a key its check rejected.
++ */
++import { expect, layer } from "@effect/vitest";
++import { Effect } from "effect";
++import { randomUUID } from "node:crypto";
++import type { Page } from "playwright";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { App } from "../support/contracts.ts";
++import { accountNamePrompt, nameConnectedAccount } from "../support/name-account.ts";
++import { scenarios } from "../test-plan.ts";
++import { appsManifest } from "../support/apps-release.ts";
++
++// One service declared twice, as a catalog app keeps API tokens and sign-ins apart: both
++// requirements carry the service's name and link many accounts for the caller.
++const twoRequirements = `
++import { defineApp, defineProvider, object, oauth2, router, secrets, string } from "apps";
++const tokens = defineProvider({ name: "Deploy fixture", auth: { apiKey: secrets({ label: "Access token", fields: object({ token: string() }) }) } });
++const signIn = defineProvider({ name: "Deploy fixture", auth: { oauth: oauth2({ authorizationUrl: "https://oauth.example.test/authorize", tokenUrl: "https://oauth.example.test/token", scopes: ["read"] }) } });
++export default defineApp({ user: { accounts: { tokens: tokens.many(), signIn: signIn.many() } } }, async () => ({ tools: router({}) }));
++`;
++
++// The check rejects every key, so saving one needs "Continue anyway".
++const rejecting = `
++import { ProviderError, defineApp, defineProvider, object, router, secrets, string } from "apps";
++const service = defineProvider({
++  name: "Rejecting fixture",
++  auth: { apiKey: secrets({ label: "Access token", fields: object({ token: string() }) }) },
++  async health() {
++    throw new ProviderError({ reason: "unauthorized", status: 403 });
++  },
++});
++export default defineApp({ user: { accounts: { service: service.many() } } }, async () => ({ tools: router({}) }));
++`;
++
++/** Each requirement section in Your accounts: its accessible name and what its header reads. */
++const readSections = (page: Page) =>
++  page
++    .getByRole("region", { name: "Your accounts", exact: true })
++    .locator("section[aria-label]")
++    .evaluateAll((sections) =>
++      sections.map((section) => ({
++        name: section.getAttribute("aria-label"),
++        header: (section.firstElementChild as HTMLElement | null)?.innerText.trim() ?? "",
++        lists: Array.from(section.querySelectorAll("ul[aria-label]"), (list) =>
++          list.getAttribute("aria-label"),
++        ),
++      })),
++    );
++
++/** Every open dialog, overlay and focus trap left in the page. */
++const leftovers = (page: Page) =>
++  page.evaluate(() => {
++    const focused = document.activeElement;
++    return {
++      dialogs: document.querySelectorAll('[role="dialog"], [role="alertdialog"]').length,
++      overlays: document.querySelectorAll('[data-slot="dialog-overlay"]').length,
++      focusGuards: document.querySelectorAll("[data-radix-focus-guard]").length,
++      bodyPointerEvents: getComputedStyle(document.body).pointerEvents,
++      // Focus sits on a control of the page itself, not on the document or a removed dialog.
++      focusOnPage:
++        focused instanceof HTMLElement &&
++        focused !== document.body &&
++        focused.isConnected &&
++        focused.closest('[role="dialog"], [role="alertdialog"]') === null,
++    };
++  });
++
++layer(HostedLive, { excludeTestServices: true })("App account sections", (it) => {
++  const deploy = (name: string, content: string) =>
++    Effect.gen(function* () {
++      const actors = yield* Actors;
++      const api = yield* Api;
++      const prefix = `/api/organizations/${actors.organization.id}`;
++      const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++        name: `${name} ${randomUUID().slice(0, 8)}`,
++        files: [{ path: "index.ts", content }, appsManifest],
++      });
++      expect(deployed.status).toBe(200);
++      const app = yield* body(App, deployed);
++      yield* Effect.addFinalizer(() =>
++        api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(
++          Effect.map((response) => expect(response.status).toBe(200)),
++          Effect.orDie,
++        ),
++      );
++      return app;
++    });
++
++  const distinctSections = (width: number) => (context: Parameters<typeof withHostedCase>[0]) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors;
++        const browser = yield* Browser;
++        const app = yield* deploy("Sections", twoRequirements);
++        yield* browser.login(actors.owner);
++        yield* browser.use(`A ${width}px screen`, (page) =>
++          page.setViewportSize({ width, height: width < 600 ? 844 : 900 }),
++        );
++        yield* browser.use("Open the app's accounts", (page) =>
++          page
++            .goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`)
++            .then(() =>
++              page
++                .getByRole("region", { name: "Your accounts", exact: true })
++                .getByRole("button", { name: "Connect new account", exact: true })
++                .nth(1)
++                .waitFor({ state: "visible" }),
++            ),
++        );
++        const sections = yield* browser.use("Read the requirement sections", readSections);
++        yield* browser.checkpoint(`Requirement sections at ${width}px`);
++        expect(sections).toHaveLength(2);
++        // Each section names what it is for, so neither reads as a copy of the other.
++        expect(new Set(sections.map((section) => section.name)).size).toBe(2);
++        expect(new Set(sections.map((section) => section.header)).size).toBe(2);
++        expect(new Set(sections.flatMap((section) => section.lists)).size).toBe(
++          sections.flatMap((section) => section.lists).length,
++        );
++        expect(sections.map((section) => section.name).sort()).toEqual([
++          "Deploy fixture · Access token",
++          "Deploy fixture · Sign in",
++        ]);
++      }),
++    );
++
++  it.effect(scenarios.appAccountSectionsDistinctDesktop.title, distinctSections(1280));
++  it.effect(scenarios.appAccountSectionsDistinctPhone.title, distinctSections(390));
++
++  it.effect(scenarios.appAccountContinueAnywayCloses.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors;
++        const browser = yield* Browser;
++        const app = yield* deploy("Rejecting", rejecting);
++        yield* browser.login(actors.owner);
++        yield* browser.use("A 1280px screen", (page) =>
++          page.setViewportSize({ width: 1280, height: 900 }),
++        );
++        yield* browser.use("Open the app's accounts", (page) =>
++          page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
++        );
++        yield* browser.use("Connect a new account", (page) =>
++          page.getByRole("button", { name: "Connect new account", exact: true }).click(),
++        );
++        const connect = yield* browser.use("The Connect dialog opens", (page) => {
++          const dialog = page.getByRole("dialog", {
++            name: "Connect Rejecting fixture",
++            exact: true,
++          });
++          return dialog.waitFor({ state: "visible" }).then(() => dialog);
++        });
++        yield* browser.use("Validate a key the check rejects", () =>
++          connect
++            .getByLabel("Token", { exact: true })
++            .fill("synthetic-rejected-token")
++            .then(() =>
++              connect.getByRole("button", { name: "Validate Access token", exact: true }).click(),
++            )
++            .then(() =>
++              connect
++                .locator('[data-credential-check="credentials_rejected"]')
++                .waitFor({ state: "visible" }),
++            ),
++        );
++        yield* browser.checkpoint("The check rejected the key");
++        yield* browser.use("Continue anyway", () =>
++          connect.getByRole("button", { name: "Continue anyway", exact: true }).click(),
++        );
++        // The prompt takes the Connect dialog's place, which unmounts rather than staying behind
++        // it, hidden, until the prompt closes.
++        const behindPrompt = yield* browser.use(
++          "The Connect dialog unmounts behind the prompt",
++          (page) =>
++            accountNamePrompt(page)
++              .then(() =>
++                page
++                  .waitForFunction(
++                    () => document.querySelectorAll('[data-slot="dialog-content"]').length === 1,
++                    undefined,
++                    { timeout: 3_000 },
++                  )
++                  .catch(() => undefined),
++              )
++              .then(() =>
++                page.evaluate(() =>
++                  Array.from(document.querySelectorAll('[data-slot="dialog-content"]'), (dialog) =>
++                    dialog.getAttribute("data-state"),
++                  ),
++                ),
++              ),
++        );
++        yield* browser.checkpoint("The name prompt replaces the Connect dialog");
++        expect(behindPrompt).toEqual(["open"]);
++        yield* browser.use("Name the saved account", (page) =>
++          nameConnectedAccount(page, "Rejected key"),
++        );
++        // The Connect dialog is gone with its overlay and focus scope, and focus is on the page.
++        const left = yield* browser.use("Nothing of the dialog is left", (page) =>
++          page
++            .waitForFunction(
++              () =>
++                document.querySelectorAll(
++                  '[role="dialog"], [role="alertdialog"], [data-slot="dialog-overlay"]',
++                ).length === 0,
++              undefined,
++              { timeout: 5_000 },
++            )
++            .catch(() => undefined)
++            .then(() => leftovers(page)),
++        );
++        yield* browser.checkpoint("After Continue anyway");
++        expect(left).toEqual({
++          dialogs: 0,
++          overlays: 0,
++          focusGuards: 0,
++          bodyPointerEvents: "auto",
++          focusOnPage: true,
++        });
++        // The very next click opens the new row's menu without Escape first.
++        yield* browser.use("Open the new row's menu", (page) =>
++          page
++            .getByRole("button", { name: /^Manage Rejected key/ })
++            .click({ timeout: 5_000 })
++            .then(() => page.getByRole("menu").waitFor({ state: "visible", timeout: 5_000 })),
++        );
++        yield* browser.checkpoint("The row menu opens");
++        yield* browser.use("A 390px screen", (page) =>
++          page.setViewportSize({ width: 390, height: 844 }),
++        );
++        yield* browser.checkpoint("The row menu on a phone");
++      }),
++    ),
++  );
++});
+diff --git a/packages/ui/src/implementation/components/dialog.tsx b/packages/ui/src/implementation/components/dialog.tsx
+index 7519ddc..f68b102 100644
+--- a/packages/ui/src/implementation/components/dialog.tsx
++++ b/packages/ui/src/implementation/components/dialog.tsx
+@@ -61,10 +61,56 @@ const focusFirstField = (event: Event) => {
+   field.focus();
+ };
+ 
++const dialogContent = '[data-slot="dialog-content"]';
++
++/** Where each mounted dialog returns focus, nearest first. */
++const returnTargets = new WeakMap<Element, readonly Element[]>();
++
++/**
++ * Where a dialog opening now returns focus: the element that has focus, then, when it opens over
++ * or in place of another dialog, wherever that dialog returns focus. A prompt that replaces the
++ * dialog it was opened from so returns to what opened that dialog.
++ */
++const openerTargets = (): readonly Element[] => {
++  const active = document.activeElement;
++  const own = active !== null && active !== document.body ? [active] : [];
++  const dialogs = document.querySelectorAll(dialogContent);
++  const host = active?.closest(dialogContent) ?? dialogs[dialogs.length - 1];
++  return [...own, ...((host && returnTargets.get(host)) ?? [])];
++};
++
++/** Focus the first target still on the page outside a closing dialog; false when none takes it. */
++const returnFocus = (targets: readonly Element[]) =>
++  targets.some((target) => {
++    if (
++      !(target instanceof HTMLElement) ||
++      !target.isConnected ||
++      target.closest(`${dialogContent}[data-state="closed"]`) !== null
++    )
++      return false;
++    target.focus({ preventScroll: true });
++    return document.activeElement === target;
++  });
++
++/**
++ * Reads where focus returns as the content mounts, before any field inside it takes focus. A dialog
++ * stays rendered while closed, so its first render can come long before it opens.
++ */
++function CaptureReturnTargets({
++  onCapture,
++}: {
++  readonly onCapture: (targets: readonly Element[]) => void;
++}) {
++  const [targets] = React.useState(openerTargets);
++  React.useLayoutEffect(() => onCapture(targets), [onCapture, targets]);
++  return null;
++}
++
+ /**
+  * Dialog Content primitive; accepts native props and composes caller styles. Closing returns focus
+  * to the element that had it when the dialog opened, without scrolling to it: a button in a list
+- * that scrolls stays where the member left it.
++ * that scrolls stays where the member left it. When that element went away with a dialog this one
++ * replaced, focus returns to where that dialog would have returned it.
+  */
+ function DialogContent({
+   className,
+@@ -78,25 +124,29 @@ function DialogContent({
+   showCloseButton?: boolean;
+   overlayClassName?: string;
+ }) {
+-  // Read as the dialog first renders, before any field inside it takes focus.
+-  const [opener] = React.useState(() =>
+-    typeof document === "undefined" ? null : document.activeElement,
+-  );
++  const opener = React.useRef<readonly Element[]>([]);
++  const capture = React.useCallback((targets: readonly Element[]) => {
++    opener.current = targets;
++  }, []);
+   return (
+     <DialogPortal data-slot="dialog-portal">
+       <DialogOverlay className={overlayClassName} />
+       <DialogPrimitive.Content
+         data-slot="dialog-content"
+         onOpenAutoFocus={(event) => {
++          if (event.target instanceof Element) returnTargets.set(event.target, opener.current);
+           onOpenAutoFocus?.(event);
+           if (!event.defaultPrevented) focusFirstField(event);
+         }}
+         onCloseAutoFocus={(event) => {
+           onCloseAutoFocus?.(event);
+-          if (event.defaultPrevented || !(opener instanceof HTMLElement) || !opener.isConnected)
++          if (event.defaultPrevented) return;
++          // A dialog that took this one's place keeps focus; it returns focus when it closes.
++          if (document.activeElement?.closest(`${dialogContent}[data-state="open"]`)) {
++            event.preventDefault();
+             return;
+-          event.preventDefault();
+-          opener.focus({ preventScroll: true });
++          }
++          if (returnFocus(opener.current)) event.preventDefault();
+         }}
+         className={cn(
+           "fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border bg-background p-6 shadow-lg duration-200 outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg",
+@@ -104,6 +154,7 @@ function DialogContent({
+         )}
+         {...props}
+       >
++        <CaptureReturnTargets onCapture={capture} />
+         {children}
+         {showCloseButton && (
+           <DialogPrimitive.Close asChild>
+diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+index e50fafe..7d07f0c 100644
+--- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -71,7 +71,7 @@ import {
+   DialogTitle,
+ } from "../components/dialog.tsx";
+ import { cn } from "../lib/utils.ts";
+-import { methodLabels } from "./method-labels.ts";
++import { methodLabels, methodVariant } from "./method-labels.ts";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { useToast } from "../components/toast.tsx";
+ import { ProviderDestination } from "./provider-accounts.tsx";
+@@ -431,6 +431,39 @@ const methodStates = (
+   }));
+ };
+ 
++/**
++ * Each requirement's title in one scope: its service's name, and where two requirements would read
++ * the same, such as one service declared once for keys and once for sign-ins, what each is for:
++ * its sign-in methods, or else its own name.
++ */
++const requirementTitles = (requirements: readonly RequirementEntry[]) => {
++  const name = (requirement: AccountRequirement) => requirement.definition.name.trim();
++  const reading = ([, requirement]: RequirementEntry) =>
++    `${name(requirement)}\0${requirement.cardinality}`;
++  const methods = ([, requirement]: RequirementEntry) =>
++    [...methodLabels(requirement.definition.name, requirementMethods(requirement)).values()]
++      .map((label) => (label === `Sign in with ${requirement.definition.name}` ? "Sign in" : label))
++      .join(", ");
++  const titles = new Map<string, string>();
++  for (const entry of requirements) {
++    const [slot, requirement] = entry;
++    if (name(requirement) === "") continue;
++    const alike = requirements.filter((other) => reading(other) === reading(entry));
++    const own = methods(entry);
++    const qualifier =
++      alike.length === 1
++        ? undefined
++        : own !== "" && alike.every((other) => other === entry || methods(other) !== own)
++          ? own
++          : methodVariant(slot);
++    titles.set(
++      slot,
++      qualifier === undefined ? name(requirement) : `${name(requirement)} · ${qualifier}`,
++    );
++  }
++  return titles;
++};
++
+ /** The host can connect none of the requirement's methods now. */
+ const noMethodOpen = (
+   methods: RequirementMethods | undefined,
+@@ -714,6 +747,7 @@ function LinkScope<E>({
+       !accounts.some((account) => account.provider === requirement.provider),
+   );
+   const open = shown.filter((entry) => !closed.includes(entry));
++  const titles = requirementTitles(shown);
+   const readOnly = open.every(([, requirement]) => editingFor(data, requirement) === undefined);
+   return (
+     <section aria-label={title} data-read-only={readOnly} className="space-y-3">
+@@ -731,12 +765,18 @@ function LinkScope<E>({
+             {...props}
+             slot={slot}
+             requirement={requirement}
++            title={titles.get(slot)}
+             linked={data.links.flatMap((link) => (link.requirement === slot ? [link.account] : []))}
+             readOnlyNote={readOnly ? undefined : data.readOnly}
+           />
+         ))}
+         {closed.length > 0 && (
+-          <UnavailableRequirements app={props.app} requirements={closed} methods={methods} />
++          <UnavailableRequirements
++            app={props.app}
++            requirements={closed}
++            titles={titles}
++            methods={methods}
++          />
+         )}
+       </div>
+     </section>
+@@ -747,10 +787,12 @@ function LinkScope<E>({
+ function UnavailableRequirements({
+   app,
+   requirements,
++  titles,
+   methods,
+ }: {
+   readonly app: App;
+   readonly requirements: readonly RequirementEntry[];
++  readonly titles: ReadonlyMap<string, string>;
+   readonly methods: RequirementMethods | undefined;
+ }) {
+   return (
+@@ -772,7 +814,7 @@ function UnavailableRequirements({
+             className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 px-3.5 py-3 text-[13px] [&_.provider-icon]:row-span-2 [&_.provider-icon]:size-7"
+           >
+             <AppProviderIcon app={app} provider={requirement.definition} />
+-            <span className="font-medium">{requirement.definition.name}</span>
++            <span className="font-medium">{titles.get(slot) ?? requirement.definition.name}</span>
+             <ul className="grid gap-0.75 text-xs text-muted-foreground">
+               {methodStates(methods, slot, requirement).map((state) => (
+                 <li key={state.name}>
+@@ -805,12 +847,15 @@ const requirementNote = (requirement: AccountRequirement, linked: number) =>
+ function RequirementView<E>({
+   slot,
+   requirement,
++  title,
+   linked,
+   readOnlyNote,
+   ...props
+ }: ScopeProps<E> & {
+   readonly slot: string;
+   readonly requirement: AccountRequirement;
++  /** The requirement's title in its scope; absent for a service without a name. */
++  readonly title: string | undefined;
+   /** The requirement's linked accounts, oldest first. */
+   readonly linked: readonly AccountSummary[];
+   /** Why this requirement is read-only when others in its scope are not. */
+@@ -819,7 +864,6 @@ function RequirementView<E>({
+   const { data } = props;
+   const edit = editingFor(data, requirement);
+   const managed = provisionedOnly(requirement);
+-  const label = requirement.definition.name.trim() || undefined;
+   const native = props.methods?.native(slot);
+   const kept = retained(connectionOf(props.connections, slot), data, requirement);
+   const states = methodStates(props.methods, slot, requirement);
+@@ -838,15 +882,15 @@ function RequirementView<E>({
+           .join(" · ") || undefined;
+   return (
+     <section
+-      {...(label === undefined ? {} : { "aria-label": label })}
++      {...(title === undefined ? {} : { "aria-label": title })}
+       className={cn("min-w-0 space-y-2.5", edit === undefined && "opacity-60")}
+     >
+       <div className="flex min-h-8 min-w-0 items-center gap-3 text-sm [&_.provider-icon]:size-14 [&_.provider-icon]:rounded-lg [&_.provider-icon]:border-0 [&_.provider-icon]:bg-muted/40 [&_.provider-icon>img]:size-8 [&_.provider-icon>svg]:size-8">
+         <AppProviderIcon app={props.app} provider={requirement.definition} large />
+         <div className="min-w-0">
+-          {label !== undefined && (
++          {title !== undefined && (
+             <p className="flex min-w-0 items-center gap-2 font-medium">
+-              <span className="truncate">{label}</span>
++              <span className="truncate">{title}</span>
+               {kept && (
+                 <span className="shrink-0 rounded-sm border px-1.5 py-px text-[10px] font-normal text-foreground">
+                   Retained
+@@ -899,6 +943,7 @@ function RequirementView<E>({
+             }
+             slot={slot}
+             requirement={requirement}
++            title={title}
+             linked={linked}
+           />
+         ) : (
+@@ -907,6 +952,7 @@ function RequirementView<E>({
+             edit={edit}
+             slot={slot}
+             requirement={requirement}
++            title={title}
+             linked={linked}
+           />
+         )}
+@@ -990,11 +1036,13 @@ function ReadOnlyChoices<E>({
+   showProvisionedProblems,
+   slot,
+   requirement,
++  title,
+   linked,
+   data,
+ }: ScopeProps<E> & {
+   readonly slot: string;
+   readonly requirement: AccountRequirement;
++  readonly title: string | undefined;
+   readonly linked: readonly AccountSummary[];
+ }) {
+   const plain = requirement.cardinality === "one";
+@@ -1082,9 +1130,7 @@ function ReadOnlyChoices<E>({
+   });
+   const list = (
+     <ul
+-      {...(requirement.definition.name.trim() === ""
+-        ? {}
+-        : { "aria-label": `${requirement.definition.name} accounts` })}
++      {...(title === undefined ? {} : { "aria-label": `${title} accounts` })}
+       className={cn(accountRowsContainer, "divide-y divide-border/50 text-[13px]")}
+     >
+       {rows}
+@@ -1094,7 +1140,7 @@ function ReadOnlyChoices<E>({
+     <RadioGroup.Root
+       value={linked.at(-1)?.id ?? ""}
+       disabled
+-      aria-label={`${requirement.definition.name} account`}
++      aria-label={`${title ?? requirement.definition.name} account`}
+     >
+       {list}
+     </RadioGroup.Root>
+@@ -1143,6 +1189,7 @@ function EditableChoices<E>({
+   showProvisionedProblems,
+   slot,
+   requirement,
++  title,
+   linked,
+   data,
+   edit,
+@@ -1154,6 +1201,7 @@ function EditableChoices<E>({
+   readonly edit: LinkEditing<E>;
+   readonly slot: string;
+   readonly requirement: AccountRequirement;
++  readonly title: string | undefined;
+   readonly linked: readonly AccountSummary[];
+ }) {
+   const brand = useProductBrand();
+@@ -1263,9 +1311,7 @@ function EditableChoices<E>({
+     : [];
+   const list = (
+     <ul
+-      {...(requirement.definition.name.trim() === ""
+-        ? {}
+-        : { "aria-label": `${requirement.definition.name} accounts` })}
++      {...(title === undefined ? {} : { "aria-label": `${title} accounts` })}
+       className={cn(accountRowsContainer, "divide-y divide-border/50 text-[13px]")}
+     >
+       {rows}
+@@ -1285,7 +1331,7 @@ function EditableChoices<E>({
+         (plain ? (
+           <RadioGroup.Root
+             value={choices.find((choice) => choice.linked)?.account.id ?? ""}
+-            aria-label={`${requirement.definition.name} account`}
++            aria-label={`${title ?? requirement.definition.name} account`}
+           >
+             {list}
+           </RadioGroup.Root>
+diff --git a/packages/ui/src/implementation/styles/dashboard.css b/packages/ui/src/implementation/styles/dashboard.css
+index 96b2155..58edff1 100644
+--- a/packages/ui/src/implementation/styles/dashboard.css
++++ b/packages/ui/src/implementation/styles/dashboard.css
+@@ -3,7 +3,10 @@
+ 
+ /*
+  * A name prompt that follows the dialog which saved the account takes its place: it appears
+- * without an entrance, and the closing dialog does not animate out underneath it.
++ * without an entrance, and the closing dialog does not show animating out underneath it. The
++ * closing dialog stays hidden, not `display: none`: that would freeze its exit animation, and the
++ * dialog only unmounts when that animation ends, so it would keep its modal layer and return empty
++ * after the prompt.
+  */
+ [data-name-account-handoff][data-state="open"],
+ .name-account-handoff[data-state="open"] {
+@@ -11,7 +14,7 @@
+ }
+ body:has([data-name-account-handoff][data-state="open"])
+   :is([data-slot="dialog-content"], [data-slot="dialog-overlay"])[data-state="closed"] {
+-  display: none;
++  visibility: hidden;
+ }
+ 
+ /*

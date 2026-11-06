@@ -1,0 +1,73 @@
+{
+  "scenarios": {
+    "appAccountSectionsDistinctDesktop": {
+      "fixtures": "actors",
+      "title": "Two requirements of one service each read as their own section at 1280px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Display only; self-host proves the shared requirement sections."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Display only; the shared requirement sections are proven on self-host."
+        }
+      }
+    },
+    "appAccountSectionsDistinctPhone": {
+      "fixtures": "actors",
+      "title": "Two requirements of one service each read as their own section at 390px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Display only; self-host proves the shared requirement sections."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Display only; the shared requirement sections are proven on self-host."
+        }
+      }
+    },
+    "appAccountContinueAnywayCloses": {
+      "fixtures": "actors",
+      "title": "Continue anyway saves a rejected key, closes the Connect dialog and the next click opens the new row's menu",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The hosted Connect dialog is the same on cloud; self-host proves it."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The local dashboard keeps its own Connect dialog."
+        }
+      }
+    }
+  },
+  "runs": {
+    "appAccountSectionsDistinctDesktop": ["account-acquisition:account-usage-rows-and-cells"],
+    "appAccountSectionsDistinctPhone": ["account-acquisition:account-usage-rows-and-cells"],
+    "appAccountContinueAnywayCloses": ["account-acquisition:account-usage-rows-and-cells"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/connect-account.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/connection-dialog.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/name-account-dialog.tsx",
+    ".upstream/e2e/tests/app-account-sections.spec.ts",
+    ".upstream/packages/ui/src/implementation/components/dialog.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-form.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/method-labels.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/name-account.tsx",
+    ".upstream/packages/ui/src/implementation/styles/dashboard.css"
+  ]
+}
