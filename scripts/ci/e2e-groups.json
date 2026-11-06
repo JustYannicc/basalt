@@ -176,6 +176,12 @@
     "mode": "managed",
     "command": "node scripts/production-ops/prove-scope.ts"
   },
+  "production-ops:connection-retention": {
+    "job": "production-ops-migrations",
+    "target": "cloud",
+    "mode": "managed",
+    "command": "node scripts/production-ops/prove-scope.ts"
+  },
   "oauth:removal": {
     "job": "oauth-account-regressions",
     "target": "cloud",
