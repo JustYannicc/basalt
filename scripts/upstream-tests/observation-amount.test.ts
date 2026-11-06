@@ -16,9 +16,12 @@ test("a reported amount names one unit in the singular and any other count in th
   assert.equal(amount(0, "resets", format, true), "0 resets");
   assert.equal(amount(1.5, "credits", format, true), "1.5 credits");
   assert.equal(amount(1, "credits", format, true), "1 credit");
-  // Units that are not a plural keep their spelling.
-  assert.equal(amount(1, "access", format, true), "1 access");
-  assert.equal(amount(1, "GB", format, true), "1 GB");
+  assert.equal(amount(1, "requests", format, true), "1 request");
+  // Displayed as 1, so read as one.
+  assert.equal(amount(1.001, "resets", format, true), "1 reset");
+  // Units without a known singular keep their spelling.
+  for (const unit of ["ms", "Mbps", "queries", "status", "access", "GB"])
+    assert.equal(amount(1, unit, format, true), `1 ${unit}`);
   assert.equal(amount(1, "%", format, true), "1%");
   assert.equal(amount(1, "resets", format), "1");
 });
