@@ -30,7 +30,14 @@ test("a banked credit's Details amount reads one reset", () => {
   const now = Date.parse("2026-11-06T08:00:00Z");
   const credit = (available: number) =>
     balanceView(
-      { label: "Banked resets", unit: "resets", available, expiresAt: "2026-12-03T08:00:00Z" },
+      {
+        id: "banked-reset-1",
+        label: "Banked resets",
+        unit: "resets",
+        available,
+        observedAt: "2026-11-06T07:55:00Z",
+        expiresAt: "2026-12-03T08:00:00Z",
+      },
       now,
       format,
     ).detail;
