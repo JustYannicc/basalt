@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Native removal intents translate only expected SQL, decoding, configuration, signing, HTTP transport and timeout failures; their original causes stay local and never cross the public error response. Account acquisition errors retain their own tags and status. The receiver refuses malformed JSON with HTTP 400 and invalid signatures with HTTP 401; typed membership, signing and persistence outages return HTTP 503, while unexpected programming failures reach the platform error boundary. External I/O failures are classified at their dependency calls, outside receipt and membership logic. Only HTTP 404 from the intent POST permits unlink to finish without a receipt; HTTP 401, 403, 409, 503 and transport failures remain strict, preserving the existing host StorageError response for receiver failures."
+    }
+  }
+}

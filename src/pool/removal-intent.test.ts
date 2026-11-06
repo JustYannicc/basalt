@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { HomeTransportFailure } from "./json.ts";
 import { PoolAccountRemovals } from "./account-removals.ts";
 import { handleRemovalIntent, removalIntentPath, removalIntentPrefix } from "./removal-intent.ts";
 import { signEnvelope } from "./token.ts";
@@ -53,7 +54,7 @@ function fixture() {
         signingKey: key,
         now: () => clock,
         refresh: async () => {
-          if (failed) throw Error("Home unavailable");
+          if (failed) throw new HomeTransportFailure("transport");
         },
         selected: async () => selected,
         record: (pool, refs, actor, operation, issuedAt) =>

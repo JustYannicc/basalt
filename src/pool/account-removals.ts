@@ -1,3 +1,4 @@
+import { poolDependency } from "./dependency-failure.ts";
 import type { PoolView } from "../../apps/pool/contract.ts";
 import type { ControlStorage } from "./attribution.ts";
 
@@ -13,7 +14,7 @@ export class PoolAccountRemovals {
   }
 
   async read(pool: string): Promise<History> {
-    const saved = await this.storage.get<Saved>(key(pool));
+    const saved = await poolDependency("storage", this.storage.get<Saved>(key(pool)));
     return saved ? { since: saved.since, items: saved.items } : { since: null, items: [] };
   }
 
@@ -29,7 +30,10 @@ export class PoolAccountRemovals {
     operation?: string,
     issuedAt?: number,
   ): Promise<boolean> {
-    const previous = (await this.storage.get<Saved>(key(pool))) ?? { since: null, items: [] };
+    const previous = (await poolDependency("storage", this.storage.get<Saved>(key(pool)))) ?? {
+      since: null,
+      items: [],
+    };
     if (operation !== undefined && previous.operations?.includes(operation)) return false;
     // An evicted operation cannot refresh a receipt or cross the history's truncation watermark.
     if (issuedAt !== undefined) {
@@ -59,7 +63,7 @@ export class PoolAccountRemovals {
       operation === undefined
         ? (previous.operations ?? [])
         : [...(previous.operations ?? []), operation].slice(-100);
-    await this.storage.put(key(pool), { since, items, operations });
+    await poolDependency("storage", this.storage.put(key(pool), { since, items, operations }));
     return true;
   }
 }

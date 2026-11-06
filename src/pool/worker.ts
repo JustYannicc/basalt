@@ -1,5 +1,6 @@
 import { deploymentReadinessPath, handleDeploymentReadiness } from "./deployment-readiness.ts";
 import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
+import { PoolDependencyFailure, poolDependency } from "./dependency-failure.ts";
 import { handleRemovalIntent, removalIntentPath } from "./removal-intent.ts";
 import { pricedSummary } from "./model-history/priced-summary.ts";
 import { publishAccountObservations } from "./account-observation-publish.ts";
@@ -20,7 +21,7 @@ import { Computers } from "./computers.ts";
 import { accessPath } from "./access-contract.ts";
 import { requirePoolUse } from "./authorization.ts";
 import { requireActivePoolOrganization } from "./organization-access.ts";
-import { failureResponse } from "./json.ts";
+import { failureResponse, unavailable } from "./json.ts";
 import { isPublicModelPath, PoolLifecycle, poolLifecycle, poolPort } from "./lifecycle.ts";
 import { nativeControlPath, nativeModelHeader, nativeSessionPath } from "./native-contract.ts";
 import { nativeSession } from "./native-response.worker.ts";
@@ -240,21 +241,31 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       install: async (policy) => {
         const projection = await signEnvelope(env.POOL_APP_SIGNING_KEY, policyPrefix, policy);
         const container = ctx.container;
-        if (!container) throw new Error("Pool container unavailable");
-        const response = await container.getTcpPort(8318).fetch("http://pool/native-policy", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${env.POOL_MANAGEMENT_KEY}`,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({ projection }),
-          signal: AbortSignal.timeout(2_000),
-        });
+        if (!container) return unavailable();
+        const response = await poolDependency(
+          "membership",
+          container.getTcpPort(8318).fetch("http://pool/native-policy", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${env.POOL_MANAGEMENT_KEY}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ projection }),
+            signal: AbortSignal.timeout(2_000),
+          }),
+        );
         if (!response.ok) {
           await response.body?.cancel();
-          throw new Error("Pool account protection is unavailable");
+          return unavailable();
         }
-        const acknowledgement: unknown = await response.json();
+        const body = await poolDependency("membership", response.text());
+        let acknowledgement: unknown;
+        try {
+          acknowledgement = JSON.parse(body);
+        } catch (cause) {
+          if (!(cause instanceof SyntaxError)) throw cause;
+          throw new PoolDependencyFailure("membership", cause);
+        }
         if (
           typeof acknowledgement !== "object" ||
           acknowledgement === null ||
@@ -263,7 +274,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
           !("revision" in acknowledgement) ||
           acknowledgement.revision !== policy.revision
         )
-          throw new Error("Pool account protection acknowledgement is invalid");
+          return unavailable();
       },
       abort: (pool) => {
         this.modelStreams.abortPool(pool);
@@ -392,7 +403,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         refresh: (pool) => this.memberships.refresh(pool),
         selected: async (pool) => {
           const policy = await this.memberships.authority(pool);
-          if (!policy) throw new Error("Native pool membership is unavailable");
+          if (!policy) return unavailable();
           return policy.accounts;
         },
         record: (pool, references, actor, operation, issuedAt) =>
