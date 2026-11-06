@@ -26,6 +26,14 @@ test("a reported amount names one unit in the singular and any other count in th
   assert.equal(amount(1, "resets", format), "1");
 });
 
+test("a reported amount's English unit follows English plural rules in any locale", () => {
+  // Russian reads 21 as "one" and Filipino reads 2 as "one"; neither is one reset.
+  assert.equal(amount(21, "resets", { locale: "ru-RU", timeZone: "UTC" }, true), "21 resets");
+  assert.equal(amount(2, "credits", { locale: "fil", timeZone: "UTC" }, true), "2 credits");
+  assert.equal(amount(1, "resets", { locale: "ru-RU", timeZone: "UTC" }, true), "1 reset");
+  assert.equal(amount(1.5, "credits", { locale: "de-DE", timeZone: "UTC" }, true), "1,5 credits");
+});
+
 test("a banked credit's Details amount reads one reset", () => {
   const now = Date.parse("2026-11-06T08:00:00Z");
   const credit = (available: number) =>
