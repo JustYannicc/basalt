@@ -38,12 +38,8 @@
     }
   },
   "runs": {
-    "cloudPoolReceiverGroupFailure": [
-      "declared:cloud"
-    ],
-    "cloudPoolReceiverNativeMembershipFailure": [
-      "declared:cloud"
-    ]
+    "cloudPoolReceiverGroupFailure": ["declared:cloud"],
+    "cloudPoolReceiverNativeMembershipFailure": ["declared:cloud"]
   },
   "inputs": [
     ".upstream/e2e/support/pool-receiver-faults.ts",
@@ -75,5 +71,6 @@
     ".upstream/apps/hosted/cloud/src/implementation/access-hooks.ts",
     ".upstream/packages/sdk/src/contracts/interactive-accounts.ts",
     ".upstream/e2e/tests/pool-receiver-membership.spec.ts"
-  ]
+  ],
+  "fixture": "pool-setup"
 }
