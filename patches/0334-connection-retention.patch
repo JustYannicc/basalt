@@ -1,3 +1,15 @@
+diff --git a/apps/docs/content/run/self-host.mdx b/apps/docs/content/run/self-host.mdx
+index 2095073..1232851 100644
+--- a/apps/docs/content/run/self-host.mdx
++++ b/apps/docs/content/run/self-host.mdx
+@@ -40,6 +40,7 @@ These settings override the defaults:
+ | `EXECUTOR_TOOL_LISTING_FRESH_SECONDS` | no     | Reuse an app's evaluated tool list this long before refreshing it in the background. The default is `30`. |
+ | `EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS` | no  | Never serve an evaluated tool list older than this; `0` evaluates every list. The default is `86400`. |
+ | `EXECUTOR_TOOL_LISTING_LOAD_SECONDS` | no     | Stop evaluating an app's tool list after this long when no request is waiting for it; capped at the maximum age. The default is `45`. |
++| `EXECUTOR_ACCOUNT_CONNECTION_RETENTION` | no | Set to `true` to delete, once a day, account sign-ins that never connected an account and expired more than a day ago. Off by default. |
+ | `EXECUTOR_EVALUATION_MEMORY_MB`      | no       | Memory for kept tool lists and app declarations. The default is `256`.  |
+ | `EXECUTOR_NPM_REGISTRY`              | no       | npm registry that app builds install packages from. The default is `https://registry.npmjs.org`. |
+ | `DO_NOT_TRACK` or `EXECUTOR_DISABLE_ANALYTICS` | no | Set to `1` to turn off anonymous usage analytics and feedback. See [usage analytics](/run/usage-analytics). |
 diff --git a/apps/hosted/cloud/src/infrastructure/background-jobs.ts b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
 index 97fd42c..2544bf2 100644
 --- a/apps/hosted/cloud/src/infrastructure/background-jobs.ts
@@ -23,6 +35,31 @@ index 1d6582a..e262bcd 100644
    "hosted_account_access",
    "hosted_account_groups",
    "hosted_account_observation_access",
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts b/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
+index f068a96..0b0684d 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
+@@ -1,5 +1,6 @@
+ import { Effect, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
++import { producedAccount } from "@executor-js/hosted-server/connection-retention";
+ 
+ /** These projections are the complete SQL interface; workflow inputs never supply SQL. */
+ export const inventoryQueries = {
+@@ -57,11 +58,11 @@ export const inventoryQueries = {
+     order by id limit 2001`,
+   // Account connections as metadata only: their status, never the rest of their state, their
+   // sign-in attempt or their account. A pending connection past its expiry reads `expired`.
+-  // `produced_account` is any completed sign-in: a new, reconnected or reused account.
++  // `produced_account` is the retention rules' own definition: any completed sign-in.
+   connections: `select c.id, c.provider, c.target ->> 'app' as app,
+     c.target ->> 'requirement' as requirement, c.state ->> 'status' as status,
+     c.expires_at <= now() as expired,
+-    coalesce(c.state ->> 'status' = 'completed', false) as produced_account,
++    ${producedAccount("c")} as produced_account,
+     c.created_at::text, c.expires_at::text from executor_account_connections c
+     where c.owner = 'organization:' || $1 order by c.id limit 2001`,
+   // The same connections as counts, so an organization with more than the row bound still gets
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
 index 7dca588..bf0a592 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
@@ -43,19 +80,22 @@ index 7dca588..bf0a592 100644
  };
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/account-connection-retention-v1.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/account-connection-retention-v1.ts
 new file mode 100644
-index 0000000..1b68a3b
+index 0000000..471aefa
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/account-connection-retention-v1.ts
-@@ -0,0 +1,133 @@
+@@ -0,0 +1,135 @@
 +import { Effect, Schema } from "effect";
 +import { SqlClient } from "effect/sql";
 +import { abandonedConnection } from "@executor-js/hosted-server/connection-retention";
 +import type { Json, ProductionMigration } from "../contracts.ts";
 +import { canonical } from "../crypto.ts";
-+import { Entry, entry, readRows, refuse, whereKey } from "./duplicate-binding-rows.ts";
++import { Entry, entry, readBoundedRows, refuse, whereKey } from "./row-evidence.ts";
 +
 +/** One plan's bound; a larger backlog takes another reviewed plan with a later cutoff. */
 +const batch = 200;
++const tooMany = `More than ${batch} connections; choose an earlier cutoff`;
++const readRows = (table: string, predicate: string, params: readonly string[]) =>
++  readBoundedRows(table, predicate, params, tooMany);
 +const Request = Schema.Struct({
 +  organization: Schema.NonEmptyString.check(Schema.isMaxLength(256)),
 +  // Fixes the reviewed set: time only adds connections past `now() - 24h`, never past the cutoff.
@@ -70,7 +110,7 @@ index 0000000..1b68a3b
 +});
 +const Data = Schema.Struct({ removed: Schema.Array(Removal) });
 +const decode = (input: Json) => Schema.decodeUnknownEffect(Request)(input);
-+const one = (rows: readonly (typeof Entry.Type)[]) => (rows.length === 1 ? rows[0]! : null);
++const one = (rows: readonly Entry[]): Entry | null => (rows.length === 1 ? rows[0]! : null);
 +
 +const read = (input: Json) =>
 +  Effect.gen(function* () {
@@ -86,12 +126,11 @@ index 0000000..1b68a3b
 +        and entry.expires_at < $2::timestamptz`,
 +      [request.organization, request.expiredBefore],
 +    );
-+    if (connections.length > batch)
-+      return yield* refuse(`More than ${batch} connections; choose an earlier cutoff`);
-+    const removed = [];
++    if (connections.length > batch) return yield* refuse(tooMany);
++    const removed: (typeof Removal.Type)[] = [];
 +    for (const connection of connections.sort((a, b) => String(a.id).localeCompare(String(b.id)))) {
 +      const id = String(connection.id);
-+      let attempt = null;
++      let attempt: Entry | null = null;
 +      if (typeof connection.oauth_attempt === "string") {
 +        const sharing = yield* sql`select 1 from executor_account_connections
 +          where oauth_attempt = ${connection.oauth_attempt} and id <> ${id} limit 1`;
@@ -134,7 +173,7 @@ index 0000000..1b68a3b
 +    };
 +  });
 +
-+const absent = (row: typeof Entry.Type | null) =>
++const absent = (row: Entry | null) =>
 +  row === null
 +    ? Effect.succeed(true)
 +    : Effect.gen(function* () {
@@ -180,6 +219,133 @@ index 0000000..1b68a3b
 +      return { ok: connections && attempts && access, checks: { connections, attempts, access } };
 +    }),
 +};
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/duplicate-binding-rows.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/duplicate-binding-rows.ts
+index 41b7d79..86dbd16 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/duplicate-binding-rows.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/duplicate-binding-rows.ts
+@@ -1,16 +1,7 @@
+-import { Effect, Schema } from "effect";
+-import { SqlClient } from "effect/sql";
+-import { canonical, sha256 } from "../crypto.ts";
+-import { ProductionOperationRefused } from "../contracts.ts";
++import { Effect } from "effect";
++import { type Entry, entry, readBoundedRows, refuse, whereKey } from "./row-evidence.ts";
+ 
+-export const refuse = (message: string) => Effect.fail(new ProductionOperationRefused({ message }));
+-export const Row = Schema.Record(Schema.String, Schema.Json);
+-export const Entry = Schema.Struct({
+-  table: Schema.String,
+-  key: Schema.Record(Schema.String, Schema.NullOr(Schema.String)),
+-  sha256: Schema.String,
+-});
+-export type Entry = typeof Entry.Type;
++export { Entry, entry, refuse, Row, whereKey } from "./row-evidence.ts";
+ 
+ /** Closed table/key registry: requests can select IDs, never SQL or columns. */
+ export const retirementTables = {
+@@ -32,25 +23,7 @@ export const retirementTables = {
+ export type RetirementTable = keyof typeof retirementTables;
+ 
+ export const readRows = (table: string, predicate: string, params: readonly string[]) =>
+-  Effect.gen(function* () {
+-    const sql = yield* SqlClient.SqlClient;
+-    const result = yield* sql.unsafe(
+-      `select to_jsonb(entry) as row from "${table}" entry where ${predicate} limit 1001`,
+-      params,
+-    );
+-    const decoded = yield* Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ row: Row })))(
+-      result,
+-    );
+-    if (decoded.length > 1000)
+-      return yield* refuse("Duplicate binding evidence exceeds its row bound");
+-    return decoded.map(({ row }) => row).sort((a, b) => canonical(a).localeCompare(canonical(b)));
+-  });
+-
+-export const entry = (table: string, keys: readonly string[], row: typeof Row.Type): Entry => ({
+-  table,
+-  key: Object.fromEntries(keys.map((key) => [key, row[key] === null ? null : String(row[key])])),
+-  sha256: sha256(canonical(row)),
+-});
++  readBoundedRows(table, predicate, params, "Duplicate binding evidence exceeds its row bound");
+ 
+ export const readEntry = (item: Entry) => {
+   const keys =
+@@ -66,16 +39,3 @@ export const readEntry = (item: Entry) => {
+     Effect.map((rows) => rows.map((row) => entry(item.table, keys, row))),
+   );
+ };
+-
+-/** Nullable app subjects retain SQL NULL semantics, including on replay. */
+-export const whereKey = (item: Entry) => {
+-  const params: string[] = [];
+-  const predicate = Object.entries(item.key)
+-    .map(([key, value]) => {
+-      if (value === null) return `"${key}" is null`;
+-      params.push(value);
+-      return `"${key}" = $${params.length}`;
+-    })
+-    .join(" and ");
+-  return { predicate, params };
+-};
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/row-evidence.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/row-evidence.ts
+new file mode 100644
+index 0000000..acd18ab
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/row-evidence.ts
+@@ -0,0 +1,53 @@
++import { Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import { canonical, sha256 } from "../crypto.ts";
++import { ProductionOperationRefused } from "../contracts.ts";
++
++/** Full-row reads and keyed deletes shared by migrations that remove reviewed rows. */
++export const refuse = (message: string) => Effect.fail(new ProductionOperationRefused({ message }));
++export const Row = Schema.Record(Schema.String, Schema.Json);
++export const Entry = Schema.Struct({
++  table: Schema.String,
++  key: Schema.Record(Schema.String, Schema.NullOr(Schema.String)),
++  sha256: Schema.String,
++});
++export type Entry = typeof Entry.Type;
++
++/** Up to 1000 full rows in canonical order; more refuses with the caller's `exceeded` message. */
++export const readBoundedRows = (
++  table: string,
++  predicate: string,
++  params: readonly (string | number)[],
++  exceeded: string,
++) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const result = yield* sql.unsafe(
++      `select to_jsonb(entry) as row from "${table}" entry where ${predicate} limit 1001`,
++      params,
++    );
++    const decoded = yield* Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ row: Row })))(
++      result,
++    );
++    if (decoded.length > 1000) return yield* refuse(exceeded);
++    return decoded.map(({ row }) => row).sort((a, b) => canonical(a).localeCompare(canonical(b)));
++  });
++
++export const entry = (table: string, keys: readonly string[], row: typeof Row.Type): Entry => ({
++  table,
++  key: Object.fromEntries(keys.map((key) => [key, row[key] === null ? null : String(row[key])])),
++  sha256: sha256(canonical(row)),
++});
++
++/** Nullable app subjects retain SQL NULL semantics, including on replay. */
++export const whereKey = (item: Entry) => {
++  const params: string[] = [];
++  const predicate = Object.entries(item.key)
++    .map(([key, value]) => {
++      if (value === null) return `"${key}" is null`;
++      params.push(value);
++      return `"${key}" = $${params.length}`;
++    })
++    .join(" and ");
++  return { predicate, params };
++};
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts b/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts
 index baee04e..4456a53 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts
@@ -201,7 +367,7 @@ index baee04e..4456a53 100644
      keys: ["account_id"],
      predicate: `${organization} and ${account("account_id")}`,
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index 6e6c52e..424bad1 100644
+index 6e6c52e..dcc3a62 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -41,6 +41,10 @@ import { reportHostPoolInventory } from "./infrastructure/pool-inventory.ts";
@@ -209,8 +375,8 @@ index 6e6c52e..424bad1 100644
  import { expireIdleAgentGrants } from "@executor-js/app-management/data-steps";
  import { GroupDatabase } from "@executor-js/hosted-server/groups";
 +import {
-+  connectionRetentionEnabled,
 +  retainConnections,
++  whenConnectionRetentionEnabled,
 +} from "@executor-js/hosted-server/connection-retention";
  import { SqlClient } from "effect/sql";
  import {
@@ -219,13 +385,13 @@ index 6e6c52e..424bad1 100644
        Effect.scoped,
        Effect.catch(() => Effect.logWarning("Idle agent grant expiry failed")),
      );
-+    // Off: no deployment binds its switch, so it removes nothing until a reviewed change does.
-+    const connectionRetention = Effect.gen(function* () {
-+      const sql = yield* Effect.flatten(GroupDatabase);
-+      yield* retainConnections(yield* connectionRetentionEnabled).pipe(
-+        Effect.provideService(SqlClient.SqlClient, sql),
-+      );
-+    }).pipe(
++    // Removes abandoned account connections daily when EXECUTOR_ACCOUNT_CONNECTION_RETENTION is true.
++    const connectionRetention = whenConnectionRetentionEnabled(
++      Effect.gen(function* () {
++        const sql = yield* Effect.flatten(GroupDatabase);
++        yield* retainConnections.pipe(Effect.provideService(SqlClient.SqlClient, sql));
++      }),
++    ).pipe(
 +      Effect.provide(executor),
 +      reportErrors,
 +      Effect.scoped,
@@ -257,7 +423,7 @@ index 6e6c52e..424bad1 100644
        "personal-data-reporting": personalDataReporting,
        "account-health-rechecks": accountRechecks,
 diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
-index 16a8005..5c79ea3 100644
+index 16a8005..45e7c1c 100644
 --- a/apps/hosted/self-host/src/implementation/executor-services.ts
 +++ b/apps/hosted/self-host/src/implementation/executor-services.ts
 @@ -55,6 +55,10 @@ import {
@@ -265,22 +431,23 @@ index 16a8005..5c79ea3 100644
  import { Config, Effect, Layer, Option, Deferred, Schedule, Context, Scope } from "effect";
  import { GroupDatabase } from "@executor-js/hosted-server/groups";
 +import {
-+  connectionRetentionEnabled,
 +  retainConnections,
++  whenConnectionRetentionEnabled,
 +} from "@executor-js/hosted-server/connection-retention";
  import { HostManagedAccountRecords } from "@executor-js/hosted-server/host-managed-accounts";
  import { poolAccessRecords } from "@executor-js/hosted-server/pool-access-provenance";
  import { SqlClient } from "effect/sql";
-@@ -187,6 +191,14 @@ export const selfHostExecutorServices = <E, R>(
+@@ -187,6 +191,15 @@ export const selfHostExecutorServices = <E, R>(
            Effect.repeat(Schedule.spaced("1 day")),
          ),
        );
-+      // Off unless the operator sets EXECUTOR_ACCOUNT_CONNECTION_RETENTION.
-+      const retention = yield* connectionRetentionEnabled;
-+      yield* Effect.forkScoped(
-+        retainConnections(retention).pipe(
-+          Effect.catch(() => Effect.logWarning("Account connection retention failed")),
-+          Effect.repeat(Schedule.spaced("1 day")),
++      // Removes abandoned account connections daily when EXECUTOR_ACCOUNT_CONNECTION_RETENTION is true.
++      yield* whenConnectionRetentionEnabled(
++        Effect.forkScoped(
++          retainConnections.pipe(
++            Effect.catch(() => Effect.logWarning("Account connection retention failed")),
++            Effect.repeat(Schedule.spaced("1 day")),
++          ),
 +        ),
 +      );
        yield* Effect.forkScoped(
@@ -300,33 +467,38 @@ index c152da2..19a8d47 100644
      "./provider-login-file": "./src/implementation/provider-login-file.ts",
 diff --git a/apps/hosted/server/src/implementation/connection-retention.ts b/apps/hosted/server/src/implementation/connection-retention.ts
 new file mode 100644
-index 0000000..ca81a72
+index 0000000..247ac49
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/connection-retention.ts
-@@ -0,0 +1,65 @@
+@@ -0,0 +1,67 @@
 +/**
 + * Abandoned account connections: a sign-in that never produced an account and expired more than a
-+ * day ago. A pending connection expires after 30 minutes but nothing deletes it, so they pile up.
-+ * The reviewed `account-connection-retention-v1` operation and the daily rule share this predicate.
++ * day ago. The reviewed `account-connection-retention-v1` operation and the daily rule remove them
++ * with the same predicate; the production `connections` inventory reports the same definition.
 + */
 +import { Config, Effect, Schema } from "effect";
 +import { SqlClient } from "effect/sql";
 +
-+/**
-+ * SQL over `executor_account_connections` aliased `alias`. "Produced an account" is any completed
-+ * sign-in, exactly as the production `connections` inventory reports `produced_account`.
-+ */
-+export const abandonedConnection = (alias: string) =>
-+  `coalesce(${alias}.state ->> 'status' = 'completed', false) = false
-+    and ${alias}.expires_at < now() - interval '24 hours'`;
++/** SQL over `executor_account_connections` aliased `alias`: any completed sign-in, new, reconnected or reused. */
++export const producedAccount = (alias: string) =>
++  `coalesce(${alias}.state ->> 'status' = 'completed', false)`;
 +
-+/**
-+ * Off unless a host sets it. No deployment binds it: turning the daily rule on is a reviewed change
-+ * that follows the reviewed removal of the existing backlog.
-+ */
++/** SQL over `executor_account_connections` aliased `alias`. */
++export const abandonedConnection = (alias: string) =>
++  `${producedAccount(alias)} = false and ${alias}.expires_at < now() - interval '24 hours'`;
++
++/** Turns the daily rule on when `true`; unset or `false` leaves it off. */
 +export const connectionRetentionEnabled = Config.Boolean(
 +  "EXECUTOR_ACCOUNT_CONNECTION_RETENTION",
 +).pipe(Config.withDefault(false));
++
++/** Run `work` only when the switch is on; off, nothing connects, schedules or deletes. */
++export const whenConnectionRetentionEnabled = <A, E, R>(work: Effect.Effect<A, E, R>) =>
++  Effect.gen(function* () {
++    if (!(yield* connectionRetentionEnabled)) return false;
++    yield* work;
++    return true;
++  });
 +
 +/** One run's bound; a larger backlog drains over later runs, oldest first. */
 +export const connectionRetentionBatch = 500;
@@ -337,44 +509,41 @@ index 0000000..ca81a72
 +
 +/**
 + * Delete up to one batch of abandoned connections, each sign-in attempt before its connection, as
-+ * owner removal does. Access rows cascade with their connection; accounts are never touched.
-+ * Returns the number of connections removed; `enabled: false` removes nothing.
++ * owner removal does. An attempt another connection still names stays with it. Access rows
++ * cascade with their connection; accounts are never touched. Returns the connections removed.
 + */
-+export const retainConnections = (enabled: boolean) =>
-+  Effect.gen(function* () {
-+    if (!enabled) return 0;
-+    const sql = yield* SqlClient.SqlClient;
-+    return yield* sql.withTransaction(
-+      Effect.gen(function* () {
-+        // Locked rows are a connection another writer holds; a later run takes them.
-+        const rows = yield* sql
-+          .unsafe(
-+            `select c.id, c.oauth_attempt from executor_account_connections c
-+            where ${abandonedConnection("c")} order by c.expires_at, c.id
-+            limit ${connectionRetentionBatch} for update skip locked`,
-+          )
-+          .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Candidates)));
-+        if (rows.length === 0) return 0;
-+        const ids = rows.map((row) => row.id);
-+        const attempts = rows.flatMap((row) =>
-+          row.oauth_attempt === null ? [] : [row.oauth_attempt],
-+        );
-+        // An attempt another connection still names stays with that connection.
-+        if (attempts.length > 0)
-+          yield* sql`delete from executor_oauth_attempts a where ${sql.in("a.id", attempts)}
-+            and not exists (select 1 from executor_account_connections other
-+              where other.oauth_attempt = a.id and not ${sql.in("other.id", ids)})`;
-+        yield* sql`delete from executor_account_connections where ${sql.in("id", ids)}`;
-+        return ids.length;
-+      }),
-+    );
-+  });
++export const retainConnections = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  return yield* sql.withTransaction(
++    Effect.gen(function* () {
++      // Locked rows are a connection another writer holds; a later run takes them.
++      const rows = yield* sql
++        .unsafe(
++          `select c.id, c.oauth_attempt from executor_account_connections c
++          where ${abandonedConnection("c")} order by c.expires_at, c.id
++          limit ${connectionRetentionBatch} for update skip locked`,
++        )
++        .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Candidates)));
++      if (rows.length === 0) return 0;
++      const ids = rows.map((row) => row.id);
++      const attempts = rows.flatMap((row) =>
++        row.oauth_attempt === null ? [] : [row.oauth_attempt],
++      );
++      if (attempts.length > 0)
++        yield* sql`delete from executor_oauth_attempts a where ${sql.in("a.id", attempts)}
++          and not exists (select 1 from executor_account_connections other
++            where other.oauth_attempt = a.id and not ${sql.in("other.id", ids)})`;
++      yield* sql`delete from executor_account_connections where ${sql.in("id", ids)}`;
++      return ids.length;
++    }),
++  );
++});
 diff --git a/e2e/support/production-ops-connection-rows.ts b/e2e/support/production-ops-connection-rows.ts
 new file mode 100644
-index 0000000..a642463
+index 0000000..c8e6649
 --- /dev/null
 +++ b/e2e/support/production-ops-connection-rows.ts
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,90 @@
 +import { Effect, Schema } from "effect";
 +import { randomUUID } from "node:crypto";
 +import { productionMigrationProof } from "./production-ops-migration-proof.ts";
@@ -385,13 +554,20 @@ index 0000000..a642463
 + */
 +export const productionOpsConnectionRows = Effect.gen(function* () {
 +  const p = yield* productionMigrationProof;
++  const id = {
++    pending: randomUUID(),
++    cancelled: randomUUID(),
++    completed: randomUUID(),
++    fresh: randomUUID(),
++    foreign: randomUUID(),
++  };
 +  const rows = [
-+    { key: "pending", side: p.own, status: "pending", hours: 72 },
-+    { key: "cancelled", side: p.own, status: "cancelled", hours: 48 },
-+    { key: "completed", side: p.own, status: "completed", hours: 72 },
-+    { key: "fresh", side: p.own, status: "pending", hours: 2 },
-+    { key: "foreign", side: p.foreign, status: "pending", hours: 72 },
-+  ].map((row) => ({ ...row, id: randomUUID() }));
++    { id: id.pending, side: p.own, status: "pending", hours: 72 },
++    { id: id.cancelled, side: p.own, status: "cancelled", hours: 48 },
++    { id: id.completed, side: p.own, status: "completed", hours: 72 },
++    { id: id.fresh, side: p.own, status: "pending", hours: 2 },
++    { id: id.foreign, side: p.foreign, status: "pending", hours: 72 },
++  ];
 +  const ids = rows.map((row) => row.id),
 +    attempts = ids.map((id) => `attempt-${id}`);
 +  yield* Effect.addFinalizer(() =>
@@ -438,7 +614,6 @@ index 0000000..a642463
 +      params: [row.id, row.side.organization, row.side.user],
 +    });
 +  }
-+  const id = Object.fromEntries(rows.map((row) => [row.key, row.id]));
 +  const present = (table: string, column: string) =>
 +    p.database
 +      .run({
@@ -460,7 +635,7 @@ index 0000000..a642463
 +  };
 +});
 diff --git a/e2e/tests/production-ops-migrations.spec.ts b/e2e/tests/production-ops-migrations.spec.ts
-index cb462c0..2888f6d 100644
+index cb462c0..c112fce 100644
 --- a/e2e/tests/production-ops-migrations.spec.ts
 +++ b/e2e/tests/production-ops-migrations.spec.ts
 @@ -12,6 +12,7 @@ import {
@@ -490,7 +665,7 @@ index cb462c0..2888f6d 100644
 +        };
 +        const before = { connections: yield* connections, attempts: yield* attempts };
 +        const dry = yield* p.dryRun(operation);
-+        const plan = Schema.decodeUnknownSync(
++        const plan = yield* Schema.decodeUnknownEffect(
 +          Schema.Struct({
 +            plan: Schema.Struct({
 +              changes: Schema.Array(
@@ -502,7 +677,7 @@ index cb462c0..2888f6d 100644
 +            }),
 +          }),
 +        )(p.decrypt(dry.artifact));
-+        const removed = [id.pending!, id.cancelled!].sort();
++        const removed = [id.pending, id.cancelled].sort();
 +        expect(
 +          plan.plan.changes.map((change) => [change.table, Object.values(change.key)[0]]),
 +        ).toEqual(
@@ -516,7 +691,7 @@ index cb462c0..2888f6d 100644
 +        const revise = (revision: string) =>
 +          p.database.run({
 +            sql: "update executor_account_connections set revision = $2 where id = $1",
-+            params: [id.cancelled!, revision],
++            params: [id.cancelled, revision],
 +          });
 +        yield* revise("changed");
 +        expect((yield* p.request(p.apply(operation, dry))).status).toBe(409);

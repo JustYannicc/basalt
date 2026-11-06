@@ -1,7 +1,7 @@
 model {
   extend basalt.productionOps {
     metadata {
-      constraint "Abandoned account connections are those that never produced an account, by the same definition as the connections inventory, and expired more than a day ago. The reviewed retention operation removes one organization's abandoned connections that expired before a cutoff at least a day old, at most 200 per plan, after a backup of their full rows and sign-in attempts and a dry run listing their exact IDs and checksums; apply refuses any changed row, removes each sign-in attempt and access row before its connection, and keeps completed connections and every account. The daily rule applies the same definition and stays off unless an explicit server setting turns it on, which no deployment does."
+      constraint "Abandoned account connections are those that never produced an account, by the same definition as the connections inventory, and expired more than a day ago. The reviewed retention operation removes one organization's abandoned connections that expired before a cutoff at least a day old, at most 200 per plan, after a backup of their full rows and sign-in attempts and a dry run listing their exact IDs and checksums; apply refuses any changed row, removes each sign-in attempt and access row before its connection, and keeps completed connections and every account. The daily rule applies the same definition, keeps a sign-in attempt another connection still names, and runs only when an explicit server setting turns it on; with the setting off it neither connects nor schedules anything."
     }
   }
 }

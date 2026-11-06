@@ -158,6 +158,7 @@
     ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/account-connection-retention-v1.ts",
     ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/duplicate-binding-rows.ts",
     ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-schema.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/row-evidence.ts",
     ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts",
     ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/refusal-guards.ts",
     ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts",
@@ -165,6 +166,7 @@
     ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts",
     ".upstream/apps/hosted/cloud/src/main.ts",
     ".upstream/apps/hosted/cloud/src/mcp-server.ts",
-    ".upstream/apps/hosted/server/src/implementation/connection-retention.ts"
+    ".upstream/apps/hosted/server/src/implementation/connection-retention.ts",
+    ".upstream/e2e/support/production-ops-connection-rows.ts"
   ]
 }

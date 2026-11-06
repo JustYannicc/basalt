@@ -196,18 +196,24 @@ connection that can still complete is never selected, and the reviewed set stays
 fixed while time passes. A plan holds at most 200 connections; for a larger
 backlog, choose an earlier cutoff first, then repeat with later ones.
 
-Back up with `action=backup` and the migration name first. The backup holds
-complete connection, sign-in attempt and connection access rows. The dry run
-lists each selected connection with its sign-in attempt and access row, by exact
-ID and row checksum. A sign-in attempt that another connection also names refuses.
+Back up with `action=backup` and the migration name first. Like every migration
+backup, including the one the dry run saves, it is the runner's whole-table
+snapshot of the connection, sign-in attempt and connection access tables, across
+all organizations, bounded at 10,000 rows per table and 8 MB. A large backlog can
+therefore refuse at the dry run; check the row counts with the
+`connections-summary` inventory first. The dry run lists each selected
+connection with its sign-in attempt and access row, by exact ID and row checksum.
+A sign-in attempt that another connection also names refuses.
 Apply, with GO for that exact plan, removes each attempt and access row before
 its connection. It refuses if any reviewed row changed or the selection differs.
 Completed connections and every account stay.
 
-The same rule can run daily on its own. It is off unless the server's
-`EXECUTOR_ACCOUNT_CONNECTION_RETENTION` is `true`, and no deployment sets it.
-When on, it removes up to 500 such connections a day across all organizations,
-each older than a day past its expiry, sign-in attempts first.
+The same rule can run daily on its own. Setting the server's
+`EXECUTOR_ACCOUNT_CONNECTION_RETENTION` to `true` turns it on; unset, nothing
+runs. When on, it removes up to 500 such connections a day across all
+organizations, each more than a day past its expiry, sign-in attempts first. A
+sign-in attempt that another connection still names is kept with that
+connection, where the reviewed operation refuses it.
 
 ## Apply the reviewed plan
 
