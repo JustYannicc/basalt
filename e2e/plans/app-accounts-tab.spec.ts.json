@@ -2,7 +2,7 @@
   "scenarios": {
     "hostedAppAccountsFirstEntryDesktop": {
       "fixtures": "actors",
-      "title": "App Accounts first entry keeps the app shell and is never blank at 1280px",
+      "title": "App Accounts first entry keeps the app shell, is never blank, and says what each section and account control is for at 1280px",
       "targets": {
         "local": {
           "status": "not-applicable",
@@ -18,7 +18,7 @@
     },
     "hostedAppAccountsFirstEntryPhone": {
       "fixtures": "actors",
-      "title": "App Accounts first entry keeps the app shell and is never blank at 390px",
+      "title": "App Accounts first entry keeps the app shell, is never blank, and says what each section and account control is for at 390px",
       "targets": {
         "local": {
           "status": "not-applicable",
