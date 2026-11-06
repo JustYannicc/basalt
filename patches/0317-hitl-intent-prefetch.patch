@@ -597,7 +597,7 @@ diff --git a/e2e/tests/hitl-intent-scope.spec.ts b/e2e/tests/hitl-intent-scope.s
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/hitl-intent-scope.spec.ts
-@@ -0,0 +1,499 @@
+@@ -0,0 +1,510 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Deferred, Effect, Schema } from "effect";
 +import { randomUUID } from "node:crypto";
@@ -718,9 +718,16 @@ new file mode 100644
 +                  expect(createdResponse.status, JSON.stringify(createdResponse.body)).toBe(200);
 +                  const organization = yield* body(Created, createdResponse);
 +                  yield* Effect.addFinalizer(() =>
-+                    api
-+                      .request(actors.owner, "DELETE", `/api/organizations/${organization.id}`)
-+                      .pipe(Effect.ignore),
++                    Effect.gen(function* () {
++                      const removed = yield* api.request(
++                        actors.owner,
++                        "DELETE",
++                        `/api/organizations/${organization.id}`,
++                      );
++                      expect(removed.status, "The scenario removes its second organization").toBe(
++                        200,
++                      );
++                    }).pipe(Effect.orDie),
 +                  );
 +
 +                  return organization;
@@ -808,8 +815,8 @@ new file mode 100644
 +                    .then(() => link(page).waitFor()),
 +                )
 +              : browser.use(label, (page) => link(page).waitFor());
-+          // Hover on desktop. The phone context has no touch support (shared Browser), so keyboard
-+          // focus is its intent here; touch stays the existing spec's synthetic touchstart.
++          // Focus supplies intent in the shared phone context; checkTouchIntent below proves
++          // native touch in its own hasTouch context.
 +          const intent = (page: Page) => (phone ? link(page).focus() : link(page).hover());
 +          const away = (page: Page) =>
 +            phone
@@ -937,6 +944,10 @@ new file mode 100644
 +          );
 +          yield* settle("Flush fetch dispatch after the due timers");
 +          expect(blocked, "An unfollowed intent sends no write or health check").toEqual([]);
++          expect(endpoints(), "An unfollowed intent leaves no queue poll or focus read").toEqual([
++            "schedules.runs",
++            "workflowInputs.list",
++          ]);
 +          yield* evidence.json(`hitl-scope-negative-${width}.json`, { reads, blocked });
 +          const refresh = yield* holdQuery(inputsEndpoint, "continue");
 +          yield* follow("Follow A's warmed link", "populated", question);
