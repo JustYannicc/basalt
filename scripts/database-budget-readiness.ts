@@ -93,8 +93,25 @@ export async function openDeploymentReadiness(options: {
 export function bounded<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
     const abort = () => reject(new DOMException("Operation aborted", "AbortError"));
+    // Work may reject while it synchronously aborts the supplied signal.
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
     if (signal.aborted) return abort();
     signal.addEventListener("abort", abort, { once: true });
-    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
   });
+}
+
+/** AbortSignal.timeout does not keep a standalone verifier process alive. */
+export function liveDeadline(milliseconds: number) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), milliseconds);
+  return { signal: controller.signal, dispose: () => clearTimeout(timer) };
+}
+
+export async function withinDeadline<T>(work: Promise<T>, milliseconds: number) {
+  const deadline = liveDeadline(milliseconds);
+  try {
+    return await bounded(work, deadline.signal);
+  } finally {
+    deadline.dispose();
+  }
 }

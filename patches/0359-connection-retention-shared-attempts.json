@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-connection-retention-shared-attempts",
+  "file": "0359-connection-retention-shared-attempts.patch",
+  "content_sha256": "ed3d999de4a8457a8c53fb166ab93afffb1a4f1ee4380df314bb133551106320",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}

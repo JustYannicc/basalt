@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountPresentation {
+    metadata {
+      constraint "On an app's Accounts tab a row the host gives no menu of its own opens its usage and checks from the row's own menu, as on the Accounts list."
+    }
+  }
+}

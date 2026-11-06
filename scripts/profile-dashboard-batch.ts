@@ -61,6 +61,12 @@ const files = (directory: string): string[] =>
   );
 
 const measure = (label: "before" | "after") => {
+  const prepared = spawnSync("bun", ["run", "e2e:prepare"], {
+    cwd: upstream,
+    stdio: "inherit",
+  });
+  if (prepared.error) throw prepared.error;
+  if (prepared.status !== 0) throw new Error(`Could not prepare the ${label} dashboard batch tree`);
   const previous = new Set(directories());
   const result = spawnSync(
     "bun",

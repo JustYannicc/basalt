@@ -1577,6 +1577,8 @@ jobs:
       - run: npm run prepare:upstream
       - name: Verify every adopted test declares its plan and CI job
         run: bun scripts/ci/check-plans.ts
+      - name: Reject e2e tests and checks without CI coverage
+        run: bun scripts/ci/check-e2e-coverage.ts
       - name: Check workflow syntax
         run: node scripts/ci/check-workflows.ts
       - name: Prove failed E2E evidence reaches artifact inputs

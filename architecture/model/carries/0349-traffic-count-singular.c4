@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "An account's counted requests, tokens, resets and credits name one in the singular on every row tooltip, screen-reader label, token footer and reported amount, deciding one by English plural rules whatever the reader's locale, since the nouns are English."
+    }
+  }
+}

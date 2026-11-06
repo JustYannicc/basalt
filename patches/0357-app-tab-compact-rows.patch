@@ -1,0 +1,576 @@
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index df7afa5..a44aec3 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -10031,6 +10031,17 @@ export const scenarios = plan({
+       local: na("Exercises hosted account rows."),
+     },
+   },
++  appTabOfferedCompactRow: {
++    fixtures: "actors",
++    file: "account-compact-rows.spec.ts",
++    title:
++      "An offered but unlinked account on an app's Accounts tab is one compact row; its checks and Check now open from its ⋯ Details",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Display only; self-host proves the shared rows."),
++      local: na("Exercises hosted app Accounts tabs."),
++    },
++  },
+   accountCompactRows: {
+     fixtures: "actors",
+     file: "account-compact-rows.spec.ts",
+diff --git a/e2e/tests/account-compact-rows.spec.ts b/e2e/tests/account-compact-rows.spec.ts
+index e16c564..ba38d58 100644
+--- a/e2e/tests/account-compact-rows.spec.ts
++++ b/e2e/tests/account-compact-rows.spec.ts
+@@ -4,7 +4,7 @@ import { Effect, Schema } from "effect";
+ import { FetchHttpClient, HttpClient } from "effect/http";
+ import type { Page } from "playwright";
+ import { body } from "../support/api.ts";
+-import { connectionsPath, linkAccount } from "../support/app-accounts.ts";
++import { connectionsPath, linkAccount, unlinkAccount } from "../support/app-accounts.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+ import { accountIdentityIssuer } from "../support/account-identity-issuer.ts";
+ import { IdentityAccount } from "../support/account-identity-product.ts";
+@@ -19,7 +19,7 @@ import {
+   observationSource,
+ } from "../support/account-observation-fixture.ts";
+ import { accountRowLayout, trackAccountRowHeight } from "../support/account-row-layout.ts";
+-import { accountRow, openRowMenu } from "../support/account-rows.ts";
++import { accountRow, openRowDetails, openRowMenu } from "../support/account-rows.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ /**
+@@ -824,4 +824,112 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+       }),
+     ),
+   );
++  it.effect(scenarios.appTabOfferedCompactRow.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const browser = yield* Browser,
++          evidence = yield* Evidence;
++        // A saved key whose provider defines a sign-in check, offered on the app's tab but not
++        // linked: the host gives the row no menu, yet its usage block has Check now and Details of
++        // its own. Until it is linked no app here checks it, so its Check now says why it waits.
++        const f = yield* observationFixture({
++          name: "Offered key app",
++          observe: true,
++          health: true,
++        });
++        expect(
++          (yield* f.api.request(f.actors.owner, "PATCH", f.accountPath, {
++            label: "Offered key",
++            description: "Kept for the staging workspace.",
++          })).status,
++        ).toBe(200);
++        yield* unlinkAccount(f.actors.owner, f.appPath, "service", f.account);
++        const tab = `/org/${f.actors.organization.slug}/apps/${f.app.id}?view=accounts`;
++        const row = (page: Page) =>
++          page
++            .getByRole("region", { name: "Your accounts", exact: true })
++            .locator("li")
++            .filter({ has: page.locator("[data-account-name]", { hasText: "Offered key" }) });
++        yield* browser.login(f.actors.owner);
++        // Both widths are read and captured before judging either, so a failure keeps both images.
++        const readings = yield* Effect.forEach([1280, 390], (width) =>
++          Effect.gen(function* () {
++            const collapsed = yield* browser.use(`Read the offered row at ${width}px`, (page) =>
++              page
++                .setViewportSize({ width, height: 900 })
++                .then(() => page.emulateMedia({ colorScheme: "light" }))
++                .then(() => page.goto(tab))
++                .then(() =>
++                  // Hydrated: the row's own actions show, in its ⋯ or, without one, inline.
++                  row(page)
++                    .getByRole("button", { name: /^Manage Offered key$|^Check now$/ })
++                    .first()
++                    .waitFor(),
++                )
++                .then(() =>
++                  Promise.all([
++                    row(page)
++                      .getByRole("button", { name: "Manage Offered key", exact: true })
++                      .count(),
++                    row(page)
++                      .getByRole("button", { name: /^Check now$|^Details$/ })
++                      .count(),
++                    row(page).locator("[data-account-health]").count(),
++                    row(page).locator(".requested-access").count(),
++                    row(page).locator("[data-account-description]").count(),
++                    row(page).evaluate((element) => element.getBoundingClientRect().height),
++                    page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
++                  ]),
++                ),
++            );
++            yield* evidence.attach(
++              `app-tab-offered-row-${width}.png`,
++              "image/png",
++              yield* browser.use("Capture the app's Accounts tab", (page) =>
++                page.screenshot({ fullPage: true }),
++              ),
++            );
++            return [width, collapsed] as const;
++          }),
++        );
++        for (const [width, collapsed] of readings) {
++          const [menus, inline, health, access, description, height, fits] = collapsed;
++          expect(menus, "the offered row has one ⋯ menu").toBe(1);
++          expect(
++            { inline, health, access, description },
++            "Check now, Details, checks, requested access and the description wait behind the menu",
++          ).toEqual({ inline: 0, health: 0, access: 0, description: 0 });
++          expect(fits, `no horizontal scroll at ${width}px`).toBe(true);
++          if (width === 390)
++            expect(height, "the offered row stays compact on a phone").toBeLessThanOrEqual(110);
++          const opened = yield* browser.use(
++            `Open the offered row's Details at ${width}px`,
++            (page) =>
++              page
++                .setViewportSize({ width, height: 900 })
++                .then(() => page.goto(tab))
++                .then(() => openRowDetails(page, row(page), "Offered key"))
++                .then(() => {
++                  const details = row(page).locator("[data-account-details]");
++                  const checkNow = details.getByRole("button", { name: "Check now", exact: true });
++                  return Promise.all([
++                    details.locator("[data-account-health]").count(),
++                    checkNow.count(),
++                    checkNow.isEnabled(),
++                    checkNow.getAttribute("aria-disabled"),
++                    row(page).locator("[data-account-description]").innerText(),
++                  ]);
++                }),
++          );
++          const [checks, checkNow, enabled, ariaDisabled, text] = opened;
++          expect(
++            { checks, checkNow, enabled, ariaDisabled },
++            "Details hold the checks and Check now, which waits until the account is linked",
++          ).toEqual({ checks: 1, checkNow: 1, enabled: false, ariaDisabled: "true" });
++          expect(text).toBe("Kept for the staging workspace.");
++        }
++      }),
++    ),
++  );
+ });
+diff --git a/e2e/tests/contributed-app-accounts.spec.ts b/e2e/tests/contributed-app-accounts.spec.ts
+index 7420f1c..4c86e62 100644
+--- a/e2e/tests/contributed-app-accounts.spec.ts
++++ b/e2e/tests/contributed-app-accounts.spec.ts
+@@ -149,7 +149,9 @@ layer(HostedLive, { excludeTestServices: true })("Contributed Accounts tab", (it
+           page.setViewportSize({ width: 1440, height: 960 }),
+         );
+         yield* browser.use("Open my contribution's menu", (page) =>
+-          page.getByRole("button", { name: "Manage My service account", exact: true }).click(),
++          requirementSection(page, "contributed")
++            .getByRole("button", { name: "Manage My service account", exact: true })
++            .click(),
+         );
+         yield* browser.use("Remove the contribution I added", (page) =>
+           page.getByRole("menuitem", { name: "Unlink", exact: true }).click(),
+diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/packages/ui/src/implementation/dashboard/account-actions.tsx
+index 757f1f8..9da7754 100644
+--- a/packages/ui/src/implementation/dashboard/account-actions.tsx
++++ b/packages/ui/src/implementation/dashboard/account-actions.tsx
+@@ -1,7 +1,15 @@
+ import { EmptyState } from "./empty-state.tsx";
+ import type { Account, App } from "@executor-js/sdk";
+ import { Exit, type Cause } from "effect";
+-import { Children, useState, type ComponentType, type ReactNode } from "react";
++import {
++  Children,
++  useRef,
++  useState,
++  type ComponentProps,
++  type ComponentType,
++  type ReactElement,
++  type ReactNode,
++} from "react";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { ArrowUpRight01Icon, MoreHorizontalIcon } from "@hugeicons/core-free-icons";
+ import type { AccountDetail, AccountSummary, FailureProps } from "../../contracts/dashboard.ts";
+@@ -13,6 +21,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../compon
+ import {
+   DropdownMenu,
+   DropdownMenuContent,
++  DropdownMenuItem,
+   DropdownMenuTrigger,
+ } from "../components/dropdown-menu.tsx";
+ import {
+@@ -23,7 +32,13 @@ import {
+ import { ProviderIcon } from "./common.tsx";
+ import { useDashboard } from "./context.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+-import { AccountRowMenuItems, AccountRowMenuPresence } from "./account-row.tsx";
++import {
++  AccountRowMenuItems,
++  AccountRowMenuPresence,
++  accountRowHasActions,
++  menuTrigger,
++  useAccountRow,
++} from "./account-row.tsx";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+ import { accountMethodKindLabel, accountTitle } from "../../contracts/account-identities.ts";
+ import { accountMenuName } from "../../contracts/account-title.ts";
+@@ -36,24 +51,26 @@ import { ownMethodLabel } from "./method-labels.ts";
+ export function AccountActionsMenu({
+   account,
+   name,
++  trigger,
+   children,
+ }: {
+   readonly account: Pick<AccountSummary, "label"> & Partial<Pick<AccountSummary, "providerName">>;
+   /** What the menu's button announces; by default the account's own name (`accountMenuName`). */
+   readonly name?: string | undefined;
++  /** The menu's button for its announced label, where a list's other rows use another button. */
++  readonly trigger?: ((label: string) => ReactElement) | undefined;
+   readonly children?: ReactNode;
+ }) {
++  const label = `Manage ${name ?? accountMenuName(account)}`;
+   return (
+     <DropdownMenu>
+       <AccountRowMenuPresence />
+       <DropdownMenuTrigger asChild>
+-        <Button
+-          variant="ghost"
+-          size="icon-sm"
+-          aria-label={`Manage ${name ?? accountMenuName(account)}`}
+-        >
+-          <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={2} aria-hidden />
+-        </Button>
++        {trigger?.(label) ?? (
++          <Button variant="ghost" size="icon-sm" aria-label={label}>
++            <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={2} aria-hidden />
++          </Button>
++        )}
+       </DropdownMenuTrigger>
+       {/* Long labels, such as an identity's app name, wrap within a phone's width. */}
+       <DropdownMenuContent align="end" collisionPadding={16} className="min-w-44 max-w-72">
+@@ -64,6 +81,67 @@ export function AccountActionsMenu({
+   );
+ }
+ 
++/**
++ * The ⋯ for a row the host gives no menu of its own, such as a grouped identity or a host-provisioned
++ * app account: the row's own actions (usage, Details, checking every sign-in, adding an app for
++ * the identity), and, with `manage`, each grouped sign-in's own actions in a dialog. Like every
++ * row with a menu, its checks and requested access open with Details. A row with no actions of its
++ * own gets no menu.
++ */
++export function AccountOwnActionsMenu({
++  title,
++  name,
++  trigger,
++  manage,
++}: {
++  readonly title: string;
++  /** What the menu's button announces; by default the row's title (`accountMenuName`). */
++  readonly name?: string | undefined;
++  readonly trigger?: ComponentProps<typeof AccountActionsMenu>["trigger"];
++  readonly manage?: ReactNode;
++}) {
++  const row = useAccountRow();
++  const [managing, setManaging] = useState(false);
++  const returnFocus = useRef<HTMLElement | null>(null);
++  if (manage === undefined && (row === undefined || !accountRowHasActions(row))) return null;
++  return (
++    <>
++      <AccountActionsMenu account={{ label: title }} name={name} trigger={trigger}>
++        {manage !== undefined && (
++          <DropdownMenuItem
++            onSelect={(event) => {
++              returnFocus.current = menuTrigger(event.target);
++              setManaging(true);
++            }}
++          >
++            Manage apps
++          </DropdownMenuItem>
++        )}
++      </AccountActionsMenu>
++      {manage !== undefined && (
++        <Dialog open={managing} onOpenChange={setManaging}>
++          <DialogContent
++            className="max-h-[85dvh] min-w-0 overflow-y-auto sm:max-w-[480px]"
++            onCloseAutoFocus={(event) => {
++              const target = returnFocus.current;
++              returnFocus.current = null;
++              if (target?.isConnected !== true) return;
++              event.preventDefault();
++              target.focus({ preventScroll: true });
++            }}
++          >
++            <DialogTitle>Manage apps</DialogTitle>
++            <DialogDescription>
++              Each saved sign-in for {title} has its own actions. Removing one leaves the others.
++            </DialogDescription>
++            {manage}
++          </DialogContent>
++        </Dialog>
++      )}
++    </>
++  );
++}
++
+ /** One modal shell for every row action, titled for the action and identified by the account. */
+ export function AccountDialog({
+   title,
+diff --git a/packages/ui/src/implementation/dashboard/account-observations.tsx b/packages/ui/src/implementation/dashboard/account-observations.tsx
+index b5cfbe9..d328b7f 100644
+--- a/packages/ui/src/implementation/dashboard/account-observations.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observations.tsx
+@@ -2,7 +2,15 @@ import type { AccountObservationRecord, App } from "@executor-js/sdk";
+ import { useAtomValue } from "@effect/atom-react";
+ import { Exit, Option, type Cause } from "effect";
+ import { AsyncResult } from "effect/reactivity";
+-import { useEffect, useId, useRef, useState, type ComponentProps, type ComponentType } from "react";
++import {
++  useEffect,
++  useId,
++  useLayoutEffect,
++  useRef,
++  useState,
++  type ComponentProps,
++  type ComponentType,
++} from "react";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
+ import type { AccountSummary, FailureProps, Query } from "../../contracts/dashboard.ts";
+@@ -119,7 +127,9 @@ export function AccountObservations<E>({
+   const blocked = view === undefined ? undefined : refreshBlocked(view, now, format);
+   const hasDetails = reported || health !== undefined || checks !== undefined;
+   const setUsage = row?.setUsage;
+-  useEffect(() => {
++  // Set before paint, like the menu's presence, so a row without a host menu never shows its
++  // usage inline for a frame before its own menu mounts.
++  useLayoutEffect(() => {
+     if (setUsage === undefined) return;
+     setUsage(
+       hasDetails
+@@ -131,7 +141,10 @@ export function AccountObservations<E>({
+         : undefined,
+     );
+   }, [setUsage, hasDetails, reported, pending, blocked]);
+-  useEffect(() => (setUsage === undefined ? undefined : () => setUsage(undefined)), [setUsage]);
++  useLayoutEffect(
++    () => (setUsage === undefined ? undefined : () => setUsage(undefined)),
++    [setUsage],
++  );
+   if (!reported && !hasDetails && !AsyncResult.isFailure(result)) return null;
+   const fact = (detailsOnly: boolean) => (
+     <UsageFact
+diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+index 1d94857..ad97140 100644
+--- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
++++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+@@ -17,11 +17,8 @@ import {
+   accountRowGroup,
+   type AccountRowInput,
+   accountRowGrid,
+-  accountRowHasActions,
+   accountRowType,
+   accountRowsContainer,
+-  menuTrigger,
+-  useAccountRow,
+ } from "./account-row.tsx";
+ import { AccountHealthCell, accountRowHealth } from "./account-row-health.tsx";
+ import {
+@@ -34,7 +31,7 @@ import { observationClock } from "./account-observation-format.ts";
+ import { useAtomValue } from "@effect/atom-react";
+ import { cn } from "../lib/utils.ts";
+ import { useEffect, useRef, useState, type ReactNode } from "react";
+-import { AccountActionsMenu } from "./account-actions.tsx";
++import { AccountOwnActionsMenu } from "./account-actions.tsx";
+ import type { AccountSignIn } from "./account-sign-in-checks.tsx";
+ import { QueryResult, useQuery, useDashboard } from "./context.tsx";
+ import { HugeiconsIcon } from "@hugeicons/react";
+@@ -55,8 +52,6 @@ import { accountMenuName } from "../../contracts/account-title.ts";
+ import { RequestedAccess } from "./oauth-scopes.tsx";
+ import { Button } from "../components/button.tsx";
+ import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.tsx";
+-import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../components/dialog.tsx";
+-import { DropdownMenuItem } from "../components/dropdown-menu.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+ 
+@@ -382,7 +377,7 @@ function AccountsList({
+                     {/* Renders only its dialog here; it offers itself from the row's one menu. */}
+                     {account.identity !== undefined && identityActions?.(bindings, data)}
+                     {bindings.length > 1 ? (
+-                      <IdentityRowMenu
++                      <AccountOwnActionsMenu
+                         title={accountTitle(account, undefined, accountKindLabel(data, account))}
+                         manage={
+                           <OutsideAccountRow>
+@@ -414,7 +409,7 @@ function AccountsList({
+                         }
+                       />
+                     ) : accountActions === undefined ? (
+-                      <IdentityRowMenu
++                      <AccountOwnActionsMenu
+                         title={accountTitle(account, undefined, accountKindLabel(data, account))}
+                       />
+                     ) : (
+@@ -487,58 +482,3 @@ function AccountsList({
+     </>
+   );
+ }
+-
+-/**
+- * The ⋯ for a row the host gives no menu of its own, such as a grouped identity: the row's own
+- * actions (usage, Details, checking every sign-in, adding an app for the identity), and each
+- * grouped sign-in's own actions in a dialog. Like every row with a menu, its checks and requested
+- * access open with Details.
+- */
+-function IdentityRowMenu({
+-  title,
+-  manage,
+-}: {
+-  readonly title: string;
+-  readonly manage?: ReactNode;
+-}) {
+-  const row = useAccountRow();
+-  const [managing, setManaging] = useState(false);
+-  const returnFocus = useRef<HTMLElement | null>(null);
+-  if (manage === undefined && (row === undefined || !accountRowHasActions(row))) return null;
+-  return (
+-    <>
+-      <AccountActionsMenu account={{ label: title }}>
+-        {manage !== undefined && (
+-          <DropdownMenuItem
+-            onSelect={(event) => {
+-              returnFocus.current = menuTrigger(event.target);
+-              setManaging(true);
+-            }}
+-          >
+-            Manage apps
+-          </DropdownMenuItem>
+-        )}
+-      </AccountActionsMenu>
+-      {manage !== undefined && (
+-        <Dialog open={managing} onOpenChange={setManaging}>
+-          <DialogContent
+-            className="max-h-[85dvh] min-w-0 overflow-y-auto sm:max-w-[480px]"
+-            onCloseAutoFocus={(event) => {
+-              const target = returnFocus.current;
+-              returnFocus.current = null;
+-              if (target?.isConnected !== true) return;
+-              event.preventDefault();
+-              target.focus({ preventScroll: true });
+-            }}
+-          >
+-            <DialogTitle>Manage apps</DialogTitle>
+-            <DialogDescription>
+-              Each saved sign-in for {title} has its own actions. Removing one leaves the others.
+-            </DialogDescription>
+-            {manage}
+-          </DialogContent>
+-        </Dialog>
+-      )}
+-    </>
+-  );
+-}
+diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+index e50fafe..5298464 100644
+--- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -44,6 +44,8 @@ import {
+   type AccountRowInput,
+ } from "./account-row.tsx";
+ import { AccountHealthCell, appRowHealth } from "./account-row-health.tsx";
++import { AccountOwnActionsMenu } from "./account-actions.tsx";
++import { accountMenuName } from "../../contracts/account-title.ts";
+ import {
+   AccountRequestsCell,
+   AccountTrafficDetails,
+@@ -128,6 +130,19 @@ const accountName = (account: AccountSummary, kind?: string) =>
+ export const kindIn = (requirement: AccountRequirement, account: AccountSummary) =>
+   accountMethodKindLabel(requirement.definition, account.method, requirement.provider);
+ 
++/** The ⋯ of every row on this tab, whether the host's menu or the row's own actions. */
++const rowMenuButton = (label: string, pending = false) => (
++  <Button
++    variant="ghost"
++    size="icon-xs"
++    aria-label={label}
++    className="shrink-0 text-muted-foreground hover:text-foreground"
++    loading={pending}
++  >
++    <HugeiconsIcon icon={MoreHorizontalIcon} size={14} strokeWidth={2} aria-hidden />
++  </Button>
++);
++
+ /**
+  * An account's actions in this app: the host's items, then unlinking when the host offers it.
+  * Unlinking stops using the account for the requirement; the saved account and its other links
+@@ -158,15 +173,7 @@ export function LinkedAccountMenu<A, E>({
+       <AccountRowMenuPresence />
+       <DropdownMenu>
+         <DropdownMenuTrigger asChild>
+-          <Button
+-            variant="ghost"
+-            size="icon-xs"
+-            aria-label={`Manage ${label}`}
+-            className="shrink-0 text-muted-foreground hover:text-foreground"
+-            loading={pending}
+-          >
+-            <HugeiconsIcon icon={MoreHorizontalIcon} size={14} strokeWidth={2} aria-hidden />
+-          </Button>
++          {rowMenuButton(`Manage ${label}`, pending)}
+         </DropdownMenuTrigger>
+         <DropdownMenuContent align="end" className="min-w-44">
+           <AccountRowMenuItems />
+@@ -885,8 +892,8 @@ function RequirementView<E>({
+         ) : edit === undefined || managed ? (
+           <ReadOnlyChoices
+             {...props}
+-            // A requirement the caller cannot change offers no account actions, as a read-only
+-            // scope never did, even beside a contributed one.
++            // A requirement the caller cannot change offers none of the host's account actions,
++            // even beside a contributed one; a row keeps only its own (usage, Details).
+             data={
+               edit === undefined
+                 ? {
+@@ -1063,7 +1070,13 @@ function ReadOnlyChoices<E>({
+               users={<AddedBy credit={addedBy(data, slot, requirement, account.id)} />}
+             />
+             <AccountRowMenu>
+-              {provisioned ? undefined : data.accountMenu?.(account, slot, requirement, true)}
++              {(provisioned ? undefined : data.accountMenu?.(account, slot, requirement, true)) || (
++                <AccountOwnActionsMenu
++                  title={accountName(account, kind)}
++                  name={accountMenuName(account, kind)}
++                  trigger={rowMenuButton}
++                />
++              )}
+             </AccountRowMenu>
+             <div className={bandClass}>
+               <AccountStatusNotes app={app} account={account} />
+@@ -1399,7 +1412,7 @@ function ChoiceRow<E>({
+   readonly Failure: ComponentType<FailureProps<E>>;
+ }) {
+   const { account, linked } = choice;
+-  // The caller's default credential links like any choice, with no menu that could name it.
++  // The caller's default credential links like any choice, with no host menu that could name it.
+   const automatic = choice.automatic === true;
+   const link = edit.link(slot, account.id);
+   const unlink = edit.unlink(slot, account.id);
+@@ -1515,9 +1528,15 @@ function ChoiceRow<E>({
+                 <Spinner className="size-3 text-muted-foreground" />
+               </AccountRowMenuMark>
+             )}
+-            {hostProvisioned || automatic
++            {(hostProvisioned || automatic
+               ? undefined
+-              : data.accountMenu?.(account, slot, requirement, linked)}
++              : data.accountMenu?.(account, slot, requirement, linked)) || (
++              <AccountOwnActionsMenu
++                title={name}
++                name={accountMenuName(account, kind)}
++                trigger={rowMenuButton}
++              />
++            )}
+           </AccountRowMenu>
+           <div className={bandClass}>
+             {blockedReason !== undefined && (
