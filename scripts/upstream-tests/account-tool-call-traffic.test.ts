@@ -51,7 +51,7 @@ test("the storage migration creates the counts table and a counted call only wri
     Effect.gen(function* () {
       const [table] = yield* sql<{ exists: boolean }>`
         select to_regclass('executor_account_tool_calls') is not null as exists`;
-      const at = Date.parse("2026-11-06T08:10:00Z");
+      const at = Date.now();
       yield* storage.accountTraffic.record({ accounts: [counted], at, ok: true });
       const read = yield* storage.accountTraffic.read({
         accounts: [counted],
@@ -97,7 +97,7 @@ test("the tool-call-traffic inventory lists one organization's accounts with the
     Effect.gen(function* () {
       yield* sql`insert into executor_accounts (id, owner, provider, method, label, encrypted_credentials, created_at)
         values ('acc_foreign', 'organization:org_foreign', 'prv_counted', 'key', 'Foreign key', ${new Uint8Array([1])}, now())`;
-      const at = Date.parse("2026-11-06T08:10:00Z");
+      const at = Date.now();
       yield* storage.accountTraffic.record({ accounts: [counted], at, ok: true });
       yield* storage.accountTraffic.record({ accounts: [counted], at, ok: false });
       yield* storage.accountTraffic.record({ accounts: [foreign], at, ok: true });

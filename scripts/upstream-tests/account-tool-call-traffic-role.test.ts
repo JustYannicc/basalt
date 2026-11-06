@@ -49,10 +49,10 @@ test(
   async () => {
     const admin = new pg.Client({ connectionString: adminUrl });
     await admin.connect();
-    await admin.query(`create database ${database}`);
-    await admin.query(`create role ${runtime} login password '${password}'`);
-    await admin.query(`grant pg_read_all_data, pg_write_all_data to ${runtime}`);
     try {
+      await admin.query(`create database ${database}`);
+      await admin.query(`create role ${runtime} login password '${password}'`);
+      await admin.query(`grant pg_read_all_data, pg_write_all_data to ${runtime}`);
       // The migration job, as the database owner.
       await withDatabase(
         url(),
@@ -62,16 +62,17 @@ test(
       );
       const owner = new pg.Client({ connectionString: url() });
       await owner.connect();
-      const [{ create }] = (
-        await owner.query<{ create: boolean }>(
+      const [{ create }] = await owner
+        .query<{ create: boolean }>(
           `select has_schema_privilege('${runtime}', 'public', 'CREATE') as create`,
         )
-      ).rows;
-      await owner.end();
+        .then((result) => result.rows)
+        .finally(() => owner.end());
       assert.equal(create, false, "the runtime role is production's: it may not create tables");
       // The runtime, as the role the deployed Worker logs in as.
       const account = sdk.AccountId.make("acc_runtime");
-      const at = Date.parse("2026-11-06T08:10:00Z");
+      // Real time: reads keep only the retention window before the clock.
+      const at = Date.now();
       const counted = await withDatabase(
         url(runtime),
         Effect.gen(function* () {

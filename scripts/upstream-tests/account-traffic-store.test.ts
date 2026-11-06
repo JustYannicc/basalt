@@ -9,18 +9,27 @@ const { makeAccountTrafficStore, accountTrafficRetention } = (await import(
   new URL("packages/sdk/src/implementation/account-traffic-store.ts", upstream).href
 )) as typeof import("../../.upstream/packages/sdk/src/implementation/account-traffic-store.ts");
 
+const { migrateAccountTraffic } = (await import(
+  new URL("packages/sdk/src/implementation/storage-migrations.ts", upstream).href
+)) as typeof import("../../.upstream/packages/sdk/src/implementation/storage-migrations.ts");
+
 const hour = 3_600_000;
 // Real time: reads keep only the retention window before the clock.
 const now = Date.now();
 const run = <A>(body: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
-  Effect.runPromise(body.pipe(Effect.provide(pgliteLayer())) as Effect.Effect<A, unknown>);
+  Effect.runPromise(
+    migrateAccountTraffic.pipe(
+      Effect.andThen(body),
+      Effect.provide(pgliteLayer()),
+    ) as Effect.Effect<A, unknown>,
+  );
 
 test("counts each call per account and hour, with failures and the latest success", () =>
   run(
     Effect.gen(function* () {
       const store = makeAccountTrafficStore(yield* SqlClient.SqlClient);
       const [a, b] = ["acc_traffic_a", "acc_traffic_b"] as never[];
-      // The table creates itself on the first read, which then lists nothing.
+      // A migrated table with nothing counted lists nothing.
       assert.deepEqual(yield* store.read({ accounts: [a], from: now - 7 * 24 * hour }), []);
       yield* store.record({ accounts: [a, b, a], at: now - 2 * hour, ok: true });
       yield* store.record({ accounts: [a], at: now - 2 * hour + 60_000, ok: false });
@@ -83,7 +92,7 @@ test("an account with only failures has no latest success, and old hours are dro
     }),
   ));
 
-test("concurrent first calls create the table once and lose no count", () =>
+test("concurrent calls lose no count", () =>
   run(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

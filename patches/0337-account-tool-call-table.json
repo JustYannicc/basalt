@@ -1,7 +1,7 @@
 {
   "identity": "basalt-account-tool-call-table",
   "file": "0337-account-tool-call-table.patch",
-  "content_sha256": "5c505d79c5e45eab7dc1a8deae0fa0f5916762b68446cab1ce8911cf71e31073",
+  "content_sha256": "d3024a3b2725a265b10b63248dbe66e8af6573d3141f62cc382cf96a5d5c6a95",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
