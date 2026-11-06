@@ -1,7 +1,7 @@
 {
   "identity": "executor-native-pool-removal-intent",
   "file": "0345-native-pool-removal-intent.patch",
-  "content_sha256": "c031cd154ccc9be88c1f3d965404e321aac0404dbbac6968ee5c07cf5b353413",
+  "content_sha256": "15f18b3011329a3f0027856869d8b12cdd519f50717ddb6b62eda91a1db2c17b",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

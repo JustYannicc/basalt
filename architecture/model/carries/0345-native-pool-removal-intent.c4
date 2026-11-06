@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "Native saved-account removal carries the authenticated host CurrentActor into the retirement callback, never the acquisition owner or client input. Native unlink captures the verified private binding before its authorized transaction and sends a signed receipt only after commit; the pool revalidates membership before recording acknowledgement. Private sbrm1 envelopes bind their removal endpoint audience, expire after thirty seconds and refuse bad signatures, expired assertions, repeated operations or stale timestamps without writing a receipt. A missing person, refused operation, stale binding, retained selection or unavailable receiver records no intentional-removal receipt."
+      constraint "Native saved-account removal carries the authenticated host CurrentActor into the retirement callback, never the acquisition owner or client input. Account-list batching and native unlink remain composable; native unlink captures the verified private binding before its authorized transaction and sends a signed receipt only after commit; the pool revalidates membership before recording acknowledgement. Private sbrm1 envelopes bind their removal endpoint audience, expire after thirty seconds and refuse bad signatures, expired assertions, repeated operations or stale timestamps without writing a receipt. A missing person, refused operation, stale binding, retained selection or unavailable receiver records no intentional-removal receipt."
     }
   }
 }
