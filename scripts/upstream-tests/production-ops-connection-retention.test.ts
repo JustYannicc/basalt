@@ -124,11 +124,17 @@ const attemptsOf = (connections: readonly string[]) =>
     })
     .sort();
 const allConnections = seeded.map((row) => row.id).sort();
-const Refused = Schema.Struct({ message: Schema.String });
-const refusal = (operation: Effect.Effect<unknown, unknown, unknown>) =>
+const Refused = Schema.Struct({
+  _tag: Schema.optional(Schema.String),
+  message: Schema.String,
+});
+const refusal = (operation: Effect.Effect<unknown, unknown, unknown>, tag?: string) =>
   Effect.flip(operation).pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(Refused)),
-    Effect.map((error) => error.message),
+    Effect.map((error) => {
+      if (tag !== undefined) assert.equal(error._tag, tag);
+      return error.message;
+    }),
   );
 const Plan = Schema.Struct({
   plan: Schema.Struct({
@@ -137,6 +143,7 @@ const Plan = Schema.Struct({
         table: Schema.String,
         key: Schema.Record(Schema.String, Schema.String),
         action: Schema.String,
+        beforeSha256: Schema.String,
       }),
     ),
   }),
@@ -189,7 +196,7 @@ const operations = async () => {
   return { request, operation, open };
 };
 
-test("account connection retention removes exactly the reviewed abandoned connections, attempts first", async () => {
+test("account connection retention removes exactly the reviewed abandoned connections, attempts last", async () => {
   const { request, operation, open } = await operations();
   await run(
     Effect.gen(function* () {
@@ -218,7 +225,7 @@ test("account connection retention removes exactly the reviewed abandoned connec
         "The dry run lists exactly the abandoned connections",
       );
       assert.ok(changes.every((change) => change.action === "delete"));
-      // Each connection's attempt and access row come before it.
+      // Access rows precede connections; attempts follow their last connection.
       for (const id of removedByMigration) {
         const at = (table: string, key: string) =>
           changes.findIndex(
@@ -228,8 +235,8 @@ test("account connection retention removes exactly the reviewed abandoned connec
         assert.ok(at("hosted_connection_access", id) < connection, `access before ${id}`);
         if (id !== "conn_own_pending_no_attempt")
           assert.ok(
-            at("executor_oauth_attempts", `attempt_${id}`) < connection,
-            `attempt before ${id}`,
+            at("executor_oauth_attempts", `attempt_${id}`) > connection,
+            `attempt after ${id}`,
           );
       }
       assert.equal(changes.length, removedByMigration.length * 3 - 1);
@@ -314,18 +321,115 @@ test("account connection retention removes exactly the reviewed abandoned connec
   );
 });
 
+test("account connection retention removes three selected connections sharing one reviewed attempt once", async () => {
+  const { operation, open } = await operations();
+  const shared = ["conn_shared_1", "conn_shared_2", "conn_shared_3"];
+  const crypto = await load("apps/hosted/cloud/src/infrastructure/production-ops/crypto.ts");
+  await run(
+    Effect.gen(function* () {
+      const { sql, connections, attempts, access } = yield* fixture(
+        shared.map((id) => ({
+          id,
+          org: "org_own",
+          status: "pending",
+          expired: 72,
+          attempt: "attempt_shared",
+        })),
+      );
+      // Audit actual deletes, including their order; a repeated receipt must issue none.
+      yield* sql`create table deleted_rows (position serial, kind text, id text)`;
+      yield* sql.unsafe(`create function record_delete() returns trigger language plpgsql as $$
+        begin
+          insert into deleted_rows (kind, id) values (TG_TABLE_NAME, coalesce(to_jsonb(OLD)->>'id', to_jsonb(OLD)->>'connection_id'));
+          return OLD;
+        end $$`);
+      for (const table of [
+        "executor_account_connections",
+        "executor_oauth_attempts",
+        "hosted_connection_access",
+      ])
+        yield* sql.unsafe(
+          `create trigger record_delete before delete on ${table} for each row execute function record_delete()`,
+        );
+      const deletes = sql`select kind, id from deleted_rows order by position`;
+      const dry = yield* operation("dry-run");
+      const { changes } = (yield* open(Plan, dry.artifact)).plan;
+      const plannedAttempts = changes.filter((row) => row.table === "executor_oauth_attempts");
+      const original =
+        yield* sql`select to_jsonb(a) as row from executor_oauth_attempts a where id = 'attempt_shared'`;
+      const [row] = yield* Schema.decodeUnknownEffect(
+        Schema.Array(Schema.Struct({ row: Schema.Json })),
+      )(original);
+      assert.ok(row);
+      assert.deepEqual(
+        plannedAttempts,
+        [
+          {
+            table: "executor_oauth_attempts",
+            key: { id: "attempt_shared" },
+            action: "delete",
+            beforeSha256: crypto.sha256(crypto.canonical(row.row)),
+          },
+        ],
+        "The attempt has one exact key and full-row checksum",
+      );
+      assert.deepEqual(
+        changes.map((row) => [row.table, row.key]),
+        [
+          ...shared.flatMap((id) => [
+            ["hosted_connection_access", { connection_id: id }],
+            ["executor_account_connections", { id }],
+          ]),
+          ["executor_oauth_attempts", { id: "attempt_shared" }],
+        ],
+      );
+      const apply = () =>
+        operation("apply", {
+          artifact: dry.artifact,
+          planSha256: dry.artifact.sha256,
+          backupSha256: dry.backupSha256,
+          go: `GO ${dry.artifact.sha256}`,
+        });
+      yield* sql`update executor_oauth_attempts set status = 'cancelled' where id = 'attempt_shared'`;
+      assert.equal(yield* refusal(apply()), "Migration inputs changed after review");
+      assert.deepEqual(yield* deletes, []);
+      yield* sql`update executor_oauth_attempts set status = 'pending' where id = 'attempt_shared'`;
+      const applied = yield* apply();
+      assert.equal(applied.repeated, false);
+      assert.equal(applied.verification.ok, true);
+      assert.deepEqual(yield* connections, []);
+      assert.deepEqual(yield* attempts, []);
+      assert.deepEqual(yield* access, []);
+      const expectedDeletes = changes.map((row) => ({
+        kind: row.table,
+        id: Object.values(row.key)[0],
+      }));
+      assert.deepEqual(yield* deletes, expectedDeletes);
+      const repeated = yield* apply();
+      assert.equal(repeated.repeated, true);
+      assert.equal(repeated.verification.ok, true);
+      assert.deepEqual(yield* deletes, expectedDeletes, "Replay deletes nothing");
+    }),
+  );
+});
+
 test("account connection retention refuses a shared sign-in attempt and more than one plan's bound", async () => {
   const { operation } = await operations();
   const old = { org: "org_own", status: "pending", expired: 72 };
   // Another connection, even a live one, still names the attempt.
   await run(
     Effect.gen(function* () {
-      const { connections } = yield* fixture([
+      const { connections, attempts, access } = yield* fixture([
         { ...old, id: "conn_shared_old", attempt: "attempt_shared" },
         { ...old, id: "conn_shared_live", expired: -0.3, attempt: "attempt_shared" },
       ]);
-      assert.equal(yield* refusal(operation("dry-run")), "A sign-in attempt is shared");
+      assert.equal(
+        yield* refusal(operation("dry-run"), "ProductionOperationRefused"),
+        "A sign-in attempt is shared",
+      );
       assert.deepEqual(yield* connections, ["conn_shared_live", "conn_shared_old"]);
+      assert.deepEqual(yield* attempts, ["attempt_shared"]);
+      assert.deepEqual(yield* access, ["conn_shared_live", "conn_shared_old"]);
     }),
   );
   // Above the plan bound, and above the row reads' own bound, the operator gets the same advice.
@@ -390,11 +494,20 @@ test("the daily connection retention rule is off by default and applies the same
       attempt: "attempt_shared",
     },
   ];
-  const all = [...seeded, ...shared];
+  const selectedShared = ["conn_selected_1", "conn_selected_2", "conn_selected_3"].map((id) => ({
+    id,
+    org: "org_own",
+    status: "pending",
+    expired: 72,
+    attempt: "attempt_selected_shared",
+  }));
+  const all = [...seeded, ...shared, ...selectedShared];
   const InventoryRow = Schema.Struct({ id: Schema.String, produced_account: Schema.Boolean });
   await run(
     Effect.gen(function* () {
-      const { connections, attempts, access } = yield* fixture(all);
+      const { sql, connections, attempts, access } = yield* fixture(all);
+      yield* sql`alter table executor_account_connections add constraint attempt_delete_order
+        foreign key (oauth_attempt) references executor_oauth_attempts(id)`;
       // The inventory's own `produced_account` decides which connections never produced one.
       const unproduced = new Set<string>();
       for (const org of ["org_own", "org_other"]) {
