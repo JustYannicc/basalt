@@ -18,10 +18,10 @@ index 2b91421..f50dbc5 100644
  Each requirement lists every saved account of its provider you can use. A
  single-account requirement shows a radio button per account: selecting one
 diff --git a/e2e/support/account-choices.ts b/e2e/support/account-choices.ts
-index 1f73efe..3f36a1d 100644
+index 1f73efe..2c1623f 100644
 --- a/e2e/support/account-choices.ts
 +++ b/e2e/support/account-choices.ts
-@@ -1,10 +1,30 @@
+@@ -1,10 +1,34 @@
  /**
   * The app Accounts tab's choices for one requirement: a list named `<Provider> accounts` with
   * every account the caller could link, each with a radio (plain requirement) or a checkbox
@@ -43,6 +43,10 @@ index 1f73efe..3f36a1d 100644
 +export const rowMenuName = (label: string, section: AccountsTabSection) =>
 +  `Manage ${label} in ${section}`;
 +
++/** Any ⋯ name for the account titled `label`: `rowMenuName` in either section, or unqualified. */
++export const anyRowMenuName = (label: string) =>
++  new RegExp(`^Manage ${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}( in (App|Your) accounts)?$`);
++
 +/** The account title inside a control name from `choiceName`; any other name fails the read. */
 +export const choiceLabel = (name: string) => {
 +  const label = /^Use (.*) for this app$/.exec(name)?.[1];
@@ -53,7 +57,7 @@ index 1f73efe..3f36a1d 100644
  /** One requirement's list of choices, named after its provider. */
  export const accountChoices = (
    root: Page | Locator,
-@@ -16,8 +36,8 @@ export const accountChoices = (
+@@ -16,8 +40,8 @@ export const accountChoices = (
  export const linkedChoice = (root: Page | Locator, provider: string, label: string) => {
    const list = accountChoices(root, provider);
    return list
@@ -64,7 +68,7 @@ index 1f73efe..3f36a1d 100644
  };
  
  /** The controls of every linked account in one requirement's choices. */
-@@ -30,15 +50,15 @@ export const linkedChoices = (root: Page | Locator, provider: string) => {
+@@ -30,15 +54,15 @@ export const linkedChoices = (root: Page | Locator, provider: string) => {
  
  /** The labels of the linked accounts in one requirement's choices, in the order shown. */
  export const linkedLabels = (root: Page | Locator, provider: string) =>
@@ -167,7 +171,7 @@ index 756ad35..2e218b6 100644
                checked: true,
                includeHidden: true,
 diff --git a/e2e/tests/account-dialog-naming.spec.ts b/e2e/tests/account-dialog-naming.spec.ts
-index 4e14353..327c671 100644
+index 4e14353..0b8a72b 100644
 --- a/e2e/tests/account-dialog-naming.spec.ts
 +++ b/e2e/tests/account-dialog-naming.spec.ts
 @@ -6,6 +6,7 @@ import { Evidence } from "../support/evidence.ts";
@@ -178,6 +182,15 @@ index 4e14353..327c671 100644
  
  const title = "Unnamed key service API key";
  
+@@ -91,7 +92,7 @@ layer(HostedLive, { excludeTestServices: true })("Account dialog naming", (it) =
+               .getByRole("button", { name: "Cancel", exact: true })
+               .click(),
+           );
+-          // The key's app tab names its menu the same way.
++          // The key's app tab names its menu by the account and the tab's section.
+           const tabbed = yield* browser.use(`Read the key's app tab menu at ${width}px`, (page) => {
+             const menu = page
+               .getByRole("region", { name: "Your accounts", exact: true })
 @@ -101,7 +102,7 @@ layer(HostedLive, { excludeTestServices: true })("Account dialog naming", (it) =
                .then(() => menu.first().waitFor())
                .then(() => menu.first().getAttribute("aria-label"));
@@ -1477,7 +1490,7 @@ index 46f97d1..529fcc8 100644
          );
          yield* browser.use("Unlink Team Datadog", (page) =>
 diff --git a/e2e/tests/oauth-connect-storyboard.spec.ts b/e2e/tests/oauth-connect-storyboard.spec.ts
-index 80c05fc..c9dbfdc 100644
+index 80c05fc..bf4dfcf 100644
 --- a/e2e/tests/oauth-connect-storyboard.spec.ts
 +++ b/e2e/tests/oauth-connect-storyboard.spec.ts
 @@ -20,7 +20,7 @@ import {
@@ -1489,7 +1502,21 @@ index 80c05fc..c9dbfdc 100644
  import { scenarios } from "../test-plan.ts";
  import { appsManifest } from "../support/apps-release.ts";
  
-@@ -729,7 +729,12 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
+@@ -544,7 +544,12 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+           page
+             .waitForURL((url) => onAccount(url) && !url.searchParams.has("connection"))
+             .then(() =>
+-              page.getByRole("button", { name: "Manage Work reports", exact: true }).waitFor(),
++              page
++                .getByRole("button", {
++                  name: rowMenuName("Work reports", "Your accounts"),
++                  exact: true,
++                })
++                .waitFor(),
+             ),
+         );
+         yield* capture("Reconnect-completed");
+@@ -729,7 +734,12 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
  
          // Credentials are replaced from the app that selects the account, through its menu.
          yield* browser.use("Open the selected account's menu", (page) =>
@@ -1503,7 +1530,7 @@ index 80c05fc..c9dbfdc 100644
          );
          yield* browser.use("Choose Reconnect", (page) =>
            page.getByRole("menuitem", { name: "Reconnect", exact: true }).click(),
-@@ -759,7 +764,12 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
+@@ -759,7 +769,12 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
                (url) => url.pathname === appPath && url.searchParams.get("view") === "accounts",
              )
              .then(() =>
@@ -1588,15 +1615,23 @@ index 87ea0d5..5f2f55c 100644
            ),
          ).toBe(0);
 diff --git a/e2e/tests/provisioned-accounts.spec.ts b/e2e/tests/provisioned-accounts.spec.ts
-index 9ca2c42..0d7a3e5 100644
+index 9ca2c42..984299f 100644
 --- a/e2e/tests/provisioned-accounts.spec.ts
 +++ b/e2e/tests/provisioned-accounts.spec.ts
-@@ -134,7 +134,7 @@ layer(HostedLive, { excludeTestServices: true })("Provisioned accounts", (it) =>
+@@ -12,6 +12,7 @@ import { legacyStorage } from "../support/legacy-storage.ts";
+ import { serverControl } from "../support/server-control.ts";
+ import { provisionedSource as source } from "../support/provisioned-source.ts";
+ import { scenarios } from "../test-plan.ts";
++import { anyRowMenuName } from "../support/account-choices.ts";
+ 
+ const App = Schema.Struct({
+   id: Schema.String,
+@@ -134,7 +135,7 @@ layer(HostedLive, { excludeTestServices: true })("Provisioned accounts", (it) =>
            Promise.all([
              page.getByRole("button", { name: "Connect new account", exact: true }).count(),
              page.getByRole("button", { name: "Reconnect", exact: true }).count(),
 -            page.getByRole("button", { name: "Manage Host account", exact: true }).count(),
-+            page.getByRole("button", { name: /^Manage Host account( in |$)/ }).count(),
++            page.getByRole("button", { name: anyRowMenuName("Host account") }).count(),
              page.getByRole("button", { name: "Update credentials", exact: true }).count(),
              page
                .getByRole("menuitem", { name: /Remove|Delete|Update credentials|Reconnect/ })

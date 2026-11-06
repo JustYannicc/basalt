@@ -51,6 +51,7 @@
     ".upstream/apps/local/server/src/implementation/app-accounts.ts",
     ".upstream/apps/local/server/src/implementation/dashboard.ts",
     ".upstream/apps/local/web/src/contracts/errors.ts",
+    ".upstream/e2e/support/account-choices.ts",
     ".upstream/packages/apps/protocols/17.json",
     ".upstream/packages/apps/src/contracts/account-status.ts",
     ".upstream/packages/apps/src/contracts/app.ts",

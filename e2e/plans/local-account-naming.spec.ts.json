@@ -5,6 +5,7 @@
   "inputs": [
     ".upstream/apps/local/web/src/implementation/pages/app-accounts.tsx",
     ".upstream/e2e/tests/local-account-naming.spec.ts",
+    ".upstream/packages/ui/src/implementation/components/checkbox.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx"
   ]
 }
