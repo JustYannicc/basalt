@@ -1,7 +1,7 @@
 {
   "identity": "basalt-cloud-runtime-role",
   "file": "0338-cloud-runtime-role.patch",
-  "content_sha256": "394f06e3da49654a452e133eaa54363a311b0e26495475c6e8896c5782790cc3",
+  "content_sha256": "2fde50297e2b0375cc57a9662e8f03cba6e44e49b778855f7cfb33bc7dfffa66",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

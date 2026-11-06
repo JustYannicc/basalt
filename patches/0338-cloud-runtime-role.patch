@@ -340,3 +340,25 @@ index 38ec762..2974e93 100644
        'identity', (select id::text from production_ops_database_identity),
        'snapshotStartedAt', statement_timestamp(),
        'rowDigests', (select json_agg(json_build_object('idHash', md5(a.id), 'rowHash', md5(to_jsonb(a)::text),
+diff --git a/e2e/tests/telemetry-relay.spec.ts b/e2e/tests/telemetry-relay.spec.ts
+index 7864a36..f1db1f0 100644
+--- a/e2e/tests/telemetry-relay.spec.ts
++++ b/e2e/tests/telemetry-relay.spec.ts
+@@ -150,7 +150,16 @@ export default defineApp({}, async () => ({ tools: router({
+             return yield* read().pipe(
+               Effect.repeat({
+                 schedule: Schedule.spaced("100 millis"),
+-                until: (records) => records.some((record) => record.kind === "feedback"),
++                // Analytics batches flush on their own schedule, so wait for both completions too,
++                // not only the feedback record.
++                until: (records) => {
++                  const fresh = records.slice(beforeRelay.length);
++                  const completed = fresh
++                    .filter((record) => record.kind === "analytics")
++                    .flatMap((record) => Schema.decodeUnknownSync(RelayBatch)(record.body).events)
++                    .filter((event) => event.event === "tool_execution_completed").length;
++                  return fresh.some((record) => record.kind === "feedback") && completed >= 2;
++                },
+               }),
+               Effect.timeout("10 seconds"),
+             );
