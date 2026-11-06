@@ -1,3 +1,4 @@
+import { productionOpsRelease } from "./.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";
@@ -156,6 +157,7 @@ export default Alchemy.Stack(
       runtimeLogin: runtimeRole.username,
       databases: ["postgres"],
       deployment: api.hash,
+      candidate: productionOpsRelease,
     });
     const catalog = yield* Cloudflare.Worker("Catalog", {
       main: fileURLToPath(new URL("./src/catalog/worker.ts", import.meta.url)),

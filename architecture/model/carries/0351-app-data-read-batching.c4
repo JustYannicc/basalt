@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "Hosted data query and mutation dispatch may batch SDK app/version, selected-account rows and lifecycle first statements only after product authorization and caller selection. The SDK consumes a matching app, owner and account prefetch once, revalidates actor and account authority, preserves version validation, and falls back to ordered live reads on absent, mismatched or failed prefetch. Subscriptions reread live state. Batches use the existing invocation client, one held connection and repeatable-read semantics without raising the two-connection invocation bound or adding database sessions. Cloud batch statements share one socket write and one client. Closed snapshot, resolve, runtime and AppData I/O timings remain bounded and contain no invocation data."
+      constraint "Hosted data query and mutation dispatch may batch SDK app/version, selected-account rows and lifecycle first statements only after product authorization and caller selection. The SDK consumes a matching app, owner and account prefetch once, revalidates actor and account authority, preserves version validation, and falls back to ordered live reads on absent, mismatched or failed prefetch. Subscriptions reread live state. SDK prefetch wiring preserves the account-read host and its existing dependencies. Batches use the existing invocation client, one held connection and repeatable-read semantics without raising the two-connection invocation bound or adding database sessions. Cloud batch statements share one socket write and one client. Closed snapshot, resolve, runtime and AppData I/O timings remain bounded and contain no invocation data."
     }
   }
 }

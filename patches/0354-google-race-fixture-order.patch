@@ -1,0 +1,24 @@
+diff --git a/e2e/tests/google-duplicate-binding-race.spec.ts b/e2e/tests/google-duplicate-binding-race.spec.ts
+--- a/e2e/tests/google-duplicate-binding-race.spec.ts
++++ b/e2e/tests/google-duplicate-binding-race.spec.ts
+@@ -11,6 +11,7 @@
+ import { Evidence } from "../support/evidence.ts";
+ import { googleRaceCleanup } from "../support/google-race-cleanup.ts";
+ import { scenarios } from "../test-plan.ts";
++import { settleWebhookSources, sourcesAre } from "../support/webhook-sources.ts";
+ 
+ const source = `import { defineApp, defineProvider, oauth2, secrets, object, string, router } from "apps";
+ const primary = ${keyProvider("Primary webhook source")};
+@@ -35,6 +36,12 @@
+         const f = yield* appLinksFixture([{ path: "index.ts", content: source }]);
+         const { api, actors, path } = f;
+         const primary = yield* f.connect(actors.owner, "user", "primary", "synthetic-primary");
++        // Automatic registration must finish before synthetic legacy credentials become selectable.
++        yield* settleWebhookSources(
++          actors.owner,
++          path,
++          sourcesAre({ [primary]: { status: "ready", failure: null } }),
++        );
+         const created = yield* api.request(actors.owner, "POST", `${path}/webhooks`, {
+           name: "primaryHook",
+           sourceAccount: primary,

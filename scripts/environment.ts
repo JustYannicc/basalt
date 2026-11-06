@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { appHosting, brand, deployment } from "../brand.ts";
 import { catalog } from "../src/catalog/settings.ts";
@@ -256,6 +256,7 @@ export function deployEnvironment(
   return {
     ...source,
     ...connectors,
+    POOL_DEPLOYMENT_KEY: randomBytes(32).toString("hex"),
     CI: "true",
     DO_NOT_TRACK: source.POSTHOG_PROJECT_KEY?.trim() ? "0" : "1",
     // Fresh deployment: no earlier dispatcher can create the legacy native instance.
@@ -348,6 +349,7 @@ export function previewEnvironment(pullRequest: number, source = process.env): P
   }
 
   Object.assign(deploy, generated, {
+    POOL_DEPLOYMENT_KEY: randomBytes(32).toString("hex"),
     ALCHEMY_STAGE: stage,
     CI: "true",
     DO_NOT_TRACK: "1",

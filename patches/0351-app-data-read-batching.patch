@@ -257,7 +257,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
 +      [PrefetchHost]: { invocation: tools.prefetchInvocation, hint: tools.prefetchHint },
        [AppViewsHost]: makeAppViews(options.database.appViews, credentials, crypto),
        [AccountTrafficHost]: { read: options.database.accountTraffic.read },
-       [AppSourceHost]: { dispatch: tools.mcpAppSource },
+       [AccountReadHost]: makeAccountRead(
 @@ -802,7 +802,7 @@
          unlink: webhookSources.unlink,
        },
