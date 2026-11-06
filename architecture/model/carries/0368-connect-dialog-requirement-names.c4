@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway.accountPresentation {
     metadata {
-      constraint "A Connect dialog opened from an app's Accounts tab names the requirement it connects, and where two requirements of one scope share a service, each account control names its requirement so no two controls read alike."
+      constraint "A Connect or import dialog opened from an app's Accounts tab names the requirement it adds an account for, and where two requirements of one scope share a service, each account control names its requirement so control names are unique within that scope."
     }
   }
 }
