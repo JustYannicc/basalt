@@ -135,13 +135,16 @@ export function preparedCacheCollection(
     const all = directories(prepared).flatMap(directories);
     const entries = all.filter((path) => !retiredName.test(basename(path)));
     const locked = new Set<string>();
-    for (const entry of entries)
+    for (const entry of entries) {
+      // Legacy installers create sibling attempts while holding the parent key's lock.
+      const owner = entry.replace(/\.attempt-[0-9a-f-]{36}$/, "");
       for (const suffix of [".lock", ".lock.recovery"])
         try {
-          if (processOwnerAlive(JSON.parse(readlinkSync(entry + suffix)))) locked.add(entry);
+          if (processOwnerAlive(JSON.parse(readlinkSync(owner + suffix)))) locked.add(entry);
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }
+    }
     const current = new Map(entries.map((entry) => [entry, currentGeneration(entry)]));
     const usedAt = (entry: string) =>
       statSync(existsSync(join(entry, "last-used")) ? join(entry, "last-used") : entry).mtimeMs;
