@@ -1,0 +1,1021 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
+index 3df7ef9b517d87aabc759f27c2b2573a6a19d7ae..b9519a57856ea9b7a8e00ad712a73eb1d325dd02 100644
+--- a/apps/hosted/cloud/src/infrastructure/executor.ts
++++ b/apps/hosted/cloud/src/infrastructure/executor.ts
+@@ -9,6 +9,7 @@ import { AccessLifecycle } from "@executor-js/hosted-server/access-lifecycle";
+ import { poolAccessLifecycle } from "@executor-js/hosted-server/pool-access-hook";
+ import { poolAccountRegistry } from "@executor-js/hosted-server/pool-account-registry";
+ import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
++import { makeHostedBackgroundWork } from "@executor-js/hosted-server/background-work";
+ import {
+   createExecutor,
+   httpEventSender,
+@@ -19,7 +20,7 @@ import { hostedEventAuthority } from "@executor-js/hosted-server/events";
+ import { SqlClient } from "effect/sql";
+ import { makeBatchExecutionMemo } from "./batch-execution.ts";
+ import * as Cloudflare from "alchemy/Cloudflare";
+-import { Config, Context, Effect, FiberSet, Option } from "effect";
++import { Config, Context, Effect, Option } from "effect";
+ import { cachedVersionSources } from "../implementation/version-source-cache.ts";
+ import { organizationPublishers } from "../implementation/publishers.ts";
+ import type { AppSources } from "./source.ts";
+@@ -111,21 +112,7 @@ export const cloudExecutor = Effect.fn(function* (
+       // this event's lifetime: until 20 s after it closes, when the remaining work is interrupted.
+       // Work offered once the event is closing is refused, so its caller releases what it holds,
+       // and work it accepted always has those 20 s.
+-      const refreshes = yield* FiberSet.make();
+-      let closing = false;
+-      yield* Effect.addFinalizer(() =>
+-        Effect.sync(() => {
+-          closing = true;
+-        }).pipe(
+-          Effect.andThen(FiberSet.awaitEmpty(refreshes)),
+-          Effect.timeoutOption("20 seconds"),
+-          Effect.asVoid,
+-        ),
+-      );
+-      const background = (work: Effect.Effect<void>) =>
+-        Effect.suspend(() =>
+-          closing ? Effect.succeed(false) : FiberSet.run(refreshes, work).pipe(Effect.as(true)),
+-        );
++      const background = yield* makeHostedBackgroundWork;
+       const lifecycle = yield* hostedResourceLifecycle.pipe(
+         Effect.provide(BrowserCrypto.layer),
+         Effect.provideService(AccessLifecycle, accessLifecycle),
+diff --git a/apps/hosted/cloud/src/infrastructure/invocation-database.ts b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
+index a0d67956954d32667af89a211ac722febb2fb93b..3f8335aa660469687d6b96c04259a6aa1a420b2a 100644
+--- a/apps/hosted/cloud/src/infrastructure/invocation-database.ts
++++ b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
+@@ -13,6 +13,7 @@ import {
+   cloudDatabasePool,
+ } from "./database.ts";
+ import { ObjectDatabase, type SqlServices } from "./object-database.ts";
++import { registerContributedAccountSchema } from "@executor-js/hosted-server/app-link-schema";
+ 
+ /**
+  * Connections one Worker event may hold. The pool opens them on demand and reuses an idle one,
+@@ -50,7 +51,15 @@ export const cloudInvocationDatabase = Layer.effect(
+           scope: reservations,
+           retire: Effect.void,
+         });
+-      }).pipe(Effect.withSpan("runtime.cloud.database.initialize")),
++      }).pipe(
++        // Both deployed and managed Cloud bind their database only after hosted migrations.
++        Effect.tap((services) =>
++          Effect.sync(() =>
++            registerContributedAccountSchema(Context.get(services, SqlClient.SqlClient)),
++          ),
++        ),
++        Effect.withSpan("runtime.cloud.database.initialize"),
++      ),
+     );
+   }),
+ );
+diff --git a/apps/hosted/self-host/src/implementation/database-schema.ts b/apps/hosted/self-host/src/implementation/database-schema.ts
+index 5a3051ad690220d4692d85159a57701375da05b6..93a448399c5ddf61a6599c26c025279b4438b467 100644
+--- a/apps/hosted/self-host/src/implementation/database-schema.ts
++++ b/apps/hosted/self-host/src/implementation/database-schema.ts
+@@ -1,7 +1,9 @@
+ /** Shared auth and product schema initialization over an acquired SQL client. */
+ import { selfHostAuthOptions, selfHostAuthSettings } from "./auth-options.ts";
+ import { migrateHostedSchemas } from "@executor-js/hosted-server/migrations";
++import { registerContributedAccountSchema } from "@executor-js/hosted-server/app-link-schema";
+ import { Effect, Layer, Redacted } from "effect";
++import { SqlClient } from "effect/sql";
+ import { AuthDatabase } from "../contracts/database.ts";
+ import { makeAuthDatabase } from "./auth-database.ts";
+ /** Acquire one engine and initialize both schemas before exposing services. */
+@@ -17,6 +19,7 @@ export const selfHostDatabaseSchema = Layer.effect(
+       database,
+       secret: Redacted.value(settings.secret),
+     });
++    registerContributedAccountSchema(yield* SqlClient.SqlClient);
+     return database;
+   }),
+ );
+diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
+index 45e7c1cb9cf3eed4f1ceed1b85061f262af1d47f..e3fbe2539c6d35341b5df32fb4167ec3b51d6b09 100644
+--- a/apps/hosted/self-host/src/implementation/executor-services.ts
++++ b/apps/hosted/self-host/src/implementation/executor-services.ts
+@@ -43,6 +43,7 @@ import {
+ } from "@executor-js/hosted-server";
+ import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
+ import { hostedEventAuthority } from "@executor-js/hosted-server/events";
++import { makeHostedBackgroundWork } from "@executor-js/hosted-server/background-work";
+ import { deliverEvents } from "@executor-js/sdk/scheduling";
+ import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
+ import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui/contracts";
+@@ -53,7 +54,7 @@ import {
+   type BlobStorage,
+   type WorkflowRuntime,
+ } from "@executor-js/sdk/core";
+-import { Config, Effect, Layer, Option, Deferred, Schedule, Context, Scope } from "effect";
++import { Config, Effect, Layer, Option, Deferred, Schedule, Context } from "effect";
+ import { GroupDatabase } from "@executor-js/hosted-server/groups";
+ import {
+   retainConnections,
+@@ -103,11 +104,11 @@ export const selfHostExecutorServices = <E, R>(
+       });
+       const storage = yield* makeExecutorStorage({ provider: "postgresql" });
+       const evaluation = yield* declarationConfig;
+-      const server = yield* Scope.Scope;
+       const ready = yield* Deferred.make<Executor>();
+       const { runtime, workflows, declarations, blobs, repositories } = yield* acquire(
+         Deferred.await(ready),
+       );
++      const background = yield* makeHostedBackgroundWork;
+       const registry = remoteRegistry(
+         yield* Config.String("EXECUTOR_REGISTRY_URL").pipe(
+           Config.withDefault(hostedExecutorOrigin),
+@@ -159,8 +160,7 @@ export const selfHostExecutorServices = <E, R>(
+           durable: declarations,
+           toolListings: evaluation.toolListings,
+         },
+-        // Stale declarations refresh on the server's own lifetime.
+-        background: (work) => Effect.forkIn(work, server).pipe(Effect.as(true)),
++        background,
+         events: {
+           sender: httpEventSender(egress),
+           authorize: hostedEventAuthority(Effect.succeed(yield* SqlClient.SqlClient)),
+diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+index 320bf03c9898675942751b0f39d6aafe62e19ab3..e0ce7b490307e71018c178a07a6d5245b7b8fcba 100644
+--- a/apps/hosted/server/package.json
++++ b/apps/hosted/server/package.json
+@@ -4,6 +4,8 @@
+   "type": "module",
+   "sideEffects": false,
+   "exports": {
++    "./app-link-schema": "./src/implementation/app-link-schema.ts",
++    "./background-work": "./src/implementation/background-work.ts",
+     "./pool-account-registry": "./src/implementation/pool-account-registry.ts",
+     "./contributed-departures": "./src/implementation/contributed-departure-queue.ts",
+     "./connection-retention": "./src/implementation/connection-retention.ts",
+diff --git a/apps/hosted/server/src/implementation/app-link-policy.ts b/apps/hosted/server/src/implementation/app-link-policy.ts
+index c51414f92079c5b3001edd089ced8808e1eda64c..6059a901434d7898f04e71f4caf1174d4043b3ca 100644
+--- a/apps/hosted/server/src/implementation/app-link-policy.ts
++++ b/apps/hosted/server/src/implementation/app-link-policy.ts
+@@ -1,23 +1,27 @@
+ import { StorageError, type AppId } from "@executor-js/sdk/core";
+ import { Effect } from "effect";
+ import type { SqlClient } from "effect/sql";
++import { hasContributedAccountSchema } from "./app-link-schema.ts";
+ 
+ /** Current app links, with contribution policy required only by opted-in deployments. */
+ export const usableAppLinks = (sql: SqlClient.SqlClient, apps: readonly AppId[]) =>
+   Effect.gen(function* () {
+-    const contributed = yield* sql`select 1 from executor_apps app
++    // Full hosts register their migrated schema before serving. Unknown embeddings keep the
++    // legacy opt-in read because SQL resolves optional functions even for an ordinary app.
++    const contributed = hasContributedAccountSchema(sql)
++      ? true
++      : (yield* sql`select 1 from executor_apps app
+       join executor_deployments d on d.id = app.active_deployment
+       cross join lateral jsonb_each(coalesce(d.requirements::jsonb -> 'accounts', '{}'::jsonb)) requirement
+       where ${sql.in("app.id", apps)} and requirement.value ->> 'contributed' = 'true'
+-      limit 1`;
++      limit 1`).length > 0;
+     const ordinary = sql`coalesce(contribution_deployment.requirements::jsonb -> 'accounts' -> l.requirement ->> 'contributed', 'false') <> 'true'`;
+     // SQL resolves columns, functions and tables before evaluating OR. Ordinary SDK hosts must
+     // not need the hosted contribution schema. Recheck opt-in in the final read so a concurrent
+     // deployment cannot turn that smaller query into an unchecked contribution read.
+-    const policy =
+-      contributed.length === 0
+-        ? ordinary
+-        : sql`(${ordinary} or (hosted_contribution_access(l.app, l.account, l.linked_by)
++    const policy = !contributed
++      ? ordinary
++      : sql`(${ordinary} or (hosted_contribution_access(l.app, l.account, l.linked_by)
+             and not exists (select 1 from hosted_contributed_departures revoked
+               where revoked.app = l.app and revoked.requirement = l.requirement
+                 and revoked.account = l.account and revoked.linked_at = l.created_at)))`;
+diff --git a/apps/hosted/server/src/implementation/app-link-schema.ts b/apps/hosted/server/src/implementation/app-link-schema.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..7672798898edaa7d5899f4ba717e6056dc575000
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/app-link-schema.ts
+@@ -0,0 +1,12 @@
++import type { SqlClient } from "effect/sql";
++
++const contributedSchemas = new WeakSet<SqlClient.SqlClient>();
++
++/** Register only after hosted migrations committed, or in a runtime bound to their success. */
++export const registerContributedAccountSchema = (sql: SqlClient.SqlClient) => {
++  contributedSchemas.add(sql);
++};
++
++/** Schema capability follows the client, never an app's mutable deployment requirements. */
++export const hasContributedAccountSchema = (sql: SqlClient.SqlClient) =>
++  contributedSchemas.has(sql);
+diff --git a/apps/hosted/server/src/implementation/background-work.ts b/apps/hosted/server/src/implementation/background-work.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..72463f4580608495dc8170a9e1353b7edf3c776d
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/background-work.ts
+@@ -0,0 +1,25 @@
++import { Effect, FiberSet } from "effect";
++import type { BackgroundWork } from "@executor-js/sdk/core";
++
++/** Accepted work drains before its host releases the database and runtime it shares. */
++export const makeHostedBackgroundWork = Effect.gen(function* () {
++  const work = yield* FiberSet.make();
++  let closing = false;
++  yield* Effect.addFinalizer(() =>
++    Effect.sync(() => {
++      closing = true;
++    }).pipe(
++      Effect.andThen(FiberSet.awaitEmpty(work)),
++      Effect.timeoutOption("20 seconds"),
++      Effect.asVoid,
++    ),
++  );
++  return ((effect) =>
++    Effect.uninterruptible(
++      Effect.suspend(() =>
++        closing
++          ? Effect.succeed(false)
++          : FiberSet.run(work, Effect.interruptible(effect)).pipe(Effect.as(true)),
++      ),
++    )) satisfies BackgroundWork;
++});
+diff --git a/apps/hosted/testing/self-host.ts b/apps/hosted/testing/self-host.ts
+index 63d2e5848885e198c4fcc0470443ca1a43107c0f..81f4f56e2fdd6d2396560de430156b9009a6ef1e 100644
+--- a/apps/hosted/testing/self-host.ts
++++ b/apps/hosted/testing/self-host.ts
+@@ -54,6 +54,11 @@ const command = Command.make("test-self-host", {
+           const development = yield* developmentSignIn(target, organization);
+           const statementHold = yield* statementHoldFixture;
+           const product = yield* statementHold.provide(selfHostRoutes);
++          const releaseHeldWrite = () => { Effect.runFork(statementHold.releaseOnShutdown); };
++          yield* Effect.acquireRelease(
++            Effect.sync(() => { process.on("SIGTERM", releaseHeldWrite); }),
++            () => Effect.sync(() => { process.removeListener("SIGTERM", releaseHeldWrite); }),
++          );
+           const routes = Layer.mergeAll(
+             HttpRouter.add("GET", "/api/devtools", development.status),
+             HttpRouter.add("POST", "/api/devtools/operator", development.signIn),
+diff --git a/apps/hosted/testing/statement-hold-fixture.ts b/apps/hosted/testing/statement-hold-fixture.ts
+index 9d292361ae4361ef975b538e7c24387aa6ae667d..1769c6160ec1f91f4c470253e48998e3f181d3ae 100644
+--- a/apps/hosted/testing/statement-hold-fixture.ts
++++ b/apps/hosted/testing/statement-hold-fixture.ts
+@@ -46,6 +46,10 @@ const Arm = Schema.Union([
+   Schema.Struct({ authentication: Schema.Literal("tool-call") }),
+   // Fails the next read of account rows inside a tool call instead of holding it.
+   Schema.Struct({ fail: Schema.Literal("tool-call-accounts") }),
++  Schema.Struct({
++    traffic: Schema.NonEmptyString,
++    releaseOnShutdown: Schema.optional(Schema.Boolean),
++  }),
+ ]);
+ 
+ const isTemplate = (value: unknown): value is TemplateStringsArray =>
+@@ -70,8 +74,10 @@ interface Hold {
+   readonly toolCall: boolean;
+   /** Fail the next read of account rows inside a tool call; nothing is held. */
+   readonly failAccounts: boolean;
++  readonly traffic: { readonly account: string; readonly releaseOnShutdown: boolean } | undefined;
+   readonly reached: Deferred.Deferred<void>;
+   readonly release: Deferred.Deferred<void>;
++  readonly completed: Deferred.Deferred<void>;
+ }
+ 
+ export const statementHoldFixture = Effect.gen(function* () {
+@@ -94,6 +100,19 @@ export const statementHoldFixture = Effect.gen(function* () {
+         const [strings, ...params] = args;
+         const hold = armed;
+         if (hold === undefined || !isTemplate(strings)) return Reflect.apply(target, self, args);
++        if (hold.traffic !== undefined) {
++          const statement: Statement.Statement<unknown> = Reflect.apply(target, self, args);
++          const [text, bound] = statement.compile();
++          if (!/^\s*insert into executor_account_tool_calls\b/iu.test(text) ||
++              !bound.includes(hold.traffic.account)) return statement;
++          return Effect.suspend(() => {
++            if (armed !== hold) return statement;
++            armed = undefined;
++            return held(hold, statement).pipe(
++              Effect.ensuring(Deferred.succeed(hold.completed, undefined)),
++            );
++          });
++        }
+         if (hold.after !== undefined) {
+           const statement: Statement.Statement<unknown> = Reflect.apply(target, self, args);
+           const [text, bound] = statement.compile();
+@@ -166,8 +185,13 @@ export const statementHoldFixture = Effect.gen(function* () {
+           after: "after" in arm ? { check: arm.after, id: arm.id } : undefined,
+           toolCall: "app" in arm && arm.toolCall === true,
+           failAccounts: "fail" in arm,
++          traffic: "traffic" in arm ? {
++            account: arm.traffic,
++            releaseOnShutdown: arm.releaseOnShutdown === true,
++          } : undefined,
+           reached: yield* Deferred.make<void>(),
+           release: yield* Deferred.make<void>(),
++          completed: yield* Deferred.make<void>(),
+         };
+         return HttpServerResponse.jsonUnsafe({ armed: true });
+       }).pipe(Effect.orDie),
+@@ -179,9 +203,19 @@ export const statementHoldFixture = Effect.gen(function* () {
+         const hold = current;
+         return HttpServerResponse.jsonUnsafe({
+           held: hold !== undefined && (yield* Deferred.isDone(hold.reached)),
++          completed: hold !== undefined && (yield* Deferred.isDone(hold.completed)),
+         });
+       }),
+     ),
++    HttpRouter.add(
++      "GET",
++      `${path}/reached`,
++      Effect.gen(function* () {
++        if (current === undefined) return HttpServerResponse.empty({ status: 409 });
++        yield* Deferred.await(current.reached);
++        return HttpServerResponse.jsonUnsafe({ held: true });
++      }),
++    ),
+     HttpRouter.add(
+       "DELETE",
+       path,
+@@ -193,5 +227,9 @@ export const statementHoldFixture = Effect.gen(function* () {
+     provide: <A, E, R>(product: Effect.Effect<A, E, R>) =>
+       product.pipe(Effect.updateService(SqlClient.SqlClient, sql)),
+     routes,
++    /** Let an externally held real write resume while the test product shuts down. */
++    releaseOnShutdown: Effect.suspend(() =>
++      current?.traffic?.releaseOnShutdown === true ? release : Effect.void,
++    ),
+   };
+ });
+diff --git a/e2e/support/account-tool-accounting.ts b/e2e/support/account-tool-accounting.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..8d082e00d5ff5bda42506e89d300898e1113ffd5
+--- /dev/null
++++ b/e2e/support/account-tool-accounting.ts
+@@ -0,0 +1,81 @@
++import { expect } from "@effect/vitest";
++import { Effect, Schedule, Schema } from "effect";
++import { randomBytes, randomUUID } from "node:crypto";
++import { Api, body, type Session } from "./api.ts";
++import { App, Resource } from "./contracts.ts";
++import { appsManifest } from "./apps-release.ts";
++import { connectionsPath } from "./app-accounts.ts";
++import { Telemetry } from "./evidence.ts";
++
++const files = [{ path: "index.ts", content: `
++import { defineApp, defineProvider, secrets, object, string, router, query } from "apps";
++const service = defineProvider({ name: "Background accounting fixture", auth: {
++  key: secrets({ label: "API key", fields: object({ token: string() }) }),
++} });
++export default defineApp({ user: { accounts: { service } } }, { tools: router({
++  ping: query({ input: object({}) }, async () => true),
++  fail: query({ input: object({}) }, async () => { throw new Error("Synthetic tool failure"); }),
++}) });` }, appsManifest];
++const Traffic = Schema.Struct({ accounts: Schema.Array(Schema.Struct({
++  account: Schema.String, requests: Schema.Number, failed: Schema.Number,
++  lastSuccessAt: Schema.NullOr(Schema.String),
++})) });
++
++/** A normal deployed app and a linked synthetic key account, with only public operations. */
++export const accountToolAccounting = (
++  api: typeof Api.Service, owner: Session, prefix: string, headers: Record<string, string> = {},
++) => Effect.gen(function* () {
++  const deployed = yield* api.request(owner, "POST", `${prefix}/apps/deploy`, {
++    name: `Background accounting ${randomUUID().slice(0,8)}`, files,
++  }, headers);
++  expect(deployed.status).toBe(200);
++  const app = (yield* body(App, deployed)).id;
++  yield* Effect.addFinalizer(() => api.request(owner, "DELETE", `${prefix}/apps/${app}`, undefined, headers).pipe(
++    Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))), Effect.orDie,
++  ));
++  const pending = yield* api.request(owner, "POST", connectionsPath(`${prefix}/apps/${app}`, "user", "service"), {}, headers);
++  expect(pending.status).toBe(200);
++  const saved = yield* api.request(owner, "POST", `${prefix}/connections/${(yield* body(Resource, pending)).id}/submit`, {
++    method: "key", label: "Background key", fields: { token: "synthetic-background-token" },
++  }, headers);
++  expect(saved.status).toBe(200);
++  const account = (yield* body(Resource, saved)).id;
++  yield* Effect.addFinalizer(() => api.request(owner, "DELETE", `${prefix}/accounts/${account}`, undefined, headers).pipe(
++    Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))), Effect.orDie,
++  ));
++  return {
++    account,
++    call: (tool: "ping" | "fail") => Effect.gen(function* () {
++      const traceId = randomBytes(16).toString("hex");
++      const response = yield* api.request(owner, "POST", `${prefix}/apps/${app}/tools/call`, {
++        tool, kind: "query", input: {},
++      }, { ...headers, traceparent: `00-${traceId}-${randomBytes(8).toString("hex")}-01` });
++      expect(response.status)[tool === "ping" ? "toBe" : "toBeGreaterThanOrEqual"](tool === "ping" ? 200 : 400);
++      return { response, traceId };
++    }),
++    read: Effect.gen(function* () {
++      const response = yield* api.request(owner, "POST", `${prefix}/account-traffic`, { accounts: [account] }, headers);
++      expect(response.status).toBe(200);
++      return (yield* body(Traffic, response)).accounts[0] ?? { account, requests: 0, failed: 0, lastSuccessAt: null };
++    }),
++  };
++});
++
++/** Wait for an exported completion event, then retain its independently rooted SQL trace. */
++export const accountingCompleted = (telemetry: typeof Telemetry.Service, traceId: string) =>
++  telemetry.search("sdk.account_traffic.record", { "executor.account_traffic.call_trace": traceId }).pipe(
++    Effect.repeat({ schedule: Schedule.spaced("100 millis"), until: (result) => result.data.length > 0 }),
++    Effect.timeout("10 seconds"),
++    Effect.flatMap((result) => Effect.gen(function* () {
++      expect(result.data).toHaveLength(1);
++      const entry = result.data[0]!;
++      expect(entry.traceId).not.toBe(traceId);
++      expect(entry.span.parentSpanId).toBeNull();
++      expect(entry.span.tags["executor.owner"]).toBe("background");
++      expect(entry.span.tags["executor.account_traffic.outcome"]).toBe("persisted");
++      expect(entry.span.tags["executor.account_traffic.call_span"]).toMatch(/^[a-f0-9]{16}$/u);
++      const trace = yield* telemetry.query(entry.traceId);
++      expect(trace.data.some(({ span }) => span.operationName === "sql.execute")).toBe(true);
++      return trace;
++    })),
++  );
+diff --git a/e2e/support/managed-server.ts b/e2e/support/managed-server.ts
+index 9e5ebc669a561b9441e5d07def831d9ae30e723b..141fde2d7f89ee13bf53e11ca6df9ceeedcfce18 100644
+--- a/e2e/support/managed-server.ts
++++ b/e2e/support/managed-server.ts
+@@ -635,6 +635,15 @@ export const startDevelopmentServer = (
+     Effect.map(({ origin }) => origin),
+   );
+ 
++/** Development host with its own stop/start control, for held work during graceful shutdown. */
++export const startControlledDevelopmentServer = (target: typeof Target.Service) =>
++  startIsolatedSelfHost(target, "development").pipe(
++    Effect.map(({ origin, controlOrigin, directory }): typeof Target.Service => ({
++      ...target, directory, controlOrigin,
++      metadata: { ...target.metadata, origin, target: "self-host" },
++    })),
++  );
++
+ /** Start an unconfigured product instance; the scenario scope owns its process and fresh data. */
+ export const startFreshSelfHost = (
+   target: typeof Target.Service,
+diff --git a/e2e/tests/account-tool-accounting.spec.ts b/e2e/tests/account-tool-accounting.spec.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..6f801f8cec572a7cd2006456cf21bb70b49402ae
+--- /dev/null
++++ b/e2e/tests/account-tool-accounting.spec.ts
+@@ -0,0 +1,77 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Layer, Schema } from "effect";
++import { Api, SessionClients, body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Evidence, Telemetry } from "../support/evidence.ts";
++import { Target } from "../support/platform.ts";
++import { startControlledDevelopmentServer } from "../support/managed-server.ts";
++import { serverControl } from "../support/server-control.ts";
++import { accountToolAccounting, accountingCompleted } from "../support/account-tool-accounting.ts";
++import { scenarios } from "../test-plan.ts";
++
++const hold = "/api/devtools/statement-hold";
++const Held = Schema.Struct({ held: Schema.Boolean, completed: Schema.Boolean });
++const Users = Schema.Struct({ users: Schema.Array(Schema.Struct({ id: Schema.String, email: Schema.String })) });
++const Organizations = Schema.Array(Schema.Struct({ id: Schema.String }));
++
++layer(HostedLive, { excludeTestServices: true })("Background account tool accounting", (it) => {
++  it.effect(scenarios.accountToolAccounting.title, (context) => withHostedCase(context,
++    Effect.gen(function* () {
++      const evidence = yield* Evidence;
++      const target = yield* startControlledDevelopmentServer(yield* Target);
++      const api = yield* Api.pipe(
++        Effect.provide(Layer.fresh(Api.layer)), Effect.provide(Layer.fresh(SessionClients.layer)),
++        Effect.provideService(Target, target),
++      );
++      const telemetry = yield* Telemetry.pipe(
++        Effect.provide(Layer.fresh(Telemetry.layer)), Effect.provideService(Target, target),
++      );
++      const owner = yield* api.session();
++      const headers = { origin: target.metadata.origin };
++      const send = (method: "GET" | "POST" | "DELETE", path: string, data?: unknown) =>
++        api.request(owner, method, `${target.metadata.origin}${path}`, data, headers);
++      expect((yield* send("POST", "/api/devtools/operator", {})).status).toBe(200);
++      const developer = (yield* body(Users, yield* send("GET", "/api/auth/admin/list-users"))).users
++        .find((user) => user.email === "agent-agent@example.test");
++      if (developer === undefined) return yield* Effect.die("Development owner missing");
++      expect((yield* send("POST", "/api/auth/admin/impersonate-user", { userId: developer.id })).status).toBe(200);
++      const organization = (yield* body(Organizations, yield* send("GET", "/api/auth/organization/list")))[0];
++      if (organization === undefined) return yield* Effect.die("Development organization missing");
++      const fixture = yield* accountToolAccounting(api, owner,
++        `${target.metadata.origin}/api/organizations/${organization.id}`, headers);
++      yield* Effect.addFinalizer(() => send("DELETE", hold).pipe(Effect.orDie));
++
++      for (const tool of ["ping", "fail"] as const) {
++        const before = yield* fixture.read;
++        expect((yield* send("POST", hold, { traffic: fixture.account })).status).toBe(200);
++        const call = yield* fixture.call(tool);
++        expect((yield* send("GET", `${hold}/reached`)).status).toBe(200);
++        const held = yield* body(Held, yield* send("GET", hold));
++        expect(held).toEqual({ held: true, completed: false });
++        expect(yield* fixture.read).toEqual(before);
++        expect((yield* send("DELETE", hold)).status).toBe(200);
++        yield* evidence.json(`${tool}-background-trace`, yield* accountingCompleted(telemetry, call.traceId));
++        const after = yield* fixture.read;
++        expect(after.requests).toBe(before.requests + 1);
++        expect(after.failed).toBe(before.failed + (tool === "fail" ? 1 : 0));
++        if (tool === "ping") expect(after.lastSuccessAt).not.toBeNull();
++        else expect(after.lastSuccessAt).toBe(before.lastSuccessAt);
++        yield* evidence.json(`${tool}-accounting-order`, { held, before, after, callTrace: call.traceId });
++      }
++
++      const before = yield* fixture.read;
++      expect((yield* send("POST", hold, { traffic: fixture.account, releaseOnShutdown: true })).status).toBe(200);
++      const call = yield* fixture.call("ping");
++      expect((yield* send("GET", `${hold}/reached`)).status).toBe(200);
++      expect(yield* body(Held, yield* send("GET", hold))).toEqual({ held: true, completed: false });
++      // The test host releases the real held write on SIGTERM, while its background work drains.
++      yield* serverControl("stop").pipe(Effect.provideService(Target, target));
++      yield* serverControl("start").pipe(Effect.provideService(Target, target));
++      const after = yield* fixture.read;
++      expect(after.requests).toBe(before.requests + 1);
++      expect(after.failed).toBe(before.failed);
++      expect(after.lastSuccessAt).not.toBeNull();
++      yield* evidence.json("shutdown-accepted-accounting", { before, after, callTrace: call.traceId });
++    }),
++  ));
++});
+diff --git a/e2e/tests/cloud-account-tool-accounting.spec.ts b/e2e/tests/cloud-account-tool-accounting.spec.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..b74c5b8333121b9d5bc87501adccd8e1e2939a27
+--- /dev/null
++++ b/e2e/tests/cloud-account-tool-accounting.spec.ts
+@@ -0,0 +1,46 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schedule } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Evidence, Telemetry } from "../support/evidence.ts";
++import { cloudLocks } from "../support/cloud-locks.ts";
++import { accountToolAccounting, accountingCompleted } from "../support/account-tool-accounting.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Cloud background account tool accounting", (it) => {
++  it.effect(scenarios.cloudAccountToolAccounting.title, (context) => withHostedCase(context,
++    Effect.gen(function* () {
++      const api = yield* Api, actors = yield* Actors, evidence = yield* Evidence,
++        telemetry = yield* Telemetry, locks = yield* cloudLocks;
++      const fixture = yield* accountToolAccounting(api, actors.owner, `/api/organizations/${actors.organization.id}`);
++      for (const tool of ["ping", "fail"] as const) {
++        const before = yield* fixture.read;
++        // This scenario owns its managed Cloud database. A table lock also covers a call that
++        // opens a new UTC hour, while normal public traffic reads remain possible.
++        yield* locks.hold({ sql: "lock table executor_account_tool_calls in share mode" });
++        const [holder] = yield* locks.hold({ sql: "select pg_backend_pid() as pid" });
++        const pid = holder?.pid;
++        if (typeof pid !== "number") return yield* Effect.die("Accounting lock holder missing");
++        const call = yield* fixture.call(tool);
++        const blocked = yield* locks.run({
++          sql: `select pid from pg_stat_activity where $1 = any(pg_blocking_pids(pid))
++            and query ilike '%insert into executor_account_tool_calls%'`, params: [pid],
++        }).pipe(
++          Effect.repeat({ schedule: Schedule.spaced("20 millis"), until: (rows) => rows.length === 1 }),
++          Effect.timeout("1 second"),
++        );
++        expect(blocked).toHaveLength(1);
++        expect(yield* fixture.read).toEqual(before);
++        yield* locks.release;
++        yield* evidence.json(`${tool}-background-trace`, yield* accountingCompleted(telemetry, call.traceId));
++        const after = yield* fixture.read;
++        expect(after.requests).toBe(before.requests + 1);
++        expect(after.failed).toBe(before.failed + (tool === "fail" ? 1 : 0));
++        if (tool === "ping") expect(after.lastSuccessAt).not.toBeNull();
++        else expect(after.lastSuccessAt).toBe(before.lastSuccessAt);
++        yield* evidence.json(`${tool}-accounting-order`, { before, after, callTrace: call.traceId, blocked: blocked.length });
++      }
++    }),
++  ));
++});
+diff --git a/packages/sdk/src/implementation/account-target-read.ts b/packages/sdk/src/implementation/account-target-read.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..77838a38876a0e5fde1b6ae0f3c6e6d0e27d6c35
+--- /dev/null
++++ b/packages/sdk/src/implementation/account-target-read.ts
+@@ -0,0 +1,34 @@
++import { Effect, Schema } from "effect";
++import { AccountTargetBinding } from "../contracts/account-target.ts";
++import { StorageError, type AccountId, type OwnerId } from "../contracts/shared.ts";
++
++/** Raw metadata observed with this exact account row; null is an observed absence. */
++export interface AccountTargetRead {
++  readonly account: AccountId;
++  readonly owner: OwnerId;
++  readonly credentialGeneration: number;
++  readonly row: unknown;
++}
++
++const StoredTarget = Schema.Struct({
++  account: AccountTargetBinding.fields.account,
++  owner: AccountTargetBinding.fields.owner,
++  revision: AccountTargetBinding.fields.revision,
++  mode: AccountTargetBinding.fields.mode,
++  enabled: AccountTargetBinding.fields.enabled,
++  ...AccountTargetBinding.fields.target.fields,
++});
++
++/** Decode at the target gate, after normal selection and app-view binding validation. */
++export const decodeAccountTarget = (input: unknown) =>
++  input === null
++    ? Effect.succeed(undefined)
++    : Schema.decodeUnknownEffect(StoredTarget)(input).pipe(
++        Effect.flatMap(({ device, deviceName, binding, manifestRevision, ...identity }) =>
++          Schema.decodeUnknownEffect(AccountTargetBinding)({
++            ...identity,
++            target: { device, deviceName, binding, manifestRevision },
++          }),
++        ),
++        Effect.mapError(() => new StorageError()),
++      );
+diff --git a/packages/sdk/src/implementation/account-targets.ts b/packages/sdk/src/implementation/account-targets.ts
+index 696dafd155df9cbf458a3a08080fc66226ebe57e..b48f292261619ad8345c745eb207039272f8a8f5 100644
+--- a/packages/sdk/src/implementation/account-targets.ts
++++ b/packages/sdk/src/implementation/account-targets.ts
+@@ -11,6 +11,7 @@ import {
+ import { StorageError, type AccountId, type OwnerId } from "../contracts/shared.ts";
+ import { storedAccount } from "./accounts.ts";
+ import { query, transaction, type Query } from "./database.ts";
++import { decodeAccountTarget, type AccountTargetRead } from "./account-target-read.ts";
+ 
+ /** Saves target metadata and refuses bound accounts before any cloud credential resolution. */
+ export const makeAccountTargets = (db: Query, host: MachineAccounts | undefined) => {
+@@ -21,12 +22,7 @@ export const makeAccountTargets = (db: Query, host: MachineAccounts | undefined)
+           where: (b) => b.and(b("account", "=", account), b("owner", "=", owner)),
+         }),
+       );
+-      if (row === null) return undefined;
+-      const { device, deviceName, binding, manifestRevision, ...identity } = row;
+-      return yield* Schema.decodeUnknownEffect(AccountTargetBinding)({
+-        ...identity,
+-        target: { device, deviceName, binding, manifestRevision },
+-      }).pipe(Effect.mapError(() => new StorageError()));
++      return yield* decodeAccountTarget(row);
+     });
+   const authorize = (binding: AccountTargetBinding, managing: boolean) =>
+     Effect.gen(function* () {
+@@ -176,11 +172,20 @@ export const makeAccountTargets = (db: Query, host: MachineAccounts | undefined)
+       readonly credentialGeneration: number;
+     }[];
+     readonly authorize: Effect.Effect<void, StorageError>;
++    readonly reads?: readonly AccountTargetRead[];
+   }) =>
+     Effect.gen(function* () {
+-      const bindings = yield* Effect.forEach(input.accounts, (account) =>
+-        read(account.id, account.owner),
+-      );
++      const bindings = yield* Effect.forEach(input.accounts, (account) => {
++        const joined = input.reads?.find(
++          (row) =>
++            row.account === account.id &&
++            row.owner === account.owner &&
++            row.credentialGeneration === account.credentialGeneration,
++        );
++        return joined === undefined
++          ? read(account.id, account.owner)
++          : decodeAccountTarget(joined.row);
++      });
+       const local = bindings
+         .filter((binding) => binding !== undefined)
+         .filter((binding) => binding.mode === "device");
+diff --git a/packages/sdk/src/implementation/account-tool-traffic.ts b/packages/sdk/src/implementation/account-tool-traffic.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..f97a34f44169d38c5e7872ee701b5b8bf09228b5
+--- /dev/null
++++ b/packages/sdk/src/implementation/account-tool-traffic.ts
+@@ -0,0 +1,84 @@
++import { Cause, Clock, Effect, Exit, Option, Predicate } from "effect";
++import { currentTraceContext, ownedBy, traceLinks } from "@executor-js/telemetry";
++import type { BackgroundWork } from "../contracts/declarations.ts";
++import { StorageError, type AccountId } from "../contracts/shared.ts";
++import { accountTrafficNotCounted, type makeAccountTrafficStore } from "./account-traffic-store.ts";
++
++const accountFailures = [
++  "ToolCallFailed",
++  "AppProviderFailed",
++  "OAuthReconnectRequired",
++  "OAuthRenewalFailed",
++] as const;
++
++/** Count only completed app work, preserving its outcome and original UTC bucket. */
++export const makeToolCallAccounting =
++  (
++    store: Pick<ReturnType<typeof makeAccountTrafficStore>, "record">,
++    background: BackgroundWork | undefined,
++  ) =>
++  (accounts: readonly AccountId[], entered: () => boolean) =>
++  <A, E, R>(effect: Effect.Effect<A, E, R>) =>
++    Effect.onExit(effect, (exit) => {
++      if (!entered() || accounts.length === 0) return Effect.void;
++      const ok = Exit.isSuccess(exit)
++        ? Predicate.hasProperty(exit.value, "status") && exit.value.status === "completed"
++          ? !(Predicate.hasProperty(exit.value, "toolError") && exit.value.toolError === true)
++          : undefined
++        : Cause.findErrorOption(exit.cause).pipe(
++              Option.exists((error) =>
++                accountFailures.some((tag) => Predicate.isTagged(error, tag)),
++              ),
++            )
++          ? false
++          : undefined;
++      if (ok === undefined) return Effect.void;
++      return Effect.gen(function* () {
++        const at = yield* Clock.currentTimeMillis;
++        const trace = yield* currentTraceContext;
++        const record = (accepted: boolean) =>
++          store.record({ accounts, at, ok }).pipe(
++            Effect.interruptible,
++            Effect.timeout("2 seconds"),
++            Effect.tap(() =>
++              Effect.annotateCurrentSpan("executor.account_traffic.outcome", "persisted"),
++            ),
++            Effect.catchCause((cause) => {
++              const error = Option.getOrUndefined(Cause.findErrorOption(cause));
++              const report = Cause.hasInterruptsOnly(cause)
++                ? accepted
++                  ? accountTrafficNotCounted("interrupted")
++                  : Effect.void
++                : error instanceof StorageError
++                  ? Effect.void
++                  : accountTrafficNotCounted(
++                      Cause.isTimeoutError(error) ? "timeout" : "unexpected",
++                    );
++              return Effect.uninterruptible(report);
++            }),
++          );
++        const linked = <B, F, S>(work: Effect.Effect<B, F, S>) =>
++          work.pipe(
++            Effect.withSpan(
++              "sdk.account_traffic.record",
++              ownedBy("background", {
++                root: true,
++                links: traceLinks(trace, "account-traffic"),
++                attributes:
++                  trace === undefined
++                    ? {}
++                    : {
++                        "executor.account_traffic.call_trace": trace.traceId,
++                        "executor.account_traffic.call_span": trace.spanId,
++                      },
++              }),
++            ),
++          );
++        if (background === undefined) return yield* record(false);
++        const accepted = yield* background(linked(record(true)));
++        if (accepted) return;
++        yield* linked(accountTrafficNotCounted("refused"));
++        // A closing host refused ownership; keep the original bounded inline attempt.
++        yield* record(false);
++      });
++    });
+diff --git a/packages/sdk/src/implementation/account-traffic-store.ts b/packages/sdk/src/implementation/account-traffic-store.ts
+index 1f2736af6a2d677a07ba2abf89b5e172ecfcc0c4..7b44c632901db9978cfff630b4804e8130493bad 100644
+--- a/packages/sdk/src/implementation/account-traffic-store.ts
++++ b/packages/sdk/src/implementation/account-traffic-store.ts
+@@ -40,10 +40,11 @@ const sqlState = (error: unknown) => {
+  * storage failure, its SQLSTATE, never an account or a call.
+  */
+ export const accountTrafficNotCounted = (
+-  failure: "storage" | "timeout" | "unexpected",
++  failure: "storage" | "timeout" | "unexpected" | "interrupted" | "refused",
+   state?: string,
+ ) => {
+   const annotations = {
++    "executor.account_traffic.outcome": "unconfirmed",
+     "executor.account_traffic.failure": failure,
+     "executor.account_traffic.sqlstate": state ?? "none",
+   };
+diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+index 9a92b5c53dae025848b4cecb84be03bad4cbae5d..09ac88881e9399d162704341b89058384693def9 100644
+--- a/packages/sdk/src/implementation/create.ts
++++ b/packages/sdk/src/implementation/create.ts
+@@ -411,6 +411,7 @@ export const createExecutor = (
+       makeAppConfirmations(db, appConnectionStore, options.appCalls),
+       options.toolPolicy,
+       accountTargets,
++      options.background,
+     );
+     const interactiveOperations = makeInteractiveAccounts(
+       db,
+diff --git a/packages/sdk/src/implementation/selection.ts b/packages/sdk/src/implementation/selection.ts
+index 02ec4994aa8ac470a32c36fae6719edf7790edf2..ae5afbf535e427024b5d25cc0462cd189d184850 100644
+--- a/packages/sdk/src/implementation/selection.ts
++++ b/packages/sdk/src/implementation/selection.ts
+@@ -14,6 +14,7 @@ import { StoredAccount, type StoredVersion } from "../contracts/storage.ts";
+ import { interactiveBinding } from "./interactive-state.ts";
+ import { acquisitionBinding, bindingMatchesAccount } from "./account-acquisition-bindings.ts";
+ import { query, type Query } from "./database.ts";
++import type { AccountTargetRead } from "./account-target-read.ts";
+ 
+ /** The distinct accounts a selection names, in selection order. */
+ export const selectionAccountIds = (selected: SelectedAccounts): readonly AccountId[] => [
+@@ -26,7 +27,12 @@ export const selectionAccountIds = (selected: SelectedAccounts): readonly Accoun
+ export const readSelectionAccounts = (db: Query, ids: readonly AccountId[]) =>
+   ids.length === 0
+     ? Effect.succeed([])
+-    : query(() => db.findMany("accounts", { where: (b) => b("id", "in", ids) }));
++    : query(() =>
++        db.findMany("accounts", {
++          join: (b) => b.executionTarget(),
++          where: (b) => b("id", "in", ids),
++        }),
++      );
+ 
+ /** Rows {@link readSelectionAccounts} returned for these IDs, read before the selection was known. */
+ export interface SelectionAccountsRead {
+@@ -115,7 +121,16 @@ export const validateSelection = (
+         return { slot, required, accounts: resolved };
+       }),
+     );
+-    return new Map(selections.map((selection) => [selection.slot, selection]));
++    const targets: readonly AccountTargetRead[] = accounts.map((account) => ({
++      account: account.id,
++      owner: account.owner,
++      credentialGeneration: account.credentialGeneration,
++      row: rows.find((row) => row.id === account.id)?.executionTarget ?? null,
++    }));
++    return {
++      selections: new Map(selections.map((selection) => [selection.slot, selection])),
++      targets,
++    };
+   });
+ 
+ /** The scope accounts named by scope run in: without `user`, the app's, with no caller. */
+@@ -162,17 +177,17 @@ export const chooseAccounts = (
+     const scoped = Object.entries(requirements).filter(
+       ([slot, required]) =>
+         (scope === "user" || required.scope === "app") &&
+-        (connecting === undefined || validated.has(slot)),
++        (connecting === undefined || validated.selections.has(slot)),
+     );
+     const selections = yield* Effect.forEach(scoped, ([slot, required]) => {
+-      const selection = validated.get(slot);
++      const selection = validated.selections.get(slot);
+       return selection === undefined
+         ? Effect.fail(
+             new AccountRequired({ app, version: version.id, slot, scope: required.scope }),
+           )
+         : Effect.succeed(selection);
+     });
+-    return { scope, accounts: selected, selections };
++    return { scope, accounts: selected, selections, targets: validated.targets };
+   });
+ 
+ /** A selection as the accounts it names, by scope; without a caller it names no `user`. */
+diff --git a/packages/sdk/src/implementation/storage-current.ts b/packages/sdk/src/implementation/storage-current.ts
+index 5a20d953829adfae3bbadc912df4860de3d6bf41..5a8cf62e27c07401ff8980fbf1d6163bd63bf11b 100644
+--- a/packages/sdk/src/implementation/storage-current.ts
++++ b/packages/sdk/src/implementation/storage-current.ts
+@@ -10,6 +10,7 @@ export const currentStorageSchema = schema({
+   relations: {
+     accounts: ({ one }) => ({
+       providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
++      executionTarget: one("accountTargets", ["id", "account"], ["owner", "owner"]),
+     }),
+     apps: ({ one }) => ({
+       deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
+diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
+index 716cca47dd2c4175edbac7330acab2739195155e..a126911dd4cf224ca0bd84862238ed6d386c0a5f 100644
+--- a/packages/sdk/src/implementation/tools.ts
++++ b/packages/sdk/src/implementation/tools.ts
+@@ -19,7 +19,6 @@ import {
+   Exit,
+   Match,
+   Option,
+-  Predicate,
+   Redacted,
+   Result,
+   Schema,
+@@ -54,7 +53,8 @@ import {
+   type ResourceLifecycle,
+ } from "../contracts/executor.ts";
+ import { AppCodeEntered, type Runtime } from "../contracts/runtime.ts";
+-import { accountTrafficNotCounted } from "./account-traffic-store.ts";
++import { makeToolCallAccounting } from "./account-tool-traffic.ts";
++import type { BackgroundWork } from "../contracts/declarations.ts";
+ import {
+   Cursor,
+   ToolName,
+@@ -198,7 +198,7 @@ export function snapshot(
+           : yield* Schema.decodeUnknownEffect(StoredVersion)(row.deployment).pipe(
+               Effect.mapError(() => new StorageError()),
+             );
+-    const { scope, accounts, selections } = yield* chooseAccounts(
++    const { scope, accounts, selections, targets } = yield* chooseAccounts(
+       db,
+       app.id,
+       version,
+@@ -212,7 +212,7 @@ export function snapshot(
+       ahead?.accounts,
+       input.connecting,
+     );
+-    return { app, version, scope, selections, accounts, actor: yield* CurrentActor };
++    return { app, version, scope, selections, accounts, targets, actor: yield* CurrentActor };
+   });
+ }
+ 
+@@ -767,14 +767,6 @@ const summarizeTool = ({
+   ...summary
+ }: Tool): ToolSummary => summary;
+ 
+-/** Failures that count against the accounts a call used: its app's code or its service failed. */
+-const accountFailures = [
+-  "ToolCallFailed",
+-  "AppProviderFailed",
+-  "OAuthReconnectRequired",
+-  "OAuthRenewalFailed",
+-] as const;
+-
+ /** Live calls return completion or a durable approval request. Resume trusts the supplied SDK decision. */
+ export const makeTools = (
+   storage: ExecutorRuntimeDatabase,
+@@ -795,6 +787,7 @@ export const makeTools = (
+     ReturnType<typeof import("./account-targets.ts").makeAccountTargets>,
+     "requireCloudCall" | "requireCloud"
+   >,
++  background?: BackgroundWork,
+ ) => {
+   const db = database(storage);
+   const toolControls = (state: InvocationSnapshot) => {
+@@ -810,51 +803,7 @@ export const makeTools = (
+   };
+   const resolveAccount = oauth.resolveSelected;
+   const approvals = makeToolApprovals(db, credentials, crypto, storage.reactivity.inTransaction);
+-  /**
+-   * Counts a call's outcome toward each account it used, for account lists, once the app's code
+-   * ran for it. A completed call succeeded unless its result was a tool error. It failed when the
+-   * app's code failed or its service refused the account. A refusal of the caller's own request,
+-   * such as invalid input, a blocked tool or approval, and an interruption count nothing.
+-   * Best-effort and bounded: counting never changes the call's result and never holds it long,
+-   * and a count that could not be saved is logged with its failure kind and SQLSTATE.
+-   */
+-  const countCall =
+-    (state: InvocationSnapshot, entered: () => boolean) =>
+-    <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+-      Effect.onExit(effect, (exit) => {
+-        if (!entered()) return Effect.void;
+-        const ok = Exit.isSuccess(exit)
+-          ? Predicate.hasProperty(exit.value, "status") && exit.value.status === "completed"
+-            ? !(Predicate.hasProperty(exit.value, "toolError") && exit.value.toolError === true)
+-            : undefined
+-          : Cause.findErrorOption(exit.cause).pipe(
+-                Option.exists((error) =>
+-                  accountFailures.some((tag) => Predicate.isTagged(error, tag)),
+-                ),
+-              )
+-            ? false
+-            : undefined;
+-        if (ok === undefined) return Effect.void;
+-        return Clock.currentTimeMillis.pipe(
+-          Effect.flatMap((at) =>
+-            storage.accountTraffic.record({
+-              accounts: distinctSelection(state).map(({ account }) => account.id),
+-              at,
+-              ok,
+-            }),
+-          ),
+-          Effect.interruptible,
+-          Effect.timeout("2 seconds"),
+-          // Never the call's result, but never silent: the store reports a storage failure itself,
+-          // and an interrupted count, like an interrupted call, counts nothing.
+-          Effect.catchCause((cause) => {
+-            const error = Option.getOrUndefined(Cause.findErrorOption(cause));
+-            return Cause.hasInterruptsOnly(cause) || error instanceof StorageError
+-              ? Effect.void
+-              : accountTrafficNotCounted(Cause.isTimeoutError(error) ? "timeout" : "unexpected");
+-          }),
+-        );
+-      });
++  const countCall = makeToolCallAccounting(storage.accountTraffic, background);
+   /** Renew an account the service refused without repeating what it refused; undefined when none was. */
+   const renewOnce = (state: InvocationSnapshot, context: InvocationContext, error: unknown) =>
+     renewRefused(oauth, clients, sitePolicy, state, context, error).pipe(
+@@ -1642,6 +1591,7 @@ export const makeTools = (
+         // Machine-bound accounts never enter cloud app code or credential resolution.
+         yield* (
+           accountTargets?.requireCloudCall({
++            reads: state.targets,
+             accounts: distinctSelection(state).map(({ account }) => ({
+               id: account.id,
+               owner: account.owner,
+@@ -1801,7 +1751,10 @@ export const makeTools = (
+                 ),
+           ),
+           Effect.provideService(AppCodeEntered, appCode),
+-          countCall(state, () => enteredApp),
++          countCall(
++            distinctSelection(state).map(({ account }) => account.id),
++            () => enteredApp,
++          ),
+         );
+       }).pipe(Effect.withSpan("sdk.tools.call")),
+     pruneApprovals: (input: Parameters<Executor["tools"]["pruneApprovals"]>[0] = {}) =>
+@@ -2000,7 +1953,10 @@ export const makeTools = (
+                         enteredApp = true;
+                       },
+                     }),
+-                    countCall(state, () => enteredApp),
++                    countCall(
++                      distinctSelection(state).map(({ account }) => account.id),
++                      () => enteredApp,
++                    ),
+                   );
+                 }).pipe(
+                   // The request is consumed, so its caller receives the call's own failure.
