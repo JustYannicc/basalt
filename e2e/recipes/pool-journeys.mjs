@@ -1,11 +1,12 @@
+import { waitForHeldCall } from "./held-call.mjs";
 import { Effect, Fiber } from "effect";
 import { until } from "./harness.mjs";
 import { poolRecipeScenario } from "./pool-scenario.mjs";
 
 /** Native pool ownership, disappearance, intent, recovery, and revoked channel authority. */
-export const verifyPoolJourneys = (h, pool, checked) =>
+export const verifyPoolJourneys = (h, pool, checked, initial) =>
   Effect.gen(function* () {
-    const scenario = yield* poolRecipeScenario(h, pool);
+    const scenario = yield* poolRecipeScenario(h, pool, initial);
     const {
       fixture,
       channel,
@@ -18,6 +19,8 @@ export const verifyPoolJourneys = (h, pool, checked) =>
       scan,
       read,
       healthy,
+      account,
+      seed,
     } = scenario;
     const app = yield* copy("owner", channel);
     yield* healthy(app, "synthetic-account-a");
@@ -32,13 +35,12 @@ export const verifyPoolJourneys = (h, pool, checked) =>
       (yield* checkpoint(app)).observation.poolMembers[0].inUse,
       true,
     );
-    const deletion = fixture.holdRemoval("synthetic-account-a");
-    const removing = yield* Effect.forkChild(
-      h.call(pool.id, "removeAccount", { id: "synthetic-account-a" }, "mutation"),
-    );
-    yield* Effect.promise(() => deletion.started);
+    const saved = yield* account("synthetic-account-a");
+    const deletion = fixture.holdUnlink(saved.reference);
+    const removing = yield* Effect.forkChild(h.raw("owner", "DELETE", saved.unlink));
     let concurrentBaseline;
     try {
+      yield* waitForHeldCall(removing, deletion.started, "native account unlink");
       fixture.seed(pool.id, "synthetic-account-a", { attemptedAt: Date.now() });
       yield* read(app);
       concurrentBaseline = (yield* checkpoint(app)).observation.poolMembers[0].seenAt;
@@ -57,7 +59,8 @@ export const verifyPoolJourneys = (h, pool, checked) =>
       Date.parse(afterRemoval.value.removals.items[0].at) >= concurrentBaseline,
       true,
     );
-    checked("native owner removal succeeds", removed.ok, true);
+    checked("native owner removal succeeds", removed.status, 200);
+    yield* h.request("DELETE", saved.remove);
     yield* read(app);
     checked(
       "intentional native removal creates no waiting item",
@@ -98,29 +101,30 @@ export const verifyPoolJourneys = (h, pool, checked) =>
     );
     yield* read(app);
     checked("duplicate pool scans send once", fixture.sends.length, 1);
-    fixture.seed(pool.id, "synthetic-account-c", { fresh: false });
+    yield* seed("synthetic-account-c", { fresh: false });
     yield* read(app);
     checked(
       "a stale replacement preserves the missing account baseline",
       (yield* checkpoint(app)).observation.poolMissing[0].id,
       "synthetic-account-b",
     );
-    fixture.seed(pool.id, "synthetic-account-c", { remaining: 0 });
+    yield* seed("synthetic-account-c", { remaining: 0 });
     yield* read(app);
     checked(
       "a blocked replacement retains the original question",
       (yield* checkpoint(app)).question.id,
       missing.question.id,
     );
-    fixture.seed(pool.id, "synthetic-account-c", { remaining: 0 });
+    yield* seed("synthetic-account-c", { remaining: 0 });
     yield* read(app);
-    const acknowledged = yield* h.call(
-      pool.id,
-      "removeAccount",
-      { id: "synthetic-account-b" },
-      "mutation",
+    const missingAccount = yield* account("synthetic-account-b");
+    const acknowledged = yield* h.raw("owner", "DELETE", missingAccount.unlink);
+    checked(
+      "owner can acknowledge the already unavailable native account",
+      acknowledged.status,
+      200,
     );
-    checked("owner can acknowledge the already unavailable native account", acknowledged.ok, true);
+    yield* h.request("DELETE", missingAccount.remove);
     yield* read(app);
     const stillExhausted = yield* checkpoint(app);
     checked(
@@ -133,7 +137,7 @@ export const verifyPoolJourneys = (h, pool, checked) =>
       stillExhausted.question?.id,
       missing.question.id,
     );
-    fixture.seed(pool.id, "synthetic-account-c", { remaining: 0.15 });
+    yield* seed("synthetic-account-c", { remaining: 0.15 });
     yield* read(app);
     checked(
       "ordinary capacity cannot close an already confirmed quota episode",
@@ -145,14 +149,14 @@ export const verifyPoolJourneys = (h, pool, checked) =>
       (yield* checkpoint(app)).observation.poolQuotaOpen,
       true,
     );
-    fixture.seed(pool.id, "synthetic-account-c");
+    yield* seed("synthetic-account-c");
     yield* read(app);
     checked(
       "one high native reading cannot close the quota episode",
       (yield* checkpoint(app)).open,
       true,
     );
-    fixture.seed(pool.id, "synthetic-account-c");
+    yield* seed("synthetic-account-c");
     yield* read(app);
     yield* until(
       h.request("GET", `${h.appPath(app.id)}/workflow-inputs/${missing.question.id}`),
@@ -237,14 +241,9 @@ export const verifyPoolJourneys = (h, pool, checked) =>
       Object.hasOwn(memberView.value, "removals"),
       false,
     );
-    const denied = yield* h.callAs(
-      "member",
-      pool.id,
-      "removeAccount",
-      { id: "synthetic-account-d" },
-      "mutation",
-    );
-    checked("a pool member cannot remove the owner's account", denied.error, "not_owner");
+    const protectedAccount = yield* account("synthetic-account-d");
+    const denied = yield* h.raw("member", "DELETE", protectedAccount.unlink);
+    checked("a pool member cannot remove the owner's account", denied.status, 403);
     const memberApp = yield* copy("member", sharedChannel);
     const memberRun = yield* read(memberApp, "member");
     checked(
