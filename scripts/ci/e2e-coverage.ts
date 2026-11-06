@@ -9,7 +9,8 @@ import {
   expandedRuns,
   commandWords,
   executedArgv,
-  selectorReferenced,
+  selectorAssigned,
+  groupSelectors,
   delegatedCommand,
   type Workflow,
 } from "./e2e-workflow.ts";
@@ -50,7 +51,8 @@ export function coverageInventory(
                 workflow.jobs[group.job]?.strategy?.matrix ===
                   "${{ fromJSON(needs.select.outputs.matrices)['" + group.job + "'] }}"
               );
-            const pattern = selectorReferenced(run, id);
+            const filter = words.indexOf("--test-name");
+            const pattern = filter !== -1 && groupSelectors(id).includes(words[filter + 1] ?? "");
             if (
               words[0] === "bun" &&
               words[1] === "run" &&
@@ -70,7 +72,11 @@ export function coverageInventory(
                 (group.command &&
                   group.command.split(" ")[1] === path &&
                   source.includes(`patternForGroup("${id}")`)) ||
-                (pattern && /process\.env\.BASALT_(?:SCOPE|ADOPTION)_PROOF_PATTERN/.test(source))
+                ["BASALT_SCOPE_PROOF_PATTERN", "BASALT_ADOPTION_PROOF_PATTERN"].some(
+                  (variable) =>
+                    selectorAssigned(run, id, variable) &&
+                    source.includes(`process.env.${variable}`),
+                )
               )
                 return true;
             }

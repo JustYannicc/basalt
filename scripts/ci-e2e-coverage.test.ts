@@ -224,6 +224,23 @@ test("a config must include the test in executable data rather than a comment", 
     assert.deepEqual(coverageErrors(inventory(), []), []);
   }));
 
+test("a selector mentioned in another command cannot replace the runner's actual filter", () =>
+  fixture((root, workflow, inventory) => {
+    writeFileSync(
+      join(root, "scripts/ci/e2e-groups.json"),
+      JSON.stringify({
+        "declared:self-host": { job: "declared-self-host", target: "self-host", mode: "managed" },
+      }),
+    );
+    const step = workflow.jobs["declared-self-host"]!.steps![0]!;
+    step.run =
+      'bun run e2e:self-host --test-name "Nothing matches"\necho "$(node scripts/ci/e2e-pattern.ts declared:self-host)"';
+    assert.match(coverageErrors(inventory(), [])[0]!, /first.spec.ts#first/);
+    step.run =
+      'bun run e2e:self-host --test-name "$(node scripts/ci/e2e-pattern.ts declared:self-host)"';
+    assert.deepEqual(coverageErrors(inventory(), []), []);
+  }));
+
 test("reviewed exceptions bind source changes and expire as soon as their runner is wired", () =>
   fixture((root, workflow, inventory) => {
     const file = join(root, "e2e/pool-recipe-checks.mjs");

@@ -143,19 +143,19 @@ export function executedArgv(runner: string, argv: string[]) {
   return paths;
 }
 
-export function selectorReferenced(run: string, group: string) {
-  return run
-    .split("\n")
-    .some((line) =>
-      shellWords(line).some((word) =>
-        ["scripts/ci/e2e-pattern.ts", "../scripts/ci/e2e-pattern.ts"].some(
-          (path) =>
-            word === `$(node ${path} ${group})` ||
-            (/^BASALT_(?:SCOPE|ADOPTION)_PROOF_PATTERN=/.test(word) &&
-              word.endsWith(`=$(node ${path} ${group})`)),
-        ),
-      ),
-    );
+export const groupSelectors = (group: string) =>
+  ["scripts/ci/e2e-pattern.ts", "../scripts/ci/e2e-pattern.ts"].map(
+    (path) => `$(node ${path} ${group})`,
+  );
+
+export function selectorAssigned(run: string, group: string, variable: string) {
+  return run.split("\n").some((line) => {
+    for (const word of shellWords(line)) {
+      if (!/^[A-Z_][A-Z0-9_]*=/.test(word)) break;
+      if (groupSelectors(group).some((selector) => word === `${variable}=${selector}`)) return true;
+    }
+    return false;
+  });
 }
 
 export function delegatedCommand(command: string) {
