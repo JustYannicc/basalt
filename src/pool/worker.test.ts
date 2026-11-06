@@ -985,8 +985,24 @@ test("the Worker answers its release without waking the pool container", async (
 
 test("deployment readiness cannot be invoked on public routes or without the release signature", async () => {
   let warms = 0;
-  const env = { POOL_DEPLOYMENT_KEY: "a".repeat(64), POOL_IMAGE_HASH: "1234abcd",
-    PoolContainer: { jurisdiction() { return { getByName() { return { async deploymentReady() { warms++; throw new Error("must not warm"); } }; } }; } } };
+  const env = {
+    POOL_DEPLOYMENT_KEY: "a".repeat(64),
+    POOL_IMAGE_HASH: "1234abcd",
+    PoolContainer: {
+      jurisdiction() {
+        return {
+          getByName() {
+            return {
+              async deploymentReady() {
+                warms++;
+                throw new Error("must not warm");
+              },
+            };
+          },
+        };
+      },
+    },
+  };
   for (const method of ["GET", "POST"]) {
     const request = new Request("https://pool.example/deployment-readiness", { method });
     assert.equal((await poolWorker.fetch(request, env)).status, 404);

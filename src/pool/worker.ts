@@ -336,8 +336,11 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
 
   async deploymentReady() {
     return {
-      candidate: productionOpsRelease, workerInput: poolWorkerRevision, imageHash: this.env.POOL_IMAGE_HASH,
-      instanceId: this.ctx.id.toString(), ...(await (await this.lifecycle).deploymentReady()),
+      candidate: productionOpsRelease,
+      workerInput: poolWorkerRevision,
+      imageHash: this.env.POOL_IMAGE_HASH,
+      instanceId: this.ctx.id.toString(),
+      ...(await (await this.lifecycle).deploymentReady()),
     };
   }
 
@@ -551,9 +554,16 @@ export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
   async fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
     if (path === deploymentReadinessPath)
-      return handleDeploymentReadiness(request, { candidate: productionOpsRelease,
-        workerInput: poolWorkerRevision, imageHash: this.env.POOL_IMAGE_HASH },
-        this.env.POOL_DEPLOYMENT_KEY ?? "", () => singleton(this.env).deploymentReady());
+      return handleDeploymentReadiness(
+        request,
+        {
+          candidate: productionOpsRelease,
+          workerInput: poolWorkerRevision,
+          imageHash: this.env.POOL_IMAGE_HASH,
+        },
+        this.env.POOL_DEPLOYMENT_KEY ?? "",
+        () => singleton(this.env).deploymentReady(),
+      );
     if (path === runtimeRecoveryPath) return singleton(this.env).fetch(request);
     if ([historySchemaCatalogPath, historySchemaApplyPath, historyBackfillPath].includes(path))
       return handleModelHistoryOperation(request, this.env.POOL_AUTH_DATABASE?.connectionString);

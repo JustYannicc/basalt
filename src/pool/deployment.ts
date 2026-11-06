@@ -70,9 +70,12 @@ export const poolWorker = Effect.gen(function* () {
     databases: ["basalt_pool"],
     deployment: worker.hash,
     candidate: productionOpsRelease,
-    readiness: { worker: worker.workerName, accountId: application.accountId,
-      key: yield* Config.Redacted("POOL_DEPLOYMENT_KEY"), workerInput: poolWorkerRevision,
-      imageHash: application.hash.pipe(Output.map(hash => hash?.image ?? "")),
+    readiness: {
+      worker: worker.workerName,
+      accountId: application.accountId,
+      key: yield* Config.Redacted("POOL_DEPLOYMENT_KEY"),
+      workerInput: poolWorkerRevision,
+      imageHash: application.hash.pipe(Output.map((hash) => hash?.image ?? "")),
     },
   });
   const receiptPath = yield* Config.String("BASALT_POOL_IMAGE_RECEIPT").pipe(
