@@ -1117,9 +1117,7 @@ diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/sr
    AppWorkflowsActive,
    AccountWorkflowsActive,
  } from "@executor-js/sdk/core";
-@@ -288,6 +289,7 @@
-   site: Schema.optional(Schema.NonEmptyString),
- });
+@@ -290,4 +291,5 @@
  const appConnectionErrors = [
 +  AccessDependencyUnavailable,
    AccountProvisioned,
