@@ -19,6 +19,7 @@ export const nativePoolAccount = (h, pool, reference) =>
     if (saved.state !== "connected")
       throw new Error("Synthetic provider connection did not complete");
     yield* h.request("PUT", `${h.appPath(pool.id)}/accounts/app/openai/${saved.account.id}`);
+    yield* h.request("DELETE", `${h.appPath(app.id)}/accounts/app/openai/${saved.account.id}`);
     yield* Effect.promise(() => h.fixture.reconcile(pool.id));
     return {
       account: saved.account.id,
