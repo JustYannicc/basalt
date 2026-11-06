@@ -663,7 +663,7 @@ new file mode 100644
 +              ? Schema.Struct({
 +                  held: Schema.Literal(true),
 +                  closed: Schema.Literal(true),
-+                  later: Schema.Number.check(Schema.isGreaterThan(0)),
++                  later: Schema.Literal(1),
 +                })
 +              : Schema.Struct({ held: Schema.Literal(true), interrupted: Schema.Literal(true) });
 +            yield* Schema.decodeUnknownEffect(guard)(state);
