@@ -200,6 +200,18 @@ test(
         node.type === "Cloudflare.ContainerApplication" ||
         ["Site", "PoolImagePublicationReceipt"].includes(node.id),
     );
+    for (const id of [
+      "Api",
+      "Router",
+      "PoolWorker",
+      "Site",
+      "PoolContainer",
+      "PoolImagePublicationReceipt",
+    ])
+      assert.ok(
+        applicationResources.some((node) => node.id === id),
+        `The real graph must include ${id}`,
+      );
     assert.ok(
       applicationResources.length >= 15,
       "The proof must cover the actual Workers, Site, container and receipt",

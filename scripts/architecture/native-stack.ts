@@ -12,10 +12,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  validateInventory,
-  type WorkerMetadata,
-} from "./native-stack-fixtures.ts";
+import { validateInventory, type WorkerMetadata } from "./native-stack-fixtures.ts";
 
 export interface StackResource {
   id: string;
