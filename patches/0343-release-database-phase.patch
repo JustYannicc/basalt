@@ -1,0 +1,144 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/database.ts b/apps/hosted/cloud/src/infrastructure/database.ts
+--- a/apps/hosted/cloud/src/infrastructure/database.ts
++++ b/apps/hosted/cloud/src/infrastructure/database.ts
+@@ -1,5 +1,6 @@
+ /** Database infrastructure belongs to cloud; Docker and local keep their own drivers. */
+ import * as Output from "alchemy/Output";
++import { fileURLToPath } from "node:url";
+ import * as Cloudflare from "alchemy/Cloudflare";
+ import * as Command from "alchemy/Command";
+ import * as Planetscale from "alchemy/Planetscale";
+@@ -184,11 +185,45 @@
+     };
+   }).pipe(Effect.orDie);
+ 
+-/**
+- * Production's PlanetScale database, its roles and the migration job. Workers use the runtime
+- * role through PlanetScale's PgBouncer (port 6432), directly or through Hyperdrive. Only the
+- * migration job receives the schema-owner role.
+- */
++/** Production's database commands are shared by the filtered and full deploys. */
++export const productionDatabaseMigration = Effect.gen(function* () {
++  const settings = yield* Config.all({
++    name: Config.String("PLANETSCALE_DATABASE_NAME"),
++    clusterSize: Config.String("PLANETSCALE_CLUSTER_SIZE"),
++    region: Config.String("PLANETSCALE_REGION"),
++    adopt: Config.Boolean("PLANETSCALE_ADOPT_DATABASE").pipe(Config.withDefault(false)),
++    connectionLimit: Config.Number("CLOUD_DATABASE_CONNECTION_LIMIT").pipe(Config.option),
++  });
++  const database = yield* Planetscale.PostgresDatabase("Database", {
++    name: settings.name,
++    clusterSize: settings.clusterSize,
++    region: { slug: settings.region },
++  }).pipe(adopt(settings.adopt), retain());
++  const migrationRole = yield* Planetscale.PostgresRole("MigrationRole", {
++    database,
++    inheritedRoles: ["postgres"],
++  }).pipe(retain());
++  const budget = yield* databasePoolBudget("RuntimeDatabaseBudget", settings.name, "main");
++  const migrations = yield* Command.Exec("Migrations", {
++    command: "node src/migrate.ts",
++    cwd: fileURLToPath(new URL("../../", import.meta.url)),
++    env: {
++      BASALT_RELEASE_ATTEMPT: yield* Config.NonEmptyString("BASALT_RELEASE_ATTEMPT"),
++      DATABASE_POOL_BUDGET_READY: budget.hash.pipe(Output.map(() => "ready")),
++      DATABASE_URL: migrationRole.origin.pipe(Output.map(migrationUrl)),
++      BETTER_AUTH_URL: yield* cloudOrigin,
++      BETTER_AUTH_SECRET: yield* Config.Redacted("BETTER_AUTH_SECRET"),
++      // Auth setup provisions the OAuth resources at the role hosts too.
++      ...(yield* roleHostsJobEnvironment),
++    },
++    memo: { include: ["src/**"], lockfile: true },
++    // Above the job's own hard limit (`migrationHardLimit`), so it exits with its phase first.
++    timeout: "7 minutes",
++  });
++  return { settings, database, budget, migrations };
++});
++
++/** Production runtime bindings consume the successfully migrated database. */
+ const productionDatabase = Effect.gen(function* () {
+   // Inside the Worker only the bindings' identities are needed, not provisioning config.
+   if (globalThis.__ALCHEMY_RUNTIME__) {
+@@ -198,42 +233,13 @@
+       Option.some(Effect.die(new Error("Hyperdrive props are deploy-time only"))),
+     );
+   }
+-  const settings = yield* Config.all({
+-    name: Config.String("PLANETSCALE_DATABASE_NAME"),
+-    clusterSize: Config.String("PLANETSCALE_CLUSTER_SIZE"),
+-    region: Config.String("PLANETSCALE_REGION"),
+-    adopt: Config.Boolean("PLANETSCALE_ADOPT_DATABASE").pipe(Config.withDefault(false)),
+-    connectionLimit: Config.Number("CLOUD_DATABASE_CONNECTION_LIMIT").pipe(Config.option),
+-  });
++  const { settings, database, budget, migrations } = yield* productionDatabaseMigration;
+   const connectionLimit = yield* Schema.decodeUnknownEffect(
+     Schema.Option(Schema.Int.check(Schema.isGreaterThanOrEqualTo(5))),
+   )(settings.connectionLimit);
+-  const database = yield* Planetscale.PostgresDatabase("Database", {
+-    name: settings.name,
+-    clusterSize: settings.clusterSize,
+-    region: { slug: settings.region },
+-  }).pipe(adopt(settings.adopt), retain());
+   const role = yield* Planetscale.PostgresRole("RuntimeRole", {
+     database,
+     inheritedRoles: ["pg_read_all_data", "pg_write_all_data"],
+-  });
+-  const migrationRole = yield* Planetscale.PostgresRole("MigrationRole", {
+-    database,
+-    inheritedRoles: ["postgres"],
+-  }).pipe(retain());
+-  const budget = yield* databasePoolBudget("RuntimeDatabaseBudget", settings.name, "main");
+-  const migrations = yield* Command.Exec("Migrations", {
+-    command: "node src/migrate.ts",
+-    env: {
+-      DATABASE_URL: migrationRole.origin.pipe(Output.map(migrationUrl)),
+-      BETTER_AUTH_URL: yield* cloudOrigin,
+-      BETTER_AUTH_SECRET: yield* Config.Redacted("BETTER_AUTH_SECRET"),
+-      // Auth setup provisions the OAuth resources at the role hosts too.
+-      ...(yield* roleHostsJobEnvironment),
+-    },
+-    memo: false,
+-    // Above the job's own hard limit (`migrationHardLimit`), so it exits with its phase first.
+-    timeout: "7 minutes",
+   });
+   // Every database consumer waits for the migration, including an existing Worker update.
+   const migrated = Output.all(role.pooledOrigin, migrations.hash, budget.hash).pipe(
+diff --git a/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts b/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts
+--- a/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts
++++ b/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts
+@@ -1,11 +1,29 @@
+ import * as Command from "alchemy/Command";
++import { fileURLToPath } from "node:url";
+ import type { Input } from "alchemy/Input";
++import { Config, Effect } from "effect";
+ 
+-/** Runtime URLs depend on this receipt, rather than resource declaration order. */
++/** One execution per production deploy attempt; isolated previews retain their existing behavior. */
+ export const databasePoolBudget = (id: string, database: Input<string>, branch: Input<string>) =>
+-  Command.Exec(id, {
+-    command: "node scripts/database-pool-budget.ts",
+-    env: { POOL_BUDGET_DATABASE: database, POOL_BUDGET_BRANCH: branch },
+-    memo: false,
+-    timeout: "7 minutes",
++  Effect.gen(function* () {
++    const attempt = yield* Config.String("BASALT_RELEASE_ATTEMPT").pipe(Config.withDefault(""));
++    return yield* Command.Exec(id, {
++      command: "node scripts/database-pool-budget.ts",
++      cwd: fileURLToPath(new URL("../../", import.meta.url)),
++      env: {
++        POOL_BUDGET_DATABASE: database,
++        POOL_BUDGET_BRANCH: branch,
++        BASALT_RELEASE_ATTEMPT: attempt,
++      },
++      memo: attempt
++        ? {
++            include: [
++              "scripts/database-pool-budget.ts",
++              "src/infrastructure/database-pool-policy.ts",
++            ],
++            lockfile: true,
++          }
++        : false,
++      timeout: "7 minutes",
++    });
+   });

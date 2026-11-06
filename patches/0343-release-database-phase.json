@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-release-database-phase",
+  "file": "0343-release-database-phase.patch",
+  "content_sha256": "4fd9406458bdce197d2c777d09d2a664b0492412a6418de7686e3b31cc8eb1cc",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}
