@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
-index 3df7ef9b517d87aabc759f27c2b2573a6a19d7ae..b9519a57856ea9b7a8e00ad712a73eb1d325dd02 100644
+index 3df7ef9b517d87aabc759f27c2b2573a6a19d7ae..88b5470b51f73071e96aea9c8e230c0139dd2e73 100644
 --- a/apps/hosted/cloud/src/infrastructure/executor.ts
 +++ b/apps/hosted/cloud/src/infrastructure/executor.ts
 @@ -9,6 +9,7 @@ import { AccessLifecycle } from "@executor-js/hosted-server/access-lifecycle";
@@ -19,7 +19,12 @@ index 3df7ef9b517d87aabc759f27c2b2573a6a19d7ae..b9519a57856ea9b7a8e00ad712a73eb1
  import { cachedVersionSources } from "../implementation/version-source-cache.ts";
  import { organizationPublishers } from "../implementation/publishers.ts";
  import type { AppSources } from "./source.ts";
-@@ -111,21 +112,7 @@ export const cloudExecutor = Effect.fn(function* (
+@@ -107,25 +108,12 @@ export const cloudExecutor = Effect.fn(function* (
+       const storage = yield* makeExecutorRuntimeStorage({ provider: "postgresql" }).pipe(
+         Effect.provideContext(services),
+       );
++      const runtime = yield* makeRuntime;
+       // Stale metadata refreshes and tool listings nobody waits for run beside the request, inside
        // this event's lifetime: until 20 s after it closes, when the remaining work is interrupted.
        // Work offered once the event is closing is refused, so its caller releases what it holds,
        // and work it accepted always has those 20 s.
@@ -42,6 +47,15 @@ index 3df7ef9b517d87aabc759f27c2b2573a6a19d7ae..b9519a57856ea9b7a8e00ad712a73eb1
        const lifecycle = yield* hostedResourceLifecycle.pipe(
          Effect.provide(BrowserCrypto.layer),
          Effect.provideService(AccessLifecycle, accessLifecycle),
+@@ -140,7 +128,7 @@ export const cloudExecutor = Effect.fn(function* (
+         webhookOrigin,
+         git: appSources(background),
+         blobs: yield* cachedVersionSources(origin, blobs),
+-        runtime: yield* makeRuntime,
++        runtime,
+         workflows,
+         // SDK owners include a namespace; dashboard routes resolve the organization ID itself.
+         workflowInputUrl: ({ owner, app, id }) =>
 diff --git a/apps/hosted/cloud/src/infrastructure/invocation-database.ts b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
 index a0d67956954d32667af89a211ac722febb2fb93b..3f8335aa660469687d6b96c04259a6aa1a420b2a 100644
 --- a/apps/hosted/cloud/src/infrastructure/invocation-database.ts
@@ -704,7 +718,7 @@ index d0c8a8a4f357b2c3916a51c47eed99b22db17601..718c5e339e22b73d991d08fe1339292c
          expect((yield* sdk.request("read", { account: ids.local })).body).toMatchObject({
 diff --git a/e2e/tests/account-tool-accounting.spec.ts b/e2e/tests/account-tool-accounting.spec.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..f8e1dc41f41aec97c6420b419b1f522db49e1329
+index 0000000000000000000000000000000000000000..f7ce5a60342381b1c59fbeac8ba8c0e15359d8a0
 --- /dev/null
 +++ b/e2e/tests/account-tool-accounting.spec.ts
 @@ -0,0 +1,141 @@
@@ -779,11 +793,11 @@ index 0000000000000000000000000000000000000000..f8e1dc41f41aec97c6420b419b1f522d
 +                ...(failure === "storage" ? { failure } : {}),
 +              })).status,
 +            ).toBe(200);
-+            const call = yield* fixture.call("ping");
++            const call = yield* fixture.call(tool);
 +            expect((yield* send("GET", `${hold}/reached`)).status).toBe(200);
 +            if (failure === "storage") expect((yield* send("DELETE", hold)).status).toBe(200);
 +            yield* evidence.json(
-+              `${failure}-background-trace`,
++              `${tool}-${failure}-background-trace`,
 +              yield* accountingCompleted(telemetry, call.traceId, failure),
 +            );
 +            expect(yield* fixture.read).toEqual(before);
