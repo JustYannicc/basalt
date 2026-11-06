@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Effect } from "effect";
 import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.ts";
-import { definition, owner, visibilityFixture } from "./provider-error-visibility-fixture.ts";
+import {
+  definition,
+  owner,
+  visibilityFixture,
+  CurrentAuthorization,
+  fullAuthority,
+} from "./provider-error-visibility-fixture.ts";
 
 const root = new URL("../../.upstream/", import.meta.url);
 const { appProviderFailure } = (await import(
@@ -26,16 +32,17 @@ const { describeAppFailure, renderAppFailure } = (await import(
 
 type Dependencies = Parameters<typeof appProviderFailure>[0];
 type State = Parameters<ReturnType<typeof appProviderFailure>>[0];
-for (const [verified, label] of [
-  [false, "Default 2"],
-  [true, "Default 2"],
-  [false, "owner@company.test"],
+for (const [verified, label, editor] of [
+  [false, "Default 2", false],
+  [true, "Default 2", false],
+  [false, "owner@company.test", false],
+  [false, "Default 2", true],
 ] as const) {
-  test(`hosted member and owner errors equal their own shared-account row titles, verified=${verified}, label=${label}`, async () => {
+  test(`hosted member and owner errors equal their own shared-account row titles, verified=${verified}, label=${label}, editor=${editor}`, async () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const fixture = yield* visibilityFixture(verified, label);
+          const fixture = yield* visibilityFixture(verified, label, editor);
           const db = {
             findFirst: () => Effect.succeed(fixture.account.identity),
           } as unknown as Dependencies["db"];
@@ -58,7 +65,7 @@ for (const [verified, label] of [
             const title = accountTitle(summary, undefined, accountKindLabel(inventory, summary));
             assert.equal(
               title,
-              actor === "owner"
+              actor === "owner" || editor
                 ? verified
                   ? "Verified Owner"
                   : label === "Default 2"
@@ -109,14 +116,17 @@ for (const [verified, label] of [
             ];
             for (const output of outputs) {
               assert.ok(output?.includes(title));
-              if (actor === "member") {
+              if (actor === "member" && !editor) {
                 assert.ok(!output.includes("owner@company.test"));
                 assert.ok(!output.includes("Verified Owner"));
               }
             }
           }
         }),
-      ).pipe(Effect.provide(pgliteLayer())),
+      ).pipe(
+        Effect.provideService(CurrentAuthorization, fullAuthority),
+        Effect.provide(pgliteLayer()),
+      ),
     );
   });
 }

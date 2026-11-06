@@ -8,7 +8,13 @@
     "providerErrorsCustom"
   ],
   "inputs": [
+    ".upstream/apps/hosted/server/src/contracts/auth.ts",
+    ".upstream/apps/hosted/server/src/contracts/authorization.ts",
+    ".upstream/apps/hosted/server/src/contracts/executor.ts",
     ".upstream/apps/hosted/server/src/implementation/account-identity.ts",
+    ".upstream/apps/hosted/server/src/implementation/accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-link-policy.ts",
     ".upstream/apps/hosted/server/src/implementation/contributed-account-policy.ts",
     ".upstream/apps/hosted/server/src/implementation/resource-lifecycle.ts",
     ".upstream/apps/hosted/server/src/implementation/resource-policy.ts",

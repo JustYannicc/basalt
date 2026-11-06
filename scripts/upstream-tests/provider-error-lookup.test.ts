@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-const { Effect } = (await import(
+const { Effect, Schema } = (await import(
   new URL("../../.upstream/node_modules/effect/dist/index.js", import.meta.url).href
 )) as typeof import("../../.upstream/node_modules/effect/dist/index.js");
 const { appProviderFailure } = (await import(
@@ -13,6 +13,10 @@ const { ProviderError } = (await import(
 const { StorageError, AccountId } = (await import(
   new URL("../../.upstream/packages/sdk/src/contracts/shared.ts", import.meta.url).href
 )) as typeof import("../../.upstream/packages/sdk/src/contracts/shared.ts");
+
+const { AccountIdentity } = (await import(
+  new URL("../../.upstream/packages/sdk/src/contracts/account-identity.ts", import.meta.url).href
+)) as typeof import("../../.upstream/packages/sdk/src/contracts/account-identity.ts");
 
 type Dependencies = Parameters<typeof appProviderFailure>[0];
 type State = Parameters<ReturnType<typeof appProviderFailure>>[0];
@@ -86,7 +90,17 @@ for (const fault of ["placement", "query", "decode", "health", "defect"] as cons
 
 test("a failed hosted visibility lookup keeps the refusal without revealing a copied identity label", async () => {
   const input = state(false);
-  const account = { ...input.selections[0]!.accounts[0]!, label: "owner@company.test" };
+  const account = {
+    ...input.selections[0]!.accounts[0]!,
+    label: "owner@company.test",
+    identity: Schema.decodeUnknownSync(AccountIdentity)({
+      id: "aid_hidden",
+      issuer: "https://example.test",
+      name: "Example",
+      label: "Hidden Owner",
+    }),
+    health: { info: { email: "owner@company.test" } },
+  };
   const hidden = { ...input, selections: [{ ...input.selections[0]!, accounts: [account] }] };
   const result = await Effect.runPromise(
     Effect.flip(
@@ -104,4 +118,5 @@ test("a failed hosted visibility lookup keeps the refusal without revealing a co
   assert.equal(result.status, 403);
   assert.equal(result.account?.label, "Example account");
   assert.ok(!JSON.stringify(result).includes("owner@company.test"));
+  assert.ok(!JSON.stringify(result).includes("Hidden Owner"));
 });

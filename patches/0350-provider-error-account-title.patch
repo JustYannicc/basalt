@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/server/src/implementation/account-identity.ts b/apps/hosted/server/src/implementation/account-identity.ts
-index aef0bae..3f20613 100644
+index aef0bae..1fac0d8 100644
 --- a/apps/hosted/server/src/implementation/account-identity.ts
 +++ b/apps/hosted/server/src/implementation/account-identity.ts
 @@ -4,6 +4,9 @@ import {
@@ -30,7 +30,7 @@ index aef0bae..3f20613 100644
  
  /** Use retained acquisition identity only to find copied labels, never to authorize identity. */
  const acquisitionLabels = (accounts: readonly AccountId[]) =>
-@@ -215,3 +221,20 @@ export const visibleAccountStatuses = <
+@@ -215,3 +221,21 @@ export const visibleAccountStatuses = <
        };
      });
    });
@@ -40,36 +40,47 @@ index aef0bae..3f20613 100644
 +  executor: Pick<Executor, "accounts">,
 +  account: Pick<Account, "id" | "owner">,
 +  provider: ProviderDefinition,
++  apps: readonly AppId[],
 +) =>
 +  Effect.gen(function* () {
 +    const metadata = yield* executor.accounts.get({ owner: account.owner, account: account.id });
 +    const health = yield* executor.accounts.health({
 +      owner: account.owner,
 +      account: account.id,
-+      apps: [],
++      apps,
 +    });
 +    const [status] = yield* visibleAccountStatuses([{ account: metadata, health }]);
 +    return providerAccountTitle({ ...status!.account, health: status!.health }, provider);
 +  });
 diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
-index 11b33ed..0a6e5a6 100644
+index 11b33ed..9f34380 100644
 --- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
 +++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
-@@ -1,3 +1,4 @@
+@@ -1,3 +1,5 @@
++import { linkedApps } from "./accounts.ts";
 +import { visibleProviderAccountTitle } from "./account-identity.ts";
  import { AutomaticAccountCheck, automaticCheckAccounts } from "./account-recheck-authority.ts";
  import { accountIdentityPlacements } from "./account-identity-placement.ts";
  import { hostedToolPolicy } from "./tool-policy-evaluation.ts";
-@@ -288,6 +289,16 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
+@@ -288,6 +290,25 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
          ),
        );
      const lifecycle: ResourceLifecycle = {
 +      accountFailureTitle: (input) =>
 +        asOwner(
 +          input.app.owner,
-+          Effect.flatMap(executor, (executor) =>
-+            visibleProviderAccountTitle(executor, input.account, input.provider),
-+          ),
++          Effect.gen(function* () {
++            const current = yield* executor;
++            const apps = yield* linkedApps(input.account.owner, input.account.id).pipe(
++              Effect.provideService(HostedExecutor, Effect.succeed(current)),
++            );
++            return yield* visibleProviderAccountTitle(
++              current,
++              input.account,
++              input.provider,
++              apps.map((app) => app.id),
++            );
++          }),
 +        ).pipe(
 +          Effect.provideService(CurrentUserId, input.actor),
 +          Effect.mapError(() => new StorageError()),
@@ -675,10 +686,10 @@ index 9a92b5c..64955a1 100644
          ...webhooks.webhooks,
          sources: webhookSources.sources,
 diff --git a/packages/sdk/src/implementation/provider-error.ts b/packages/sdk/src/implementation/provider-error.ts
-index c9e8b85..c907f17 100644
+index c9e8b85..e5b7b8c 100644
 --- a/packages/sdk/src/implementation/provider-error.ts
 +++ b/packages/sdk/src/implementation/provider-error.ts
-@@ -1,38 +1,88 @@
+@@ -1,38 +1,89 @@
 -import type { Effect } from "effect";
 +import { Effect } from "effect";
  import type { ProviderError } from "apps/contracts";
@@ -756,7 +767,8 @@ index c9e8b85..c907f17 100644
 +                lifecycle?.accountFailureTitle === undefined
 +                  ? match.account
 +                  : {
-+                      ...match.account,
++                      method: match.account.method,
++                      provider: match.account.provider,
 +                      label:
 +                        authoredLabel(match.account.label) === undefined ? match.account.label : "",
 +                    },
