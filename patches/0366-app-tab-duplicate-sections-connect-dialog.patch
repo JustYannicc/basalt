@@ -1,6 +1,6 @@
 diff --git a/e2e/support/app-account-sections.ts b/e2e/support/app-account-sections.ts
 new file mode 100644
-index 0000000..72c7969
+index 00000000..72c79690
 --- /dev/null
 +++ b/e2e/support/app-account-sections.ts
 @@ -0,0 +1,47 @@
@@ -52,7 +52,7 @@ index 0000000..72c7969
 +      }),
 +    );
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 6e23132..d35c4e3 100644
+index 6e23132a..d35c4e31 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -8937,6 +8937,47 @@ export const scenarios = plan({
@@ -104,7 +104,7 @@ index 6e23132..d35c4e3 100644
      fixtures: "actors",
      file: "app-accounts-tab.spec.ts",
 diff --git a/e2e/tests/app-account-picker.spec.ts b/e2e/tests/app-account-picker.spec.ts
-index 0c8aa47..f9d1c75 100644
+index 0c8aa472..f9d1c755 100644
 --- a/e2e/tests/app-account-picker.spec.ts
 +++ b/e2e/tests/app-account-picker.spec.ts
 @@ -97,14 +97,16 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
@@ -143,7 +143,7 @@ index 0c8aa47..f9d1c75 100644
                readonly selector: string;
 diff --git a/e2e/tests/app-account-sections.spec.ts b/e2e/tests/app-account-sections.spec.ts
 new file mode 100644
-index 0000000..58644cc
+index 00000000..58644cc2
 --- /dev/null
 +++ b/e2e/tests/app-account-sections.spec.ts
 @@ -0,0 +1,200 @@
@@ -348,10 +348,10 @@ index 0000000..58644cc
 +  );
 +});
 diff --git a/e2e/tests/contributed-app-accounts.spec.ts b/e2e/tests/contributed-app-accounts.spec.ts
-index 13c08c4..9f10090 100644
+index 13c08c4e..623bd8a8 100644
 --- a/e2e/tests/contributed-app-accounts.spec.ts
 +++ b/e2e/tests/contributed-app-accounts.spec.ts
-@@ -14,14 +14,15 @@ import { choiceName, rowMenuName } from "../support/account-choices.ts";
+@@ -14,13 +14,17 @@ import { choiceName, rowMenuName } from "../support/account-choices.ts";
  const ordinaryNote = "Only people who can edit this app can change these accounts.";
  
  /**
@@ -362,20 +362,19 @@ index 13c08c4..9f10090 100644
 + * change.
   */
  const requirementSection = (page: Page, kind: "contributed" | "ordinary") =>
--  page
--    .getByRole("region", { name: "App accounts", exact: true })
+   page
+     .getByRole("region", { name: "App accounts", exact: true })
 -    .getByRole("region", { name: "Contributed service", exact: true })
--    .filter(kind === "ordinary" ? { hasText: ordinaryNote } : { hasNotText: ordinaryNote });
-+  page.getByRole("region", { name: "App accounts", exact: true }).getByRole("region", {
-+    name: kind === "ordinary" ? "Contributed service · Ordinary" : "Contributed service · Shared",
-+    exact: true,
-+  });
++    .getByRole("region", {
++      name: kind === "ordinary" ? "Contributed service · Ordinary" : "Contributed service · Shared",
++      exact: true,
++    })
+     .filter(kind === "ordinary" ? { hasText: ordinaryNote } : { hasNotText: ordinaryNote });
  
  layer(HostedLive, { excludeTestServices: true })("Contributed Accounts tab", (it) => {
-   it.effect(scenarios.contributedAppAccountsBrowser.title, (context) =>
 diff --git a/e2e/tests/local-app-account-sections.spec.ts b/e2e/tests/local-app-account-sections.spec.ts
 new file mode 100644
-index 0000000..b9bcb7f
+index 00000000..b9bcb7ff
 --- /dev/null
 +++ b/e2e/tests/local-app-account-sections.spec.ts
 @@ -0,0 +1,127 @@
@@ -507,7 +506,7 @@ index 0000000..b9bcb7f
 +  );
 +});
 diff --git a/e2e/tests/provisioned-link-boundary.spec.ts b/e2e/tests/provisioned-link-boundary.spec.ts
-index f549762..ea4e985 100644
+index f549762a..ea4e9858 100644
 --- a/e2e/tests/provisioned-link-boundary.spec.ts
 +++ b/e2e/tests/provisioned-link-boundary.spec.ts
 @@ -129,8 +129,9 @@ layer(HostedLive, { excludeTestServices: true })("Provisioned link boundary", (i
@@ -522,7 +521,7 @@ index f549762..ea4e985 100644
                .click(),
            ]).then(([response]) => response.status()),
 diff --git a/packages/ui/src/implementation/components/dialog.tsx b/packages/ui/src/implementation/components/dialog.tsx
-index 7519ddc..a8ccdc5 100644
+index 7519ddc9..a8ccdc57 100644
 --- a/packages/ui/src/implementation/components/dialog.tsx
 +++ b/packages/ui/src/implementation/components/dialog.tsx
 @@ -61,10 +61,56 @@ const focusFirstField = (event: Event) => {
@@ -629,7 +628,7 @@ index 7519ddc..a8ccdc5 100644
          {showCloseButton && (
            <DialogPrimitive.Close asChild>
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index 64279f6..e20b063 100644
+index 64279f6c..e20b0637 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
 @@ -83,6 +83,7 @@ import {
@@ -823,7 +822,7 @@ index 64279f6..e20b063 100644
            </RadioGroup.Root>
 diff --git a/packages/ui/src/implementation/dashboard/requirement-titles.ts b/packages/ui/src/implementation/dashboard/requirement-titles.ts
 new file mode 100644
-index 0000000..7b7eb61
+index 00000000..7b7eb611
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/requirement-titles.ts
 @@ -0,0 +1,52 @@
@@ -880,7 +879,7 @@ index 0000000..7b7eb61
 +  );
 +};
 diff --git a/packages/ui/src/implementation/styles/dashboard.css b/packages/ui/src/implementation/styles/dashboard.css
-index 96b2155..58edff1 100644
+index 96b21553..58edff1f 100644
 --- a/packages/ui/src/implementation/styles/dashboard.css
 +++ b/packages/ui/src/implementation/styles/dashboard.css
 @@ -3,7 +3,10 @@

@@ -78,6 +78,8 @@
     ".upstream/packages/ui/src/implementation/dashboard/account-form.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/common.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/method-labels.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/requirement-titles.ts",
     ".upstream/packages/ui/src/implementation/lib/provider-brand.ts",
     ".upstream/packages/ui/src/implementation/styles/dashboard.css"
   ]
