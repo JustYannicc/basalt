@@ -590,7 +590,7 @@ diff --git a/e2e/support/data-query-batch.ts b/e2e/support/data-query-batch.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/data-query-batch.ts
-@@ -0,0 +1,165 @@
+@@ -0,0 +1,173 @@
 +/** Delivered SQL for one public data request, without application implementation imports. */
 +import { expect } from "@effect/vitest";
 +import { Effect, Layer, Schedule } from "effect";
@@ -722,7 +722,15 @@ new file mode 100644
 +    const pipeline = pipelines[0];
 +    if (pipeline === undefined) return yield* Effect.die("The data query batch is missing");
 +    expect(Number(pipeline.tags["db.pipeline.leaves"])).toBe(3);
-+    expect(Number(pipeline.tags["db.pipeline.statements"])).toBe(3);
++    const target = yield* Target;
++    // PgConnection counts BEGIN and COMMIT; PGlite counts the captured reads only.
++    expect(Number(pipeline.tags["db.pipeline.statements"])).toBe(
++      target.metadata.target === "cloud" ? 5 : 3,
++    );
++    if (target.metadata.target === "cloud") {
++      expect(Number(pipeline.tags["db.pipeline.writes"])).toBe(1);
++      expect(Number(pipeline.tags["db.pipeline.apart"])).toBe(0);
++    }
 +    // SQL spans open while leaves queue, before the pipeline span opens. They are siblings.
 +    const reads = sql.filter((span) => span.operation === "sql.execute");
 +    expect(
