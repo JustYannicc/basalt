@@ -1,7 +1,7 @@
 model {
   extend basalt.build {
     metadata {
-      constraint "Managed Cloud fixtures that enable pool setup or hosted routes run the external pool receiver with the same synthetic signing key as the Worker. Membership and access callbacks retain signature, prefix and expiration checks. Focused public-API scenarios prove audience changes and completed organization cleanup with committed pools; existing assertions and deadlines remain unchanged. Missing product dependencies still fail closed."
+      constraint "Managed Cloud fixtures that enable pool setup or hosted routes run the external pool receiver with the same synthetic signing key as the Worker. Membership and access callbacks retain signature, prefix and expiration checks. Focused public-API scenarios prove audience changes and completed organization cleanup with committed pools; existing assertions and deadlines remain unchanged. The release endpoint reports only the generated pool Worker revision and the shared signing-key text digest with no-store caching. The real rollout gate compares those values; an explicit revision-mismatch negative control keeps repair pending. Missing product dependencies still fail closed."
     }
   }
 }
