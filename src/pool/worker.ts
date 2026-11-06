@@ -1,5 +1,6 @@
 import { deploymentReadinessPath, handleDeploymentReadiness } from "./deployment-readiness.ts";
 import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
+import { handleRemovalIntent, removalIntentPath } from "./removal-intent.ts";
 import { pricedSummary } from "./model-history/priced-summary.ts";
 import { publishAccountObservations } from "./account-observation-publish.ts";
 import { appUsage } from "./model-history/app-usage.ts";
@@ -384,6 +385,19 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         this.env.POOL_APP_SIGNING_KEY,
         `https://${brand.host}`,
       );
+    if (pathname === removalIntentPath)
+      return handleRemovalIntent(request, {
+        signingKey: this.env.POOL_APP_SIGNING_KEY,
+        previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
+        refresh: (pool) => this.memberships.refresh(pool),
+        selected: async (pool) => {
+          const policy = await this.memberships.authority(pool);
+          if (!policy) throw new Error("Native pool membership is unavailable");
+          return policy.accounts;
+        },
+        record: (pool, references, actor, operation, issuedAt) =>
+          this.control.recordRemovalIntent(pool, references, actor, operation, issuedAt),
+      });
     if (pathname === accountAcquisitionPath) return this.control.acquire(request);
     if (pathname === membershipPath) {
       try {
@@ -496,6 +510,7 @@ export async function handlePoolWorkerRequest(
   // Answered here, without waking the container.
   if (pathname === poolReleasePath) return poolRelease(request, env);
   if (
+    pathname === removalIntentPath ||
     pathname === importRemovalPath ||
     pathname === appModelPath ||
     pathname === accountMirrorPath ||
