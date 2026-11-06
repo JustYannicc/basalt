@@ -60,7 +60,7 @@ test("release admission refuses 20/22 and admits 14/22 with the configured seven
   assert.throws(() => primaryHeadroom(metrics(16), "main"), /refused/);
   const raisedLimit = metrics(20);
   raisedLimit.metrics[1]!.values[0]!.value = 40;
-  assert.throws(() => primaryHeadroom(raisedLimit, "main"), /max 40, configured max 25/);
+  assert.throws(() => primaryHeadroom(raisedLimit, "main"), /observed max 40, expected max 25/);
 });
 
 test("missing, duplicate, mismatched and invalid primary metrics fail closed", () => {

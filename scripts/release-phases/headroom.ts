@@ -63,7 +63,7 @@ export function primaryHeadroom(value: unknown, branch: string, policy = release
   if (primary[1]!.value !== policy.maxConnections)
     throw new Error(
       `Database preflight refused: primary total ${observed}, release envelope ${envelope}, ordinary slots ${ordinarySlots} ` +
-        `(max ${primary[1]!.value}, configured max ${policy.maxConnections}). No deployment has started. ` +
+        `(observed max ${primary[1]!.value}, expected max ${policy.maxConnections}). No deployment has started. ` +
         "The connection limits need an explicit configuration review before retrying.",
     );
   if (ordinarySlots <= 0 || envelope <= 0 || observed + envelope > ordinarySlots)
