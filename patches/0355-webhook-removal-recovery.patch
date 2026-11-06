@@ -142,6 +142,15 @@ diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/impl
              }),
            );
            const current = yield* read(input);
+@@ -661,7 +698,7 @@
+       }),
+     create: (input: typeof CreateWebhook.Type) => create(input, false),
+     reconcile: (input: typeof WebhookTarget.Type) => reconcile(input),
+-    remove: (input: typeof WebhookTarget.Type) => reconcile(input, true),
++    remove: (input: typeof WebhookTarget.Type) => reconcile(input, true, false),
+     deliver: (input: typeof DeliverWebhook.Type) =>
+       Effect.gen(function* () {
+         yield* outsideTransaction;
 @@ -696,6 +733,12 @@
    };
    return {
@@ -359,7 +368,7 @@ diff --git a/e2e/support/webhook-removal-case.ts b/e2e/support/webhook-removal-c
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/webhook-removal-case.ts
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,122 @@
 +import { expect } from "@effect/vitest";
 +import { Clock, Effect, Schedule, Schema } from "effect";
 +import { body } from "./api.ts";
@@ -395,6 +404,11 @@ new file mode 100644
 +      expect(result).toMatchObject({ id: hook.id, status: expected, failure: "unregister" });
 +    }
 +    if (kind === "authored" || kind === "provider") {
++      // Durable cleanup also calls DELETE again; only an explicit reconcile may resume removal.
++      const held = yield* api.request(actors.owner, "DELETE", endpoint);
++      expect(held.status, JSON.stringify(held.body)).toBe(200);
++      expect(held.body).toMatchObject({ id: hook.id, status: "disabled", failure: "unregister" });
++      expect(yield* f.removalRequests).toBe(3);
 +      // Re-saving the same source exercises managed creation with the disabled key.
 +      const configured = yield* api.request(
 +        actors.owner,
