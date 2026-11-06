@@ -1414,15 +1414,19 @@ jobs:
         uses: ./.github/actions/setup-browser
       - name: Run this file's declared scenarios
         run: bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          include-hidden-files: true
           name: declared-self-host-${{ matrix.file }}-${{ matrix.key }}
           path: |
-            .upstream/.local/e2e/**/results.json
-            .upstream/.local/e2e/**/server.log
-            .upstream/.local/e2e/**/cloud.log
-            .upstream/.local/e2e/**/report/**
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   declared-local:
     needs: select
@@ -1448,15 +1452,19 @@ jobs:
         uses: ./.github/actions/setup-browser
       - name: Run this file's declared scenarios
         run: bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          include-hidden-files: true
           name: declared-local-${{ matrix.file }}-${{ matrix.key }}
           path: |
-            .upstream/.local/e2e/**/results.json
-            .upstream/.local/e2e/**/server.log
-            .upstream/.local/e2e/**/cloud.log
-            .upstream/.local/e2e/**/report/**
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   declared-cloud:
     needs: select
@@ -1482,15 +1490,19 @@ jobs:
         uses: ./.github/actions/setup-browser
       - name: Run this file's declared scenarios
         run: bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          include-hidden-files: true
           name: declared-cloud-${{ matrix.file }}-${{ matrix.key }}
           path: |
-            .upstream/.local/e2e/**/results.json
-            .upstream/.local/e2e/**/server.log
-            .upstream/.local/e2e/**/cloud.log
-            .upstream/.local/e2e/**/report/**
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   upstream-image:
     needs: select
@@ -1546,6 +1558,18 @@ jobs:
         run: bun scripts/ci/check-plans.ts
       - name: Check workflow syntax
         run: node scripts/ci/check-workflows.ts
+      - name: Prove failed E2E evidence reaches artifact inputs
+        env:
+          BASALT_E2E_UPLOAD_PROOF_DIR: .generated/ci-evidence-proof
+        run: node --test scripts/ci/collect-e2e-evidence.test.mjs scripts/ci/declared-e2e-evidence.test.mjs
+      - name: Upload forced-failure evidence proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: declared-e2e-failure-evidence-proof
+          path: .generated/ci-evidence-proof
+          include-hidden-files: true
+          if-no-files-found: error
       - name: Check app conventions
         run: |
           node scripts/app-lint/prepare-host.mjs
