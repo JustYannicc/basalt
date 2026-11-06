@@ -1,0 +1,112 @@
+diff --git a/e2e/support/account-delete-contention.ts b/e2e/support/account-delete-contention.ts
+--- a/e2e/support/account-delete-contention.ts
++++ b/e2e/support/account-delete-contention.ts
+@@ -74,18 +74,21 @@
+ /** Queued writers can hide the held app from PostgreSQL's immediate blockers. */
+ export const blockedThrough = (
+   locks: Effect.Success<typeof cloudLocks>,
+-  waiter: number,
++  waiter: number | undefined,
+   blocker: number,
+   statement: string,
+ ) =>
+   locks
+     .run({
+-      sql: `with recursive blocking(pid) as (
+-        select unnest(pg_blocking_pids($1::integer))
+-        union select unnest(pg_blocking_pids(blocking.pid)) from blocking
+-      ) select pid, query from pg_stat_activity where pid = $1 and query ilike $3
+-      and exists (select 1 from blocking where pid = $2)`,
+-      params: [waiter, blocker, statement],
++      sql: `with recursive waiters as (
++        select pid, query from pg_stat_activity
++        where ($1::integer is null or pid = $1) and query ilike $3
++      ), blocking(waiter, pid) as (
++        select pid, unnest(pg_blocking_pids(pid)) from waiters
++        union select waiter, unnest(pg_blocking_pids(blocking.pid)) from blocking
++      ) select pid, query from waiters
++      where exists (select 1 from blocking where waiter = waiters.pid and pid = $2)`,
++      params: [waiter ?? null, blocker, statement],
+     })
+     .pipe(
+       Effect.flatMap(Schema.decodeUnknownEffect(Backends)),
+@@ -114,12 +117,19 @@
+ 
+ /** Queue the held app behind the route precheck, so the SDK must reacquire it afterward. */
+ export const holdSdkApp = <A, E, R>(
+-  input: { readonly organization: string; readonly user: string; readonly app: string },
++  input: {
++    readonly organization: string;
++    readonly user: string;
++    readonly app: string;
++    readonly queuedWriter?: boolean;
++  },
+   remove: Effect.Effect<A, E, R>,
+ ) =>
+   Effect.gen(function* () {
+     const membership = yield* cloudLocks;
+     const app = yield* cloudLocks;
++    const queued = input.queuedWriter ? yield* cloudLocks : undefined;
++    if (queued) yield* Effect.addFinalizer(() => Effect.ignore(queued.release));
+     yield* Effect.addFinalizer(() => Effect.ignore(membership.release));
+     yield* Effect.addFinalizer(() => Effect.ignore(app.release));
+     const [member] = yield* membership
+@@ -144,17 +154,40 @@
+         .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Holder)), Effect.orDie),
+     );
+     yield* blockedThrough(membership, appBackend!.pid, precheck!.pid, "%executor_apps%");
++    let queuedHolding: Fiber.Fiber<readonly { readonly pid: number }[]> | undefined;
++    if (queued) {
++      const [backend] = yield* queued
++        .hold({ sql: "select pg_backend_pid() as pid" })
++        .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Holder)), Effect.orDie);
++      queuedHolding = yield* Effect.forkChild(
++        queued
++          .hold({
++            sql: "select pg_backend_pid() as pid from executor_apps where id = $1 for no key update",
++            params: [input.app],
++          })
++          .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Holder)), Effect.orDie),
++      );
++      yield* blockedThrough(membership, backend!.pid, appBackend!.pid, "%executor_apps%");
++      yield* (yield* Evidence).json("delete-queued-writer.json", { backend });
++    }
+     yield* membership.release;
+     const [holder] = yield* Fiber.join(holding);
+     // The SDK transaction may use another pooled backend after the route precheck commits.
+     const trace = precheck!.query.match(/traceparent='00-([a-f0-9]{32})-/)?.[1];
+     if (trace === undefined) return yield* Effect.die("Delete precheck omitted its request trace");
+     const requestStatement = `%select id from executor_apps%for no key update%traceparent='00-${trace}-%`;
+-    const [deleting] = yield* blocked(membership, [holder!.pid], requestStatement);
++    const [deleting] = yield* blockedThrough(membership, undefined, holder!.pid, requestStatement);
+     yield* (yield* Evidence).json("delete-observed-backends.json", { precheck, holder, deleting });
+     return {
+       request,
+       app,
++      releaseApp: Effect.gen(function* () {
++        yield* app.release;
++        if (queued && queuedHolding) {
++          yield* Fiber.join(queuedHolding);
++          yield* queued.release;
++        }
++      }),
+       observer: membership,
+       deleting: deleting!,
+       holder: holder!,
+diff --git a/e2e/tests/contributed-account-delete-oauth.spec.ts b/e2e/tests/contributed-account-delete-oauth.spec.ts
+--- a/e2e/tests/contributed-account-delete-oauth.spec.ts
++++ b/e2e/tests/contributed-account-delete-oauth.spec.ts
+@@ -137,11 +137,12 @@
+             // Keep this gate independent of the reconnect's membership share lock.
+             user: f.ids.admin,
+             app: f.app.id,
++            queuedWriter: true,
+           },
+           api.request(actors.admin, "DELETE", `${prefix}/accounts/${account.id}`),
+         );
+         yield* completing.release;
+-        yield* deletion.app.release;
++        yield* deletion.releaseApp;
+         yield* ok(yield* Fiber.join(saving));
+         yield* ok(yield* Fiber.join(deletion.request));
+         yield* deletedAccount(
