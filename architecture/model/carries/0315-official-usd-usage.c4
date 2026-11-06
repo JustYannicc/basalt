@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "Settings and Overview estimate USD from the same retained request tokens, shared official price table and cost calculation. Current pool account membership does not erase retained cost. Home credit charges never enter USD estimates; models with no known official price remain separately counted as unpriced. Personal reads exclude other people and import-owner attribution. Subscription classification remains independent of API-equivalent valuation."
+    }
+  }
+}

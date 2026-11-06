@@ -77,7 +77,7 @@ function MoneyCell({
         unavailable
       </span>
     );
-  if (!priced && excluded > 0n) return <span className="text-muted-foreground">excluded</span>;
+  if (!priced && excluded > 0n) return <span className="text-muted-foreground">unpriced</span>;
   return dash;
 }
 
@@ -231,17 +231,14 @@ const cells = (
         />
       </td>
       <td className="py-2.5 text-right tabular-nums max-[540px]:hidden">
-        {apiUnavailable && totals.imported.length ? (
-          // Same fallback as the API cost figure, so the rows add up to it.
-          <span title={`Recorded API price. ${apiUnavailable}`}>{moneyList(totals.imported)}</span>
-        ) : (
+        {
           <MoneyCell
             list={moneyRows.apiBilled}
             priced={moneyRows.apiCount}
             excluded={moneyRows.apiExcluded}
             title={apiUnavailable ?? undefined}
           />
-        )}
+        }
       </td>
     </>
   );
@@ -517,9 +514,8 @@ export function Money({
   const slices = personal?.metrics.usageSlices ?? overview?.metrics.usageSlices ?? [];
   const providers = [...new Set(slices.map((slice) => slice.provider))].sort();
   const unknown = api?.excluded.unknownKind ?? 0;
-  const unpriced = (api?.excluded.unpriced ?? 0) + (subscription?.excluded.unpriced ?? 0);
+  const unpriced = api?.excluded.unpriced ?? 0;
   const personDay = overview?.metrics.perActivePersonPerDay;
-  const recorded = total(people.value.groups).imported;
   return (
     <section id="cost" aria-labelledby="cost-heading" className="grid scroll-mt-4 gap-4 pt-12">
       <div className="grid gap-1">
@@ -527,28 +523,16 @@ export function Money({
           API cost and subscription value
         </h2>
         <p className="max-w-[38rem] text-sm text-muted-foreground text-pretty">
-          Two different things. API cost is money billed per token. Subscription value is what
-          flat-rate requests would have cost at API prices.
+          API cost estimates request tokens at current official USD prices. Subscription value
+          separates flat-rate usage where the account type is known.
         </p>
       </div>
       <div className="grid grid-cols-2 rounded-lg border border-border max-[540px]:grid-cols-1">
         <Figure
-          label={
-            api?.status !== "available" && recorded.length ? "API cost, recorded price" : "API cost"
-          }
-          value={
-            api?.status === "available"
-              ? overviewAmount(api.amount)
-              : recorded.length
-                ? moneyList(recorded)
-                : "Unavailable"
-          }
+          label={"API cost"}
+          value={api?.status === "available" ? overviewAmount(api.amount) : "Unavailable"}
           days={days}
-          body={
-            api?.status !== "available" && recorded.length
-              ? `${metricBody(api, "No billed estimate is available.")} Shown instead: the API price recorded with each request, the figure Settings shows. It includes flat-rate requests.`
-              : metricBody(api, "Waiting for current USD provider prices.")
-          }
+          body={metricBody(api, "Waiting for current USD provider prices.")}
         />
         <Figure
           label="Subscription value"
@@ -572,7 +556,7 @@ export function Money({
               <b className="font-medium text-foreground tabular-nums">
                 {unpriced.toLocaleString()}
               </b>{" "}
-              unpriced requests are excluded from both totals.
+              unpriced requests are excluded from the API cost estimate.
             </span>
           </span>
         )}

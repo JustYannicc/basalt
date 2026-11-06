@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-official-usd-usage",
+  "file": "0315-official-usd-usage.patch",
+  "content_sha256": "5b20d6c8a96bc8dd5a348e16c72478f4d21113b6d0d2cec4f8d5e0fd9af3c5a3",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

@@ -1,3 +1,4 @@
+import { pricedSummary } from "./model-history/priced-summary.ts";
 import { publishAccountObservations } from "./account-observation-publish.ts";
 import { appUsage } from "./model-history/app-usage.ts";
 import { AppModels } from "./app-models.ts";
@@ -174,6 +175,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       audience: (pool) => this.computers.audience(pool),
       defer: (work) => ctx.waitUntil(work),
       collection: this.control.collection,
+      officialSummary: (input) =>
+        withHistoryDatabase(env.POOL_AUTH_DATABASE?.connectionString, (db) =>
+          pricedSummary(db, input, (targets) => this.overviewPrices.read(targets)),
+        ),
       appUsage: (input) =>
         env.POOL_MODEL_HISTORY_ENABLED !== "true"
           ? Promise.resolve(undefined)
