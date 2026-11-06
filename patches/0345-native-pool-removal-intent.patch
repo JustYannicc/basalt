@@ -89,10 +89,9 @@ index 1269ab8..72795db 100644
            ...input,
 diff --git a/apps/hosted/server/src/implementation/pool-removal-intent.ts b/apps/hosted/server/src/implementation/pool-removal-intent.ts
 new file mode 100644
-index 0000000..2e911b9
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-removal-intent.ts
-@@ -0,0 +1,100 @@
+@@ -0,0 +1,101 @@
 +import { AppId, AccountAcquisitionHost, type AccountId, StorageError } from "@executor-js/sdk/core";
 +import { Clock, Config, Context, Effect, Option, Redacted, Schema } from "effect";
 +import { FetchHttpClient, HttpBody, HttpClient } from "effect/http";
@@ -185,7 +184,8 @@ index 0000000..2e911b9
 +          new URL("/pool/v1/account-removal-intents", origin).href,
 +          { body: HttpBody.jsonUnsafe({ envelope }) },
 +        );
-+        if (response.status !== 204) return yield* new StorageError();
++        // The hosted API can deploy before the Pool Worker supports removal intents.
++        if (response.status !== 204 && response.status !== 404) return yield* new StorageError();
 +      }
 +    }).pipe(
 +      Effect.timeout("10 seconds"),
@@ -239,3 +239,62 @@ index 4caabe8..683aadb 100644
            Effect.mapError((error) =>
              Schema.is(HostOperationNotFound)(error) ? new HostOperationFailed({}) : error,
            ),
+diff --git a/e2e/support/account-mirror-backend.ts b/e2e/support/account-mirror-backend.ts
+--- a/e2e/support/account-mirror-backend.ts
++++ b/e2e/support/account-mirror-backend.ts
+@@ -9,8 +9,19 @@
+     readonly { account: string; reference: string; fields: Readonly<Record<string, string>> }[]
+   >([]);
+   const references = yield* Ref.make<ReadonlySet<string>>(new Set());
++  const intentStatus = yield* Ref.make(404);
++  const intentStatuses = yield* Ref.make<readonly number[]>([]);
+   let gate: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | undefined;
+   const routes = Layer.mergeAll(
++    HttpRouter.add(
++      "POST",
++      "/pool/v1/account-removal-intents",
++      Effect.gen(function* () {
++        const status = yield* Ref.get(intentStatus);
++        yield* Ref.update(intentStatuses, (values) => [...values, status]);
++        return HttpServerResponse.empty({ status });
++      }),
++    ),
+     HttpRouter.add(
+       "POST",
+       "/mirror",
+@@ -60,6 +71,8 @@
+     origin: `http://127.0.0.1:${server.address.port}`,
+     calls: Ref.get(calls),
+     references: Ref.get(references),
++    removalIntents: Ref.get(intentStatuses),
++    removalIntentStatus: (status: number) => Ref.set(intentStatus, status),
+     hold: Effect.gen(function* () {
+       const held = { started: yield* Deferred.make<void>(), release: yield* Deferred.make<void>() };
+       gate = held;
+diff --git a/e2e/tests/native-pool-account-mirrors.spec.ts b/e2e/tests/native-pool-account-mirrors.spec.ts
+--- a/e2e/tests/native-pool-account-mirrors.spec.ts
++++ b/e2e/tests/native-pool-account-mirrors.spec.ts
+@@ -172,7 +172,23 @@
+           yield* api.request(actors.owner, "GET", `${pool.path}/accounts/app`),
+         );
+         expect(after.map((row) => row.account.id)).toEqual([shared]);
++        for (const status of [401, 403, 409, 503]) {
++          yield* backend.removalIntentStatus(status);
++          const account = yield* connect(actors.owner, `synthetic-strict-${status}`, true);
++          expect((yield* link(actors.owner, account)).status).toBe(200);
++          const denied = yield* unlink(actors.owner, account);
++          expect(denied.status).toBe(500);
++          expect(denied.body).toMatchObject({ _tag: "StorageError" });
++          expect((yield* backend.removalIntents).at(-1)).toBe(status);
++        }
++        yield* backend.removalIntentStatus(204);
++        const supported = yield* connect(actors.owner, "synthetic-supported-intent", true);
++        expect((yield* link(actors.owner, supported)).status).toBe(200);
++        expect((yield* unlink(actors.owner, supported)).status).toBe(200);
++        expect((yield* backend.removalIntents).at(-1)).toBe(204);
++        yield* backend.removalIntentStatus(404);
+         expect((yield* unlink(actors.owner, shared)).status).toBe(200);
++        expect((yield* backend.removalIntents).at(-1)).toBe(404);
+         expect(yield* backend.references).toContain((yield* backend.calls)[0]!.reference);
+         expect(
+           (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${shared}`)).status,
