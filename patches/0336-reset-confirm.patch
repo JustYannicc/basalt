@@ -233,7 +233,7 @@ index dc53fe9..4294dfb 100644
      fixtures: "actors",
      file: "account-dialog-naming.spec.ts",
 diff --git a/e2e/tests/account-usage-cells.spec.ts b/e2e/tests/account-usage-cells.spec.ts
-index eaf4324..ac3ec22 100644
+index eaf4324..85a7c6a 100644
 --- a/e2e/tests/account-usage-cells.spec.ts
 +++ b/e2e/tests/account-usage-cells.spec.ts
 @@ -1,12 +1,19 @@
@@ -258,7 +258,7 @@ index eaf4324..ac3ec22 100644
  import {
    accountRow,
    openRowDetails,
-@@ -405,4 +412,186 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+@@ -405,4 +412,238 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
        }),
      ),
    );
@@ -329,6 +329,18 @@ index eaf4324..ac3ec22 100644
 +        const confirm = (page: Page) =>
 +          page.getByRole("dialog", { name: "Use a banked reset?", exact: true });
 +        yield* browser.login(actors.owner);
++        // The tab's memory of a spend in flight is keyed by account and pool; note its key in the
++        // tab's own storage, which outlives reloads.
++        yield* browser.use("Note the reset memory's key", (page) =>
++          page.addInitScript(() => {
++            const set = Storage.prototype.setItem;
++            Storage.prototype.setItem = function (name: string, value: string) {
++              if (name.startsWith("executor:reset-spend:"))
++                set.call(sessionStorage, "e2e:reset-memory", name);
++              return set.call(this, name, value);
++            };
++          }),
++        );
 +        // Each width starts fresh: two unspent credits, no calls and a new reading of ↻ 2.
 +        for (const width of [1280, 390]) {
 +          yield* resets.reset;
@@ -440,15 +452,64 @@ index eaf4324..ac3ec22 100644
 +            "a reload keeps the confirmed reset on the same reading",
 +          ).toBe("confirmed");
 +          expect(yield* resets.uses, "the reload spends nothing").toHaveLength(1);
++          // This tab's own unanswered spend outlives another request's confirmation.
++          if (width === 1280) {
++            const other = crypto.randomUUID();
++            const recovered = yield* browser.use("Reload with another spend in flight", (page) =>
++              page
++                .evaluate((other) => {
++                  const name = sessionStorage.getItem("e2e:reset-memory");
++                  if (name === null) throw new Error("No reset memory key noted");
++                  sessionStorage.setItem(
++                    name,
++                    JSON.stringify({ creditId: "credit-1", requestId: other }),
++                  );
++                  return name;
++                }, other)
++                .then((name) =>
++                  page
++                    .reload()
++                    .then(() => row(page).locator('[data-reset-note="unrecorded"]').waitFor())
++                    .then(() =>
++                      Promise.all([
++                        row(page)
++                          .locator('[data-reset-note="unrecorded"]')
++                          .getAttribute("data-request-id"),
++                        control(page).getAttribute("data-reset-control"),
++                        page.evaluate((name) => {
++                          const kept = sessionStorage.getItem(name);
++                          sessionStorage.removeItem(name);
++                          return kept;
++                        }, name),
++                      ]),
++                    ),
++                ),
++            );
++            expect(recovered.slice(0, 2), "the remembered spend keeps its recovery").toEqual([
++              other,
++              "unrecorded",
++            ]);
++            expect(recovered[2], "its IDs stay remembered").toContain(other);
++            expect(yield* resets.uses, "recovery sends nothing by itself").toHaveLength(1);
++          }
 +        }
 +      }),
 +    ),
 +  );
  });
 diff --git a/packages/ui/src/implementation/dashboard/account-reset-control.tsx b/packages/ui/src/implementation/dashboard/account-reset-control.tsx
-index ef87cf8..844422f 100644
+index ef87cf8..7f151be 100644
 --- a/packages/ui/src/implementation/dashboard/account-reset-control.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-reset-control.tsx
+@@ -4,7 +4,7 @@
+  * IDs of a spend the server may never have recorded, kept for this tab so a reload cannot mint a
+  * second request while one is unresolved.
+  */
+-import { useEffect, useState, type ReactNode } from "react";
++import { useEffect, useRef, useState, type ReactNode } from "react";
+ import type { DisplayFormat } from "../../contracts/display.ts";
+ import { Button } from "../components/button.tsx";
+ import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.tsx";
 @@ -43,6 +43,7 @@ export interface ResetResultView {
  /** The server's retained attempt; its retry window is the only recovery clock. */
  export interface ResetAttemptView extends ResetResultView {
@@ -457,12 +518,20 @@ index ef87cf8..844422f 100644
    readonly retryUntil: string;
    readonly canRetryProvider: boolean;
  }
-@@ -232,13 +233,25 @@ export function useResetControl({
+@@ -230,15 +231,35 @@ export function useResetControl({
+     memory.keep(key, next);
+     setState(next);
    };
++  // The mount read compares against the latest reading without re-reading on each new one.
++  const latestReading = useRef(reading);
++  useEffect(() => {
++    latestReading.current = reading;
++  });
  
    // After a reload or on another device: the server's unknown first, then this tab's IDs. A
 -  // request it settled meanwhile just clears; the row shows that through its usage.
-+  // reset confirmed after this reading stays confirmed, as it would have in the tab that sent it.
++  // reset confirmed after this reading stays confirmed, as it would have in the tab that sent it,
++  // unless this tab remembers a different spend, which keeps its own recovery.
    useEffect(() => {
      let live = true;
      const remembered = memory.read(key);
@@ -470,9 +539,11 @@ index ef87cf8..844422f 100644
        if (!live) return;
 -      const spend = read.ok && read.value?.outcome === "unknown" ? spendOf(read.value) : remembered;
 +      const attempt = read.ok ? read.value : null;
++      const reading = latestReading.current;
 +      if (
 +        attempt !== null &&
 +        done.has(attempt.outcome) &&
++        (remembered === undefined || remembered.requestId === attempt.requestId) &&
 +        Date.parse(attempt.startedAt) > Date.parse(reading)
 +      ) {
 +        memory.keep(key, { kind: "idle" });
@@ -485,12 +556,3 @@ index ef87cf8..844422f 100644
        if (spend === undefined) return;
        const next = settled(spend, read, { replayed: false, reading: "" });
        memory.keep(key, next);
-@@ -248,7 +261,7 @@ export function useResetControl({
-     return () => {
-       live = false;
-     };
--  }, [readAttempt, key]);
-+  }, [readAttempt, key, reading]);
- 
-   const reread = (confirming: boolean) =>
-     actions.attempt().then((read) => {

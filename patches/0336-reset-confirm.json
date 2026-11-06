@@ -1,7 +1,7 @@
 {
   "identity": "basalt-reset-confirm",
   "file": "0336-reset-confirm.patch",
-  "content_sha256": "175f501d94b7a2046f1bd177c8ca53ac56255c0cebb8cc7c0a12cca3d2b626ea",
+  "content_sha256": "51bb833d3b433a7ac0a6d2809fb7f28aff2ca452a69fdd5fba8d1173ae41365a",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
