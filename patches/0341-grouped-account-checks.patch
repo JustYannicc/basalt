@@ -1,0 +1,782 @@
+diff --git a/apps/hosted/server/src/contracts/accounts.ts b/apps/hosted/server/src/contracts/accounts.ts
+index 84cc580..4e638ce 100644
+--- a/apps/hosted/server/src/contracts/accounts.ts
++++ b/apps/hosted/server/src/contracts/accounts.ts
+@@ -84,6 +84,22 @@ export const AccountLinkedToApp = UserFacingError.define({
+ /** Parsed AccountLinkedToApp failure. */
+ export type AccountLinkedToApp = typeof AccountLinkedToApp.Type;
+ 
++/** A row supplies its sign-in IDs; the host checks each distinct ID with its own authority. */
++export const AccountGroupCheck = Schema.Struct({
++  accounts: Schema.Array(AccountId).check(Schema.isMinLength(1)),
++});
++/** Refused IDs reveal no existence, health, identity or app metadata. */
++export const AccountGroupCheckResult = Schema.Union([
++  Schema.Struct({ account: AccountId, status: Schema.Literal("checked"), health: AccountHealth }),
++  Schema.Struct({ account: AccountId, status: Schema.Literal("refused") }),
++  Schema.Struct({
++    account: AccountId,
++    status: Schema.Literal("failed"),
++    error: Schema.Union([StorageError, AccountAcquisitionUnavailable]),
++  }),
++]);
++export type AccountGroupCheckResult = typeof AccountGroupCheckResult.Type;
++
+ const params = { organization: OrganizationReference };
+ export const AccountLinkRequired = UserFacingError.define({
+   tag: "AccountLinkRequired",
+@@ -252,6 +268,13 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
+       error: [StorageError, CredentialsError, AccountNotFound, OrganizationForbidden],
+     }).pipe(requireAccount.use),
+   )
++  .add(
++    HttpApiEndpoint.post("checkGroup", `${prefix}/accounts/health`, {
++      params,
++      payload: AccountGroupCheck,
++      success: Schema.Array(AccountGroupCheckResult),
++    }).annotate(RequiredAction, "run"),
++  )
+   .add(
+     HttpApiEndpoint.post("check", `${prefix}/accounts/:account/health`, {
+       params: { ...params, account: AccountId },
+diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/server/src/implementation/accounts.ts
+index b078dd8..9043a4c 100644
+--- a/apps/hosted/server/src/implementation/accounts.ts
++++ b/apps/hosted/server/src/implementation/accounts.ts
+@@ -73,7 +73,7 @@ import { HostedExecutor } from "../contracts/executor.ts";
+ import { recordUsage } from "../contracts/product-analytics.ts";
+ import { currentOwner, ownedConnection } from "./access.ts";
+ import { appLinkApps, appLinkedAccounts, callerLinkedAccounts } from "./app-accounts.ts";
+-import { AccountLinkedToApp } from "../contracts/accounts.ts";
++import { AccountLinkedToApp, type AccountGroupCheckResult } from "../contracts/accounts.ts";
+ import { requireSeparateNativeAccountLink } from "./pool-account-connection.ts";
+ import { requireProviderAccountMethod } from "./provider-account-methods.ts";
+ import { RequirementMismatch } from "../contracts/app-accounts.ts";
+@@ -168,6 +168,27 @@ export const checkAccount = Effect.gen(function* () {
+     Effect.flatMap(visibleObservationHealth),
+   );
+ });
++/** Each sign-in uses the single-account grant and redaction path; one refusal cannot cancel siblings. */
++export const checkAccountGroup = (accounts: readonly AccountId[]) =>
++  Effect.forEach(
++    [...new Set(accounts)],
++    (account) =>
++      checkAccount.pipe(
++        Effect.provideService(AccountTargets.use, { account }),
++        Effect.map((health): AccountGroupCheckResult => ({ account, status: "checked", health })),
++        Effect.catchTags({
++          OrganizationForbidden: () =>
++            Effect.succeed<AccountGroupCheckResult>({ account, status: "refused" }),
++          AccountNotFound: () =>
++            Effect.succeed<AccountGroupCheckResult>({ account, status: "refused" }),
++          StorageError: (error) =>
++            Effect.succeed<AccountGroupCheckResult>({ account, status: "failed", error }),
++          AccountAcquisitionUnavailable: (error) =>
++            Effect.succeed<AccountGroupCheckResult>({ account, status: "failed", error }),
++        }),
++      ),
++    { concurrency: 2 },
++  );
+ /**
+  * Check only providers reachable through the caller's app or account access. Lists the registered
+  * clients the caller may use, as metadata; never a client secret.
+@@ -418,6 +439,7 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
+       )
+       .handle("identify", () => identifyAccount)
+       .handle("check", () => checkAccount)
++      .handle("checkGroup", ({ payload }) => checkAccountGroup(payload.accounts))
+       .handle("disconnect", () => disconnectAccount)
+       .handle("update", ({ payload }) => updateAccount(payload))
+       .handle("oauthSetup", ({ params }) =>
+diff --git a/apps/hosted/web/src/contracts/accounts.ts b/apps/hosted/web/src/contracts/accounts.ts
+index ff2a29d..cf3e073 100644
+--- a/apps/hosted/web/src/contracts/accounts.ts
++++ b/apps/hosted/web/src/contracts/accounts.ts
+@@ -6,7 +6,14 @@ import { linkedAccountIds } from "@executor-js/ui/contracts/app-accounts";
+ import { acknowledgeResourceAccount, resourceDirectoryAtom } from "./resource-access.ts";
+ import { protectedQuery } from "./protected-query.ts";
+ /** Account queries remain independent across organizations, including OAuth returns. */
+-import type { Account, AccountFieldsInput, AccountId, AppId, ProviderId } from "@executor-js/sdk";
++import type {
++  Account,
++  AccountHealth,
++  AccountFieldsInput,
++  AccountId,
++  AppId,
++  ProviderId,
++} from "@executor-js/sdk";
+ import type { OrganizationReference } from "@executor-js/hosted-server/organization";
+ import { Data, Effect, Option } from "effect";
+ import { AsyncResult, Atom } from "effect/reactivity";
+@@ -43,24 +50,24 @@ const updateAccount = Atom.family((key: AccountKey) =>
+ /** Run the checks of the apps this member can use and show the results where accounts are listed. */
+ const runCheck = (get: Atom.FnContext, key: AccountKey) =>
+   Effect.flatMap(HostedClient, (client) => client.accounts.check({ params: key })).pipe(
+-    Effect.tap((health) =>
+-      Effect.sync(() => {
+-        acknowledge(get, accountAtom(key), (data) => ({ ...data, health }));
+-        // The account list reads the resource directory; reload it for the recorded results.
+-        get.refresh(resourceDirectoryAtom(key.organization));
+-        get.refresh(resourceDirectoryAtom(key.organization, "managed"));
+-        refreshSavedAccountRows(get, key.organization);
+-        acknowledge(get, inventoryAtom(key.organization), (data) => ({
+-          ...data,
+-          accounts: data.accounts.map((current) =>
+-            current.id === key.account ? { ...current, health } : current,
+-          ),
+-        }));
+-        // An app's check can also report usage, which the row then shows.
+-        get.refresh(accountObservationsAtom(key));
+-      }),
+-    ),
++    Effect.tap((health) => Effect.sync(() => acknowledgeCheck(get, key, health))),
+   );
++const acknowledgeCheck = (get: Atom.FnContext, key: AccountKey, health: AccountHealth) => {
++  acknowledge(get, accountAtom(key), (data) => ({ ...data, health }));
++  // The account list reads the resource directory; reload it for the recorded results.
++  get.refresh(resourceDirectoryAtom(key.organization));
++  get.refresh(resourceDirectoryAtom(key.organization, "managed"));
++  refreshSavedAccountRows(get, key.organization);
++  acknowledge(get, inventoryAtom(key.organization), (data) => ({
++    ...data,
++    accounts: data.accounts.map((current) =>
++      current.id === key.account ? { ...current, health } : current,
++    ),
++  }));
++  // An app's check can also report usage, which the row then shows.
++  get.refresh(accountObservationsAtom(key));
++};
++
+ const checkAccount = Atom.family((key: AccountKey) =>
+   HostedClient.runtime.fn((_: void, get) => runCheck(get, key)),
+ );
+@@ -69,6 +76,37 @@ export const checkAccountAtom = (key: {
+   organization: OrganizationReference;
+   account: AccountId;
+ }) => checkAccount(new AccountKey(key));
++class AccountGroupKey extends Data.Class<{
++  readonly organization: OrganizationReference;
++  readonly accounts: readonly AccountId[];
++}> {}
++const checkAccountGroup = Atom.family((key: AccountGroupKey) =>
++  HostedClient.runtime.fn((_: void, get) =>
++    Effect.flatMap(HostedClient, (client) =>
++      client.accounts.checkGroup({
++        params: { organization: key.organization },
++        payload: { accounts: key.accounts },
++      }),
++    ).pipe(
++      Effect.tap((results) =>
++        Effect.sync(() => {
++          for (const result of results)
++            if (result.status === "checked")
++              acknowledgeCheck(
++                get,
++                new AccountKey({ organization: key.organization, account: result.account }),
++                result.health,
++              );
++        }),
++      ),
++    ),
++  ),
++);
++/** One pending call per grouped row; only checked accounts update their retained health. */
++export const checkAccountGroupAtom = (key: {
++  readonly organization: OrganizationReference;
++  readonly accounts: readonly AccountId[];
++}) => checkAccountGroup(new AccountGroupKey({ ...key, accounts: Data.array(key.accounts) }));
+ class AppAccountKey extends Data.Class<{
+   readonly organization: OrganizationReference;
+   readonly app: AppId;
+diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
+index 9f5d665..e232457 100644
+--- a/apps/local/server/src/contracts/dashboard.ts
++++ b/apps/local/server/src/contracts/dashboard.ts
+@@ -135,6 +135,22 @@ import {
+   OpenApi,
+ } from "effect/http-api";
+ 
++/** A row supplies its sign-in IDs; the host checks each distinct ID with its own authority. */
++export const AccountGroupCheck = Schema.Struct({
++  accounts: Schema.Array(AccountId).check(Schema.isMinLength(1)),
++});
++/** Refused IDs reveal no existence, health, identity or app metadata. */
++export const AccountGroupCheckResult = Schema.Union([
++  Schema.Struct({ account: AccountId, status: Schema.Literal("checked"), health: AccountHealth }),
++  Schema.Struct({ account: AccountId, status: Schema.Literal("refused") }),
++  Schema.Struct({
++    account: AccountId,
++    status: Schema.Literal("failed"),
++    error: Schema.Union([StorageError, AccountAcquisitionUnavailable]),
++  }),
++]);
++export type AccountGroupCheckResult = typeof AccountGroupCheckResult.Type;
++
+ /** Why the last start did not move other owners' records to `local`; see data step 7. */
+ export { blockedRecovery, LocalOwnerMigration };
+ 
+@@ -917,6 +933,12 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+         error: [StorageError, AppNotFound, AuthMethodInvalid, AccountFieldsInvalid],
+       }),
+     )
++    .add(
++      HttpApiEndpoint.post("checkAccountGroup", "/dashboard/api/accounts/health", {
++        payload: AccountGroupCheck,
++        success: Schema.Array(AccountGroupCheckResult),
++      }),
++    )
+     .add(
+       HttpApiEndpoint.post("checkAccount", "/dashboard/api/accounts/:account/health", {
+         params: { account: AccountId },
+diff --git a/apps/local/server/src/implementation/account-checks.ts b/apps/local/server/src/implementation/account-checks.ts
+new file mode 100644
+index 0000000..fda495d
+--- /dev/null
++++ b/apps/local/server/src/implementation/account-checks.ts
+@@ -0,0 +1,41 @@
++import { type AccountId, type Executor } from "@executor-js/sdk/core";
++import { Effect } from "effect";
++import type { SqlClient } from "effect/sql";
++import type { AccountGroupCheckResult } from "../contracts/dashboard.ts";
++import { accountLinks } from "./app-accounts.ts";
++
++/** Local's authenticated dashboard uses its existing executor and links for every sign-in. */
++export const localAccountChecks = (executor: Executor, sql: SqlClient.SqlClient) => {
++  const linkedApps = (account: AccountId) =>
++    Effect.gen(function* () {
++      const found = yield* executor.accounts.get({ account });
++      const linked = new Set(
++        (yield* accountLinks(sql, executor, found.id)).map((link) => link.app),
++      );
++      return (yield* executor.apps.list()).filter((app) => linked.has(app.id));
++    });
++  const check = (account: AccountId) =>
++    linkedApps(account).pipe(
++      Effect.flatMap((apps) =>
++        executor.accounts.check({ account, apps: apps.map((app) => app.id) }),
++      ),
++    );
++  const checkGroup = (accounts: readonly AccountId[]) =>
++    Effect.forEach(
++      [...new Set(accounts)],
++      (account) =>
++        check(account).pipe(
++          Effect.map((health): AccountGroupCheckResult => ({ account, status: "checked", health })),
++          Effect.catchTags({
++            AccountNotFound: () =>
++              Effect.succeed<AccountGroupCheckResult>({ account, status: "refused" }),
++            StorageError: (error) =>
++              Effect.succeed<AccountGroupCheckResult>({ account, status: "failed", error }),
++            AccountAcquisitionUnavailable: (error) =>
++              Effect.succeed<AccountGroupCheckResult>({ account, status: "failed", error }),
++          }),
++        ),
++      { concurrency: 2 },
++    );
++  return { linkedApps, check, checkGroup };
++};
+diff --git a/apps/local/server/src/implementation/dashboard.ts b/apps/local/server/src/implementation/dashboard.ts
+index 6540807..c98e57f 100644
+--- a/apps/local/server/src/implementation/dashboard.ts
++++ b/apps/local/server/src/implementation/dashboard.ts
+@@ -1,3 +1,4 @@
++import { localAccountChecks } from "./account-checks.ts";
+ import { dashboardOAuthConnections } from "./dashboard-oauth-connections.ts";
+ import { sourceDisplay, sourceDisplayFile } from "@executor-js/app-management/source-display";
+ import { connectOptions, connectionClient } from "./oauth-clients.ts";
+@@ -364,15 +365,11 @@ export const dashboard = (
+         versions,
+       };
+     });
+-  /** The apps an account is linked to, in either scope. */
+-  const linkedApps = (account: AccountId) =>
+-    Effect.gen(function* () {
+-      const found = yield* executor.accounts.get({ account });
+-      const linked = new Set(
+-        (yield* accountLinks(sql, executor, found.id)).map((link) => link.app),
+-      );
+-      return (yield* executor.apps.list()).filter((app) => linked.has(app.id));
+-    });
++  const {
++    linkedApps,
++    check: checkAccount,
++    checkGroup: checkAccountGroup,
++  } = localAccountChecks(executor, sql);
+   /** The app and the accounts a call or listing runs with. */
+   const resolved = (appId: AppId) =>
+     Effect.gen(function* () {
+@@ -687,13 +684,8 @@ export const dashboard = (
+           ),
+         ),
+       )
+-      .handle("checkAccount", ({ params }) =>
+-        linkedApps(params.account).pipe(
+-          Effect.flatMap((apps) =>
+-            executor.accounts.check({ ...params, apps: apps.map((app) => app.id) }),
+-          ),
+-        ),
+-      )
++      .handle("checkAccount", ({ params }) => checkAccount(params.account))
++      .handle("checkAccountGroup", ({ payload }) => checkAccountGroup(payload.accounts))
+       .handle("checkCredentials", ({ params, payload }) =>
+         executor.apps.checkCredentials({ ...params, ...payload }),
+       )
+diff --git a/apps/local/web/src/contracts/accounts.ts b/apps/local/web/src/contracts/accounts.ts
+index adecd0c..5ce71b9 100644
+--- a/apps/local/web/src/contracts/accounts.ts
++++ b/apps/local/web/src/contracts/accounts.ts
+@@ -1,7 +1,14 @@
+ /** Typed account management; successful responses contain metadata only. */
+-import type { Account, AccountId, AccountFieldsInput, AppId, ProviderId } from "@executor-js/sdk";
++import type {
++  Account,
++  AccountHealth,
++  AccountId,
++  AccountFieldsInput,
++  AppId,
++  ProviderId,
++} from "@executor-js/sdk";
+ import { DashboardAccountDetail } from "@executor-js/local-server/contracts";
+-import { Effect, Option } from "effect";
++import { Data, Effect, Option } from "effect";
+ import { AsyncResult, Atom } from "effect/reactivity";
+ import { acknowledge, acknowledgedQuery, invalidate } from "@executor-js/ui/contracts/mutations";
+ import type { AccountToName } from "@executor-js/ui/dashboard/name-account";
+@@ -57,23 +64,40 @@ export const checkAccountAtom = Atom.family((account: AccountId) =>
+   DashboardClient.runtime.fn((_: void, get) =>
+     Effect.flatMap(DashboardClient, (client) =>
+       client.dashboard.checkAccount({ params: { account } }),
++    ).pipe(Effect.tap((health) => Effect.sync(() => acknowledgeCheck(get, account, health)))),
++  ),
++);
++const acknowledgeCheck = (get: Atom.FnContext, account: AccountId, health: AccountHealth) => {
++  acknowledge(get, accountAtom(account), (data) => ({ ...data, health }));
++  acknowledge(get, overviewAtom, (data) => ({
++    ...data,
++    accounts: data.accounts.map((current) =>
++      current.id === account ? { ...current, health } : current,
++    ),
++  }));
++  // An app's check can also report usage, which the row then shows.
++  get.refresh(accountObservationsAtom(account));
++};
++class AccountGroupKey extends Data.Class<{ readonly accounts: readonly AccountId[] }> {}
++const checkAccountGroup = Atom.family((key: AccountGroupKey) =>
++  DashboardClient.runtime.fn((_: void, get) =>
++    Effect.flatMap(DashboardClient, (client) =>
++      client.dashboard.checkAccountGroup({
++        payload: { accounts: key.accounts },
++      }),
+     ).pipe(
+-      Effect.tap((health) =>
++      Effect.tap((results) =>
+         Effect.sync(() => {
+-          acknowledge(get, accountAtom(account), (data) => ({ ...data, health }));
+-          acknowledge(get, overviewAtom, (data) => ({
+-            ...data,
+-            accounts: data.accounts.map((current) =>
+-              current.id === account ? { ...current, health } : current,
+-            ),
+-          }));
+-          // An app's check can also report usage, which the row then shows.
+-          get.refresh(accountObservationsAtom(account));
++          for (const result of results)
++            if (result.status === "checked") acknowledgeCheck(get, result.account, result.health);
+         }),
+       ),
+     ),
+   ),
+ );
++/** One pending call per grouped row; only checked accounts update their retained health. */
++export const checkAccountGroupAtom = (accounts: readonly AccountId[]) =>
++  checkAccountGroup(new AccountGroupKey({ accounts: Data.array(accounts) }));
+ /** A fresh read of which apps select an account, taken after a selection change commits. */
+ export const accountUsageAtom = DashboardClient.runtime.fn((account: AccountId) =>
+   Effect.flatMap(DashboardClient, (client) => client.dashboard.account({ params: { account } })),
+diff --git a/e2e/support/account-observation-fixture.ts b/e2e/support/account-observation-fixture.ts
+index 4b63bad..62f7ee5 100644
+--- a/e2e/support/account-observation-fixture.ts
++++ b/e2e/support/account-observation-fixture.ts
+@@ -48,6 +48,7 @@ export const observationBackend = Effect.gen(function* () {
+     body: { accountInfo: { displayName: "Observed identity" } },
+   });
+   const calls = yield* Ref.make(0);
++  const healthCalls = yield* Ref.make(0);
+   const held = yield* Ref.make<
+     { entered: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | undefined
+   >(undefined);
+@@ -67,6 +68,7 @@ export const observationBackend = Effect.gen(function* () {
+             yield* Deferred.await(gate.release);
+           }
+         }
++        if (path === "/health") yield* Ref.update(healthCalls, (count) => count + 1);
+         const result = yield* Ref.get(path === "/health" ? health : answer);
+         return yield* HttpServerResponse.json(result.body, { status: result.status });
+       }),
+@@ -82,6 +84,7 @@ export const observationBackend = Effect.gen(function* () {
+   return {
+     origin: `http://127.0.0.1:${server.address.port}`,
+     calls: Ref.get(calls),
++    healthCalls: Ref.get(healthCalls),
+     answer: (value: Answer) => Ref.set(answer, value),
+     health: (value: Answer) => Ref.set(health, value),
+     hold: Effect.gen(function* () {
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 38c9da7..3c6f1ab 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -3686,6 +3686,43 @@ export const scenarios = plan({
+       local: na("The shared OpenAPI and MCP error path is covered on self-host."),
+     },
+   },
++  groupAccountCheckPolicy: {
++    legacyStorage: true,
++    file: "group-account-checks.spec.ts",
++    fixtures: "actors",
++    title: "group account checks answer per account and preserve account use policy",
++    targets: {
++      "self-host": {
++        status: "scheduled",
++      },
++      local: {
++        status: "not-applicable",
++        reason: "Hosted authorization owns membership and account policy.",
++      },
++      cloud: {
++        status: "not-applicable",
++        reason: "Uses a loopback check service.",
++      },
++    },
++  },
++  groupAccountCheckLocal: {
++    legacyStorage: true,
++    file: "group-account-checks.spec.ts",
++    title: "local group account checks reuse single checks and answer per account",
++    targets: {
++      "self-host": {
++        status: "not-applicable",
++        reason: "Exercises the local dashboard contract.",
++      },
++      local: {
++        status: "scheduled",
++      },
++      cloud: {
++        status: "not-applicable",
++        reason: "Exercises the local dashboard contract.",
++      },
++    },
++  },
+   accountHealth: {
+     fixtures: "actors",
+     file: "account-health.spec.ts",
+diff --git a/e2e/tests/group-account-checks.spec.ts b/e2e/tests/group-account-checks.spec.ts
+new file mode 100644
+index 0000000..69afd23
+--- /dev/null
++++ b/e2e/tests/group-account-checks.spec.ts
+@@ -0,0 +1,305 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { body } from "../support/api.ts";
++import { HostedLive, TestLive, withHostedCase, withCase } from "../support/case.ts";
++import {
++  observationBackend,
++  observationFixture,
++  observationSource,
++  observationToken,
++} from "../support/account-observation-fixture.ts";
++import { connectLocalAccount, linkAccount } from "../support/app-accounts.ts";
++import { localAgent } from "../support/local-links.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { scenarios } from "../test-plan.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { serverControl } from "../support/server-control.ts";
++
++const Resource = Schema.Struct({ id: Schema.String });
++const Revision = Schema.Struct({ revision: Schema.String });
++const Health = Schema.Struct({
++  account: Schema.String,
++  apps: Schema.Array(
++    Schema.Struct({
++      app: Schema.String,
++      check: Schema.NullOr(Schema.Struct({ status: Schema.String, checkedAt: Schema.String })),
++    }),
++  ),
++});
++const Results = Schema.Array(
++  Schema.Union([
++    Schema.Struct({ account: Schema.String, status: Schema.Literal("checked"), health: Health }),
++    Schema.Struct({ account: Schema.String, status: Schema.Literal("refused") }),
++    Schema.Struct({
++      account: Schema.String,
++      status: Schema.Literal("failed"),
++      error: Schema.Struct({ _tag: Schema.String }),
++    }),
++  ]),
++);
++
++layer(HostedLive, { excludeTestServices: true })("Group account check policy", (it) => {
++  it.effect(scenarios.groupAccountCheckPolicy.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const shared = yield* observationFixture({
++          health: true,
++          shared: true,
++          name: "Shared check",
++        });
++        const personal = yield* observationFixture({ health: true, name: "Private check" });
++        const { api, actors, prefix } = shared;
++        const revision = yield* body(
++          Revision,
++          yield* api.request(actors.owner, "GET", `${shared.appPath}/access`),
++        );
++        expect(
++          (yield* api.request(actors.owner, "PATCH", `${shared.appPath}/access`, {
++            revision: revision.revision,
++            audience: { kind: "everyone" },
++          })).status,
++        ).toBe(200);
++        yield* linkAccount(actors.member, shared.appPath, "service", shared.account);
++        const path = `${prefix}/accounts/health`;
++        const missing = `acc_${randomUUID()}`;
++        const accounts = [shared.account, personal.account, missing, shared.account];
++        const sharedBefore = yield* shared.backend.healthCalls;
++        const personalBefore = yield* personal.backend.healthCalls;
++        // The member may use the shared account only. Private and absent IDs have identical answers.
++        const member = yield* api.request(actors.member, "POST", path, { accounts });
++        expect(member.status, "group check route accepts the account list").toBe(200);
++        const checked = yield* body(Results, member);
++        expect(checked.map(({ account, status }) => ({ account, status }))).toEqual([
++          { account: shared.account, status: "checked" },
++          { account: personal.account, status: "refused" },
++          { account: missing, status: "refused" },
++        ]);
++        expect(member.body).toEqual([
++          expect.objectContaining({
++            account: shared.account,
++            status: "checked",
++            health: expect.objectContaining({
++              account: shared.account,
++              apps: [
++                expect.objectContaining({
++                  app: shared.app.id,
++                  check: expect.objectContaining({ status: "healthy" }),
++                }),
++              ],
++            }),
++          }),
++          { account: personal.account, status: "refused" },
++          { account: missing, status: "refused" },
++        ]);
++        expect(Object.keys(checked[1]!).sort()).toEqual(["account", "status"]);
++        expect(yield* shared.backend.healthCalls).toBe(sharedBefore + 1);
++        expect(yield* personal.backend.healthCalls).toBe(personalBefore);
++        expect(
++          (yield* api.request(actors.member, "POST", `${personal.accountPath}/health`)).status,
++        ).toBe(403);
++        const owner = yield* api.request(actors.owner, "POST", path, { accounts });
++        expect(owner.status).toBe(200);
++        expect(
++          (yield* body(Results, owner)).map(({ account, status }) => ({ account, status })),
++        ).toEqual([
++          { account: shared.account, status: "checked" },
++          { account: personal.account, status: "checked" },
++          { account: missing, status: "refused" },
++        ]);
++        expect(yield* shared.backend.healthCalls).toBe(sharedBefore + 2);
++        expect(yield* personal.backend.healthCalls).toBe(personalBefore + 1);
++        // Managing a shared account does not grant use after its audience is removed.
++        const access = yield* body(
++          Revision,
++          yield* api.request(actors.owner, "GET", `${shared.accountPath}/access`),
++        );
++        expect(
++          (yield* api.request(actors.owner, "PATCH", `${shared.accountPath}/access`, {
++            revision: access.revision,
++            audience: { kind: "groups", groups: [] },
++          })).status,
++        ).toBe(200);
++        expect(
++          (yield* api.request(actors.owner, "POST", `${shared.accountPath}/health`)).status,
++        ).toBe(403);
++        yield* personal.backend.health({ status: 503, body: {} });
++        const narrowed = yield* api.request(actors.owner, "POST", path, { accounts });
++        expect(narrowed.status).toBe(200);
++        expect(
++          (yield* body(Results, narrowed)).map(({ account, status }) => ({ account, status })),
++        ).toEqual([
++          { account: shared.account, status: "refused" },
++          { account: personal.account, status: "checked" },
++          { account: missing, status: "refused" },
++        ]);
++        expect(narrowed.body).toEqual([
++          { account: shared.account, status: "refused" },
++          expect.objectContaining({
++            health: expect.objectContaining({
++              apps: [
++                expect.objectContaining({
++                  check: expect.objectContaining({ status: "upstream_unavailable" }),
++                }),
++              ],
++            }),
++          }),
++          { account: missing, status: "refused" },
++        ]);
++        expect(yield* shared.backend.healthCalls).toBe(sharedBefore + 2);
++        expect(yield* personal.backend.healthCalls).toBe(personalBefore + 2);
++        // A storage failure answers for that account without cancelling a usable sibling.
++        const narrowedAccess = yield* body(
++          Revision,
++          yield* api.request(actors.owner, "GET", `${shared.accountPath}/access`),
++        );
++        expect(
++          (yield* api.request(actors.owner, "PATCH", `${shared.accountPath}/access`, {
++            revision: narrowedAccess.revision,
++            audience: { kind: "everyone" },
++          })).status,
++        ).toBe(200);
++        if (!/^acc_[A-Za-z0-9_-]+$/.test(personal.account))
++          return yield* Effect.die("Expected a synthetic account ID");
++        yield* legacyStorage([
++          {
++            sql: "CREATE FUNCTION e2e_group_check_fault() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'Synthetic account check write failure'; END $$",
++          },
++          {
++            sql: `CREATE TRIGGER e2e_group_check_fault BEFORE INSERT OR UPDATE ON executor_account_checks FOR EACH ROW WHEN (NEW.account = '${personal.account}') EXECUTE FUNCTION e2e_group_check_fault()`,
++          },
++        ]);
++        yield* serverControl("start");
++        const failed = yield* api.request(actors.owner, "POST", path, { accounts });
++        expect(failed.status).toBe(200);
++        expect(
++          (yield* body(Results, failed)).map(({ account, status }) => ({ account, status })),
++        ).toEqual([
++          { account: shared.account, status: "checked" },
++          { account: personal.account, status: "failed" },
++          { account: missing, status: "refused" },
++        ]);
++        const singleFailure = yield* api.request(
++          actors.owner,
++          "POST",
++          `${personal.accountPath}/health`,
++        );
++        expect(singleFailure.status).toBe(500);
++        expect(failed.body).toEqual([
++          expect.objectContaining({ account: shared.account, status: "checked" }),
++          expect.objectContaining({
++            account: personal.account,
++            status: "failed",
++            error: singleFailure.body,
++          }),
++          { account: missing, status: "refused" },
++        ]);
++        for (const invalid of [[], ["not-an-account-id"]])
++          expect(
++            (yield* api.request(actors.owner, "POST", path, { accounts: invalid })).status,
++          ).toBe(400);
++      }),
++    ),
++  );
++});
++
++layer(TestLive, { excludeTestServices: true })("Local group account checks", (it) => {
++  it.effect(scenarios.groupAccountCheckLocal.title, (context) =>
++    withCase(
++      context,
++      Effect.gen(function* () {
++        const { agent } = yield* localAgent;
++        const backend = yield* observationBackend;
++        const created = yield* agent.send("POST", "/v1/apps/deploy", {
++          owner: "local",
++          name: "Group checks",
++          files: [
++            appsManifest,
++            {
++              path: "index.ts",
++              content: observationSource(backend.origin, { health: true }).replace(
++                "accounts:{service}",
++                "accounts:{service:service.many()}",
++              ),
++            },
++          ],
++        });
++        expect(created.status).toBe(200);
++        const { app } = yield* body(Schema.Struct({ app: Resource }), created);
++        const accounts: string[] = [];
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* agent.send("DELETE", `/v1/apps/${app.id}`);
++            for (const account of accounts) yield* agent.send("DELETE", `/v1/accounts/${account}`);
++          }).pipe(Effect.orDie),
++        );
++        for (let i = 0; i < 2; i++) {
++          const account = yield* connectLocalAccount(agent, {
++            app: app.id,
++            requirement: "service",
++            method: "key",
++            fields: { token: observationToken },
++          });
++          accounts.push(account.id);
++        }
++        expect(new Set(accounts).size).toBe(2);
++        const before = yield* backend.healthCalls;
++        const missing = `acc_${randomUUID()}`;
++        const response = yield* agent.send("POST", "/dashboard/api/accounts/health", {
++          accounts: [...accounts, missing, accounts[0]],
++        });
++        expect(response.status, "local group check route accepts the account list").toBe(200);
++        const results = yield* body(Results, response);
++        expect(results.map(({ account, status }) => ({ account, status }))).toEqual([
++          ...accounts.map((account) => ({ account, status: "checked" })),
++          { account: missing, status: "refused" },
++        ]);
++        expect(yield* backend.healthCalls).toBe(before + 2);
++        for (const result of results)
++          if (result.status === "checked") {
++            expect(result.health.apps).toHaveLength(1);
++            expect(result.health.apps[0]?.check?.status).toBe("healthy");
++            expect(result.health.account).toBe(result.account);
++            const single = yield* agent.send(
++              "POST",
++              `/dashboard/api/accounts/${result.account}/health`,
++            );
++            expect(single.status).toBe(200);
++            expect((yield* body(Health, single)).apps.map(({ app }) => app)).toEqual(
++              result.health.apps.map(({ app }) => app),
++            );
++          }
++        expect(yield* backend.healthCalls).toBe(before + 4);
++        const [first, second] = accounts;
++        if (first === undefined || second === undefined)
++          return yield* Effect.die("Expected two accounts");
++        if (!/^acc_[A-Za-z0-9_-]+$/.test(first))
++          return yield* Effect.die("Expected a synthetic account ID");
++        yield* legacyStorage([
++          {
++            sql: "CREATE FUNCTION e2e_group_check_fault() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'Synthetic account check write failure'; END $$",
++          },
++          {
++            sql: `CREATE TRIGGER e2e_group_check_fault BEFORE INSERT OR UPDATE ON executor_account_checks FOR EACH ROW WHEN (NEW.account = '${first}') EXECUTE FUNCTION e2e_group_check_fault()`,
++          },
++        ]);
++        yield* serverControl("start");
++        const failed = yield* agent.send("POST", "/dashboard/api/accounts/health", { accounts });
++        expect(failed.status).toBe(200);
++        expect(
++          (yield* body(Results, failed)).map(({ account, status }) => ({ account, status })),
++        ).toEqual([
++          { account: first, status: "failed" },
++          { account: second, status: "checked" },
++        ]);
++        const singleFailure = yield* agent.send("POST", `/dashboard/api/accounts/${first}/health`);
++        expect(singleFailure.status).toBe(500);
++        expect(failed.body).toEqual([
++          { account: first, status: "failed", error: singleFailure.body },
++          expect.objectContaining({ account: second, status: "checked" }),
++        ]);
++      }),
++    ),
++  );
++});
