@@ -1679,8 +1679,8 @@ diff --git a/e2e/tests/pool-app-removal.spec.ts b/e2e/tests/pool-app-removal.spe
 @@ -7,3 +7,4 @@
  import { Evidence } from "../support/evidence.ts";
  import { RuntimeLive, Target } from "../support/platform.ts";
- import { scenarios } from "../test-plan.ts";
 +import { cloudLocks } from "../support/cloud-locks.ts";
+ import { scenarios } from "../test-plan.ts";
 @@ -54,6 +55,41 @@
          const accounts = yield* choices();
          expect(accounts.accounts.length).toBeGreaterThan(0);
