@@ -187,9 +187,9 @@ new file mode 100644
 +            (read.group === "schedules" && read.endpoint === "runs")
 +          )
 +            endpoints.push(`${read.group}.${read.endpoint}`);
-+      if (request.method() === "GET" && /\/workflow-inputs$/.test(path))
++      if (request.method() === "GET" && path.endsWith("/workflow-inputs"))
 +        endpoints.push("workflowInputs.list");
-+      if (request.method() === "GET" && /\/scheduled-runs$/.test(path))
++      if (request.method() === "GET" && path.endsWith("/scheduled-runs"))
 +        endpoints.push("schedules.runs");
 +    });
 +    const page = touch.page;
@@ -223,7 +223,7 @@ new file mode 100644
 +      Promise.all([
 +        page.waitForRequest(
 +          (request) =>
-+            /\/workflow-inputs$/.test(new URL(request.url()).pathname) ||
++            new URL(request.url()).pathname.endsWith("/workflow-inputs") ||
 +            (new URL(request.url()).pathname === batchPath &&
 +              batchedReads(request.postData()).some((read) => read.group === "workflowInputs")),
 +        ),

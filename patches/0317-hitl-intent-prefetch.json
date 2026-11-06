@@ -1,7 +1,7 @@
 {
   "identity": "basalt-hitl-intent-prefetch",
   "file": "0317-hitl-intent-prefetch.patch",
-  "content_sha256": "0462cdb5c854c902c287d562a1e92be3f739f20c4aca49e52e9cbfc76dcc92c4",
+  "content_sha256": "f4b541c1177d0833439bb7d495be1a5dd9becaf2174e3f2051f030db8d6c760a",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
