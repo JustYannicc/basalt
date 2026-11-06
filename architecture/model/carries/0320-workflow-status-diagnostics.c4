@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "Workflow run status reads, including dashboard batch reads, emit one native failure record containing only a bounded phase, a closed exception class or tag, and the trace id. Native status and decode errors are observed before their causes are translated. Decode failures return WorkflowStatusUnavailable with HTTP 503 without changing or restarting the run. Client rejections and successful reads emit no failure record. Context around the client error mapping and scenario registrations is limited to their stable following anchors so earlier app-removal declarations remain intact. Forced-phase controls exist only in local Cloud; deployed runtime adapters ignore their request header."
+      constraint "Workflow run status reads, including dashboard batch reads, emit one native failure record containing only a bounded phase, a closed exception class or tag, and the trace id. Native status and decode errors are observed before their causes are translated. Decode failures return WorkflowStatusUnavailable with HTTP 503 without changing or restarting the run. Client rejections and successful reads emit no failure record. Context around the client error mapping and scenario registrations is limited to their stable following anchors so earlier app-removal declarations remain intact. The dashboard authentication profiler switches only batch authentication and preserves later middleware in both samples, with the original authentication-budget assertions. The deployment binding inventory includes the local fault-control binding. Forced-phase controls exist only in local Cloud; deployed runtime adapters ignore their request header."
     }
   }
 }
