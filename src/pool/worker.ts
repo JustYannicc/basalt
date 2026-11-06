@@ -1,3 +1,5 @@
+import { deploymentReadinessPath, handleDeploymentReadiness } from "./deployment-readiness.ts";
+import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
 import { pricedSummary } from "./model-history/priced-summary.ts";
 import { publishAccountObservations } from "./account-observation-publish.ts";
 import { appUsage } from "./model-history/app-usage.ts";
@@ -76,6 +78,7 @@ export interface PoolEnvironment extends TelemetryEnv, SentryEnv {
   POOL_APP_SIGNING_KEY: string;
   POOL_APP_SIGNING_KEY_PREVIOUS?: string;
   POOL_IMAGE_HASH: string;
+  POOL_DEPLOYMENT_KEY?: string;
   POOL_MODEL_HISTORY_ENABLED?: string;
   TOOLS_SERVICE: Fetcher;
 }
@@ -330,6 +333,13 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     await reportPoolStorage(this.ctx.storage);
   }
 
+  async deploymentReady() {
+    return {
+      candidate: productionOpsRelease, workerInput: poolWorkerRevision, imageHash: this.env.POOL_IMAGE_HASH,
+      instanceId: this.ctx.id.toString(), ...(await (await this.lifecycle).deploymentReady()),
+    };
+  }
+
   async migrateCodexWebSockets(approved?: Pick<CodexWebSocketPlan, "digest" | "pending">) {
     await this.managementReady();
     const container = this.ctx.container;
@@ -525,6 +535,10 @@ function modelAuthResponse(status: 401 | 503, error: string): Response {
 export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
   async fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
+    if (path === deploymentReadinessPath)
+      return handleDeploymentReadiness(request, { candidate: productionOpsRelease,
+        workerInput: poolWorkerRevision, imageHash: this.env.POOL_IMAGE_HASH },
+        this.env.POOL_DEPLOYMENT_KEY ?? "", () => singleton(this.env).deploymentReady());
     if (path === runtimeRecoveryPath) return singleton(this.env).fetch(request);
     if ([historySchemaCatalogPath, historySchemaApplyPath, historyBackfillPath].includes(path))
       return handleModelHistoryOperation(request, this.env.POOL_AUTH_DATABASE?.connectionString);
