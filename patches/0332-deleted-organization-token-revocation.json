@@ -1,7 +1,7 @@
 {
   "identity": "basalt-deleted-organization-token-revocation",
   "file": "0332-deleted-organization-token-revocation.patch",
-  "content_sha256": "3dc813f62f25e8ea05962b4973425305e2c3ef3a3ac98e37bac2f3cd03ee55be",
+  "content_sha256": "6cf46a34f6d58d332c6d1f8d04f952258809007205374d65fe6e1a4a7ccedabc",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

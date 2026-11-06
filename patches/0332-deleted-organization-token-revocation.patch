@@ -96,7 +96,7 @@ diff --git a/e2e/support/pool-worker-runtime.ts b/e2e/support/pool-worker-runtim
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/pool-worker-runtime.ts
-@@ -0,0 +1,128 @@
+@@ -0,0 +1,129 @@
 +import { build } from "esbuild";
 +import {
 +  Miniflare,
@@ -171,14 +171,15 @@ new file mode 100644
 +                  TOOLS_SERVICE: (request: RuntimeRequest) => {
 +                    if (!authorityAvailable) return new RuntimeResponse(null, { status: 503 });
 +                    const url = new URL(request.url);
-+                    return runtimeFetch(new URL(url.pathname + url.search, toolsOrigin), {
++                    const init = {
 +                      method: request.method,
 +                      headers: Object.fromEntries(request.headers),
 +                      body: request.body,
-+                      ...{ duplex: "half" },
++                      duplex: "half",
 +                      redirect: "manual",
 +                      signal: request.signal,
-+                    }).then(
++                    } satisfies Parameters<typeof runtimeFetch>[1] & { duplex: "half" };
++                    return runtimeFetch(new URL(url.pathname + url.search, toolsOrigin), init).then(
 +                      (response) =>
 +                        new RuntimeResponse(response.body, {
 +                          status: response.status,
