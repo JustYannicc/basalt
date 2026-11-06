@@ -1,6 +1,7 @@
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";
+import * as Planetscale from "alchemy/Planetscale";
 import * as Output from "alchemy/Output";
 import { Stage } from "alchemy/Stage";
 import { basename, dirname } from "node:path";
@@ -11,6 +12,7 @@ import { telemetryBindings, workerObservability } from "./src/telemetry/deployme
 import { retain } from "alchemy/RemovalPolicy";
 import { adopt } from "alchemy/AdoptPolicy";
 import { appHosting, brand, deployment } from "./brand.ts";
+import { verifyRuntimeDatabaseBudget } from "./src/pool/database-budget.ts";
 import { poolWorker } from "./src/pool/deployment.ts";
 import { previewStageOrigin } from "./scripts/environment.ts";
 import {
@@ -30,19 +32,26 @@ export default Alchemy.Stack(
     const { accountId } = yield* yield* Cloudflare.CloudflareEnvironment;
     const stage = yield* Stage;
     const previewNumber = /^test-pr-([1-9][0-9]*)$/.exec(stage)?.[1];
-    const preview = previewNumber === undefined ? undefined : {
-      number: previewNumber,
-      domain: yield* Config.NonEmptyString("TEST_STAGE_DOMAIN"),
-      sourceNamespace: yield* Config.NonEmptyString("CLOUD_SOURCE_NAMESPACE"),
-      databaseName: yield* Config.NonEmptyString("TEST_STAGE_DATABASE"),
-    };
+    const preview =
+      previewNumber === undefined
+        ? undefined
+        : {
+            number: previewNumber,
+            domain: yield* Config.NonEmptyString("TEST_STAGE_DOMAIN"),
+            sourceNamespace: yield* Config.NonEmptyString("CLOUD_SOURCE_NAMESPACE"),
+            databaseName: yield* Config.NonEmptyString("TEST_STAGE_DATABASE"),
+          };
     if (preview !== undefined) {
       const expectedNamespace = `basalt-preview-pr-${preview.number}-apps`;
       if (preview.sourceNamespace !== expectedNamespace)
-        return yield* Effect.die(new Error("Preview Artifacts namespace does not match its stage."));
+        return yield* Effect.die(
+          new Error("Preview Artifacts namespace does not match its stage."),
+        );
       const expectedDatabase = `basalt-preview-pr-${preview.number}`;
       if (preview.databaseName !== expectedDatabase)
-        return yield* Effect.die(new Error("Preview PlanetScale database does not match its stage."));
+        return yield* Effect.die(
+          new Error("Preview PlanetScale database does not match its stage."),
+        );
     }
     const zoneName = preview?.domain ?? brand.zone;
     const host = preview === undefined ? brand.host : `app.pr-${preview.number}.${preview.domain}`;
@@ -58,34 +67,43 @@ export default Alchemy.Stack(
         zone: { zoneId: zone.id } as unknown as Cloudflare.Zone.Zone,
         phase: "http_config_settings",
         description: "Basalt API paths skip Browser Integrity Check",
-        rules: [{
-          action: "set_config",
-          actionParameters: { bic: false },
-          expression: apiPathsExpression(host),
-          description: "Non-browser API paths on the app host",
-          enabled: true,
-        }],
+        rules: [
+          {
+            action: "set_config",
+            actionParameters: { bic: false },
+            expression: apiPathsExpression(host),
+            description: "Non-browser API paths on the app host",
+            enabled: true,
+          },
+        ],
       });
     }
     if (preview === undefined && appHosting.enabled) {
       yield* Cloudflare.DNS.Record("AppOriginWildcard", {
-        zoneId: zone.id, zoneName: zoneName, name: `*.${appHosting.zone}`,
-        type: "AAAA", content: "100::", proxied: true, ttl: "1",
+        zoneId: zone.id,
+        zoneName: zoneName,
+        name: `*.${appHosting.zone}`,
+        type: "AAAA",
+        content: "100::",
+        proxied: true,
+        ttl: "1",
         comment: "Routes private app origins through the app host dispatcher",
       }).pipe(adopt(false));
       // A route runs before a Custom Domain origin. Exclude only configured product hosts.
       for (const productHost of appHosting.bypassHosts) {
         yield* Cloudflare.Workers.WorkerRoute(`AppHostBypass-${productHost}`, {
-          zoneId: zone.id, pattern: `${productHost}/*`,
+          zoneId: zone.id,
+          pattern: `${productHost}/*`,
         }).pipe(adopt(false));
       }
     }
-    const emailReady = preview === undefined
-      ? (yield* Cloudflare.Email.SendingSubdomain("AuthEmailDomain", {
-          zoneId: zone.id,
-          name: brand.emailDomain,
-        }).pipe(retain())).enabled
-      : false;
+    const emailReady =
+      preview === undefined
+        ? (yield* Cloudflare.Email.SendingSubdomain("AuthEmailDomain", {
+            zoneId: zone.id,
+            name: brand.emailDomain,
+          }).pipe(retain())).enabled
+        : false;
     const namespaceScript = fileURLToPath(
       new URL("./scripts/ensure-artifacts.ts", import.meta.url),
     );
@@ -109,9 +127,7 @@ export default Alchemy.Stack(
         domain: preview.domain,
         origin: previewStageOrigin(`pr-${preview.number}`, preview.domain, false),
       });
-      const seedScript = fileURLToPath(
-        new URL("./scripts/preview-auth/seed.ts", import.meta.url),
-      );
+      const seedScript = fileURLToPath(new URL("./scripts/preview-auth/seed.ts", import.meta.url));
       yield* Command.Exec("PreviewAuthSeed", {
         command: `node ${basename(seedScript)}`,
         cwd: dirname(seedScript),
@@ -133,11 +149,23 @@ export default Alchemy.Stack(
     }
     const api = yield* Api;
     const pool = yield* poolWorker;
+    const runtimeRole = yield* Planetscale.PostgresRole.ref("RuntimeRole");
+    const migrationRole = yield* Planetscale.PostgresRole.ref("MigrationRole");
+    yield* verifyRuntimeDatabaseBudget("ToolsBackendBudget", {
+      adminUrl: migrationRole.connectionUrl,
+      runtimeLogin: runtimeRole.username,
+      databases: ["postgres"],
+      deployment: api.hash,
+    });
     const catalog = yield* Cloudflare.Worker("Catalog", {
       main: fileURLToPath(new URL("./src/catalog/worker.ts", import.meta.url)),
       env: {
-        ZENDESK_MARKETPLACE_ORGANIZATION_ID: yield* Config.String("ZENDESK_MARKETPLACE_ORGANIZATION_ID").pipe(Config.withDefault("")),
-        ZENDESK_MARKETPLACE_APP_ID: yield* Config.String("ZENDESK_MARKETPLACE_APP_ID").pipe(Config.withDefault("")),
+        ZENDESK_MARKETPLACE_ORGANIZATION_ID: yield* Config.String(
+          "ZENDESK_MARKETPLACE_ORGANIZATION_ID",
+        ).pipe(Config.withDefault("")),
+        ZENDESK_MARKETPLACE_APP_ID: yield* Config.String("ZENDESK_MARKETPLACE_APP_ID").pipe(
+          Config.withDefault(""),
+        ),
       },
       workersDev: false,
       compatibility: { date: "2026-09-08" },
@@ -163,10 +191,15 @@ export default Alchemy.Stack(
     const router = yield* Cloudflare.Worker("Router", {
       main: new URL("./src/router.ts", import.meta.url).pathname,
       // The brand's logo and favicon; every other path reaches the router code.
-      assets: { directory: fileURLToPath(new URL("./public/", import.meta.url)), runWorkerFirst: true },
+      assets: {
+        directory: fileURLToPath(new URL("./public/", import.meta.url)),
+        runWorkerFirst: true,
+      },
       domain: host,
       // Cloudflare rejects infix host wildcards. More specific product-host bypasses protect their existing origins.
-      ...(preview === undefined && appHosting.enabled ? { routes: [{ pattern: `*.${appHosting.zone}/*` }] } : {}),
+      ...(preview === undefined && appHosting.enabled
+        ? { routes: [{ pattern: `*.${appHosting.zone}/*` }] }
+        : {}),
       workersDev: false,
       compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
       observability: workerObservability,

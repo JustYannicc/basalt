@@ -41,6 +41,26 @@ class FakeStream:
 
 
 class BootstrapContractTests(unittest.TestCase):
+    def test_standalone_database_keeps_its_login_owner(self) -> None:
+        self.assertNotIn("schema-owner:", cluster_yaml("postgresql://fixture@localhost/pool"))
+
+    def test_provisioned_database_selects_only_its_explicit_owner(self) -> None:
+        owner = 'owner: "quoted"'
+        config = cluster_yaml("postgresql://fixture@localhost/pool", owner)
+        line = next(item for item in config.splitlines() if "schema-owner:" in item)
+        self.assertEqual(json.loads(line.split(":", 1)[1].strip()), owner)
+
+    def test_missing_or_denied_owner_has_a_closed_startup_error(self) -> None:
+        for error, expected in (
+            ('ERROR: role "private-owner" does not exist (SQLSTATE 42704)', {"missing_role": 1, "denied_role": 0}),
+            ('ERROR: permission denied to set role "private-owner" (SQLSTATE 42501)', {"missing_role": 0, "denied_role": 1}),
+        ):
+            projected = safe_child_output_line("home", "failed to migrate database: " + error)
+            assert projected is not None
+            self.assertTrue(projected.startswith("POOL_HOME_SCHEMA_OWNER_UNAVAILABLE "))
+            self.assertEqual(json.loads(projected.split(" ", 1)[1]), expected)
+            self.assertNotIn("private-owner", projected)
+
     def read_child_output(
         self,
         name: str,

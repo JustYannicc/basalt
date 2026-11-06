@@ -2,22 +2,25 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { poolDatabaseUrl, previewPoolDatabaseBranch } from "./database-settings.ts";
 
-test("pool uses its own logical database and stable owner on the existing direct TLS connection", () => {
-  const original = "postgresql://runtime:credential@cluster.example:5432/postgres?sslmode=verify-full";
+test("pool runtime uses its logical database through PgBouncer without session role options", () => {
+  const original =
+    "postgresql://runtime:credential@cluster.example:6432/postgres?sslmode=verify-full";
   const url = new URL(poolDatabaseUrl(original));
-  assert.equal(url.host, "cluster.example:5432");
+  assert.equal(url.host, "cluster.example:6432");
   assert.equal(url.username, "runtime");
   assert.equal(url.password, "credential");
   assert.equal(url.pathname, "/basalt_pool");
   assert.equal(url.searchParams.get("sslmode"), "verify-full");
-  assert.equal(url.searchParams.get("options"), "-c role=basalt_pool_owner");
+  assert.equal(url.searchParams.has("options"), false);
 });
 
-test("pool rejects a pooled or unverified connection", () => {
+test("pool rejects direct, unverified, or session-dependent runtime connections", () => {
   for (const url of [
-    "postgresql://runtime:credential@cluster.example:6432/postgres?sslmode=verify-full",
-    "postgresql://runtime:credential@cluster.example:5432/postgres?sslmode=require",
-  ]) assert.throws(() => poolDatabaseUrl(url), /direct Postgres connection with verified TLS/);
+    "postgresql://runtime:credential@cluster.example:5432/postgres?sslmode=verify-full",
+    "postgresql://runtime:credential@cluster.example:6432/postgres?sslmode=require",
+    "postgresql://runtime:credential@cluster.example:6432/postgres?sslmode=verify-full&options=-c%20role=owner",
+  ])
+    assert.throws(() => poolDatabaseUrl(url), /pooled Postgres connection/);
 });
 
 test("each PR preview gets its own pool database branch", () => {

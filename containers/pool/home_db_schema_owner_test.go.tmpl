@@ -1,0 +1,154 @@
+package cluster
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/url"
+	"os"
+	"testing"
+	"time"
+
+	"gorm.io/gorm"
+)
+
+func TestHomeDBPoolTransactionOwnerReset(t *testing.T) {
+	dsn := os.Getenv("HOME_TEST_POOLED_DSN")
+	if dsn == "" {
+		t.Skip("isolated transaction pooler required")
+	}
+	parsed, errParse := url.Parse(dsn)
+	if errParse != nil {
+		t.Fatal(errParse)
+	}
+	if parsed.Hostname() != "localhost" && parsed.Hostname() != "127.0.0.1" {
+		t.Fatal("local fixture required")
+	}
+	one := 1
+	db, errOpen := Open(t.Context(), PGSQLConfig{PostgresURI: dsn, SchemaOwner: "basalt_pool_owner", MaxOpenConns: &one})
+	if errOpen != nil {
+		t.Fatal(errOpen)
+	}
+	sqlDB, _ := db.DB()
+	defer func() {
+		if errClose := sqlDB.Close(); errClose != nil {
+			t.Error(errClose)
+		}
+	}()
+	var login string
+	if err := db.Raw("SELECT current_user").Scan(&login).Error; err != nil {
+		t.Fatal(err)
+	}
+	rollback := errors.New("rollback sentinel")
+	for _, abort := range []bool{false, true, false} {
+		err := schemaTransaction(db, func(tx *gorm.DB) error {
+			var owner string
+			if errScan := tx.Raw("SELECT current_user").Scan(&owner).Error; errScan != nil {
+				return errScan
+			}
+			if owner != "basalt_pool_owner" {
+				t.Fatalf("transaction owner = %s", owner)
+			}
+			if abort {
+				return rollback
+			}
+			return nil
+		})
+		if abort && !errors.Is(err, rollback) {
+			t.Fatal(err)
+		}
+		if !abort && err != nil {
+			t.Fatal(err)
+		}
+		var after string
+		if errRead := db.Raw("SELECT current_user").Scan(&after).Error; errRead != nil {
+			t.Fatal(errRead)
+		}
+		if after != login {
+			t.Fatalf("owner leaked after commit/rollback: %s, want %s", after, login)
+		}
+	}
+}
+
+func TestHomeDBPoolPooledRetainedPrivacy(t *testing.T) {
+	dsn := os.Getenv("HOME_TEST_POOLED_DSN")
+	if dsn == "" {
+		t.Skip("isolated transaction pooler required")
+	}
+	t.Setenv(DiagnosticsMetadataOnlyEnv, "0")
+	db, errOpen := Open(t.Context(), PGSQLConfig{PostgresURI: dsn, SchemaOwner: "basalt_pool_owner"})
+	if errOpen != nil {
+		t.Fatal(errOpen)
+	}
+	sqlDB, _ := db.DB()
+	defer func() {
+		if errClose := sqlDB.Close(); errClose != nil {
+			t.Error(errClose)
+		}
+	}()
+	if err := AutoMigrateContext(t.Context(), db); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewRepository(db)
+	seedPrivacyHistory(t, db, 1)
+	legacyLog := AppLogRecord{Timestamp: time.Now().UTC(), Level: "warning", Line: "retained-body-sentinel", ClientIP: "retained-client-sentinel"}
+	if err := db.Create(&legacyLog).Error; err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(DiagnosticsMetadataOnlyEnv, "1")
+	if err := AutoMigrateContext(t.Context(), db); err != nil {
+		t.Fatal(err)
+	}
+	// Another runtime login must see the retained schema, not rerun DDL as itself.
+	parsed, _ := url.Parse(dsn)
+	parsed.User = url.UserPassword("budget_b", "fixture-only")
+	retained, errRetained := Open(t.Context(), PGSQLConfig{PostgresURI: parsed.String(), SchemaOwner: "basalt_pool_owner"})
+	if errRetained != nil {
+		t.Fatal(errRetained)
+	}
+	otherSQL, _ := retained.DB()
+	defer func() {
+		if errClose := otherSQL.Close(); errClose != nil {
+			t.Error(errClose)
+		}
+	}()
+	if err := AutoMigrateContext(t.Context(), retained); err != nil {
+		t.Fatal(err)
+	}
+	var foreignObjects int64
+	if err := db.Raw(`SELECT count(*) FROM (
+      SELECT relowner AS owner FROM pg_class WHERE relnamespace='public'::regnamespace
+      UNION ALL SELECT proowner FROM pg_proc WHERE pronamespace='public'::regnamespace
+    ) AS objects WHERE pg_get_userbyid(owner) <> 'basalt_pool_owner'`).Scan(&foreignObjects).Error; err != nil {
+		t.Fatal(err)
+	}
+	if foreignObjects != 0 {
+		t.Fatalf("objects owned by rotating login: %d", foreignObjects)
+	}
+	testHomeDBPoolMixedWorkload(t, repo, func(ctx context.Context, repo *Repository) error {
+		for range 32 {
+			result, err := repo.RunDiagnosticsPrivacyBatch(ctx)
+			if err != nil {
+				return err
+			}
+			if result.Done {
+				return nil
+			}
+		}
+		return fmt.Errorf("privacy cleanup did not finish")
+	})
+	var usage UsageRecord
+	if err := db.First(&usage).Error; err != nil {
+		t.Fatal(err)
+	}
+	if usage.FailBody != "" {
+		t.Fatal("retained usage was not scrubbed")
+	}
+	var stored AppLogRecord
+	if err := db.First(&stored, legacyLog.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Line != diagnosticAppLogLine || stored.ClientIP != "" {
+		t.Fatal("retained log was not scrubbed")
+	}
+}

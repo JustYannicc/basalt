@@ -1,0 +1,7 @@
+model {
+  extend basalt.deployment {
+    metadata {
+      constraint "All production runtime database paths use the existing local transaction pooler, with five server connections per logical database across runtime roles and processes, ten combined for the two declared databases. Runtime URLs depend on successful budget configuration and readback. Direct sessions belong only to bounded release jobs. Warm backends retire with a sixty-second lifetime and fifteen-second idle timeout; read-only post-deploy counts must converge within ninety seconds or deployment fails without terminating sessions. Owner selection and server timeouts stay transaction-local."
+    }
+  }
+}
