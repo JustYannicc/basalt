@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "Home's configured schema owner applies only inside each existing DDL transaction. Pooled runtime logins inherit access; object ownership stays stable and the role resets at commit or rollback. Privacy cleanup keeps its independent batch commits, retained data and liveness behavior. The process-local six-client budget remains separate from the shared five-server budget per logical database."
+    }
+  }
+}

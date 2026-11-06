@@ -111,6 +111,7 @@ def cluster_yaml(database_url: str) -> str:
         "pgsql:\n"
         f"  postgres_uri: {encoded_url}\n"
         "  max-open-conns: 6\n"
+        "  schema-owner: basalt_pool_owner\n"
         "  max-idle-conns: 6\n"
         "  conn-max-idle-time: 5m\n"
         "  conn-max-lifetime: 30m\n"
