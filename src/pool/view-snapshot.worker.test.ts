@@ -96,6 +96,7 @@ async function fixture() {
     POOL_DATABASE_URL: "postgres://snapshot:fixture@database.invalid/snapshot",
     POOL_MANAGEMENT_KEY: "snapshot-management-key", POOL_APP_SIGNING_KEY: signingKey, POOL_IMAGE_HASH: "snapshot-image",
     TOOLS_SERVICE: { fetch: async (_url: string, init: RequestInit) => {
+      if (new URL(_url).pathname === "/api/internal/pool-organization") return new Response(null, { status: 204 });
       const { envelope } = JSON.parse(String(init.body)) as { envelope: string };
       const assertion = await openEnvelope(signingKey, membershipReadPrefix, envelope);
       assert.deepEqual(Object.fromEntries(Object.entries(assertion as object).filter(([key]) => ["pool", "organization"].includes(key))),

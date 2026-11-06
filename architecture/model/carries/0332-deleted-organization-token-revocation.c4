@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "Every pool-token request checks current organization existence and removal tombstones through signed host authority before any endpoint read or write. Erasing and deleted organizations return 403 immediately; lookup failures refuse access, and successful checks are never cached."
+    }
+  }
+}

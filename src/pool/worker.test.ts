@@ -319,6 +319,7 @@ test("signed access changes reach the computer queue before generic pool-token c
     POOL_MANAGEMENT_KEY: "fake-management-key",
     POOL_APP_SIGNING_KEY: signingKey,
     POOL_IMAGE_HASH: "fake-image",
+    TOOLS_SERVICE: { fetch: async () => new Response(null, { status: 204 }) },
   };
   const container = new PoolContainer(
     {
@@ -420,6 +421,7 @@ test("native pool use is required before control, setup and usage can reach Home
       POOL_MANAGEMENT_KEY: "fake-management-key",
       POOL_APP_SIGNING_KEY: signingKey,
       POOL_IMAGE_HASH: "fake-image",
+      TOOLS_SERVICE: { fetch: async () => new Response(null, { status: 204 }) },
     },
   );
   const token = await signPoolToken(signingKey, claims);
@@ -525,6 +527,7 @@ test("opening Connect starts a stopped pool without waiting for it, and only for
       POOL_MANAGEMENT_KEY: "fake-management-key",
       POOL_APP_SIGNING_KEY: signingKey,
       POOL_IMAGE_HASH: "fake-image",
+      TOOLS_SERVICE: { fetch: async () => new Response(null, { status: 204 }) },
     },
   );
   const token = await signPoolToken(signingKey, claims);
@@ -625,6 +628,7 @@ test("management calls share readiness for 30 seconds and rewarm when the contai
     POOL_MANAGEMENT_KEY: "obviously-fake-management-key",
     POOL_APP_SIGNING_KEY: signingKey,
     POOL_IMAGE_HASH: "fake-image",
+    TOOLS_SERVICE: { fetch: async () => new Response(null, { status: 204 }) },
   });
   async function read() {
     const response = await worker.fetch(
@@ -681,6 +685,7 @@ test("old pool tools cannot acquire credentials or start the runtime through the
     POOL_MANAGEMENT_KEY: "obviously-fake-management-key",
     POOL_APP_SIGNING_KEY: signingKey,
     POOL_IMAGE_HASH: "fake-image",
+    TOOLS_SERVICE: { fetch: async () => new Response(null, { status: 204 }) },
   });
   for (const [method, path] of [
     ["POST", "sign-ins"],
