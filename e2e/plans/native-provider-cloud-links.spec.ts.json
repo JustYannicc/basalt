@@ -1,0 +1,33 @@
+{
+  "scenarios": {
+    "nativeProviderCloudLinks": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Cloud native provider accounts link through the hosted API",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Provider app reuse is covered by the self-host provider app scenario."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The hosted API is not available on the local target."
+        }
+      }
+    }
+  },
+  "runs": {
+    "nativeProviderCloudLinks": [
+      "production-ops:native-provider-links-through-the-cloud-hosted-api"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/infrastructure/executor.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/product-services.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-account-acquisition.ts"
+  ]
+}

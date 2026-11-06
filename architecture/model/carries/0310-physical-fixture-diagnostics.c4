@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Runner-owned physical readiness subprocesses retain stdout, stderr and the actual exit code in private report diagnostics. Runtime-control failures retain their complete nested cause and SQLSTATE in the same collected evidence through boundary-allowed Effect formatting of normalized errors, bypassing tagged errors' iterable and custom string rendering, while the HTTP response stays generic. Diagnostic write failures do not change readiness success or failure; no retry, deadline or readiness condition changes."
+    }
+  }
+}

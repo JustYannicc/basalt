@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-per-file-test-plans",
+  "file": "0312-per-file-test-plans.patch",
+  "content_sha256": "11f2a6c2efe0a1f56f8871f702e40ebb094e1ecb162c9ec77e3726f9df4ac20c",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": true
+}

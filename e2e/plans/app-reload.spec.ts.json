@@ -1,0 +1,15 @@
+{
+  "scenarios": {},
+  "runs": {},
+  "inherited": ["appReload"],
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/app-ui.ts",
+    ".upstream/apps/hosted/self-host/src/implementation/routes.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-ui.ts",
+    ".upstream/apps/local/server/src/implementation/app-ui.ts",
+    ".upstream/apps/local/server/src/implementation/server.ts",
+    ".upstream/packages/apps/src/implementation/ui-serving.ts",
+    ".upstream/packages/apps/src/implementation/ui-watch.ts",
+    ".upstream/packages/apps/src/ui-serving.ts"
+  ]
+}

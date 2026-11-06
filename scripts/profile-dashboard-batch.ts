@@ -1,3 +1,4 @@
+import { patternForGroup } from "./ci/declarations.ts";
 import {
   appendFileSync,
   copyFileSync,
@@ -56,7 +57,7 @@ const measure = (label: "before" | "after") => {
   const previous = new Set(directories());
   const result = spawnSync(
     "bun",
-    ["run", "e2e:self-host", "--test-name", scenario, "--workers", "1"],
+    ["run", "e2e:self-host", "--test-name", patternForGroup("dashboard:profile"), "--workers", "1"],
     { cwd: upstream, stdio: "inherit", env: { ...process.env, BASALT_E2E_EXPORT: "1" } },
   );
   if (result.error) throw result.error;

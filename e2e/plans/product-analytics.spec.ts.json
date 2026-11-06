@@ -1,0 +1,44 @@
+{
+  "scenarios": {
+    "productAnalytics": {
+      "fixtures": "actors",
+      "title": "Cloud product events preserve identity and dashboard replay masks private data",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Self-host does not export product analytics or replay."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not export product analytics or replay."
+        }
+      }
+    },
+    "productAnalyticsOnboarding": {
+      "title": "Cloud product events record onboarding replay with masked team details and setup secrets, but not OAuth returns or consent",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Self-host does not export product analytics or replay."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not export product analytics or replay."
+        }
+      }
+    }
+  },
+  "runs": {
+    "productAnalytics": ["human-in-the-loop:browser-analytics-after-server-rendering"],
+    "productAnalyticsOnboarding": ["human-in-the-loop:browser-analytics-after-server-rendering"]
+  },
+  "inputs": [".upstream/apps/hosted/cloud/web/src/implementation/analytics.tsx"]
+}

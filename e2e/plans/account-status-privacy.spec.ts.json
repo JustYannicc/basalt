@@ -1,0 +1,85 @@
+{
+  "scenarios": {
+    "accountStatusPrivacy": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "account status rejects credential and opaque reference strings before storage and hides short-secret collisions",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses isolated loopback account fixtures."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted account HTTP endpoints."
+        }
+      }
+    }
+  },
+  "runs": {
+    "accountStatusPrivacy": ["declared:self-host"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/contracts/accounts.ts",
+    ".upstream/apps/hosted/server/src/contracts/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/contracts/mcp-connections.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/organization-defaults.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-account.ts",
+    ".upstream/apps/hosted/server/src/implementation/provisioned-links.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-lifecycle.ts",
+    ".upstream/apps/hosted/web/src/contracts/errors.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts.tsx",
+    ".upstream/apps/local/server/src/contracts/account-connections.ts",
+    ".upstream/apps/local/server/src/contracts/dashboard.ts",
+    ".upstream/apps/local/server/src/implementation/app-accounts.ts",
+    ".upstream/apps/local/web/src/contracts/errors.ts",
+    ".upstream/packages/apps/protocols/17.json",
+    ".upstream/packages/apps/src/contracts/account-status.ts",
+    ".upstream/packages/apps/src/contracts/app.ts",
+    ".upstream/packages/apps/src/contracts/connect.ts",
+    ".upstream/packages/apps/src/contracts/host.ts",
+    ".upstream/packages/apps/src/contracts/protocol-version.ts",
+    ".upstream/packages/apps/src/contracts/protocols/16.ts",
+    ".upstream/packages/apps/src/contracts/protocols/current.ts",
+    ".upstream/packages/apps/src/contracts/protocols/oauth-16.ts",
+    ".upstream/packages/apps/src/contracts/protocols/oauth-17.ts",
+    ".upstream/packages/apps/src/contracts/protocols/released.ts",
+    ".upstream/packages/apps/src/contracts/provider.ts",
+    ".upstream/packages/apps/src/implementation/account-check-errors.ts",
+    ".upstream/packages/apps/src/implementation/account-status-output.ts",
+    ".upstream/packages/apps/src/implementation/app.ts",
+    ".upstream/packages/apps/src/implementation/connect.ts",
+    ".upstream/packages/apps/src/implementation/failure-detail.ts",
+    ".upstream/packages/apps/src/implementation/host.ts",
+    ".upstream/packages/apps/src/implementation/provider.ts",
+    ".upstream/packages/apps/src/index.ts",
+    ".upstream/packages/sdk/src/contracts/account-connection.ts",
+    ".upstream/packages/sdk/src/contracts/account.ts",
+    ".upstream/packages/sdk/src/contracts/apps.ts",
+    ".upstream/packages/sdk/src/contracts/executor.ts",
+    ".upstream/packages/sdk/src/contracts/interactive-accounts.ts",
+    ".upstream/packages/sdk/src/contracts/provider.ts",
+    ".upstream/packages/sdk/src/implementation/account-check-record.ts",
+    ".upstream/packages/sdk/src/implementation/account-connections.ts",
+    ".upstream/packages/sdk/src/implementation/account-health.ts",
+    ".upstream/packages/sdk/src/implementation/account-status-output.ts",
+    ".upstream/packages/sdk/src/implementation/app-protocols.ts",
+    ".upstream/packages/sdk/src/implementation/apps.ts",
+    ".upstream/packages/sdk/src/implementation/connection-target.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts",
+    ".upstream/packages/sdk/src/implementation/interactive-accounts.ts",
+    ".upstream/packages/sdk/src/implementation/interactive-check.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/account-form.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-health.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-status.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/common.tsx",
+    ".upstream/packages/utils/package.json",
+    ".upstream/packages/utils/src/account-display-privacy.ts",
+    ".upstream/packages/utils/src/account-secrets.ts"
+  ]
+}

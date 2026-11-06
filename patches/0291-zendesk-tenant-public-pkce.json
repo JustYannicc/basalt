@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-zendesk-tenant-public-pkce",
+  "file": "0291-zendesk-tenant-public-pkce.patch",
+  "content_sha256": "4510befa4cd1cccac74b24f7bfe53bf71a98685df2c341a6085eb858ae8b69c0",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

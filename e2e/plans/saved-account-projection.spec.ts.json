@@ -1,0 +1,32 @@
+{
+  "scenarios": {
+    "savedAccountProjection": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "Saved-account rows retain exact IDs, managed-only pool bindings and truthful reconnect actions",
+      "targets": {
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted policy owns saved-account visibility."
+        },
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses retained pool metadata in the process-owned hosted database."
+        }
+      }
+    }
+  },
+  "runs": {
+    "savedAccountProjection": [
+      "host-managed-accounts-cloud:one-saved-provider-account-supplies-two-native-pools"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/implementation/account-reconnect.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-account-links.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-access.ts"
+  ]
+}

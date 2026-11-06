@@ -1,0 +1,22 @@
+diff --git a/e2e/tests/contributed-account-delete-oauth.spec.ts b/e2e/tests/contributed-account-delete-oauth.spec.ts
+--- a/e2e/tests/contributed-account-delete-oauth.spec.ts
++++ b/e2e/tests/contributed-account-delete-oauth.spec.ts
+@@ -38,7 +38,8 @@
+             path: "index.ts",
+             content: `import { defineApp, defineProvider, oauth2, router } from "apps";
+ const service = defineProvider({ name: "Deletion OAuth", auth: { oauth: oauth2(${JSON.stringify(config)}) } });
+-export default defineApp({ app: { accounts: { shared: service.many().contributed() } }, user: { accounts: { own: service.many() } } }, async () => ({ tools: router({}) }));`,
++const original = defineProvider({ name: "Deletion OAuth source", auth: { oauth: oauth2(${JSON.stringify(config)}) } });
++export default defineApp({ app: { accounts: { shared: service.many().contributed() } }, user: { accounts: { own: original.many() } } }, async () => ({ tools: router({}) }));`,
+           },
+         ]);
+         const { api, actors, prefix } = f;
+@@ -99,6 +100,8 @@
+           Schema.Struct({ status: Schema.Literal("completed"), account: Resource }),
+           reused,
+         );
++        // The race needs two provider bindings sharing a grant, rather than two links to one account.
++        expect(account.id).not.toBe(source.id);
+         yield* Effect.addFinalizer(() =>
+           api
+             .request(actors.member, "DELETE", `${prefix}/accounts/${account.id}`)

@@ -1,0 +1,116 @@
+{
+  "scenarios": {
+    "accountFamilyProfile": {
+      "title": "A declared family reuses a host-verified non-OIDC account without changing saved IDs",
+      "targets": {
+        "local": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The public local product exercises the shared SDK family recipe."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The synthetic identity service listens on loopback."
+        }
+      }
+    },
+    "accountFamilyLegacyIdentity": {
+      "legacyStorage": true,
+      "title": "Family metadata preserves retained authored and implicit OAuth provider IDs",
+      "targets": {
+        "local": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The local public deploy path proves shared provider ID selection."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The fixture writes its own stopped local legacy provider rows."
+        }
+      }
+    },
+    "accountFamilyCapabilities": {
+      "title": "Consumer capability requirements block unsupported acquisition and stale consent without breaking management",
+      "targets": {
+        "local": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The local management API proves shared SDK capability enforcement."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The synthetic identity service listens on loopback."
+        }
+      }
+    }
+  },
+  "runs": {
+    "accountFamilyProfile": [
+      "host-managed-accounts-cloud:shared-account-families-and-consumer-capability-refusals"
+    ],
+    "accountFamilyLegacyIdentity": [
+      "host-managed-accounts-cloud:shared-account-families-and-consumer-capability-refusals"
+    ],
+    "accountFamilyCapabilities": [
+      "host-managed-accounts-cloud:shared-account-families-and-consumer-capability-refusals"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/contracts/oauth-wire.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/oauth-protocol.ts",
+    ".upstream/apps/hosted/server/src/contracts/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/mcp-connections.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-account-acquisition.ts",
+    ".upstream/apps/hosted/server/src/implementation/provider-account-methods.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/oauth-callback.tsx",
+    ".upstream/apps/local/web/src/implementation/pages/oauth.tsx",
+    ".upstream/packages/apps/package.json",
+    ".upstream/packages/apps/protocols/27.json",
+    ".upstream/packages/apps/protocols/30.json",
+    ".upstream/packages/apps/src/contracts/account-family.ts",
+    ".upstream/packages/apps/src/contracts/account-observation.ts",
+    ".upstream/packages/apps/src/contracts/host.ts",
+    ".upstream/packages/apps/src/contracts/protocol-version.ts",
+    ".upstream/packages/apps/src/contracts/protocols/26.ts",
+    ".upstream/packages/apps/src/contracts/protocols/27.ts",
+    ".upstream/packages/apps/src/contracts/protocols/current.ts",
+    ".upstream/packages/apps/src/contracts/protocols/released.ts",
+    ".upstream/packages/apps/src/contracts/provider.ts",
+    ".upstream/packages/apps/src/implementation/host.ts",
+    ".upstream/packages/apps/src/implementation/provider.ts",
+    ".upstream/packages/apps/src/index.ts",
+    ".upstream/packages/sdk/src/contracts/account-acquisition-driver.ts",
+    ".upstream/packages/sdk/src/contracts/account-consumers.ts",
+    ".upstream/packages/sdk/src/contracts/account-family-recipes.ts",
+    ".upstream/packages/sdk/src/contracts/apps.ts",
+    ".upstream/packages/sdk/src/contracts/index.ts",
+    ".upstream/packages/sdk/src/contracts/oauth-families.ts",
+    ".upstream/packages/sdk/src/contracts/oauth.ts",
+    ".upstream/packages/sdk/src/contracts/provider.ts",
+    ".upstream/packages/sdk/src/implementation/account-consumer-plan.ts",
+    ".upstream/packages/sdk/src/implementation/app-protocols.ts",
+    ".upstream/packages/sdk/src/implementation/apps.ts",
+    ".upstream/packages/sdk/src/implementation/connection-state.ts",
+    ".upstream/packages/sdk/src/implementation/connection-target.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts",
+    ".upstream/packages/sdk/src/implementation/oauth-connection-plan.ts",
+    ".upstream/packages/sdk/src/implementation/oauth-consent-state.ts",
+    ".upstream/packages/sdk/src/implementation/oauth-grant-reuse.ts",
+    ".upstream/packages/sdk/src/implementation/oauth-protocol-native.ts",
+    ".upstream/packages/sdk/src/implementation/oauth-scope-evidence.ts",
+    ".upstream/packages/sdk/src/implementation/oauth.ts",
+    ".upstream/packages/sdk/src/implementation/provider.ts",
+    ".upstream/packages/ui/src/contracts/account-identities.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/accounts-client.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/identity-consent-client.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/oauth-scopes.tsx"
+  ]
+}

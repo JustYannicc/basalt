@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Remote workflow callbacks preserve the host-owned run name and active step identity for dependency dispatch and approval policies. The caller retains run authority; a supplied step must match the invoked step ID, and ordinary calls cannot borrow workflow approval."
+    }
+  }
+}

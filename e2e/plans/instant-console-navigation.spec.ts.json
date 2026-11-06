@@ -1,0 +1,44 @@
+{
+  "scenarios": {
+    "instantConsoleRevisit": {
+      "fixtures": "actors",
+      "appOrigin": true,
+      "title": "Returning to loaded console pages commits no loading state",
+      "serverEnvironment": {
+        "BETTER_AUTH_URL": "http://app.fixture.localhost:0",
+        "EXECUTOR_APP_UI_BASE_URL": "http://fixture.localhost:0",
+        "EXECUTOR_APP_UI_ADDRESS_SCHEME": "opaque",
+        "EXECUTOR_APP_UI_EMBEDDED": "true"
+      },
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "This scenario owns a self-host process with opaque addressing and embedding enabled."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "This journey checks the hosted console's sidebar pages and organization reads."
+        }
+      }
+    }
+  },
+  "runs": {
+    "instantConsoleRevisit": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/web/src/contracts/app-ui.ts",
+    ".upstream/apps/hosted/web/src/contracts/workflow-inputs.ts",
+    ".upstream/apps/hosted/web/src/implementation/components/app-frame-view.tsx",
+    ".upstream/apps/hosted/web/src/implementation/components/app-frames.tsx",
+    ".upstream/apps/hosted/web/src/implementation/components/organization.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-detail.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-screen.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/accounts.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/review-lazy.tsx"
+  ]
+}

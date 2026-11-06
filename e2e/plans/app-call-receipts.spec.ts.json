@@ -1,0 +1,108 @@
+{
+  "scenarios": {
+    "appCallWorkflow": {
+      "title": "native workerd workflows supply direct and operation app calls with trusted step identity",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses the public SDK native workerd workflow backend."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a runner-owned public SDK host."
+        }
+      }
+    },
+    "appCallConfiguration": {
+      "title": "owner-approved configuration alone attaches a version-bound app call confirmation",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses a runner-owned public SDK host."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a runner-owned public SDK host."
+        }
+      }
+    },
+    "appCallReceipts": {
+      "title": "app call receipts fence concurrent dispatch and retain terminal outcomes after restart",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises the public SDK host with a retained PostgreSQL adapter."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Exercises a runner-owned public SDK host."
+        }
+      }
+    }
+  },
+  "runs": {
+    "appCallWorkflow": ["declared:self-host"],
+    "appCallConfiguration": ["declared:self-host"],
+    "appCallReceipts": ["declared:self-host"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/contracts/api.ts",
+    ".upstream/apps/hosted/server/src/contracts/app-connections.ts",
+    ".upstream/apps/hosted/server/src/implementation/api.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-connections.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-lifecycle.ts",
+    ".upstream/apps/hosted/web/src/contracts/errors.ts",
+    ".upstream/packages/apps/package.json",
+    ".upstream/packages/apps/protocols/33.json",
+    ".upstream/packages/apps/src/contracts/app-calls.ts",
+    ".upstream/packages/apps/src/contracts/app.ts",
+    ".upstream/packages/apps/src/contracts/context.ts",
+    ".upstream/packages/apps/src/contracts/host.ts",
+    ".upstream/packages/apps/src/contracts/operations.ts",
+    ".upstream/packages/apps/src/contracts/protocol-version.ts",
+    ".upstream/packages/apps/src/contracts/protocols/31.ts",
+    ".upstream/packages/apps/src/contracts/protocols/current.ts",
+    ".upstream/packages/apps/src/contracts/protocols/released.ts",
+    ".upstream/packages/apps/src/contracts/workflows.ts",
+    ".upstream/packages/apps/src/implementation/app-calls.ts",
+    ".upstream/packages/apps/src/implementation/app.ts",
+    ".upstream/packages/apps/src/implementation/failure-detail.ts",
+    ".upstream/packages/apps/src/implementation/host.ts",
+    ".upstream/packages/apps/src/implementation/workflow-context.ts",
+    ".upstream/packages/apps/src/implementation/workflow-rpc.ts",
+    ".upstream/packages/apps/src/index.ts",
+    ".upstream/packages/sdk/src/contracts/app-calls.ts",
+    ".upstream/packages/sdk/src/contracts/apps.ts",
+    ".upstream/packages/sdk/src/contracts/executor.ts",
+    ".upstream/packages/sdk/src/contracts/storage.ts",
+    ".upstream/packages/sdk/src/contracts/workerd-host.ts",
+    ".upstream/packages/sdk/src/core.ts",
+    ".upstream/packages/sdk/src/implementation/app-call-accounts.ts",
+    ".upstream/packages/sdk/src/implementation/app-call-receipts.ts",
+    ".upstream/packages/sdk/src/implementation/app-call-schema.ts",
+    ".upstream/packages/sdk/src/implementation/app-calls.ts",
+    ".upstream/packages/sdk/src/implementation/app-confirmations.ts",
+    ".upstream/packages/sdk/src/implementation/app-connections.ts",
+    ".upstream/packages/sdk/src/implementation/app-protocols.ts",
+    ".upstream/packages/sdk/src/implementation/apps.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts",
+    ".upstream/packages/sdk/src/implementation/database.ts",
+    ".upstream/packages/sdk/src/implementation/owners.ts",
+    ".upstream/packages/sdk/src/implementation/promise.ts",
+    ".upstream/packages/sdk/src/implementation/storage-migrations.ts",
+    ".upstream/packages/sdk/src/implementation/storage.ts",
+    ".upstream/packages/sdk/src/implementation/tools.ts",
+    ".upstream/packages/sdk/src/implementation/worker-workflow-rpc.ts",
+    ".upstream/packages/sdk/src/implementation/workerd-client.ts",
+    ".upstream/packages/sdk/src/implementation/workerd-entry.ts"
+  ]
+}

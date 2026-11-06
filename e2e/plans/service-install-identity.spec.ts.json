@@ -1,0 +1,46 @@
+{
+  "scenarios": {
+    "serviceInstallIdentity": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "Service installs reuse one team app across names and MCP transports while explicit instances stay separate",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The shared hosted install transaction and catalog identity run through self-host."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Team install identity belongs to hosted products."
+        }
+      }
+    }
+  },
+  "runs": {
+    "serviceInstallIdentity": [
+      "host-managed-accounts:catalog-service-identity-and-import-compatibility"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/contracts/apps.ts",
+    ".upstream/apps/hosted/server/src/contracts/organization.ts",
+    ".upstream/apps/hosted/server/src/contracts/service-install.ts",
+    ".upstream/apps/hosted/server/src/implementation/apps.ts",
+    ".upstream/apps/hosted/server/src/implementation/catalog-service-search.ts",
+    ".upstream/apps/hosted/server/src/implementation/organization.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-lifecycle.ts",
+    ".upstream/apps/hosted/server/src/implementation/service-install-records.ts",
+    ".upstream/apps/hosted/server/src/implementation/service-installs.ts",
+    ".upstream/packages/catalog/src/contracts/catalog.ts",
+    ".upstream/packages/catalog/src/contracts/index.ts",
+    ".upstream/packages/catalog/src/contracts/service.ts",
+    ".upstream/packages/catalog/src/implementation/catalog.ts",
+    ".upstream/packages/catalog/src/implementation/services.ts",
+    ".upstream/packages/ui/src/contracts/dashboard.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/catalog.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/custom-app.tsx"
+  ]
+}

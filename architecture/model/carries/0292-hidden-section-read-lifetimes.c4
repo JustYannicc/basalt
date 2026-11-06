@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Leaving a hosted console section releases its active subscriptions before the destination loading page is shown. Inactive sections perform no focus, visibility or periodic reads. Retained values remain available on return, visible sections resume reconciliation and browser-only view preloads remain excluded from server rendering."
+    }
+  }
+}

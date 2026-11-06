@@ -1,0 +1,98 @@
+{
+  "scenarios": {
+    "cloudSsoBilling": {
+      "fixtures": "actors",
+      "title": "Cloud billing gates SSO and preserves PAYG checkout and seat synchronization",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Cloud billing and customer SSO"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Cloud billing and customer SSO"
+        }
+      }
+    },
+    "cloudSsoOidc": {
+      "fixtures": "actors",
+      "title": "Cloud SSO OIDC setup preserves drafts and binds verified identities to one team",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Cloud customer SSO"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Cloud customer SSO"
+        }
+      }
+    },
+    "cloudSsoOidcProtocol": {
+      "fixtures": "actors",
+      "title": "Cloud SSO OIDC protocol creates a verified session and joins only its team",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Cloud customer SSO"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Cloud customer SSO"
+        }
+      }
+    },
+    "cloudSsoSaml": {
+      "fixtures": "actors",
+      "title": "Cloud SSO SAML accepts signed assertions and rejects tampering and replay",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Cloud customer SSO"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Cloud customer SSO"
+        }
+      }
+    }
+  },
+  "runs": {
+    "cloudSsoBilling": ["production-ops:isolated-billing-policy-and-oidc-sign-in"],
+    "cloudSsoOidc": ["production-ops:isolated-billing-policy-and-oidc-sign-in"],
+    "cloudSsoOidcProtocol": [
+      "sso-service-binding:oidc-and-saml-through-the-private-service-binding"
+    ],
+    "cloudSsoSaml": ["sso-service-binding:oidc-and-saml-through-the-private-service-binding"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/alchemy.run.ts",
+    ".upstream/apps/hosted/cloud/src/implementation/auth-options.ts",
+    ".upstream/apps/hosted/cloud/src/implementation/auth-provisioning.ts",
+    ".upstream/apps/hosted/cloud/src/implementation/billing.ts",
+    ".upstream/apps/hosted/cloud/src/implementation/sso-policy.ts",
+    ".upstream/apps/hosted/cloud/src/implementation/sso.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/auth.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/sso-worker.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/sso.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/worker-build.ts",
+    ".upstream/apps/hosted/cloud/src/main.ts",
+    ".upstream/apps/hosted/cloud/src/sso.ts"
+  ]
+}

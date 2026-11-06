@@ -1,0 +1,14 @@
+{
+  "scenarios": {},
+  "runs": {},
+  "config": [
+    {
+      "job": "fast",
+      "config": "cloud-app-listener.config.ts"
+    }
+  ],
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/app-ui.ts",
+    ".upstream/apps/hosted/cloud/src/contracts/app-ui.ts"
+  ]
+}

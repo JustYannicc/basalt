@@ -1,0 +1,45 @@
+{
+  "scenarios": {
+    "appPackageMetadata": {
+      "fixtures": "actors",
+      "title": "Quick-add MCP apps retain package names independently of installed labels",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "This scenario uses a loopback upstream; hosted templates share the same implementation."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "This scenario exercises the hosted import API."
+        }
+      }
+    }
+  },
+  "runs": {
+    "appPackageMetadata": [
+      "host-managed-accounts:catalog-service-identity-and-import-compatibility"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/contracts/apps.ts",
+    ".upstream/apps/hosted/server/src/contracts/organization.ts",
+    ".upstream/apps/hosted/server/src/contracts/service-install.ts",
+    ".upstream/apps/hosted/server/src/implementation/apps.ts",
+    ".upstream/apps/hosted/server/src/implementation/catalog-service-search.ts",
+    ".upstream/apps/hosted/server/src/implementation/organization.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-lifecycle.ts",
+    ".upstream/apps/hosted/server/src/implementation/service-install-records.ts",
+    ".upstream/apps/hosted/server/src/implementation/service-installs.ts",
+    ".upstream/packages/catalog/src/contracts/catalog.ts",
+    ".upstream/packages/catalog/src/contracts/index.ts",
+    ".upstream/packages/catalog/src/contracts/service.ts",
+    ".upstream/packages/catalog/src/implementation/catalog.ts",
+    ".upstream/packages/catalog/src/implementation/services.ts",
+    ".upstream/packages/ui/src/contracts/dashboard.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/catalog.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/custom-app.tsx"
+  ]
+}

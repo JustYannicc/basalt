@@ -1,0 +1,33 @@
+{
+  "scenarios": {
+    "contributedAccountDeleteOAuthReconnect": {
+      "fixtures": "actors",
+      "title": "a contributed account delete removes the grant committed by a concurrent OAuth reconnect",
+      "targets": {
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no organization contributions."
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Requires concurrent transactions in managed Cloud's PostgreSQL."
+        },
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        }
+      }
+    }
+  },
+  "runs": {
+    "contributedAccountDeleteOAuthReconnect": ["declared:cloud"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/implementation/account-removal-lock.ts",
+    ".upstream/apps/hosted/server/src/implementation/accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/contributed-account-policy.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-lifecycle.ts",
+    ".upstream/packages/sdk/src/contracts/executor.ts",
+    ".upstream/packages/sdk/src/implementation/accounts.ts"
+  ]
+}

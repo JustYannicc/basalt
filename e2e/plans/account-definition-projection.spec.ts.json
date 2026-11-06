@@ -1,0 +1,17 @@
+{
+  "scenarios": {},
+  "runs": {},
+  "config": [
+    {
+      "job": "host-managed-accounts-cloud",
+      "config": "account-definition.config.ts",
+      "titles": [
+        "host-added Google metadata preserves retained and current account-check definitions"
+      ]
+    }
+  ],
+  "inputs": [
+    ".upstream/packages/sdk/src/implementation/app-account-projection.ts",
+    ".upstream/packages/sdk/src/implementation/app-runner.ts"
+  ]
+}

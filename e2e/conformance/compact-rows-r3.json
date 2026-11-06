@@ -13,7 +13,7 @@
         {
           "scenario": "accountCompactRows",
           "target": "self-host",
-          "job": "account-acquisition"
+          "job": "account-usage"
         }
       ]
     },
@@ -33,7 +33,7 @@
         {
           "scenario": "accountCompactRows",
           "target": "self-host",
-          "job": "account-acquisition"
+          "job": "account-usage"
         }
       ]
     },

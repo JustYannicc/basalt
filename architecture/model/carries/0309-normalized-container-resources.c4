@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Container reconciliation treats named instance types and their expanded resource readback as equivalent while preserving rollouts for image, resource, command and attachment changes."
+    }
+  }
+}

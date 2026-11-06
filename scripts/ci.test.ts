@@ -19,27 +19,33 @@ test("affected selection is conservative for unknown and shared inputs", () => {
     ".upstream/bun.lock",
     ".upstream/packages/sdk/src/unknown.ts",
     "src/new-feature.ts",
-  ])
-    assert.deepEqual(selectPaths([file]).jobs, heavyJobs, file);
-  assert.deepEqual(
-    selectPaths(["docs/guide.md", "architecture/model/build.c4", "scripts/ci.test.ts"]).jobs,
-    [],
-  );
+    "scripts/ci.test.ts",
+    "scripts/architecture/source.ts",
+    "clients/mobile/src/account.ts",
+  ]) {
+    const selected = selectPaths([file]);
+    assert.deepEqual(selected.jobs, heavyJobs, file);
+    assert.equal(selected.declaredFiles, null, file);
+  }
+  assert.deepEqual(selectPaths(["docs/guide.md", "architecture/model/build.c4"]).jobs, []);
   assert.throws(() => selectPaths(["../outside.ts"]));
 });
 
-test("a client change selects its real product and platform jobs without cloud operation suites", () => {
+test("an undeclared client change retains every product and platform job", () => {
   const selected = selectPaths(["clients/mobile/src/account.ts"]);
-  assert.deepEqual(selected.jobs, ["client-mobile", "client-desktop", "client-native-product"]);
+  assert.deepEqual(selected.jobs, heavyJobs);
+  assert.equal(selected.declaredFiles, null);
   assert.deepEqual(selected.reasons["client-mobile"], ["clients/mobile/src/account.ts"]);
   const accounts = selectPaths([
     ".upstream/apps/hosted/server/src/implementation/accounts.ts",
   ]).jobs;
   for (const job of [
     "host-managed-accounts",
+    "host-managed-accounts-pool",
     "host-managed-accounts-local",
     "host-managed-accounts-cloud",
     "google-account-recovery",
+    "google-account-diagnostics",
     "contributed-account-recipes",
     "production-ops-identity",
     "production-build",
@@ -140,9 +146,9 @@ test("access-editor and publishing proofs have a separate deadline from the appr
     .filter((step: { run?: string }) => step.run?.includes("--test-name"))
     .map((step: { run: string }) => step.run);
   assert.deepEqual(commands, [
-    'bun run e2e:self-host --test-name "^Member restrictions keep controls|^Mobile member restrictions keep controls|^A host that does not publish says so" --workers 1',
-    "bun run e2e:self-host --test-name 'asks for groups without waiting' --workers 1",
-    "bun run e2e:cloud --test-name 'asks for groups without waiting' --workers 1",
+    'bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts access-editor-reads:publishing-layout)" --workers 1',
+    'bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts access-editor-reads:self-host)" --workers 1',
+    'bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts access-editor-reads:cloud)" --workers 1',
   ]);
   for (const command of commands)
     assert.ok(!approvals.steps.some((step: { run?: string }) => step.run === command));
@@ -167,8 +173,7 @@ test("AWS catalog, proof inputs and loopback carries select the AWS runtime proo
   }
   const vercel = selectPaths(["src/catalog/vercel.json"]).jobs;
   assert.ok(vercel.includes("vercel-sign-in"));
-  assert.ok(!vercel.includes("aws-connectors"));
-  assert.ok(!selectPaths(["clients/mobile/src/account.ts"]).jobs.includes("aws-connectors"));
+  assert.deepEqual(vercel, heavyJobs);
 });
 
 test("the aggregate blocks missing, failed, cancelled and unexpectedly skipped work", () => {
@@ -442,6 +447,31 @@ test("connection control changes select their retained-data browser guard", () =
     ".upstream/apps/hosted/web/src/implementation/pages/connection-dialog.tsx",
     ".upstream/e2e/tests/cached-account-controls.spec.ts",
     ".upstream/e2e/tests/cached-provider-policy.spec.ts",
+  ])
+    assert.ok(selectPaths([path]).jobs.includes("human-in-the-loop"), path);
+});
+
+test("first-entry view and route changes select their browser guards", () => {
+  for (const path of [
+    ".upstream/apps/hosted/web/src/implementation/pages/accounts.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/approvals.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/accounts.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/review-lazy.tsx",
+    ".upstream/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx",
+    ".upstream/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx",
+    ".upstream/e2e/tests/first-entry-reveal.spec.ts",
+    ".upstream/e2e/tests/first-entry-behavior.spec.ts",
+    ".upstream/e2e/support/first-entry-reveal-probe.ts",
+  ])
+    assert.ok(selectPaths([path]).jobs.includes("human-in-the-loop"), path);
+});
+
+test("hidden section reads select their browser guards", () => {
+  for (const path of [
+    ".upstream/e2e/tests/hidden-section-reads.spec.ts",
+    ".upstream/e2e/tests/dashboard-client-loading.spec.ts",
+    ".upstream/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.tsx",
+    ".upstream/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.tsx",
   ])
     assert.ok(selectPaths([path]).jobs.includes("human-in-the-loop"), path);
 });

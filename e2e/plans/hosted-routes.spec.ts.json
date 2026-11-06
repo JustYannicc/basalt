@@ -1,0 +1,46 @@
+{
+  "scenarios": {
+    "hostedRoutes": {
+      "fixtures": "actors",
+      "title": "Hosted Routes installs the Maps source, reserves one shared call, and retires an unlinked account",
+      "targets": {
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The hosted Google Routes proxy is Cloud-only."
+        },
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The hosted Google Routes proxy is Cloud-only."
+        }
+      }
+    }
+  },
+  "runs": {
+    "hostedRoutes": ["declared:cloud"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/contracts/emulators.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/hosted-routes.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/maps-routes/google.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/maps-routes/index.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/maps-routes/request.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/maps-routes/response.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/maps-routes/usage.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/product-services.ts",
+    ".upstream/apps/hosted/cloud/src/main.ts",
+    ".upstream/apps/hosted/server/package.json",
+    ".upstream/apps/hosted/server/src/contracts/hosted-routes.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/hosted-routes-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/hosted-routes-schema.ts",
+    ".upstream/apps/hosted/server/src/implementation/hosted-routes-token.ts",
+    ".upstream/apps/hosted/server/src/implementation/mcp-http.ts",
+    ".upstream/apps/hosted/server/src/implementation/migrations.ts",
+    "src/catalog/google-maps/**"
+  ],
+  "fixture": "google-routes"
+}

@@ -1,0 +1,400 @@
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -39,7 +39,7 @@
+ import { cloudLogActivity } from "./cloud-log-activity.ts";
+ import { productionOpsDatabaseFixture } from "./production-ops-database-fixture.ts";
+ import { productionOpsDatabaseProxy } from "./production-ops-database-proxy.ts";
+-import { cloudPoolGateway } from "./cloud-pool-gateway.ts";
++import { cloudPoolGateway, poolFixtureSigningKey } from "./cloud-pool-gateway.ts";
+ import { cloudNativeStack } from "./cloud-native-stack.ts";
+ import { startMapsRoutesEmulator } from "./maps-routes-emulator.ts";
+ import {
+@@ -191,7 +191,11 @@
+     if (databaseProxy !== undefined) yield* databaseProxy.select(databaseBackendPort);
+     const databasePort = databaseProxy?.port ?? input.databasePort;
+     const nativePoolBackend = process.env.BASALT_E2E_POOL_BACKEND === "1";
+-    const poolBackend = nativePoolBackend || process.env.BASALT_E2E_PRODUCTION_OPS === "1";
++    const poolBackend =
++      nativePoolBackend ||
++      process.env.BASALT_E2E_PRODUCTION_OPS === "1" ||
++      process.env.BASALT_E2E_POOL_SETUP === "1" ||
++      process.env.BASALT_E2E_ROUTES === "1";
+     if (input.manualCron && nativePoolBackend)
+       return yield* Effect.die(new Error("Manual cron requires the ordinary local Cloud stack."));
+     const apiListener = poolBackend ? yield* cloudListener : input.listener;
+@@ -374,13 +378,10 @@
+           }),
+       // Fresh test installs use the encrypted native journal, as production does.
+       EXECUTOR_ENCRYPTED_WORKFLOW_STARTS: "true",
+-      ...(process.env.BASALT_E2E_POOL_SETUP === "1" || mapsRoutes !== undefined
+-        ? { POOL_APP_SIGNING_KEY: randomBytes(32).toString("hex") }
+-        : {}),
+       MCP_SESSION_KEY_CURRENT: randomBytes(32).toString("hex"),
+       MCP_SESSION_KEY_PREVIOUS: randomBytes(32).toString("hex"),
+       ...(process.env.BASALT_E2E_PRODUCTION_OPS === "1" || poolBackend
+-        ? { POOL_APP_SIGNING_KEY: "ab".repeat(32) }
++        ? { POOL_APP_SIGNING_KEY: poolFixtureSigningKey }
+         : {}),
+       APP_DOMAIN_CONTROL_SECRET: randomBytes(32).toString("hex"),
+       EXECUTOR_BUILD_VERSION: input.commit,
+diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.ts
+--- a/e2e/support/cloud-pool-gateway.ts
++++ b/e2e/support/cloud-pool-gateway.ts
+@@ -15,10 +15,15 @@
+ import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
+ import { createHmac, timingSafeEqual } from "node:crypto";
+ import { createServer, request } from "node:http";
++import { poolWorkerRevision } from "../../apps/hosted/server/src/implementation/pool-worker-revision.ts";
++import { tokenKeyVersion } from "../../apps/hosted/server/src/implementation/pool-token.ts";
+ import { TransportDiagnostic, transportDiagnostic } from "./transport-diagnostic.ts";
++
++export const poolFixtureSigningKey = "ab".repeat(32);
+ 
+ const access = "/pool/v1/access";
+ const acquisition = "/pool/v1/account-acquisitions";
++const membership = "/pool/v1/membership";
+ const catalog = "/native-provider-fixture/catalog";
+ const Signed = Schema.Struct({
+   action: Schema.String,
+@@ -26,6 +31,13 @@
+   reference: Schema.optionalKey(Schema.String),
+   at: Schema.Number,
+   expiresAt: Schema.Number,
++});
++
++const SignedTiming = Schema.Struct({ at: Schema.Number, expiresAt: Schema.Number });
++const SignedMembership = Schema.Struct({
++  pool: Schema.String,
++  organization: Schema.String,
++  ...SignedTiming.fields,
+ });
+ 
+ const ForwardingDiagnostic = Schema.Struct({
+@@ -63,24 +75,35 @@
+         );
+         const [prefix, payload, signature, extra] = envelope.split(".");
+         if (
+-          prefix !== (url === access ? "sba1" : "sbaa1") ||
++          prefix !== (url === access ? "sba1" : url === membership ? "sbm1" : "sbaa1") ||
+           payload === undefined ||
+           signature === undefined ||
+           extra !== undefined
+         )
+           return HttpServerResponse.empty({ status: 401 });
+-        const expected = createHmac("sha256", Buffer.from("ab".repeat(32), "hex"))
++        const expected = createHmac("sha256", Buffer.from(poolFixtureSigningKey, "hex"))
+           .update(`${prefix}.${payload}`)
+           .digest();
+         const supplied = Buffer.from(signature, "base64url");
+         if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected))
+           return HttpServerResponse.empty({ status: 401 });
+-        const input = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Signed))(
+-          Buffer.from(payload, "base64url").toString(),
+-        );
++        const text = Buffer.from(payload, "base64url").toString();
++        const timing = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(SignedTiming))(text);
+         const now = Date.now();
+-        if (input.at > now || input.expiresAt <= now || input.expiresAt > input.at + 30_000)
++        if (timing.at > now || timing.expiresAt <= now || timing.expiresAt > timing.at + 30_000)
+           return HttpServerResponse.empty({ status: 401 });
++        if (url === membership) {
++          yield* Schema.decodeUnknownEffect(Schema.fromJsonString(SignedMembership))(text);
++          const event = { path: url, action: "membership", provider: undefined, refused: false };
++          yield* Ref.update(events, (previous) => [...previous, event]);
++          yield* fs.writeFileString(
++            path.join(directory, "pool-backend.ndjson"),
++            JSON.stringify(event) + "\n",
++            { flag: "a", mode: 0o600 },
++          );
++          return HttpServerResponse.jsonUnsafe(null);
++        }
++        const input = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Signed))(text);
+         const refused =
+           process.env.BASALT_E2E_POOL_CLEANUP_REFUSED === "1" &&
+           (input.action === "remove" ||
+@@ -120,7 +143,24 @@
+         if (input.action === "check") return HttpServerResponse.jsonUnsafe({ result: {} });
+         return HttpServerResponse.jsonUnsafe(null);
+       });
++    const releaseRevision =
++      process.env.BASALT_E2E_POOL_RELEASE_MISMATCH === "1"
++        ? poolWorkerRevision.slice(0, -1) + (poolWorkerRevision.endsWith("0") ? "1" : "0")
++        : poolWorkerRevision;
++    const keyVersion = yield* Effect.promise(() => tokenKeyVersion(poolFixtureSigningKey));
+     const routes = Layer.mergeAll(
++      HttpRouter.add(
++        "GET",
++        "/pool/v1/release",
++        Effect.succeed(
++          HttpServerResponse.jsonUnsafe(
++            { revision: releaseRevision, keyVersion },
++            {
++              headers: { "Cache-Control": "no-store" },
++            },
++          ),
++        ),
++      ),
+       HttpRouter.add(
+         "POST",
+         "/native-provider-fixture/retirement-reference",
+@@ -144,6 +184,7 @@
+       ),
+       HttpRouter.add("POST", access, backend(access)),
+       HttpRouter.add("POST", acquisition, backend(acquisition)),
++      HttpRouter.add("POST", membership, backend(membership)),
+       HttpRouter.add(
+         "GET",
+         "/native-provider-fixture/backend-events",
+diff --git a/e2e/tests/cloud-app-listener.spec.ts b/e2e/tests/cloud-app-listener.spec.ts
+--- a/e2e/tests/cloud-app-listener.spec.ts
++++ b/e2e/tests/cloud-app-listener.spec.ts
+@@ -1,10 +1,11 @@
++import { createHash, createHmac } from "node:crypto";
+ import * as NodeServices from "@effect/platform-node/NodeServices";
+ import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
+ import { expect, layer } from "@effect/vitest";
+ import { Effect, FileSystem, Schema } from "effect";
+ import { cloudPoolGateway } from "../support/cloud-pool-gateway.ts";
+ import { cloudListener } from "../support/cloud-listener.ts";
+-import { HttpClient } from "effect/http";
++import { HttpBody, HttpClient } from "effect/http";
+ import { cloudAppListener } from "../support/cloud-app-listener.ts";
+ import { appHttpBackend } from "../support/cloud-app-listener-fixtures.ts";
+ import { freePort, holdPort, refusingPort } from "../support/ports.ts";
+@@ -123,6 +124,72 @@
+     );
+   }
+ 
++  it.effect("pool backend reports generated release identity and its own signing key version", () =>
++    Effect.gen(function* () {
++      const fs = yield* FileSystem.FileSystem;
++      const directory = yield* fs.makeTempDirectoryScoped();
++      const api = yield* cloudListener;
++      const gateway = yield* cloudPoolGateway(api.url.origin, directory, api.url);
++      const http = yield* HttpClient.HttpClient;
++      const response = yield* http.get(`${gateway.origin}/pool/v1/release`);
++      expect(response.status).toBe(200);
++      expect(response.headers["cache-control"]).toBe("no-store");
++      const text = yield* response.text;
++      const report = JSON.parse(text);
++      const generated = yield* fs.readFileString(
++        "apps/hosted/server/src/implementation/pool-worker-revision.ts",
++      );
++      expect(Object.keys(report).sort()).toEqual(["keyVersion", "revision"]);
++      expect(generated).toContain(JSON.stringify(report.revision));
++      expect(report.revision).toMatch(/^[0-9a-f]{64}$/);
++      expect(report.keyVersion).toBe(
++        createHash("sha256").update("ab".repeat(32)).digest("hex").slice(0, 16),
++      );
++      expect(text).not.toContain("ab".repeat(32));
++    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
++  );
++
++  it.effect("pool backend verifies membership and audience callback envelopes", () =>
++    Effect.gen(function* () {
++      const fs = yield* FileSystem.FileSystem;
++      const directory = yield* fs.makeTempDirectoryScoped();
++      const api = yield* cloudListener;
++      const gateway = yield* cloudPoolGateway(api.url.origin, directory, api.url);
++      const http = yield* HttpClient.HttpClient;
++      const at = Date.now();
++      const membership = {
++        pool: "app_fixture",
++        organization: "organization-fixture",
++        at,
++        expiresAt: at + 10_000,
++      };
++      const envelope = (prefix: string, value: unknown) => {
++        const payload = Buffer.from(JSON.stringify(value)).toString("base64url");
++        const signature = createHmac("sha256", Buffer.from("ab".repeat(32), "hex"))
++          .update(`${prefix}.${payload}`)
++          .digest("base64url");
++        return `${prefix}.${payload}.${signature}`;
++      };
++      const post = (path: string, signed: string) =>
++        http.post(`${gateway.origin}${path}`, {
++          body: HttpBody.jsonUnsafe({ envelope: signed }),
++        });
++      expect((yield* post("/pool/v1/membership", envelope("sbm1", membership))).status).toBe(200);
++      expect(
++        (yield* post(
++          "/pool/v1/access",
++          envelope("sba1", { action: "audience", pools: [], at, expiresAt: at + 10_000 }),
++        )).status,
++      ).toBe(200);
++      expect((yield* post("/pool/v1/membership", envelope("sba1", membership))).status).toBe(401);
++      expect(
++        (yield* post("/pool/v1/membership", envelope("sbm1", { ...membership, expiresAt: at - 1 })))
++          .status,
++      ).toBe(401);
++      expect((yield* post("/pool/v1/membership", "sbm1.invalid.invalid")).status).toBe(401);
++    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
++  );
++
+   for (const fail of [false, true]) {
+     it.effect(`releases the held origin on scope ${fail ? "failure" : "completion"}`, () =>
+       Effect.gen(function* () {
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -9259,6 +9259,26 @@
+       "self-host": scheduled,
+       cloud: managedCloud,
+       local: na("General owner policies belong to the hosted product."),
++    },
++  },
++  cloudPoolCallbackSharing: {
++    fixtures: "actors",
++    file: "cloud-pool-callbacks.spec.ts",
++    title: "Cloud pool callbacks let a separate catalog instance change its audience",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("Managed Cloud exercises the external pool receiver fixture."),
++      local: na("Local has no hosted app audiences."),
++    },
++  },
++  cloudPoolCallbackCleanup: {
++    fixtures: "actors",
++    file: "cloud-pool-callbacks.spec.ts",
++    title: "Cloud pool callbacks let an onboarded organization finish fixture cleanup",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("Managed Cloud exercises the external pool receiver fixture."),
++      local: na("Local has no hosted organization removal."),
+     },
+   },
+   hostedToolPolicyRestart: {
+diff --git a/e2e/tests/cloud-pool-callbacks.spec.ts b/e2e/tests/cloud-pool-callbacks.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/cloud-pool-callbacks.spec.ts
+@@ -0,0 +1,98 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Api, body } from "../support/api.ts";
++import { Actors } from "../support/actors.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { cloudLocks } from "../support/cloud-locks.ts";
++import { Evidence } from "../support/evidence.ts";
++import { RuntimeLive } from "../support/platform.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Installed = Schema.Struct({ id: Schema.String });
++const Access = Schema.Struct({ revision: Schema.String });
++
++// The pool commit precedes its external acknowledgment, so refused sync still leaves a real pool.
++const committedPool = Effect.gen(function* () {
++  const api = yield* Api;
++  const actors = yield* Actors;
++  const response = yield* api.request(
++    actors.owner,
++    "POST",
++    `/api/organizations/${actors.organization.id}/pools`,
++    {
++      name: "Callback pool",
++      requestId: crypto.randomUUID(),
++      newInstance: true,
++    },
++  );
++  const database = yield* cloudLocks;
++  const rows = yield* database.run({
++    sql: "select count(*)::int as pools from organization o cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) pool where o.id = $1",
++    params: [actors.organization.id],
++  });
++  const counts = yield* Schema.decodeUnknownEffect(
++    Schema.Array(Schema.Struct({ pools: Schema.Number })),
++  )(rows);
++  expect(counts[0]!.pools).toBeGreaterThan(0);
++  yield* (yield* Evidence).json("pool-callback-creation.json", {
++    status: response.status,
++    body: response.body,
++    pools: counts[0]!.pools,
++  });
++  return response.status;
++});
++
++layer(RuntimeLive, { excludeTestServices: true })("Cloud pool callbacks", (it) => {
++  it.effect(scenarios.cloudPoolCallbackSharing.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api;
++        const actors = yield* Actors;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const poolCreated = yield* committedPool;
++        const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++          entry: "google-maps",
++          name: "Pool callback sharing",
++          newInstance: true,
++        });
++        expect(response.status, JSON.stringify(response.body)).toBe(200);
++        const app = yield* body(Installed, response);
++        const path = `${prefix}/apps/${app.id}`;
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
++        );
++        const current = yield* body(
++          Access,
++          yield* api.request(actors.owner, "GET", `${path}/access`),
++        );
++        const shared = yield* api.request(actors.owner, "PATCH", `${path}/access`, {
++          revision: current.revision,
++          audience: { kind: "everyone" },
++        });
++        yield* (yield* Evidence).json("pool-callback-sharing.json", {
++          status: shared.status,
++          body: shared.body,
++        });
++        expect(shared.status, JSON.stringify(shared.body)).toBe(200);
++        expect(poolCreated).toBe(200);
++      }),
++    ),
++  );
++  it.effect(scenarios.cloudPoolCallbackCleanup.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api;
++        const actors = yield* Actors;
++        yield* committedPool;
++        const access = yield* api.request(
++          actors.owner,
++          "GET",
++          `/api/organizations/${actors.organization.id}/access`,
++        );
++        expect(access.status).toBe(200);
++      }),
++    ),
++  );
++});
+diff --git a/e2e/check-boundary.ts b/e2e/check-boundary.ts
+--- a/e2e/check-boundary.ts
++++ b/e2e/check-boundary.ts
+@@ -75,6 +75,26 @@
+             allowed.has(specifier)
+           )
+             return;
++          // This external receiver reports the generated release identity and shared key digest.
++          if (
++            label === `support${path.sep}cloud-pool-gateway.ts` &&
++            ts.isImportDeclaration(node.parent) &&
++            node.parent.importClause?.name === undefined &&
++            node.parent.importClause?.namedBindings !== undefined &&
++            ts.isNamedImports(node.parent.importClause.namedBindings) &&
++            node.parent.importClause.namedBindings.elements.length === 1
++          ) {
++            const imported = node.parent.importClause.namedBindings.elements[0];
++            if (
++              imported?.propertyName === undefined &&
++              ((specifier ===
++                "../../apps/hosted/server/src/implementation/pool-worker-revision.ts" &&
++                imported?.name.text === "poolWorkerRevision") ||
++                (specifier === "../../apps/hosted/server/src/implementation/pool-token.ts" &&
++                  imported?.name.text === "tokenKeyVersion"))
++            )
++              return;
++          }
+           // The harness shares only the bounded infrastructure policy, never product implementations.
+           if (
+             label === `support${path.sep}emulators.ts` &&

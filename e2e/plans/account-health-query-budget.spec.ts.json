@@ -1,0 +1,47 @@
+{
+  "scenarios": {
+    "accountHealthQueryBudget": {
+      "title": "account lists use constant SQL statements for one and six saved identities",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Statement counting is confined to the local test host."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted identity placements and health list reads."
+        }
+      }
+    }
+  },
+  "runs": {
+    "accountHealthQueryBudget": ["account-acquisition:account-usage-rows-and-cells"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/package.json",
+    ".upstream/apps/hosted/testing/package.json",
+    ".upstream/bun.lock",
+    ".upstream/apps/hosted/server/src/implementation/account-identity-placement.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-lifecycle.ts",
+    ".upstream/apps/hosted/testing/storage-fault-fixture.ts",
+    ".upstream/apps/hosted/testing/string-set-fixture.ts",
+    ".upstream/apps/hosted/web/src/contracts/account-observations.ts",
+    ".upstream/apps/hosted/web/src/contracts/account-polling.ts",
+    ".upstream/apps/hosted/web/src/contracts/app-accounts.ts",
+    ".upstream/apps/hosted/web/src/contracts/organization.ts",
+    ".upstream/apps/hosted/web/src/contracts/resource-access.ts",
+    ".upstream/packages/fumadb-effect/src/implementation/sql/index.ts",
+    ".upstream/packages/fumadb-effect/src/implementation/sql/string-set.ts",
+    ".upstream/packages/fumadb-effect/src/implementation/sql/where.ts",
+    ".upstream/packages/sdk/src/contracts/executor.ts",
+    ".upstream/packages/sdk/src/implementation/account-acquisition-bindings.ts",
+    ".upstream/packages/sdk/src/implementation/account-driver-health.ts",
+    ".upstream/packages/sdk/src/implementation/account-health.ts",
+    ".upstream/packages/sdk/src/implementation/account-identities.ts",
+    ".upstream/packages/sdk/src/implementation/accounts.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/account-observations.tsx"
+  ]
+}

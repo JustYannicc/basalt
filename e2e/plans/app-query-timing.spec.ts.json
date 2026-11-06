@@ -1,0 +1,29 @@
+{
+  "scenarios": {
+    "appQueryTiming": {
+      "fixtures": "actors",
+      "appOrigin": true,
+      "title": "app query traces record ordered request phase durations",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "This scenario uses hosted app authentication."
+        }
+      }
+    }
+  },
+  "runs": {
+    "appQueryTiming": ["host-managed-accounts:app-query-phase-diagnostics", "declared:cloud"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/implementation/app-ui-query-timing.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-ui.ts",
+    ".upstream/packages/telemetry/src/isolate.ts"
+  ]
+}

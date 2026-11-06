@@ -1,0 +1,29 @@
+{
+  "scenarios": {
+    "dashboardBatchAuthentication": {
+      "fixtures": "actors",
+      "title": "A dashboard batch checks its session and each membership once, without retaining authority for the next request",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The local dashboard does not batch its reads"
+        }
+      }
+    }
+  },
+  "runs": {
+    "dashboardBatchAuthentication": ["dashboard:profile", "declared:cloud"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/implementation/auth.ts",
+    ".upstream/apps/hosted/server/src/implementation/batch-authentication.ts",
+    ".upstream/apps/hosted/server/src/implementation/middleware.ts",
+    ".upstream/apps/hosted/server/src/implementation/organization.ts"
+  ]
+}

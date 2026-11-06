@@ -64,6 +64,7 @@ import { ImportRemoval } from "./import-removal/operation.ts";
 import { handleImportRemoval } from "./import-removal/http.ts";
 import { removalSnapshot } from "./import-removal/snapshot.ts";
 import { handleRuntimeRecovery, RuntimeRecovery, runtimeRecoveryPath } from "./runtime-recovery.ts";
+import { poolRelease, poolReleasePath } from "./release.ts";
 
 export interface PoolEnvironment extends TelemetryEnv, SentryEnv {
   PoolContainer: DurableObjectNamespace<PoolContainer>;
@@ -462,6 +463,8 @@ export async function handlePoolWorkerRequest(
   lookupHomeApiKey: HomeApiKeyLookup = hasActiveHomeApiKey,
 ): Promise<Response> {
   const pathname = new URL(request.url).pathname;
+  // Answered here, without waking the container.
+  if (pathname === poolReleasePath) return poolRelease(request, env);
   if (
     pathname === importRemovalPath ||
     pathname === appModelPath ||

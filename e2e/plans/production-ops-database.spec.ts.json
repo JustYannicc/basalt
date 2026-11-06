@@ -1,0 +1,96 @@
+{
+  "scenarios": {
+    "cloudProductionOpsRoleIdentity": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Cloud production operations enforce the reviewed SQL login",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Production operations use the Cloud runtime database and deploy secrets."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host production operations."
+        }
+      }
+    },
+    "cloudProductionOpsPhysicalDatabase": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Cloud production operations enforce the reviewed physical database with equivalent fixture rows",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Production operations use the Cloud runtime database and deploy secrets."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host production operations."
+        }
+      }
+    },
+    "cloudProductionOpsOptionalServer": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Cloud production operations enforce database identity when the server identifier is unavailable",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Production operations use the Cloud runtime database and deploy secrets."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host production operations."
+        }
+      }
+    },
+    "cloudProductionOpsStalePlan": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Cloud production operations enforce a fresh dry run after the reviewed deployment changes",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Production operations use the Cloud runtime database and deploy secrets."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host production operations."
+        }
+      }
+    }
+  },
+  "runs": {
+    "cloudProductionOpsRoleIdentity": ["production-ops:identity-role"],
+    "cloudProductionOpsPhysicalDatabase": ["production-ops:identity-physical"],
+    "cloudProductionOpsOptionalServer": ["production-ops:identity-without-server"],
+    "cloudProductionOpsStalePlan": ["production-ops:identity-release"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/implementation/migrations.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/database-identity.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/http.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-schema.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/schema.ts"
+  ]
+}

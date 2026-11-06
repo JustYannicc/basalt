@@ -1,0 +1,281 @@
+diff --git a/apps/hosted/testing/production-ops-provisioning-fixture.ts b/apps/hosted/testing/production-ops-provisioning-fixture.ts
+--- a/apps/hosted/testing/production-ops-provisioning-fixture.ts
++++ b/apps/hosted/testing/production-ops-provisioning-fixture.ts
+@@ -2,10 +2,15 @@
+ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
+ import * as NodeServices from "@effect/platform-node/NodeServices";
+ import { Client } from "pg";
+-import { Config, Data, Effect, FileSystem, Redacted, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { dirname } from "node:path";
++import { inspect } from "node:util";
++import { Cause, Config, Data, Effect, FileSystem, Redacted, Schema } from "effect";
+ import { LocalDatabaseUrl } from "../cloud/src/contracts/database.ts";
+ 
+-class ProvisioningFixtureFailed extends Data.TaggedError("ProvisioningFixtureFailed") {}
++class ProvisioningFixtureFailed extends Data.TaggedError("ProvisioningFixtureFailed")<{
++  readonly cause?: unknown;
++}> {}
+ const Configuration = Schema.fromJsonString(Schema.Struct({ database: Schema.String }));
+ // Member jobs can retry later steps after creating their accounts. Wait for committed records.
+ const Counts = Schema.Array(
+@@ -58,7 +63,7 @@
+             await client.connect();
+             return client;
+           },
+-          catch: () => new ProvisioningFixtureFailed(),
++          catch: (cause) => new ProvisioningFixtureFailed({ cause }),
+         }),
+         (client) =>
+           Effect.promise(async () => {
+@@ -77,6 +82,7 @@
+           let observedPending = 0;
+           let wake = () => {};
+           let disconnected = false;
++          let disconnectCause: unknown;
+           const started = performance.now();
+           let updated = started,
+             progressed = started;
+@@ -115,8 +121,9 @@
+             revision++;
+             wake();
+           };
+-          const failed = () => {
++          const failed = (cause: unknown) => {
+             disconnected = true;
++            disconnectCause = cause;
+             changed();
+           };
+           client.on("notification", changed);
+@@ -139,7 +146,10 @@
+             create trigger e2e_pool_links_completed after insert or update or delete on hosted_app_account_links
+             for each statement execute function e2e_provisioning_completed()`);
+             for (;;) {
+-              if (signal.aborted || disconnected) throw new ProvisioningFixtureFailed();
++              if (signal.aborted || disconnected)
++                throw new ProvisioningFixtureFailed({
++                  cause: signal.aborted ? signal.reason : disconnectCause,
++                });
+               const seen = revision;
+               const [counts] = Schema.decodeUnknownSync(Counts)(
+                 (
+@@ -206,7 +216,7 @@
+                   )
+                 ).rows,
+               );
+-              if (counts === undefined) throw new ProvisioningFixtureFailed();
++              if (counts === undefined) throw new ProvisioningFixtureFailed({});
+               const nextSignature = JSON.stringify({
+                 components: counts.components,
+                 poolReasons: counts.poolReasons,
+@@ -222,7 +232,7 @@
+               signature = nextSignature;
+               snapshot = counts;
+               if (emitted === 0) report("waiting");
+-              if (counts.failed !== 0) throw new ProvisioningFixtureFailed();
++              if (counts.failed !== 0) throw new ProvisioningFixtureFailed({});
+               if (counts.pending === 0) {
+                 complete = true;
+                 const { pending, failed, completed } = counts;
+@@ -245,8 +255,32 @@
+             signal.removeEventListener("abort", changed);
+           }
+         },
+-        catch: () => new ProvisioningFixtureFailed(),
++        catch: (cause) => new ProvisioningFixtureFailed({ cause }),
+       });
+     }),
+-  ).pipe(Effect.provide(NodeServices.layer)),
++  ).pipe(
++    Effect.tapCause((cause) =>
++      Effect.gen(function* () {
++        const fs = yield* FileSystem.FileSystem;
++        const directory = `${dirname(process.argv[2] ?? "")}/report/diagnostics`;
++        yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
++        // Pretty errors omit fields such as SQLSTATE; full details stay in retained evidence.
++        yield* fs.writeFileString(
++          `${directory}/physical-readiness-cause-${randomUUID()}.json`,
++          `${JSON.stringify({
++            cause: Cause.pretty(cause),
++            details: inspect(cause, {
++              depth: null,
++              colors: false,
++              customInspect: false,
++              maxArrayLength: null,
++              maxStringLength: null,
++            }),
++          })}\n`,
++          { mode: 0o600 },
++        );
++      }).pipe(Effect.ignore),
++    ),
++    Effect.provide(NodeServices.layer),
++  ),
+ );
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -861,6 +861,7 @@
+       fixtures,
+       logActivity,
+       alternatePort === undefined ? undefined : reconfigure,
++      directory,
+     );
+     return {
+       emulators,
+diff --git a/e2e/support/cloud-runtime-control.ts b/e2e/support/cloud-runtime-control.ts
+--- a/e2e/support/cloud-runtime-control.ts
++++ b/e2e/support/cloud-runtime-control.ts
+@@ -12,6 +12,7 @@
+ import { createServer } from "node:http";
+ import type { FixtureControl } from "../sdk/contracts.ts";
+ import { CloudLogWait, type cloudLogActivity } from "./cloud-log-activity.ts";
++import { retainFixtureCause } from "./fixture-diagnostics.ts";
+ 
+ const Change = Schema.Struct({
+   binding: Schema.Literals([
+@@ -33,7 +34,8 @@
+ export const cloudRuntimeControl = <A, E>(
+   fixtures: typeof FixtureControl.Type,
+   log: Effect.Success<typeof cloudLogActivity>,
+-  change?: (binding: typeof Change.Type.binding) => Effect.Effect<A, E>,
++  change: ((binding: typeof Change.Type.binding) => Effect.Effect<A, E>) | undefined,
++  directory: string,
+ ) =>
+   Effect.gen(function* () {
+     const http = yield* HttpClient.HttpClient;
+@@ -77,8 +79,12 @@
+         headers: response.headers,
+       });
+     }).pipe(
+-      Effect.catchCause(() =>
+-        HttpServerResponse.json({ error: "runtime_control_failed" }, { status: 503 }),
++      Effect.catchCause((cause) =>
++        retainFixtureCause(directory, cause).pipe(
++          Effect.andThen(
++            HttpServerResponse.json({ error: "runtime_control_failed" }, { status: 503 }),
++          ),
++        ),
+       ),
+     );
+     const services = yield* Layer.build(
+diff --git a/e2e/support/fixture-diagnostics.ts b/e2e/support/fixture-diagnostics.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/fixture-diagnostics.ts
+@@ -0,0 +1,70 @@
++/** Private runner evidence survives generic fixture HTTP errors and subprocess cleanup. */
++import { Cause, Effect, FileSystem, Formatter, Stream } from "effect";
++import { ChildProcess, ChildProcessSpawner } from "effect/process";
++import { randomUUID } from "node:crypto";
++
++const diagnosticFiles = (directory: string, name: string) =>
++  Effect.gen(function* () {
++    const fs = yield* FileSystem.FileSystem;
++    const output = `${directory}/report/diagnostics`;
++    yield* fs.makeDirectory(output, { recursive: true, mode: 0o700 }).pipe(Effect.ignore);
++    const prefix = `${output}/${name}-${randomUUID()}`;
++    return {
++      write: (suffix: string, text: string, append = false) =>
++        fs
++          .writeFileString(`${prefix}${suffix}`, text, {
++            flag: append ? "a" : "w",
++            mode: 0o600,
++          })
++          .pipe(Effect.ignore),
++    };
++  });
++
++/** Drain both pipes together so a noisy failure cannot block its own exit. */
++export const fixtureProcessOutput = (directory: string, command: ChildProcess.Command) =>
++  Effect.gen(function* () {
++    const evidence = yield* diagnosticFiles(directory, "physical-provisioning");
++    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++    const child = yield* processes.spawn(command);
++    yield* evidence.write(".stdout.log", "");
++    yield* evidence.write(".stderr.log", "");
++    const [stdout, , exitCode] = yield* Effect.all(
++      [
++        child.stdout.pipe(
++          Stream.decodeText(),
++          Stream.tap((text) => evidence.write(".stdout.log", text, true)),
++          Stream.mkString,
++        ),
++        child.stderr.pipe(
++          Stream.decodeText(),
++          Stream.runForEach((text) =>
++            evidence.write(".stderr.log", text, true).pipe(
++              Effect.andThen(
++                Effect.sync(() => {
++                  process.stderr.write(text);
++                }),
++              ),
++            ),
++          ),
++        ),
++        child.exitCode.pipe(
++          Effect.tap((exitCode) => evidence.write(".json", `${JSON.stringify({ exitCode })}\n`)),
++        ),
++      ],
++      { concurrency: "unbounded" },
++    );
++    return { stdout, exitCode };
++  });
++
++/** The public control response stays generic; the runner keeps the complete nested cause. */
++export const retainFixtureCause = (directory: string, cause: Cause.Cause<unknown>) =>
++  Effect.gen(function* () {
++    const evidence = yield* diagnosticFiles(directory, "cloud-runtime-control");
++    yield* evidence.write(
++      ".json",
++      `${JSON.stringify({
++        cause: Cause.pretty(cause),
++        details: Formatter.format(Cause.prettyErrors(cause), { ignoreToString: true }),
++      })}\n`,
++    );
++  });
+diff --git a/e2e/support/production-ops-database-fixture.ts b/e2e/support/production-ops-database-fixture.ts
+--- a/e2e/support/production-ops-database-fixture.ts
++++ b/e2e/support/production-ops-database-fixture.ts
+@@ -12,6 +12,7 @@
+ import { ChildProcess, ChildProcessSpawner } from "effect/process";
+ import { startCloudPostgres } from "./cloud-postgres.ts";
+ import { freePort } from "./ports.ts";
++import { fixtureProcessOutput } from "./fixture-diagnostics.ts";
+ 
+ export const ProductionDatabaseState = Schema.Struct({
+   name: Schema.String,
+@@ -111,7 +112,8 @@
+     const provisioning = (pools = false) =>
+       Effect.scoped(
+         Effect.gen(function* () {
+-          const provisioningProcess = yield* processes.spawn(
++          const result = yield* fixtureProcessOutput(
++            input.directory,
+             ChildProcess.make(
+               "node",
+               [
+@@ -122,15 +124,16 @@
+               {
+                 env: { PATH: process.env.PATH ?? "", NODE_ENV: "test" },
+                 extendEnv: false,
+-                stderr: "inherit",
++                stdout: "pipe",
++                stderr: "pipe",
+               },
+             ),
+-          );
+-          const completed = yield* provisioningProcess.stdout.pipe(
+-            Stream.decodeText(),
+-            Stream.mkString,
+-          );
+-          yield* checked(provisioningProcess.exitCode);
++          ).pipe(
++            Effect.provideService(FileSystem.FileSystem, fs),
++            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, processes),
++          );
++          const completed = result.stdout;
++          yield* checked(Effect.succeed(result.exitCode));
+           yield* Schema.decodeUnknownEffect(
+             Schema.fromJsonString(
+               Schema.Struct({

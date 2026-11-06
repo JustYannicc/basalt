@@ -1,0 +1,11 @@
+{
+  "identity": "alchemy-container-publication-outputs",
+  "file": "0311-container-publication-outputs.patch",
+  "content_sha256": "75746efe84c1626a47d1e88896f6f537b23d62d8b168ba4f310e79719fe49d83",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "alchemy-dependency-upgrade",
+  "requires": "A pinned Alchemy release detects changed external build contexts before deferring cyclic bindings; remove after changed-context publication, Worker binding, receipt, no-op, resource-change and drift regressions pass."
+}

@@ -151,3 +151,16 @@ export async function verifyPoolToken(
     return undefined;
   }
 }
+
+/**
+ * The non-secret version the tools service records as `tokenKeyVersion`: the first 16 hex digits
+ * of SHA-256 over the key text. Comparing it never needs the key itself.
+ */
+export async function tokenKeyVersion(secret: string): Promise<string> {
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret)),
+  );
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0"))
+    .join("")
+    .slice(0, 16);
+}

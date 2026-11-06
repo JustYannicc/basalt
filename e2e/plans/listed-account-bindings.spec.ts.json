@@ -1,0 +1,53 @@
+{
+  "scenarios": {
+    "listedBindingRemove": {
+      "fixtures": "actors",
+      "title": "Remove saved sign-in opens on its binding and waits while the account is read",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The local dashboard keeps its own account dialogs."
+        }
+      }
+    },
+    "listedBindingRemoveMobile": {
+      "fixtures": "actors",
+      "title": "Mobile Remove saved sign-in opens on its binding and waits while the account is read",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The local dashboard keeps its own account dialogs."
+        }
+      }
+    }
+  },
+  "runs": {
+    "listedBindingRemove": [
+      "host-managed-accounts-pool:listed-account-actions",
+      "host-managed-accounts-cloud:listed-account-actions"
+    ],
+    "listedBindingRemoveMobile": [
+      "host-managed-accounts-pool:listed-account-actions",
+      "host-managed-accounts-cloud:listed-account-actions"
+    ]
+  },
+  "inputs": [
+    ".upstream/packages/ui/src/implementation/dashboard/account-actions.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/account-actions.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/accounts-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/accounts-setup.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx"
+  ]
+}

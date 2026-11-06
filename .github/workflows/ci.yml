@@ -4,7 +4,7 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
-    branches: [main, 'batch/**']
+    branches: [main, "batch/**"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.run_id }}
@@ -26,6 +26,7 @@ jobs:
       hosted_jobs: ${{ steps.jobs.outputs.hosted_jobs }}
       boat_jobs: ${{ steps.jobs.outputs.boat_jobs }}
       boat_jobs_csv: ${{ steps.jobs.outputs.boat_jobs_csv }}
+      matrices: ${{ steps.jobs.outputs.matrices }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -317,28 +318,19 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "^app query traces record ordered request phase durations$"
+          "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts:app-query-phase-diagnostics)"
           --workers 1
       - name: Verify catalog service identity and import compatibility
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "^Service installs reuse one team app|^Quick-add MCP apps retain package names|^MCP quick add confirms public"
+          "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts:catalog-service-identity-and-import-compatibility)"
           --workers 1
       - name: Verify host-managed visibility and existing account behavior
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "host-managed accounts are hidden|host-provisioned accounts keep working|account radio linking cannot replace|agent connection creation and updates|Executor app card shows|Executor installation shows|Executor installs each|A member's unlinked managed Executor key|a configured product name and logo|failed executor upgrades report a safe SQLSTATE|^Reviewed catalog OAuth clients|^Catalog OAuth grants|^Hosted operator-client partial consent retains|^account rows show retained usage and health|^Apps check a shared account their own way and report its identity$|^app-acquired account checks publish bounded status|^pool seed upgrades add canonical native slots|^native pool account links mirror current tokens only after hosted authorization|^native pool settings keep|^native sharing keeps existing|^invitation roles cannot grant|^organization admins who manage an app|^An account check and agents' discovery report an app whose tools do not load|^an open account row shows newly retained usage|^the signed usage publish request refreshes native usage reports|^Pool creation preserves retained pools|^catalog instances keep every service family reachable|^app model bindings delegate one pool|^app model requests preserve refusals|^native pool usage (renders|preserves)|^Catalog OAuth deferrals"
-          --workers 1
-      - name: Keep listed account actions usable during the detail read
-        working-directory: .upstream
-        run: bun run e2e:self-host --test-name 'while the account is read' --workers 1
-      - name: Verify bounded per-account usage through the public host API
-        working-directory: .upstream
-        run: >-
-          bun run e2e:self-host --test-name
-          "^poolUsageSeries is manager-only and preserves one bounded decimal usage read$"
+          "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts:host-managed-visibility-and-existing-account-behavior)"
           --workers 1
       - name: Collect bounded E2E evidence
         if: always()
@@ -349,6 +341,52 @@ jobs:
         if: always()
         with:
           name: host-managed-accounts-self-host-e2e
+          path: ${{ runner.temp }}/basalt-e2e-evidence
+          include-hidden-files: true
+          if-no-files-found: warn
+  host-managed-accounts-pool:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'host-managed-accounts-pool')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build the isolated self-host test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the scenarios' browser engine
+        uses: ./.github/actions/setup-browser
+      - name: Verify retained pool accounts and usage behavior
+        working-directory: .upstream
+        run: >-
+          bun run e2e:self-host --test-name
+          "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior)"
+          --workers 1
+      - name: Keep listed account actions usable during the detail read
+        working-directory: .upstream
+        run: bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-pool:listed-account-actions)" --workers 1
+      - name: Verify bounded per-account usage through the public host API
+        working-directory: .upstream
+        run: >-
+          bun run e2e:self-host --test-name
+          "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-pool:bounded-per-account-usage-through-the-public-host-api)"
+          --workers 1
+      - name: Collect bounded E2E evidence
+        if: always()
+        run: |
+          node --test scripts/ci/collect-e2e-evidence.test.mjs
+          node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: host-managed-accounts-pool-self-host-e2e
           path: ${{ runner.temp }}/basalt-e2e-evidence
           include-hidden-files: true
           if-no-files-found: warn
@@ -375,7 +413,7 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:local --test-name
-          "^Verified account rows retain|^An existing identity batches|^Existing Google declarations gain|^One consent connects|^Incremental consent retains|^Wrong identities denial|^Refresh and changed targets|^Additive identity storage|^Verified subjects group|^Covering grants share|^Separate grants never"
+          "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-local:shared-identities-and-incremental-consent)"
           --workers 1
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
@@ -414,20 +452,20 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:cloud --test-name
-          "^Hosted identity reuse preserves personal placement|^OAuth clients authenticate to services|^OAuth classifies token and callback error responses|^Agents learn safely when an MCP server needs them to write the app|^invitation roles cannot grant|^organization admins who manage an app"
+          "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement)"
           --workers 1
       - name: Keep listed account actions usable through Cloud
         working-directory: .upstream
-        run: bun run e2e:cloud --test-name 'while the account is read' --workers 1
+        run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-cloud:listed-account-actions)" --workers 1
       - name: Verify shared account families and consumer capability refusals
         working-directory: .upstream
         run: >-
           bun run e2e:local --test-name
-          '^A declared family reuses|^Consumer capability requirements block|^Family metadata preserves retained|^Exact account reuse preserves each app'
+          "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-cloud:shared-account-families-and-consumer-capability-refusals)"
           --workers 1
       - name: Verify one saved provider account supplies two native pools
         working-directory: .upstream
-        run: bun run e2e:self-host --test-name '^One OpenAI saved account supplies|^Saved-account rows retain exact IDs|^Hosted saved sign-in completion retries' --workers 1
+        run: bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-cloud:one-saved-provider-account-supplies-two-native-pools)" --workers 1
       - name: Verify account mirror retries and generations through the SDK HTTP host
         working-directory: .upstream
         run: bunx vitest run --config e2e/account-mirrors.config.ts
@@ -480,22 +518,10 @@ jobs:
           BASALT_E2E_PRODUCTION_OPS: "1"
           BASALT_E2E_PREBOOT_BINDING: "alternate"
           BASALT_ADOPTION_PROOF_WORKERS: "1"
-          BASALT_ADOPTION_PROOF_PATTERN: '^(Google|Atlassian) identity recovery (binds exact grants|refuses a plan after|retires exact duplicate bindings)'
-        run: node scripts/production-ops/prove-provider-adoption.ts
-      - name: Verify saved Google client comparisons
-        timeout-minutes: 3
-        working-directory: .upstream
-        env:
-          BASALT_E2E_PRODUCTION_OPS: "1"
-          BASALT_E2E_GOOGLE_CLIENT_DIAGNOSTICS: configured
-        run: bun run e2e:cloud --test-name '^Google client diagnostics compare saved clients without exposing credentials$' --workers 1
-      - name: Verify unavailable Google client diagnostics
-        timeout-minutes: 3
-        working-directory: .upstream
-        env:
-          BASALT_E2E_PRODUCTION_OPS: "1"
-          BASALT_E2E_GOOGLE_CLIENT_DIAGNOSTICS: unconfigured
-        run: bun run e2e:cloud --test-name '^Google client diagnostics distinguish an unavailable configured client$' --workers 1
+        run: |
+          BASALT_ADOPTION_PROOF_PATTERN="$(node scripts/ci/e2e-pattern.ts google-account-recovery:google-recovery-through-signed-cloud-operations)"
+          export BASALT_ADOPTION_PROOF_PATTERN
+          node scripts/production-ops/prove-provider-adoption.ts
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
@@ -506,6 +532,67 @@ jobs:
         with:
           include-hidden-files: true
           name: google-account-recovery-e2e
+          path: |
+            .upstream/.local/e2e/**/results.json
+            .upstream/.local/e2e/**/server.log
+            .upstream/.local/e2e/**/cloud*.log
+            .upstream/.local/e2e/**/cloud-forwarding-errors.ndjson
+            .upstream/.local/e2e/**/report/**
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
+          if-no-files-found: warn
+  google-account-diagnostics:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'google-account-diagnostics')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Prepare the pinned Google recovery runtime
+        timeout-minutes: 2
+        uses: ./.github/actions/setup-browser
+        with:
+          prepare-upstream: "true"
+      - name: Build the isolated Google recovery test assets
+        timeout-minutes: 2
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Verify the prepared Google recovery browser engine
+        timeout-minutes: 1
+        working-directory: .upstream
+        run: node ../scripts/check-e2e-browser.mjs
+      - name: Verify saved Google client comparisons
+        timeout-minutes: 3
+        working-directory: .upstream
+        env:
+          BASALT_E2E_PRODUCTION_OPS: "1"
+          BASALT_E2E_GOOGLE_CLIENT_DIAGNOSTICS: configured
+        run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts google-account-diagnostics:configured-client-diagnostics)" --workers 1
+      - name: Verify unavailable Google client diagnostics
+        timeout-minutes: 3
+        working-directory: .upstream
+        env:
+          BASALT_E2E_PRODUCTION_OPS: "1"
+          BASALT_E2E_GOOGLE_CLIENT_DIAGNOSTICS: unconfigured
+        run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts google-account-diagnostics:unconfigured-client-diagnostics)" --workers 1
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
+      - name: Upload Google client diagnostics evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        timeout-minutes: 1
+        with:
+          include-hidden-files: true
+          name: google-account-diagnostics-e2e
           path: |
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/server.log
@@ -584,13 +671,13 @@ jobs:
         working-directory: .upstream
         env:
           BASALT_E2E_POOL_SETUP: "1"
-        run: bun run e2e:cloud --test-name '^Cloud pool account recovery queues|^Cloud default reconciliation retains' --manual-cron --workers 1
+        run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts pool-account-recovery:recovery-through-cloud-s-real-provisioning-queue)" --manual-cron --workers 1
       - name: Verify atomic pool setup with ordinary cron triggers
         timeout-minutes: 5
         working-directory: .upstream
         env:
           BASALT_E2E_POOL_SETUP: "1"
-        run: bun run e2e:cloud --test-name '^Cloud pool account recovery publishes' --workers 1
+        run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts pool-account-recovery:atomic-pool-setup-with-ordinary-cron-triggers)" --workers 1
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
@@ -626,7 +713,7 @@ jobs:
         uses: ./.github/actions/setup-browser
       - name: Verify OIDC and SAML through the private service binding
         working-directory: .upstream
-        run: bun run e2e:cloud --test-name '^Cloud SSO (OIDC protocol|SAML)' --workers 1
+        run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts sso-service-binding:oidc-and-saml-through-the-private-service-binding)" --workers 1
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
@@ -664,20 +751,20 @@ jobs:
         working-directory: .upstream
         env:
           BASALT_E2E_PRODUCTION_OPS: "1"
-        run: node ../scripts/ci/run-e2e.ts --job production-ops -- bun run e2e:cloud --test-name '^Cloud production operations bind' --workers 1
+        run: node ../scripts/ci/run-e2e.ts --job production-ops -- bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts production-ops:runtime-database-binding-with-one-isolated-restart)" --workers 1
       - name: Verify encrypted production operation reads and backup refusal boundaries
         working-directory: .upstream
         env:
           BASALT_E2E_PRODUCTION_OPS: "1"
-        run: node ../scripts/ci/run-e2e.ts --job production-ops -- bun run e2e:cloud --test-name '^Cloud production operations (encrypt|scope)' --workers 1
+        run: node ../scripts/ci/run-e2e.ts --job production-ops -- bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts production-ops:encrypted-production-operation-reads-and-backup-refusal-boundaries)" --workers 1
       - name: Verify native provider links through the Cloud hosted API
         working-directory: .upstream
         env:
           BASALT_E2E_POOL_BACKEND: "1"
-        run: bun run e2e:cloud --test-name '^Cloud native provider accounts link' --workers 1
+        run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts production-ops:native-provider-links-through-the-cloud-hosted-api)" --workers 1
       - name: Verify isolated billing policy and OIDC sign-in
         working-directory: .upstream
-        run: bun run e2e:cloud --test-name '^Cloud (billing gates SSO|SSO OIDC setup preserves drafts)' --workers 1
+        run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts production-ops:isolated-billing-policy-and-oidc-sign-in)" --workers 1
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
@@ -718,9 +805,7 @@ jobs:
         run: node scripts/production-ops/prove-provider-adoption.ts
       - name: Verify migration ownership through signed apply verification and replay
         timeout-minutes: 5
-        env:
-          BASALT_SCOPE_PROOF_PATTERN: ^Cloud production operations enforce (stable identities through apply and replay|organization references before verification)$
-        run: node scripts/production-ops/prove-scope.ts
+        run: BASALT_SCOPE_PROOF_PATTERN="$(node scripts/ci/e2e-pattern.ts production-ops:migrations)" node scripts/production-ops/prove-scope.ts
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
@@ -746,21 +831,13 @@ jobs:
       matrix:
         include:
           - scope: diagnostics
-            scenario: safe refusal and SQL cause classification
           - scope: credentials
-            scenario: stable plans across credential rotation
           - scope: host
-            scenario: the reviewed database host
           - scope: database
-            scenario: the reviewed database name
           - scope: role
-            scenario: the reviewed SQL login
           - scope: physical
-            scenario: the reviewed physical database with equivalent fixture rows
           - scope: without-server
-            scenario: database identity when the server identifier is unavailable
           - scope: release
-            scenario: a fresh dry run after the reviewed deployment changes
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -777,9 +854,7 @@ jobs:
         uses: ./.github/actions/setup-browser
       - name: Verify stable database identity through signed apply verification and replay
         timeout-minutes: 22
-        env:
-          BASALT_SCOPE_PROOF_PATTERN: '^Cloud production operations enforce ${{ matrix.scenario }}$'
-        run: node scripts/ci/run-e2e.ts --job production-ops-identity -- node scripts/production-ops/prove-scope.ts
+        run: BASALT_SCOPE_PROOF_PATTERN="$(node scripts/ci/e2e-pattern.ts production-ops:identity-${{ matrix.scope }})" node scripts/ci/run-e2e.ts --job production-ops-identity -- node scripts/production-ops/prove-scope.ts
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
@@ -831,7 +906,7 @@ jobs:
         working-directory: .upstream
         env:
           BASALT_E2E_COMPILER_CACHE_INHERITED: "1"
-        run: bun run e2e:cloud --test-name '^(Cloud deploys fail promptly when the compiler does not answer|Production compiler cache reuses only intact output from the same release|Cloud test stages bypass inherited production compiler cache settings)$' --workers 1
+        run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts compiler-diagnostics:a-compiler-deadline-retains-its-phase-trail)" --workers 1
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
@@ -870,22 +945,13 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "^Approvals answers free text|^Approvals renders custom|^hosted schedule controls enable|^Before a route|^Returning to loaded console pages|^Connect leads Claude Code and Codex with one-click pool setup|^Claude Desktop and the pool endpoint show a pool key once|^Returning to Connect|^Organization entry prefetches|^Dashboard loading shows content|^Dashboard client code keeps|^Known methods stay usable|^Credential draft survives app refresh|^Initial catalog failure recovers|^Provider account policy waits for a settled refresh"
+          "$(node ../scripts/ci/e2e-pattern.ts human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab)"
           --workers 1
       - name: Verify local navigation, custom displays and scheduled approvals
         working-directory: .upstream
         run: >-
           bun run e2e:local --test-name
-          "^local Approvals renders|^browser schedule controls enable"
-          --workers 1
-      - name: Verify the human-in-the-loop route while Cloud code and data load
-        working-directory: .upstream
-        run: bun run e2e:cloud --test-name "^Before a route|^Organization entry prefetches|^Dashboard loading shows content|^Dashboard client code keeps" --workers 1
-      - name: Verify browser analytics after server rendering
-        working-directory: .upstream
-        run: >-
-          bun run e2e:cloud --test-name
-          "^Cloud product events preserve identity|^Cloud product events record onboarding replay|^Cloud support dialog lists"
+          "$(node ../scripts/ci/e2e-pattern.ts human-in-the-loop:local-navigation-custom-displays-and-scheduled-approvals)"
           --workers 1
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
@@ -895,6 +961,44 @@ jobs:
         with:
           include-hidden-files: true
           name: human-in-the-loop-e2e
+          path: ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
+          if-no-files-found: warn
+  human-in-the-loop-cloud:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'human-in-the-loop-cloud')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build the isolated test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the browser engine
+        uses: ./.github/actions/setup-browser
+      - name: Verify the human-in-the-loop route while Cloud code and data load
+        working-directory: .upstream
+        run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts human-in-the-loop:the-human-in-the-loop-route-while-cloud-code-and-data-load)" --workers 1
+      - name: Verify browser analytics after server rendering
+        working-directory: .upstream
+        run: >-
+          bun run e2e:cloud --test-name
+          "$(node ../scripts/ci/e2e-pattern.ts human-in-the-loop:browser-analytics-after-server-rendering)"
+          --workers 1
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          include-hidden-files: true
+          name: human-in-the-loop-cloud-e2e
           path: ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   access-editor-reads:
@@ -918,13 +1022,13 @@ jobs:
         uses: ./.github/actions/setup-browser
       - name: Verify the app overview stays in place as publishing access settles
         working-directory: .upstream
-        run: bun run e2e:self-host --test-name "^Member restrictions keep controls|^Mobile member restrictions keep controls|^A host that does not publish says so" --workers 1
+        run: bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts access-editor-reads:publishing-layout)" --workers 1
       - name: Verify access editors start independent reads together
         working-directory: .upstream
-        run: bun run e2e:self-host --test-name 'asks for groups without waiting' --workers 1
+        run: bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts access-editor-reads:self-host)" --workers 1
       - name: Verify Cloud access editors start independent reads together
         working-directory: .upstream
-        run: bun run e2e:cloud --test-name 'asks for groups without waiting' --workers 1
+        run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts access-editor-reads:cloud)" --workers 1
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
@@ -960,13 +1064,13 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "^members contribute to opted-in app collections|^pending contributions recheck|^removing a member or leaving|^independent departure cleanup|^retained departure diagnostics migrate once|^unlinking or losing native app and account grants|^the Accounts tab names contributors"
+          "$(node ../scripts/ci/e2e-pattern.ts contributed-accounts:contributed-account-authority-and-recovery)"
           --workers 1
       - name: Verify contributed accounts through Cloud
         working-directory: .upstream
         run: >-
           bun run e2e:cloud --test-name
-          "^Cloud encrypted workflow|^members contribute to opted-in app collections|^pending contributions recheck|^departure diagnostics retain the real eighth failure|^removing a member or leaving|^unlinking or losing native app and account grants|^the Accounts tab names contributors"
+          "$(node ../scripts/ci/e2e-pattern.ts contributed-accounts:contributed-accounts-through-cloud)"
           --workers 1
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
@@ -1042,13 +1146,13 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "^scheduled personal-data reports|^personal-data|^account status preserves|^upgrading hosted storage from before app accounts"
+          "$(node ../scripts/ci/e2e-pattern.ts personal-data-reporting:reporting-retained-data-and-registration-isolation)"
           --workers 2
       - name: Verify Cloud scheduling and organization isolation
         working-directory: .upstream
         run: >-
           bun run e2e:cloud --test-name
-          "^scheduled personal-data reports|^personal-data reports use each organization"
+          "$(node ../scripts/ci/e2e-pattern.ts personal-data-reporting:cloud-scheduling-and-organization-isolation)"
           --workers 1
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
@@ -1084,7 +1188,7 @@ jobs:
         uses: ./.github/actions/setup-browser
       - name: Verify the Cloud inventory and exact-ID token retirement tooling
         working-directory: .upstream
-        run: bun run e2e:cloud --test-name '^Cloud pool migration inventory|^Cloud retired pool token command' --workers 1
+        run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts pool-inventory:the-cloud-inventory-and-exact-id-token-retirement-tooling)" --workers 1
       - name: Verify banked reset recovery with a synthetic provider
         run: node e2e/pool-reset-checks.mjs .generated/pool-reset-checks/ci
       - name: Verify the banked reset control in a browser with a synthetic provider
@@ -1135,7 +1239,7 @@ jobs:
         uses: ./.github/actions/setup-browser
       - name: Check Google BYO OAuth through the real self-host flow
         working-directory: .upstream
-        run: bun run e2e:self-host --test-name 'Rejected OAuth clients remain editable|^Google OAuth choices keep'
+        run: bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts dashboard-batch:google-byo-oauth-through-the-real-self-host-flow)"
       - name: Prove shared Google Admin OAuth selection through the pinned server
         env:
           BASE_SHA: ${{ needs.select.outputs.base_sha }}
@@ -1154,7 +1258,7 @@ jobs:
             "$BASE_SHA"
       - name: Check the reviewed Google client through its native E2E scenario
         working-directory: .upstream
-        run: bun run e2e:self-host --test-name '^The reviewed Google client follows' --workers 2
+        run: bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts dashboard-batch:the-reviewed-google-client-through-its-native-e2e-scenario)" --workers 2
       - name: Retain the Google Admin proof summary
         uses: actions/upload-artifact@v4
         if: always()
@@ -1167,7 +1271,7 @@ jobs:
         run: node scripts/profile-dashboard-batch.ts
       - name: Check Cloud resources stay within each dashboard batch request
         working-directory: .upstream
-        run: bun run e2e:cloud --test-name 'Cloud dashboard batches share one SQL pool'
+        run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts dashboard-batch:cloud-resources-stay-within-each-dashboard-batch-request)"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -1269,10 +1373,10 @@ jobs:
         uses: ./.github/actions/setup-browser
       - name: Verify captured views, source bindings and the packaged renderer
         working-directory: .upstream
-        run: bun run e2e:self-host --test-name '^MCP Apps retain native|^MCP Apps preserve remote source|^MCP Apps render original|^App builds retain their selected npm framework' --workers 1
+        run: bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts mcp-apps:captured-views-source-bindings-and-the-packaged-renderer)" --workers 1
       - name: Verify encrypted retention, concurrent limits and restart
         working-directory: .upstream
-        run: bun run e2e:local --test-name '^Local MCP Apps survive' --workers 1
+        run: bun run e2e:local --test-name "$(node ../scripts/ci/e2e-pattern.ts mcp-apps:encrypted-retention-concurrent-limits-and-restart)" --workers 1
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
@@ -1284,6 +1388,144 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
+          include-hidden-files: true
+          if-no-files-found: warn
+  declared-self-host:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'declared-self-host')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select.outputs.matrices)['declared-self-host'] }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build isolated test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the scenarios' browser engine
+        uses: ./.github/actions/setup-browser
+      - name: Run this file's declared scenarios
+        run: bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: declared-self-host-${{ matrix.file }}-${{ matrix.key }}
+          path: |
+            .upstream/.local/e2e/**/results.json
+            .upstream/.local/e2e/**/server.log
+            .upstream/.local/e2e/**/cloud.log
+            .upstream/.local/e2e/**/report/**
+          if-no-files-found: warn
+  declared-local:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'declared-local')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select.outputs.matrices)['declared-local'] }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build isolated test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the scenarios' browser engine
+        uses: ./.github/actions/setup-browser
+      - name: Run this file's declared scenarios
+        run: bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: declared-local-${{ matrix.file }}-${{ matrix.key }}
+          path: |
+            .upstream/.local/e2e/**/results.json
+            .upstream/.local/e2e/**/server.log
+            .upstream/.local/e2e/**/cloud.log
+            .upstream/.local/e2e/**/report/**
+          if-no-files-found: warn
+  declared-cloud:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'declared-cloud')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select.outputs.matrices)['declared-cloud'] }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build isolated test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the scenarios' browser engine
+        uses: ./.github/actions/setup-browser
+      - name: Run this file's declared scenarios
+        run: bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: declared-cloud-${{ matrix.file }}-${{ matrix.key }}
+          path: |
+            .upstream/.local/e2e/**/results.json
+            .upstream/.local/e2e/**/server.log
+            .upstream/.local/e2e/**/cloud.log
+            .upstream/.local/e2e/**/report/**
+          if-no-files-found: warn
+  upstream-image:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'upstream-image')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      EXECUTOR_E2E_DOCKER_IMAGE: basalt-ci-self-host:contract
+      EXECUTOR_E2E_DOCKER_ARCH: amd64
+      EXECUTOR_E2E_DOCKER_VERSION: 0.0.0-ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build isolated test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Build the image whose carried assertions are adopted
+        timeout-minutes: 20
+        run: docker build --file .upstream/apps/hosted/self-host/Dockerfile --build-arg EXECUTOR_BUILD_VERSION="$EXECUTOR_E2E_DOCKER_VERSION" --tag "$EXECUTOR_E2E_DOCKER_IMAGE" .upstream
+      - name: Verify carried registry and network refusals through the real image
+        working-directory: .upstream
+        run: |
+          mkdir -p ../.generated/ci-image
+          bunx vitest run --config e2e/docker-release.config.ts e2e/tests/docker-release.spec.ts --testNamePattern "$(node ../scripts/ci/e2e-pattern.ts --config docker-release.spec.ts)" --reporter=default --reporter=json --outputFile=../.generated/ci-image/results.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upstream-image-contract
+          path: .generated/ci-image/results.json
           include-hidden-files: true
           if-no-files-found: warn
   fast:
@@ -1300,6 +1542,8 @@ jobs:
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
+      - name: Verify every adopted test declares its plan and CI job
+        run: bun scripts/ci/check-plans.ts
       - name: Format and lint changed source and carry targets
         env:
           BASE_SHA: ${{ needs.select.outputs.base_sha }}
@@ -1549,7 +1793,56 @@ jobs:
 
   check:
     name: ${{ needs.select.outputs.full_suite == 'true' && 'check' || 'check (fast-only)' }}
-    needs: [select, fast, cpa-pipeline, client-connection, client-mobile, client-desktop, client-native-product, slack-health, catalog-compat, host-managed-accounts, host-managed-accounts-local, host-managed-accounts-cloud, google-account-recovery, oauth-account-regressions, pool-account-recovery, sso-service-binding, production-ops, production-ops-migrations, production-ops-identity, compiler-diagnostics, human-in-the-loop, access-editor-reads, contributed-accounts, contributed-account-recipes, personal-data-reporting, pool-inventory, dashboard-batch, aws-connectors, gitlab-connectors, mcp-apps, pool-runtime, production-build, docs-build, upstream-contracts, account-acquisition, vercel-sign-in, elevenlabs-sign-in, boat-bundle, boat-check]
+    needs:
+      [
+        select,
+        fast,
+        cpa-pipeline,
+        client-connection,
+        client-mobile,
+        client-desktop,
+        client-native-product,
+        slack-health,
+        catalog-compat,
+        host-managed-accounts,
+        host-managed-accounts-pool,
+        host-managed-accounts-local,
+        host-managed-accounts-cloud,
+        google-account-recovery,
+        google-account-diagnostics,
+        oauth-account-regressions,
+        pool-account-recovery,
+        sso-service-binding,
+        production-ops,
+        production-ops-migrations,
+        production-ops-identity,
+        compiler-diagnostics,
+        human-in-the-loop,
+        human-in-the-loop-cloud,
+        access-editor-reads,
+        contributed-accounts,
+        contributed-account-recipes,
+        personal-data-reporting,
+        pool-inventory,
+        dashboard-batch,
+        aws-connectors,
+        gitlab-connectors,
+        mcp-apps,
+        pool-runtime,
+        upstream-image,
+        production-build,
+        docs-build,
+        upstream-contracts,
+        declared-self-host,
+        declared-local,
+        declared-cloud,
+        account-acquisition,
+        account-usage,
+        vercel-sign-in,
+        elevenlabs-sign-in,
+        boat-bundle,
+        boat-check,
+      ]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -1609,17 +1902,11 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "^interactive accounts connect|^account observations coalesce|^driver acquisition labels|^driver reconnect cleanup|^driver reconnect instructions|^driver reconnect failures|^driver owner purge|^driver health captures|^driver observations coalesce|^missing driver hooks|^hosted acquisition status outages|^hosted driver accounts|^saved token accounts retry creation|^native token creation keeps|^additive observation migrations|^protocol (17|18) refuses observations|^OpenAI and Anthropic apps connect reusable accounts|^Pools select reusable provider accounts|^Retained pool subscriptions keep|^Pools pick accounts saved on provider apps|^Pasted credentials are named in a dialog over the app after saving, default to the first free name, and keep the name when replaced"
+          "$(node ../scripts/ci/e2e-pattern.ts account-acquisition:reusable-acquisition-health-and-retained-account-compatibility)"
           --workers 1
       - name: Verify local account lifetime and observation provenance
         working-directory: .upstream
-        run: bun run e2e:local --test-name '^local driver accounts|^tagged persisted observations' --workers 1
-      - name: Verify account usage rows and cells
-        working-directory: .upstream
-        run: >-
-          bun run e2e:self-host --test-name
-          "^account rows show retained usage and health|^usage cells show only reported limited windows|^a Home-bound account with no reading offers Refresh|^compact account rows stay about one line tall|^account rows show a mapped pool account's requests|^app Accounts tabs show a mapped pool account's requests|^account lists use constant SQL statements|^account polling backs off while health is|^an open account row shows newly retained usage"
-          --workers 1
+        run: bun run e2e:local --test-name "$(node ../scripts/ci/e2e-pattern.ts account-acquisition:local-account-lifetime-and-observation-provenance)" --workers 1
       - name: Collect bounded E2E evidence
         if: always()
         run: |
@@ -1629,6 +1916,44 @@ jobs:
         if: always()
         with:
           name: account-acquisition-e2e
+          path: ${{ runner.temp }}/basalt-e2e-evidence
+          include-hidden-files: true
+          if-no-files-found: warn
+
+  account-usage:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'account-usage')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build the isolated account test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install Chromium for the account tests
+        uses: ./.github/actions/setup-browser
+      - name: Verify account usage rows and cells
+        working-directory: .upstream
+        run: >-
+          bun run e2e:self-host --test-name
+          "$(node ../scripts/ci/e2e-pattern.ts account-acquisition:account-usage-rows-and-cells)"
+          --workers 1
+      - name: Collect bounded E2E evidence
+        if: always()
+        run: |
+          node --test scripts/ci/collect-e2e-evidence.test.mjs
+          node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: account-usage-e2e
           path: ${{ runner.temp }}/basalt-e2e-evidence
           include-hidden-files: true
           if-no-files-found: warn

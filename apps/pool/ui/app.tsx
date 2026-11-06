@@ -59,6 +59,7 @@ export function App({ api }: { api: PoolApi }) {
 
   const count = view?.accounts.length ?? 0;
   const labs = new Set(view?.accounts.map((account) => account.provider)).size;
+  const people = overview.usage?.ok ? overview.usage.value.directory.totalCount : undefined;
 
   return (
     <div className="mx-auto flex min-h-dvh w-full max-w-[56rem] flex-col px-6 max-[540px]:px-4">
@@ -106,9 +107,14 @@ export function App({ api }: { api: PoolApi }) {
             <p className="text-sm text-muted-foreground text-pretty">
               {view === undefined
                 ? "Loading this pool…"
-                : count === 0
-                  ? "No accounts yet."
-                  : `${count} subscription ${count === 1 ? "account" : "accounts"} across ${labs} ${labs === 1 ? "lab" : "labs"}. Conversations stay on one account; new ones spread across them.`}
+                : [
+                    count === 0
+                      ? "No accounts yet"
+                      : `${count} subscription ${count === 1 ? "account" : "accounts"} across ${labs} ${labs === 1 ? "lab" : "labs"}`,
+                    !people ? null : `${people} ${people === 1 ? "person" : "people"}`,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
             </p>
           </div>
           {view !== undefined && (
@@ -167,7 +173,7 @@ function Empty({ view, accountsHref }: { view: PoolView; accountsHref: string | 
       ? `${names.slice(0, 3).join(", ")} and ${names.length - 3} more`
       : names.join(", ");
   return (
-    <div className="grid justify-items-start gap-4 rounded-lg border border-dashed border-input px-6 py-10 sm:px-10">
+    <div className="mb-6 grid justify-items-start gap-4 rounded-lg border border-dashed border-input px-6 py-10 sm:px-10">
       <div className="grid max-w-[34rem] gap-1.5">
         <h2 className="text-base font-semibold tracking-[-0.015em]">
           {view.isOwner ? "Pick your first account" : "This pool has no capacity yet"}
