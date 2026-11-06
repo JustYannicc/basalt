@@ -1,3 +1,5 @@
+import { parseClosedErrorClass } from "../connectors-tests/guidance-failure.mjs";
+
 const phases = new Set([
   "unknown",
   "process-startup",
@@ -27,6 +29,7 @@ const phases = new Set([
   "initialization",
   "global-client-preference",
   "tenant-public-client",
+  "company-guidance",
 ]);
 const kinds = new Set([
   "assertion",
@@ -117,11 +120,17 @@ export function connectorDiagnostic(stage, input, failureFile = false) {
     (Number.isInteger(value.code) && value.code !== 0) ||
     (count(value.failed) && value.failed > 0) ||
     results?.some((result) => result?.passed === false);
+  const errorClass = text
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("CONNECTORS_PROOF_FAILURE "))
+    .map(parseClosedErrorClass)
+    .find((value) => value !== undefined);
   return {
     stage,
     outcome: failed ? "failed" : value.code === 0 ? "passed" : "observed",
     phase,
     kind,
+    ...errorClass,
     ...(Number.isInteger(value.code) && value.code >= 0 && value.code <= 255
       ? { code: value.code }
       : {}),

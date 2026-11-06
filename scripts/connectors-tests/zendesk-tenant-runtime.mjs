@@ -22,6 +22,7 @@ import { startZendeskCatalogWorker } from "./zendesk-catalog.mjs";
 import { proveTenantPublic } from "./zendesk-tenant-public.mjs";
 import { proveOperatorChoices } from "./zendesk-operator-choices.mjs";
 import { proveCompanyGuidance } from "./zendesk-company-guidance.mjs";
+import { describeGuidanceFailure } from "./guidance-failure.mjs";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const upstream = join(root, ".upstream");
@@ -301,37 +302,8 @@ try {
       : "Zendesk tenant proof passed: method order, callback paste, state/redirect/expiry/replay refusal, per-user PKCE, refresh and revocation.",
   );
 } catch (error) {
-  const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
-  await writeFile(join(directory, "failure.txt"), detail, { mode: 0o600 });
-  const failurePhase = [
-    "initialization",
-    "tenant-public-client",
-    "global-client-preference",
-    "company-guidance",
-  ].includes(phase)
-    ? phase
-    : "initialization";
-  const kind = /AssertionError|ERR_ASSERTION/.test(detail)
-    ? "assertion"
-    : /browserType\.launch|Executable doesn't exist|launch:/.test(detail)
-      ? "browser-launch"
-      : /Cannot find module|Cannot find package|ModuleNotFound|SyntaxError/.test(detail)
-        ? "module-load"
-        : /ENOTFOUND|EAI_AGAIN/.test(detail)
-          ? "dns"
-          : /ECONNREFUSED|ECONNRESET/.test(detail)
-            ? "connection"
-            : /EACCES|EPERM/.test(detail)
-              ? "permission"
-              : /[Tt]imeout|[Tt]imed out/.test(detail)
-                ? "timeout"
-                : "runtime";
-  const frame =
-    /scripts\/connectors-tests\/(zendesk-(?:tenant-runtime|tenant-public|operator-choices|company-guidance)\.mjs):([1-9]\d{0,5}):\d+\b/.exec(
-      detail,
-    );
-  const location = frame === null ? "unknown" : `${frame[1]}:${frame[2]}`;
-  // Failure messages can contain connection data; only closed fields leave the private capture.
-  console.error(`CONNECTORS_PROOF_FAILURE phase=${failurePhase} kind=${kind} at=${location}`);
+  const failure = describeGuidanceFailure(error, phase);
+  await writeFile(join(directory, "failure.txt"), failure.privateDetail, { mode: 0o600 });
+  console.error(failure.publicLine);
   process.exitCode = 1;
 }

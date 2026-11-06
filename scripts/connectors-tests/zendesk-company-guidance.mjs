@@ -1,7 +1,29 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+
+/** Keep Chromium's Linux singleton socket below the Unix socket path limit. */
+export async function withGuidanceBrowser({ chromium, browserExecutable, directory }, run) {
+  const temporary = await mkdtemp(
+    join(process.platform === "linux" ? "/tmp" : directory, "basalt-browser-"),
+  );
+  let browser;
+  try {
+    browser = await chromium.launch({
+      headless: true,
+      executablePath: browserExecutable,
+      env: { ...process.env, TMPDIR: temporary },
+    });
+    return await run(browser);
+  } finally {
+    try {
+      await browser?.close();
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  }
+}
 
 /** Check the real connect form before authorizing, including the values its copy buttons return. */
 export async function proveCompanyGuidance({
@@ -18,9 +40,8 @@ export async function proveCompanyGuidance({
   const { chromium } = require("playwright");
   const captures = join(directory, "company-guidance");
   await mkdir(captures, { recursive: true });
-  const browser = await chromium.launch({ headless: true, executablePath: browserExecutable });
-  const observations = [];
-  try {
+  return await withGuidanceBrowser({ chromium, browserExecutable, directory }, async (browser) => {
+    const observations = [];
     const context = await browser.newContext({
       permissions: ["clipboard-read", "clipboard-write"],
     });
@@ -138,7 +159,5 @@ export async function proveCompanyGuidance({
       exactClipboardValues: true,
       authorizationStarted: false,
     };
-  } finally {
-    await browser.close();
-  }
+  });
 }
