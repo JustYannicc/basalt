@@ -7,9 +7,11 @@ import pg from "pg";
 // writing the same tables, each job in its own order. A real local Postgres shows whether the two
 // can deadlock.
 const adminUrl = process.env.MIGRATION_TEST_ADMIN_URL;
-const local = adminUrl !== undefined && ["localhost", "127.0.0.1"].includes(new URL(adminUrl).hostname);
+const local =
+  adminUrl !== undefined && ["localhost", "127.0.0.1"].includes(new URL(adminUrl).hostname);
 const { dropReadinessTriggers, installReadinessTriggers } = (await import(
-  new URL("../../.upstream/apps/hosted/testing/provisioning-readiness-triggers.ts", import.meta.url).href
+  new URL("../../.upstream/apps/hosted/testing/provisioning-readiness-triggers.ts", import.meta.url)
+    .href
 )) as typeof import("../../.upstream/apps/hosted/testing/provisioning-readiness-triggers.ts");
 const tables = [
   "hosted_provisioning",
@@ -18,7 +20,8 @@ const tables = [
   "executor_accounts",
   "hosted_app_account_links",
 ];
-const triggerCount = "select count(*)::int as count from pg_trigger where tgname like 'e2e\\_%' and not tgisinternal";
+const triggerCount =
+  "select count(*)::int as count from pg_trigger where tgname like 'e2e\\_%' and not tgisinternal";
 
 type Outcome = { readonly ok: true } | { readonly ok: false; readonly code: string | undefined };
 const settled = (query: Promise<unknown>): Promise<Outcome> =>
@@ -31,7 +34,10 @@ const settled = (query: Promise<unknown>): Promise<Outcome> =>
  * Runs `operation` on its own connection while a job holds the account table and then writes the
  * organization table, an earlier table of the trigger list, once the operation waits on the job.
  */
-async function againstJob(operation: (client: pg.Client) => Promise<unknown>, prepare?: (client: pg.Client) => Promise<unknown>) {
+async function againstJob(
+  operation: (client: pg.Client) => Promise<unknown>,
+  prepare?: (client: pg.Client) => Promise<unknown>,
+) {
   const database = `readiness_triggers_${randomBytes(4).toString("hex")}`;
   const admin = new pg.Client({ connectionString: adminUrl });
   const url = new URL(adminUrl!);
@@ -54,7 +60,7 @@ async function againstJob(operation: (client: pg.Client) => Promise<unknown>, pr
     void result.then(() => (done = true));
     // Wait until the operation queues behind the job's lock, or ends without ever waiting.
     const deadline = Date.now() + 10_000;
-    for (let waiting = false; !waiting && !done; ) {
+    for (let waiting = false; !waiting && !done;) {
       assert.ok(Date.now() < deadline, "the operation neither waited on the job nor finished");
       const [{ count }] = (
         await admin.query<{ count: number }>(
@@ -80,14 +86,25 @@ async function againstJob(operation: (client: pg.Client) => Promise<unknown>, pr
 
 const bothComplete = { operation: { ok: true }, job: { ok: true } };
 
-test("installing the readiness triggers never deadlocks a job that writes their tables in another order", { skip: !local, timeout: 30_000 }, async () => {
-  const { outcomes, triggers } = await againstJob(installReadinessTriggers);
-  assert.deepEqual(outcomes, bothComplete, "the install and the job both complete");
-  assert.equal(triggers, tables.length, "every input table has its trigger");
-});
+test(
+  "installing the readiness triggers never deadlocks a job that writes their tables in another order",
+  { skip: !local, timeout: 30_000 },
+  async () => {
+    const { outcomes, triggers } = await againstJob(installReadinessTriggers);
+    assert.deepEqual(outcomes, bothComplete, "the install and the job both complete");
+    assert.equal(triggers, tables.length, "every input table has its trigger");
+  },
+);
 
-test("removing the readiness triggers never deadlocks a job that writes their tables in another order", { skip: !local, timeout: 30_000 }, async () => {
-  const { outcomes, triggers } = await againstJob(dropReadinessTriggers, installReadinessTriggers);
-  assert.deepEqual(outcomes, bothComplete, "the removal and the job both complete");
-  assert.equal(triggers, 0, "no trigger is left behind");
-});
+test(
+  "removing the readiness triggers never deadlocks a job that writes their tables in another order",
+  { skip: !local, timeout: 30_000 },
+  async () => {
+    const { outcomes, triggers } = await againstJob(
+      dropReadinessTriggers,
+      installReadinessTriggers,
+    );
+    assert.deepEqual(outcomes, bothComplete, "the removal and the job both complete");
+    assert.equal(triggers, 0, "no trigger is left behind");
+  },
+);
