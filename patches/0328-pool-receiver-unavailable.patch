@@ -135,10 +135,30 @@ diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -9993,6 +9993,26 @@
+@@ -9993,6 +9993,46 @@
        local: na("The hosted Google Routes proxy is Cloud-only."),
      },
    },
++  cloudPoolReceiverGroupFailure: {
++    fixtures: "actors",
++    file: "pool-receiver-membership.spec.ts",
++    title: "Cloud pool receiver outages preserve group errors and rollback membership writes",
++    targets: {
++      "self-host": na("The Cloud pool receiver is a hosted dependency."),
++      cloud: { status: "scheduled", runtime: "managed" },
++      local: na("The Cloud pool receiver is a hosted dependency."),
++    },
++  },
++  cloudPoolReceiverNativeMembershipFailure: {
++    fixtures: "actors",
++    file: "pool-receiver-membership.spec.ts",
++    title: "Cloud pool receiver outages preserve native membership errors and recovery",
++    targets: {
++      "self-host": na("The Cloud pool receiver is a hosted dependency."),
++      cloud: { status: "scheduled", runtime: "managed" },
++      local: na("The Cloud pool receiver is a hosted dependency."),
++    },
++  },
 +  cloudPoolReceiverUnavailable: {
 +    fixtures: "actors",
 +    file: "pool-receiver-unavailable.spec.ts",
@@ -655,7 +675,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-access-hook.ts b/apps/ho
          const sql = yield* SqlClient.SqlClient;
          // Notify before owner-store erasure, while SQL can still prove the pool belongs here.
          const rows = yield* sql<{
-@@ -169,21 +152,19 @@
+@@ -169,21 +152,24 @@
        }),
      userDeleting: (user) =>
        Effect.gen(function* () {
@@ -666,22 +686,28 @@ diff --git a/apps/hosted/server/src/implementation/pool-access-hook.ts b/apps/ho
 -            pool: string;
 -          }>`select app.id as pool from organization o
 +        const sql = yield* SqlClient.SqlClient;
-+        // Membership may be gone; the app must still belong to the organization recording it.
++        // Members can use pools they do not own; missing signing cannot skip their revocation.
 +        const rows = yield* sql<{
 +          pool: string;
-+        }>`select app.id as pool from organization o
++          owned: boolean;
++        }>`select app.id as pool, (coalesce(entry.value ->> 'owner', entry.key) = ${user}) as owned from organization o
              cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
              join executor_apps app on app.id = entry.value ->> 'app'
                and app.owner = 'organization:' || o.id
-             where coalesce(entry.value ->> 'owner', entry.key) = ${user}`.pipe(
+-            where coalesce(entry.value ->> 'owner', entry.key) = ${user}`.pipe(
 -            Effect.catch(() => new StorageError()),
 -          );
 -          for (const row of rows) yield* send({ action: "pool-deleted", pool: row.pool });
 -        }
 -        yield* send({ action: "person-deleted", user });
++            where coalesce(entry.value ->> 'owner', entry.key) = ${user}
++              or exists(select 1 from member m where m."organizationId" = o.id and m."userId" = ${user})`.pipe(
 +          Effect.catch(() => new StorageError()),
 +        );
-+        for (const row of rows) yield* send({ action: "pool-deleted", pool: row.pool });
++        if (Option.isNone(key) && rows.length > 0)
++          return yield* new AccessDependencyUnavailable({ dependency: "pool receiver" });
++        for (const row of rows)
++          if (row.owned) yield* send({ action: "pool-deleted", pool: row.pool });
 +        if (Option.isSome(key)) yield* send({ action: "person-deleted", user });
        }),
    };
@@ -765,7 +791,15 @@ diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts
  }
  
  /**
-@@ -284,7 +313,9 @@
+@@ -262,6 +291,7 @@
+     A,
+     | E
+     | StorageError
++    | AccessDependencyUnavailable
+     | AccountConnectionTargetChanged
+     | import("./interactive-errors.ts").InteractiveRetirementBusy
+     | import("./interactive-errors.ts").InteractiveRetirementFailed,
+@@ -284,7 +314,9 @@
    /** Called once after inserting a new configured app, before its transaction commits. */
    readonly appCreated: (app: App) => Effect.Effect<void, StorageError>;
    /** Called after active-work checks, before deleting the app in the same transaction. */
@@ -776,7 +810,7 @@ diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts
    /**
     * Called when a connection started for an app requirement saves its account, in the same
     * transaction, so the product can link the account to the requirement in its `scope`: for the
-@@ -304,7 +335,11 @@
+@@ -304,7 +336,11 @@
      readonly account: Account;
    }) => Effect.Effect<
      void,
@@ -789,7 +823,7 @@ diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts
    >;
    /** Called once for a newly saved account, including secrets and OAuth completion. */
    readonly accountCreated: (account: Account) => Effect.Effect<void, StorageError>;
-@@ -313,7 +348,9 @@
+@@ -313,7 +349,9 @@
      account: Pick<Account, "id" | "owner">,
    ) => Effect.Effect<void, StorageError>;
    /** Called after active-work checks, before deleting credentials in the same transaction. */
@@ -1042,6 +1076,17 @@ diff --git a/packages/sdk/src/implementation/interactive-retirement.ts b/package
    lifecycle?: ResourceLifecycle,
  ) => {
    const leases = makeRetirementClaims(db, crypto, lifecycle);
+@@ -54,7 +62,9 @@
+         const result = yield* action;
+         for (const account of accounts)
+           yield* deleteAccount({ owner: input.owner, account }).pipe(
+-            Effect.mapError(() => new StorageError()),
++            Effect.mapError((error) =>
++              Schema.is(AccessDependencyUnavailable)(error) ? error : new StorageError(),
++            ),
+           );
+         return result;
+       }).pipe(Effect.provideService(InteractiveRemovalDone, new Set([...held, ...accounts])));
 diff --git a/apps/hosted/server/src/contracts/mcp-connections.ts b/apps/hosted/server/src/contracts/mcp-connections.ts
 --- a/apps/hosted/server/src/contracts/mcp-connections.ts
 +++ b/apps/hosted/server/src/contracts/mcp-connections.ts
@@ -1150,3 +1195,464 @@ diff --git a/packages/mcp/src/implementation/app-asset-paths.ts b/packages/mcp/s
    sandbox:
      "/_executor/mcp-apps/sandbox-5293f06e3bc38b9e46843a54fde5de096e8dbb469adf9b7952642f8e36aef0fa.js",
  } as const;
+diff --git a/apps/hosted/server/src/implementation/groups.ts b/apps/hosted/server/src/implementation/groups.ts
+--- a/apps/hosted/server/src/implementation/groups.ts
++++ b/apps/hosted/server/src/implementation/groups.ts
+@@ -1,4 +1,5 @@
+ /** Group writes commit metadata and memberships together, after locking current authority. */
++import { AccessDependencyUnavailable } from "@executor-js/sdk/core";
+ import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
+ import { Effect, Schema } from "effect";
+ import { SqlClient, SqlError } from "effect/sql";
+@@ -145,7 +146,9 @@
+       yield* sql`insert into hosted_group_members ${sql.insert(input.memberIds.map((member) => ({ group_id: group.id, member_id: member })))}`;
+     const lifecycle = yield* AccessLifecycle;
+     yield* (lifecycle.appAccessChanged?.({ organization }) ?? Effect.void).pipe(
+-      Effect.mapError(() => new GroupsUnavailable()),
++      Effect.mapError((error) =>
++        Schema.is(AccessDependencyUnavailable)(error) ? error : new GroupsUnavailable(),
++      ),
+     );
+     return { ...group, memberIds: input.memberIds } satisfies Group;
+   });
+@@ -158,7 +161,9 @@
+     yield* sql`delete from hosted_groups where id = ${id} and organization_id = ${organization}`;
+     const lifecycle = yield* AccessLifecycle;
+     yield* (lifecycle.appAccessChanged?.({ organization }) ?? Effect.void).pipe(
+-      Effect.mapError(() => new GroupsUnavailable()),
++      Effect.mapError((error) =>
++        Schema.is(AccessDependencyUnavailable)(error) ? error : new GroupsUnavailable(),
++      ),
+     );
+     return { id };
+   });
+@@ -166,7 +171,12 @@
+ const run = <A, R>(
+   operation: Effect.Effect<
+     A,
+-    GroupConflict | GroupNotFound | GroupsUnavailable | OrganizationForbidden | SqlError.SqlError,
++    | GroupConflict
++    | GroupNotFound
++    | GroupsUnavailable
++    | OrganizationForbidden
++    | AccessDependencyUnavailable
++    | SqlError.SqlError,
+     R | SqlClient.SqlClient
+   >,
+   write = false,
+diff --git a/apps/hosted/server/src/contracts/groups.ts b/apps/hosted/server/src/contracts/groups.ts
+--- a/apps/hosted/server/src/contracts/groups.ts
++++ b/apps/hosted/server/src/contracts/groups.ts
+@@ -1,4 +1,5 @@
+ /** Hosted organization groups. Account and app grants are separate later capabilities. */
++import { AccessDependencyUnavailable } from "@executor-js/sdk/core";
+ import { Context, Effect, Schema } from "effect";
+ import { ApiError } from "@executor-js/utils/api-error";
+ import type { SqlClient } from "effect/sql";
+@@ -86,7 +87,13 @@
+ >()("hosted/GroupDatabase") {}
+ const organization = { organization: OrganizationReference };
+ const group = { ...organization, group: GroupId };
+-const errors = [OrganizationForbidden, GroupsUnavailable, GroupConflict, GroupNotFound];
++const errors = [
++  AccessDependencyUnavailable,
++  OrganizationForbidden,
++  GroupsUnavailable,
++  GroupConflict,
++  GroupNotFound,
++];
+ /** Reads require membership; handlers also require a current admin role for every write. */
+ export const HostedGroups = HttpApiGroup.make("groups")
+   .add(
+diff --git a/apps/hosted/cloud/src/implementation/access-hooks.ts b/apps/hosted/cloud/src/implementation/access-hooks.ts
+--- a/apps/hosted/cloud/src/implementation/access-hooks.ts
++++ b/apps/hosted/cloud/src/implementation/access-hooks.ts
+@@ -1,4 +1,5 @@
+ /** Better Auth's Promise boundary for host access notifications. */
++import { AccessDependencyUnavailable } from "@executor-js/sdk/core";
+ import type { BetterAuthPlugin } from "better-auth";
+ import { organizationRoleHooks } from "@executor-js/hosted-server";
+ import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
+@@ -17,6 +18,17 @@
+   readonly userDeleting: (user: string) => Promise<void>;
+ }
+ 
++const accessFailure = (error: unknown, message: string) =>
++  new APIError(
++    "SERVICE_UNAVAILABLE",
++    Schema.is(AccessDependencyUnavailable)(error)
++      ? {
++          ...Schema.encodeSync(AccessDependencyUnavailable)(error),
++          code: "ACCESS_DEPENDENCY_UNAVAILABLE",
++        }
++      : { message },
++  );
++
+ const beforeRemoval = async (
+   access: CloudAccessHooks | undefined,
+   organization: string,
+@@ -24,10 +36,11 @@
+ ) => {
+   try {
+     await access?.memberRemoving(organization, member);
+-  } catch {
+-    throw new APIError("SERVICE_UNAVAILABLE", {
+-      message: "Pool access could not be updated. No member was removed. Try again.",
+-    });
++  } catch (error) {
++    throw accessFailure(
++      error,
++      "Pool access could not be updated. No member was removed. Try again.",
++    );
+   }
+ };
+ 
+@@ -52,10 +65,11 @@
+       const { newRole, member, organization } = input;
+       try {
+         await access?.memberRoleChanging?.(organization.id, member.id, newRole);
+-      } catch {
+-        throw new APIError("SERVICE_UNAVAILABLE", {
+-          message: "Pool permissions could not be updated. No role was changed. Try again.",
+-        });
++      } catch (error) {
++        throw accessFailure(
++          error,
++          "Pool permissions could not be updated. No role was changed. Try again.",
++        );
+       }
+     },
+     beforeRemoveMember: async ({ member, organization }) =>
+@@ -108,9 +122,10 @@
+ export const beforeUserDeletion = async (access: CloudAccessHooks | undefined, user: string) => {
+   try {
+     await access?.userDeleting(user);
+-  } catch {
+-    throw new APIError("SERVICE_UNAVAILABLE", {
+-      message: "Pool access could not be revoked. Your account was not deleted. Try again.",
+-    });
++  } catch (error) {
++    throw accessFailure(
++      error,
++      "Pool access could not be revoked. Your account was not deleted. Try again.",
++    );
+   }
+ };
+diff --git a/packages/sdk/src/contracts/interactive-accounts.ts b/packages/sdk/src/contracts/interactive-accounts.ts
+--- a/packages/sdk/src/contracts/interactive-accounts.ts
++++ b/packages/sdk/src/contracts/interactive-accounts.ts
+@@ -13,6 +13,7 @@
+   type AccountId,
+   type OwnerId,
+   type StorageError,
++  type AccessDependencyUnavailable,
+ } from "./shared.ts";
+ 
+ export const AcquisitionFailureReceipt = Schema.Struct({
+@@ -155,6 +156,7 @@
+     A,
+     | E
+     | StorageError
++    | AccessDependencyUnavailable
+     | import("./interactive-errors.ts").InteractiveRetirementBusy
+     | import("./interactive-errors.ts").InteractiveRetirementFailed,
+     R
+diff --git a/e2e/tests/pool-receiver-membership.spec.ts b/e2e/tests/pool-receiver-membership.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/pool-receiver-membership.spec.ts
+@@ -0,0 +1,294 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { HttpClient, HttpBody } from "effect/http";
++import { Api, body } from "../support/api.ts";
++import { Actors } from "../support/actors.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { Evidence } from "../support/evidence.ts";
++import { RuntimeLive, Target } from "../support/platform.ts";
++import { scenarios } from "../test-plan.ts";
++
++const App = Schema.Struct({ id: Schema.String });
++const Group = Schema.Struct({
++  id: Schema.String,
++  name: Schema.String,
++  description: Schema.String,
++  revision: Schema.String,
++  memberIds: Schema.Array(Schema.String),
++});
++const Groups = Schema.Struct({
++  groups: Schema.Array(Group),
++  members: Schema.Array(Schema.Struct({ id: Schema.String, userId: Schema.String })),
++});
++const setup = Effect.gen(function* () {
++  const api = yield* Api,
++    actors = yield* Actors,
++    evidence = yield* Evidence;
++  const target = yield* Target,
++    http = yield* HttpClient.HttpClient;
++  const prefix = `/api/organizations/${actors.organization.id}`;
++  const created = yield* api.request(actors.owner, "POST", `${prefix}/pools`, {
++    name: "Membership receiver pool",
++    requestId: crypto.randomUUID(),
++    newInstance: true,
++  });
++  expect(created.status, JSON.stringify(created.body)).toBe(200);
++  const app = yield* body(App, created);
++  const fault = (receiver: "membership" | "access", mode: "off" | "refused" | "disconnected") =>
++    Effect.scoped(
++      http
++        .post(`${target.metadata.origin}/native-provider-fixture/receiver-fault`, {
++          body: HttpBody.jsonUnsafe({ pool: app.id, path: receiver, mode }),
++        })
++        .pipe(Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200)))),
++    );
++  yield* Effect.addFinalizer(() =>
++    Effect.all([fault("membership", "off"), fault("access", "off")]).pipe(Effect.orDie),
++  );
++  const groups = () =>
++    api
++      .request(actors.owner, "GET", `${prefix}/groups`)
++      .pipe(Effect.flatMap((response) => body(Groups, response)));
++  const observed = () =>
++    Effect.scoped(
++      http.get(`${target.metadata.origin}/native-provider-fixture/receiver-faults`).pipe(
++        Effect.flatMap((response) => response.json),
++        Effect.flatMap(
++          Schema.decodeUnknownEffect(
++            Schema.Array(
++              Schema.Struct({ pool: Schema.String, path: Schema.String, mode: Schema.String }),
++            ),
++          ),
++        ),
++      ),
++    );
++  return { api, actors, evidence, prefix, app, fault, groups, observed };
++});
++
++layer(RuntimeLive, { excludeTestServices: true })("Pool receiver membership errors", (it) => {
++  it.effect(scenarios.cloudPoolReceiverGroupFailure.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const p = yield* setup;
++        const members = (yield* p.groups()).members.map((member) => member.id);
++        const created = yield* p.api.request(p.actors.owner, "POST", `${p.prefix}/groups`, {
++          name: "Retained group",
++          description: "",
++          memberIds: members,
++        });
++        expect(created.status, JSON.stringify(created.body)).toBe(200);
++        const group = yield* body(Group, created),
++          initial = yield* p.groups();
++        for (const receiver of ["membership", "access"] as const)
++          for (const mode of ["refused", "disconnected"] as const) {
++            yield* p.fault(receiver, mode);
++            expect(
++              (yield* p.api.request(p.actors.member, "POST", `${p.prefix}/groups`, {
++                name: "Denied group",
++                description: "",
++                memberIds: [],
++              })).status,
++            ).toBe(403);
++            const mutations = [
++              {
++                method: "POST",
++                path: `${p.prefix}/groups`,
++                input: { name: "Refused new group", description: "", memberIds: members },
++              },
++              {
++                method: "PATCH",
++                path: `${p.prefix}/groups/${group.id}`,
++                input: {
++                  name: "Changed group",
++                  description: "",
++                  memberIds: [],
++                  revision: group.revision,
++                },
++              },
++              {
++                method: "DELETE",
++                path: `${p.prefix}/groups/${group.id}`,
++                input: { revision: group.revision },
++              },
++            ] as const;
++            for (const mutation of mutations) {
++              const response = yield* p.api.request(
++                p.actors.owner,
++                mutation.method,
++                mutation.path,
++                mutation.input,
++              );
++              yield* p.evidence.json(`${receiver}-${mode}-${mutation.method}.json`, {
++                status: response.status,
++                body: response.body,
++              });
++              expect(
++                (yield* p.observed()).some(
++                  (event) =>
++                    event.pool === p.app.id && event.path === receiver && event.mode === mode,
++                ),
++              ).toBe(true);
++              expect(response.status, JSON.stringify(response.body)).toBe(503);
++              expect(response.body).toMatchObject({
++                _tag: "AccessDependencyUnavailable",
++                dependency: "pool receiver",
++                recovery: { action: "Restore the pool receiver, then retry the operation." },
++              });
++              expect(yield* p.groups()).toEqual(initial);
++            }
++            yield* p.fault(receiver, "off");
++          }
++        const changed = yield* p.api.request(
++          p.actors.owner,
++          "PATCH",
++          `${p.prefix}/groups/${group.id}`,
++          { name: "Changed group", description: "", memberIds: [], revision: group.revision },
++        );
++        expect(changed.status, JSON.stringify(changed.body)).toBe(200);
++        const saved = yield* body(Group, changed);
++        expect(saved.memberIds).toEqual([]);
++        expect(saved.revision).not.toBe(group.revision);
++        expect(
++          (yield* p.api.request(p.actors.owner, "DELETE", `${p.prefix}/groups/${group.id}`, {
++            revision: saved.revision,
++          })).status,
++        ).toBe(200);
++        const retried = yield* p.api.request(p.actors.owner, "POST", `${p.prefix}/groups`, {
++          name: "Refused new group",
++          description: "",
++          memberIds: members,
++        });
++        expect(retried.status, JSON.stringify(retried.body)).toBe(200);
++        yield* p.evidence.json("group-recovered.json", {
++          create: retried.status,
++          update: changed.status,
++          retainedMemberships: true,
++        });
++      }),
++    ),
++  );
++
++  it.effect(scenarios.cloudPoolReceiverNativeMembershipFailure.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const p = yield* setup;
++        const initial = yield* p.groups();
++        const signedIn = yield* body(
++          Schema.Struct({ user: Schema.Struct({ id: Schema.String, email: Schema.String }) }),
++          yield* p.api.request(p.actors.member, "GET", "/api/auth/get-session"),
++        );
++        const member = initial.members.find((member) => member.userId === signedIn.user.id)!;
++        const role = {
++          organizationId: p.actors.organization.id,
++          memberId: member.id,
++          role: "admin",
++        };
++        const access = () =>
++          p.api
++            .request(p.actors.member, "GET", `${p.prefix}/access`)
++            .pipe(
++              Effect.flatMap((response) => body(Schema.Struct({ role: Schema.String }), response)),
++            );
++        expect((yield* access()).role).toBe("member");
++        for (const receiver of ["membership", "access"] as const)
++          for (const mode of ["refused", "disconnected"] as const) {
++            yield* p.fault(receiver, mode);
++            expect(
++              (yield* p.api.request(
++                p.actors.member,
++                "POST",
++                "/api/auth/organization/update-member-role",
++                role,
++              )).status,
++            ).toBe(403);
++            const mutations = [
++              {
++                actor: p.actors.owner,
++                path: "/api/auth/organization/update-member-role",
++                input: role,
++                name: "role",
++              },
++              {
++                actor: p.actors.owner,
++                path: "/api/auth/organization/remove-member",
++                input: {
++                  organizationId: p.actors.organization.id,
++                  memberIdOrEmail: signedIn.user.email,
++                },
++                name: "remove",
++              },
++              {
++                actor: p.actors.admin,
++                path: "/api/auth/organization/leave",
++                input: { organizationId: p.actors.organization.id },
++                name: "leave",
++              },
++            ];
++            for (const mutation of mutations) {
++              const response = yield* p.api.request(
++                mutation.actor,
++                "POST",
++                mutation.path,
++                mutation.input,
++              );
++              yield* p.evidence.json(`${receiver}-${mode}-${mutation.name}.json`, {
++                status: response.status,
++                body: response.body,
++              });
++              expect(
++                (yield* p.observed()).some(
++                  (event) =>
++                    event.pool === p.app.id && event.path === receiver && event.mode === mode,
++                ),
++              ).toBe(true);
++              expect(response.status, JSON.stringify(response.body)).toBe(503);
++              expect(response.body).toMatchObject({
++                code: "ACCESS_DEPENDENCY_UNAVAILABLE",
++                _tag: "AccessDependencyUnavailable",
++                dependency: "pool receiver",
++                recovery: { action: "Restore the pool receiver, then retry the operation." },
++              });
++              expect(yield* p.groups()).toEqual(initial);
++              expect((yield* access()).role).toBe("member");
++            }
++            yield* p.fault(receiver, "off");
++          }
++        const promoted = yield* p.api.request(
++          p.actors.owner,
++          "POST",
++          "/api/auth/organization/update-member-role",
++          role,
++        );
++        expect(promoted.status, JSON.stringify(promoted.body)).toBe(200);
++        expect((yield* access()).role).toBe("admin");
++        expect(
++          (yield* p.api.request(
++            p.actors.owner,
++            "POST",
++            "/api/auth/organization/update-member-role",
++            { ...role, role: "member" },
++          )).status,
++        ).toBe(200);
++        expect(
++          (yield* p.api.request(p.actors.admin, "POST", "/api/auth/organization/leave", {
++            organizationId: p.actors.organization.id,
++          })).status,
++        ).toBe(200);
++        expect(
++          (yield* p.api.request(p.actors.owner, "POST", "/api/auth/organization/remove-member", {
++            organizationId: p.actors.organization.id,
++            memberIdOrEmail: signedIn.user.email,
++          })).status,
++        ).toBe(200);
++        expect((yield* p.groups()).members.some((row) => row.id === member.id)).toBe(false);
++        yield* p.evidence.json("native-membership-recovered.json", {
++          roleChanged: true,
++          leaveSucceeded: true,
++          removalSucceeded: true,
++        });
++      }),
++    ),
++  );
++});
