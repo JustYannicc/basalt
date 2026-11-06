@@ -42,10 +42,10 @@ diff --git a/apps/hosted/server/src/implementation/statement-batch.ts b/apps/hos
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/statement-batch.ts
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,30 @@
 +import { StorageError } from "@executor-js/sdk/core";
-+import { Effect, Option } from "effect";
-+import { HttpServerRequest } from "effect/http";
++import { Cause, Effect, Option } from "effect";
++import { HttpServerError, HttpServerRequest } from "effect/http";
 +
 +/** Expired prefetch must fail before callers can retry its reads on the stalled client. */
 +export const boundedStatementBatch = <A>(batch: Effect.Effect<A>) =>
@@ -60,7 +60,12 @@ new file mode 100644
 +    return yield* bounded.pipe(
 +      Effect.raceFirst(
 +        Effect.callback<never>((resume) => {
-+          const abort = () => resume(Effect.interrupt);
++          const abort = () =>
++            resume(
++              Effect.failCause(
++                Cause.interrupt().pipe(Cause.annotate(HttpServerError.ClientAbort.annotation)),
++              ),
++            );
 +          if (signal.aborted) return abort();
 +          signal.addEventListener("abort", abort, { once: true });
 +          return Effect.sync(() => signal.removeEventListener("abort", abort));
