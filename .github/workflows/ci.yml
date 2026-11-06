@@ -1544,11 +1544,6 @@ jobs:
       - run: npm run prepare:upstream
       - name: Verify every adopted test declares its plan and CI job
         run: bun scripts/ci/check-plans.ts
-      - name: Format and lint changed source and carry targets
-        env:
-          BASE_SHA: ${{ needs.select.outputs.base_sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: node scripts/ci/style.ts
       - name: Check workflow syntax
         run: node scripts/ci/check-workflows.ts
       - name: Check app conventions
@@ -1564,6 +1559,11 @@ jobs:
         run: |
           npm run architecture:model
           npm run architecture:typecheck
+      - name: Check the prepared batch inputs and root types
+        env:
+          BASE_SHA: ${{ needs.select.outputs.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node scripts/batch-preflight.ts
       - name: Run focused owned unit tests
         if: needs.select.outputs.full_suite != 'true'
         env:
@@ -1631,8 +1631,6 @@ jobs:
           git diff --exit-code -- architecture/gen
           test -z "$(git ls-files --others --exclude-standard architecture/gen)"
           npm run architecture:validate
-      - name: Typecheck Basalt against public source exports
-        run: node scripts/typecheck.ts --source
       - name: Architecture fitness functions
         env:
           ARCHITECTURE_BASE_SHA: ${{ needs.select.outputs.base_sha }}
