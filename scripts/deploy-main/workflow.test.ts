@@ -88,8 +88,11 @@ test("Deploy looks for a newer passing commit first, then skips whichever commit
   for (const step of gated)
     assert.match(step, /^(?:(?:name|id): [^\n]+\n        )*if: steps\.live\.outputs\.already_live == 'false' && steps\.newer\.outputs\.newer == ''\n/, step);
   const after = steps.slice(4 + gated.length);
-  assert.equal(after.length, 3);
-  for (const step of after) assert.match(step, /\n        if: steps\.report\.outputs\./, step);
+  assert.equal(after.length, 4);
+  for (const step of after.slice(0, 3)) assert.match(step, /\n        if: steps\.report\.outputs\./, step);
+  assert.match(after[3]!, /^name: Retain database budget receipts\n        if: always\(\)\n        uses: actions\/upload-artifact@v4/);
+  assert.match(after[3]!, /\.local\/database-budget\/\*\.json/);
+  assert.match(after[3]!, /include-hidden-files: true/);
   // A report that succeeds without saying which path it needs fails Deploy rather than releasing nothing.
   assert.match(after[2]!, /\n        if: steps\.report\.outputs\.manual_required != 'true' && steps\.report\.outputs\.manual_required != 'false' && steps\.report\.outcome == 'success'\n        run: \|\n[^\n]*::error::[^\n]*\n\s+exit 1/);
 });
