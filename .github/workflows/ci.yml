@@ -4,7 +4,7 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
-    branches: [main, 'batch/**']
+    branches: [main, "batch/**"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.run_id }}
@@ -953,6 +953,35 @@ jobs:
           bun run e2e:local --test-name
           "$(node ../scripts/ci/e2e-pattern.ts human-in-the-loop:local-navigation-custom-displays-and-scheduled-approvals)"
           --workers 1
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          include-hidden-files: true
+          name: human-in-the-loop-e2e
+          path: ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
+          if-no-files-found: warn
+  human-in-the-loop-cloud:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'human-in-the-loop-cloud')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build the isolated test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the browser engine
+        uses: ./.github/actions/setup-browser
       - name: Verify the human-in-the-loop route while Cloud code and data load
         working-directory: .upstream
         run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts human-in-the-loop:the-human-in-the-loop-route-while-cloud-code-and-data-load)" --workers 1
@@ -969,7 +998,7 @@ jobs:
         if: always()
         with:
           include-hidden-files: true
-          name: human-in-the-loop-e2e
+          name: human-in-the-loop-cloud-e2e
           path: ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   access-editor-reads:
@@ -1382,8 +1411,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Run this file's declared scenarios
         run: bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"
       - uses: actions/upload-artifact@v4
@@ -1417,8 +1445,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Run this file's declared scenarios
         run: bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"
       - uses: actions/upload-artifact@v4
@@ -1452,8 +1479,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Run this file's declared scenarios
         run: bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"
       - uses: actions/upload-artifact@v4
@@ -1767,7 +1793,56 @@ jobs:
 
   check:
     name: ${{ needs.select.outputs.full_suite == 'true' && 'check' || 'check (fast-only)' }}
-    needs: [select, fast, cpa-pipeline, client-connection, client-mobile, client-desktop, client-native-product, slack-health, catalog-compat, host-managed-accounts, host-managed-accounts-pool, host-managed-accounts-local, host-managed-accounts-cloud, google-account-recovery, google-account-diagnostics, oauth-account-regressions, pool-account-recovery, sso-service-binding, production-ops, production-ops-migrations, production-ops-identity, compiler-diagnostics, human-in-the-loop, access-editor-reads, contributed-accounts, contributed-account-recipes, personal-data-reporting, pool-inventory, dashboard-batch, aws-connectors, gitlab-connectors, mcp-apps, pool-runtime, upstream-image, production-build, docs-build, upstream-contracts, declared-self-host, declared-local, declared-cloud, account-acquisition, vercel-sign-in, elevenlabs-sign-in, boat-bundle, boat-check]
+    needs:
+      [
+        select,
+        fast,
+        cpa-pipeline,
+        client-connection,
+        client-mobile,
+        client-desktop,
+        client-native-product,
+        slack-health,
+        catalog-compat,
+        host-managed-accounts,
+        host-managed-accounts-pool,
+        host-managed-accounts-local,
+        host-managed-accounts-cloud,
+        google-account-recovery,
+        google-account-diagnostics,
+        oauth-account-regressions,
+        pool-account-recovery,
+        sso-service-binding,
+        production-ops,
+        production-ops-migrations,
+        production-ops-identity,
+        compiler-diagnostics,
+        human-in-the-loop,
+        human-in-the-loop-cloud,
+        access-editor-reads,
+        contributed-accounts,
+        contributed-account-recipes,
+        personal-data-reporting,
+        pool-inventory,
+        dashboard-batch,
+        aws-connectors,
+        gitlab-connectors,
+        mcp-apps,
+        pool-runtime,
+        upstream-image,
+        production-build,
+        docs-build,
+        upstream-contracts,
+        declared-self-host,
+        declared-local,
+        declared-cloud,
+        account-acquisition,
+        account-usage,
+        vercel-sign-in,
+        elevenlabs-sign-in,
+        boat-bundle,
+        boat-check,
+      ]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -1832,6 +1907,38 @@ jobs:
       - name: Verify local account lifetime and observation provenance
         working-directory: .upstream
         run: bun run e2e:local --test-name "$(node ../scripts/ci/e2e-pattern.ts account-acquisition:local-account-lifetime-and-observation-provenance)" --workers 1
+      - name: Collect bounded E2E evidence
+        if: always()
+        run: |
+          node --test scripts/ci/collect-e2e-evidence.test.mjs
+          node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: account-acquisition-e2e
+          path: ${{ runner.temp }}/basalt-e2e-evidence
+          include-hidden-files: true
+          if-no-files-found: warn
+
+  account-usage:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'account-usage')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build the isolated account test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install Chromium for the account tests
+        uses: ./.github/actions/setup-browser
       - name: Verify account usage rows and cells
         working-directory: .upstream
         run: >-
@@ -1846,7 +1953,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: account-acquisition-e2e
+          name: account-usage-e2e
           path: ${{ runner.temp }}/basalt-e2e-evidence
           include-hidden-files: true
           if-no-files-found: warn

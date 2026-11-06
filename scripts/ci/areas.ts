@@ -7,6 +7,7 @@ const accounts = [
   "pool-account-recovery",
   "contributed-accounts",
   "account-acquisition",
+  "account-usage",
   "personal-data-reporting",
   "client-native-product",
   "google-account-recovery",
@@ -44,6 +45,7 @@ export const heavyJobs = [
   ...operations,
   "compiler-diagnostics",
   "human-in-the-loop",
+  "human-in-the-loop-cloud",
   "access-editor-reads",
   "contributed-accounts",
   "personal-data-reporting",
@@ -57,6 +59,7 @@ export const heavyJobs = [
   "elevenlabs-sign-in",
   "mcp-apps",
   "account-acquisition",
+  "account-usage",
   "pool-runtime",
   "upstream-image",
   "production-build",
@@ -187,7 +190,7 @@ export const areas = [
   },
   {
     paths: [".upstream/**/*approval*", ".upstream/**/*workflow*", ".upstream/**/*workflow*/**"],
-    jobs: ["human-in-the-loop"],
+    jobs: ["human-in-the-loop", "human-in-the-loop-cloud"],
   },
   {
     paths: [
@@ -216,11 +219,11 @@ export const areas = [
       ".upstream/**/*route*",
       ".upstream/**/*loading*",
     ],
-    jobs: ["dashboard-batch", "human-in-the-loop"],
+    jobs: ["dashboard-batch", "human-in-the-loop", "human-in-the-loop-cloud"],
   },
   {
     paths: [".upstream/**/*mcp-app*", ".upstream/packages/{apps,sdk}/**"],
-    jobs: ["mcp-apps", ...accounts, "human-in-the-loop", ...operations],
+    jobs: ["mcp-apps", ...accounts, "human-in-the-loop", "human-in-the-loop-cloud", ...operations],
   },
   { paths: [".upstream/**/*migration*", ".upstream/**/*migration*/**"], jobs: heavyJobs },
   {

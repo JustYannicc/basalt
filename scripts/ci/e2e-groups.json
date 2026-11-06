@@ -90,12 +90,12 @@
     "mode": "managed"
   },
   "human-in-the-loop:the-human-in-the-loop-route-while-cloud-code-and-data-load": {
-    "job": "human-in-the-loop",
+    "job": "human-in-the-loop-cloud",
     "target": "cloud",
     "mode": "managed"
   },
   "human-in-the-loop:browser-analytics-after-server-rendering": {
-    "job": "human-in-the-loop",
+    "job": "human-in-the-loop-cloud",
     "target": "cloud",
     "mode": "managed"
   },
@@ -160,7 +160,7 @@
     "mode": "managed"
   },
   "account-acquisition:account-usage-rows-and-cells": {
-    "job": "account-acquisition",
+    "job": "account-usage",
     "target": "self-host",
     "mode": "managed"
   },
