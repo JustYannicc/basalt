@@ -1,0 +1,35 @@
+{
+  "scenarios": {
+    "poolSeedNativeUpgrade": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "pool seed upgrades add canonical native slots only after retained links are removed",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted organization account links."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses runner-owned retained account fixtures on the full self-host product."
+        }
+      }
+    }
+  },
+  "runs": {
+    "poolSeedNativeUpgrade": [
+      "host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/contracts/pool-usage-series.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-membership.ts",
+    ".upstream/packages/apps/src/implementation/connect.ts",
+    ".upstream/packages/apps/src/implementation/provider.ts",
+    "apps/pool/**",
+    "src/pool/**"
+  ]
+}

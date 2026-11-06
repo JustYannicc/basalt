@@ -1,0 +1,29 @@
+{
+  "scenarios": {
+    "liveOpenapiStalePatches": {
+      "fixtures": "actors",
+      "title": "Live OpenAPI skips app patches whose target the document no longer has and still rejects malformed ones",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Loopback upstream fixture"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted version API scenario"
+        }
+      }
+    }
+  },
+  "runs": {
+    "liveOpenapiStalePatches": ["declared:self-host"]
+  },
+  "inherited": ["liveOpenapi", "liveOpenapiRetired"],
+  "inputs": [
+    ".upstream/packages/app-templates/src/implementation/executor-skill-digests.gen.ts",
+    ".upstream/packages/apps/src/implementation/openapi-source.ts"
+  ]
+}

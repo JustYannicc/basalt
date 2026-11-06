@@ -1,0 +1,29 @@
+{
+  "scenarios": {
+    "oauthAccountRemoval": {
+      "fixtures": "actors",
+      "title": "Cloud account removal survives concurrent webhook declaration OAuth renewal",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The proof gates the managed Cloud's actual Postgres transactions."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The proof gates the managed Cloud's actual Postgres transactions."
+        }
+      }
+    }
+  },
+  "runs": {
+    "oauthAccountRemoval": ["oauth:removal"]
+  },
+  "inputs": [
+    ".upstream/packages/sdk/src/implementation/account-identification.ts",
+    ".upstream/packages/sdk/src/implementation/oauth.ts"
+  ]
+}

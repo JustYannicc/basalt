@@ -1,0 +1,308 @@
+{
+  "host-managed-accounts:app-query-phase-diagnostics": {
+    "job": "host-managed-accounts",
+    "target": "self-host",
+    "mode": "managed"
+  },
+  "host-managed-accounts:catalog-service-identity-and-import-compatibility": {
+    "job": "host-managed-accounts",
+    "target": "self-host",
+    "mode": "managed"
+  },
+  "host-managed-accounts:host-managed-visibility-and-existing-account-behavior": {
+    "job": "host-managed-accounts",
+    "target": "self-host",
+    "mode": "managed"
+  },
+  "host-managed-accounts-local:shared-identities-and-incremental-consent": {
+    "job": "host-managed-accounts-local",
+    "target": "local",
+    "mode": "managed"
+  },
+  "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement": {
+    "job": "host-managed-accounts-cloud",
+    "target": "cloud",
+    "mode": "managed"
+  },
+  "host-managed-accounts-cloud:shared-account-families-and-consumer-capability-refusals": {
+    "job": "host-managed-accounts-cloud",
+    "target": "local",
+    "mode": "managed"
+  },
+  "host-managed-accounts-cloud:one-saved-provider-account-supplies-two-native-pools": {
+    "job": "host-managed-accounts-cloud",
+    "target": "self-host",
+    "mode": "managed"
+  },
+  "google-account-recovery:google-recovery-through-signed-cloud-operations": {
+    "job": "google-account-recovery",
+    "target": "cloud",
+    "mode": "managed"
+  },
+  "pool-account-recovery:recovery-through-cloud-s-real-provisioning-queue": {
+    "job": "pool-account-recovery",
+    "target": "cloud",
+    "mode": "manual-cron"
+  },
+  "pool-account-recovery:atomic-pool-setup-with-ordinary-cron-triggers": {
+    "job": "pool-account-recovery",
+    "target": "cloud",
+    "mode": "managed"
+  },
+  "sso-service-binding:oidc-and-saml-through-the-private-service-binding": {
+    "job": "sso-service-binding",
+    "target": "cloud",
+    "mode": "managed"
+  },
+  "production-ops:runtime-database-binding-with-one-isolated-restart": {
+    "job": "production-ops",
+    "target": "cloud",
+    "mode": "managed"
+  },
+  "production-ops:encrypted-production-operation-reads-and-backup-refusal-boundaries": {
+    "job": "production-ops",
+    "target": "cloud",
+    "mode": "managed"
+  },
+  "production-ops:native-provider-links-through-the-cloud-hosted-api": {
+    "job": "production-ops",
+    "target": "cloud",
+    "mode": "managed"
+  },
+  "production-ops:isolated-billing-policy-and-oidc-sign-in": {
+    "job": "production-ops",
+    "target": "cloud",
+    "mode": "managed"
+  },
+  "compiler-diagnostics:a-compiler-deadline-retains-its-phase-trail": {
+    "job": "compiler-diagnostics",
+    "target": "cloud",
+    "mode": "managed"
+  },
+  "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab": {
+    "job": "human-in-the-loop",
+    "target": "self-host",
+    "mode": "managed"
+  },
+  "human-in-the-loop:local-navigation-custom-displays-and-scheduled-approvals": {
+    "job": "human-in-the-loop",
+    "target": "local",
+    "mode": "managed"
+  },
+  "human-in-the-loop:the-human-in-the-loop-route-while-cloud-code-and-data-load": {
+    "job": "human-in-the-loop",
+    "target": "cloud",
+    "mode": "managed"
+  },
+  "human-in-the-loop:browser-analytics-after-server-rendering": {
+    "job": "human-in-the-loop",
+    "target": "cloud",
+    "mode": "managed"
+  },
+  "contributed-accounts:contributed-account-authority-and-recovery": {
+    "job": "contributed-accounts",
+    "target": "self-host",
+    "mode": "managed"
+  },
+  "contributed-accounts:contributed-accounts-through-cloud": {
+    "job": "contributed-accounts",
+    "target": "cloud",
+    "mode": "managed"
+  },
+  "personal-data-reporting:reporting-retained-data-and-registration-isolation": {
+    "job": "personal-data-reporting",
+    "target": "self-host",
+    "mode": "managed"
+  },
+  "personal-data-reporting:cloud-scheduling-and-organization-isolation": {
+    "job": "personal-data-reporting",
+    "target": "cloud",
+    "mode": "managed"
+  },
+  "pool-inventory:the-cloud-inventory-and-exact-id-token-retirement-tooling": {
+    "job": "pool-inventory",
+    "target": "cloud",
+    "mode": "managed"
+  },
+  "dashboard-batch:google-byo-oauth-through-the-real-self-host-flow": {
+    "job": "dashboard-batch",
+    "target": "self-host",
+    "mode": "managed"
+  },
+  "dashboard-batch:the-reviewed-google-client-through-its-native-e2e-scenario": {
+    "job": "dashboard-batch",
+    "target": "self-host",
+    "mode": "managed"
+  },
+  "dashboard-batch:cloud-resources-stay-within-each-dashboard-batch-request": {
+    "job": "dashboard-batch",
+    "target": "cloud",
+    "mode": "managed"
+  },
+  "mcp-apps:captured-views-source-bindings-and-the-packaged-renderer": {
+    "job": "mcp-apps",
+    "target": "self-host",
+    "mode": "managed"
+  },
+  "mcp-apps:encrypted-retention-concurrent-limits-and-restart": {
+    "job": "mcp-apps",
+    "target": "local",
+    "mode": "managed"
+  },
+  "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility": {
+    "job": "account-acquisition",
+    "target": "self-host",
+    "mode": "managed"
+  },
+  "account-acquisition:local-account-lifetime-and-observation-provenance": {
+    "job": "account-acquisition",
+    "target": "local",
+    "mode": "managed"
+  },
+  "account-acquisition:account-usage-rows-and-cells": {
+    "job": "account-acquisition",
+    "target": "self-host",
+    "mode": "managed"
+  },
+  "production-ops:adoption": {
+    "job": "production-ops-migrations",
+    "target": "cloud",
+    "mode": "managed",
+    "command": "node scripts/production-ops/prove-provider-adoption.ts"
+  },
+  "production-ops:migrations": {
+    "job": "production-ops-migrations",
+    "target": "cloud",
+    "mode": "managed",
+    "command": "node scripts/production-ops/prove-scope.ts"
+  },
+  "oauth:removal": {
+    "job": "oauth-account-regressions",
+    "target": "cloud",
+    "mode": "managed",
+    "command": "node scripts/oauth-removal-tests/prove.ts"
+  },
+  "oauth:discard": {
+    "job": "oauth-account-regressions",
+    "target": "cloud",
+    "mode": "managed",
+    "command": "node scripts/oauth-discard-tests/prove.ts"
+  },
+  "production-ops:identity-diagnostics": {
+    "job": "production-ops-identity",
+    "target": "cloud",
+    "mode": "managed",
+    "command": "node scripts/production-ops/prove-scope.ts"
+  },
+  "production-ops:identity-credentials": {
+    "job": "production-ops-identity",
+    "target": "cloud",
+    "mode": "managed",
+    "command": "node scripts/production-ops/prove-scope.ts"
+  },
+  "production-ops:identity-host": {
+    "job": "production-ops-identity",
+    "target": "cloud",
+    "mode": "managed",
+    "command": "node scripts/production-ops/prove-scope.ts"
+  },
+  "production-ops:identity-database": {
+    "job": "production-ops-identity",
+    "target": "cloud",
+    "mode": "managed",
+    "command": "node scripts/production-ops/prove-scope.ts"
+  },
+  "production-ops:identity-role": {
+    "job": "production-ops-identity",
+    "target": "cloud",
+    "mode": "managed",
+    "command": "node scripts/production-ops/prove-scope.ts"
+  },
+  "production-ops:identity-physical": {
+    "job": "production-ops-identity",
+    "target": "cloud",
+    "mode": "managed",
+    "command": "node scripts/production-ops/prove-scope.ts"
+  },
+  "production-ops:identity-without-server": {
+    "job": "production-ops-identity",
+    "target": "cloud",
+    "mode": "managed",
+    "command": "node scripts/production-ops/prove-scope.ts"
+  },
+  "production-ops:identity-release": {
+    "job": "production-ops-identity",
+    "target": "cloud",
+    "mode": "managed",
+    "command": "node scripts/production-ops/prove-scope.ts"
+  },
+  "dashboard:profile": {
+    "job": "dashboard-batch",
+    "target": "self-host",
+    "mode": "managed",
+    "command": "node scripts/profile-dashboard-batch.ts"
+  },
+  "declared:self-host": {
+    "job": "declared-self-host",
+    "target": "self-host",
+    "mode": "managed",
+    "matrix": true
+  },
+  "declared:local": {
+    "job": "declared-local",
+    "target": "local",
+    "mode": "managed",
+    "matrix": true
+  },
+  "declared:cloud": {
+    "job": "declared-cloud",
+    "target": "cloud",
+    "mode": "managed",
+    "matrix": true
+  },
+  "access-editor-reads:self-host": {
+    "job": "access-editor-reads",
+    "target": "self-host",
+    "mode": "managed"
+  },
+  "access-editor-reads:cloud": {
+    "job": "access-editor-reads",
+    "target": "cloud",
+    "mode": "managed"
+  },
+  "access-editor-reads:publishing-layout": {
+    "job": "access-editor-reads",
+    "target": "self-host",
+    "mode": "managed"
+  },
+  "host-managed-accounts-cloud:listed-account-actions": {
+    "job": "host-managed-accounts-cloud",
+    "target": "cloud",
+    "mode": "managed"
+  },
+  "host-managed-accounts-pool:listed-account-actions": {
+    "job": "host-managed-accounts-pool",
+    "target": "self-host",
+    "mode": "managed"
+  },
+  "google-account-diagnostics:configured-client-diagnostics": {
+    "job": "google-account-diagnostics",
+    "target": "cloud",
+    "mode": "managed"
+  },
+  "google-account-diagnostics:unconfigured-client-diagnostics": {
+    "job": "google-account-diagnostics",
+    "target": "cloud",
+    "mode": "managed"
+  },
+  "host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior": {
+    "job": "host-managed-accounts-pool",
+    "target": "self-host",
+    "mode": "managed"
+  },
+  "host-managed-accounts-pool:bounded-per-account-usage-through-the-public-host-api": {
+    "job": "host-managed-accounts-pool",
+    "target": "self-host",
+    "mode": "managed"
+  }
+}

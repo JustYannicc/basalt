@@ -1,0 +1,55 @@
+{
+  "scenarios": {
+    "deviceCodeProof": {
+      "fixtures": "actors",
+      "title": "Device codes bound to S256 proof refuse a missing or wrong verifier without consuming the approval",
+      "targets": {
+        "cloud": {
+          "status": "not-run",
+          "reason": "Automatic Cloud selection requires serverControl, which only runner-owned self-host processes support. Existing explicit Cloud jobs retain their target-aware fixtures."
+        },
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no device authorization endpoint."
+        }
+      }
+    },
+    "deviceCodeProofRestart": {
+      "fixtures": "actors",
+      "title": "Device code proof persists through a server restart and refuses expired codes",
+      "targets": {
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The self-host fixture owns restart and stopped-clock control."
+        },
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no device authorization endpoint."
+        }
+      }
+    }
+  },
+  "runs": {
+    "deviceCodeProof": ["declared:self-host"],
+    "deviceCodeProofRestart": ["declared:self-host"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/implementation/auth-options.ts",
+    ".upstream/apps/hosted/cloud/src/implementation/auth-provisioning.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/mcp-auth.ts",
+    ".upstream/apps/hosted/self-host/src/auth.ts",
+    ".upstream/apps/hosted/server/src/implementation/auth.ts",
+    ".upstream/apps/hosted/server/src/implementation/bearer-access.ts",
+    ".upstream/apps/hosted/server/src/implementation/mcp-oauth.ts",
+    ".upstream/apps/hosted/server/src/implementation/native-grant-host.ts",
+    ".upstream/packages/mcp-auth/src/implementation/device-authorization.ts",
+    ".upstream/packages/mcp-auth/src/implementation/native-grants.ts",
+    ".upstream/packages/mcp-auth/src/implementation/oauth.ts"
+  ]
+}

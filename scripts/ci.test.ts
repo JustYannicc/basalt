@@ -19,18 +19,22 @@ test("affected selection is conservative for unknown and shared inputs", () => {
     ".upstream/bun.lock",
     ".upstream/packages/sdk/src/unknown.ts",
     "src/new-feature.ts",
-  ])
-    assert.deepEqual(selectPaths([file]).jobs, heavyJobs, file);
-  assert.deepEqual(
-    selectPaths(["docs/guide.md", "architecture/model/build.c4", "scripts/ci.test.ts"]).jobs,
-    [],
-  );
+    "scripts/ci.test.ts",
+    "scripts/architecture/source.ts",
+    "clients/mobile/src/account.ts",
+  ]) {
+    const selected = selectPaths([file]);
+    assert.deepEqual(selected.jobs, heavyJobs, file);
+    assert.equal(selected.declaredFiles, null, file);
+  }
+  assert.deepEqual(selectPaths(["docs/guide.md", "architecture/model/build.c4"]).jobs, []);
   assert.throws(() => selectPaths(["../outside.ts"]));
 });
 
-test("a client change selects its real product and platform jobs without cloud operation suites", () => {
+test("an undeclared client change retains every product and platform job", () => {
   const selected = selectPaths(["clients/mobile/src/account.ts"]);
-  assert.deepEqual(selected.jobs, ["client-mobile", "client-desktop", "client-native-product"]);
+  assert.deepEqual(selected.jobs, heavyJobs);
+  assert.equal(selected.declaredFiles, null);
   assert.deepEqual(selected.reasons["client-mobile"], ["clients/mobile/src/account.ts"]);
   const accounts = selectPaths([
     ".upstream/apps/hosted/server/src/implementation/accounts.ts",
@@ -142,9 +146,9 @@ test("access-editor and publishing proofs have a separate deadline from the appr
     .filter((step: { run?: string }) => step.run?.includes("--test-name"))
     .map((step: { run: string }) => step.run);
   assert.deepEqual(commands, [
-    'bun run e2e:self-host --test-name "^Member restrictions keep controls|^Mobile member restrictions keep controls|^A host that does not publish says so" --workers 1',
-    "bun run e2e:self-host --test-name 'asks for groups without waiting' --workers 1",
-    "bun run e2e:cloud --test-name 'asks for groups without waiting' --workers 1",
+    'bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts access-editor-reads:publishing-layout)" --workers 1',
+    'bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts access-editor-reads:self-host)" --workers 1',
+    'bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts access-editor-reads:cloud)" --workers 1',
   ]);
   for (const command of commands)
     assert.ok(!approvals.steps.some((step: { run?: string }) => step.run === command));
@@ -169,8 +173,7 @@ test("AWS catalog, proof inputs and loopback carries select the AWS runtime proo
   }
   const vercel = selectPaths(["src/catalog/vercel.json"]).jobs;
   assert.ok(vercel.includes("vercel-sign-in"));
-  assert.ok(!vercel.includes("aws-connectors"));
-  assert.ok(!selectPaths(["clients/mobile/src/account.ts"]).jobs.includes("aws-connectors"));
+  assert.deepEqual(vercel, heavyJobs);
 });
 
 test("the aggregate blocks missing, failed, cancelled and unexpectedly skipped work", () => {

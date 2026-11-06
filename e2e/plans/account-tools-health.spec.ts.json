@@ -1,0 +1,42 @@
+{
+  "scenarios": {
+    "accountToolsHealth": {
+      "fixtures": "actors",
+      "title": "An account check and agents' discovery report an app whose tools do not load, and only discovery's own marks clear",
+      "serverEnvironment": {
+        "EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS": "0"
+      },
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a controlled loopback service through the shared runtime contract."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The shared SDK and account view are exercised through hosted APIs."
+        }
+      }
+    }
+  },
+  "runs": {
+    "accountToolsHealth": [
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ]
+  },
+  "inputs": [
+    ".upstream/packages/app-templates/src/implementation/executor-skill-digests.gen.ts",
+    ".upstream/packages/mcp/src/implementation/app-asset-paths.ts",
+    ".upstream/packages/mcp/src/implementation/app-assets.ts",
+    ".upstream/packages/sdk/src/contracts/account.ts",
+    ".upstream/packages/sdk/src/implementation/account-health.ts",
+    ".upstream/packages/sdk/src/implementation/account-tools-health.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts",
+    ".upstream/packages/sdk/src/implementation/tools.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/account-form.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-health-line.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-health.tsx"
+  ]
+}

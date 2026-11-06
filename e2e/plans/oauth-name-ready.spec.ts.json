@@ -1,0 +1,29 @@
+{
+  "scenarios": {
+    "oauthNameReady": {
+      "fixtures": "actors",
+      "title": "OAuth naming stays editable while account details and health are pending",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a scoped loopback OAuth issuer."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted callback handoff; local naming has separate coverage."
+        }
+      }
+    }
+  },
+  "runs": {
+    "oauthNameReady": ["declared:self-host"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/web/src/implementation/pages/name-account-dialog.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/oauth-callback.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/name-account.tsx"
+  ]
+}

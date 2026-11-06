@@ -1,0 +1,22 @@
+{
+  "scenarios": {},
+  "runs": {},
+  "config": [
+    {
+      "job": "upstream-image",
+      "config": "docker-release.config.ts",
+      "titles": [
+        "released image serves management tools at a tailnet origin with private fetch off"
+      ]
+    }
+  ],
+  "inputs": [
+    ".upstream/apps/hosted/self-host/**",
+    ".upstream/apps/hosted/server/**",
+    ".upstream/packages/app-management/**",
+    ".upstream/packages/app-registry/**",
+    ".upstream/packages/apps/**",
+    ".upstream/packages/sdk/**",
+    "brand.ts"
+  ]
+}

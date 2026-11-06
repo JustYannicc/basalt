@@ -1,0 +1,56 @@
+{
+  "scenarios": {
+    "firstEntryBehaviorDesktop": {
+      "fixtures": "actors",
+      "title": "First-entry document hover and recovery at 1440px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The shared hosted browser views are exercised on self-host and both Worker bundles are checked separately."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local route loaders are unchanged."
+        }
+      }
+    },
+    "firstEntryBehaviorPhone": {
+      "fixtures": "actors",
+      "title": "First-entry document hover and recovery at 390px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The shared hosted browser views are exercised on self-host and both Worker bundles are checked separately."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local route loaders are unchanged."
+        }
+      }
+    }
+  },
+  "runs": {
+    "firstEntryBehaviorDesktop": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
+    ],
+    "firstEntryBehaviorPhone": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx",
+    ".upstream/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx",
+    ".upstream/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx",
+    ".upstream/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/accounts.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/approvals.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/accounts.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/review-lazy.tsx"
+  ]
+}

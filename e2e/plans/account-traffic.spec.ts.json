@@ -1,0 +1,40 @@
+{
+  "scenarios": {
+    "accountTraffic": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "account rows show a mapped pool account's requests, hourly ticks, success share and window tokens and nothing for counts-only or connector accounts",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses runner-owned retained pool records and a signed loopback usage backend."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises hosted account rows and native pool usage."
+        }
+      }
+    }
+  },
+  "runs": {
+    "accountTraffic": ["account-acquisition:account-usage-rows-and-cells"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/web/src/contracts/pool-usage-series.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/account-observations-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/account-traffic.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/accounts-client.tsx",
+    ".upstream/e2e/support/pool-usage-series-backend.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/account-observation-format.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/account-observation-readings.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-observations.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-row-health.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-row.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-traffic.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-usage-cell.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/accounts-client.tsx"
+  ]
+}

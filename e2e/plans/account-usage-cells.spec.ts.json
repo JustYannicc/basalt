@@ -1,0 +1,46 @@
+{
+  "scenarios": {
+    "accountUsageCells": {
+      "fixtures": "actors",
+      "title": "usage cells show only reported limited windows in threshold colors, grey only stale readings, count banked resets and leave accounts without limits bare",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses loopback allowance services."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises hosted account rows."
+        }
+      }
+    }
+  },
+  "runs": {
+    "accountUsageCells": ["account-acquisition:account-usage-rows-and-cells"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/contracts/account-observations.ts",
+    ".upstream/apps/hosted/server/src/implementation/account-observations.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/account-observations-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/accounts-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx",
+    ".upstream/apps/local/web/src/implementation/pages/account-observations-client.tsx",
+    ".upstream/apps/local/web/src/implementation/pages/accounts.tsx",
+    ".upstream/apps/local/web/src/implementation/pages/app-accounts.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-actions.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-health.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-observation-format.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/account-observation-readings.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-observations.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-row-health.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-row.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-usage-cell.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/accounts-client.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/common.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/oauth-scopes.tsx"
+  ]
+}

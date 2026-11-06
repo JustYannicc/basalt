@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { selectPaths } from "./ci/affected.ts";
 import { gateErrors, fastJobs, bundleJobs } from "./ci/gate.ts";
 import { heavyJobs } from "./ci/areas.ts";
+import { patternForGroup, readDeclarations } from "./ci/declarations.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
 const workflow = parse(
@@ -13,83 +14,160 @@ const workflow = parse(
 const ids = ["host-managed-accounts", "host-managed-accounts-pool"];
 const [accounts, pool] = ids.map((id) => workflow.jobs[id]);
 
-// Preserve the unsplit suite's selectors, including cases unavailable on this target.
-const originalBehavior = [
-  "host-managed accounts are hidden",
-  "host-provisioned accounts keep working",
-  "account radio linking cannot replace",
-  "agent connection creation and updates",
-  "Executor app card shows",
-  "Executor installation shows",
-  "Executor installs each",
-  "A member's unlinked managed Executor key",
-  "a configured product name and logo",
-  "failed executor upgrades report a safe SQLSTATE",
-  "^Reviewed catalog OAuth clients",
-  "^Catalog OAuth grants",
-  "^Hosted operator-client partial consent retains",
-  "^account rows show retained usage and health",
-  "^Apps check a shared account their own way and report its identity$",
-  "^app-acquired account checks publish bounded status",
-  "^pool seed upgrades add canonical native slots",
-  "^native pool account links mirror current tokens only after hosted authorization",
-  "^native pool settings keep",
-  "^native sharing keeps existing",
-  "^invitation roles cannot grant",
-  "^organization admins who manage an app",
-  "^An account check and agents' discovery report an app whose tools do not load",
-  "^an open account row shows newly retained usage",
-  "^the signed usage publish request refreshes native usage reports",
-  "^Pool creation preserves retained pools",
-  "^catalog instances keep every service family reachable",
-  "^app model bindings delegate one pool",
-  "^app model requests preserve refusals",
-  "^native pool usage (renders|preserves)",
-  "^Catalog OAuth deferrals",
-];
+const selectedScenarios = (pattern: string) =>
+  Object.values(readDeclarations().files)
+    .flatMap((file) => Object.entries(file.scenarios))
+    .filter(([, plan]) => {
+      const target = plan.targets["self-host"];
+      assert.ok(target !== null && typeof target === "object" && "status" in target);
+      return target.status === "scheduled" && new RegExp(pattern).test(plan.title);
+    })
+    .map(([key]) => key)
+    .sort();
 
-function alternatives(pattern: string) {
-  const result: string[] = [];
-  let depth = 0;
-  let start = 0;
-  for (const [index, char] of [...pattern].entries()) {
-    if (char === "(") depth++;
-    if (char === ")") depth--;
-    if (char === "|" && depth === 0) {
-      result.push(pattern.slice(start, index));
-      start = index + 1;
-    }
+test("account and pool jobs retain every original scenario, command and execution input", () => {
+  const expected = [
+    {
+      job: "host-managed-accounts",
+      name: "Verify app query phase diagnostics",
+      run: 'bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts:app-query-phase-diagnostics)" --workers 1',
+      env: null,
+      cwd: ".upstream",
+      minutes: null,
+      scenarios: ["appQueryTiming"],
+    },
+    {
+      job: "host-managed-accounts",
+      name: "Verify catalog service identity and import compatibility",
+      run: 'bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts:catalog-service-identity-and-import-compatibility)" --workers 1',
+      env: null,
+      cwd: ".upstream",
+      minutes: null,
+      scenarios: ["appPackageMetadata", "mcpAuthDiscovery", "serviceInstallIdentity"],
+    },
+    {
+      job: "host-managed-accounts",
+      name: "Verify host-managed visibility and existing account behavior",
+      run: 'bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts:host-managed-visibility-and-existing-account-behavior)" --workers 1',
+      env: null,
+      cwd: ".upstream",
+      minutes: null,
+      scenarios: [
+        "accountDisplayStatus",
+        "accountHealth",
+        "accountObservationRows",
+        "accountToolsHealth",
+        "catalogOAuthAccounts",
+        "catalogOAuthClients",
+        "executorAppCardAccount",
+        "executorInstallationLoading",
+        "executorKeyAccount",
+        "executorKeyUnlinkSticks",
+        "hostManagedAccounts",
+        "hostedScopeRefusal",
+        "invitationRolePrivateAccounts",
+        "invitationRoles",
+        "productBrand",
+        "provisionedAccounts",
+        "provisionedAgent",
+        "provisionedRadio",
+        "storageMigrationDiagnostics",
+      ],
+    },
+    {
+      job: "host-managed-accounts-pool",
+      name: "Verify retained pool accounts and usage behavior",
+      run: 'bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior)" --workers 1',
+      env: null,
+      cwd: ".upstream",
+      minutes: null,
+      scenarios: [
+        "accountObservationInterval",
+        "accountObservationRowPolling",
+        "appModelLifecycle",
+        "appModelRequests",
+        "catalogInstances",
+        "catalogOAuthDeferrals",
+        "nativePoolAccountMirrors",
+        "poolCreation",
+        "poolSeedNativeUpgrade",
+        "poolSharing",
+        "poolSharingUi",
+        "poolUsageNavigation",
+        "poolUsageUi",
+      ],
+    },
+    {
+      job: "host-managed-accounts-pool",
+      name: "Keep listed account actions usable during the detail read",
+      run: 'bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-pool:listed-account-actions)" --workers 1',
+      env: null,
+      cwd: ".upstream",
+      minutes: null,
+      scenarios: [
+        "listedAccountDelete",
+        "listedAccountDeleteMobile",
+        "listedAccountDemotion",
+        "listedAccountDemotionMobile",
+        "listedAccountEdit",
+        "listedAccountEditMobile",
+        "listedAccountReadonly",
+        "listedAccountReadonlyMobile",
+        "listedAppAccountEdit",
+        "listedAppAccountEditMobile",
+        "listedBindingRemove",
+        "listedBindingRemoveMobile",
+        "listedSetupAccount",
+        "listedSetupAccountMobile",
+      ],
+    },
+    {
+      job: "host-managed-accounts-pool",
+      name: "Verify bounded per-account usage through the public host API",
+      run: 'bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-pool:bounded-per-account-usage-through-the-public-host-api)" --workers 1',
+      env: null,
+      cwd: ".upstream",
+      minutes: null,
+      scenarios: ["poolUsageSeries"],
+    },
+  ];
+  const commands = [accounts, pool].flatMap((job, index) =>
+    job.steps
+      .filter((step: { run?: string }) => step.run?.includes("--test-name"))
+      .map(
+        (step: {
+          name: string;
+          run: string;
+          env?: Record<string, string>;
+          "working-directory"?: string;
+          "timeout-minutes"?: number;
+        }) => ({
+          job: ids[index],
+          name: step.name,
+          run: step.run,
+          env: step.env ?? null,
+          cwd: step["working-directory"] ?? null,
+          minutes: step["timeout-minutes"] ?? null,
+        }),
+      ),
+  );
+  assert.deepEqual(
+    commands,
+    expected.map(({ scenarios: _scenarios, ...command }) => command),
+  );
+  for (const command of expected) {
+    const group = /e2e-pattern\.ts ([a-z0-9:-]+)\)/.exec(command.run);
+    assert.ok(group);
+    assert.deepEqual(selectedScenarios(patternForGroup(group[1]!)), command.scenarios);
   }
-  return [...result, pattern.slice(start)];
-}
-
-const scenarioCommands = (job: { steps: { run?: string }[] }) =>
-  job.steps.flatMap((step) => (step.run?.includes("--test-name") ? [step.run] : []));
-
-test("account and pool jobs retain the entire unsplit behavior suite once", () => {
-  const behavior = [accounts, pool].flatMap((job) => {
-    const command = scenarioCommands(job).find(
-      (run: string) =>
-        run.includes("host-managed accounts are hidden") || run.includes("^pool seed upgrades"),
-    );
-    assert.ok(command);
-    const match = command.match(/--test-name "(.+)" --workers 1/);
-    assert.ok(match);
-    return alternatives(match[1]!);
-  });
-  assert.deepEqual([...behavior].sort(), [...originalBehavior].sort());
-  const remaining = [accounts, pool]
-    .flatMap(scenarioCommands)
+  const behavior = expected
     .filter(
-      (run) =>
-        !run.includes("host-managed accounts are hidden") && !run.includes("^pool seed upgrades"),
-    );
-  assert.deepEqual(remaining, [
-    'bun run e2e:self-host --test-name "^app query traces record ordered request phase durations$" --workers 1',
-    'bun run e2e:self-host --test-name "^Service installs reuse one team app|^Quick-add MCP apps retain package names|^MCP quick add confirms public" --workers 1',
-    "bun run e2e:self-host --test-name 'while the account is read' --workers 1",
-    'bun run e2e:self-host --test-name "^poolUsageSeries is manager-only and preserves one bounded decimal usage read$" --workers 1',
-  ]);
+      (command) =>
+        command.name === "Verify host-managed visibility and existing account behavior" ||
+        command.name === "Verify retained pool accounts and usage behavior",
+    )
+    .flatMap((command) => command.scenarios);
+  assert.equal(new Set(behavior).size, behavior.length);
   assert.equal(
     accounts.steps.filter(
       (step: { run?: string }) =>

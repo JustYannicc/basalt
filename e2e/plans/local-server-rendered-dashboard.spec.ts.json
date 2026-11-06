@@ -1,0 +1,15 @@
+{
+  "scenarios": {},
+  "runs": {},
+  "inherited": ["localServerRenderedDashboard"],
+  "inputs": [
+    ".upstream/apps/hosted/server/src/contracts/resource-access.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-access.ts",
+    ".upstream/apps/hosted/web/src/contracts/resource-access.ts",
+    ".upstream/apps/local/server/src/contracts/dashboard.ts",
+    ".upstream/apps/local/server/src/implementation/dashboard.ts",
+    ".upstream/packages/ui/src/contracts/dashboard.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/accounts.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/apps.tsx"
+  ]
+}

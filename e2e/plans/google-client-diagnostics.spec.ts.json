@@ -1,0 +1,43 @@
+{
+  "scenarios": {
+    "googleClientDiagnostics": {
+      "fixtures": "actors",
+      "title": "Google client diagnostics compare saved clients without exposing credentials",
+      "targets": {
+        "local": {
+          "status": "not-applicable",
+          "reason": "The signed operator endpoint is Cloud-only."
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The signed operator endpoint is Cloud-only."
+        },
+        "cloud": {
+          "status": "scheduled"
+        }
+      }
+    },
+    "googleClientUnavailable": {
+      "fixtures": "actors",
+      "title": "Google client diagnostics distinguish an unavailable configured client",
+      "targets": {
+        "local": {
+          "status": "not-applicable",
+          "reason": "The signed operator endpoint is Cloud-only."
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The signed operator endpoint is Cloud-only."
+        },
+        "cloud": {
+          "status": "scheduled"
+        }
+      }
+    }
+  },
+  "runs": {
+    "googleClientDiagnostics": ["google-account-diagnostics:configured-client-diagnostics"],
+    "googleClientUnavailable": ["google-account-diagnostics:unconfigured-client-diagnostics"]
+  },
+  "inputs": [".upstream/e2e/tests/google-client-diagnostics.spec.ts"]
+}

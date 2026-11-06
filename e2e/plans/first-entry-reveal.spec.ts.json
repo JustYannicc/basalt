@@ -1,0 +1,96 @@
+{
+  "scenarios": {
+    "firstEntryOverlapDesktop": {
+      "fixtures": "actors",
+      "title": "First-entry route holds one pending view during overlap at 1440px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local route loaders are unchanged."
+        }
+      }
+    },
+    "firstEntryOverlapPhone": {
+      "fixtures": "actors",
+      "title": "First-entry route holds one pending view during overlap at 390px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local route loaders are unchanged."
+        }
+      }
+    },
+    "firstEntryDesktop": {
+      "fixtures": "actors",
+      "title": "First-entry route holds one pending view at 1440px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The shared hosted browser views are exercised on self-host and both Worker bundles are checked separately."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local route loaders are unchanged."
+        }
+      }
+    },
+    "firstEntryPhone": {
+      "fixtures": "actors",
+      "title": "First-entry route holds one pending view at 390px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The shared hosted browser views are exercised on self-host and both Worker bundles are checked separately."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local route loaders are unchanged."
+        }
+      }
+    }
+  },
+  "runs": {
+    "firstEntryOverlapDesktop": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab",
+      "human-in-the-loop:the-human-in-the-loop-route-while-cloud-code-and-data-load"
+    ],
+    "firstEntryOverlapPhone": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab",
+      "human-in-the-loop:the-human-in-the-loop-route-while-cloud-code-and-data-load"
+    ],
+    "firstEntryDesktop": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
+    ],
+    "firstEntryPhone": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx",
+    ".upstream/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx",
+    ".upstream/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx",
+    ".upstream/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/accounts.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/approvals.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/accounts.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/review-lazy.tsx"
+  ]
+}

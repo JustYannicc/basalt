@@ -1,0 +1,16 @@
+{
+  "scenarios": {},
+  "runs": {},
+  "inherited": ["selfHostOnboarding"],
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/infrastructure/app-catalog.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/app-outbound.ts",
+    ".upstream/apps/hosted/server/src/implementation/first-party-oauth.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/accounts-setup.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/connection-dialog.tsx",
+    ".upstream/packages/catalog/src/contracts/catalog.ts",
+    ".upstream/packages/catalog/src/contracts/index.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/catalog.tsx"
+  ]
+}

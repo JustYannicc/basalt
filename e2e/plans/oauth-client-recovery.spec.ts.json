@@ -1,0 +1,29 @@
+{
+  "scenarios": {
+    "oauthClientRecovery": {
+      "fixtures": "actors",
+      "title": "Rejected OAuth clients remain editable, other failures retry without blaming the client, and replacements commit only after successful sign-in",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a scoped loopback OAuth issuer."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted callback routing and saved-client management."
+        }
+      }
+    }
+  },
+  "runs": {
+    "oauthClientRecovery": ["dashboard-batch:google-byo-oauth-through-the-real-self-host-flow"]
+  },
+  "inputs": [
+    ".upstream/packages/ui/src/implementation/dashboard/account-form.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/method-labels.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/oauth-fields.tsx"
+  ]
+}

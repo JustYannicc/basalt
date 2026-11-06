@@ -1,0 +1,11 @@
+{
+  "scenarios": {},
+  "runs": {},
+  "config": [
+    {
+      "job": "fast",
+      "config": "emulator-failures.config.ts"
+    }
+  ],
+  "inputs": []
+}

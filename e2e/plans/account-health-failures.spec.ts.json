@@ -1,0 +1,52 @@
+{
+  "scenarios": {
+    "accountHealthFailures": {
+      "fixtures": "actors",
+      "title": "account health retains bounded failure phases and tags in results and telemetry",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises hosted saved accounts through public HTTP."
+        },
+        "cloud": {
+          "status": "not-run",
+          "reason": "Automatic Cloud selection requires serverControl, which only runner-owned self-host processes support. Existing explicit Cloud jobs retain their target-aware fixtures."
+        }
+      }
+    },
+    "driverHealthFailures": {
+      "fixtures": "actors",
+      "title": "driver health retains bounded failure records and clears them after recovery",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted accounts and operator-owned acquisition registration."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses process-owned acquisition registration."
+        }
+      }
+    }
+  },
+  "runs": {
+    "accountHealthFailures": ["declared:self-host"],
+    "driverHealthFailures": ["declared:self-host"]
+  },
+  "inputs": [
+    ".upstream/packages/mcp/src/implementation/app-asset-paths.ts",
+    ".upstream/packages/mcp/src/implementation/app-assets.ts",
+    ".upstream/packages/sdk/src/contracts/account-check-failure.ts",
+    ".upstream/packages/sdk/src/contracts/account.ts",
+    ".upstream/packages/sdk/src/implementation/account-check-failure.ts",
+    ".upstream/packages/sdk/src/implementation/account-check-record.ts",
+    ".upstream/packages/sdk/src/implementation/account-driver-health.ts",
+    ".upstream/packages/sdk/src/implementation/account-health.ts"
+  ]
+}

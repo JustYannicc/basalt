@@ -1,0 +1,27 @@
+{
+  "scenarios": {
+    "resourcePrefetch": {
+      "fixtures": "actors",
+      "title": "Organization entry prefetches resources without retaining a polling subscription",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no verified organization entry."
+        }
+      }
+    }
+  },
+  "runs": {
+    "resourcePrefetch": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab",
+      "human-in-the-loop:the-human-in-the-loop-route-while-cloud-code-and-data-load"
+    ]
+  },
+  "inputs": [".upstream/apps/hosted/web/src/implementation/components/organization.tsx"]
+}

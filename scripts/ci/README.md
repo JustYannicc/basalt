@@ -15,3 +15,5 @@ The command reads `.github/workflows/ci.yml` and runs every applicable shell ste
 The workflow is the command list. Adding an unsupported action, expression, condition or custom shell fails locally until the runner understands it. Local Linux and macOS use the same actionlint version and checked release archives as CI. ShellCheck must be installed and available on PATH; the launcher fails before linting when it is missing, so local workflow checking retains CI shell diagnostics.
 
 This command runs the complete ordinary PR fast lane; it does not establish full-suite merge eligibility. Targeted checks are useful while editing; only a complete successful `ci:fast` run establishes local fast-gate parity. Heavy product suites remain in the full CI lane.
+
+After changing `upstream.json`, fetch its exact commit into `.upstream` and run `node scripts/ci/snapshot-upstream-inputs.ts` to regenerate the input file inventory. The command reads that commit's Git tree; prepared or untracked files do not enter the snapshot. The coverage gate independently checks the snapshot against the pin.

@@ -1,3 +1,4 @@
+import { patternForGroup } from "../ci/declarations.ts";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdir, readFile, writeFile, unlink } from "node:fs/promises";
@@ -67,7 +68,7 @@ try {
       "run",
       "e2e:cloud",
       "--test-name",
-      process.env.BASALT_ADOPTION_PROOF_PATTERN ?? "^Cloud provider adoption",
+      process.env.BASALT_ADOPTION_PROOF_PATTERN ?? patternForGroup("production-ops:adoption"),
       "--workers",
       process.env.BASALT_ADOPTION_PROOF_WORKERS ?? "2",
     ],
