@@ -3,12 +3,10 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 test("a cyclic container redeploy propagates publication outputs without changing no-op or drift behavior", () => {
+  // Deployments use Bun source imports, including TypeScript inside prepared node_modules stores.
   execFileSync(
-    process.execPath,
-    [
-      "--experimental-transform-types",
-      fileURLToPath(new URL("./fixtures/container-publication-cycle.mjs", import.meta.url)),
-    ],
+    "bun",
+    [fileURLToPath(new URL("./fixtures/container-publication-cycle.mjs", import.meta.url))],
     { stdio: "pipe", timeout: 30_000 },
   );
 });
