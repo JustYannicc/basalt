@@ -1,8 +1,8 @@
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index df7afa5..d81521b 100644
+index 6e23132..4cccf77 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -8935,6 +8935,37 @@ export const scenarios = plan({
+@@ -8937,6 +8937,37 @@ export const scenarios = plan({
        cloud: scheduled,
      },
    },
@@ -287,6 +287,28 @@ index 0000000..48f6639
 +    ),
 +  );
 +});
+diff --git a/e2e/tests/contributed-app-accounts.spec.ts b/e2e/tests/contributed-app-accounts.spec.ts
+index 13c08c4..d64af82 100644
+--- a/e2e/tests/contributed-app-accounts.spec.ts
++++ b/e2e/tests/contributed-app-accounts.spec.ts
+@@ -14,13 +14,14 @@ import { choiceName, rowMenuName } from "../support/account-choices.ts";
+ const ordinaryNote = "Only people who can edit this app can change these accounts.";
+ 
+ /**
+- * Both app requirements use the same provider, so their sections share its name. A member sees
+- * the permission note only on the requirement they cannot change.
++ * Both app requirements use the same provider, so each section's title adds what tells it apart
++ * after the provider's name. A member sees the permission note only on the requirement they
++ * cannot change.
+  */
+ const requirementSection = (page: Page, kind: "contributed" | "ordinary") =>
+   page
+     .getByRole("region", { name: "App accounts", exact: true })
+-    .getByRole("region", { name: "Contributed service", exact: true })
++    .getByRole("region", { name: /^Contributed service · / })
+     .filter(kind === "ordinary" ? { hasText: ordinaryNote } : { hasNotText: ordinaryNote });
+ 
+ layer(HostedLive, { excludeTestServices: true })("Contributed Accounts tab", (it) => {
 diff --git a/packages/ui/src/implementation/components/dialog.tsx b/packages/ui/src/implementation/components/dialog.tsx
 index 7519ddc..f68b102 100644
 --- a/packages/ui/src/implementation/components/dialog.tsx
@@ -395,10 +417,10 @@ index 7519ddc..f68b102 100644
          {showCloseButton && (
            <DialogPrimitive.Close asChild>
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index e50fafe..7d07f0c 100644
+index 9fedea6..858ea14 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-@@ -71,7 +71,7 @@ import {
+@@ -86,7 +86,7 @@ import {
    DialogTitle,
  } from "../components/dialog.tsx";
  import { cn } from "../lib/utils.ts";
@@ -407,7 +429,7 @@ index e50fafe..7d07f0c 100644
  import { useProductBrand } from "../hooks/product-brand.ts";
  import { useToast } from "../components/toast.tsx";
  import { ProviderDestination } from "./provider-accounts.tsx";
-@@ -431,6 +431,39 @@ const methodStates = (
+@@ -465,6 +465,39 @@ const methodStates = (
    }));
  };
  
@@ -447,35 +469,37 @@ index e50fafe..7d07f0c 100644
  /** The host can connect none of the requirement's methods now. */
  const noMethodOpen = (
    methods: RequirementMethods | undefined,
-@@ -714,6 +747,7 @@ function LinkScope<E>({
+@@ -753,6 +786,7 @@ function LinkScope<E>({
        !accounts.some((account) => account.provider === requirement.provider),
    );
    const open = shown.filter((entry) => !closed.includes(entry));
 +  const titles = requirementTitles(shown);
    const readOnly = open.every(([, requirement]) => editingFor(data, requirement) === undefined);
    return (
-     <section aria-label={title} data-read-only={readOnly} className="space-y-3">
-@@ -731,12 +765,18 @@ function LinkScope<E>({
-             {...props}
-             slot={slot}
-             requirement={requirement}
-+            title={titles.get(slot)}
-             linked={data.links.flatMap((link) => (link.requirement === slot ? [link.account] : []))}
-             readOnlyNote={readOnly ? undefined : data.readOnly}
-           />
-         ))}
-         {closed.length > 0 && (
--          <UnavailableRequirements app={props.app} requirements={closed} methods={methods} />
-+          <UnavailableRequirements
-+            app={props.app}
-+            requirements={closed}
-+            titles={titles}
-+            methods={methods}
-+          />
-         )}
-       </div>
-     </section>
-@@ -747,10 +787,12 @@ function LinkScope<E>({
+     <RowSection.Provider value={title}>
+@@ -775,6 +809,7 @@ function LinkScope<E>({
+               {...props}
+               slot={slot}
+               requirement={requirement}
++              title={titles.get(slot)}
+               linked={data.links.flatMap((link) =>
+                 link.requirement === slot ? [link.account] : [],
+               )}
+@@ -782,7 +817,12 @@ function LinkScope<E>({
+             />
+           ))}
+           {closed.length > 0 && (
+-            <UnavailableRequirements app={props.app} requirements={closed} methods={methods} />
++            <UnavailableRequirements
++              app={props.app}
++              requirements={closed}
++              titles={titles}
++              methods={methods}
++            />
+           )}
+         </div>
+       </section>
+@@ -794,10 +834,12 @@ function LinkScope<E>({
  function UnavailableRequirements({
    app,
    requirements,
@@ -488,7 +512,7 @@ index e50fafe..7d07f0c 100644
    readonly methods: RequirementMethods | undefined;
  }) {
    return (
-@@ -772,7 +814,7 @@ function UnavailableRequirements({
+@@ -819,7 +861,7 @@ function UnavailableRequirements({
              className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 px-3.5 py-3 text-[13px] [&_.provider-icon]:row-span-2 [&_.provider-icon]:size-7"
            >
              <AppProviderIcon app={app} provider={requirement.definition} />
@@ -497,7 +521,7 @@ index e50fafe..7d07f0c 100644
              <ul className="grid gap-0.75 text-xs text-muted-foreground">
                {methodStates(methods, slot, requirement).map((state) => (
                  <li key={state.name}>
-@@ -805,12 +847,15 @@ const requirementNote = (requirement: AccountRequirement, linked: number) =>
+@@ -852,12 +894,15 @@ const requirementNote = (requirement: AccountRequirement, linked: number) =>
  function RequirementView<E>({
    slot,
    requirement,
@@ -513,7 +537,7 @@ index e50fafe..7d07f0c 100644
    /** The requirement's linked accounts, oldest first. */
    readonly linked: readonly AccountSummary[];
    /** Why this requirement is read-only when others in its scope are not. */
-@@ -819,7 +864,6 @@ function RequirementView<E>({
+@@ -866,7 +911,6 @@ function RequirementView<E>({
    const { data } = props;
    const edit = editingFor(data, requirement);
    const managed = provisionedOnly(requirement);
@@ -521,7 +545,7 @@ index e50fafe..7d07f0c 100644
    const native = props.methods?.native(slot);
    const kept = retained(connectionOf(props.connections, slot), data, requirement);
    const states = methodStates(props.methods, slot, requirement);
-@@ -838,15 +882,15 @@ function RequirementView<E>({
+@@ -885,15 +929,15 @@ function RequirementView<E>({
            .join(" · ") || undefined;
    return (
      <section
@@ -540,7 +564,7 @@ index e50fafe..7d07f0c 100644
                {kept && (
                  <span className="shrink-0 rounded-sm border px-1.5 py-px text-[10px] font-normal text-foreground">
                    Retained
-@@ -899,6 +943,7 @@ function RequirementView<E>({
+@@ -946,6 +990,7 @@ function RequirementView<E>({
              }
              slot={slot}
              requirement={requirement}
@@ -548,7 +572,7 @@ index e50fafe..7d07f0c 100644
              linked={linked}
            />
          ) : (
-@@ -907,6 +952,7 @@ function RequirementView<E>({
+@@ -954,6 +999,7 @@ function RequirementView<E>({
              edit={edit}
              slot={slot}
              requirement={requirement}
@@ -556,7 +580,7 @@ index e50fafe..7d07f0c 100644
              linked={linked}
            />
          )}
-@@ -990,11 +1036,13 @@ function ReadOnlyChoices<E>({
+@@ -1038,11 +1084,13 @@ function ReadOnlyChoices<E>({
    showProvisionedProblems,
    slot,
    requirement,
@@ -569,8 +593,8 @@ index e50fafe..7d07f0c 100644
 +  readonly title: string | undefined;
    readonly linked: readonly AccountSummary[];
  }) {
-   const plain = requirement.cardinality === "one";
-@@ -1082,9 +1130,7 @@ function ReadOnlyChoices<E>({
+   const section = useContext(RowSection);
+@@ -1138,9 +1186,7 @@ function ReadOnlyChoices<E>({
    });
    const list = (
      <ul
@@ -581,7 +605,7 @@ index e50fafe..7d07f0c 100644
        className={cn(accountRowsContainer, "divide-y divide-border/50 text-[13px]")}
      >
        {rows}
-@@ -1094,7 +1140,7 @@ function ReadOnlyChoices<E>({
+@@ -1150,7 +1196,7 @@ function ReadOnlyChoices<E>({
      <RadioGroup.Root
        value={linked.at(-1)?.id ?? ""}
        disabled
@@ -590,7 +614,7 @@ index e50fafe..7d07f0c 100644
      >
        {list}
      </RadioGroup.Root>
-@@ -1143,6 +1189,7 @@ function EditableChoices<E>({
+@@ -1199,6 +1245,7 @@ function EditableChoices<E>({
    showProvisionedProblems,
    slot,
    requirement,
@@ -598,7 +622,7 @@ index e50fafe..7d07f0c 100644
    linked,
    data,
    edit,
-@@ -1154,6 +1201,7 @@ function EditableChoices<E>({
+@@ -1210,6 +1257,7 @@ function EditableChoices<E>({
    readonly edit: LinkEditing<E>;
    readonly slot: string;
    readonly requirement: AccountRequirement;
@@ -606,7 +630,7 @@ index e50fafe..7d07f0c 100644
    readonly linked: readonly AccountSummary[];
  }) {
    const brand = useProductBrand();
-@@ -1263,9 +1311,7 @@ function EditableChoices<E>({
+@@ -1319,9 +1367,7 @@ function EditableChoices<E>({
      : [];
    const list = (
      <ul
@@ -617,7 +641,7 @@ index e50fafe..7d07f0c 100644
        className={cn(accountRowsContainer, "divide-y divide-border/50 text-[13px]")}
      >
        {rows}
-@@ -1285,7 +1331,7 @@ function EditableChoices<E>({
+@@ -1341,7 +1387,7 @@ function EditableChoices<E>({
          (plain ? (
            <RadioGroup.Root
              value={choices.find((choice) => choice.linked)?.account.id ?? ""}
