@@ -204,19 +204,20 @@ index 692626d..60f8bd9 100644
 +    describedLabel(account.label, account.providerName, kind) ||
 +    `${fallback}${generatedNumber(account.label) ?? ""}`);
 diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/packages/ui/src/implementation/dashboard/account-actions.tsx
-index 4ebd3ae..7b4d158 100644
+index 4ebd3ae..57e451e 100644
 --- a/packages/ui/src/implementation/dashboard/account-actions.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-actions.tsx
-@@ -25,7 +25,7 @@ import { useDashboard } from "./context.tsx";
+@@ -25,7 +25,8 @@ import { useDashboard } from "./context.tsx";
  import { useProductBrand } from "../hooks/product-brand.ts";
  import { AccountRowMenuItems, AccountRowMenuPresence } from "./account-row.tsx";
  import { appDisplayName } from "../../contracts/product-brand.ts";
 -import { accountTitle } from "../../contracts/account-title.ts";
 +import { accountMethodKindLabel, accountTitle } from "../../contracts/account-identities.ts";
++import { authoredLabel } from "../../contracts/account-title.ts";
  
  /**
   * Account management lives on its list row; products supply the menu items they support. The row's
-@@ -130,8 +130,20 @@ export function AccountDialogIdentity({
+@@ -130,8 +131,22 @@ export function AccountDialogIdentity({
    const definition = data?.provider.definition;
    const name = definition?.name ?? listed?.providerName;
    const label = data
@@ -235,7 +236,9 @@ index 4ebd3ae..7b4d158 100644
 +          data.account.provider,
 +        ),
 +      )
-+    : listed && accountTitle(listed);
++    : // While the account is read, the dialog names the exact binding the person picked: its saved
++      // name, else what its row reads without the group's verified identity.
++      listed && (authoredLabel(listed.label) ?? accountTitle({ ...listed, identity: undefined }));
    // The sign-in method's kind is the provider's to say, so it waits for the account read.
    return (
      <div className="flex items-center gap-3 min-w-0">
