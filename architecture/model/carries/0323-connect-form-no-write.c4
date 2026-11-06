@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway.accountConnections {
     metadata {
-      constraint "Opening an app's form for a new account reads its provider's OAuth setup, which needs no connection, on hosted and local dashboards alike; it saves nothing until sign-in starts or credentials are submitted, so closing it leaves no pending connection. Only a reconnect or a provider that declares a site reads the connection's own setup, which creates the connection first; a site provider that starts from its default origin does so as the form opens. A family whose person already has a saved identity still plans that identity's reuse as the form opens, which also creates the connection."
+      constraint "Opening an app's form for a new account reads its provider's OAuth setup, which needs no connection, on hosted and local dashboards alike; it saves nothing until sign-in starts or credentials are submitted, so closing it leaves no pending connection. Only a reconnect or a chosen site reads the connection's own setup, which creates the connection first."
     }
   }
 }

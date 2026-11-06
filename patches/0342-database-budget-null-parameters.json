@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-database-budget-null-parameters",
+  "file": "0342-database-budget-null-parameters.patch",
+  "content_sha256": "124b3d46976046faa6efae2f2bb14e01b0c0405ca97f491e84e24b24370a50ca",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}

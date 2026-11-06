@@ -34,7 +34,7 @@ test("account and pool jobs retain their owned scenarios, commands and execution
       env: null,
       cwd: ".upstream",
       minutes: null,
-      scenarios: ["appQueryTiming"],
+      scenarios: ["appQueryTiming", "appUiPhaseHeaders"],
     },
     {
       job: "host-managed-accounts",

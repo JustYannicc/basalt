@@ -1,0 +1,506 @@
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -61,6 +61,10 @@
+   poolMembershipReadPath,
+   readNativePoolMembership,
+ } from "@executor-js/hosted-server/pool-membership";
++import {
++  poolOrganizationReadPath,
++  readPoolOrganization,
++} from "@executor-js/hosted-server/pool-organization";
+ import { Billing } from "./contracts/billing.ts";
+ import { BillingMeter } from "./contracts/billing-meter.ts";
+ import { billingBindings } from "./infrastructure/billing.ts";
+@@ -660,6 +664,9 @@
+       HttpRouter.add("POST", poolMembershipReadPath, readNativePoolMembership).pipe(
+         HttpRouter.provideRequest(executor),
+       ),
++      HttpRouter.add("POST", poolOrganizationReadPath, readPoolOrganization).pipe(
++        HttpRouter.provideRequest(executor),
++      ),
+       HttpRouter.add("POST", "/api/internal/app-domains/resume", appDomains.control("resume")),
+       HttpRouter.add("POST", "/api/internal/app-domains/drain", appDomains.control("drain")),
+       HttpRouter.add("POST", "/api/internal/v1-import/start", v1Import.start),
+diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+--- a/apps/hosted/server/package.json
++++ b/apps/hosted/server/package.json
+@@ -42,6 +42,7 @@
+     "./pool-access-hook": "./src/implementation/pool-access-hook.ts",
+     "./account-observation-upkeep": "./src/implementation/account-observation-upkeep.ts",
+     "./pool-membership": "./src/implementation/pool-membership.ts",
++    "./pool-organization": "./src/implementation/pool-organization.ts",
+     "./pool-access-provenance": "./src/implementation/pool-access-provenance.ts",
+     "./pool-defaults": "./src/implementation/pool-defaults.ts",
+     "./pool-usage": "./src/contracts/pool-usage.ts",
+diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/hosted/server/src/implementation/pool-organization.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-organization.ts
+@@ -0,0 +1,39 @@
++import { AppId } from "@executor-js/sdk/core";
++import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
++import { HttpServerRequest, HttpServerResponse } from "effect/http";
++import { OrganizationId } from "../contracts/organization.ts";
++import { OrganizationTombstones } from "../contracts/organization-removal.ts";
++import { policyDatabase } from "./resource-policy.ts";
++import { openEnvelope } from "./pool-token.ts";
++
++export const poolOrganizationReadPath = "/api/internal/pool-organization";
++const Read = Schema.Struct({
++  pool: AppId,
++  organization: OrganizationId,
++  at: Schema.Finite,
++  expiresAt: Schema.Finite,
++});
++
++/** No positive cache: an unexpired pool credential cannot outlive organization removal. */
++export const readPoolOrganization = Effect.gen(function* () {
++  const key = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
++  if (Option.isNone(key)) return HttpServerResponse.empty({ status: 503 });
++  const body = yield* HttpServerRequest.schemaBodyJson(
++    Schema.Struct({ envelope: Schema.NonEmptyString }),
++  );
++  const raw = yield* Effect.tryPromise(() =>
++    openEnvelope(Redacted.value(key.value), "sbq1", body.envelope),
++  );
++  const value = yield* Schema.decodeUnknownEffect(Read)(raw);
++  const now = yield* Clock.currentTimeMillis;
++  if (value.at > now || value.expiresAt <= now || value.expiresAt > now + 30_000)
++    return HttpServerResponse.empty({ status: 401 });
++  const removed = yield* OrganizationTombstones;
++  if (yield* removed(value.organization)) return HttpServerResponse.empty({ status: 403 });
++  const sql = yield* policyDatabase;
++  const rows = yield* sql`select id from organization where id = ${value.organization}`;
++  return HttpServerResponse.empty({
++    status: rows.length === 1 ? 204 : 403,
++    headers: { "cache-control": "no-store" },
++  });
++}).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 503 }))));
+diff --git a/e2e/check-boundary.ts b/e2e/check-boundary.ts
+--- a/e2e/check-boundary.ts
++++ b/e2e/check-boundary.ts
+@@ -150,7 +150,10 @@
+           // This adapter starts the complete fork Worker at its HTTP entry. These are
+           // runtime SDKs; application source imports remain forbidden in every E2E file.
+           if (
+-            label === `support${path.sep}native-tunnel.ts` &&
++            [
++              `support${path.sep}native-tunnel.ts`,
++              `support${path.sep}pool-worker-runtime.ts`,
++            ].includes(label) &&
+             ["esbuild", "miniflare"].includes(specifier)
+           )
+             return;
+diff --git a/e2e/support/pool-worker-runtime.ts b/e2e/support/pool-worker-runtime.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/pool-worker-runtime.ts
+@@ -0,0 +1,129 @@
++import { build } from "esbuild";
++import {
++  Miniflare,
++  fetch as runtimeFetch,
++  Response as RuntimeResponse,
++  Request as RuntimeRequest,
++} from "miniflare";
++import { Effect, FileSystem, Path, Redacted, Schema } from "effect";
++import { driver, Target } from "./platform.ts";
++
++/** Full production pool routes and durable storage, forwarding authority reads to managed Cloud. */
++export const poolWorkerRuntime = (toolsOrigin: string) =>
++  Effect.gen(function* () {
++    const path = yield* Path.Path,
++      fs = yield* FileSystem.FileSystem,
++      target = yield* Target;
++    const root = path.resolve("..");
++    const configuration = yield* fs
++      .readFileString(`${target.directory}/sso-database.json`)
++      .pipe(
++        Effect.flatMap(
++          Schema.decodeUnknownEffect(
++            Schema.fromJsonString(
++              Schema.Struct({ database: Schema.RedactedFromValue(Schema.String) }),
++            ),
++          ),
++        ),
++      );
++    // Local workerd has no jurisdiction placement. Only that namespace capability is adapted.
++    const entry = `import worker from "./src/pool/worker.ts";
++      export {PoolContainer,PoolOperations} from "./src/pool/worker.ts";
++      export default {fetch(request,env){return worker.fetch(request,{...env,
++        PoolContainer:{jurisdiction:()=>({getByName:(name)=>
++          env.PoolContainer.get(env.PoolContainer.idFromName(name))})}})}};`;
++    const bundle = yield* driver("bundle production pool Worker", () =>
++      build({
++        stdin: { contents: entry, resolveDir: root, sourcefile: "pool-worker-fixture.ts" },
++        absWorkingDir: root,
++        bundle: true,
++        format: "esm",
++        platform: "node",
++        write: false,
++        target: "es2023",
++        external: ["cloudflare:*"],
++        conditions: ["workerd"],
++        banner: {
++          js: 'import {createRequire} from "node:module";const require=createRequire("file:///worker.js");',
++        },
++      }),
++    );
++    let authorityAvailable = true;
++    const runtime = yield* Effect.acquireRelease(
++      Effect.sync(
++        () =>
++          new Miniflare({
++            workers: [
++              {
++                name: "pool",
++                modules: true,
++                script: bundle.outputFiles[0]!.text,
++                compatibilityDate: "2026-08-06",
++                compatibilityFlags: ["nodejs_compat"],
++                durableObjects: { PoolContainer: { className: "PoolContainer", useSQLite: true } },
++                bindings: {
++                  POOL_APP_SIGNING_KEY: "ab".repeat(32),
++                  POOL_MANAGEMENT_KEY: "synthetic-management-key",
++                  POOL_IMAGE_HASH: "synthetic-image",
++                  POOL_DATABASE_URL: Redacted.value(configuration.database),
++                },
++                hyperdrives: { POOL_AUTH_DATABASE: Redacted.value(configuration.database) },
++                serviceBindings: {
++                  TOOLS_SERVICE: (request: RuntimeRequest) => {
++                    if (!authorityAvailable) return new RuntimeResponse(null, { status: 503 });
++                    const url = new URL(request.url);
++                    const init = {
++                      method: request.method,
++                      headers: Object.fromEntries(request.headers),
++                      body: request.body,
++                      duplex: "half",
++                      redirect: "manual",
++                      signal: request.signal,
++                    } satisfies Parameters<typeof runtimeFetch>[1] & { duplex: "half" };
++                    return runtimeFetch(new URL(url.pathname + url.search, toolsOrigin), init).then(
++                      (response) =>
++                        new RuntimeResponse(response.body, {
++                          status: response.status,
++                          headers: Object.fromEntries(response.headers),
++                        }),
++                    );
++                  },
++                },
++              },
++              {
++                name: "operations",
++                modules: true,
++                script: "export default {fetch(request,env){return env.OPERATIONS.fetch(request)}}",
++                compatibilityDate: "2026-08-06",
++                serviceBindings: { OPERATIONS: { name: "pool", entrypoint: "PoolOperations" } },
++              },
++            ],
++          }),
++      ),
++      (runtime) =>
++        driver("dispose production pool Worker", () => runtime.dispose()).pipe(Effect.orDie),
++    );
++    yield* driver("start production pool Worker", () => runtime.ready);
++    const pool = yield* driver("get production pool Worker", () => runtime.getWorker("pool"));
++    const operations = yield* driver("get private pool operations entrypoint", () =>
++      runtime.getWorker("operations"),
++    );
++    return {
++      request: (
++        path: string,
++        init?: { method?: string; headers?: Record<string, string>; body?: string },
++      ) =>
++        driver("request production pool route", () => pool.fetch(`http://pool.test${path}`, init)),
++      operations: (
++        path: string,
++        init?: { method?: string; headers?: Record<string, string>; body?: string },
++      ) =>
++        driver("request private pool schema operation", () =>
++          operations.fetch(`http://operations.test${path}`, init),
++        ),
++      authority: (available: boolean) =>
++        Effect.sync(() => {
++          authorityAvailable = available;
++        }),
++    };
++  });
+diff --git a/e2e/tests/deleted-org-pool-token.spec.ts b/e2e/tests/deleted-org-pool-token.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/deleted-org-pool-token.spec.ts
+@@ -0,0 +1,273 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Redacted, Schedule, Schema } from "effect";
++import { Api, body } from "../support/api.ts";
++import { Actors } from "../support/actors.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { cloudLocks } from "../support/cloud-locks.ts";
++import { Evidence } from "../support/evidence.ts";
++import { RuntimeLive, Target, driver } from "../support/platform.ts";
++import { poolWorkerRuntime } from "../support/pool-worker-runtime.ts";
++import { Organization } from "../support/contracts.ts";
++import { scenarios } from "../test-plan.ts";
++
++const App = Schema.Struct({ id: Schema.String });
++const Token = Schema.Struct({
++  token: Schema.RedactedFromValue(Schema.String),
++  expiresAt: Schema.String,
++});
++const Rows = Schema.Array(Schema.Struct({ count: Schema.String }));
++class RemovalPending extends Schema.TaggedError<RemovalPending>()("RemovalPending", {}) {}
++
++layer(RuntimeLive, { excludeTestServices: true })("Deleted organization pool tokens", (it) => {
++  it.effect(scenarios.deletedOrganizationPoolToken.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          target = yield* Target;
++        const locks = yield* cloudLocks,
++          evidence = yield* Evidence;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const app = yield* api
++          .request(actors.owner, "POST", `${prefix}/pools`, {
++            name: "Token revocation pool",
++            requestId: crypto.randomUUID(),
++            newInstance: true,
++          })
++          .pipe(
++            Effect.flatMap((response) => {
++              expect(response.status).toBe(200);
++              return body(App, response);
++            }),
++          );
++        const viewer = yield* api
++          .request(actors.owner, "GET", "/api/viewer")
++          .pipe(
++            Effect.flatMap((response) => body(Schema.Struct({ userId: Schema.String }), response)),
++          );
++        const minted = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/apps/${app.id}/pool-manager-tokens`,
++          {
++            user: viewer.userId,
++            lifetimeSeconds: 900,
++          },
++        );
++        expect(minted.status).toBe(200);
++        const credential = yield* body(Token, minted);
++        const headers = {
++          authorization: `Bearer ${Redacted.value(credential.token)}`,
++          "x-signalbox-caller": viewer.userId,
++        };
++        const worker = yield* poolWorkerRuntime(target.metadata.origin);
++        const otherOrg = yield* api
++          .request(actors.owner, "POST", "/api/auth/organization/create", {
++            name: "Active token control",
++            slug: `token-control-${crypto.randomUUID().slice(0, 8)}`,
++            keepCurrentActiveOrganization: true,
++          })
++          .pipe(
++            Effect.flatMap((response) => {
++              expect(response.status).toBe(200);
++              return body(Organization, response);
++            }),
++          );
++        const otherPrefix = `/api/organizations/${otherOrg.id}`;
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", otherPrefix).pipe(Effect.ignore),
++        );
++        const otherPool = yield* api
++          .request(actors.owner, "POST", `${otherPrefix}/pools`, {
++            name: "Unaffected pool",
++            requestId: crypto.randomUUID(),
++            newInstance: true,
++          })
++          .pipe(
++            Effect.flatMap((response) => {
++              expect(response.status).toBe(200);
++              return body(App, response);
++            }),
++          );
++        const otherToken = yield* api
++          .request(
++            actors.owner,
++            "POST",
++            `${otherPrefix}/apps/${otherPool.id}/pool-manager-tokens`,
++            {
++              user: viewer.userId,
++              lifetimeSeconds: 900,
++            },
++          )
++          .pipe(
++            Effect.flatMap((response) => {
++              expect(response.status).toBe(200);
++              return body(Token, response);
++            }),
++          );
++        const otherHeaders = {
++          ...headers,
++          authorization: `Bearer ${Redacted.value(otherToken.token)}`,
++        };
++        const otherCapacity = () =>
++          worker.request("/pool/v1/usage/capacity", { headers: otherHeaders });
++        expect((yield* otherCapacity()).status).toBe(200);
++        // History migrations use the stable owner provisioned by production.
++        for (const sql of [
++          "DO $$ BEGIN CREATE ROLE basalt_pool_owner NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$",
++          "GRANT USAGE, CREATE ON SCHEMA public TO basalt_pool_owner",
++          "create table usage (id bigint, timestamp timestamptz)",
++          "create table home_data_migration (name text, completed boolean)",
++        ])
++          yield* locks.run({ sql });
++        const plan = yield* worker.operations("/model-history/schema/catalog");
++        expect(plan.status).toBe(200);
++        const hashes = yield* driver("read history schema plan", () => plan.json()).pipe(
++          Effect.flatMap(
++            Schema.decodeUnknownEffect(
++              Schema.Struct({ schemaHash: Schema.String, catalogHash: Schema.String }),
++            ),
++          ),
++        );
++        const applied = yield* worker.operations("/model-history/schema", {
++          method: "POST",
++          headers: { "content-type": "application/json" },
++          body: JSON.stringify({ go: true, ...hashes }),
++        });
++        expect(applied.status).toBe(200);
++        const history = "/pool/v1/usage/history?from=2019-01-01T00:00:00Z&to=2021-01-01T00:00:00Z";
++        const payload = {
++          source: crypto.randomUUID(),
++          format: "home-v8-jsonl",
++          data: JSON.stringify({
++            usage_id: 1,
++            request_id: crypto.randomUUID(),
++            timestamp: "2020-01-01T12:00:00Z",
++            provider: "fixture-provider",
++            model: "revocation-model",
++            failed: false,
++            input_tokens: 100,
++            output_tokens: 10,
++            cached_tokens: 20,
++            cache_creation_tokens: 0,
++            reasoning_tokens: 3,
++            total_tokens: 110,
++            latency_ms: 25,
++            endpoint: "/v1/responses",
++            amount: null,
++          }),
++        };
++        const importRequest = (input: object) =>
++          worker.request("/pool/v1/usage/import", {
++            method: "POST",
++            headers: { ...headers, "content-type": "application/json" },
++            body: JSON.stringify(input),
++          });
++        const dry = yield* importRequest(payload);
++        expect(dry.status).toBe(200);
++        const approval = yield* driver("read private import approval", () => dry.json()).pipe(
++          Effect.flatMap(
++            Schema.decodeUnknownEffect(
++              Schema.Struct({
++                approval: Schema.RedactedFromValue(Schema.String),
++                wouldInsert: Schema.Number,
++              }),
++            ),
++          ),
++        );
++        expect(approval.wouldInsert).toBe(1);
++        const imported = yield* importRequest({
++          ...payload,
++          mode: "apply",
++          approval: Redacted.value(approval.approval),
++        });
++        expect(imported.status).toBe(200);
++        const before = yield* worker.request(history, { headers });
++        expect(before.status).toBe(200);
++        const records = yield* driver("read public history", () => before.json()).pipe(
++          Effect.flatMap(
++            Schema.decodeUnknownEffect(Schema.Struct({ records: Schema.Array(Schema.Unknown) })),
++          ),
++        );
++        expect(records.records).toHaveLength(1);
++        expect((yield* worker.request("/pool/v1/usage/capacity", { headers })).status).toBe(200);
++        yield* locks.run({
++          sql: `create table if not exists e2e_organization_removal_stall
++          (organization_id text primary key, stalled_until timestamptz not null)`,
++        });
++        const release = locks.run({
++          sql: "delete from e2e_organization_removal_stall where organization_id = $1",
++          params: [actors.organization.id],
++        });
++        yield* Effect.addFinalizer(() =>
++          release.pipe(Effect.andThen(api.request(actors.owner, "DELETE", prefix)), Effect.ignore),
++        );
++        yield* locks.run({
++          sql: "insert into e2e_organization_removal_stall values ($1, 'infinity')",
++          params: [actors.organization.id],
++        });
++        expect((yield* api.request(actors.owner, "DELETE", prefix)).status).toBe(200);
++        const state = yield* locks
++          .run({
++            sql: "select count(*)::text as count from organization where id=$1",
++            params: [actors.organization.id],
++          })
++          .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Rows)));
++        expect(state[0]?.count).toBe("1");
++        expect((yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}`)).status).toBe(
++          403,
++        );
++        const denied = (phase: "erasing" | "gone") =>
++          Effect.gen(function* () {
++            const read = yield* worker.request(history, { headers });
++            yield* evidence.json(`deleted-org-token-${phase}-status.json`, {
++              status: read.status,
++              tokenStillValid: Date.parse(credential.expiresAt) > Date.now(),
++            });
++            expect(Date.parse(credential.expiresAt)).toBeGreaterThan(Date.now());
++            expect(read.status).toBe(403);
++            expect((yield* worker.request("/pool/v1/usage/capacity", { headers })).status).toBe(
++              403,
++            );
++            expect((yield* importRequest(payload)).status).toBe(403);
++            expect(
++              (yield* importRequest({
++                ...payload,
++                mode: "apply",
++                approval: Redacted.value(approval.approval),
++              })).status,
++            ).toBe(403);
++            const saved = yield* locks
++              .run({ sql: "select count(*)::text as count from basalt_model_requests" })
++              .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Rows)));
++            expect(saved[0]?.count).toBe("1");
++            expect((yield* otherCapacity()).status).toBe(200);
++          });
++        yield* denied("erasing");
++        yield* release;
++        yield* locks
++          .run({
++            sql: "select count(*)::text as count from organization where id=$1",
++            params: [actors.organization.id],
++          })
++          .pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(Rows)),
++            Effect.flatMap((rows) =>
++              rows[0]?.count === "0" ? Effect.void : Effect.fail(new RemovalPending()),
++            ),
++            Effect.retry({
++              while: Schema.is(RemovalPending),
++              schedule: Schedule.spaced("250 millis"),
++            }),
++            Effect.timeout("20 seconds"),
++          );
++        yield* denied("gone");
++        yield* worker.authority(false);
++        expect((yield* otherCapacity()).status).toBe(503);
++        yield* worker.authority(true);
++        expect((yield* otherCapacity()).status).toBe(200);
++      }),
++    ),
++  );
++});

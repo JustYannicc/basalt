@@ -34,6 +34,11 @@ Dispatch `production-ops.yml` on `main` with `action=inventory`, the public key 
 - `connections-summary`: the same connections counted by status, expiry, target
   app and provider, with the first and last creation times. Use it when the
   organization may have more connections than the row bound.
+- `tool-call-traffic`: each of the organization's accounts with every hour of
+  tool calls still stored for it: hours with a count, requests, failures, and
+  the latest counted hour and success. Hours past retention that no later call
+  pruned are included. Counts only, never a call's input or result. A missing
+  counts table fails the run with SQL state class `42`.
 
 `retired-tokens` uses the same recorded pool-app, personal placement and exact
 provider provenance as host-managed pool-access rows. Labels do not identify
@@ -184,6 +189,36 @@ backup. The ordinary `accounts` backup does not cover all retired check and sour
 history. Deployment only registers the operation. Apply still needs GO for the
 exact plan. Retirement deletes the selected redundant bindings and their own
 grants locally, preserves verified replacements, and never revokes Google consent.
+
+## Remove abandoned account connections
+
+Use `account-connection-retention-v1` with
+`{"organization":"<organization-id>","expiredBefore":"<UTC timestamp, e.g. 2026-11-05T00:00:00Z>"}`.
+It selects that organization's connections that never produced an account and
+expired before the cutoff: the `connections` inventory rows with
+`produced_account: false`. The cutoff must be at least 24 hours old, so a
+connection that can still complete is never selected, and the reviewed set stays
+fixed while time passes. A plan holds at most 200 connections; for a larger
+backlog, choose an earlier cutoff first, then repeat with later ones.
+
+Back up with `action=backup` and the migration name first. Like every migration
+backup, including the one the dry run saves, it is the runner's whole-table
+snapshot of the connection, sign-in attempt and connection access tables, across
+all organizations, bounded at 10,000 rows per table and 8 MB. A large backlog can
+therefore refuse at the dry run; check the row counts with the
+`connections-summary` inventory first. The dry run lists each selected
+connection with its sign-in attempt and access row, by exact ID and row checksum.
+A sign-in attempt that another connection also names refuses.
+Apply, with GO for that exact plan, removes each attempt and access row before
+its connection. It refuses if any reviewed row changed or the selection differs.
+Completed connections and every account stay.
+
+The same rule can run daily on its own. Setting the server's
+`EXECUTOR_ACCOUNT_CONNECTION_RETENTION` to `true` turns it on; unset, nothing
+runs. When on, it removes up to 500 such connections a day across all
+organizations, each more than a day past its expiry, sign-in attempts first. A
+sign-in attempt that another connection still names is kept with that
+connection, where the reviewed operation refuses it.
 
 ## Apply the reviewed plan
 

@@ -72,6 +72,9 @@ RUN cd /source/node && \
 
 FROM source-build AS home-db-pool-tests
 COPY home_db_pool_privacy_test.go.tmpl /source/home/internal/cluster/basalt_db_pool_privacy_test.go
+COPY home_db_schema_owner_test.go.tmpl /source/home/internal/cluster/basalt_db_schema_owner_test.go
+COPY home_db_budget_client.go.tmpl /source/home/cmd/basalt-budget-proof/main.go
+RUN cd /source/home && go build -p=2 -mod=readonly -buildvcs=false -o /out/home-budget-client ./cmd/basalt-budget-proof
 RUN cd /source/home && go test -p=2 -mod=readonly -c -o /out/home-db-pool-tests ./internal/cluster
 ENTRYPOINT ["/out/home-db-pool-tests", "-test.run=^TestHomeDBPool", "-test.v", "-test.timeout=10m"]
 

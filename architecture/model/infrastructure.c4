@@ -242,3 +242,9 @@ model {
     metadata { resources "resource-705f006b9cd1e8eae2e4a8a7a40c30f19aa5bfc5efdfc5da06e1b33b91779029|resource-f629d04a7705fb979431998422c538087cb454323f88176937abce5605ff7fed" }
   }
 }
+
+model {
+  extend basalt.deployment {
+    metadata { resources "resource-2ac42b2188e42a8df03abcbd9b2e0fa80e880a8ae814d9b936e1c8e84d16a72c|resource-6353343c55aea63ac241ed1d8e072a289e25d38335d42586343b0bed9376240e|resource-79431a83dd92b66180f973cac8de89449b6f0aab6fdbd18859a35b188f907ffa" }
+  }
+}

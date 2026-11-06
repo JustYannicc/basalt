@@ -1,0 +1,44 @@
+diff --git a/e2e/tests/account-usage-cells.spec.ts b/e2e/tests/account-usage-cells.spec.ts
+index eaf4324..ca1d37d 100644
+--- a/e2e/tests/account-usage-cells.spec.ts
++++ b/e2e/tests/account-usage-cells.spec.ts
+@@ -312,6 +312,8 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+           (page) => block(page, "Spare").locator("[data-observation-details]").innerText(),
+         );
+         expect(spareExpiry.match(/Expires /g)?.length, spareExpiry).toBe(2);
++        // Each credit holds one reset and reads in the singular.
++        expect(spareExpiry.match(/\b1 reset\b/g)?.length, spareExpiry).toBe(2);
+         expect(studioCells.every((entry) => entry.count === null)).toBe(true);
+         // A connector without a usage reporter has no usage area or text.
+         expect(connectorCells).toEqual([]);
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-format.ts b/packages/ui/src/implementation/dashboard/account-observation-format.ts
+index 571acd3..e53560f 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-format.ts
++++ b/packages/ui/src/implementation/dashboard/account-observation-format.ts
+@@ -55,6 +55,13 @@ export const moment = (value: string, now: number, format: DisplayFormat) => {
+ const currencies = new Set(Intl.supportedValuesOf("currency"));
+ const isCurrency = (unit: string) => currencies.has(unit);
+ const isPercent = (unit: string) => unit === "%" || unit.toLowerCase() === "percent";
++/** Reported plural units and how one of each reads; any other unit keeps its spelling. */
++const singulars: Readonly<Record<string, string>> = {
++  resets: "reset",
++  credits: "credit",
++  requests: "request",
++  tokens: "token",
++};
+ 
+ export const amount = (value: number, unit: string, format: DisplayFormat, withUnit = false) => {
+   if (isCurrency(unit))
+@@ -63,7 +70,11 @@ export const amount = (value: number, unit: string, format: DisplayFormat, withU
+     );
+   const number = new Intl.NumberFormat(format.locale, { maximumFractionDigits: 2 }).format(value);
+   if (isPercent(unit)) return `${number}%`;
+-  return withUnit ? `${number} ${unit}` : number;
++  if (!withUnit) return number;
++  const one =
++    singulars[unit] !== undefined &&
++    new Intl.PluralRules(format.locale, { maximumFractionDigits: 2 }).select(value) === "one";
++  return `${number} ${one ? singulars[unit] : unit}`;
+ };
+ 
+ const toneOf = (ratio: number): ObservationMeterState =>

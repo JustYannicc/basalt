@@ -1,0 +1,39 @@
+{
+  "scenarios": {
+    "cloudPoolAppRemovalFailure": {
+      "fixtures": "actors",
+      "title": "Cloud pool app removal reports unavailable revocation and recovers without losing accounts",
+      "targets": {
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Cloud pool membership acknowledgements are hosted dependencies."
+        },
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Cloud pool membership acknowledgements are hosted dependencies."
+        }
+      }
+    }
+  },
+  "runs": {
+    "cloudPoolAppRemovalFailure": [
+      "declared:cloud"
+    ]
+  },
+  "inputs": [
+    ".upstream/e2e/support/cloud-pool-gateway.ts",
+    ".upstream/packages/sdk/src/contracts/apps.ts",
+    ".upstream/packages/sdk/src/contracts/executor.ts",
+    ".upstream/apps/hosted/server/src/contracts/apps.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-lifecycle.ts",
+    ".upstream/apps/local/server/src/contracts/dashboard.ts",
+    ".upstream/apps/hosted/web/src/contracts/errors.ts",
+    ".upstream/packages/mcp/src/implementation/app-assets.ts",
+    ".upstream/packages/mcp/src/implementation/app-asset-paths.ts"
+  ],
+  "fixture": "pool-setup"
+}

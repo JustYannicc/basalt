@@ -8,6 +8,9 @@ import { Config, Effect, Option, Redacted } from "effect";
 import { basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { poolDatabase, poolDatabaseUrl, previewPoolDatabaseBranch } from "./database-settings.ts";
+import { databasePoolBudget } from "../../.upstream/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts";
+import { productionDatabaseMigration } from "../../.upstream/apps/hosted/cloud/src/infrastructure/database.ts";
+import { postgresUrl } from "../../.upstream/apps/hosted/cloud/src/infrastructure/preview-database.ts";
 
 /** A logical database inside the tools service's existing PlanetScale cluster. */
 export const poolDatabaseInfrastructure = Effect.gen(function* () {
@@ -79,26 +82,57 @@ export const poolDatabaseInfrastructure = Effect.gen(function* () {
           }),
         };
       });
+  const budget = globalThis.__ALCHEMY_RUNTIME__
+    ? undefined
+    : yield* databasePoolBudget(
+        isPreview ? "PoolDatabaseBudget" : "RuntimeDatabaseBudget",
+        yield* Config.NonEmptyString(
+          isPreview ? "TEST_STAGE_DATABASE" : "PLANETSCALE_DATABASE_NAME",
+        ),
+        isPreview ? previewPoolDatabaseBranch(stageName!) : "main",
+      );
+  const migration =
+    isPreview || globalThis.__ALCHEMY_RUNTIME__
+      ? undefined
+      : (yield* productionDatabaseMigration).migrations;
+  const attempt =
+    isPreview || globalThis.__ALCHEMY_RUNTIME__
+      ? ""
+      : yield* Config.NonEmptyString("BASALT_RELEASE_ATTEMPT");
   const script = fileURLToPath(new URL("../../scripts/ensure-pool-database.ts", import.meta.url));
   const ready = yield* Command.Exec("PoolDatabase", {
     // Alchemy splits the command on whitespace without a shell, so quotes would reach node literally.
     command: `node ${basename(script)}`,
     cwd: dirname(script),
     env: {
+      BASALT_RELEASE_ATTEMPT: attempt,
+      ...(migration
+        ? { DATABASE_MIGRATIONS_READY: migration.hash.pipe(Output.map(() => "ready")) }
+        : {}),
+      ...(budget
+        ? { DATABASE_POOL_BUDGET_READY: budget.hash.pipe(Output.map(() => "ready")) }
+        : {}),
       POOL_DATABASE_ADMIN_URL: admin.connectionUrl,
       // `name` is PlanetScale's display name; the Postgres role that logs in is `username`.
       POOL_DATABASE_RUNTIME_ROLE: runtime.username,
     },
-    memo: false,
+    memo: isPreview
+      ? false
+      : { include: ["ensure-pool-database.ts", "pool-database-provisioning.ts"], lockfile: true },
     // The script bounds itself at 132s (worstCaseMs in scripts/pool-database-provisioning.ts) and
     // exits with the step it failed at. This outer limit only catches a script that cannot exit.
     timeout: "3 minutes",
   });
+  const readyHash = Output.all(ready.hash, budget?.hash ?? ready.hash).pipe(
+    Output.map(() => "ready"),
+  );
   return {
-    directUrl: Output.all(runtime.connectionUrl, ready.hash).pipe(
-      Output.map(([url]) => Redacted.make(poolDatabaseUrl(Redacted.value(url)))),
+    adminUrl: admin.connectionUrl,
+    runtimeRole: runtime.username,
+    runtimeUrl: Output.all(runtime.pooledOrigin, readyHash).pipe(
+      Output.map(([origin]) => Redacted.make(poolDatabaseUrl(Redacted.value(postgresUrl(origin))))),
     ),
-    workerOrigin: Output.all(runtime.origin, ready.hash).pipe(
+    workerOrigin: Output.all(runtime.pooledOrigin, readyHash).pipe(
       Output.map(([origin]) => ({ ...origin, database: poolDatabase.name })),
     ),
   };

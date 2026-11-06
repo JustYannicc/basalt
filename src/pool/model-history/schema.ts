@@ -1,5 +1,10 @@
+import { poolDatabase } from "../database-settings.ts";
+
 export interface HistoryDatabase {
-  query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[]; rowCount: number | null }>;
+  query(
+    text: string,
+    values?: unknown[],
+  ): Promise<{ rows: Record<string, unknown>[]; rowCount: number | null }>;
 }
 
 export const historyBaseSchemaVersion = "model_request_history_v1";
@@ -11,7 +16,9 @@ export async function planModelHistorySchema(db: HistoryDatabase) {
   await db.query("BEGIN TRANSACTION READ ONLY");
   try {
     await db.query("SET LOCAL statement_timeout = '3s'");
-    const identity = await db.query("SELECT current_database() AS database, current_user AS role, current_schema() AS schema");
+    const identity = await db.query(
+      "SELECT current_database() AS database, current_user AS role, current_schema() AS schema",
+    );
     const relations = await db.query(`SELECT c.relname AS name,c.relkind AS kind
       FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
       WHERE n.nspname=current_schema() AND c.relname LIKE 'basalt_model_%' ORDER BY c.relname`);
@@ -54,8 +61,11 @@ export const historySchemaStatements = [
     CHECK (price_snapshot IS NULL OR price_version IS NOT NULL),
     CHECK (id ~ '^[0-9a-f]{64}$' AND source ~ '^[0-9a-f]{64}$' AND source_record ~ '^[0-9a-f]{64}$')
   ) PARTITION BY HASH (id)`,
-  ...Array.from({ length: 16 }, (_, remainder) => `CREATE TABLE basalt_model_requests_${remainder}
-    PARTITION OF basalt_model_requests FOR VALUES WITH (MODULUS 16, REMAINDER ${remainder})`),
+  ...Array.from(
+    { length: 16 },
+    (_, remainder) => `CREATE TABLE basalt_model_requests_${remainder}
+    PARTITION OF basalt_model_requests FOR VALUES WITH (MODULUS 16, REMAINDER ${remainder})`,
+  ),
   `CREATE INDEX basalt_model_requests_pool_time ON basalt_model_requests (pool, timestamp, id)`,
   `CREATE INDEX basalt_model_requests_person_time ON basalt_model_requests (pool, person, timestamp, id)`,
   `CREATE INDEX basalt_model_requests_source_record ON basalt_model_requests (source, source_record)`,
@@ -78,9 +88,12 @@ export const historySchemaStatements = [
     FOR EACH ROW EXECUTE FUNCTION basalt_model_history_append_only()`,
   `CREATE TRIGGER basalt_model_history_no_truncate BEFORE TRUNCATE ON basalt_model_requests
     FOR EACH STATEMENT EXECUTE FUNCTION basalt_model_history_append_only()`,
-  ...Array.from({ length: 16 }, (_, part) => `CREATE TRIGGER basalt_model_history_no_truncate
+  ...Array.from(
+    { length: 16 },
+    (_, part) => `CREATE TRIGGER basalt_model_history_no_truncate
     BEFORE TRUNCATE ON basalt_model_requests_${part}
-    FOR EACH STATEMENT EXECUTE FUNCTION basalt_model_history_append_only()`),
+    FOR EACH STATEMENT EXECUTE FUNCTION basalt_model_history_append_only()`,
+  ),
 ];
 
 export const historyAppAttributionStatements = [
@@ -96,7 +109,9 @@ export const historySchemaMigrations = [
 ];
 /** Existing collectors keep working while the additive app migration awaits its approved apply. */
 export async function appAttributionReady(db: HistoryDatabase): Promise<boolean> {
-  const result = await db.query("SELECT 1 FROM basalt_model_history_migrations WHERE name = $1", [historyAppSchemaVersion]);
+  const result = await db.query("SELECT 1 FROM basalt_model_history_migrations WHERE name = $1", [
+    historyAppSchemaVersion,
+  ]);
   return result.rows.length === 1;
 }
 
@@ -104,16 +119,22 @@ export async function appAttributionReady(db: HistoryDatabase): Promise<boolean>
 export async function migrateModelHistory(db: HistoryDatabase): Promise<void> {
   await db.query("BEGIN");
   try {
+    await db.query(`SET LOCAL ROLE "${poolDatabase.owner}"`);
     await db.query("SET LOCAL lock_timeout = '500ms'");
     await db.query("SET LOCAL statement_timeout = '5s'");
     await db.query("SELECT pg_advisory_xact_lock(1409, 20)");
     await db.query(`CREATE TABLE IF NOT EXISTS basalt_model_history_migrations (
       name text PRIMARY KEY, completed_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
     for (const migration of historySchemaMigrations) {
-      const applied = await db.query("SELECT 1 FROM basalt_model_history_migrations WHERE name = $1", [migration.name]);
+      const applied = await db.query(
+        "SELECT 1 FROM basalt_model_history_migrations WHERE name = $1",
+        [migration.name],
+      );
       if (!applied.rows.length) {
         for (const sql of migration.statements) await db.query(sql);
-        await db.query("INSERT INTO basalt_model_history_migrations (name) VALUES ($1)", [migration.name]);
+        await db.query("INSERT INTO basalt_model_history_migrations (name) VALUES ($1)", [
+          migration.name,
+        ]);
       }
     }
     await db.query("COMMIT");

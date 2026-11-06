@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Connector CI publishes bounded summaries of known proof stages and fixed diagnostic categories, including the guidance stage and an allowlisted error name and marker. Raw process output, exception messages, request payloads, screenshots, session files and tenant identities stay private. Missing, oversized and malformed inputs remain visible without copying their contents."
+    }
+  }
+}

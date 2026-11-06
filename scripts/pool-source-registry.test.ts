@@ -62,6 +62,11 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         assert.match(patch.retirement.requires, /config apply and liveness/);
         assert.match(patch.retirement.requires, /direct transport and advisory locks/);
         assert.match(patch.retirement.requires, /pool wait counters/);
+      } else if (patch.identity === "cliproxy-home-transaction-schema-owner") {
+        assert.equal(name, "home");
+        assert.match(patch.retirement.requires, /stable schema owner/);
+        assert.match(patch.retirement.requires, /commit and rollback/);
+        assert.match(patch.retirement.requires, /multi-process shared-budget/);
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&

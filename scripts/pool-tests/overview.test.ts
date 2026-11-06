@@ -6,10 +6,19 @@ import type {
   OverviewApiPrice,
   PoolOverviewSignedInput,
 } from "../../apps/pool/overview-contract.ts";
-import { poolPersonalOverview, poolUsageOverview } from "../../src/pool/model-history/overview.ts";
+import {
+  overviewTargets,
+  poolPersonalOverview,
+  poolUsageOverview,
+} from "../../src/pool/model-history/overview.ts";
 import { reference, timestamp, type ModelRequest } from "../../src/pool/model-history/record.ts";
 import { homeAccountMappingProven } from "../../src/pool/model-history/series-mapping.ts";
 import { pool, seriesFixture } from "./series-fixture.ts";
+import { pricedSummary } from "../../src/pool/model-history/priced-summary.ts";
+import { homeRequest } from "../../src/pool/model-history/home.ts";
+import { poolGroupPrefix } from "../../src/pool/control.ts";
+import { UsageLedger } from "../../src/pool/usage-summary.ts";
+import type { UsageStorage } from "../../src/pool/usage-storage.ts";
 
 type Fixture = Parameters<Parameters<typeof seriesFixture>[0]>[0];
 
@@ -174,7 +183,7 @@ test("overview prices protocol aliases from total context, keeps excluded counts
     });
 
     assert.equal(result.metrics.apiBilled.status, "available");
-    assert.equal(result.metrics.apiBilled.amount, "0.001900000000");
+    assert.equal(result.metrics.apiBilled.amount, "0.007600000000");
     assert.equal(result.metrics.subscriptionValue.status, "available");
     assert.equal(result.metrics.subscriptionValue.amount, "0.005700000000");
     assert.equal(result.metrics.subscriptionValue.excluded.unpriced, 1);
@@ -283,7 +292,9 @@ test("personal overview scopes series, percentiles and pricing to the signed cal
     assert.equal(result.series.coverage.capturedThrough, null);
     assert.equal(result.metrics.apiBilled.status, "unavailable");
     assert.equal(result.metrics.subscriptionValue.status, "unavailable");
-    assert.equal(result.metrics.usageSlices.length, 0);
+    assert.equal(result.metrics.usageSlices.length, 1);
+    assert.equal(result.metrics.usageSlices[0]?.person, caller);
+    assert.equal(result.metrics.usageSlices[0]?.apiBilled, null);
     assert.equal(encoded.includes(other), false);
     assert.equal(encoded.includes("model-secret"), false);
     assert.equal("directory" in result, false);
@@ -344,7 +355,7 @@ test("personal overview scopes series, percentiles and pricing to the signed cal
   });
 });
 
-test("overview reports zero for a validly priced empty API category and refuses rounded large token percentiles", async () => {
+test("overview withholds unpriceable protocols and refuses rounded large token percentiles", async () => {
   await seriesFixture(async (fixture) => {
     const fingerprint = await prepareHomeSource(
       fixture.client,
@@ -367,8 +378,9 @@ test("overview reports zero for a validly priced empty API category and refuses 
       tokenQuality: "legacy",
     });
     const result = await poolUsageOverview(fixture.db, { ...signed, prices: [rates("0", "10")] });
-    assert.equal(result.metrics.apiBilled.status, "available");
-    assert.equal(result.metrics.apiBilled.amount, "0.000000000000");
+    assert.equal(result.metrics.apiBilled.status, "unavailable");
+    assert.equal(result.metrics.apiBilled.amount, null);
+    assert.equal(result.metrics.apiBilled.excluded.unpriced, 1);
     assert.equal(result.metrics.requestTokens.status, "unavailable");
     assert.equal(result.metrics.requestTokens.percentiles, null);
     assert.equal(
@@ -400,5 +412,242 @@ test("source-ID coverage proof withholds a Home hour that has not reached model 
     assert.equal(result.homeCapture.completeHours.length, 71);
     assert.equal(result.homeCapture.completeHours.includes("2026-01-02T03:00:00.000Z"), false);
     assert.equal(result.partial, true);
+  });
+});
+
+test("overview with no pool accounts reports the account prerequisite instead of blaming USD prices", async () => {
+  await seriesFixture(async (fixture) => {
+    await prepareHomeSource(fixture.client, await backendUserName("member", pool));
+    const signed = await input({ canManage: true, mappingProven: true, accounts: [] });
+    const result = await poolUsageOverview(fixture.db, { ...signed, prices: [] });
+    assert.equal(result.metrics.apiBilled.status, "unavailable");
+    assert.equal(result.metrics.apiBilled.reason, "No accounts in this pool yet.");
+  });
+});
+
+test("overview retains the token-priced cost Settings can read after every account is disconnected", async () => {
+  await seriesFixture(async (fixture) => {
+    const username = await backendUserName("member", pool);
+    const fingerprint = await prepareHomeSource(fixture.client, username);
+    const values = new Map<string, unknown>();
+    const storage: UsageStorage = {
+      async get<T>(key: string) {
+        return structuredClone(values.get(key)) as T | undefined;
+      },
+      async put(key, value) {
+        values.set(key, structuredClone(value));
+      },
+      async delete(key) {
+        values.delete(key);
+      },
+    };
+    const at = "2026-01-03T01:00:00Z";
+    const record = {
+      id: "1",
+      timestamp: at,
+      provider: "provider-alias",
+      model: "model-fixture",
+      client: { username },
+      credential: { credential_id: null },
+      tokens: { input_tokens: 200000, output_tokens: 51600, total_tokens: 251600 },
+      token_breakdown: {
+        quality: "complete",
+        total_tokens: 251600,
+        input: { uncached_tokens: 200000, cache_read_tokens: 0, cache_write_tokens: 0 },
+        output: { total_tokens: 51600 },
+      },
+      billing: { amount: 999, matched_price_rule: "fixture-credit-rule" },
+    };
+    const ledger = new UsageLedger(storage, {
+      async allMembership() {
+        return { groups: [{ id: 1, channel_name: `${poolGroupPrefix}${pool}` }], members: [] };
+      },
+      async data(path) {
+        if (path === "/capabilities") return { capabilities: { usage_token_breakdown_v2: true } };
+        const query = new URL(path, "https://fixture.invalid").searchParams;
+        const included =
+          Date.parse(query.get("from")!) <= Date.parse(at) &&
+          Date.parse(at) < Date.parse(query.get("to")!);
+        return { items: included ? [record] : [], total: included ? 1 : 0 };
+      },
+    });
+    const now = new Date(to);
+    await ledger.sync(now);
+    const settings = await ledger.summary(pool, {
+      owner: "member",
+      caller: "member",
+      members: ["member"],
+      days: 7,
+      now,
+      canManage: true,
+      cap: () => null,
+    });
+    assert.equal(settings.total.tokens.total, 251600);
+    assert.equal(settings.total.cost, 999);
+    const home = await digest(homeSourceName);
+    const request = await homeRequest(
+      {
+        source_id: "1",
+        timestamp: at,
+        failed: false,
+        username,
+        auth_index: "disconnected-account",
+        provider: record.provider,
+        model: record.model,
+        endpoint: "/v1/responses",
+        token_accounting_version: 2,
+        token_accounting_quality: "complete",
+        accounting_input_tokens: "200000",
+        accounting_output_tokens: "51600",
+        accounting_cache_read_tokens: "0",
+        accounting_cache_write_tokens: "0",
+        accounting_total_tokens: "251600",
+        charge_id: null,
+      },
+      home,
+    );
+    await fixture.insert(request);
+    await fixture.client.query("INSERT INTO usage (id,timestamp,api_key) VALUES (1,$1,$2)", [
+      at,
+      fingerprint,
+    ]);
+    const signed = await input({ canManage: true, mappingProven: true, accounts: [] });
+    const result = await poolUsageOverview(fixture.db, {
+      ...signed,
+      prices: [{ ...rates("0", "0.5"), output: "0", cacheRead: "0", cacheWrite: "0" }],
+    });
+    const priced = await pricedSummary(
+      fixture.db,
+      { pool, caller: "member", canManage: true, summary: settings },
+      async () => [{ ...rates("0", "0.5"), output: "0", cacheRead: "0", cacheWrite: "0" }],
+    );
+    assert.equal(priced.total.cost, 0.1);
+    assert.equal(Number(result.metrics.apiBilled.amount), priced.total.cost);
+    assert.equal(priced.members?.find((member) => member.member === "member")?.cost, 0.1);
+    assert.equal(priced.models[0]?.cost, 0.1);
+    assert.equal(priced.days[0]?.cost, 0.1);
+    assert.equal(result.metrics.apiBilled.pricedRequests, 1);
+    assert.deepEqual((await overviewTargets(fixture.db, signed)).targets, [
+      { provider: "provider-alias", model: "model-fixture" },
+    ]);
+  });
+});
+
+test("unknown official prices are unpriced in Settings and overview, never Home credits or a free request", async () => {
+  await seriesFixture(async (fixture) => {
+    await prepareHomeSource(fixture.client, await backendUserName("member", pool));
+    await fixture.insert({
+      source: await digest(homeSourceName),
+      pool: (await digest(pool)).slice(0, 16),
+      person: await digest("member"),
+      provider: "unknown-provider",
+      model: "unknown-model",
+      apiType: "responses",
+      inputTokens: "100",
+      outputTokens: "20",
+      cacheReadTokens: "0",
+      cacheWriteTokens: "0",
+      totalTokens: "120",
+      tokenQuality: "complete",
+      cost: "999",
+      currency: "credits",
+      costBasis: "home-charge",
+    });
+    const signed = await input({ canManage: true, mappingProven: true, accounts: [] });
+    const overview = await poolUsageOverview(fixture.db, { ...signed, prices: [] });
+    assert.equal(overview.metrics.apiBilled.status, "unavailable");
+    assert.equal(overview.metrics.apiBilled.amount, null);
+    assert.equal(overview.metrics.apiBilled.excluded.unpriced, 1);
+    assert.match(overview.metrics.apiBilled.reason!, /No known official USD price/);
+    const tokens = { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120 };
+    const summary = {
+      scope: "pool" as const,
+      from,
+      to,
+      total: { requests: 1, tokens, cost: 999, unpriced: 0 },
+      models: [
+        {
+          provider: "unknown-provider",
+          model: "unknown-model",
+          requests: 1,
+          tokens,
+          cost: 999,
+          unpriced: 0,
+        },
+      ],
+      days: [],
+      accounts: [],
+      cap: null,
+      readAt: null,
+    };
+    const settings = await pricedSummary(
+      fixture.db,
+      { pool, caller: "member", canManage: true, summary },
+      async () => [],
+    );
+    assert.equal(settings.total.unpriced, 1);
+    assert.equal(settings.models[0]?.unpriced, 1);
+    assert.equal(settings.total.cost, 0); // Additive subtotal only; the USD formatter must show Unpriced.
+  });
+});
+
+test("official USD totals keep unknown models separate and personal Settings cannot include another person's cost", async () => {
+  await seriesFixture(async (fixture) => {
+    await prepareHomeSource(fixture.client, await backendUserName("member", pool));
+    const home = await digest(homeSourceName),
+      person = await digest("member"),
+      other = await digest("other");
+    const base = {
+      source: home,
+      pool: (await digest(pool)).slice(0, 16),
+      person,
+      provider: "provider-alias",
+      model: "model-fixture",
+      apiType: "responses",
+      inputTokens: "200000",
+      outputTokens: "0",
+      cacheReadTokens: "0",
+      cacheWriteTokens: "0",
+      totalTokens: "200000",
+      tokenQuality: "complete" as const,
+    };
+    await fixture.insert(
+      base,
+      { ...base, model: "no-official-price" },
+      { ...base, person: other, inputTokens: "900000", totalTokens: "900000" },
+      { ...base, pool: (await digest("other-pool")).slice(0, 16) },
+    );
+    const signed = await input({ canManage: true, mappingProven: true, accounts: [] });
+    const prices = [{ ...rates("0", "0.5"), output: "0", cacheRead: "0", cacheWrite: "0" }];
+    const overview = await poolUsageOverview(fixture.db, { ...signed, prices });
+    assert.equal(overview.metrics.apiBilled.amount, "0.550000000000");
+    assert.equal(overview.metrics.apiBilled.pricedRequests, 2);
+    assert.equal(overview.metrics.apiBilled.excluded.unpriced, 1);
+    const personal = await poolPersonalOverview(
+      fixture.db,
+      { pool, person, from, to, days: 7, offerings: [] },
+      prices,
+    );
+    assert.equal(personal.metrics.apiBilled.amount, "0.100000000000");
+    assert.equal(personal.metrics.apiBilled.excluded.unpriced, 1);
+    const tokens = { input: 400000, output: 0, cacheRead: 0, cacheWrite: 0, total: 400000 };
+    const summary = {
+      scope: "you" as const,
+      from,
+      to,
+      total: { requests: 2, tokens, cost: 999, unpriced: 0 },
+      models: [],
+      days: [],
+      accounts: [],
+      cap: null,
+      readAt: null,
+    };
+    const settings = await pricedSummary(
+      fixture.db,
+      { pool, caller: "member", canManage: false, summary },
+      async () => prices,
+    );
+    assert.equal(settings.total.cost, Number(personal.metrics.apiBilled.amount));
+    assert.equal(settings.total.unpriced, 1);
   });
 });

@@ -1,0 +1,9 @@
+{
+  "identity": "executor-embedded-frame-timer",
+  "file": "0326-embedded-frame-timer.patch",
+  "content_sha256": "742da8fdbb9f7e28ee6f401826699b364ad743fc735b055870ffa042020abf0d",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

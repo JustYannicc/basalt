@@ -1,0 +1,82 @@
+diff --git a/internal/cluster/config.go b/internal/cluster/config.go
+index 6c5dd35..ee3494d 100644
+--- a/internal/cluster/config.go
++++ b/internal/cluster/config.go
+@@ -22,6 +22,7 @@ type Config struct {
+ }
+ 
+ type PGSQLConfig struct {
++	SchemaOwner        string        `yaml:"schema-owner"`
+ 	MaxOpenConns       *int          `yaml:"max-open-conns"`
+ 	MaxIdleConns       *int          `yaml:"max-idle-conns"`
+ 	ConnMaxIdleTime    time.Duration `yaml:"conn-max-idle-time"`
+diff --git a/internal/cluster/db.go b/internal/cluster/db.go
+index 35d0dbd..db4a828 100644
+--- a/internal/cluster/db.go
++++ b/internal/cluster/db.go
+@@ -49,6 +49,7 @@ func Open(ctx context.Context, cfg PGSQLConfig) (*gorm.DB, error) {
+ 	if errOpen != nil {
+ 		return nil, errOpen
+ 	}
++	db = db.Set(schemaOwnerSetting, strings.TrimSpace(cfg.SchemaOwner)).Session(&gorm.Session{})
+ 
+ 	sqlDB, errDB := db.DB()
+ 	if errDB != nil {
+diff --git a/internal/cluster/schema_owner.go b/internal/cluster/schema_owner.go
+new file mode 100644
+index 0000000..4fbf834
+--- /dev/null
++++ b/internal/cluster/schema_owner.go
+@@ -0,0 +1,26 @@
++package cluster
++
++import (
++	"strings"
++
++	"gorm.io/gorm"
++)
++
++const schemaOwnerSetting = "home:schema-owner"
++
++// A pooled backend belongs to another caller after commit, so owner changes stay
++// inside the transaction that creates schema objects.
++func schemaTransaction(db *gorm.DB, run func(*gorm.DB) error) error {
++	return db.Transaction(func(tx *gorm.DB) error {
++		value, configured := tx.Get(schemaOwnerSetting)
++		if configured {
++			if owner, ok := value.(string); ok && owner != "" {
++				quoted := `"` + strings.ReplaceAll(owner, `"`, `""`) + `"`
++				if err := tx.Exec("SET LOCAL ROLE " + quoted).Error; err != nil {
++					return err
++				}
++			}
++		}
++		return run(tx)
++	})
++}
+diff --git a/internal/cluster/schema_migration.go b/internal/cluster/schema_migration.go
+index 95c60ba..88d033f 100644
+--- a/internal/cluster/schema_migration.go
++++ b/internal/cluster/schema_migration.go
+@@ -229,7 +229,7 @@ func postgresSchemaMigrationOperations(db *gorm.DB, startedAt time.Time, executi
+ 				cancelAcquisition()
+ 			}()
+ 
+-			errTransaction := db.WithContext(acquisitionCtx).Transaction(func(tx *gorm.DB) error {
++			errTransaction := schemaTransaction(db.WithContext(acquisitionCtx), func(tx *gorm.DB) error {
+ 				if errLock := tx.WithContext(acquisitionCtx).Raw("SELECT pg_try_advisory_xact_lock(?)", migrationAdvisoryLockKey).Scan(&acquired).Error; errLock != nil {
+ 					return fmt.Errorf("try database migration advisory lock: %w", errLock)
+ 				}
+diff --git a/internal/cluster/diagnostics_privacy_postgres.go b/internal/cluster/diagnostics_privacy_postgres.go
+index 4bc9125..bc6ac53 100644
+--- a/internal/cluster/diagnostics_privacy_postgres.go
++++ b/internal/cluster/diagnostics_privacy_postgres.go
+@@ -347,7 +347,7 @@ func installDiagnosticsMetadataOnlyPostgresGuards(ctx context.Context, db *gorm.
+ 		return nil
+ 	}
+ 	ctx = contextOrBackground(ctx)
+-	errInstall := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
++	errInstall := schemaTransaction(db.WithContext(ctx), func(tx *gorm.DB) error {
+ 		if errLimit := setDiagnosticsPrivacyTransactionLimits(tx, diagnosticsPrivacyBatchTimeout); errLimit != nil {
+ 			return errLimit
+ 		}
