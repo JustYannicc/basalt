@@ -1,7 +1,7 @@
 model {
   extend basalt.build {
     metadata {
-      constraint "Self-host dashboard preparation stamps the dist with the same transitive input, dependency, toolchain and build-environment key used by the existing preparation cache. Successful builds and restores both stamp, including uncached CI builds; a failed rebuild invalidates the prior stamp. Every suite containing self-host checks this stamp before allocating a run or starting servers. Missing, malformed or stale stamps fail with bun run e2e:prepare and require no new flags. Input hashing remains shared with preparation so the checker cannot drift from its build."
+      constraint "Self-host dashboard preparation stamps the dist with the same transitive input, dependency, toolchain and build-environment key used by the existing preparation cache. After a successful web build the key is recomputed from completed inputs, including generated route source, and used for both the stamp and cache publication. Successful builds and restores both stamp, including uncached CI builds; a failed rebuild invalidates the prior stamp. Every suite containing self-host checks this stamp before allocating a run or starting servers. Missing, malformed or stale stamps fail with bun run e2e:prepare and require no new flags. Input hashing remains shared with preparation so the checker cannot drift from its build."
     }
   }
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import {
   cpSync,
   existsSync,
@@ -28,11 +28,7 @@ const steps = {
 function fixture(
   run: (
     root: string,
-    command: (
-      script: string,
-      ci?: boolean,
-      failedStep?: string,
-    ) => ReturnType<typeof spawnSync<string>>,
+    command: (script: string, ci?: boolean, failedStep?: string) => SpawnSyncReturns<string>,
   ) => void,
 ) {
   const root = mkdtempSync(join(tmpdir(), "basalt-web-freshness-"));
@@ -78,6 +74,7 @@ const [step, output] = process.argv.slice(2);
 if (process.env.FAKE_FAIL === step) process.exit(3);
 mkdirSync(dirname(output), { recursive: true }); writeFileSync(output, step);
 if (step === 'e2e:runtime') writeFileSync(output + '.map', '{}');
+if (step === 'hosted:self-host:web:build') writeFileSync('apps/hosted/self-host/web/routeTree.gen.ts', 'generated route source');
 appendFileSync('built.log', step + '\\n');
 `,
   );
@@ -150,7 +147,7 @@ appendFileSync('built.log', step + '\\n');
   }
 }
 
-const output = (result: ReturnType<typeof spawnSync<string>>) =>
+const output = (result: SpawnSyncReturns<string>) =>
   `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
 const prepare = (command: Parameters<Parameters<typeof fixture>[0]>[1], ci = false) => {
   const result = command("e2e-prepare", ci);

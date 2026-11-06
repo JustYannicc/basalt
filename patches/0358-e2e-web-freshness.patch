@@ -1,7 +1,7 @@
 diff --git a/scripts/e2e-prepare.ts b/scripts/e2e-prepare.ts
 --- a/scripts/e2e-prepare.ts
 +++ b/scripts/e2e-prepare.ts
-@@ -240,32 +240,64 @@
+@@ -240,32 +240,69 @@
      fs.rmSync(path.join(directory, old.name), { recursive: true, force: true });
  };
  
@@ -51,9 +51,9 @@ diff --git a/scripts/e2e-prepare.ts b/scripts/e2e-prepare.ts
 +  const summary: Array<string> = [];
 +  for (const step of steps) {
 +    const stepStarted = performance.now();
-+    const key = useCache || step === selfHostWeb ? keyOf(step) : undefined;
++    let key = useCache || step === selfHostWeb ? keyOf(step) : undefined;
 +    if (key !== undefined) keys.set(step.name, key);
-+    const entry = !useCache || key === undefined ? undefined : path.join(cacheRoot, step.name, key);
++    let entry = !useCache || key === undefined ? undefined : path.join(cacheRoot, step.name, key);
 +    if (step === selfHostWeb) fs.rmSync(selfHostWebStamp, { force: true });
 +    const restored = entry !== undefined && fs.existsSync(entry);
 +    if (restored) {
@@ -77,6 +77,11 @@ diff --git a/scripts/e2e-prepare.ts b/scripts/e2e-prepare.ts
 -  }
 -  summary[summary.length - 1] += ` in ${((performance.now() - stepStarted) / 1000).toFixed(1)}s`;
 +    if (step === selfHostWeb) {
++      // Vite generates route source while building; stamp and cache its completed inputs.
++      fileHashes.clear();
++      key = keyOf(step);
++      keys.set(step.name, key);
++      entry = useCache ? path.join(cacheRoot, step.name, key) : undefined;
 +      fs.writeFileSync(selfHostWebStamp, JSON.stringify({ inputs: key }) + "\n");
 +    }
 +    if (!restored && entry !== undefined) store(step, entry);

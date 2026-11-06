@@ -1,7 +1,7 @@
 {
   "identity": "basalt-e2e-web-freshness",
   "file": "0358-e2e-web-freshness.patch",
-  "content_sha256": "ca6ecd2ab6527740bb67e1858f5832d4944cb9cf7786d6ef52c9b83425a2612c",
+  "content_sha256": "a1ffa2219faabb93eddd3535107772e5c0a51daf4f36c9fa90f8613e61dffd8b",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
