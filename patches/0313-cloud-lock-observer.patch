@@ -1,6 +1,14 @@
 --- a/e2e/support/account-delete-contention.ts
 +++ b/e2e/support/account-delete-contention.ts
-@@ -13,12 +13,14 @@
+@@ -3,6 +3,7 @@
+ import { Effect, Fiber, Schedule, Schema } from "effect";
+ import { refused } from "./app-links.ts";
+ import { cloudLocks } from "./cloud-locks.ts";
++import { Evidence } from "./evidence.ts";
+ import type { Response } from "./platform.ts";
+ 
+ export const Holder = Schema.Tuple([Schema.Struct({ pid: Schema.Number })]);
+@@ -13,12 +14,14 @@
    locks: Effect.Success<typeof cloudLocks>,
    blockers: readonly number[],
    statement: string,
@@ -17,17 +25,18 @@
      })
      .pipe(
        Effect.flatMap(Schema.decodeUnknownEffect(Backends)),
-@@ -64,6 +66,9 @@
+@@ -64,6 +67,10 @@
        .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Holder)), Effect.orDie);
      const request = yield* Effect.forkChild(remove);
      const [precheck] = yield* blocked(membership, [member!.pid], "%from member%for share%");
 +    const [appBackend] = yield* app
 +      .hold({ sql: "select pg_backend_pid() as pid" })
 +      .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Holder)), Effect.orDie);
++    yield* (yield* Evidence).json("delete-setup-backends.json", { precheck, appBackend });
      const holding = yield* Effect.forkChild(
        app
          .hold({
-@@ -72,9 +77,34 @@
+@@ -72,9 +79,38 @@
          })
          .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Holder)), Effect.orDie),
      );
@@ -54,15 +63,20 @@
      yield* membership.release;
      const [holder] = yield* Fiber.join(holding);
 -    const [deleting] = yield* blocked(membership, [holder!.pid], "%executor_apps%");
+-    return { request, app, observer: membership, deleting: deleting!, holder: holder! };
 +    // The SDK transaction may use another pooled backend after the route precheck commits.
 +    const trace = precheck!.query.match(/traceparent='00-([a-f0-9]{32})-/)?.[1];
 +    if (trace === undefined) return yield* Effect.die("Delete precheck omitted its request trace");
-+    const [deleting] = yield* blocked(
-+      membership,
-+      [holder!.pid],
-+      `%executor_apps%traceparent='00-${trace}-%`,
-+    );
-     return { request, app, observer: membership, deleting: deleting!, holder: holder! };
++    const requestStatement = `%select id from executor_apps%for no key update%traceparent='00-${trace}-%`;
++    const [deleting] = yield* blocked(membership, [holder!.pid], requestStatement);
++    yield* (yield* Evidence).json("delete-observed-backends.json", { precheck, holder, deleting });
++    return {
++      request,
++      app,
++      observer: membership,
++      deleting: deleting!,
++      holder: holder!,
++    };
    });
 --- a/e2e/tests/contributed-account-delete-lock-set.spec.ts
 +++ b/e2e/tests/contributed-account-delete-lock-set.spec.ts
@@ -102,10 +116,19 @@
          // The expansion retry must release its account lock before waiting for the new app.
          const accountLock = yield* added.probe({
            sql: "select id from executor_accounts where id = $1 for update nowait",
-@@ -137,15 +145,58 @@
+@@ -137,15 +145,66 @@
          );
          // Reconnect owns the account. Deletion owns the first app and waits on the second.
          yield* completing.release;
+-        const [waitingReconnect] = yield* blocked(
++        // Establish reconnect's direct wait before cron can queue another writer ahead of it.
++        const [beforeCron] = yield* blocked(
+           completing,
+           [deletion.deleting.pid],
+           "%executor_apps%",
++          saving!.pid,
++        );
++        yield* (yield* Evidence).json("reconnect-waiting-before-cron.json", { beforeCron });
 +        const queued = yield* completing.run({
 +          sql: `update executor_webhook_sources set status = 'pending', lease = null
 +          where app = $1 and account = $2 returning id`,
@@ -147,10 +170,10 @@
 +          deleting: deletion.deleting,
 +          competing,
 +        });
-         const [waitingReconnect] = yield* blocked(
-           completing,
-           [deletion.deleting.pid],
-           "%executor_apps%",
++        const [waitingReconnect] = yield* blocked(
++          completing,
++          [deletion.deleting.pid],
++          "%executor_apps%",
 +          saving!.pid,
          );
          expect(waitingReconnect!.pid).toBe(saving!.pid);
