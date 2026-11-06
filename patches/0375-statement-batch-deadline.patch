@@ -1,0 +1,521 @@
+diff --git a/apps/hosted/server/src/implementation/app-data.ts b/apps/hosted/server/src/implementation/app-data.ts
+--- a/apps/hosted/server/src/implementation/app-data.ts
++++ b/apps/hosted/server/src/implementation/app-data.ts
+@@ -16,6 +16,7 @@
+ import { HostedApi } from "../contracts/api.ts";
+ import { HostedExecutor, StatementBatch } from "../contracts/executor.ts";
+ import { appUiPhase } from "./app-ui-phase-timing.ts";
++import { boundedStatementBatch } from "./statement-batch.ts";
+ import {
+   OrganizationForbidden,
+   CurrentOrganization,
+@@ -62,7 +63,7 @@
+       owner: app.owner,
+       known: { accounts, hint: sdk.hint(app) },
+     });
+-    yield* appUiPhase("query-snapshot", batch(reads.leaves, { outside: 0 }));
++    yield* appUiPhase("query-snapshot", boundedStatementBatch(batch(reads.leaves, { outside: 0 })));
+     const read = yield* reads.take;
+     if (read.failed || read.invocation === undefined) return yield* operation;
+     return yield* operation.pipe(
+diff --git a/apps/hosted/server/src/implementation/mcp-http.ts b/apps/hosted/server/src/implementation/mcp-http.ts
+--- a/apps/hosted/server/src/implementation/mcp-http.ts
++++ b/apps/hosted/server/src/implementation/mcp-http.ts
+@@ -55,6 +55,7 @@
+ import { resourceAuthorityForLinks } from "./resource-policy.ts";
+ import { BearerHashes } from "./bearer-access.ts";
+ import { hostedMcpBackend } from "./mcp.ts";
++import { boundedStatementBatch } from "./statement-batch.ts";
+ import { CurrentProductBrand } from "@executor-js/utils/product-brand";
+ 
+ // A native MCP server retains its tool handlers. Authority is supplied only while
+@@ -307,7 +308,7 @@
+                   Effect.provideContext(services),
+                 ),
+               );
+-            yield* batch(leaves, { outside: first ? 1 : 0 });
++            yield* boundedStatementBatch(batch(leaves, { outside: first ? 1 : 0 }));
+             return yield* sdk.take;
+           });
+         /**
+diff --git a/apps/hosted/server/src/implementation/statement-batch.ts b/apps/hosted/server/src/implementation/statement-batch.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/statement-batch.ts
+@@ -0,0 +1,11 @@
++import { StorageError } from "@executor-js/sdk/core";
++import { Effect } from "effect";
++
++/** Expired prefetch must fail before callers can retry its reads on the stalled client. */
++export const boundedStatementBatch = <A>(batch: Effect.Effect<A>) =>
++  batch.pipe(
++    Effect.timeoutOrElse({
++      duration: "10 seconds",
++      orElse: () => new StorageError(),
++    }),
++  );
+diff --git a/apps/hosted/testing/statement-hold-fixture.ts b/apps/hosted/testing/statement-hold-fixture.ts
+--- a/apps/hosted/testing/statement-hold-fixture.ts
++++ b/apps/hosted/testing/statement-hold-fixture.ts
+@@ -36,6 +36,7 @@
+ } as const;
+ const path = "/api/devtools/statement-hold";
+ const Arm = Schema.Union([
++  Schema.Struct({ prefetch: Schema.NonEmptyString }),
+   // `toolCall` holds only a check made inside an MCP tool call, not one made by discovery.
+   Schema.Struct({ app: Schema.NonEmptyString, toolCall: Schema.optional(Schema.Literal(true)) }),
+   // Holds the next such check that binds `id` once it has answered, outside any transaction.
+@@ -62,6 +63,8 @@
+ }).pipe(Effect.orElseSucceed(() => false));
+ 
+ interface Hold {
++  readonly prefetch: string | undefined;
++  interrupted: boolean;
+   /** The app whose access check to hold, or the next PAT check inside a tool call. */
+   readonly app: string | undefined;
+   /** Hold the next answered check of this kind that binds this ID, instead. */
+@@ -94,6 +97,27 @@
+         const [strings, ...params] = args;
+         const hold = armed;
+         if (hold === undefined || !isTemplate(strings)) return Reflect.apply(target, self, args);
++        if (hold.prefetch !== undefined) {
++          const statement: Statement.Statement<unknown> = Reflect.apply(target, self, args);
++          const [text, bound] = statement.compile();
++          if (!text.includes("cross join lateral jsonb_each") || !bound.includes(hold.prefetch))
++            return statement;
++          // The first SQL has returned; the same lifecycle leaf still owes its authority read.
++          return Effect.tap(statement, () =>
++            Effect.suspend(() => {
++              if (armed !== hold) return Effect.void;
++              armed = undefined;
++              return Deferred.succeed(hold.reached, undefined).pipe(
++                Effect.andThen(Deferred.await(hold.release)),
++                Effect.onInterrupt(() =>
++                  Effect.sync(() => {
++                    hold.interrupted = true;
++                  }),
++                ),
++              );
++            }),
++          );
++        }
+         if (hold.after !== undefined) {
+           const statement: Statement.Statement<unknown> = Reflect.apply(target, self, args);
+           const [text, bound] = statement.compile();
+@@ -162,6 +186,8 @@
+         const arm = yield* HttpServerRequest.schemaBodyJson(Arm);
+         yield* release;
+         armed = current = {
++          prefetch: "prefetch" in arm ? arm.prefetch : undefined,
++          interrupted: false,
+           app: "app" in arm ? arm.app : undefined,
+           after: "after" in arm ? { check: arm.after, id: arm.id } : undefined,
+           toolCall: "app" in arm && arm.toolCall === true,
+@@ -174,11 +200,20 @@
+     ),
+     HttpRouter.add(
+       "GET",
++      `${path}/reached`,
++      Effect.gen(function* () {
++        if (current !== undefined) yield* Deferred.await(current.reached);
++        return HttpServerResponse.jsonUnsafe({ held: current !== undefined });
++      }),
++    ),
++    HttpRouter.add(
++      "GET",
+       path,
+       Effect.gen(function* () {
+         const hold = current;
+         return HttpServerResponse.jsonUnsafe({
+           held: hold !== undefined && (yield* Deferred.isDone(hold.reached)),
++          interrupted: hold?.interrupted ?? false,
+         });
+       }),
+     ),
+diff --git a/e2e/support/app-invocation-counter.ts b/e2e/support/app-invocation-counter.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/app-invocation-counter.ts
+@@ -0,0 +1,27 @@
++import { Effect } from "effect";
++import { createServer } from "node:http";
++
++/** Count author-code calls through a real external HTTP dependency. */
++export const appInvocationCounter = Effect.gen(function* () {
++  let calls = 0;
++  const server = createServer((_request, response) => {
++    calls++;
++    response.end("recorded");
++  });
++  yield* Effect.acquireRelease(
++    Effect.promise(
++      () =>
++        new Promise<void>((resolve, reject) => {
++          server.once("error", reject);
++          server.listen(0, "127.0.0.1", () => {
++            server.off("error", reject);
++            resolve();
++          });
++        }),
++    ),
++    () => Effect.promise(() => new Promise<void>((resolve) => server.close(() => resolve()))),
++  );
++  const address = server.address();
++  if (address === null || typeof address === "string") return yield* Effect.die("No counter port");
++  return { origin: `http://127.0.0.1:${address.port}`, calls: Effect.sync(() => calls) };
++});
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -40,6 +40,7 @@
+ import { cloudLogActivity } from "./cloud-log-activity.ts";
+ import { productionOpsDatabaseFixture } from "./production-ops-database-fixture.ts";
+ import { productionOpsDatabaseProxy } from "./production-ops-database-proxy.ts";
++import { statementBatchProxy } from "./statement-batch-proxy.ts";
+ import { cloudPoolGateway, poolFixtureSigningKey } from "./cloud-pool-gateway.ts";
+ import { cloudNativeStack } from "./cloud-native-stack.ts";
+ import { startMapsRoutesEmulator } from "./maps-routes-emulator.ts";
+@@ -184,10 +185,13 @@
+     const cloud = path.resolve("apps/hosted/cloud");
+     const browser = input.browserOrigin === "app" ? roleHost(input.origin, "app") : input.origin;
+     const directory = path.resolve(input.directory);
++    const batchProxy =
++      process.env.BASALT_E2E_BATCH_STALL === "1" ? yield* statementBatchProxy : undefined;
+     const databaseProxy =
+-      process.env.BASALT_E2E_PRODUCTION_OPS === "1"
++      batchProxy ??
++      (process.env.BASALT_E2E_PRODUCTION_OPS === "1"
+         ? yield* productionOpsDatabaseProxy()
+-        : undefined;
++        : undefined);
+     const databaseBackendPort = databaseProxy === undefined ? input.databasePort : yield* freePort;
+     if (databaseProxy !== undefined) yield* databaseProxy.select(databaseBackendPort);
+     const databasePort = databaseProxy?.port ?? input.databasePort;
+@@ -869,6 +873,7 @@
+       logActivity,
+       alternatePort === undefined ? undefined : reconfigure,
+       directory,
++      batchProxy?.control,
+     );
+     return {
+       emulators,
+diff --git a/e2e/support/cloud-runtime-control.ts b/e2e/support/cloud-runtime-control.ts
+--- a/e2e/support/cloud-runtime-control.ts
++++ b/e2e/support/cloud-runtime-control.ts
+@@ -13,6 +13,7 @@
+ import type { FixtureControl } from "../sdk/contracts.ts";
+ import { CloudLogWait, type cloudLogActivity } from "./cloud-log-activity.ts";
+ import { retainFixtureCause } from "./fixture-diagnostics.ts";
++import type { statementBatchProxy } from "./statement-batch-proxy.ts";
+ 
+ const Change = Schema.Struct({
+   binding: Schema.Literals([
+@@ -36,6 +37,7 @@
+   log: Effect.Success<typeof cloudLogActivity>,
+   change: ((binding: typeof Change.Type.binding) => Effect.Effect<A, E>) | undefined,
+   directory: string,
++  batch?: Effect.Success<typeof statementBatchProxy>["control"],
+ ) =>
+   Effect.gen(function* () {
+     const http = yield* HttpClient.HttpClient;
+@@ -44,6 +46,10 @@
+       const request = yield* HttpServerRequest.HttpServerRequest;
+       if (request.headers.authorization !== `Bearer ${Redacted.value(fixtures.token)}`)
+         return HttpServerResponse.empty({ status: 401 });
++      if (request.url === "/runtime/statement-batch" && request.method === "POST") {
++        if (batch === undefined) return HttpServerResponse.empty({ status: 404 });
++        return HttpServerResponse.jsonUnsafe(yield* batch(yield* request.json));
++      }
+       if (request.url === "/runtime/cloud-log" && request.method === "POST") {
+         const input = yield* request.json.pipe(
+           Effect.flatMap(Schema.decodeUnknownEffect(CloudLogWait)),
+diff --git a/e2e/support/statement-batch-proxy.ts b/e2e/support/statement-batch-proxy.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/statement-batch-proxy.ts
+@@ -0,0 +1,180 @@
++import { Deferred, Effect, Exit, Schema } from "effect";
++import { connect, createServer, type Socket } from "node:net";
++
++const Control = Schema.Union([
++  Schema.Struct({ action: Schema.Literal("arm"), app: Schema.NonEmptyString }),
++  Schema.Struct({ action: Schema.Literals(["held", "closed", "state", "release"]) }),
++]);
++
++interface Hold {
++  readonly app: string;
++  readonly reached: Deferred.Deferred<void>;
++  readonly ended: Deferred.Deferred<void>;
++  held: boolean;
++  closed: boolean;
++  later: number;
++}
++
++/** Withhold a chosen app's COMMIT reply in the runner-owned PostgreSQL transport. */
++export const statementBatchProxy = Effect.gen(function* () {
++  let target: number | undefined;
++  let armed: Hold | undefined;
++  let current: Hold | undefined;
++  const sockets = new Set<Socket>();
++  const pending: Array<readonly [Socket, Buffer]> = [];
++  let released = false;
++  const release = () => {
++    released = true;
++    armed = undefined;
++    for (const [socket, bytes] of pending.splice(0)) if (!socket.destroyed) socket.write(bytes);
++  };
++  const server = createServer((incoming) => {
++    if (target === undefined) return incoming.destroy();
++    const outgoing = connect({ host: "127.0.0.1", port: target });
++    sockets.add(incoming);
++    sockets.add(outgoing);
++    let front = Buffer.alloc(0);
++    let back = Buffer.alloc(0);
++    let startup = true;
++    let ready = false;
++    let index = 0;
++    let frozen: Hold | undefined;
++    let transaction: { matches: boolean } | undefined;
++    const queries: Array<{ commit?: Hold }> = [];
++    const close = () => {
++      sockets.delete(incoming);
++      sockets.delete(outgoing);
++      incoming.destroy();
++      outgoing.destroy();
++      if (frozen !== undefined && !frozen.closed) {
++        frozen.closed = true;
++        Deferred.doneUnsafe(frozen.ended, Exit.void);
++      }
++    };
++    incoming.on("error", close);
++    outgoing.on("error", close);
++    incoming.once("close", close);
++    outgoing.once("close", close);
++    incoming.on("data", (chunk) => {
++      front = Buffer.concat([front, chunk]);
++      while (front.length >= (startup ? 4 : 5)) {
++        const length = startup ? front.readInt32BE(0) : front.readInt32BE(1) + 1;
++        if (front.length < length) break;
++        const frame = front.subarray(0, length);
++        front = front.subarray(length);
++        if (startup) {
++          startup = false;
++          outgoing.write(frame);
++          continue;
++        }
++        if (frame[0] === 80) {
++          const offset = frame.indexOf(0, 5) + 1;
++          const sql = frame.toString("utf8", offset, frame.indexOf(0, offset));
++          if (sql === "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
++            transaction = { matches: false };
++          const commit = sql === "COMMIT" && transaction?.matches ? armed : undefined;
++          queries.push(commit === undefined ? {} : { commit });
++          if (sql === "COMMIT") transaction = undefined;
++          if (frozen !== undefined) frozen.later++;
++        } else if (frame[0] === 66 && transaction !== undefined && armed !== undefined) {
++          let offset = frame.indexOf(0, 5) + 1;
++          offset = frame.indexOf(0, offset) + 1;
++          const formats = frame.readInt16BE(offset);
++          offset += 2 + formats * 2;
++          const count = frame.readInt16BE(offset);
++          offset += 2;
++          for (let item = 0; item < count; item++) {
++            const size = frame.readInt32BE(offset);
++            offset += 4;
++            if (size >= 0) {
++              if (frame.toString("utf8", offset, offset + size) === armed.app)
++                transaction.matches = true;
++              offset += size;
++            }
++          }
++        } else if (frame[0] === 81) {
++          queries.push({});
++        }
++        outgoing.write(frame);
++      }
++    });
++    outgoing.on("data", (chunk) => {
++      back = Buffer.concat([back, chunk]);
++      while (back.length >= 5) {
++        const length = back.readInt32BE(1) + 1;
++        if (back.length < length) break;
++        const frame = back.subarray(0, length);
++        back = back.subarray(length);
++        const hold = queries[index]?.commit;
++        if (ready && frozen === undefined && hold !== undefined && hold === armed) {
++          frozen = hold;
++          armed = undefined;
++          hold.held = true;
++          Deferred.doneUnsafe(hold.reached, Exit.void);
++        }
++        if (frozen !== undefined && !released) pending.push([incoming, frame]);
++        else incoming.write(frame);
++        if (frame[0] === 90) {
++          if (ready) index++;
++          else ready = true;
++        }
++      }
++    });
++  });
++  yield* Effect.acquireRelease(
++    Effect.promise(
++      () =>
++        new Promise<void>((resolve, reject) => {
++          server.once("error", reject);
++          server.listen(0, "127.0.0.1", () => {
++            server.off("error", reject);
++            resolve();
++          });
++        }),
++    ),
++    () =>
++      Effect.promise(
++        () =>
++          new Promise<void>((resolve) => {
++            release();
++            for (const socket of sockets) socket.destroy();
++            server.close(() => resolve());
++          }),
++      ),
++  );
++  const address = server.address();
++  if (address === null || typeof address === "string")
++    return yield* Effect.die("No SQL proxy port");
++  return {
++    port: address.port,
++    select: (port: number) =>
++      Effect.sync(() => {
++        target = port;
++      }),
++    control: (input: unknown) =>
++      Effect.gen(function* () {
++        const command = yield* Schema.decodeUnknownEffect(Control)(input);
++        if (command.action === "arm") {
++          release();
++          released = false;
++          armed = current = {
++            app: command.app,
++            reached: yield* Deferred.make<void>(),
++            ended: yield* Deferred.make<void>(),
++            held: false,
++            closed: false,
++            later: 0,
++          };
++        } else if (command.action === "release") release();
++        else if (command.action === "held" && current !== undefined)
++          yield* Deferred.await(current.reached);
++        else if (command.action === "closed" && current !== undefined)
++          yield* Deferred.await(current.ended);
++        return {
++          held: current?.held ?? false,
++          closed: current?.closed ?? false,
++          later: current?.later ?? 0,
++        };
++      }).pipe(Effect.timeout("20 seconds")),
++  };
++});
+diff --git a/e2e/tests/statement-batch-deadline.spec.ts b/e2e/tests/statement-batch-deadline.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/statement-batch-deadline.spec.ts
+@@ -0,0 +1,100 @@
++import { expect, layer } from "@effect/vitest";
++import { Clock, Effect, Fiber, Schema } from "effect";
++import { appLinksFixture } from "../support/app-links.ts";
++import { appInvocationCounter } from "../support/app-invocation-counter.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { tracedDataQuery, withDataQueryTelemetry } from "../support/data-query-batch.ts";
++import { Evidence } from "../support/evidence.ts";
++import { Target } from "../support/platform.ts";
++import { fixtureRequest } from "../sdk/fixtures.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Statement batch deadline", (it) => {
++  it.effect(scenarios.statementBatchDeadline.title, (context) =>
++    withHostedCase(
++      context,
++      withDataQueryTelemetry(() =>
++        Effect.gen(function* () {
++          const target = yield* Target;
++          const evidence = yield* Evidence;
++          const counter = yield* appInvocationCounter;
++          const source = `import { defineApp, defineProvider, secrets, query, object, string, router } from "apps";
++const service = defineProvider({ name: "Batch deadline fixture", auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) } });
++export default defineApp({ app: { accounts: { team: service } } }, { tools: router({
++  read: query({ input: object({}) }, async () => { await fetch(${JSON.stringify(counter.origin)}); return "author-ran"; })
++}) });`;
++          const f = yield* appLinksFixture([{ path: "index.ts", content: source }]);
++          yield* f.connect(f.actors.owner, "app", "team", "synthetic-team");
++          const read = () => tracedDataQuery(f.actors.member, f.path, { name: "read", input: {} });
++          expect((yield* read()).response.status).toBe(200);
++          expect(yield* counter.calls).toBe(1);
++          const cloud = target.metadata.target === "cloud";
++          const control = (action: "arm" | "held" | "closed" | "state" | "release") =>
++            Effect.gen(function* () {
++              if (cloud) {
++                if (target.fixtures === undefined)
++                  return yield* Effect.die("Cloud fixture control missing");
++                return yield* fixtureRequest(target.fixtures, "/runtime/statement-batch", {
++                  action,
++                  ...(action === "arm" ? { app: f.app.id } : {}),
++                });
++              }
++              const response = yield* f.api.request(
++                f.actors.owner,
++                action === "arm" ? "POST" : action === "release" ? "DELETE" : "GET",
++                `/api/devtools/statement-hold${action === "held" ? "/reached" : ""}`,
++                action === "arm" ? { prefetch: f.app.id } : undefined,
++              );
++              expect(response.status).toBe(200);
++              return response.body;
++            });
++          yield* Effect.addFinalizer(() => control("release").pipe(Effect.orDie));
++          const before = yield* counter.calls;
++          yield* control("arm");
++          const start = yield* Clock.currentTimeMillis;
++          const waiting = yield* Effect.forkChild(read());
++          yield* control("held");
++          const failed = yield* Fiber.join(waiting).pipe(Effect.timeout("12 seconds"));
++          const elapsed = (yield* Clock.currentTimeMillis) - start;
++          expect(failed.response.status, JSON.stringify(failed.response.body)).toBe(500);
++          expect(failed.response.body).toMatchObject({ _tag: "StorageError" });
++          expect(failed.response.body).not.toMatchObject({ mayHaveWritten: true });
++          expect(elapsed).toBeLessThan(12_000);
++          expect(yield* counter.calls).toBe(before);
++          const state = yield* control(cloud ? "closed" : "state");
++          const guard = cloud
++            ? Schema.Struct({
++                held: Schema.Literal(true),
++                closed: Schema.Literal(true),
++                later: Schema.Number,
++              })
++            : Schema.Struct({ held: Schema.Literal(true), interrupted: Schema.Literal(true) });
++          yield* Schema.decodeUnknownEffect(guard)(state);
++          expect((yield* read()).response.body).toBe("author-ran");
++          expect(yield* counter.calls).toBe(before + 1);
++          yield* evidence.json("statement-batch-deadline.json", {
++            elapsed,
++            failure: failed.response.body,
++            state,
++            authorCallsBefore: before,
++            authorCallsAfter: yield* counter.calls,
++          });
++
++          yield* control("arm");
++          const cancelled = yield* Effect.forkChild(read());
++          yield* control("held");
++          yield* Fiber.interrupt(cancelled);
++          const cancelledState = yield* control(cloud ? "closed" : "state");
++          yield* Schema.decodeUnknownEffect(guard)(cancelledState);
++          expect(yield* counter.calls).toBe(before + 1);
++          expect((yield* read()).response.body).toBe("author-ran");
++          expect(yield* counter.calls).toBe(before + 2);
++          yield* evidence.json("statement-batch-cancellation.json", {
++            state: cancelledState,
++            authorCalls: yield* counter.calls,
++          });
++        }),
++      ),
++    ),
++  );
++});

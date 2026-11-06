@@ -152,7 +152,7 @@ export function readDeclarations(root = repository) {
         const fixture =
           source.fixture === undefined
             ? undefined
-            : choice(source.fixture, ["google-routes", "pool-setup"] as const);
+            : choice(source.fixture, ["google-routes", "pool-setup", "statement-batch"] as const);
         return [file, { scenarios, runs, config, inherited, inputs, fixture }];
       }),
   );
