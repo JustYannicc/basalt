@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "Host-managed OAuth choices retain preference order and exact identifiers without changing the app provider or saved grants. A configured global Zendesk client precedes the company public client with the hosted callback, then the same company client with http://localhost:27439/callback. Anonymous registration checks submit no consent and never follow redirects. The existing callback-paste screen returns the full URL to server completion, which validates state, the exact redirect, expiry and one-time use before exchanging the server-held S256 verifier. Unavailable hosted callbacks show the reviewed admin instruction and a copyable exact callback. An explicitly selected client cannot silently fall through to another client, and all unavailable choices refuse automatic sign-in."
+      constraint "Host-managed OAuth choices retain preference order and exact identifiers without changing the app provider or saved grants. A configured global Zendesk client precedes the company public client with the hosted callback, then the same company client with http://localhost:27439/callback. Anonymous registration checks submit no consent and never follow redirects. The existing callback-paste screen returns the full URL to server completion, which validates state, the exact redirect, expiry and one-time use before exchanging the server-held S256 verifier. Unavailable hosted callbacks show the reviewed admin instruction and a copyable exact callback. An explicitly selected client cannot silently fall through to another client, and all unavailable choices refuse automatic sign-in. Embedded MCP Apps assets and their path manifest must match the carried OAuth form."
     }
   }
 }
