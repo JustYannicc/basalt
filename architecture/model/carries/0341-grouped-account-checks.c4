@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway.accountPresentation {
     metadata {
-      constraint "A grouped identity row checks each supplied sign-in through the same account-use policy and health projection as an individual check, with bounded concurrency and a separate answer per account; refused accounts reveal no identity, health or app metadata."
+      constraint "A grouped identity row checks each supplied sign-in through the same account-use policy and health projection as an individual check, with bounded concurrency and a separate answer per account; refused accounts reveal no identity, health or app metadata. The row's menu and its Details offer one Check now for every sign-in in the row and share one pending check; Details list each sign-in's checks under its name, and an answer that leaves sign-ins unchecked counts them without naming a refused one."
     }
   }
 }

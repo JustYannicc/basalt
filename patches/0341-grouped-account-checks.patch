@@ -89,7 +89,7 @@ index b078dd8..9043a4c 100644
        .handle("update", ({ payload }) => updateAccount(payload))
        .handle("oauthSetup", ({ params }) =>
 diff --git a/apps/hosted/web/src/contracts/accounts.ts b/apps/hosted/web/src/contracts/accounts.ts
-index ff2a29d..cf3e073 100644
+index ff2a29d..852b8bb 100644
 --- a/apps/hosted/web/src/contracts/accounts.ts
 +++ b/apps/hosted/web/src/contracts/accounts.ts
 @@ -6,7 +6,14 @@ import { linkedAccountIds } from "@executor-js/ui/contracts/app-accounts";
@@ -184,10 +184,242 @@ index ff2a29d..cf3e073 100644
 +export const checkAccountGroupAtom = (key: {
 +  readonly organization: OrganizationReference;
 +  readonly accounts: readonly AccountId[];
-+}) => checkAccountGroup(new AccountGroupKey({ ...key, accounts: Data.array(key.accounts) }));
++}) => checkAccountGroup(new AccountGroupKey(key));
  class AppAccountKey extends Data.Class<{
    readonly organization: OrganizationReference;
    readonly app: AppId;
+diff --git a/apps/hosted/web/src/implementation/pages/account-observations-client.tsx b/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
+index b016d13..0376b91 100644
+--- a/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
+@@ -12,6 +12,10 @@ import {
+   AccountObservations,
+ } from "@executor-js/ui/dashboard/account-observations";
+ import type { AccountResetActions } from "@executor-js/ui/dashboard/account-reset-control";
++import type {
++  AccountGroupCheckOutcome,
++  AccountSignIn,
++} from "@executor-js/ui/dashboard/account-sign-in-checks";
+ import { QueryView, useQuery } from "@executor-js/ui/dashboard/context";
+ import { DetailSkeleton } from "@executor-js/ui/dashboard/loading";
+ import {
+@@ -23,7 +27,11 @@ import {
+   type ObservationPolicy,
+ } from "../../contracts/account-observations.ts";
+ import { savedAccountRowsAtom } from "../../contracts/account-projection.ts";
+-import { checkAccountAtom, checkAppAccountAtom } from "../../contracts/accounts.ts";
++import {
++  checkAccountAtom,
++  checkAccountGroupAtom,
++  checkAppAccountAtom,
++} from "../../contracts/accounts.ts";
+ import { sessionAtom } from "../../contracts/auth.ts";
+ import { appError, type HostedError } from "../../contracts/errors.ts";
+ import { groupsAtom } from "../../contracts/groups.ts";
+@@ -34,18 +42,21 @@ import { ownedResetPool, useHostedResetActions } from "./account-resets-client.t
+ 
+ /**
+  * Usage under an account's row. With `apps`, the block also shows those apps' checks and an inline
+- * Check now, which runs the same checks as the Check health dialog. When the caller owns a pool
++ * Check now, which runs the same checks as the Check health dialog. With `signIns`, a grouped
++ * row's, it shows each sign-in's checks and checks them all at once. When the caller owns a pool
+  * the account is bound to, its banked reset count becomes the one-click control with a confirm.
+  */
+ export function HostedAccountObservations({
+   account,
+   apps,
++  signIns,
+   app,
+   canReconnect,
+   windowTokens,
+ }: {
+   readonly account: AccountSummary;
+   readonly apps?: readonly App[];
++  readonly signIns?: readonly AccountSignIn[] | undefined;
+   readonly app?: App;
+   readonly canReconnect?: (app: App) => boolean;
+   /** Footer counts for the account's usage windows, such as its pool's tokens. */
+@@ -64,34 +75,64 @@ export function HostedAccountObservations({
+     Option.getOrUndefined(savedRows.data)?.find((row) => row.id === account.id),
+     viewer,
+   );
+-  const observations = (resets?: AccountResetActions) => (
++  const observations = (
++    resets?: AccountResetActions,
++    group?: { readonly signIns: readonly AccountSignIn[]; readonly check: GroupCheck },
++  ) => (
+     <AccountObservations<HostedError>
+       account={account}
+       query={accountObservationsAtom(key)}
+       refresh={() => refresh()}
+       windowTokens={windowTokens}
+-      {...(app === undefined
+-        ? apps === undefined
+-          ? {}
+-          : {
+-              health: {
+-                apps,
+-                check: () => check(),
+-                ...(canReconnect === undefined ? {} : { canReconnect }),
+-              },
+-            }
+-        : { health: { apps: [app], check: () => check(), showStatus: false } })}
++      {...(group !== undefined
++        ? { group }
++        : app === undefined
++          ? apps === undefined
++            ? {}
++            : {
++                health: {
++                  apps,
++                  check: () => check(),
++                  ...(canReconnect === undefined ? {} : { canReconnect }),
++                },
++              }
++          : { health: { apps: [app], check: () => check(), showStatus: false } })}
+       resets={resets}
+       Failure={HostedFailure}
+     />
+   );
++  const grouped = (resets?: AccountResetActions) =>
++    signIns === undefined ? (
++      observations(resets)
++    ) : (
++      <WithGroupCheck accounts={signIns.map((signIn) => signIn.account.id)}>
++        {(check) => observations(resets, { signIns, check })}
++      </WithGroupCheck>
++    );
+   return pool === undefined ? (
+-    observations()
++    grouped()
+   ) : (
+-    <WithResets target={{ ...key, pool }}>{observations}</WithResets>
++    <WithResets target={{ ...key, pool }}>{grouped}</WithResets>
+   );
+ }
+ 
++type GroupCheck = () => Promise<Exit.Exit<AccountGroupCheckOutcome<HostedError>, HostedError>>;
++
++/** A grouped row's one check of all its sign-ins; only grouped rows mount it. */
++function WithGroupCheck({
++  accounts,
++  children,
++}: {
++  readonly accounts: readonly AccountId[];
++  readonly children: (check: GroupCheck) => ReactNode;
++}) {
++  const { organization } = useOrganizationRoute();
++  const check = useAtomSet(checkAccountGroupAtom({ organization, accounts }), {
++    mode: "promiseExit",
++  });
++  return children(() => check());
++}
++
+ /** Reset actions need a known pool, so their atoms mount only once one is found. */
+ function WithResets({
+   target,
+diff --git a/apps/hosted/web/src/implementation/pages/accounts-client.tsx b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
+index 1f7f603..9c3388b 100644
+--- a/apps/hosted/web/src/implementation/pages/accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
+@@ -5,7 +5,8 @@ import { IdentityAppPicker } from "@executor-js/ui/dashboard/identity-app-picker
+ import { AppConnectionDialogContent } from "./app-accounts.tsx";
+ import { useState } from "react";
+ import { catalogAtom } from "../../contracts/api.ts";
+-import type { AccountId } from "@executor-js/sdk";
++import type { AccountId, App } from "@executor-js/sdk";
++import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
+ import {
+   HostedAccountActions,
+   HostedAccountDialog,
+@@ -62,6 +63,38 @@ export function AccountsPage({
+     binding: boolean;
+     listed: ListedRow;
+   }>();
++  /** Whether this page may offer Reconnect for `account` in `app`, from a current rejection. */
++  const canReconnect = (account: AccountSummary) => (app: App) => {
++    if (
++      account.hostManaged === true ||
++      app.activeVersion === null ||
++      !Option.isSome(directory.data) ||
++      !Option.isSome(inventory.data)
++    )
++      return false;
++    const saved = inventory.data.value;
++    const listed = directory.data.value.apps.find((entry) => entry.app.id === app.id);
++    const usable = directory.data.value.accounts.some(
++      (entry) => entry.account.id === account.id && entry.access.canUse,
++    );
++    if (listed === undefined || !usable) return false;
++    return Object.values(app.requirements.accounts).some((requirement) => {
++      const method = requirement.definition.auth[account.method];
++      if (
++        requirement.provider !== account.provider ||
++        method === undefined ||
++        method.type === "interactive" ||
++        (method.type === "secrets" && method.provisioned === true)
++      )
++        return false;
++      return requirement.scope === "user"
++        ? listed.access.canUse && listed.linkedAccounts.includes(account.id)
++        : listed.access.canManage &&
++            (saved.appLinks ?? []).some(
++              (link) => link.app === app.id && link.account === account.id,
++            );
++    });
++  };
+   const role = useOrganizationDetails()?.role;
+   const admin = role !== undefined && role !== "member";
+   const manageClients = admin && (
+@@ -166,42 +199,16 @@ export function AccountsPage({
+           return saved === undefined ? undefined : accountRowFromSaved(saved);
+         }}
+         accountTraffic={traffic.traffic}
+-        accountDetails={(account, apps) => (
++        accountDetails={(account, apps, signIns) => (
+           <HostedAccountObservations
+             account={account}
+             apps={apps}
++            signIns={signIns?.map((signIn) => ({
++              ...signIn,
++              canReconnect: canReconnect(signIn.account),
++            }))}
+             windowTokens={traffic.windowTokens(account)}
+-            canReconnect={(app) => {
+-              if (
+-                account.hostManaged === true ||
+-                app.activeVersion === null ||
+-                !Option.isSome(directory.data) ||
+-                !Option.isSome(inventory.data)
+-              )
+-                return false;
+-              const saved = inventory.data.value;
+-              const listed = directory.data.value.apps.find((entry) => entry.app.id === app.id);
+-              const usable = directory.data.value.accounts.some(
+-                (entry) => entry.account.id === account.id && entry.access.canUse,
+-              );
+-              if (listed === undefined || !usable) return false;
+-              return Object.values(app.requirements.accounts).some((requirement) => {
+-                const method = requirement.definition.auth[account.method];
+-                if (
+-                  requirement.provider !== account.provider ||
+-                  method === undefined ||
+-                  method.type === "interactive" ||
+-                  (method.type === "secrets" && method.provisioned === true)
+-                )
+-                  return false;
+-                return requirement.scope === "user"
+-                  ? listed.access.canUse && listed.linkedAccounts.includes(account.id)
+-                  : listed.access.canManage &&
+-                      (saved.appLinks ?? []).some(
+-                        (link) => link.app === app.id && link.account === account.id,
+-                      );
+-              });
+-            }}
++            canReconnect={canReconnect(account)}
+           />
+         )}
+       />
 diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
 index 9f5d665..e232457 100644
 --- a/apps/local/server/src/contracts/dashboard.ts
@@ -322,7 +554,7 @@ index 6540807..c98e57f 100644
          executor.apps.checkCredentials({ ...params, ...payload }),
        )
 diff --git a/apps/local/web/src/contracts/accounts.ts b/apps/local/web/src/contracts/accounts.ts
-index adecd0c..5ce71b9 100644
+index adecd0c..deb6117 100644
 --- a/apps/local/web/src/contracts/accounts.ts
 +++ b/apps/local/web/src/contracts/accounts.ts
 @@ -1,7 +1,14 @@
@@ -389,10 +621,185 @@ index adecd0c..5ce71b9 100644
  );
 +/** One pending call per grouped row; only checked accounts update their retained health. */
 +export const checkAccountGroupAtom = (accounts: readonly AccountId[]) =>
-+  checkAccountGroup(new AccountGroupKey({ accounts: Data.array(accounts) }));
++  checkAccountGroup(new AccountGroupKey({ accounts }));
  /** A fresh read of which apps select an account, taken after a selection change commits. */
  export const accountUsageAtom = DashboardClient.runtime.fn((account: AccountId) =>
    Effect.flatMap(DashboardClient, (client) => client.dashboard.account({ params: { account } })),
+diff --git a/apps/local/web/src/implementation/pages/account-observations-client.tsx b/apps/local/web/src/implementation/pages/account-observations-client.tsx
+index 870fdb4..61f93c6 100644
+--- a/apps/local/web/src/implementation/pages/account-observations-client.tsx
++++ b/apps/local/web/src/implementation/pages/account-observations-client.tsx
+@@ -1,6 +1,8 @@
+ /** Local account rows show usage with the owner's own authority. */
+ import { useAtomSet } from "@effect/atom-react";
+-import type { App } from "@executor-js/sdk";
++import type { AccountId, App } from "@executor-js/sdk";
++import type { Exit } from "effect";
++import type { ReactNode } from "react";
+ import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
+ import {
+   AccountObservationPlan,
+@@ -10,46 +12,81 @@ import {
+   accountObservationsAtom,
+   refreshAccountObservationsAtom,
+ } from "../../contracts/account-observations.ts";
+-import { checkAccountAtom } from "../../contracts/accounts.ts";
++import type {
++  AccountGroupCheckOutcome,
++  AccountSignIn,
++} from "@executor-js/ui/dashboard/account-sign-in-checks";
++import { checkAccountAtom, checkAccountGroupAtom } from "../../contracts/accounts.ts";
+ import type { DashboardError } from "../../contracts/errors.ts";
+ import { Failure } from "../components/common.tsx";
+ 
+ /**
+  * Usage under an account's row. With `apps`, the block also shows those apps' checks and an inline
+- * Check now, which runs the same checks as the Check health dialog.
++ * Check now, which runs the same checks as the Check health dialog. With `signIns`, a grouped
++ * row's, it shows each sign-in's checks and checks them all at once.
+  */
+ export function LocalAccountObservations({
+   account,
+   apps,
++  signIns,
+   app,
+   canReconnect,
+ }: {
+   readonly account: AccountSummary;
+   readonly apps?: readonly App[];
++  readonly signIns?: readonly AccountSignIn[] | undefined;
+   readonly app?: App;
+   readonly canReconnect?: (app: App) => boolean;
+ }) {
+   const refresh = useAtomSet(refreshAccountObservationsAtom(account.id), { mode: "promiseExit" });
+   const check = useAtomSet(checkAccountAtom(account.id), { mode: "promiseExit" });
+-  return (
++  const observations = (group?: {
++    readonly signIns: readonly AccountSignIn[];
++    readonly check: GroupCheck;
++  }) => (
+     <AccountObservations<DashboardError>
+       account={account}
+       query={accountObservationsAtom(account.id)}
+       refresh={() => refresh()}
+-      {...(app === undefined
+-        ? apps === undefined
+-          ? {}
+-          : {
+-              health: {
+-                apps,
+-                check: () => check(),
+-                ...(canReconnect === undefined ? {} : { canReconnect }),
+-              },
+-            }
+-        : { health: { apps: [app], check: () => check(), showStatus: false } })}
++      {...(group !== undefined
++        ? { group }
++        : app === undefined
++          ? apps === undefined
++            ? {}
++            : {
++                health: {
++                  apps,
++                  check: () => check(),
++                  ...(canReconnect === undefined ? {} : { canReconnect }),
++                },
++              }
++          : { health: { apps: [app], check: () => check(), showStatus: false } })}
+       Failure={Failure}
+     />
+   );
++  return signIns === undefined ? (
++    observations()
++  ) : (
++    <WithGroupCheck accounts={signIns.map((signIn) => signIn.account.id)}>
++      {(check) => observations({ signIns, check })}
++    </WithGroupCheck>
++  );
++}
++
++type GroupCheck = () => Promise<
++  Exit.Exit<AccountGroupCheckOutcome<DashboardError>, DashboardError>
++>;
++
++/** A grouped row's one check of all its sign-ins; only grouped rows mount it. */
++function WithGroupCheck({
++  accounts,
++  children,
++}: {
++  readonly accounts: readonly AccountId[];
++  readonly children: (check: GroupCheck) => ReactNode;
++}) {
++  const check = useAtomSet(checkAccountGroupAtom(accounts), { mode: "promiseExit" });
++  return children(() => check());
+ }
+ 
+ /** The reported plan beside the account's other metadata. */
+diff --git a/apps/local/web/src/implementation/pages/accounts.tsx b/apps/local/web/src/implementation/pages/accounts.tsx
+index 87d7a5b..bbe1c1f 100644
+--- a/apps/local/web/src/implementation/pages/accounts.tsx
++++ b/apps/local/web/src/implementation/pages/accounts.tsx
+@@ -9,7 +9,8 @@ import { AccountsPage as SharedPage } from "@executor-js/ui/dashboard/accounts";
+ import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
+ import { Button } from "@executor-js/ui/components/button";
+ import { Link } from "@tanstack/react-router";
+-import type { AccountId } from "@executor-js/sdk";
++import type { AccountId, App } from "@executor-js/sdk";
++import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
+ import { useState } from "react";
+ import {
+   LocalAccountActions,
+@@ -17,6 +18,20 @@ import {
+   type AccountDialogKind,
+ } from "./account-actions.tsx";
+ import { LocalAccountObservations, LocalAccountPlan } from "./account-observations.tsx";
++/** Whether the page may offer Reconnect for `account` in `app`. */
++const canReconnect = (account: AccountSummary) => (app: App) =>
++  account.hostManaged !== true &&
++  app.activeVersion !== null &&
++  Object.values(app.requirements.accounts).some((requirement) => {
++    const method = requirement.definition.auth[account.method];
++    return (
++      requirement.provider === account.provider &&
++      method !== undefined &&
++      method.type !== "interactive" &&
++      !(method.type === "secrets" && method.provisioned === true)
++    );
++  });
++
+ /** Local product supplies its own action and typed route. */
+ export function AccountsPage({ highlight }: { readonly highlight?: AccountId | undefined }) {
+   const identify = useAtomSet(identifyAccountsAtom, { mode: "promiseExit" });
+@@ -77,23 +92,15 @@ export function AccountsPage({ highlight }: { readonly highlight?: AccountId | u
+           />
+         )}
+         accountPlan={(account) => <LocalAccountPlan account={account} />}
+-        accountDetails={(account, apps) => (
++        accountDetails={(account, apps, signIns) => (
+           <LocalAccountObservations
+             account={account}
+             apps={apps}
+-            canReconnect={(app) =>
+-              account.hostManaged !== true &&
+-              app.activeVersion !== null &&
+-              Object.values(app.requirements.accounts).some((requirement) => {
+-                const method = requirement.definition.auth[account.method];
+-                return (
+-                  requirement.provider === account.provider &&
+-                  method !== undefined &&
+-                  method.type !== "interactive" &&
+-                  !(method.type === "secrets" && method.provisioned === true)
+-                );
+-              })
+-            }
++            signIns={signIns?.map((signIn) => ({
++              ...signIn,
++              canReconnect: canReconnect(signIn.account),
++            }))}
++            canReconnect={canReconnect(account)}
+           />
+         )}
+       />
 diff --git a/e2e/support/account-observation-fixture.ts b/e2e/support/account-observation-fixture.ts
 index 4b63bad..62f7ee5 100644
 --- a/e2e/support/account-observation-fixture.ts
@@ -422,7 +829,7 @@ index 4b63bad..62f7ee5 100644
      health: (value: Answer) => Ref.set(health, value),
      hold: Effect.gen(function* () {
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 38c9da7..3c6f1ab 100644
+index 38c9da7..4e56fcf 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -3686,6 +3686,43 @@ export const scenarios = plan({
@@ -469,6 +876,15 @@ index 38c9da7..3c6f1ab 100644
    accountHealth: {
      fixtures: "actors",
      file: "account-health.spec.ts",
+@@ -5307,7 +5344,7 @@ export const scenarios = plan({
+     fixtures: "actors",
+     file: "listed-account-bindings.spec.ts",
+     title:
+-      "A grouped sign-in row stays one compact row; its checks and requested access open with Details",
++      "A grouped sign-in row stays one compact row; Check now checks each sign-in the caller may use and Details list every sign-in's checks",
+     targets: {
+       "self-host": scheduled,
+       cloud: na("Display only; self-host proves the shared rows."),
 diff --git a/e2e/tests/group-account-checks.spec.ts b/e2e/tests/group-account-checks.spec.ts
 new file mode 100644
 index 0000000..69afd23
@@ -780,3 +1196,1221 @@ index 0000000..69afd23
 +    ),
 +  );
 +});
+diff --git a/e2e/tests/listed-account-bindings.spec.ts b/e2e/tests/listed-account-bindings.spec.ts
+index 3e42608..9af75d5 100644
+--- a/e2e/tests/listed-account-bindings.spec.ts
++++ b/e2e/tests/listed-account-bindings.spec.ts
+@@ -1,4 +1,7 @@
+-/** Removing one verified sign-in opens on that binding and preserves its sibling. */
++/**
++ * Removing one verified sign-in opens on that binding and preserves its sibling. The grouped row
++ * stays compact, and its ⋯ Check now checks every sign-in the caller may use.
++ */
+ import { expect, layer } from "@effect/vitest";
+ import { Effect, Schema } from "effect";
+ import { FetchHttpClient, HttpClient } from "effect/http";
+@@ -7,6 +10,7 @@ import { Api, body } from "../support/api.ts";
+ import { Browser } from "../support/browser.ts";
+ import { Evidence } from "../support/evidence.ts";
+ import { accountRow, openRowMenu } from "../support/account-rows.ts";
++import { observationBackend, observationToken } from "../support/account-observation-fixture.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { Resource } from "../support/contracts.ts";
+ import { accountIdentityIssuer } from "../support/account-identity-issuer.ts";
+@@ -16,98 +20,128 @@ import { appsManifest } from "../support/apps-release.ts";
+ import { holdQuery } from "../support/query-transition.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+-const verifiedBindings = Effect.gen(function* () {
+-  const api = yield* Api;
+-  const actors = yield* Actors;
+-  const issuer = yield* accountIdentityIssuer;
+-  const http = yield* HttpClient.HttpClient;
+-  const prefix = `/api/organizations/${actors.organization.id}`;
+-  const apps: string[] = [];
+-  const accounts = new Set<string>();
+-  yield* Effect.addFinalizer(() =>
+-    Effect.gen(function* () {
+-      for (const app of apps)
+-        expect((yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`)).status).toBe(
+-          200,
+-        );
+-      for (const account of accounts)
+-        expect(
+-          (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`)).status,
+-        ).toBe(200);
+-    }).pipe(Effect.orDie),
+-  );
+-  const bindings = [];
+-  for (const label of ["First saved sign-in", "Other saved sign-in"]) {
+-    const config = {
+-      authorizationUrl: issuer.origin + "/authorize",
+-      tokenUrl: issuer.origin + "/token",
+-      scopes: ["read"],
+-      tokenEndpointAuthMethod: "none",
+-      identity: { issuer: issuer.origin, name: "Fixture identity" },
+-    };
+-    const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+-      name: `App for ${label}`,
+-      files: [
+-        appsManifest,
+-        {
+-          path: "index.ts",
+-          content: `import {defineApp,defineProvider,oauth2,router} from "apps";
+-const service=defineProvider({name:${JSON.stringify(`Provider for ${label}`)},auth:{oauth:oauth2(${JSON.stringify(config)})}});
++/**
++ * Two saved sign-ins of one verified identity, each in its own app. With `checks`, each app checks
++ * its sign-in through its own check service, and both are shared with everyone, so one's audience
++ * can later be removed while its manager keeps seeing it.
++ */
++const verifiedBindings = (options: { readonly checks?: boolean } = {}) =>
++  Effect.gen(function* () {
++    const api = yield* Api;
++    const actors = yield* Actors;
++    const issuer = yield* accountIdentityIssuer;
++    const http = yield* HttpClient.HttpClient;
++    const prefix = `/api/organizations/${actors.organization.id}`;
++    const apps: string[] = [];
++    const accounts = new Set<string>();
++    yield* Effect.addFinalizer(() =>
++      Effect.gen(function* () {
++        for (const app of apps)
++          expect((yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`)).status).toBe(
++            200,
++          );
++        for (const account of accounts)
++          expect(
++            (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`)).status,
++          ).toBe(200);
++      }).pipe(Effect.orDie),
++    );
++    const bindings = [];
++    const backends = [];
++    for (const label of ["First saved sign-in", "Other saved sign-in"]) {
++      const backend = options.checks === true ? yield* observationBackend : undefined;
++      // An empty answer is a healthy check that reports no identity, so the row title stays put.
++      if (backend !== undefined) yield* backend.health({ status: 200, body: {} });
++      const health =
++        backend === undefined
++          ? ""
++          : `,health:async(context)=>{const response=await context.fetch(${JSON.stringify(`${backend.origin}/health`)},{signal:context.signal,headers:{authorization:${JSON.stringify(`Bearer ${observationToken}`)}}});if(!response.ok)throw new ProviderError({reason:"unavailable",status:response.status});return await response.json();}`;
++      const config = {
++        authorizationUrl: issuer.origin + "/authorize",
++        tokenUrl: issuer.origin + "/token",
++        scopes: ["read"],
++        tokenEndpointAuthMethod: "none",
++        identity: { issuer: issuer.origin, name: "Fixture identity" },
++      };
++      const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++        name: `App for ${label}`,
++        files: [
++          appsManifest,
++          {
++            path: "index.ts",
++            content: `import {defineApp,defineProvider,oauth2,router,ProviderError} from "apps";
++const service=defineProvider({name:${JSON.stringify(`Provider for ${label}`)},auth:{oauth:oauth2(${JSON.stringify(config)})}${health}});
+ export default defineApp({user:{accounts:{service}}},{tools:router({})});`,
+-        },
+-      ],
+-    });
+-    expect(deployed.status).toBe(200);
+-    const app = (yield* body(Resource, deployed)).id;
+-    apps.push(app);
+-    const connection = yield* body(
+-      Resource,
+-      yield* api.request(
++          },
++        ],
++      });
++      expect(deployed.status).toBe(200);
++      const app = (yield* body(Resource, deployed)).id;
++      apps.push(app);
++      const connection = yield* body(
++        Resource,
++        yield* api.request(
++          actors.owner,
++          "POST",
++          connectionsPath(`${prefix}/apps/${app}`, "user", "service"),
++          options.checks === true
++            ? { destination: { kind: "shared", audience: { kind: "everyone" } } }
++            : {},
++        ),
++      );
++      const started = yield* api.request(
+         actors.owner,
+         "POST",
+-        connectionsPath(`${prefix}/apps/${app}`, "user", "service"),
+-        {},
+-      ),
+-    );
+-    const started = yield* api.request(
+-      actors.owner,
+-      "POST",
+-      `${prefix}/connections/${connection.id}/oauth/start`,
+-      { method: "oauth", client: { clientId: "listed-bindings-client" } },
+-    );
+-    expect(started.status).toBe(200);
+-    const authorization = yield* body(Schema.Struct({ authorizationUrl: Schema.String }), started);
+-    const callbackUrl = yield* Effect.scoped(
+-      Effect.gen(function* () {
+-        const response = yield* HttpClient.withScope(http).get(authorization.authorizationUrl);
+-        const location = response.headers.location;
+-        if (location === undefined) return yield* Effect.die("Fixture issuer omitted callback");
+-        return location;
+-      }),
+-    ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
+-    const completed = yield* api.request(
+-      actors.owner,
+-      "POST",
+-      `${prefix}/connections/${connection.id}/oauth/complete`,
+-      { callbackUrl },
+-    );
+-    expect(completed.status).toBe(200);
+-    const account = yield* body(IdentityAccount, completed);
+-    expect(account.identity).toBeDefined();
+-    accounts.add(account.id);
+-    expect(
+-      (yield* api.request(actors.owner, "PATCH", `${prefix}/accounts/${account.id}`, { label }))
+-        .status,
+-    ).toBe(200);
+-    bindings.push({ ...account, label });
+-  }
+-  const [first, other] = bindings;
+-  if (first === undefined || other === undefined)
+-    return yield* Effect.die("Fixture did not create both bindings");
+-  expect(first.id).not.toBe(other.id);
+-  expect(first.identity?.id).toBe(other.identity?.id);
+-  return { first, other, prefix, removed: (account: string) => accounts.delete(account) };
+-});
++        `${prefix}/connections/${connection.id}/oauth/start`,
++        { method: "oauth", client: { clientId: "listed-bindings-client" } },
++      );
++      expect(started.status).toBe(200);
++      const authorization = yield* body(
++        Schema.Struct({ authorizationUrl: Schema.String }),
++        started,
++      );
++      const callbackUrl = yield* Effect.scoped(
++        Effect.gen(function* () {
++          const response = yield* HttpClient.withScope(http).get(authorization.authorizationUrl);
++          const location = response.headers.location;
++          if (location === undefined) return yield* Effect.die("Fixture issuer omitted callback");
++          return location;
++        }),
++      ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
++      const completed = yield* api.request(
++        actors.owner,
++        "POST",
++        `${prefix}/connections/${connection.id}/oauth/complete`,
++        { callbackUrl },
++      );
++      expect(completed.status).toBe(200);
++      const account = yield* body(IdentityAccount, completed);
++      expect(account.identity).toBeDefined();
++      accounts.add(account.id);
++      expect(
++        (yield* api.request(actors.owner, "PATCH", `${prefix}/accounts/${account.id}`, { label }))
++          .status,
++      ).toBe(200);
++      bindings.push({ ...account, label });
++      if (backend !== undefined) backends.push(backend);
++    }
++    const [first, other] = bindings;
++    if (first === undefined || other === undefined)
++      return yield* Effect.die("Fixture did not create both bindings");
++    expect(first.id).not.toBe(other.id);
++    expect(first.identity?.id).toBe(other.identity?.id);
++    return {
++      first,
++      other,
++      prefix,
++      /** Each sign-in's check calls, first then other; empty without `checks`. */
++      checkCalls: Effect.forEach(backends, (backend) => backend.healthCalls),
++      removed: (account: string) => accounts.delete(account),
++    };
++  });
++
++const Revision = Schema.Struct({ revision: Schema.String });
++const groupCheckPath = /^\/api\/organizations\/[^/]+\/accounts\/health$/;
+ 
+ layer(HostedLive, { excludeTestServices: true })("Listed account bindings", (it) => {
+   for (const [scenario, width] of [
+@@ -121,7 +155,7 @@ layer(HostedLive, { excludeTestServices: true })("Listed account bindings", (it)
+           const api = yield* Api;
+           const actors = yield* Actors;
+           const browser = yield* Browser;
+-          const fixture = yield* verifiedBindings;
++          const fixture = yield* verifiedBindings();
+           const paths = [actors.organization.id, actors.organization.slug].map(
+             (organization) => `/api/organizations/${organization}/accounts/${fixture.first.id}`,
+           );
+@@ -245,10 +279,11 @@ layer(HostedLive, { excludeTestServices: true })("Listed account bindings", (it)
+     withHostedCase(
+       context,
+       Effect.gen(function* () {
++        const api = yield* Api;
+         const actors = yield* Actors;
+         const browser = yield* Browser;
+         const evidence = yield* Evidence;
+-        const fixture = yield* verifiedBindings;
++        const fixture = yield* verifiedBindings({ checks: true });
+         const groupTitle = fixture.first.identity?.label ?? fixture.first.label;
+         yield* browser.login(actors.owner);
+         for (const width of [1280, 390]) {
+@@ -283,42 +318,267 @@ layer(HostedLive, { excludeTestServices: true })("Listed account bindings", (it)
+           expect(fits, `no horizontal scroll at ${width}px`).toBe(true);
+           if (width === 390)
+             expect(height, "the grouped row stays compact on a phone").toBeLessThanOrEqual(110);
++          const before = yield* fixture.checkCalls;
++          const offered = yield* Effect.scoped(
++            Effect.gen(function* () {
++              // Holding the group check shows its pending state in the menu and on the row.
++              const held = yield* holdQuery(groupCheckPath, "continue", { method: "POST" });
++              const items = yield* browser.use(
++                `Open the grouped row's menu at ${width}px`,
++                (page) =>
++                  openRowMenu(page, accountRow(page, groupTitle), groupTitle).then((menu) =>
++                    // The menu fades in; capture it once it has settled.
++                    menu
++                      .evaluate((element) =>
++                        Promise.all(element.getAnimations().map((animation) => animation.finished)),
++                      )
++                      .then(() => menu.getByRole("menuitem").allInnerTexts()),
++                  ),
++              );
++              yield* evidence.attach(
++                `listed-binding-menu-${width}.png`,
++                "image/png",
++                yield* browser.use("Capture the open menu", (page) => page.screenshot()),
++              );
++              expect
++                .soft(items, "the grouped row's ⋯ offers Check now beside Details")
++                .toEqual(expect.arrayContaining(["Details", "Check now", "Manage apps"]));
++              if (!items.includes("Check now")) {
++                yield* browser.use("Close the menu", (page) => page.keyboard.press("Escape"));
++                return undefined;
++              }
++              const sent = yield* browser.use("Check every sign-in from the menu", (page) =>
++                Promise.all([
++                  page.waitForRequest(
++                    (request) =>
++                      request.method() === "POST" &&
++                      groupCheckPath.test(new URL(request.url()).pathname),
++                  ),
++                  page.getByRole("menuitem", { name: "Check now", exact: true }).click(),
++                ]).then(([request]): unknown => request.postDataJSON()),
++              );
++              yield* held.requested;
++              const pending = yield* browser.use("Read the pending check", (page) => {
++                const row = accountRow(page, groupTitle);
++                return row
++                  .getByRole("status")
++                  .filter({ hasText: "Checking sign-ins…" })
++                  .waitFor()
++                  .then(() => openRowMenu(page, row, groupTitle))
++                  .then((menu) =>
++                    menu
++                      .getByRole("menuitem", { name: "Checking…", exact: true })
++                      .isDisabled()
++                      .then((disabled) => page.keyboard.press("Escape").then(() => disabled)),
++                  );
++              });
++              const answered = yield* browser.use("Await the group check's answer", (page) =>
++                Promise.resolve({
++                  response: page.waitForResponse(
++                    (response) =>
++                      response.request().method() === "POST" &&
++                      groupCheckPath.test(new URL(response.url()).pathname),
++                  ),
++                }),
++              );
++              // The row stays busy until the held check answers.
++              yield* browser.use("The row is still checking", (page) =>
++                accountRow(page, groupTitle)
++                  .locator('[data-account-observations][aria-busy="true"]')
++                  .waitFor(),
++              );
++              yield* held.release;
++              yield* browser.use("The group check finishes", (page) =>
++                answered.response.then(() =>
++                  accountRow(page, groupTitle)
++                    .locator('[data-account-observations][aria-busy="true"]')
++                    .waitFor({ state: "detached" }),
++                ),
++              );
++              return { sent, pending };
++            }),
++          );
++          const after = yield* fixture.checkCalls;
++          expect
++            .soft(offered?.sent, "Check now sends every sign-in of the group at once")
++            .toEqual({ accounts: expect.arrayContaining([fixture.first.id, fixture.other.id]) });
++          expect
++            .soft(offered?.pending, "the menu item waits while the group is checked")
++            .toBe(true);
++          expect
++            .soft(
++              after.map((calls, index) => calls - (before[index] ?? 0)),
++              "each sign-in's own check ran once",
++            )
++            .toEqual([1, 1]);
+           const opened = yield* browser.use(
+             `Open the grouped row's Details at ${width}px`,
+             (page) => {
+               const row = accountRow(page, groupTitle);
+-              return openRowMenu(page, row, groupTitle)
+-                .then((menu) =>
+-                  menu
+-                    .getByRole("menuitem")
+-                    .allInnerTexts()
+-                    .then((items) =>
+-                      menu
+-                        .getByRole("menuitem", { name: "Details", exact: true })
+-                        .click()
+-                        .then(() => items),
+-                    ),
+-                )
+-                .then((items) =>
+-                  row
+-                    .locator(".requested-access")
+-                    .waitFor()
+-                    .then(() =>
+-                      Promise.all([
+-                        Promise.resolve(items),
+-                        row.locator("[data-account-health]").count(),
+-                        row
+-                          .locator("[data-account-health]")
+-                          .getByRole("button", { name: "Check now", exact: true })
+-                          .count(),
+-                      ]),
+-                    ),
+-                );
++              return (
++                openRowMenu(page, row, groupTitle)
++                  .then((menu) =>
++                    menu.getByRole("menuitem", { name: "Details", exact: true }).click(),
++                  )
++                  .then(() => row.locator(".requested-access").waitFor())
++                  // The list reads the recorded checks again after the group check answers.
++                  .then(() =>
++                    row
++                      .locator('[data-sign-in] [data-check-status="healthy"]')
++                      .nth(1)
++                      .waitFor({ timeout: 10_000 })
++                      .catch(() => undefined),
++                  )
++                  .then(() =>
++                    Promise.all([
++                      row.locator("[data-sign-in]").allInnerTexts(),
++                      row
++                        .locator("[data-sign-in]")
++                        .evaluateAll((blocks) =>
++                          blocks.map((block) =>
++                            [...block.querySelectorAll("[data-check-status]")].map((status) =>
++                              status.getAttribute("data-check-status"),
++                            ),
++                          ),
++                        ),
++                      row
++                        .locator('[data-observation-details] td[data-label="Sign-in"]')
++                        .allInnerTexts(),
++                      row.getByRole("button", { name: "Check now", exact: true }).count(),
++                      page.evaluate(
++                        () => document.documentElement.scrollWidth <= window.innerWidth,
++                      ),
++                    ]),
++                  )
++              );
+             },
+           );
+-          expect(opened[0]).toEqual(expect.arrayContaining(["Details", "Manage apps"]));
+-          expect(opened.slice(1), "Details hold the checks and Check now").toEqual([1, 1]);
++          yield* evidence.attach(
++            `listed-binding-details-${width}.png`,
++            "image/png",
++            yield* browser.use("Capture the open Details", (page) =>
++              page.screenshot({ fullPage: true }),
++            ),
++          );
++          const [blocks, statuses, tableSignIns, buttons, detailsFit] = opened;
++          expect
++            .soft(
++              blocks.map((text) => text.split("\n")[0]),
++              "Details list every sign-in by name",
++            )
++            .toEqual([fixture.first.label, fixture.other.label]);
++          expect
++            .soft(statuses, "each sign-in shows its own fresh check")
++            .toEqual([["healthy"], ["healthy"]]);
++          expect
++            .soft(new Set(tableSignIns), "the Checks table names each sign-in")
++            .toEqual(new Set([fixture.first.label, fixture.other.label]));
++          expect.soft(buttons, "Details hold one Check now for the whole group").toBe(1);
++          expect(detailsFit, `no horizontal scroll with Details open at ${width}px`).toBe(true);
+         }
++        // The list was read while both sign-ins were usable. Managing a shared sign-in does not
++        // grant its use, so removing its audience before Check now leaves only the other to check.
++        const shown = yield* browser.use("Open the group's Details on a fresh list", (page) => {
++          const row = accountRow(page, groupTitle);
++          return page
++            .setViewportSize({ width: 1280, height: 900 })
++            .then(() => page.goto(`/org/${actors.organization.slug}/accounts`))
++            .then(() => openRowMenu(page, row, groupTitle))
++            .then((menu) => menu.getByRole("menuitem", { name: "Details", exact: true }).click())
++            .then(() => row.locator("[data-sign-in]").nth(1).waitFor())
++            .then(() => row.locator("[data-sign-in]").count());
++        });
++        expect(shown, "both sign-ins are listed before their use changes").toBe(2);
++        const access = yield* body(
++          Revision,
++          yield* api.request(
++            actors.owner,
++            "GET",
++            `${fixture.prefix}/accounts/${fixture.other.id}/access`,
++          ),
++        );
++        expect(
++          (yield* api.request(
++            actors.owner,
++            "PATCH",
++            `${fixture.prefix}/accounts/${fixture.other.id}/access`,
++            { revision: access.revision, audience: { kind: "groups", groups: [] } },
++          )).status,
++        ).toBe(200);
++        const partialBefore = yield* fixture.checkCalls;
++        const partial = yield* Effect.scoped(
++          Effect.gen(function* () {
++            // The list's own reload would drop the unusable sign-in; hold it to read the outcome.
++            const reads = yield* holdQuery(/^\/api\/dashboard\/batch$/, "continue", {
++              method: "POST",
++              allRequests: true,
++            });
++            const directory = yield* holdQuery(/\/resources$/, "continue", { allRequests: true });
++            const read = yield* browser.use("Check the group from Details", (page) => {
++              const row = accountRow(page, groupTitle);
++              return Promise.all([
++                page.waitForResponse(
++                  (response) =>
++                    response.request().method() === "POST" &&
++                    groupCheckPath.test(new URL(response.url()).pathname),
++                ),
++                row
++                  .locator("[data-sign-in-checks]")
++                  .getByRole("button", { name: "Check now", exact: true })
++                  .click(),
++              ]).then(([response]) =>
++                Promise.all([
++                  response.json() as Promise<unknown>,
++                  Promise.resolve(response.request().postDataJSON() as unknown),
++                  row
++                    .locator("[data-sign-in-check-outcome]")
++                    .waitFor()
++                    .then(() => row.locator("[data-sign-in-check-outcome]").innerText()),
++                ]),
++              );
++            });
++            yield* evidence.attach(
++              "listed-binding-partial-1280.png",
++              "image/png",
++              yield* browser.use("Capture the partial check", (page) =>
++                page.screenshot({ fullPage: true }),
++              ),
++            );
++            yield* reads.release;
++            yield* directory.release;
++            return read;
++          }),
++        );
++        const [answer, sent, outcome] = partial;
++        expect(sent, "the stale row still sends both sign-ins").toEqual({
++          accounts: expect.arrayContaining([fixture.first.id, fixture.other.id]),
++        });
++        expect(answer, "the host refuses the unusable sign-in without its metadata").toEqual(
++          expect.arrayContaining([
++            expect.objectContaining({ account: fixture.first.id, status: "checked" }),
++            { account: fixture.other.id, status: "refused" },
++          ]),
++        );
++        const partialAfter = yield* fixture.checkCalls;
++        expect(
++          partialAfter.map((calls, index) => calls - (partialBefore[index] ?? 0)),
++          "only the usable sign-in was checked",
++        ).toEqual([1, 0]);
++        expect(outcome).toBe("Checked 1 of 2 sign-ins. 1 wasn't checked because you can't use it.");
++        expect(outcome, "the outcome never names the refused sign-in").not.toContain(
++          fixture.other.label,
++        );
++        const settled = yield* browser.use(
++          "The reloaded list shows only the usable sign-in",
++          (page) =>
++            page
++              .reload()
++              .then(() => page.locator(".inventory-row [data-account-name]").first().waitFor())
++              .then(() => page.locator(".inventory").innerText()),
++        );
++        expect(settled, "nothing of the refused sign-in is shown").not.toContain(
++          fixture.other.label,
++        );
+       }),
+     ),
+   );
+diff --git a/packages/ui/src/implementation/dashboard/account-health-line.tsx b/packages/ui/src/implementation/dashboard/account-health-line.tsx
+index 43b1393..2acc207 100644
+--- a/packages/ui/src/implementation/dashboard/account-health-line.tsx
++++ b/packages/ui/src/implementation/dashboard/account-health-line.tsx
+@@ -35,7 +35,8 @@ const states = {
+  * The latest check of each app and of the account's sign-in driver, one line per result, worst
+  * first. The driver's result stands on its own line and is never attributed to an app. Only a
+  * current rejection in an app offers Reconnect, in the app that reported it; a failed or timed-out
+- * check makes no claim about the sign-in.
++ * check makes no claim about the sign-in. Without `check`, the line has no Check now of its own,
++ * as in a grouped row whose sign-ins are checked together.
+  */
+ export function AccountHealthLine<E>({
+   account,
+@@ -47,9 +48,9 @@ export function AccountHealthLine<E>({
+ }: {
+   readonly account: AccountSummary;
+   readonly apps: readonly App[];
+-  readonly check: () => Promise<Exit.Exit<unknown, E>>;
++  readonly check?: (() => Promise<Exit.Exit<unknown, E>>) | undefined;
+   readonly showStatus?: boolean;
+-  readonly canReconnect?: (app: App) => boolean;
++  readonly canReconnect?: ((app: App) => boolean) | undefined;
+   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
+ }) {
+   const brand = useProductBrand();
+@@ -86,14 +87,14 @@ export function AccountHealthLine<E>({
+     ),
+   );
+   const run = async () => {
+-    if (pending) return;
++    if (pending || check === undefined) return;
+     setPending(true);
+     setError(undefined);
+     const exit = await check();
+     setPending(false);
+     if (Exit.isFailure(exit)) setError(exit.cause);
+   };
+-  const action = (
++  const action = check !== undefined && (
+     <Button
+       variant="outline"
+       size="xs"
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-details.tsx b/packages/ui/src/implementation/dashboard/account-observation-details.tsx
+index e31097c..e92c30f 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-details.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observation-details.tsx
+@@ -4,6 +4,7 @@ import type { AccountSummary } from "../../contracts/dashboard.ts";
+ import type { DisplayFormat } from "../../contracts/display.ts";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+ import { useProductBrand } from "../hooks/product-brand.ts";
++import type { AccountSignIn } from "./account-sign-in-checks.tsx";
+ import { describeAccountCheck } from "./account-health.tsx";
+ import {
+   age,
+@@ -79,13 +80,15 @@ const checkReasons = {
+ 
+ /**
+  * Every reading with its own read time, where each report came from and how its last refresh
+- * went, and every app's latest check with its reason. Shown only on request.
++ * went, and every app's latest check with its reason. A grouped row's `signIns` list each
++ * sign-in's checks under its name instead. Shown only on request.
+  */
+ export function ObservationDetails({
+   id,
+   reports,
+   account,
+   apps,
++  signIns,
+   now,
+   format,
+ }: {
+@@ -93,10 +96,32 @@ export function ObservationDetails({
+   readonly reports: readonly AccountObservationRecord[];
+   readonly account: AccountSummary;
+   readonly apps?: readonly App[] | undefined;
++  readonly signIns?: readonly AccountSignIn[] | undefined;
+   readonly now: number;
+   readonly format: DisplayFormat;
+ }) {
+   const brand = useProductBrand();
++  /** An app's latest check of `account`: result, time and reason. */
++  const checkCells = (account: AccountSummary, app: App): ReactNode[] => {
++    const entry = account.health?.apps.find((item) => item.app === app.id);
++    const check = entry?.check ?? null;
++    const result =
++      check === null ? (entry?.checkable === true ? "Not checked" : "No check") : undefined;
++    const { label } = check === null ? { label: "" } : describeAccountCheck(check.status);
++    return [
++      appDisplayName(app, brand),
++      result ?? (check?.current === false ? `${label} · outdated` : label),
++      check === null ? "—" : moment(check.checkedAt.toISOString(), now, format),
++      check?.message ??
++        (check?.reason === undefined ? (
++          <span key="reason" className="text-muted-foreground">
++            None
++          </span>
++        ) : (
++          checkReasons[check.reason]
++        )),
++    ];
++  };
+   const read = (value: string, stale: boolean) => (
+     <>
+       <span className={stale ? "text-sign-in-warning" : undefined}>{age(value, now)}</span>{" "}
+@@ -177,34 +202,26 @@ export function ObservationDetails({
+           </div>
+         );
+       })}
+-      {apps !== undefined && apps.length > 0 && (
++      {signIns !== undefined ? (
+         <Table
+           caption="Checks"
+-          columns={["App", "Result", "Checked", "Reason"]}
+-          rows={apps.map((app) => {
+-            const entry = account.health?.apps.find((item) => item.app === app.id);
+-            const check = entry?.check ?? null;
+-            const result =
+-              check === null ? (entry?.checkable === true ? "Not checked" : "No check") : undefined;
+-            const { label } = check === null ? { label: "" } : describeAccountCheck(check.status);
+-            return {
+-              key: app.id,
+-              cells: [
+-                appDisplayName(app, brand),
+-                result ?? (check?.current === false ? `${label} · outdated` : label),
+-                check === null ? "—" : moment(check.checkedAt.toISOString(), now, format),
+-                check?.message ??
+-                  (check?.reason === undefined ? (
+-                    <span key="reason" className="text-muted-foreground">
+-                      None
+-                    </span>
+-                  ) : (
+-                    checkReasons[check.reason]
+-                  )),
+-              ],
+-            };
+-          })}
++          columns={["Sign-in", "App", "Result", "Checked", "Reason"]}
++          rows={signIns.flatMap((signIn) =>
++            signIn.apps.map((app) => ({
++              key: `${signIn.account.id}:${app.id}`,
++              cells: [signIn.name, ...checkCells(signIn.account, app)],
++            })),
++          )}
+         />
++      ) : (
++        apps !== undefined &&
++        apps.length > 0 && (
++          <Table
++            caption="Checks"
++            columns={["App", "Result", "Checked", "Reason"]}
++            rows={apps.map((app) => ({ key: app.id, cells: checkCells(account, app) }))}
++          />
++        )
+       )}
+     </div>
+   );
+diff --git a/packages/ui/src/implementation/dashboard/account-observations.tsx b/packages/ui/src/implementation/dashboard/account-observations.tsx
+index 7666908..c527ac8 100644
+--- a/packages/ui/src/implementation/dashboard/account-observations.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observations.tsx
+@@ -25,6 +25,14 @@ import { ObservationReadings } from "./account-observation-readings.tsx";
+ import type { AccountResetActions } from "./account-reset-control.tsx";
+ import { useQuery } from "./context.tsx";
+ import { useAccountRow } from "./account-row.tsx";
++import {
++  SignInCheckOutcome,
++  SignInChecks,
++  partialOutcome,
++  useSignInChecks,
++  type AccountGroupCheckOutcome,
++  type AccountSignIn,
++} from "./account-sign-in-checks.tsx";
+ import { brandFill, brandLab } from "../lib/provider-brand.ts";
+ 
+ /** What a product lets the caller see of an account's reported usage. */
+@@ -44,13 +52,16 @@ export interface AccountObservationsView {
+  * failure never reads as a sign-in problem. Products own both mutations and their authority.
+  *
+  * Inside a compact row with a menu, Refresh and Details move into that menu and the band shows
+- * only the usage cells; the source, its age and the checks open as the row's details.
++ * only the usage cells; the source, its age and the checks open as the row's details. A grouped
++ * row passes `group` instead of `health`: Details list each sign-in's checks, and one Check now,
++ * also in the row's menu, checks them all.
+  */
+ export function AccountObservations<E>({
+   account,
+   query,
+   refresh,
+   health,
++  group,
+   windowTokens,
+   resets,
+   Failure,
+@@ -66,6 +77,11 @@ export function AccountObservations<E>({
+     readonly showStatus?: boolean;
+     readonly canReconnect?: (app: App) => boolean;
+   };
++  /** Every sign-in of a grouped row, which `check` checks together. */
++  readonly group?: {
++    readonly signIns: readonly AccountSignIn[];
++    readonly check: () => Promise<Exit.Exit<AccountGroupCheckOutcome<E>, E>>;
++  };
+   /** A window's footer count, such as the tokens the account's pool counted in it. */
+   readonly windowTokens?: ComponentProps<typeof ObservationReadings>["tokens"];
+   /** Only for a caller who may spend this account's banked resets; each spend asks first. */
+@@ -84,6 +100,7 @@ export function AccountObservations<E>({
+   const inspected = view?.canInspect === true ? view : undefined;
+   const [pending, setPending] = useState(false);
+   const [error, setError] = useState<Cause.Cause<E>>();
++  const checks = useSignInChecks(group);
+   const run = async () => {
+     if (pending) return;
+     setPending(true);
+@@ -104,7 +121,7 @@ export function AccountObservations<E>({
+     inspected !== undefined &&
+     (inspected.reports.length > 0 || inspected.hasUsageReporter === true);
+   const blocked = view === undefined ? undefined : refreshBlocked(view, now, format);
+-  const hasDetails = reported || health !== undefined;
++  const hasDetails = reported || health !== undefined || checks !== undefined;
+   const setUsage = row?.setUsage;
+   useEffect(() => {
+     if (setUsage === undefined) return;
+@@ -119,7 +136,7 @@ export function AccountObservations<E>({
+     );
+   }, [setUsage, hasDetails, reported, pending, blocked]);
+   useEffect(() => (setUsage === undefined ? undefined : () => setUsage(undefined)), [setUsage]);
+-  if (!reported && health === undefined && !AsyncResult.isFailure(result)) return null;
++  if (!reported && !hasDetails && !AsyncResult.isFailure(result)) return null;
+   const fact = (detailsOnly: boolean) => (
+     <UsageFact
+       result={result}
+@@ -153,14 +170,17 @@ export function AccountObservations<E>({
+     queued.length === 0 &&
+     !pending &&
+     error === undefined &&
++    checks?.pending !== true &&
++    checks?.error === undefined &&
++    !partialOutcome(checks) &&
+     !AsyncResult.isFailure(result)
+   )
+     return null;
+   return (
+     <div
+       role="group"
+-      aria-label={`${health === undefined ? "Usage" : "Usage and health"} of ${label}`}
+-      aria-busy={pending}
++      aria-label={`${health === undefined && checks === undefined ? "Usage" : "Usage and health"} of ${label}`}
++      aria-busy={pending || checks?.pending === true}
+       data-account-observations
+       className="@container grid min-w-0 grid-cols-[minmax(0,_1fr)] gap-2.5 text-[11px] text-foreground/80"
+     >
+@@ -199,6 +219,14 @@ export function AccountObservations<E>({
+             </p>
+           )}
+           {!open && error && <Failure cause={error} layout="compact" />}
++          {!open && checks?.pending === true && (
++            <p role="status" className="text-muted-foreground">
++              Checking sign-ins…
++            </p>
++          )}
++          {!open && checks !== undefined && (
++            <SignInCheckOutcome state={checks} quiet Failure={Failure} />
++          )}
+           {!open && AsyncResult.isFailure(result) && (
+             <Failure
+               cause={result.cause}
+@@ -212,7 +240,7 @@ export function AccountObservations<E>({
+         <div
+           className={cn(
+             "grid min-w-0 grid-cols-[minmax(0,_1fr)] items-start gap-x-6 gap-y-1.5 text-muted-foreground",
+-            health === undefined
++            health === undefined && checks === undefined
+               ? "@[740px]:grid-cols-[minmax(0,_1fr)_auto]"
+               : "@[740px]:grid-cols-[minmax(0,_1fr)_minmax(0,_1fr)_auto]",
+           )}
+@@ -220,6 +248,7 @@ export function AccountObservations<E>({
+           {health !== undefined && (
+             <AccountHealthLine account={account} {...health} Failure={Failure} />
+           )}
++          {checks !== undefined && <SignInChecks state={checks} Failure={Failure} />}
+           {fact(false)}
+           {hasDetails ? (
+             <Button
+@@ -246,6 +275,7 @@ export function AccountObservations<E>({
+           {compact && health !== undefined && (
+             <AccountHealthLine account={account} {...health} Failure={Failure} />
+           )}
++          {compact && checks !== undefined && <SignInChecks state={checks} Failure={Failure} />}
+           {compact && fact(false)}
+           {fact(true)}
+           <ObservationDetails
+@@ -253,6 +283,7 @@ export function AccountObservations<E>({
+             reports={inspected?.reports ?? []}
+             account={account}
+             apps={health?.apps}
++            signIns={checks?.signIns}
+             now={now}
+             format={format}
+           />
+diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages/ui/src/implementation/dashboard/account-row.tsx
+index f02d577..53a3e76 100644
+--- a/packages/ui/src/implementation/dashboard/account-row.tsx
++++ b/packages/ui/src/implementation/dashboard/account-row.tsx
+@@ -138,6 +138,14 @@ export interface AccountRowUsage {
+   readonly disabledReason?: string | undefined;
+ }
+ 
++/** Checking every sign-in of a grouped identity row together, offered from the row's menu. */
++export interface AccountRowCheck {
++  readonly run: () => void;
++  readonly pending: boolean;
++  /** Why nothing can be checked, such as no app defining a check. */
++  readonly disabledReason?: string | undefined;
++}
++
+ /** A row-level action a host control offers through the row's menu, such as adding an app. */
+ export interface AccountRowMenuAction {
+   readonly label: string;
+@@ -162,6 +170,8 @@ interface AccountRowState {
+   readonly setDetails: (open: boolean) => void;
+   readonly usage: AccountRowUsage | undefined;
+   readonly setUsage: (usage: AccountRowUsage | undefined) => void;
++  readonly check: AccountRowCheck | undefined;
++  readonly setCheck: (check: AccountRowCheck | undefined) => void;
+   /** Row content that only Details shows, such as requested access or the description. */
+   readonly extra: boolean;
+   readonly setExtra: (present: boolean) => void;
+@@ -179,6 +189,7 @@ export function AccountRowProvider({ children }: { readonly children: ReactNode
+   const [menu, setMenu] = useState(false);
+   const [details, setDetails] = useState(false);
+   const [usage, setUsage] = useState<AccountRowUsage>();
++  const [check, setCheck] = useState<AccountRowCheck>();
+   const [extra, setExtra] = useState(false);
+   const [identity, setIdentity] = useState<AccountRowMenuAction>();
+   const value = useMemo(
+@@ -189,12 +200,14 @@ export function AccountRowProvider({ children }: { readonly children: ReactNode
+       setDetails,
+       usage,
+       setUsage,
++      check,
++      setCheck,
+       extra,
+       setExtra,
+       identity,
+       setIdentity,
+     }),
+-    [menu, details, usage, extra, identity],
++    [menu, details, usage, check, extra, identity],
+   );
+   return <AccountRowContext.Provider value={value}>{children}</AccountRowContext.Provider>;
+ }
+@@ -204,9 +217,9 @@ export function OutsideAccountRow({ children }: { readonly children: ReactNode }
+   return <AccountRowContext.Provider value={undefined}>{children}</AccountRowContext.Provider>;
+ }
+ 
+-/** Whether the row has actions of its own (usage, Details, adding an app) for its menu. */
++/** Whether the row has actions of its own (usage, checks, Details, adding an app) for its menu. */
+ export const accountRowHasActions = (row: AccountRowState) =>
+-  row.usage !== undefined || row.extra || row.identity !== undefined;
++  row.usage !== undefined || row.check !== undefined || row.extra || row.identity !== undefined;
+ 
+ /**
+  * Rendered by a row's menu so the row knows its actions have a home there. Set before paint, so
+@@ -255,14 +268,15 @@ function AccountRowIdentityItem() {
+ }
+ 
+ /**
+- * The row's own actions at the top of its menu: refreshing usage, details and adding an app. The
+- * separator divides them from the menu's other items, when there are any.
++ * The row's own actions at the top of its menu: refreshing usage, details, checking its sign-ins
++ * and adding an app. The separator divides them from the menu's other items, when there are any.
+  */
+ export function AccountRowMenuItems({ separator = true }: { readonly separator?: boolean }) {
+   const row = useAccountRow();
+   if (row === undefined || !accountRowHasActions(row)) return null;
+-  const details = row.usage !== undefined || row.extra;
++  const details = row.usage !== undefined || row.check !== undefined || row.extra;
+   const { refresh, pending = false, disabledReason } = row.usage ?? {};
++  const check = row.check;
+   return (
+     <>
+       {refresh !== undefined && (
+@@ -283,6 +297,19 @@ export function AccountRowMenuItems({ separator = true }: { readonly separator?:
+           {row.details ? "Hide details" : "Details"}
+         </DropdownMenuItem>
+       )}
++      {check !== undefined && (
++        <DropdownMenuItem
++          disabled={check.pending || check.disabledReason !== undefined}
++          onSelect={() => check.run()}
++        >
++          <span className="flex min-w-0 flex-col">
++            <span>{check.pending ? "Checking…" : "Check now"}</span>
++            {!check.pending && check.disabledReason !== undefined && (
++              <span className="text-[11px] text-muted-foreground">{check.disabledReason}</span>
++            )}
++          </span>
++        </DropdownMenuItem>
++      )}
+       <AccountRowIdentityItem />
+       {separator && <DropdownMenuSeparator />}
+     </>
+diff --git a/packages/ui/src/implementation/dashboard/account-sign-in-checks.tsx b/packages/ui/src/implementation/dashboard/account-sign-in-checks.tsx
+new file mode 100644
+index 0000000..2de6368
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/account-sign-in-checks.tsx
+@@ -0,0 +1,175 @@
++/**
++ * Checks of every sign-in in a grouped identity row, run together by one host action. The host
++ * checks each sign-in with the caller's own authority. A sign-in it refuses is only counted, never
++ * named, and keeps what the row already showed.
++ */
++import type { AccountId, App } from "@executor-js/sdk";
++import { Cause, Exit } from "effect";
++import { useEffect, useRef, useState, type ComponentType } from "react";
++import type { AccountSummary, FailureProps } from "../../contracts/dashboard.ts";
++import { Button } from "../components/button.tsx";
++import { AccountHealthLine } from "./account-health-line.tsx";
++import { driverCanCheck } from "./account-health.tsx";
++import { useAccountRow } from "./account-row.tsx";
++
++/** One saved sign-in of a grouped row, with the apps it serves. */
++export interface AccountSignIn {
++  readonly account: AccountSummary;
++  /** What the sign-in's own menu announces, such as its given name. */
++  readonly name: string;
++  readonly apps: readonly App[];
++  readonly canReconnect?: ((app: App) => boolean) | undefined;
++}
++
++/** The host's answer for each sign-in it was given. */
++export type AccountGroupCheckOutcome<F> = readonly (
++  | { readonly account: AccountId; readonly status: "checked" | "refused" }
++  | { readonly account: AccountId; readonly status: "failed"; readonly error: F }
++)[];
++
++const noCheck = "No app that uses these sign-ins defines a check.";
++
++const checkable = ({ account, apps }: AccountSignIn) =>
++  (account.health?.apps.some(
++    (entry) => entry.checkable && apps.some((app) => app.id === entry.app),
++  ) ??
++    false) ||
++  driverCanCheck(account.health?.driver);
++
++/** A grouped row's shared check: one pending run and the last outcome. */
++export interface SignInChecksState<E> {
++  readonly signIns: readonly AccountSignIn[];
++  readonly pending: boolean;
++  readonly error: Cause.Cause<E> | undefined;
++  readonly outcome: AccountGroupCheckOutcome<E> | undefined;
++  readonly disabledReason: string | undefined;
++  readonly run: () => Promise<void>;
++}
++
++const count = (n: number) => `${n} ${n === 1 ? "sign-in" : "sign-ins"}`;
++
++/**
++ * The group check's state. Inside a row with a menu it also offers Check now from that menu, so
++ * the menu item and Details share one pending check and one outcome.
++ */
++export function useSignInChecks<E>(
++  group:
++    | {
++        readonly signIns: readonly AccountSignIn[];
++        readonly check: () => Promise<Exit.Exit<AccountGroupCheckOutcome<E>, E>>;
++      }
++    | undefined,
++): SignInChecksState<E> | undefined {
++  const [pending, setPending] = useState(false);
++  const [error, setError] = useState<Cause.Cause<E>>();
++  const [outcome, setOutcome] = useState<AccountGroupCheckOutcome<E>>();
++  const run = async () => {
++    if (pending || group === undefined) return;
++    setPending(true);
++    setError(undefined);
++    setOutcome(undefined);
++    const exit = await group.check();
++    setPending(false);
++    if (Exit.isFailure(exit)) setError(exit.cause);
++    else setOutcome(exit.value);
++  };
++  // The row menu keeps one stable callback that always runs the latest check.
++  const latest = useRef(run);
++  useEffect(() => {
++    latest.current = run;
++  });
++  const grouped = group !== undefined;
++  const disabledReason = group?.signIns.some(checkable) === true ? undefined : noCheck;
++  const setCheck = useAccountRow()?.setCheck;
++  useEffect(() => {
++    if (setCheck === undefined) return;
++    setCheck(grouped ? { run: () => void latest.current(), pending, disabledReason } : undefined);
++  }, [setCheck, grouped, pending, disabledReason]);
++  useEffect(() => (setCheck === undefined ? undefined : () => setCheck(undefined)), [setCheck]);
++  return group === undefined
++    ? undefined
++    : { signIns: group.signIns, pending, error, outcome, disabledReason, run };
++}
++
++/** Whether the last check left a sign-in unchecked, which the collapsed row also says. */
++export const partialOutcome = <E,>(state: SignInChecksState<E> | undefined) =>
++  state?.outcome?.some((result) => result.status !== "checked") === true;
++
++/**
++ * What the last group check did: how many sign-ins it checked, how many the caller may not use,
++ * and the first failure. `quiet` leaves a fully checked group to the updated checks.
++ */
++export function SignInCheckOutcome<E>({
++  state,
++  quiet = false,
++  Failure,
++}: {
++  readonly state: SignInChecksState<E>;
++  readonly quiet?: boolean;
++  readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
++}) {
++  const { outcome, error } = state;
++  const failed = outcome?.flatMap((result) => (result.status === "failed" ? [result] : [])) ?? [];
++  const refused = outcome?.filter((result) => result.status === "refused").length ?? 0;
++  const checked = outcome?.filter((result) => result.status === "checked").length ?? 0;
++  const partial = refused > 0 || failed.length > 0;
++  return (
++    <>
++      {outcome !== undefined && (partial || !quiet) && (
++        <div role="status" className="grid min-w-0 gap-0.75" data-sign-in-check-outcome>
++          <p className="text-muted-foreground">
++            {partial
++              ? `Checked ${checked} of ${count(outcome.length)}.`
++              : `Checked ${count(checked)}.`}
++            {refused > 0 &&
++              ` ${refused} ${refused === 1 ? "wasn't" : "weren't"} checked because you can't use ${refused === 1 ? "it" : "them"}.`}
++            {failed.length > 0 && ` ${failed.length} couldn't be checked.`}
++          </p>
++          {failed[0] !== undefined && (
++            <Failure cause={Cause.fail(failed[0].error)} layout="compact" />
++          )}
++        </div>
++      )}
++      {error && <Failure cause={error} layout="compact" />}
++    </>
++  );
++}
++
++/** Each sign-in's latest checks under its name, with one Check now for the whole group. */
++export function SignInChecks<E>({
++  state,
++  Failure,
++}: {
++  readonly state: SignInChecksState<E>;
++  readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
++}) {
++  return (
++    <div className="flex min-w-0 flex-col gap-1.5" data-sign-in-checks>
++      <div className="flex min-h-6 flex-wrap items-center gap-x-1.5 gap-y-0.5">
++        <span>Checks of {count(state.signIns.length)}</span>
++        <Button
++          variant="outline"
++          size="xs"
++          className="ml-1"
++          loading={state.pending}
++          disabledReason={state.disabledReason}
++          onClick={() => void state.run()}
++        >
++          Check now
++        </Button>
++      </div>
++      <SignInCheckOutcome state={state} Failure={Failure} />
++      {state.signIns.map((signIn) => (
++        <div key={signIn.account.id} className="grid min-w-0 gap-0.5" data-sign-in>
++          <span className="font-medium text-foreground wrap-anywhere">{signIn.name}</span>
++          <AccountHealthLine<E>
++            account={signIn.account}
++            apps={signIn.apps}
++            canReconnect={signIn.canReconnect}
++            Failure={Failure}
++          />
++        </div>
++      ))}
++    </div>
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+index 42551ec..1d94857 100644
+--- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
++++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+@@ -35,6 +35,7 @@ import { useAtomValue } from "@effect/atom-react";
+ import { cn } from "../lib/utils.ts";
+ import { useEffect, useRef, useState, type ReactNode } from "react";
+ import { AccountActionsMenu } from "./account-actions.tsx";
++import type { AccountSignIn } from "./account-sign-in-checks.tsx";
+ import { QueryResult, useQuery, useDashboard } from "./context.tsx";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
+@@ -112,8 +113,15 @@ export function AccountsPage<E>({
+   readonly accountTraffic?:
+     | ((accounts: readonly AccountSummary[]) => AccountRowTraffic | undefined)
+     | undefined;
+-  /** A full-width block under the row, such as the account's usage, given the apps using it. */
+-  readonly accountDetails?: (account: AccountSummary, apps: readonly App[]) => ReactNode;
++  /**
++   * A full-width block under the row, such as the account's usage, given the apps using it. A
++   * grouped identity row also gives each of its sign-ins, whose checks Details list.
++   */
++  readonly accountDetails?: (
++    account: AccountSummary,
++    apps: readonly App[],
++    signIns?: readonly AccountSignIn[],
++  ) => ReactNode;
+   /** A linked account is scrolled into view and marked, since accounts have no page of their own. */
+   readonly highlight?: AccountId | undefined;
+ }) {
+@@ -195,7 +203,11 @@ function AccountsList({
+   readonly accountTraffic?:
+     | ((accounts: readonly AccountSummary[]) => AccountRowTraffic | undefined)
+     | undefined;
+-  readonly accountDetails?: (account: AccountSummary, apps: readonly App[]) => ReactNode;
++  readonly accountDetails?: (
++    account: AccountSummary,
++    apps: readonly App[],
++    signIns?: readonly AccountSignIn[],
++  ) => ReactNode;
+   readonly highlight?: AccountId | undefined;
+ }) {
+   const brand = useProductBrand();
+@@ -451,7 +463,19 @@ function AccountsList({
+                   )}
+                   {accountDetails !== undefined && (
+                     <div className={cn(accountRowBand(false), "empty:hidden")}>
+-                      {accountDetails(account, apps)}
++                      {bindings.length > 1
++                        ? accountDetails(
++                            account,
++                            apps,
++                            bindings.map((binding) => ({
++                              account: binding,
++                              name: accountMenuName(binding, accountKindLabel(data, binding), {
++                                binding: true,
++                              }),
++                              apps: bindingApps(data, [binding]),
++                            })),
++                          )
++                        : accountDetails(account, apps)}
+                     </div>
+                   )}
+                 </div>
+@@ -466,8 +490,9 @@ function AccountsList({
+ 
+ /**
+  * The ⋯ for a row the host gives no menu of its own, such as a grouped identity: the row's own
+- * actions (usage, Details, adding an app for the identity), and each grouped sign-in's own actions
+- * in a dialog. Like every row with a menu, its checks and requested access open with Details.
++ * actions (usage, Details, checking every sign-in, adding an app for the identity), and each
++ * grouped sign-in's own actions in a dialog. Like every row with a menu, its checks and requested
++ * access open with Details.
+  */
+ function IdentityRowMenu({
+   title,

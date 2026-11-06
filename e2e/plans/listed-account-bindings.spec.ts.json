@@ -34,7 +34,7 @@
     },
     "listedBindingCompactRow": {
       "fixtures": "actors",
-      "title": "A grouped sign-in row stays one compact row; its checks and requested access open with Details",
+      "title": "A grouped sign-in row stays one compact row; Check now checks each sign-in the caller may use and Details list every sign-in's checks",
       "targets": {
         "self-host": {
           "status": "scheduled"
@@ -69,6 +69,11 @@
     ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/accounts-client.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/account-observations.tsx",
-    ".upstream/packages/ui/src/implementation/dashboard/account-row.tsx"
+    ".upstream/packages/ui/src/implementation/dashboard/account-row.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-sign-in-checks.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-health-line.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-observation-details.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/account-observations-client.tsx",
+    ".upstream/apps/hosted/web/src/contracts/accounts.ts"
   ]
 }
