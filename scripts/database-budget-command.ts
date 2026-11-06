@@ -1,7 +1,15 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { checkDatabaseBackends, databaseVerificationOverallMs } from "./verify-database-budget.ts";
-import { bounded, openDeploymentReadiness } from "./database-budget-readiness.ts";
+import {
+  checkDatabaseBackends,
+  databaseVerificationOverallMs,
+} from "./database-budget-postgres.ts";
+import {
+  bounded,
+  liveDeadline,
+  openDeploymentReadiness,
+  withinDeadline,
+} from "./database-budget-readiness.ts";
 import { decodeRuntimeReady } from "../src/pool/deployment-readiness.ts";
 import {
   DatabaseBudgetFailure,
@@ -37,7 +45,14 @@ export async function runDatabaseBudgetCommand(
   } = {},
 ) {
   const now = adapters.now ?? Date.now;
-  const timeout = adapters.timeout ?? AbortSignal.timeout;
+  const deadlines: ReturnType<typeof liveDeadline>[] = [];
+  const timeout =
+    adapters.timeout ??
+    ((milliseconds: number) => {
+      const deadline = liveDeadline(milliseconds);
+      deadlines.push(deadline);
+      return deadline.signal;
+    });
   const open = adapters.open ?? openDeploymentReadiness;
   const check = adapters.check ?? checkDatabaseBackends;
   let readiness: Awaited<ReturnType<typeof openDeploymentReadiness>> | undefined;
@@ -72,10 +87,13 @@ export async function runDatabaseBudgetCommand(
   });
   const mode = args.includes("--ready") ? "ready" : "verify";
   try {
+    const command = timeout(mode === "ready" ? 180_000 : databaseVerificationCommandMs);
     const worker = source.DATABASE_BUDGET_WORKER;
     const previous =
       worker && mode === "verify"
-        ? JSON.parse(await readFile(source.DATABASE_BUDGET_READY_RECEIPT ?? "", "utf8"))
+        ? JSON.parse(
+            await bounded(readFile(source.DATABASE_BUDGET_READY_RECEIPT ?? "", "utf8"), command),
+          )
         : undefined;
     const initialReady = previous ? decodeRuntimeReady(previous.ready, target) : undefined;
     if (
@@ -92,10 +110,8 @@ export async function runDatabaseBudgetCommand(
     const remaining = overallDeadline - now();
     if (!Number.isFinite(remaining) || remaining <= 0)
       throw new Error("Overall verification bound expired");
-    const operation = timeout(
-      mode === "ready" ? 180_000 : Math.min(remaining, databaseVerificationCommandMs),
-    );
-    const startup = mode === "ready" ? operation : AbortSignal.any([operation, timeout(180_000)]);
+    const operation = AbortSignal.any([command, timeout(remaining)]);
+    const startup = operation;
     if (worker) {
       const opening = open({
         worker,
@@ -105,7 +121,7 @@ export async function runDatabaseBudgetCommand(
       });
       opening.then(
         (connection) => {
-          if (startup.aborted) void bounded(connection.close(), timeout(1000)).catch(() => {});
+          if (startup.aborted) void withinDeadline(connection.close(), 1000).catch(() => {});
         },
         () => {},
       );
@@ -113,14 +129,14 @@ export async function runDatabaseBudgetCommand(
     }
     if (mode === "ready") {
       if (!readiness) throw new Error("Readiness service missing");
-      const ready = await readiness.ready(startup);
+      const ready = await bounded(readiness.ready(startup), startup);
       receipt = {
         ...receipt,
         outcome: "converged",
         runtime: ready,
         elapsedMs: now() - startedAt,
       };
-      await save(path, { startedAt, readyReceivedAt: now(), ready });
+      await withinDeadline(save(path, { startedAt, readyReceivedAt: now(), ready }), 1000);
     } else {
       await check({
         adminUrl: source.DATABASE_BUDGET_ADMIN_URL ?? "",
@@ -132,15 +148,14 @@ export async function runDatabaseBudgetCommand(
         overallDeadline,
         ...(readiness
           ? {
-              ready: (signal: AbortSignal) =>
-                readiness!.ready(AbortSignal.any([signal, timeout(180_000)])),
+              ready: (signal: AbortSignal) => bounded(readiness!.ready(signal), signal),
             }
           : {}),
         signal: operation,
         now,
         retain: async (value) => {
           receipt = contextual(value);
-          await save(path, receipt);
+          await withinDeadline(save(path, receipt), 1000);
         },
       });
     }
@@ -154,9 +169,14 @@ export async function runDatabaseBudgetCommand(
         elapsedMs: now() - startedAt,
       };
     receipt = contextual(receipt);
-    await save(path, receipt);
+    // The CLI still emits the failure receipt if the destination cannot be written.
+    await withinDeadline(save(path, receipt), 1000).catch(() => {});
     throw new DatabaseBudgetFailure(receipt);
   } finally {
-    if (readiness) await bounded(readiness.close(), timeout(1000)).catch(() => {});
+    try {
+      if (readiness) await withinDeadline(readiness.close(), 1000).catch(() => {});
+    } finally {
+      for (const deadline of deadlines) deadline.dispose();
+    }
   }
 }
