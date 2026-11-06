@@ -193,16 +193,16 @@ jobs:
       - run: bun run --cwd .upstream e2e:prepare
       - name: Verify Vercel sign-in, retained tokens and both tool transports
         run: bun e2e/vercel-sign-in.mjs .generated/vercel-sign-in/ci
+      - name: Collect sanitized connector diagnostics
+        if: always()
+        run: node scripts/ci/collect-connector-evidence.mjs vercel-sign-in "$RUNNER_TEMP/connector-evidence.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: vercel-sign-in
-          path: |
-            .generated/vercel-sign-in/ci/report.json
-            .generated/vercel-sign-in/ci/partial-results.json
-            .generated/vercel-sign-in/ci/upstream-calls.json
-            .generated/vercel-sign-in/ci/failure.txt
-          if-no-files-found: warn
+          name: vercel-sign-in-evidence
+          path: ${{ runner.temp }}/connector-evidence.json
+          if-no-files-found: error
+
   elevenlabs-sign-in:
     needs: select
     if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'elevenlabs-sign-in')
@@ -220,16 +220,16 @@ jobs:
       - run: bun run --cwd .upstream e2e:prepare
       - name: Verify ElevenLabs client metadata sign-in, retained tokens and audio approval
         run: bun e2e/elevenlabs-sign-in.mjs .generated/elevenlabs-sign-in/ci
+      - name: Collect sanitized connector diagnostics
+        if: always()
+        run: node scripts/ci/collect-connector-evidence.mjs elevenlabs-sign-in "$RUNNER_TEMP/connector-evidence.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: elevenlabs-sign-in
-          path: |
-            .generated/elevenlabs-sign-in/ci/report.json
-            .generated/elevenlabs-sign-in/ci/partial-results.json
-            .generated/elevenlabs-sign-in/ci/upstream-calls.json
-            .generated/elevenlabs-sign-in/ci/failure.txt
-          if-no-files-found: warn
+          name: elevenlabs-sign-in-evidence
+          path: ${{ runner.temp }}/connector-evidence.json
+          if-no-files-found: error
+
   slack-health:
     needs: select
     if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'slack-health')
@@ -252,15 +252,16 @@ jobs:
           mkdir -p .generated/slack-health
           git show "${{ needs.select.outputs.base_sha }}:src/catalog/slack.json" > .generated/slack-before-health.json
           bun e2e/slack-health.mjs .generated/slack-health/ci .generated/slack-before-health.json
+      - name: Collect sanitized connector diagnostics
+        if: always()
+        run: node scripts/ci/collect-connector-evidence.mjs slack-health "$RUNNER_TEMP/connector-evidence.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: slack-health
-          path: |
-            .generated/slack-health/ci/report.json
-            .generated/slack-health/ci/partial-results.json
-            .generated/slack-health/ci/failure.txt
-          if-no-files-found: warn
+          name: slack-health-evidence
+          path: ${{ runner.temp }}/connector-evidence.json
+          if-no-files-found: error
+
   catalog-compat:
     needs: select
     if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'catalog-compat')
@@ -280,19 +281,16 @@ jobs:
         run: bun e2e/catalog-compat.mjs .generated/catalog-compat/ci all 8
       - name: Verify ElevenLabs tools load as the catalog serves it, with dropped routes
         run: bun e2e/elevenlabs-discovery.mjs .generated/elevenlabs-discovery/ci
+      - name: Collect sanitized connector diagnostics
+        if: always()
+        run: node scripts/ci/collect-connector-evidence.mjs catalog-compat "$RUNNER_TEMP/connector-evidence.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: catalog-compat
-          # Only these files: session files under .generated stay private.
-          path: |
-            .generated/catalog-compat/ci/report.json
-            .generated/catalog-compat/ci/partial-results.json
-            .generated/catalog-compat/ci/failure.txt
-            .generated/elevenlabs-discovery/ci/result.json
-            .generated/elevenlabs-discovery/ci/failure.txt
-          include-hidden-files: true
-          if-no-files-found: warn
+          name: catalog-compat-evidence
+          path: ${{ runner.temp }}/connector-evidence.json
+          if-no-files-found: error
+
   host-managed-accounts:
     needs: select
     if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'host-managed-accounts')
@@ -1342,13 +1340,16 @@ jobs:
         env:
           CONNECTORS_PROOF_DIRECT: "1"
           CONNECTORS_PROOF_SKIP_CLAUDE: "1"
+      - name: Collect sanitized connector diagnostics
+        if: always()
+        run: node scripts/ci/collect-connector-evidence.mjs gitlab-connectors "$RUNNER_TEMP/connector-evidence.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: gitlab-account-site-ui
-          path: .generated/connectors-proof/run-*/gitlab-account-site-*.png
+          name: gitlab-connectors-evidence
+          path: ${{ runner.temp }}/connector-evidence.json
           if-no-files-found: error
-          include-hidden-files: true
+
   mcp-apps:
     needs: select
     if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'mcp-apps')
@@ -1546,6 +1547,18 @@ jobs:
         run: bun scripts/ci/check-plans.ts
       - name: Check workflow syntax
         run: node scripts/ci/check-workflows.ts
+      - name: Prove connector failure diagnostics reach artifact inputs
+        env:
+          BASALT_CONNECTOR_UPLOAD_PROOF_DIR: .generated/ci-connector-evidence-proof
+        run: node --test scripts/ci/connector-evidence.test.mjs
+      - name: Upload sanitized connector failure proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: connector-failure-evidence-proof
+          path: .generated/ci-connector-evidence-proof
+          include-hidden-files: true
+          if-no-files-found: error
       - name: Check app conventions
         run: |
           node scripts/app-lint/prepare-host.mjs
