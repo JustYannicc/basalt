@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The hosted app Accounts tab preloads its browser-only client through the existing route loading mechanism before rendering it. A first entry keeps an honest loading or previous-content state while the client is held, without a blank nested fallback or delayed Suspense reveal, at desktop and phone widths on Cloud and self-host. Retained revisits reuse the same loaded client and preserve account state. Other app tabs start no account workflow reads, health checks, pollers or writes merely to load their own route. The client remains excluded from server rendering and failed imports keep the existing retry path."
+    }
+  }
+}

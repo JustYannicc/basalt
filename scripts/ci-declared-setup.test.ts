@@ -64,7 +64,7 @@ test("HITL partitions retain every target scenario exactly once behind required 
       }
     }
   }
-  assert.equal(counts.size, 58);
+  assert.equal(counts.size, 62);
   assert.ok([...counts.values()].every((count) => count === 1));
   for (const target of ["self-host", "cloud"])
     for (const scenario of [
@@ -76,6 +76,8 @@ test("HITL partitions retain every target scenario exactly once behind required 
       "settingsIntentPrefetchPhone",
       "settingsIntentPrefetchMember",
       "settingsLoading",
+      "hostedAppAccountsFirstEntryDesktop",
+      "hostedAppAccountsFirstEntryPhone",
     ])
       assert.equal(counts.get(`${target}:${scenario}`), 1, `${target}:${scenario}`);
   for (const path of [
@@ -86,6 +88,7 @@ test("HITL partitions retain every target scenario exactly once behind required 
     ".upstream/e2e/support/hitl-touch-intent.ts",
     ".upstream/e2e/tests/settings-intent-prefetch.spec.ts",
     ".upstream/e2e/tests/settings-loading.spec.ts",
+    ".upstream/e2e/tests/app-accounts-tab.spec.ts",
     ".upstream/e2e/support/settings-touch-intent.ts",
     ".upstream/packages/ui/src/implementation/dashboard/review-lazy.tsx",
   ])

@@ -1,0 +1,365 @@
+diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.apps.$appId.tsx b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.apps.$appId.tsx
+--- a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.apps.$appId.tsx
++++ b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.apps.$appId.tsx
+@@ -1,6 +1,7 @@
+ import { AccountConnectionDialog } from "@executor-js/hosted-web/pages/connection-dialog";
+ import { createFileRoute } from "@tanstack/react-router";
+ import { OpenAppAction } from "@executor-js/hosted-web/pages/app-sign-in";
++import { preloadAppAccounts } from "@executor-js/hosted-web/pages/app-accounts";
+ import { AppDetailPage, appDetailPageReads } from "@executor-js/hosted-web/pages/app-detail";
+ import { parseAppSearch } from "@executor-js/hosted-web/contracts/navigation";
+ import { parseAppParams } from "@executor-js/hosted-web/route-params";
+@@ -9,6 +10,10 @@
+   params: { parse: parseAppParams },
+   validateSearch: parseAppSearch,
+   staticData: { organizationReads: appDetailPageReads },
++  // Opening Accounts waits for its browser-only view, so the router keeps the previous tab until
++  // the view can render without a nested fallback; see preloadView. Other tabs share one match.
++  loaderDeps: ({ search }) => ({ accounts: search.view === "accounts" }),
++  loader: ({ deps }) => (deps.accounts ? preloadAppAccounts() : undefined),
+   component: AppPage,
+ });
+ function AppPage() {
+diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.apps.$appId.tsx b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.apps.$appId.tsx
+--- a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.apps.$appId.tsx
++++ b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.apps.$appId.tsx
+@@ -2,6 +2,7 @@
+ import { createFileRoute } from "@tanstack/react-router";
+ import { AppDetailPage, appDetailPageReads } from "@executor-js/hosted-web/pages/app-detail";
+ import { OpenAppAction } from "@executor-js/hosted-web/pages/app-sign-in";
++import { preloadAppAccounts } from "@executor-js/hosted-web/pages/app-accounts";
+ import { parseAppSearch } from "@executor-js/hosted-web/contracts/navigation";
+ import { parseAppParams } from "@executor-js/hosted-web/route-params";
+ 
+@@ -9,6 +10,10 @@
+   params: { parse: parseAppParams },
+   validateSearch: parseAppSearch,
+   staticData: { organizationReads: appDetailPageReads },
++  // Opening Accounts waits for its browser-only view, so the router keeps the previous tab until
++  // the view can render without a nested fallback; see preloadView. Other tabs share one match.
++  loaderDeps: ({ search }) => ({ accounts: search.view === "accounts" }),
++  loader: ({ deps }) => (deps.accounts ? preloadAppAccounts() : undefined),
+   component: AppPage,
+ });
+ function AppPage() {
+diff --git a/apps/hosted/web/src/implementation/pages/app-accounts.tsx b/apps/hosted/web/src/implementation/pages/app-accounts.tsx
+--- a/apps/hosted/web/src/implementation/pages/app-accounts.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-accounts.tsx
+@@ -1,5 +1,7 @@
+ import { lazy, Suspense } from "react";
+ import { useHydrated } from "@executor-js/ui/hooks/hydrated";
++import { preloadView, usePreloadedView } from "@executor-js/ui/dashboard/review-lazy";
++import { AppAccountsLoading } from "@executor-js/ui/dashboard/app-loading";
+ import type {
+   AppAccounts as AccountsClient,
+   AppConnectionDialogContent as DialogClient,
+@@ -11,17 +13,36 @@
+   import.meta.env.SSR
+     ? Promise.reject(new Error("Account workflows render only in a browser"))
+     : import("./app-accounts-client.tsx");
+-const Accounts = lazy(() => load().then((module) => ({ default: module.AppAccounts })));
++const loadAccounts = () => load().then((module) => ({ default: module.AppAccounts }));
+ const Dialog = lazy(() =>
+   load().then((module) => ({ default: module.AppConnectionDialogContent })),
+ );
++
++/** The app route's loader awaits this when it opens the Accounts tab; see preloadView. */
++export const preloadAppAccounts = () => preloadView(loadAccounts);
++
+ export function AppAccounts(props: Parameters<typeof AccountsClient>[0]) {
+   const hydrated = useHydrated();
++  const Accounts = usePreloadedView(loadAccounts);
+   return hydrated ? (
+-    <Suspense fallback={null}>
++    <Suspense fallback={<Loading app={props.app} />}>
++      {/* oxlint-disable-next-line react/static-components -- usePreloadedView returns one component per mount and loader */}
+       <Accounts {...props} />
+     </Suspense>
+-  ) : null;
++  ) : (
++    <Loading app={props.app} />
++  );
++}
++/**
++ * The page's own Accounts loading state, which pads itself as the tab's whole content. The page
++ * already pads this tab, so the margin cancels that padding and the state sits where it would.
++ */
++function Loading({ app }: Pick<Parameters<typeof AccountsClient>[0], "app">) {
++  return (
++    <div className="-m-5 max-[740px]:-m-4">
++      <AppAccountsLoading app={app} />
++    </div>
++  );
+ }
+ export function AppConnectionDialogContent(props: Parameters<typeof DialogClient>[0]) {
+   const hydrated = useHydrated();
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -8816,6 +8816,26 @@
+       cloud: scheduled,
+     },
+   },
++  hostedAppAccountsFirstEntryDesktop: {
++    fixtures: "actors",
++    file: "app-accounts-tab.spec.ts",
++    title: "App Accounts first entry keeps the app shell and is never blank at 1280px",
++    targets: {
++      local: na("Hosted app accounts wrapper."),
++      "self-host": scheduled,
++      cloud: scheduled,
++    },
++  },
++  hostedAppAccountsFirstEntryPhone: {
++    fixtures: "actors",
++    file: "app-accounts-tab.spec.ts",
++    title: "App Accounts first entry keeps the app shell and is never blank at 390px",
++    targets: {
++      local: na("Hosted app accounts wrapper."),
++      "self-host": scheduled,
++      cloud: scheduled,
++    },
++  },
+   hostedAppAccountsManagerBrowser: {
+     fixtures: "actors",
+     file: "app-accounts-tab.spec.ts",
+diff --git a/e2e/tests/app-accounts-tab.spec.ts b/e2e/tests/app-accounts-tab.spec.ts
+--- a/e2e/tests/app-accounts-tab.spec.ts
++++ b/e2e/tests/app-accounts-tab.spec.ts
+@@ -27,6 +27,7 @@
+ import { Access } from "../support/hosted-app-accounts.ts";
+ import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
+ import { settleWebhookSources } from "../support/webhook-sources.ts";
++import { holdQuery } from "../support/query-transition.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ /**
+@@ -44,6 +45,10 @@
+   tools: router({ who, report }),
+   schedules: { report: appInterval({ minutes: 1 }, report, {}) },
+ }));`;
++const firstEntrySource = `import { defineApp, defineProvider, secrets, query, object, string, router } from "apps";
++const datadog = defineProvider({ name: "Datadog", auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) } });
++const who = query({ input: object({}) }, async () => "ready");
++export default defineApp({ app: { accounts: { datadog } } }, async () => ({ tools: router({ who }) }));`;
+ const Failure = Schema.Struct({ _tag: Schema.String });
+ const Settings = Schema.Array(
+   Schema.Struct({
+@@ -156,7 +161,217 @@
+ /** The schedule row of the app's `report` schedule. */
+ const reportRow = (page: Page) => page.locator('[aria-label="report"]');
+ 
++/** The Accounts tab's browser-only client, held at the public asset boundary. */
++const accountsClient = /\/assets\/app-accounts-client-[^/]+\.js$/;
++/** A link in the app's tab bar. */
++const appTab = (page: Page, name: string) =>
++  page
++    .getByRole("navigation", { name: "App navigation", exact: true })
++    .getByRole("link", { name, exact: true });
++/** What each committed state after the click showed in the app's tab content. */
++interface AccountsTabRecord {
++  /** Whether the pointerdown that opened the tab came from real input. */
++  readonly trusted: boolean | null;
++  /** The Accounts tab's loading state. */
++  readonly loading: boolean;
++  /** The previous tab, still selected, with its own content. */
++  readonly previous: boolean;
++  /** Accounts styled as the selected tab over content that is neither its loading state nor it. */
++  readonly mislabeled: boolean;
++  /** The App accounts section itself. */
++  readonly content: boolean;
++  /** Nothing at all: no text and no loading status, as a nested null fallback leaves it. */
++  readonly blank: boolean;
++  /** The app's heading left the page, so the whole page gave way to a placeholder. */
++  readonly headingLost: boolean;
++}
++
++/**
++ * Classifies every DOM commit from a MutationObserver installed before the click, so a state
++ * React commits and replaces before the next frame is still seen. Nothing here waits on time.
++ * The selected tab is not read: the tab bar's links mark the new location current before its
++ * content commits, so only the content says what the person sees.
++ */
++const recordAccountsTab = (label: string) =>
++  Effect.flatMap(Browser, (browser) =>
++    browser.use(label, (page) =>
++      page.evaluate(() => {
++        const state = {
++          trusted: null as boolean | null,
++          loading: false,
++          previous: false,
++          mislabeled: false,
++          content: false,
++          blank: false,
++          headingLost: false,
++        };
++        const scan = () => {
++          // The tab content follows the header row that holds the tab bar.
++          const nav = document.querySelector('nav[aria-label="App navigation"]');
++          const tab = nav?.parentElement?.nextElementSibling;
++          // The selected tab's look follows the content the page rendered, not the location.
++          const selected = [...(nav?.children ?? [])]
++            .find((item) => item.classList.contains("font-medium"))
++            ?.textContent?.trim();
++          if (tab?.querySelector('section[aria-label="App accounts"]')) state.content = true;
++          else if (!tab?.textContent?.trim() && !tab?.querySelector('[role="status"]'))
++            state.blank = true;
++          else if (tab?.querySelector('[role="status"][aria-label="Loading accounts"]'))
++            state.loading = true;
++          else if (selected === "Accounts") state.mislabeled = true;
++          else state.previous = true;
++          if (!document.querySelector('h1 a[aria-label$=" overview"]')) state.headingLost = true;
++        };
++        document.addEventListener(
++          "pointerdown",
++          (event) => {
++            state.trusted = event.isTrusted;
++          },
++          { once: true, capture: true },
++        );
++        const observer = new MutationObserver(scan);
++        observer.observe(document.documentElement, {
++          subtree: true,
++          childList: true,
++          attributes: true,
++          characterData: true,
++        });
++        Object.assign(window, { __accountsTab: state, __accountsTabObserver: observer });
++      }),
++    ),
++  );
++/** A copy of the record so far; `stop` ends the recording. */
++const readAccountsTab = (label: string, stop: boolean) =>
++  Effect.flatMap(Browser, (browser) =>
++    browser.use(label, (page) =>
++      page.evaluate((stop): AccountsTabRecord => {
++        if (stop) Reflect.get(window, "__accountsTabObserver").disconnect();
++        return { ...Reflect.get(window, "__accountsTab") };
++      }, stop),
++    ),
++  );
++
+ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) => {
++  // Opening the Accounts tab from another tab of the same app, in a document that has never loaded
++  // its code, keeps the app's page until the tab can render: the previous tab, still selected, or
++  // the tab's loading state, then the tab. A blank tab in between is a nested Suspense fallback,
++  // whose reveal React throttles; no wall-clock budget is asserted.
++  for (const width of [1280, 390]) {
++    const scenario =
++      width === 1280
++        ? scenarios.hostedAppAccountsFirstEntryDesktop
++        : scenarios.hostedAppAccountsFirstEntryPhone;
++    it.effect(scenario.title, (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const browser = yield* Browser;
++          const evidence = yield* Evidence;
++          const fixture = yield* sharedApp("First-entry controls", firstEntrySource);
++          yield* fixture.connect("datadog", "Synthetic linked account");
++          yield* browser.login(fixture.actors.owner);
++          yield* browser.use("Set viewport", (page) =>
++            page.setViewportSize({ width, height: 960 }),
++          );
++          // One fresh document, settled on another tab of the same app.
++          yield* browser.use("Open the app's Tools tab", (page) =>
++            page.goto(`${fixture.url}?view=tools&tool=who`),
++          );
++          yield* browser.use("Tools are usable before the tab switch", (page) =>
++            page.getByRole("button", { name: "Run tool", exact: true }).waitFor(),
++          );
++          const chunk = yield* holdQuery(accountsClient, "continue", { allRequests: true });
++          yield* recordAccountsTab("Record the first entry");
++          yield* browser.use("Open Accounts with real input", (page) =>
++            appTab(page, "Accounts").click(),
++          );
++          yield* chunk.requested;
++          yield* browser.use("The Tools tab's content leaves", (page) =>
++            page
++              .getByRole("button", { name: "Run tool", exact: true })
++              .waitFor({ state: "detached" }),
++          );
++          yield* browser.use("Let the held tab paint", (page) =>
++            page.evaluate(
++              () =>
++                new Promise((resolve) =>
++                  requestAnimationFrame(() => requestAnimationFrame(resolve)),
++                ),
++            ),
++          );
++          const held = yield* readAccountsTab("Read the held tab", false);
++          yield* chunk.release;
++          yield* browser.use("The tab shows its accounts", (page) =>
++            appSection(page)
++              .getByRole("radio", { name: "Synthetic linked account", exact: true })
++              .waitFor(),
++          );
++          const entered = yield* readAccountsTab("Read the first entry", true);
++
++          // A revisit keeps the loaded code: no request for it, and the tab without a loading state.
++          yield* browser.use("Back to Tools", (page) => appTab(page, "Tools").click());
++          yield* browser.use("The Accounts tab's content leaves", (page) =>
++            appSection(page).waitFor({ state: "detached" }),
++          );
++          const requested: string[] = [];
++          const watch = (request: import("playwright").Request) => {
++            const path = new URL(request.url()).pathname;
++            if (accountsClient.test(path)) requested.push(path);
++          };
++          yield* Effect.acquireRelease(
++            browser.use("Watch revisit requests", (page) =>
++              Promise.resolve(void page.on("request", watch)),
++            ),
++            () =>
++              browser
++                .use("Stop watching revisit requests", (page) =>
++                  Promise.resolve(void page.off("request", watch)),
++                )
++                .pipe(Effect.orDie),
++          );
++          yield* recordAccountsTab("Record the revisit");
++          yield* browser.use("Revisit Accounts", (page) => appTab(page, "Accounts").click());
++          yield* browser.use("The revisit shows its accounts", (page) =>
++            appSection(page)
++              .getByRole("radio", { name: "Synthetic linked account", exact: true })
++              .waitFor(),
++          );
++          const revisit = yield* readAccountsTab("Read the revisit", true);
++          yield* evidence.json("app-accounts-first-entry.json", {
++            width,
++            held,
++            entered,
++            revisit,
++            requested,
++          });
++          yield* browser.checkpoint(`App Accounts first entry ${width}`);
++
++          expect(held.trusted, "the tab opens from trusted input").toBe(true);
++          expect(held.content, "the held code cannot have rendered the tab").toBe(false);
++          expect(
++            held.loading || held.previous,
++            "while its code loads the page shows the Accounts loading state or keeps the previous tab",
++          ).toBe(true);
++          expect(held.blank, "the tab is never blank while its code loads").toBe(false);
++          expect(held.mislabeled, "Accounts is never selected over other content").toBe(false);
++          expect(held.headingLost, "the app's heading stays while the tab loads").toBe(false);
++          expect(entered.content, "the tab shows its accounts once its code arrives").toBe(true);
++          expect(entered.blank, "the tab is never blank on its way to the accounts").toBe(false);
++          expect(entered.mislabeled, "Accounts is never selected over other content").toBe(false);
++          expect(entered.headingLost, "the app's heading stays on first entry").toBe(false);
++          expect(requested, "a revisit loads no Accounts code").toEqual([]);
++          expect(revisit.trusted, "the revisit opens from trusted input").toBe(true);
++          expect(revisit.content, "the revisit shows its accounts").toBe(true);
++          expect(revisit.loading, "a revisit shows no loading state").toBe(false);
++          expect(revisit.blank, "a revisit is never blank").toBe(false);
++          expect(revisit.mislabeled, "a revisit never selects Accounts over other content").toBe(
++            false,
++          );
++        }),
++      ),
++    );
++  }
++
+   it.effect(scenarios.hostedAppAccountsManagerBrowser.title, (context) =>
+     withHostedCase(
+       context,
