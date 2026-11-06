@@ -1,3 +1,14 @@
+diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+--- a/packages/sdk/src/implementation/create.ts
++++ b/packages/sdk/src/implementation/create.ts
+@@ -511,6 +511,7 @@
+       liveDefinitions: webhooks.liveDefinitions,
+       retarget: webhooks.retarget,
+       createManaged: webhooks.createManaged,
++      removeManaged: webhooks.removeManaged,
+       accountNeedingReconnect: tools.accountNeedingReconnect,
+     });
+     // App source defines schedules. Each activation removes saved settings for schedules the new
 diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/implementation/webhooks.ts
 --- a/packages/sdk/src/implementation/webhooks.ts
 +++ b/packages/sdk/src/implementation/webhooks.ts
@@ -20,11 +31,21 @@ diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/impl
  });
  
  /**
-@@ -310,12 +315,19 @@
+@@ -297,7 +302,7 @@
+   const outsideTransaction = storage.reactivity.inTransaction.pipe(
+     Effect.flatMap((inside) => (inside ? Effect.fail(new RequestInvalid()) : Effect.void)),
+   );
+-  const reconcile = (input: typeof WebhookTarget.Type, remove = false) =>
++  const reconcile = (input: typeof WebhookTarget.Type, remove = false, retryDisabled = true) =>
+     Effect.gen(function* () {
+       yield* outsideTransaction;
+       const parsed = yield* Schema.decodeUnknownEffect(WebhookTarget)(input).pipe(
+@@ -310,12 +315,20 @@
              const row = yield* read(parsed);
              if (
                row.status === "stopped" ||
 -              (!remove && ["active", "setup-required", "disabled"].includes(row.status))
++              (row.status === "disabled" && !retryDisabled) ||
 +              (!remove && ["active", "setup-required"].includes(row.status))
              )
                return row;
@@ -42,7 +63,7 @@ diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/impl
              const now = yield* Clock.currentTimeMillis;
              if (row.leaseUntil.getTime() > now) return yield* new WebhookConflict();
              yield* query(() =>
-@@ -324,7 +336,9 @@
+@@ -324,7 +337,9 @@
                  set: {
                    revision: claim,
                    leaseUntil: new Date(manual ? 0 : now + defaultWebhookLifecycleLimits.leaseMs),
@@ -53,7 +74,7 @@ diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/impl
                  },
                }),
              );
-@@ -337,11 +351,11 @@
+@@ -337,11 +352,11 @@
            Effect.gen(function* () {
              if (row.revision !== claim || row.status === "disabled") return yield* metadata(row);
              const stopping = row.status === "stopping";
@@ -66,7 +87,7 @@ diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/impl
                const common = {
                  name: row.name,
                  config: saved.config,
-@@ -392,6 +406,22 @@
+@@ -392,6 +407,22 @@
                Effect.result,
              );
              const result = yield* work;
@@ -89,7 +110,7 @@ diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/impl
              yield* transaction(db, () =>
                Effect.gen(function* () {
                  yield* query(() =>
-@@ -404,6 +434,12 @@
+@@ -404,6 +435,12 @@
                            ? "unregister"
                            : "register"
                          : null,
@@ -102,7 +123,16 @@ diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/impl
                        ...(Result.isSuccess(result)
                          ? refused
                            ? { status: "disabled", failure: null }
-@@ -633,7 +669,7 @@
+@@ -619,7 +656,7 @@
+           return id;
+         }),
+       );
+-      return yield* reconcile({ app: parsed.app, subscription: target });
++      return yield* reconcile({ app: parsed.app, subscription: target }, false, !managed);
+     }).pipe(Effect.withSpan("sdk.webhooks.create"));
+   const webhooks = {
+     get: (input: typeof WebhookTarget.Type) => read(input).pipe(Effect.flatMap(metadata)),
+@@ -633,7 +670,7 @@
            yield* query(() =>
              db.updateMany("webhooks", {
                where: (b) => b.and(b("id", "=", row.id), b("revision", "=", row.revision)),
@@ -111,7 +141,16 @@ diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/impl
              }),
            );
            const current = yield* read(input);
-@@ -746,7 +782,11 @@
+@@ -700,6 +737,8 @@
+     liveDefinitions: (state: InvocationSnapshot) => definitions(state, true),
+     /** Create a source's managed subscription; see `create`. */
+     createManaged: (input: typeof ManagedWebhook.Type) => create(input, true),
++    /** Source reconciliation cannot retry a registration held for manual cleanup. */
++    removeManaged: (input: typeof WebhookTarget.Type) => reconcile(input, true, false),
+     /**
+      * Point a subscription at its source's current actor. Callbacks resolve accounts at each
+      * delivery, so the upstream registration is unchanged.
+@@ -746,7 +785,11 @@
              return yield* new WebhookFailed({ reason: "input" });
            return yield* Schema.decodeUnknownEffect(Schema.toType(WebhookSetupView))(
              saved.setup === undefined
@@ -127,42 +166,32 @@ diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/impl
 diff --git a/packages/sdk/src/implementation/webhook-sources.ts b/packages/sdk/src/implementation/webhook-sources.ts
 --- a/packages/sdk/src/implementation/webhook-sources.ts
 +++ b/packages/sdk/src/implementation/webhook-sources.ts
-@@ -173,10 +173,13 @@
+@@ -81,6 +81,7 @@
+     readonly retarget: ReturnType<typeof makeWebhooks>["retarget"];
+     /** Creates a managed subscription beside a stopped one with the same key. */
+     readonly createManaged: ReturnType<typeof makeWebhooks>["createManaged"];
++    readonly removeManaged: ReturnType<typeof makeWebhooks>["removeManaged"];
+     /** Stored-state check for an account whose sign-in must reconnect. */
+     readonly accountNeedingReconnect: ReturnType<typeof makeTools>["accountNeedingReconnect"];
+   },
+@@ -173,7 +174,7 @@
                if (removing) {
                  for (const hook of hooks)
                    if (hook.status !== "stopped") {
 -                    const stopped = yield* resources.webhooks.remove({
--                      app: app.id,
--                      subscription: hook.id,
--                    });
-+                    const stopped =
-+                      hook.status === "disabled"
-+                        ? hook
-+                        : yield* resources.webhooks.remove({
-+                            app: app.id,
-+                            subscription: hook.id,
-+                          });
-                     if (stopped.status !== "stopped") failure = "cleanup";
-                   }
-                 return;
-@@ -263,10 +266,13 @@
++                    const stopped = yield* resources.removeManaged({
+                       app: app.id,
+                       subscription: hook.id,
+                     });
+@@ -263,7 +264,7 @@
                // Old registrations retain the code and state required for their own cleanup.
                for (const hook of hooks)
                  if (hook.status !== "stopped" && !desired.has(hook.key)) {
 -                  const stopped = yield* resources.webhooks.remove({
--                    app: app.id,
--                    subscription: hook.id,
--                  });
-+                  const stopped =
-+                    hook.status === "disabled"
-+                      ? hook
-+                      : yield* resources.webhooks.remove({
-+                          app: app.id,
-+                          subscription: hook.id,
-+                        });
-                   if (stopped.status !== "stopped") {
-                     status = "failed";
-                     failure = "cleanup";
++                  const stopped = yield* resources.removeManaged({
+                     app: app.id,
+                     subscription: hook.id,
+                   });
 diff --git a/e2e/support/webhook-registration.ts b/e2e/support/webhook-registration.ts
 --- a/e2e/support/webhook-registration.ts
 +++ b/e2e/support/webhook-registration.ts
@@ -338,36 +367,27 @@ new file mode 100644
 +    });
 +    return { ...f, account, hook, fail, recover, unlink, removalRequests: provider.requests };
 +  });
-diff --git a/e2e/tests/webhook-removal-recovery.spec.ts b/e2e/tests/webhook-removal-recovery.spec.ts
+diff --git a/e2e/support/webhook-removal-case.ts b/e2e/support/webhook-removal-case.ts
 new file mode 100644
 --- /dev/null
-+++ b/e2e/tests/webhook-removal-recovery.spec.ts
-@@ -0,0 +1,138 @@
-+import { expect, layer } from "@effect/vitest";
++++ b/e2e/support/webhook-removal-case.ts
+@@ -0,0 +1,117 @@
++import { expect } from "@effect/vitest";
 +import { Clock, Effect, Schedule, Schema } from "effect";
-+import { body } from "../support/api.ts";
-+import { HostedLive, withHostedCase } from "../support/case.ts";
-+import { Evidence, Telemetry } from "../support/evidence.ts";
-+import { legacyStorage } from "../support/legacy-storage.ts";
-+import { serverControl } from "../support/server-control.ts";
-+import { webhookRemovalFixture, type RemovalFailure } from "../support/webhook-removal-fixture.ts";
-+import { settleWebhookSubscriptions } from "../support/webhook-sources.ts";
-+import { scenarios } from "../test-plan.ts";
++import { body } from "./api.ts";
++import { Evidence, Telemetry } from "./evidence.ts";
++import type { webhookRemovalFixture, RemovalFailure } from "./webhook-removal-fixture.ts";
++import { settleWebhookSources, settleWebhookSubscriptions, sourcesAre } from "./webhook-sources.ts";
 +
 +const Subscription = Schema.Struct({
 +  id: Schema.String,
 +  status: Schema.String,
 +  failure: Schema.NullOr(Schema.String),
 +});
-+const cases = [
-+  ["authored", scenarios.webhookRemovalAuthored],
-+  ["provider", scenarios.webhookRemovalProvider],
-+  ["oauth", scenarios.webhookRemovalReconnect],
-+] as const;
-+
-+const removalRecovery = (
++export const removalRecovery = <A, E, R>(
 +  kind: RemovalFailure,
 +  f: Effect.Success<ReturnType<typeof webhookRemovalFixture>>,
++  beforeThird: Effect.Effect<A, E, R>,
 +) =>
 +  Effect.gen(function* () {
 +    const { api, actors, prefix, app, path, account, hook } = f;
@@ -378,13 +398,31 @@ new file mode 100644
 +    yield* f.fail;
 +    for (const expected of ["stopping", "stopping", "disabled"]) {
 +      // The count must survive a process restart rather than start a fresh retry budget.
-+      if (kind === "storage" && attempts.length === 2) yield* serverControl("restart");
++      if (attempts.length === 2) yield* beforeThird;
 +      const response = yield* api.request(actors.owner, "DELETE", endpoint);
 +      expect(response.status, JSON.stringify(response.body)).toBe(200);
 +      const result = yield* body(Subscription, response);
 +      attempts.push(result);
 +      yield* evidence.json("webhook-removal-attempts.json", { kind, attempts });
 +      expect(result).toMatchObject({ id: hook.id, status: expected, failure: "unregister" });
++    }
++    if (kind === "authored" || kind === "provider") {
++      // Re-saving the same source exercises managed creation with the disabled key.
++      const configured = yield* api.request(
++        actors.owner,
++        "PUT",
++        `${path}/webhook-sources/${account}/config`,
++        { config: {} },
++      );
++      expect(configured.status, JSON.stringify(configured.body)).toBe(200);
++      yield* settleWebhookSources(
++        actors.owner,
++        path,
++        sourcesAre({
++          [account]: { status: "failed", failure: "registration" },
++        }),
++      );
++      expect(yield* f.removalRequests).toBe(3);
 +    }
 +    // Unlinking cannot discard a registration the provider may still hold.
 +    const unlinkStarted = yield* Clock.currentTimeMillis;
@@ -451,6 +489,23 @@ new file mode 100644
 +      recoveredSubscription: hook.id,
 +    });
 +  });
+diff --git a/e2e/tests/webhook-removal-recovery.spec.ts b/e2e/tests/webhook-removal-recovery.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/webhook-removal-recovery.spec.ts
+@@ -0,0 +1,25 @@
++import { layer } from "@effect/vitest";
++import { Effect } from "effect";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { webhookRemovalFixture } from "../support/webhook-removal-fixture.ts";
++import { removalRecovery } from "../support/webhook-removal-case.ts";
++import { scenarios } from "../test-plan.ts";
++
++const cases = [
++  ["authored", scenarios.webhookRemovalAuthored],
++  ["provider", scenarios.webhookRemovalProvider],
++  ["oauth", scenarios.webhookRemovalReconnect],
++] as const;
 +
 +layer(HostedLive, { excludeTestServices: true })("Webhook removal recovery", (it) => {
 +  for (const [kind, plan] of cases)
@@ -459,10 +514,26 @@ new file mode 100644
 +        context,
 +        Effect.gen(function* () {
 +          const f = yield* webhookRemovalFixture(kind);
-+          yield* removalRecovery(kind, f);
++          yield* removalRecovery(kind, f, Effect.void);
 +        }),
 +      ),
 +    );
++});
+diff --git a/e2e/tests/webhook-removal-storage.spec.ts b/e2e/tests/webhook-removal-storage.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/webhook-removal-storage.spec.ts
+@@ -0,0 +1,28 @@
++import { layer } from "@effect/vitest";
++import { Effect } from "effect";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { serverControl } from "../support/server-control.ts";
++import { webhookRemovalFixture } from "../support/webhook-removal-fixture.ts";
++import { removalRecovery } from "../support/webhook-removal-case.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Webhook removal storage recovery", (it) => {
 +  it.effect(scenarios.webhookRemovalUnreadable.title, (context) =>
 +    withHostedCase(
 +      context,
@@ -476,7 +547,7 @@ new file mode 100644
 +          },
 +        ]);
 +        yield* serverControl("start");
-+        yield* removalRecovery("storage", f);
++        yield* removalRecovery("storage", f, serverControl("restart"));
 +      }),
 +    ),
 +  );
