@@ -14,6 +14,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { collectUpstreamDependencies } from "./upstream-store.ts";
+import { fixturePhases } from "./upstream-fixture-phases.ts";
+import { fixtureInventory } from "./upstream-fixture-inventory.ts";
 
 const stop = (child: ReturnType<typeof spawn>) => {
   if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
@@ -23,13 +25,16 @@ test(
   "collection waits for a live PID-only reader to register its selected generation",
   { timeout: 5000 },
   async (t) => {
+    const phase = fixturePhases(t, "upstream-legacy-reader");
     const fixture = realpathSync(mkdtempSync(join(tmpdir(), "basalt-legacy-reader-")));
+    const inventory = fixtureInventory(t, fixture);
     const cache = join(fixture, "cache");
     const root = join(fixture, "reader");
     const entry = join(cache, "prepared/pin/key");
     const generation = join(entry, "generations/selected");
     mkdirSync(generation, { recursive: true });
     mkdirSync(root);
+    inventory.checkout(root);
     writeFileSync(join(entry, "store-format.json"), JSON.stringify({ version: 3 }));
     writeFileSync(join(generation, "package-bytes"), "selected package");
     const reader = spawn(
@@ -54,13 +59,16 @@ test(
       ],
       { stdio: ["ignore", "ignore", "inherit", "ipc"] },
     );
+    inventory.track(reader.pid!);
     let collector: ReturnType<typeof spawn> | undefined;
     t.after(() => {
       stop(reader);
       if (collector) stop(collector);
       rmSync(fixture, { recursive: true, force: true });
     });
+    phase.waiting("selected");
     assert.equal((await once(reader, "message"))[0].stage, "selected");
+    phase.reached("selected");
     collector = spawn(
       process.execPath,
       [
@@ -83,27 +91,39 @@ test(
         stdio: ["ignore", "ignore", "inherit", "ipc"],
       },
     );
+    inventory.track(collector.pid!);
+    phase.waiting("legacy-owner-alive");
     assert.equal((await once(collector, "message"))[0].stage, "legacy-owner-alive");
+    phase.reached("legacy-owner-alive");
     assert.equal(existsSync(generation), true, "the selected unregistered generation must survive");
     const registered = once(reader, "message"),
       collected = once(collector, "message");
     reader.send("register");
+    phase.waiting("registration-and-lock-removal");
     assert.deepEqual((await registered)[0], { stage: "registered", value: "selected package" });
+    phase.reached("registration-and-lock-removal");
+    phase.waiting("collected");
     assert.equal((await collected)[0].stage, "collected");
+    phase.reached("collected");
+    phase.waiting("collector-exit");
     if (collector.exitCode === null) await once(collector, "exit");
+    phase.reached("collector-exit");
     assert.equal(collector.exitCode, 0);
     assert.equal(readFileSync(join(generation, "package-bytes"), "utf8"), "selected package");
+    phase.complete();
   },
 );
 
 test("live PID-only parent and group leases remain protected until their owner exits", async (t) => {
   const fixture = mkdtempSync(join(tmpdir(), "basalt-legacy-leases-"));
+  const inventory = fixtureInventory(t, fixture);
   const previous = process.env.BASALT_UPSTREAM_CACHE;
   const owner = spawn(
     process.execPath,
     ["-e", "process.on('message',()=>process.exit(0));process.send('ready');"],
     { detached: true, stdio: ["ignore", "ignore", "inherit", "ipc"] },
   );
+  inventory.track(owner.pid!);
   t.after(() => {
     stop(owner);
     if (previous === undefined) delete process.env.BASALT_UPSTREAM_CACHE;

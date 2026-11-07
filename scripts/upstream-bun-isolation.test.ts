@@ -16,13 +16,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
+import { fixturePhases } from "./upstream-fixture-phases.ts";
+import { fixtureInventory } from "./upstream-fixture-inventory.ts";
 
 test(
   "real Bun cache hardlinks cannot carry an orphan's writes into a published generation",
   { timeout: 15000 },
   async (t) => {
+    const phase = fixturePhases(t, "upstream-bun-isolation");
     const fixture = mkdtempSync(join(tmpdir(), "basalt-476-hardlink-"));
     const realBun = execFileSync("which", ["bun"], { encoding: "utf8" }).trim();
+    const inventory = fixtureInventory(t, fixture);
     const bin = join(fixture, "bin");
     const template = join(fixture, "template");
     mkdirSync(bin);
@@ -83,11 +87,13 @@ if (process.env.FIXTURE_MODE === 'orphan') {
       BASALT_UPSTREAM_CACHE: join(fixture, "cache"),
       FIXTURE_GATE: gate,
     };
+    phase.waiting("template-installed");
     execFileSync(realBun, ["install", "--ignore-scripts", "--backend=hardlink"], {
       cwd: template,
       env: common,
       stdio: "pipe",
     });
+    phase.reached("template-installed");
     // --version must remain a version request, without install-only flags.
     writeFileSync(
       join(bin, "bun"),
@@ -97,6 +103,7 @@ if (process.env.FIXTURE_MODE === 'orphan') {
     function start(name: string) {
       const root = join(fixture, name);
       mkdirSync(root);
+      inventory.checkout(root);
       for (const file of ["package.json", "bunfig.toml", "bun.lock"])
         cpSync(join(template, file), join(root, file));
       const child = spawn(
@@ -116,6 +123,7 @@ if (process.env.FIXTURE_MODE === 'orphan') {
         },
       );
       owned.add(child.pid!);
+      inventory.track(child.pid!);
       child.on("exit", () => owned.delete(child.pid!));
       let errors = "";
       child.stderr!.on("data", (data) => {
@@ -129,6 +137,8 @@ if (process.env.FIXTURE_MODE === 'orphan') {
         if (message.type === "held") {
           owned.add(Number(message.pid));
           owned.add(Number(message.bunPid));
+          inventory.track(Number(message.pid));
+          inventory.track(Number(message.bunPid));
         }
         const index = waiting.findIndex((w) => w.type === message.type);
         if (index < 0) queued.push(message);
@@ -157,19 +167,34 @@ if (process.env.FIXTURE_MODE === 'orphan') {
       };
     }
     const first = start("orphan");
+    phase.waiting("held");
     const held = await first.next("held");
+    phase.reached("held");
+    assert.ok(
+      execFileSync("lsof", ["-nP", "-F0n"], { encoding: "utf8" }).includes(`n${held.path}\0`),
+      "the real orphan descriptor must remain visible to fixture collection",
+    );
     const stopped = once(first.child, "exit");
     first.child.kill("SIGKILL");
+    phase.waiting("parent-exit");
     await stopped;
+    phase.reached("parent-exit");
     const second = start("replacement");
+    phase.waiting("replacement-published");
     const published = await second.next("published");
+    phase.reached("replacement-published");
+    phase.waiting("replacement-exit");
     if (second.child.exitCode === null) await once(second.child, "exit");
+    phase.reached("replacement-exit");
     const packageFile = join(String(published.store), "node_modules/is-number/index.js");
     const before = readFileSync(packageFile, "utf8");
     const state = statSync(packageFile);
 
     writeFileSync(gate, "release");
+    phase.waiting("orphan-finished");
     await first.next("orphan-finished");
+    phase.reached("orphan-finished");
+    phase.waiting("published-bytes-verified");
     const after = readFileSync(packageFile, "utf8");
     assert.notEqual(state.ino, held.inode, "private installs must not share package inodes");
     assert.equal(after, before, "the orphan must not change published bytes");
@@ -190,5 +215,7 @@ if (process.env.FIXTURE_MODE === 'orphan') {
         2,
       ),
     );
+    phase.reached("published-bytes-verified");
+    phase.complete();
   },
 );
