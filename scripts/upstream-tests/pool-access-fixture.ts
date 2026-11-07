@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { Context, Effect, Option, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.ts";
+import type { HostAccessLifecycle } from "../../.upstream/packages/sdk/src/core.ts";
 import { openEnvelope } from "../../src/pool/token.ts";
 import type { AccessEnvelope } from "../../src/pool/access-contract.ts";
 
@@ -27,7 +28,48 @@ const InTransaction = Context.Reference<boolean>("pool-access-test/transaction",
 });
 export const organization = Schema.decodeUnknownSync(OrganizationId)("org-fixture");
 
-export async function fixture(run: (value: any) => Effect.Effect<unknown, unknown, any>) {
+interface FixtureContext {
+  readonly sql: SqlClient.SqlClient;
+  readonly hook: Required<HostAccessLifecycle>;
+  readonly changes: AccessEnvelope[];
+  readonly requestTransactions: boolean[];
+  readonly origin: string;
+  readonly loseAcknowledgement: () => void;
+  readonly fail: () => void;
+  readonly recover: () => void;
+  readonly noKey: Required<HostAccessLifecycle>;
+  readonly transaction: SqlClient.SqlClient["withTransaction"];
+  readonly inTransaction: typeof InTransaction;
+}
+
+export function changeAt(
+  changes: readonly AccessEnvelope[],
+  action: "audience",
+  index?: number,
+): Extract<AccessEnvelope, { action: "audience" }>;
+export function changeAt(
+  changes: readonly AccessEnvelope[],
+  action: "pool-deleted",
+  index?: number,
+): Extract<AccessEnvelope, { action: "pool-deleted" }>;
+export function changeAt(
+  changes: readonly AccessEnvelope[],
+  action: "person-deleted",
+  index?: number,
+): Extract<AccessEnvelope, { action: "person-deleted" }>;
+export function changeAt(
+  changes: readonly AccessEnvelope[],
+  action: AccessEnvelope["action"],
+  index = -1,
+) {
+  const change = changes.at(index);
+  assert.ok(change?.action === action, `Expected ${action} change at ${index}`);
+  return change;
+}
+
+export async function fixture<R>(
+  run: (value: FixtureContext) => Effect.Effect<unknown, unknown, R>,
+) {
   const changes: AccessEnvelope[] = [];
   const requestTransactions: boolean[] = [];
   let status = 200;
@@ -74,7 +116,7 @@ export async function fixture(run: (value: any) => Effect.Effect<unknown, unknow
           const sql = new Proxy(native, {
             get(target, property) {
               if (property !== "withTransaction") return Reflect.get(target, property);
-              return (operation: Effect.Effect<any, any, any>) =>
+              return <A, E, R>(operation: Effect.Effect<A, E, R>) =>
                 native.withTransaction(
                   Effect.acquireUseRelease(
                     Effect.sync(() => {
@@ -93,7 +135,7 @@ export async function fixture(run: (value: any) => Effect.Effect<unknown, unknow
             "create table organization (id text primary key, metadata text)",
             'create table "user" (id text primary key, name text, email text, "emailVerified" boolean)',
             'create table member (id text primary key, "organizationId" text, "userId" text, role text)',
-            "create table executor_apps (id text primary key, owner text, name text)",
+            "create table executor_apps (id text primary key, owner text, name text, active_deployment text)",
             "create table hosted_app_access (id text primary key, organization_id text, creator_id text, audience text, revision text default gen_random_uuid()::text)",
             "create table hosted_app_groups (organization_id text, app_id text, group_id text references hosted_groups(id) on delete cascade)",
             "create table hosted_app_account_links (app text)",
@@ -105,7 +147,7 @@ export async function fixture(run: (value: any) => Effect.Effect<unknown, unknow
           yield* sql`insert into organization values (${organization}, ${JSON.stringify({ basaltPools: { owner: { app: "app_pool-fixture" } } })})`;
           yield* sql`insert into "user" values ('owner', 'Owner', 'owner@example.invalid', true), ('guest', 'Guest', 'guest@example.invalid', true), ('other', 'Other', 'other@example.invalid', true)`;
           yield* sql`insert into member values ('m-owner', ${organization}, 'owner', 'owner'), ('m-guest', ${organization}, 'guest', 'member'), ('m-other', ${organization}, 'other', 'admin')`;
-          yield* sql`insert into executor_apps values ('app_pool-fixture', ${organizationOwner(organization)}, 'Fixture pool'), ('app_ordinary', ${organizationOwner(organization)}, 'Ordinary app')`;
+          yield* sql`insert into executor_apps (id, owner, name) values ('app_pool-fixture', ${organizationOwner(organization)}, 'Fixture pool'), ('app_ordinary', ${organizationOwner(organization)}, 'Ordinary app')`;
           yield* sql`insert into hosted_app_access (id, organization_id, creator_id, audience) values ('app_pool-fixture', ${organization}, 'owner', 'private'), ('app_ordinary', ${organization}, 'owner', 'private')`;
           yield* run({
             sql,
@@ -123,7 +165,7 @@ export async function fixture(run: (value: any) => Effect.Effect<unknown, unknow
               status = 200;
             },
             noKey: poolAccessLifecycle(Option.none(), origin),
-            transaction: (operation: any) => sql.withTransaction(operation),
+            transaction: sql.withTransaction,
             inTransaction: InTransaction,
           }).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),

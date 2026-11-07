@@ -8,16 +8,23 @@ export interface PoolPermissions {
 }
 
 /** Retained bindings keep their original policy until the host authorizes their handoff. */
-export async function requirePoolUse(request: Request, input: {
-  readonly signingKey: string;
-  readonly previousSigningKey?: string;
-  readonly permissions: (pool: string, user: string) => Promise<PoolPermissions | undefined>;
-}): Promise<void> {
+export async function requirePoolUse(
+  request: Request,
+  input: {
+    readonly signingKey: string;
+    readonly previousSigningKey?: string;
+    readonly permissions: (pool: string, user: string) => Promise<PoolPermissions | undefined>;
+  },
+) {
   const bearer = /^Bearer (\S+)$/i.exec(request.headers.get("authorization") ?? "")?.[1];
-  const claims = bearer ? await verifyPoolToken(input.signingKey, bearer, input.previousSigningKey) : undefined;
+  const claims = bearer
+    ? await verifyPoolToken(input.signingKey, bearer, input.previousSigningKey)
+    : undefined;
   // The endpoint owns its existing missing-token response.
   if (!claims) return;
-  const permissions = await input.permissions(claims.pool, request.headers.get(callerHeader) ?? "");
+  const user = request.headers.get(callerHeader) ?? "";
+  const permissions = await input.permissions(claims.pool, user);
   if (permissions !== undefined && !permissions.canUse)
     fail(403, "unauthorized", "This pool is not available to you.");
+  return (permissions?.canUse ?? claims.owner === user) ? claims : undefined;
 }

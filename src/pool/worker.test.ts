@@ -39,6 +39,20 @@ const {
 } = await import(workerModule);
 hooks.deregister();
 
+const retainedMembershipHost = {
+  fetch: async (input: string) => {
+    if (new URL(input).pathname === "/api/internal/pool-organization")
+      return new Response(null, { status: 204 });
+    assert.equal(new URL(input).pathname, "/api/internal/pool-membership");
+    return Response.json({
+      pool: "fake-pool",
+      organization: "fake-org",
+      native: false,
+      accounts: [],
+    });
+  },
+};
+
 test("operator calls require the named entrypoint and never enter the public pool routes", async () => {
   const calls: unknown[] = [];
   const plan = { total: 2, enabled: 1, pending: 1, writes: 2, digest: "a".repeat(64), limit: 50 };
@@ -421,7 +435,7 @@ test("native pool use is required before control, setup and usage can reach Home
       POOL_MANAGEMENT_KEY: "fake-management-key",
       POOL_APP_SIGNING_KEY: signingKey,
       POOL_IMAGE_HASH: "fake-image",
-      TOOLS_SERVICE: { fetch: async () => new Response(null, { status: 204 }) },
+      TOOLS_SERVICE: retainedMembershipHost,
     },
   );
   const token = await signPoolToken(signingKey, claims);
@@ -527,7 +541,7 @@ test("opening Connect starts a stopped pool without waiting for it, and only for
       POOL_MANAGEMENT_KEY: "fake-management-key",
       POOL_APP_SIGNING_KEY: signingKey,
       POOL_IMAGE_HASH: "fake-image",
-      TOOLS_SERVICE: { fetch: async () => new Response(null, { status: 204 }) },
+      TOOLS_SERVICE: retainedMembershipHost,
     },
   );
   const token = await signPoolToken(signingKey, claims);
@@ -628,7 +642,7 @@ test("management calls share readiness for 30 seconds and rewarm when the contai
     POOL_MANAGEMENT_KEY: "obviously-fake-management-key",
     POOL_APP_SIGNING_KEY: signingKey,
     POOL_IMAGE_HASH: "fake-image",
-    TOOLS_SERVICE: { fetch: async () => new Response(null, { status: 204 }) },
+    TOOLS_SERVICE: retainedMembershipHost,
   });
   async function read() {
     const response = await worker.fetch(
@@ -685,7 +699,13 @@ test("old pool tools cannot acquire credentials or start the runtime through the
     POOL_MANAGEMENT_KEY: "obviously-fake-management-key",
     POOL_APP_SIGNING_KEY: signingKey,
     POOL_IMAGE_HASH: "fake-image",
-    TOOLS_SERVICE: { fetch: async () => new Response(null, { status: 204 }) },
+    TOOLS_SERVICE: {
+      fetch: async (input: string) => {
+        if (new URL(input).pathname === "/api/internal/pool-organization")
+          return new Response(null, { status: 204 });
+        throw new Error("Blocked acquisition must not read native membership");
+      },
+    },
   });
   for (const [method, path] of [
     ["POST", "sign-ins"],
@@ -795,14 +815,14 @@ test("an unhealthy warm runtime returns a retryable 503 before another model dis
   }
 });
 
-test("native SQL writes require the exact policy install acknowledgement", async () => {
+test("native SQL writes to a running container require the exact policy install acknowledgement", async () => {
   const key = "ab".repeat(32),
     values = new Map<string, unknown>(),
     background: Promise<unknown>[] = [];
   let acknowledgement: unknown = { installed: true, revision: 999 },
     alarm: number | null = null;
   const container = {
-    running: false,
+    running: true,
     start() {
       this.running = true;
     },

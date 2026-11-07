@@ -1,0 +1,17 @@
+{
+  "scenarios": {
+    "poolLocalEgress": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Managed Cloud e2e apps refuse non-local requests before sending them",
+      "targets": {
+        "cloud": { "status": "scheduled", "runtime": "managed" },
+        "self-host": { "status": "not-applicable", "reason": "Exercises the managed Cloud app outbound service." },
+        "local": { "status": "not-applicable", "reason": "Exercises the managed Cloud app outbound service." }
+      }
+    }
+  },
+  "runs": { "poolLocalEgress": ["declared:cloud"] },
+  "inputs": [".upstream/apps/hosted/cloud/src/infrastructure/app-outbound.ts", ".upstream/apps/hosted/cloud/src/infrastructure/pool-app-source.ts", ".upstream/e2e/support/cloud-environment.ts"],
+  "fixture": "pool-setup"
+}
