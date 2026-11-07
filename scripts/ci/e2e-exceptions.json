@@ -129,7 +129,7 @@
       "browser-connection-failures.spec.ts#browserConnectionFailures": "8fac11a09c52c10aaaf66b5553fa5b8d025511df51d8da954ee2dbea1bbfe49b",
       "browser-error-provenance.spec.ts#browserErrorProvenance": "4cc6ee0207e2a060afa3e8b4582cbb1a418e1831bceec0354298af17233f63c3",
       "browser-navigation-telemetry.spec.ts#browserNavigationTelemetry": "29914b1e13e0cd6e37f6035a4af4302349f2bd3be816eab5674e33b960526246",
-      "browser-observability.spec.ts#browserObservability": "b5dc491cd55b87a0c790e916041f5cb7b9ff4ff85f4758fdbf281c0286e36a8e",
+      "browser-observability.spec.ts#browserObservability": "1cc8e73bd470fc6e1a74fef230af16ba728f2ef7a84a7be92ee837f1b3a5eb65",
       "build-framework-migration.spec.ts#buildFrameworkMigration": "c0bfae34ab3c2f9ef11d5c57cc527ae8d3387d7cc8fd6c513532a7a17ef5c1a7",
       "build-framework-migration.spec.ts#localBuildFrameworkMigration": "f018485e3eb83221567eb521283d103d28f10dc4dddc1411c1a9924d7e487292",
       "build-framework-storage.spec.ts#buildFrameworkColdLoad": "89b8bf7e950f0686ce13fafbf72ee59973004fbda5ad03df98885e67c87e71a5",

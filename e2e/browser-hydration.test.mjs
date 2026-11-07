@@ -16,7 +16,7 @@ const { chromium } = createRequire(new URL("../.upstream/package.json", import.m
   "playwright",
 );
 
-async function fixture(t, dashboard = true) {
+async function fixture(t, dashboard = true, incomplete = false) {
   const directory = await mkdtemp(join(tmpdir(), "driver-hydration-"));
   await mkdir(join(directory, "raw"));
   const documents = new Map();
@@ -50,6 +50,7 @@ async function fixture(t, dashboard = true) {
     response.end(`<!doctype html><html ${dashboard ? "data-dashboard" : ""}><body>
       <button>Open connection</button><div role="dialog" hidden>Client ID</div>
       <script>
+        ${incomplete ? "Object.defineProperty(window, '$_TSR', { configurable: false, value: undefined });" : ""}
         const root = document.documentElement;
         const original = root.hasAttribute.bind(root);
         root.hasAttribute = (name) => {
@@ -69,16 +70,17 @@ async function fixture(t, dashboard = true) {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
-  const native = await chromium.launch({ headless: true });
+  let native;
   t.after(async () => {
     for (const document of documents.values()) document.release();
-    await native.close();
+    await native?.close();
     await new Promise((resolve) => {
       server.close(resolve);
       server.closeAllConnections();
     });
     await rm(directory, { recursive: true, force: true });
   });
+  native = await chromium.launch({ headless: true });
   const target = Target.of({
     metadata: {
       target: "local",
@@ -181,4 +183,19 @@ test("navigation to a page outside the dashboard does not wait for dashboard hyd
   );
   assert.equal(opened, true);
   assert.deepEqual(f.clicks, [false]);
+});
+
+test("explicit commit plus load retains a deliberately incomplete document for its assertions", async (t) => {
+  const f = await fixture(t, true, true);
+  const observed = await f.run((browser) =>
+    browser.use("Read startup failure before hydration", async (page) => {
+      await page.goto("/incomplete", { waitUntil: "commit" });
+      await page.waitForLoadState("load");
+      const held = await page.evaluate(() => "$_TSR" in window);
+      await page.goto("about:blank");
+      return held;
+    }),
+  );
+  assert.equal(observed, true);
+  assert.deepEqual(f.clicks, []);
 });

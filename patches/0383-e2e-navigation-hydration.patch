@@ -212,3 +212,33 @@ diff --git a/e2e/tests/route-loading.spec.ts b/e2e/tests/route-loading.spec.ts
      .then(() =>
        Promise.all([
          headings(page),
+diff --git a/e2e/tests/browser-observability.spec.ts b/e2e/tests/browser-observability.spec.ts
+--- a/e2e/tests/browser-observability.spec.ts
++++ b/e2e/tests/browser-observability.spec.ts
+@@ -112,7 +112,9 @@
+           }),
+         );
+         yield* browser.use("Open the dashboard with a missing entry module", (page) =>
+-          page.goto(`/org/${actors.organization.slug}/apps`),
++          page
++            .goto(`/org/${actors.organization.slug}/apps`, { waitUntil: "commit" })
++            .then(() => page.waitForLoadState("load")),
+         );
+         const moduleFailure = yield* awaitSentry(
+           (event) =>
+diff --git a/e2e/support/browser-observability.ts b/e2e/support/browser-observability.ts
+--- a/e2e/support/browser-observability.ts
++++ b/e2e/support/browser-observability.ts
+@@ -112,7 +112,11 @@
+         document.documentElement.setAttribute("data-incomplete-document", "true");
+       }),
+     );
+-    yield* browser.use("Open the incomplete document", (page) => page.goto(`/org/${slug}/apps`));
++    yield* browser.use("Open the incomplete document", (page) =>
++      page
++        .goto(`/org/${slug}/apps`, { waitUntil: "commit" })
++        .then(() => page.waitForLoadState("load")),
++    );
+   });
+ 
+ /**

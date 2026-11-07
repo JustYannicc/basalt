@@ -1,7 +1,7 @@
 {
   "identity": "e2e-navigation-hydration",
   "file": "0383-e2e-navigation-hydration.patch",
-  "content_sha256": "96d5565cad65eb81865c82c4aff351447651cbb62cde5463aff108d2a579031f",
+  "content_sha256": "1f2e76393a1a78876a6f3ca634854cc663ff1f6d6ac24871e47676e935e04513",
   "kind": "upstream",
   "upstream_pull_request": null,
   "database_sensitive": false,
