@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-catalog-tool-sections",
+  "file": "0406-catalog-tool-sections.patch",
+  "content_sha256": "5b5604b77450ef78ec43e2ed3c8e3f6cc0757b21e5d965ee4550b465ecbedafa",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

@@ -1,0 +1,739 @@
+diff --git a/packages/catalog/src/contracts/tool-sections.ts b/packages/catalog/src/contracts/tool-sections.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/catalog/src/contracts/tool-sections.ts
+@@ -0,0 +1,14 @@
++import { Schema } from "effect";
++
++/** A tool section and the existing account method that supplies it. This never declares credentials. */
++export const CatalogToolSection = Schema.Struct({
++  path: Schema.String.check(
++    Schema.isPattern(/^[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z_][A-Za-z0-9_-]*)*$/u),
++  ),
++  title: Schema.NonEmptyString,
++  requirement: Schema.NonEmptyString,
++  method: Schema.NonEmptyString,
++  description: Schema.NonEmptyString,
++  actionLabel: Schema.NonEmptyString,
++});
++export type CatalogToolSection = typeof CatalogToolSection.Type;
+diff --git a/packages/catalog/src/contracts/catalog.ts b/packages/catalog/src/contracts/catalog.ts
+--- a/packages/catalog/src/contracts/catalog.ts
++++ b/packages/catalog/src/contracts/catalog.ts
+@@ -7,6 +7,7 @@
+ import type { CustomAppInput } from "./imports.ts";
+ import { CatalogService } from "./service.ts";
+ import { McpDetection } from "./detection.ts";
++import { CatalogToolSection } from "./tool-sections.ts";
+ import { CatalogConnectionGuidance } from "./connection-guidance.ts";
+ 
+ /** An image shown beside an app, light or dark. `src` is absolute once a catalog lists it. */
+@@ -53,6 +54,7 @@
+   auth: Schema.Array(CatalogAuth),
+   oauthDeferrals: Schema.optionalKey(Schema.Array(CatalogOAuthDeferral)),
+   connectionGuidance: Schema.optionalKey(Schema.Array(CatalogConnectionGuidance)),
++  toolSections: Schema.optionalKey(Schema.Array(CatalogToolSection)),
+   category: Schema.optionalKey(Schema.String),
+   icons: Schema.Array(CatalogIcon),
+   /** Optional operator notes; they do not change the installed app or its provider. */
+diff --git a/packages/catalog/src/contracts/index.ts b/packages/catalog/src/contracts/index.ts
+--- a/packages/catalog/src/contracts/index.ts
++++ b/packages/catalog/src/contracts/index.ts
+@@ -1,3 +1,4 @@
++export { CatalogToolSection } from "./tool-sections.ts";
+ export { CatalogService } from "./service.ts";
+ export { CredentialGuidance, CatalogConnectionGuidance } from "./connection-guidance.ts";
+ /** Import descriptions and generated files; no product HTTP or installation policy. */
+diff --git a/packages/ui/src/contracts/tool-sections.ts b/packages/ui/src/contracts/tool-sections.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/ui/src/contracts/tool-sections.ts
+@@ -0,0 +1,33 @@
++import type { CatalogToolSection } from "@executor-js/catalog/contracts";
++import type { RequirementAccounts } from "./app-accounts.ts";
++import type { AccountSummary, ToolCatalog } from "./dashboard.ts";
++
++/** Only a known missing method explains an empty section; search results and failures do not. */
++export const missingToolSections = (
++  sections: readonly CatalogToolSection[],
++  requirements: readonly RequirementAccounts<AccountSummary>[],
++  catalog: ToolCatalog,
++) => {
++  const seen = new Set<string>();
++  return sections.flatMap((section) => {
++    if (seen.has(section.path)) return [];
++    seen.add(section.path);
++    const entry = requirements.find((entry) => entry.slot === section.requirement);
++    if (entry === undefined || !entry.known) return [];
++    const method = entry.requirement.definition.auth[section.method];
++    if (
++      method === undefined ||
++      (method.type === "secrets" && method.provisioned === true) ||
++      entry.using.some((account) => account.method === section.method)
++    )
++      return [];
++    const router = catalog.routers.find((router) => router.path === section.path);
++    if (
++      router === undefined ||
++      router.error !== undefined ||
++      catalog.tools.some((tool) => tool.name.startsWith(`${section.path}.`))
++    )
++      return [];
++    return [{ section, requirement: entry.requirement }];
++  });
++};
+diff --git a/packages/ui/src/implementation/dashboard/missing-tool-sections.tsx b/packages/ui/src/implementation/dashboard/missing-tool-sections.tsx
+new file mode 100644
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/missing-tool-sections.tsx
+@@ -0,0 +1,32 @@
++import type { ReactNode } from "react";
++import type { CatalogToolSection } from "@executor-js/catalog/contracts";
++
++/** Keep missing capabilities visible above the tool list, including when a phone hides the list. */
++export function MissingToolSections({
++  sections,
++  renderAction,
++}: {
++  readonly sections: readonly CatalogToolSection[];
++  readonly renderAction: (section: CatalogToolSection) => ReactNode;
++}) {
++  if (sections.length === 0) return null;
++  return (
++    <div className="grid shrink-0 gap-3 border-b p-5 max-[740px]:p-4">
++      {sections.map((section) => (
++        <section
++          key={section.path}
++          aria-label={section.title}
++          className="flex items-center gap-5 rounded-lg border px-5 py-4 max-[740px]:flex-col max-[740px]:items-stretch max-[740px]:gap-3 max-[740px]:px-4"
++        >
++          <div className="min-w-0 flex-1">
++            <h3 className="text-sm font-medium">{section.title}</h3>
++            <p className="mt-1 max-w-prose text-sm leading-relaxed text-muted-foreground">
++              {section.description}
++            </p>
++          </div>
++          {renderAction(section)}
++        </section>
++      ))}
++    </div>
++  );
++}
+diff --git a/apps/hosted/web/src/implementation/pages/app-tool-sections.tsx b/apps/hosted/web/src/implementation/pages/app-tool-sections.tsx
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/app-tool-sections.tsx
+@@ -0,0 +1,123 @@
++import { useRef, useState } from "react";
++import { AsyncResult } from "effect/reactivity";
++import { Option } from "effect";
++import type { App } from "@executor-js/sdk";
++import type { CatalogEntry, CatalogToolSection } from "@executor-js/catalog/contracts";
++import type { RequirementAccounts } from "@executor-js/ui/contracts/app-accounts";
++import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
++import { missingToolSections } from "@executor-js/ui/contracts/tool-sections";
++import { MissingToolSections } from "@executor-js/ui/dashboard/missing-tool-sections";
++import { useQuery } from "@executor-js/ui/dashboard/context";
++import { Button } from "@executor-js/ui/components/button";
++import { catalogAtom } from "../../contracts/api.ts";
++import { appMethodsAtom } from "../../contracts/app-accounts.ts";
++import { toolCatalogAtom } from "../../contracts/apps.ts";
++import { useOrganizationRoute } from "../components/organization.tsx";
++import { AppConnectionDialogContent } from "./app-accounts.tsx";
++import { ConnectionModal } from "./connection-dialog.tsx";
++
++type Props = {
++  readonly app: App;
++  readonly requirements: readonly RequirementAccounts<AccountSummary>[];
++  readonly redirectUri: string;
++};
++
++/** Catalog hints bind to the installed package; the live declaration and host policy authorize the action. */
++export function AppToolSections(props: Props) {
++  const catalog = useQuery(catalogAtom);
++  const entry = Option.getOrUndefined(catalog.data)?.find(
++    (entry) => entry.package === props.app.copiedFrom?.name,
++  );
++  return entry?.toolSections?.length ? <Sections {...props} entry={entry} /> : null;
++}
++
++function Sections({
++  app,
++  requirements,
++  redirectUri,
++  entry,
++}: Props & { readonly entry: CatalogEntry }) {
++  const { organization } = useOrganizationRoute();
++  const methods = useQuery(appMethodsAtom({ organization, app: app.id }));
++  const tools = useQuery(
++    toolCatalogAtom({ organization, app: app.id, version: app.activeVersion ?? undefined }),
++  );
++  const [connection, setConnection] = useState<CatalogToolSection>();
++  const [busy, setBusy] = useState(false);
++  const trigger = useRef<HTMLButtonElement | null>(null);
++  const missing = Option.isSome(tools.data)
++    ? missingToolSections(entry.toolSections ?? [], requirements, tools.data.value)
++    : [];
++  const selectedRequirement =
++    connection === undefined
++      ? undefined
++      : requirements.find(
++          ({ slot, requirement }) =>
++            slot === connection.requirement &&
++            Object.hasOwn(requirement.definition.auth, connection.method),
++        )?.requirement;
++  const selected =
++    connection !== undefined && selectedRequirement !== undefined
++      ? { section: connection, requirement: selectedRequirement }
++      : undefined;
++  const policy =
++    AsyncResult.isSuccess(methods.result) && !methods.result.waiting
++      ? methods.result.value
++      : undefined;
++  const unavailable = (section: CatalogToolSection) => {
++    if (policy === undefined) return "Checking available connection methods.";
++    const connection = policy.connections.find(
++      (entry) => entry.requirement === section.requirement,
++    );
++    if (connection?.canConnect !== true) return "This account must be connected from Accounts.";
++    return policy.unavailable.find(
++      (entry) => entry.requirement === section.requirement && entry.method === section.method,
++    )?.reason;
++  };
++  return (
++    <>
++      <MissingToolSections
++        sections={missing.map(({ section }) => section)}
++        renderAction={(section) => (
++          <Button
++            type="button"
++            disabled={busy || unavailable(section) !== undefined}
++            title={unavailable(section)}
++            onClick={(event) => {
++              trigger.current = event.currentTarget;
++              setConnection(section);
++            }}
++          >
++            {section.actionLabel}
++          </Button>
++        )}
++      />
++      <ConnectionModal
++        open={selected !== undefined}
++        busy={busy}
++        onClose={() => setConnection(undefined)}
++        onCloseAutoFocus={(event) => {
++          event.preventDefault();
++          trigger.current?.focus();
++        }}
++      >
++        {selected && (
++          <AppConnectionDialogContent
++            key={`${selected.section.requirement}:${selected.section.method}`}
++            app={app}
++            scope={selected.requirement.scope}
++            slot={selected.section.requirement}
++            requirement={selected.requirement}
++            method={selected.section.method}
++            redirectUri={redirectUri}
++            oauthDeferrals={entry.oauthDeferrals}
++            connectionGuidance={entry.connectionGuidance}
++            unavailable={(method) => unavailable({ ...selected.section, method })}
++            onPendingChange={setBusy}
++            onSaved={() => setConnection(undefined)}
++          />
++        )}
++      </ConnectionModal>
++    </>
++  );
++}
+diff --git a/apps/hosted/web/src/implementation/pages/app-tools.tsx b/apps/hosted/web/src/implementation/pages/app-tools.tsx
+--- a/apps/hosted/web/src/implementation/pages/app-tools.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-tools.tsx
+@@ -25,16 +25,19 @@
+ } from "../../contracts/apps.ts";
+ import type { HostedError } from "../../contracts/errors.ts";
+ import { useOrganizationRoute } from "../components/organization.tsx";
++import { AppToolSections } from "./app-tool-sections.tsx";
+ 
+ /** Discover and run tools with the accounts linked to the app. */
+ export function AppTools({
+   app,
+   requirements,
+   selected,
++  redirectUri,
+ }: {
+   readonly app: App;
+   readonly requirements: readonly RequirementAccounts<AccountSummary>[];
+   readonly selected: string | undefined;
++  readonly redirectUri: string;
+ }) {
+   const { organization, slug: organizationSlug } = useOrganizationRoute();
+   const navigate = useNavigate();
+@@ -62,44 +65,47 @@
+       </p>
+     );
+   return (
+-    <ToolBrowser
+-      key={`${app.id}:${app.activeVersion}`}
+-      query={toolCatalogAtom(catalog)}
+-      detail={(tool) => toolDetailAtom({ ...catalog, tool: tool.name })}
+-      Failure={ToolsFailure}
+-      selected={selected}
+-      empty={
+-        emptyManyRequirements(requirements).length > 0 ? (
+-          <Empty title="No accounts linked">
+-            This app lists tools for each linked account. Link one in {accountsLink}.
+-          </Empty>
+-        ) : undefined
+-      }
+-      onSelect={(tool) => {
+-        void navigate({
+-          to: "/org/$organizationSlug/apps/$appId",
+-          params: { organizationSlug, appId: app.id },
+-          search: { view: "tools", tool },
+-        });
+-      }}
+-      renderAction={(tool) => (
+-        <ToolRunner
+-          key={tool.name}
+-          tool={tool.name}
+-          call={callToolAtom({
+-            organization,
+-            app: app.id,
+-            version: app.activeVersion ?? undefined,
+-            tool: tool.name,
+-            kind: tool.readOnly === true ? "query" : "mutation",
+-          })}
+-          approval={(requestId) => toolRunApprovalAtoms({ organization, app: app.id, requestId })}
+-          detail={toolDetailAtom({ ...catalog, tool: tool.name })}
+-          Failure={ToolCallFailure}
+-          accounts={runningAs(requirements)}
+-        />
+-      )}
+-    />
++    <div className="flex min-h-0 flex-1 flex-col">
++      <AppToolSections app={app} requirements={requirements} redirectUri={redirectUri} />
++      <ToolBrowser
++        key={`${app.id}:${app.activeVersion}`}
++        query={toolCatalogAtom(catalog)}
++        detail={(tool) => toolDetailAtom({ ...catalog, tool: tool.name })}
++        Failure={ToolsFailure}
++        selected={selected}
++        empty={
++          emptyManyRequirements(requirements).length > 0 ? (
++            <Empty title="No accounts linked">
++              This app lists tools for each linked account. Link one in {accountsLink}.
++            </Empty>
++          ) : undefined
++        }
++        onSelect={(tool) => {
++          void navigate({
++            to: "/org/$organizationSlug/apps/$appId",
++            params: { organizationSlug, appId: app.id },
++            search: { view: "tools", tool },
++          });
++        }}
++        renderAction={(tool) => (
++          <ToolRunner
++            key={tool.name}
++            tool={tool.name}
++            call={callToolAtom({
++              organization,
++              app: app.id,
++              version: app.activeVersion ?? undefined,
++              tool: tool.name,
++              kind: tool.readOnly === true ? "query" : "mutation",
++            })}
++            approval={(requestId) => toolRunApprovalAtoms({ organization, app: app.id, requestId })}
++            detail={toolDetailAtom({ ...catalog, tool: tool.name })}
++            Failure={ToolCallFailure}
++            accounts={runningAs(requirements)}
++          />
++        )}
++      />
++    </div>
+   );
+ }
+ 
+diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+--- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+@@ -469,7 +469,14 @@
+                 />,
+               );
+             if (selectedView === "tools")
+-              return gate(<AppTools app={current} requirements={requirements} selected={tool} />);
++              return gate(
++                <AppTools
++                  app={current}
++                  requirements={requirements}
++                  selected={tool}
++                  redirectUri={inventory.accountSetup.redirectUri}
++                />,
++              );
+             if (selectedView === "workflows")
+               return gate(
+                 <AppResources app={current} view="workflows" canReadSource={canManage} />,
+diff --git a/apps/hosted/web/src/implementation/pages/connection-dialog.tsx b/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
+--- a/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
++++ b/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
+@@ -28,11 +28,13 @@
+   busy,
+   onClose,
+   children,
++  onCloseAutoFocus,
+ }: {
+   readonly open: boolean;
+   readonly busy: boolean;
+   readonly onClose: () => void;
+   readonly children: ReactNode;
++  readonly onCloseAutoFocus?: ((event: Event) => void) | undefined;
+ }) {
+   return (
+     <Dialog
+@@ -41,7 +43,10 @@
+         if (!open && !busy) onClose();
+       }}
+     >
+-      <DialogContent className="max-h-[85dvh] gap-5 overflow-x-hidden overflow-y-auto sm:max-w-[560px]">
++      <DialogContent
++        onCloseAutoFocus={onCloseAutoFocus}
++        className="max-h-[85dvh] gap-5 overflow-x-hidden overflow-y-auto sm:max-w-[560px]"
++      >
+         {children}
+       </DialogContent>
+     </Dialog>
+diff --git a/e2e/support/managed-server.ts b/e2e/support/managed-server.ts
+--- a/e2e/support/managed-server.ts
++++ b/e2e/support/managed-server.ts
+@@ -49,6 +49,7 @@
+ const maxClockOffset = 40 * 86_400_000;
+ /** Operator settings a scenario may turn on between product generations. */
+ export const OperatorSettings = Schema.Struct({
++  EXECUTOR_CATALOG_URL: Schema.optionalKey(Schema.NonEmptyString),
+   POOL_APP_SIGNING_KEY: Schema.optionalKey(Schema.NonEmptyString),
+   BASALT_POOL_ORIGIN: Schema.optionalKey(Schema.NonEmptyString),
+   /** A full product entry composed through its public API, with typed host capabilities. */
+diff --git a/e2e/support/tool-sections-catalog.ts b/e2e/support/tool-sections-catalog.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/tool-sections-catalog.ts
+@@ -0,0 +1,95 @@
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import { Effect, Layer } from "effect";
++import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
++import { createServer } from "node:http";
++import { appsVersion } from "./apps-release.ts";
++
++/** An ordinary catalog app whose two tool sections need different account methods. */
++export const toolSectionsCatalog = (issuer: string) =>
++  Effect.gen(function* () {
++    const entry = {
++      id: "tool-sections",
++      package: "@executor.sh/tool-sections",
++      name: "Sections fixture",
++      description: "Two tool sections with one reusable provider.",
++      auth: [
++        { method: "oauth", kind: "oauth2" },
++        { method: "token", kind: "secrets", label: "Personal token" },
++      ],
++      icons: [],
++      source: "apps/tool-sections.json",
++      toolSections: [
++        {
++          path: "api",
++          title: "Service API",
++          requirement: "service",
++          method: "token",
++          description:
++            "Your sign-in provides MCP tools. Add a personal token to use the REST API too.",
++          actionLabel: "Add token",
++        },
++        {
++          path: "missing",
++          title: "Stale section",
++          requirement: "removed",
++          method: "token",
++          description: "This requirement is not in the installed app.",
++          actionLabel: "Connect removed requirement",
++        },
++      ],
++    };
++    const source = {
++      package: entry.package,
++      files: [
++        {
++          path: "index.ts",
++          content: `import { defineApp, defineProvider, oauth2, object, query, router, secrets, string } from "apps";
++const service = defineProvider({ name: "Sections fixture", auth: {
++  oauth: oauth2({ authorizationUrl: ${JSON.stringify(issuer + "/authorize")}, tokenUrl: ${JSON.stringify(issuer + "/token")}, scopes: ["read"] }),
++  token: secrets({ label: "Personal token", fields: object({ token: string({ minLength: 1 }) }) })
++} });
++export default defineApp({ user: { accounts: { service: service.many() } } }, async ({ user }) => {
++  const accounts = user?.accounts.service ?? [];
++  const token = accounts.some(account => account.method === "token");
++  return { tools: router({
++    mcp: router(accounts.length ? { read: query({ input: object({}), description: "Read through MCP" }, async () => "MCP read") } : {}, { title: "Service MCP" }),
++    api: router(token ? { read: query({ input: object({}), description: "Read through REST" }, async () => "REST read") } : {}, { title: "Service API" })
++  }) };
++});`,
++        },
++        {
++          path: "package.json",
++          content: JSON.stringify({
++            name: entry.package,
++            private: true,
++            type: "module",
++            dependencies: { apps: appsVersion },
++          }),
++        },
++      ],
++    };
++    const listener = createServer();
++    const services = yield* Layer.build(
++      HttpRouter.serve(
++        HttpRouter.add(
++          "GET",
++          "/*",
++          Effect.gen(function* () {
++            const request = yield* HttpServerRequest.HttpServerRequest;
++            const path = new URL(request.url, "http://catalog").pathname;
++            if (path === "/index.json")
++              return HttpServerResponse.jsonUnsafe({ version: 1, apps: [entry] });
++            if (path === "/apps/tool-sections.json") return HttpServerResponse.jsonUnsafe(source);
++            return HttpServerResponse.empty({ status: 404 });
++          }),
++        ),
++        { disableLogger: true, disableListenLog: true },
++      ).pipe(
++        Layer.provideMerge(NodeHttpServer.layer(() => listener, { host: "127.0.0.1", port: 0 })),
++      ),
++    );
++    yield* Effect.addFinalizer(() => Effect.sync(() => listener.closeAllConnections()));
++    const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
++    if (!("port" in server.address)) return yield* Effect.die("Catalog needs a TCP listener");
++    return { url: `http://127.0.0.1:${server.address.port}/index.json`, entry };
++  });
+diff --git a/e2e/tests/tool-sections.spec.ts b/e2e/tests/tool-sections.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/tool-sections.spec.ts
+@@ -0,0 +1,217 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { FetchHttpClient, HttpClient } from "effect/http";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { connectionsPath } from "../support/app-accounts.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { nameConnectedAccount } from "../support/name-account.ts";
++import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
++import { serverControl } from "../support/server-control.ts";
++import { toolSectionsCatalog } from "../support/tool-sections-catalog.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Redirect = Schema.Struct({ authorizationUrl: Schema.String, redirectUri: Schema.String });
++const Tools = Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) });
++
++layer(HostedLive, { excludeTestServices: true })("Missing tool sections", (it) => {
++  for (const [scenario, width] of [
++    [scenarios.catalogToolSectionsDesktop, 1280],
++    [scenarios.catalogToolSectionsPhone, 390],
++  ] as const)
++    it.effect(scenario.title, (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const api = yield* Api,
++            actors = yield* Actors,
++            browser = yield* Browser,
++            http = yield* HttpClient.HttpClient,
++            issuer = yield* oauthSetupIssuer;
++          const catalog = yield* toolSectionsCatalog(issuer.origin);
++          yield* serverControl("stop");
++          yield* serverControl("environment", 200, { EXECUTOR_CATALOG_URL: catalog.url });
++          yield* serverControl("start");
++          const prefix = `/api/organizations/${actors.organization.id}`;
++          const installed = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++            entry: catalog.entry.id,
++            name: `Sections ${width}`,
++          });
++          expect(installed.status, JSON.stringify(installed.body)).toBe(200);
++          const app = yield* body(Resource, installed),
++            path = `${prefix}/apps/${app.id}`;
++          const accounts: string[] = [];
++          yield* Effect.addFinalizer(() =>
++            Effect.gen(function* () {
++              expect((yield* api.request(actors.owner, "DELETE", path)).status).toBe(200);
++              for (const account of accounts)
++                expect(
++                  (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`))
++                    .status,
++                ).toBe(200);
++            }).pipe(Effect.orDie),
++          );
++          const connection = yield* body(
++            Resource,
++            yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
++          );
++          const client = { clientId: "sections-client", clientSecret: "sections-secret" };
++          const started = yield* api.request(
++            actors.owner,
++            "POST",
++            `${prefix}/connections/${connection.id}/oauth/start`,
++            { method: "oauth", client },
++          );
++          expect(started.status, JSON.stringify(started.body)).toBe(200);
++          const redirect = yield* body(Redirect, started);
++          yield* issuer.allowClient({ ...client, redirect: redirect.redirectUri });
++          const callbackUrl = yield* Effect.scoped(
++            Effect.gen(function* () {
++              const consent = yield* HttpClient.withScope(http).get(redirect.authorizationUrl);
++              expect(consent.status).toBe(302);
++              if (consent.headers.location === undefined)
++                return yield* Effect.die("Missing callback");
++              return consent.headers.location;
++            }),
++          ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
++          const completed = yield* api.request(
++            actors.owner,
++            "POST",
++            `${prefix}/connections/${connection.id}/oauth/complete`,
++            { callbackUrl },
++          );
++          expect(completed.status, JSON.stringify(completed.body)).toBe(200);
++          accounts.push((yield* body(Resource, completed)).id);
++          const before = yield* body(
++            Tools,
++            yield* api.request(actors.owner, "GET", `${path}/tools/index`),
++          );
++          expect(before.items.map((tool) => tool.name)).toEqual(["mcp.read"]);
++          yield* browser.login(actors.owner);
++          yield* browser.use("Open OAuth-only tools", (page) =>
++            page
++              .setViewportSize({ width, height: 900 })
++              .then(() => page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=tools`))
++              .then(() => page.getByRole("heading", { name: "Read", exact: true }).waitFor()),
++          );
++          yield* browser.use("Wait for the missing-section action to be ready", (page) =>
++            page.getByRole("button", { name: "Add token", exact: true }).click({ trial: true }),
++          );
++          yield* browser.checkpoint(`OAuth-only tool sections ${width}`);
++          expect(
++            yield* browser.use("Missing API section remains visible", (page) =>
++              page.getByRole("region", { name: "Service API", exact: true }).count(),
++            ),
++          ).toBe(1);
++          expect(
++            yield* browser.use("Stale catalog mappings offer no actions", (page) =>
++              page
++                .getByRole("button", { name: "Connect removed requirement", exact: true })
++                .count(),
++            ),
++          ).toBe(0);
++          yield* browser.use("One click opens the token method", (page) =>
++            page.getByRole("button", { name: "Add token", exact: true }).click(),
++          );
++          const dialog = yield* browser.use(
++            "Normal account form opens with token selected",
++            (page) => {
++              const dialog = page.getByRole("dialog", {
++                name: "Connect Sections fixture",
++                exact: true,
++              });
++              return dialog
++                .getByLabel("Token", { exact: true })
++                .waitFor()
++                .then(() => dialog);
++            },
++          );
++          yield* browser.checkpoint(`Missing-section connection form ${width}`);
++          yield* browser.use("Cancel preserves the OAuth account", (page) =>
++            page.keyboard.press("Escape").then(() => dialog.waitFor({ state: "hidden" })),
++          );
++          expect(
++            yield* browser.use("Cancel restores focus to Add token", (page) =>
++              page
++                .waitForFunction(() => document.activeElement?.textContent === "Add token")
++                .then(() => page.evaluate(() => document.activeElement?.textContent)),
++            ),
++          ).toBe("Add token");
++          expect(
++            (yield* body(Tools, yield* api.request(actors.owner, "GET", `${path}/tools/index`)))
++              .items,
++          ).toEqual(before.items);
++          yield* browser.use("Open token form again", (page) =>
++            page.getByRole("button", { name: "Add token", exact: true }).click(),
++          );
++          yield* browser.use("Connect a synthetic personal token", (page) =>
++            dialog
++              .getByLabel("Token", { exact: true })
++              .fill("synthetic-sections-token")
++              .then(() =>
++                Promise.all([
++                  page.waitForResponse(
++                    (response) =>
++                      response.request().method() === "POST" &&
++                      new URL(response.url()).pathname === `${path}/accounts/user/service`,
++                  ),
++                  dialog.getByRole("button", { name: "Connect account", exact: true }).click(),
++                ])
++                  .then(([response]) => response.json())
++                  .then((value) => {
++                    accounts.push(Schema.decodeUnknownSync(Resource)(value).id);
++                  }),
++              ),
++          );
++          yield* browser.use("Name the saved token", (page) =>
++            nameConnectedAccount(page, "API token"),
++          );
++          yield* browser.use("Token connection refreshes both sections", (page) =>
++            page
++              .getByRole("region", { name: "Service API", exact: true })
++              .waitFor({ state: "hidden" }),
++          );
++          const after = yield* body(
++            Tools,
++            yield* api.request(actors.owner, "GET", `${path}/tools/index`),
++          );
++          expect(after.items.map((tool) => tool.name).sort()).toEqual(["api.read", "mcp.read"]);
++          for (const tool of after.items) {
++            const called = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
++              tool: tool.name,
++              kind: "query",
++              input: {},
++            });
++            expect(called.status, JSON.stringify(called.body)).toBe(200);
++            expect(called.body).toBe(tool.name === "api.read" ? "REST read" : "MCP read");
++          }
++          yield* browser.checkpoint(`Both tool sections ${width}`);
++          expect(
++            yield* browser.use("No page overflow", (page) =>
++              page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
++            ),
++          ).toBe(false);
++          expect(
++            (yield* api.request(
++              actors.owner,
++              "DELETE",
++              `${path}/accounts/user/service/${accounts[1]}`,
++            )).status,
++          ).toBe(200);
++          yield* browser.use("Return after token unlink", (page) =>
++            page
++              .reload()
++              .then(() => page.getByRole("button", { name: "Add token", exact: true }).waitFor()),
++          );
++          const remaining = yield* body(
++            Tools,
++            yield* api.request(actors.owner, "GET", `${path}/tools/index`),
++          );
++          expect(remaining.items.map((tool) => tool.name)).toEqual(["mcp.read"]);
++          yield* browser.checkpoint(`Unlink restores API guidance ${width}`);
++        }),
++      ),
++    );
++});
