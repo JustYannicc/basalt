@@ -3,8 +3,8 @@
   "publishedUrl": "https://catalog.executor.sh/apps/gitlab.json",
   "snapshotCaptured": "2026-10-30",
   "publishedSha256": "ce0d3cbcd957fa628db8b664959ed3d7fbf6fd6a55d3313e50c58670d2f2eb0e",
-  "carriedSha256": "4e50fadf66a321ce0f7f48e317919b24b7ba9ae37c29738bed504edc016d3010",
-  "patchSha256": "b269d2bd3e3e3a3c980a4c55be14579b1c9e0d43cbb959a49001a587c13b94bc",
+  "carriedSha256": "235f54b9b3b07e45061ffefc7edd2fe96dd99e606f062ffaee418d037a5d77ad",
+  "patchSha256": "28a9984fa45f362aece67dd34dbe40d6dfa2dde8b5a2b59d1c158130efc6d55b",
   "publishedFileSha256": {
     "README.md": "1d71a6b392c94589298761e65c027e32cfd4f2744f480ca06de629b9610524ab",
     "icon.ts": "3616da179930ca6520afadd61f0788b6762757c628a1efc2653527a38311a9de",
@@ -17,9 +17,9 @@
     "icon.ts": "3616da179930ca6520afadd61f0788b6762757c628a1efc2653527a38311a9de",
     "index.ts": "8a74353b55f1ed4934224eff42ec63662a35fc90e766b531c736e1f28dfb9784",
     "openapi.ts": "dd31bb58d7708cca94717c9ff52ab17258afefb49f0ce903833ce21561de223d",
-    "package.json": "489b6bb145f13144d0d3247653233e38be44c9e780fcdd45d02a61a6d33b76d2"
+    "package.json": "85800c79b4d190d19e1eb0ca392be041e3765c0ec2b636f5fcba27175a8b1ad8"
   },
-  "appsVersion": "0.0.1-beta.104-basalt.9",
+  "appsVersion": "0.0.1-beta.104-basalt.10",
   "license": "Not declared in the published package",
   "siteConfiguration": {
     "kind": "native-account-origin",
