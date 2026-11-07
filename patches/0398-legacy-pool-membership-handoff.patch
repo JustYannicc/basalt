@@ -1,0 +1,1075 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/app-outbound.ts b/apps/hosted/cloud/src/infrastructure/app-outbound.ts
+index c89c57a..8ee2f85 100644
+--- a/apps/hosted/cloud/src/infrastructure/app-outbound.ts
++++ b/apps/hosted/cloud/src/infrastructure/app-outbound.ts
+@@ -2,7 +2,7 @@
+ import * as Cloudflare from "alchemy/Cloudflare";
+ import { AlchemyContext } from "alchemy/AlchemyContext";
+ import { Random } from "alchemy";
+-import { Cause, Effect, Redacted, Schema } from "effect";
++import { Cause, Config, Effect, Redacted, Schema } from "effect";
+ import { HttpServerRequest, HttpServerResponse } from "effect/http";
+ import { recordRoute } from "@executor-js/telemetry";
+ import type { Fetcher } from "@cloudflare/workers-types";
+@@ -18,18 +18,29 @@ import { platformObservability } from "./telemetry.ts";
+ 
+ export const AppOutbound = Effect.gen(function* () {
+   if (globalThis.__ALCHEMY_RUNTIME__) return yield* Cloudflare.Worker.ref("AppOutbound");
++  const localOrigin = yield* Config.String("EXECUTOR_E2E_LOCAL_ORIGIN").pipe(
++    Config.withDefault(""),
++    Effect.orDie,
++  );
+   return yield* Cloudflare.Worker("AppOutbound", {
+     workersDev: false,
+     compatibility: { date: "2026-09-08", flags: ["global_fetch_strictly_public"] },
++    env: { E2E_LOCAL_ORIGIN: localOrigin },
+     // This private service has no application bindings or credentials.
+     script: `export default {
+-      fetch(request) {
++      fetch(request, env) {
++        if (env.E2E_LOCAL_ORIGIN) {
++          const local = (url) => ["http:", "https:"].includes(url.protocol) &&
++            (["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) || url.hostname.endsWith(".localhost"));
++          if (!local(new URL(env.E2E_LOCAL_ORIGIN)) || !local(new URL(request.url)))
++            return Response.json({ error: "e2e_nonlocal_origin", message: "E2E app requests must stay on local origins." }, { status: 451 });
++        }
+         if (!request.headers.has("User-Agent")) {
+           const headers = new Headers(request.headers);
+           headers.set("User-Agent", "Executor");
+           request = new Request(request, { headers });
+         }
+-        return fetch(request);
++        return fetch(request, env.E2E_LOCAL_ORIGIN ? { redirect: "manual" } : undefined);
+       }
+     };`,
+     ...(yield* platformObservability),
+diff --git a/apps/hosted/cloud/src/infrastructure/pool-app-source.ts b/apps/hosted/cloud/src/infrastructure/pool-app-source.ts
+index 032f891..ac3267a 100644
+--- a/apps/hosted/cloud/src/infrastructure/pool-app-source.ts
++++ b/apps/hosted/cloud/src/infrastructure/pool-app-source.ts
+@@ -1,8 +1,8 @@
+ /** The static asset binding serves the seed without an external HTTP request. */
+ import type { Fetcher } from "@cloudflare/workers-types";
+ import * as Cloudflare from "alchemy/Cloudflare";
+-import { StorageError } from "@executor-js/sdk/core";
+-import { Effect, Schema } from "effect";
++import { SourceFiles, StorageError } from "@executor-js/sdk/core";
++import { Config, Effect, Option, Schema } from "effect";
+ import { makePoolAppSource } from "../implementation/pool-app-assets.ts";
+ 
+ const Assets = Schema.declare(
+@@ -15,7 +15,7 @@ const Assets = Schema.declare(
+ 
+ export const cloudPoolAppSource = Effect.gen(function* () {
+   const environment = yield* Cloudflare.WorkerEnvironment;
+-  return makePoolAppSource((path) =>
++  const source = makePoolAppSource((path) =>
+     Effect.gen(function* () {
+       const assets = yield* Schema.decodeUnknownEffect(Assets)(environment.ASSETS).pipe(
+         Effect.mapError(() => new StorageError()),
+@@ -26,4 +26,64 @@ export const cloudPoolAppSource = Effect.gen(function* () {
+       });
+     }),
+   );
++  const local = yield* Config.String("EXECUTOR_E2E_LOCAL_ORIGIN").pipe(Config.option);
++  if (Option.isNone(local)) return source;
++  const origin = new URL(local.value);
++  if (
++    !(
++      ["http:", "https:"].includes(origin.protocol) &&
++      (["localhost", "127.0.0.1", "[::1]"].includes(origin.hostname) ||
++        origin.hostname.endsWith(".localhost"))
++    )
++  )
++    return yield* Effect.die("E2E pool source requires a local Cloud origin");
++  // Assets exist only in a request, after Alchemy has planned the Worker.
++  const files = source.files.pipe(
++    Effect.flatMap((files) =>
++      Effect.gen(function* () {
++        const deployment = files.find((file) => file.path === "deployment.ts");
++        if (
++          deployment === undefined ||
++          !("content" in deployment) ||
++          "encoding" in deployment ||
++          deployment.content.match(/^export const poolOrigin = [^\n]+;$/gm)?.length !== 1
++        )
++          return yield* new StorageError();
++        return yield* Schema.decodeUnknownEffect(SourceFiles)(
++          files.map((file) =>
++            !("content" in file)
++              ? file
++              : file.path === "deployment.ts"
++                ? {
++                    ...file,
++                    content: file.content.replace(
++                      /^export const poolOrigin = [^\n]+;$/m,
++                      `export const poolOrigin = ${JSON.stringify(origin.origin)};`,
++                    ),
++                  }
++                : file.path === "ui/public/fonts.css"
++                  ? {
++                      ...file,
++                      content: file.content.replaceAll(
++                        /https:\/\/[^/]+\/brand\/fonts\//g,
++                        `${origin.origin}/brand/fonts/`,
++                      ),
++                    }
++                  : file,
++          ),
++        );
++      }),
++    ),
++    Effect.mapError(() => new StorageError()),
++  );
++  const digest = yield* Effect.promise(() =>
++    crypto.subtle.digest(
++      "SHA-256",
++      new TextEncoder().encode(JSON.stringify([source.version, origin.origin])),
++    ),
++  );
++  const version = Array.from(new Uint8Array(digest), (byte) =>
++    byte.toString(16).padStart(2, "0"),
++  ).join("");
++  return { version, files };
+ });
+diff --git a/apps/hosted/server/src/implementation/account-resets.ts b/apps/hosted/server/src/implementation/account-resets.ts
+index 7f0af92..b8521c8 100644
+--- a/apps/hosted/server/src/implementation/account-resets.ts
++++ b/apps/hosted/server/src/implementation/account-resets.ts
+@@ -53,10 +53,10 @@ const target = (
+       return yield* new OrganizationForbidden();
+     const executor = yield* Effect.flatten(HostedExecutor);
+     let reference: string | undefined;
+-    if (rows[0]?.membership === "executor-links-v1") {
+-      const membership = yield* nativePoolMembership(actor.organization, pool, executor).pipe(
+-        Effect.provideService(SqlClient.SqlClient, sql),
+-      );
++    const membership = yield* nativePoolMembership(actor.organization, pool, executor).pipe(
++      Effect.provideService(SqlClient.SqlClient, sql),
++    );
++    if (membership.native) {
+       const refs = [
+         ...new Set(
+           membership.accounts.flatMap((row) =>
+diff --git a/apps/hosted/server/src/implementation/pool-defaults.ts b/apps/hosted/server/src/implementation/pool-defaults.ts
+index f594e08..7971036 100644
+--- a/apps/hosted/server/src/implementation/pool-defaults.ts
++++ b/apps/hosted/server/src/implementation/pool-defaults.ts
+@@ -25,6 +25,7 @@ export { poolAppVersion, poolAppAssetPath } from "./pool-app-source.ts";
+ import { repairPoolAccount, poolTokenKeyVersion } from "./pool-account.ts";
+ import { defaultProductBrand, productBrandSettings } from "@executor-js/utils/product-brand";
+ import { PoolRecords, ownedPoolRecords } from "./pool-records.ts";
++import { reconcilePoolMembership } from "./pool-membership-reconcile.ts";
+ 
+ const basaltPools = "basaltPools";
+ 
+@@ -303,6 +304,7 @@ const reconcilePool = (
+       );
+       // Another job advanced the record or the app meanwhile; a repair made before that still counts.
+       if (!settled) decision = "superseded";
++      if (settled && !rotationOnly) yield* reconcilePoolMembership(organization, app.id);
+       yield* report(app.id);
+       return;
+     }
+@@ -424,6 +426,7 @@ const reconcilePool = (
+       }),
+     );
+     if (changed) intent = true;
++    if (changed) yield* reconcilePoolMembership(organization, app.id);
+   }).pipe(
+     Effect.tapError(() => Effect.logWarning("Pool setup failed; member job will retry")),
+     Effect.mapError(() => new StorageError()),
+diff --git a/apps/hosted/server/src/implementation/pool-membership-hook.ts b/apps/hosted/server/src/implementation/pool-membership-hook.ts
+index ac67e4b..6112f6e 100644
+--- a/apps/hosted/server/src/implementation/pool-membership-hook.ts
++++ b/apps/hosted/server/src/implementation/pool-membership-hook.ts
+@@ -5,6 +5,7 @@ import { withOrganizationAccessLock } from "./organization-access-lock.ts";
+ import { acknowledgePoolChange } from "./pool-receiver.ts";
+ 
+ const Pool = Schema.Struct({ pool: AppId, organization: Schema.String });
++const Registration = Schema.Struct({ key: Schema.String, native: Schema.Boolean });
+ export const poolMembershipPath = "/pool/v1/membership";
+ export const poolMembershipPrefix = "sbm1";
+ 
+@@ -17,21 +18,49 @@ export const invalidatePoolMemberships = (
+   Effect.gen(function* () {
+     if (input.apps?.length === 0) return;
+     const sql = yield* SqlClient.SqlClient;
+-    const rows = yield* sql`select app.id as pool, o.id as organization from organization o
++    const rows = yield* sql`select distinct app.id as pool, o.id as organization from organization o
+       cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
+       join executor_apps app on app.id = entry.value ->> 'app' and app.owner = 'organization:' || o.id
+-      where entry.value ->> 'membership' = 'executor-links-v1'
++      where app.active_deployment is not null
+         ${input.organization === undefined ? sql`` : sql`and o.id = ${input.organization}`}
+         ${input.apps === undefined ? sql`` : sql`and ${sql.in("app.id", input.apps)}`}
+       order by o.id, app.id`;
+     const pools = yield* Schema.decodeUnknownEffect(Schema.Array(Pool))(rows);
+     if (pools.length === 0) return;
+-    if (Option.isNone(key))
+-      return yield* new AccessDependencyUnavailable({ dependency: "pool receiver" });
+     for (const pool of pools)
+       yield* withOrganizationAccessLock(
+         pool.organization,
+-        acknowledgePoolChange(key.value, origin, poolMembershipPath, poolMembershipPrefix, pool),
++        Effect.gen(function* () {
++          const rows =
++            yield* sql`select entry.key, coalesce(entry.value ->> 'membership' = 'executor-links-v1', false) as native
++            from organization o
++            cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
++            join executor_apps app on app.id = entry.value ->> 'app' and app.owner = 'organization:' || o.id
++            where o.id = ${pool.organization} and app.id = ${pool.pool} and app.active_deployment is not null
++              and (entry.value ->> 'membership' = 'executor-links-v1' or not exists (
++                select 1 from hosted_app_account_links l where l.app = app.id
++                  and l.subject is null and l.requirement = 'subscriptions'
++                  and not exists (select 1 from executor_account_acquisitions acquisition
++                    where acquisition.account = l.account and acquisition.driver = 'basalt-home'
++                      and acquisition.removal is null)))`;
++          const records = yield* Schema.decodeUnknownEffect(Schema.Array(Registration))(rows);
++          if (records.length === 0) return;
++          if (records.length !== 1) return yield* new StorageError();
++          if (Option.isNone(key))
++            return yield* new AccessDependencyUnavailable({ dependency: "pool receiver" });
++          const record = records[0]!;
++          if (!record.native)
++            yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
++              array['basaltPools', ${record.key}, 'membership'], '"executor-links-v1"'::jsonb)::text
++              where id = ${pool.organization}`;
++          yield* acknowledgePoolChange(
++            key.value,
++            origin,
++            poolMembershipPath,
++            poolMembershipPrefix,
++            pool,
++          );
++        }),
+       );
+   }).pipe(
+     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
+diff --git a/apps/hosted/server/src/implementation/pool-membership-reconcile.ts b/apps/hosted/server/src/implementation/pool-membership-reconcile.ts
+new file mode 100644
+index 0000000..fa7d150
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-membership-reconcile.ts
+@@ -0,0 +1,18 @@
++import type { AppId } from "@executor-js/sdk/core";
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
++
++/** Reuse the host's signed handoff; reads never infer Home identities or rewrite saved links. */
++export const reconcilePoolMembership = (organization: string, pool: AppId) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const legacy = yield* sql`select app.id from organization o
++      cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
++      join executor_apps app on app.id = entry.value ->> 'app' and app.owner = 'organization:' || o.id
++      where o.id = ${organization} and app.id = ${pool} and app.active_deployment is not null
++        and entry.value ->> 'membership' is distinct from 'executor-links-v1'`;
++    if (legacy.length === 0) return;
++    const lifecycle = yield* AccessLifecycle;
++    yield* lifecycle.appAccountLinksChanged?.({ apps: [pool] }) ?? Effect.void;
++  });
+diff --git a/apps/hosted/server/src/implementation/pool-membership.ts b/apps/hosted/server/src/implementation/pool-membership.ts
+index e0a4c3f..4ad22d2 100644
+--- a/apps/hosted/server/src/implementation/pool-membership.ts
++++ b/apps/hosted/server/src/implementation/pool-membership.ts
+@@ -15,6 +15,7 @@ import { HostedExecutor } from "../contracts/executor.ts";
+ import { withOrganizationAccessLock } from "./organization-access-lock.ts";
+ import { policyDatabase, usableAppLinks } from "./resource-policy.ts";
+ import { openEnvelope } from "./pool-token.ts";
++import { reconcilePoolMembership } from "./pool-membership-reconcile.ts";
+ 
+ const NativePoolAccountFields = {
+   account: AccountId,
+@@ -84,6 +85,7 @@ export const nativePoolMembership = (organization: string, pool: AppId, executor
+     organization,
+     Effect.gen(function* () {
+       const sql = yield* SqlClient.SqlClient;
++      yield* reconcilePoolMembership(organization, pool);
+       const found = yield* sql`select app.id from organization o
+         cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
+         join executor_apps app on app.id = entry.value ->> 'app'
+diff --git a/e2e/support/browser.ts b/e2e/support/browser.ts
+index 130c9b1..6649559 100644
+--- a/e2e/support/browser.ts
++++ b/e2e/support/browser.ts
+@@ -119,6 +119,19 @@ export class Browser extends Context.Service<
+           recordVideo: { dir: `${evidence.directory}/raw`, size: { width: 1440, height: 960 } },
+         }),
+       );
++      const blockedOrigins = new Set<string>();
++      const local = (url: URL) =>
++        ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) ||
++        url.hostname.endsWith(".localhost");
++      if (target.metadata.target === "cloud" && local(new URL(target.metadata.origin)))
++        yield* driver("restrict managed Cloud browser requests to local origins", () =>
++          context.route("**/*", (route) => {
++            const url = new URL(route.request().url());
++            if (!["http:", "https:"].includes(url.protocol) || local(url)) return route.fallback();
++            blockedOrigins.add(url.origin);
++            return route.abort("blockedbyclient");
++          }),
++        );
+       yield* driver("route batched reads through test routes", () =>
+         splitRoutedReads(context, targetHosts(target).browser),
+       );
+@@ -207,6 +220,10 @@ export class Browser extends Context.Service<
+           yield* evidence.json("navigation.json", navigations);
+           yield* evidence.json("failed-resources.json", failedResources);
+           for (const id of traceIds) yield* evidence.browserTrace(id);
++          if (blockedOrigins.size)
++            return yield* Effect.die(
++              `E2E browser requests must stay local: ${[...blockedOrigins].join(", ")}`,
++            );
+         }),
+       );
+       yield* driver("start browser trace", () =>
+diff --git a/e2e/support/cloud-app-listener.ts b/e2e/support/cloud-app-listener.ts
+index a1ce5ee..0aac4d1 100644
+--- a/e2e/support/cloud-app-listener.ts
++++ b/e2e/support/cloud-app-listener.ts
+@@ -4,11 +4,14 @@ import { cloudListener } from "./cloud-listener.ts";
+ /** Keep app origins stable while Alchemy owns and replaces its private listener. */
+ export const cloudAppListener = Effect.gen(function* () {
+   const listener = yield* cloudListener;
++  const base = new URL(listener.url);
++  // Share the dashboard's site, while the app still has a distinct opaque origin and port.
++  if (process.env.BASALT_E2E_POOL_SETUP === "1") base.hostname = `app.${base.hostname}`;
+   return {
+     ...listener,
+     environment: {
+       CLOUD_DEV_APP_UI_PORT: "0",
+-      EXECUTOR_APP_UI_BASE_URL: listener.url.origin,
++      EXECUTOR_APP_UI_BASE_URL: base.origin,
+     },
+     forward: (line: string) => {
+       // oxlint-disable-next-line no-control-regex -- Alchemy colors its resource announcements.
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+index 2594f78..e24344c 100644
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -405,6 +405,10 @@ export const startCloudEnvironment = (input: {
+       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `${collector}/v1/traces`,
+       OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: `${collector}/v1/logs`,
+       EXECUTOR_ENVIRONMENT: "test-local",
++      EXECUTOR_E2E_LOCAL_ORIGIN: browser,
++      ...(process.env.BASALT_E2E_POOL_SETUP === "1"
++        ? { EXECUTOR_APP_UI_ADDRESS_SCHEME: "opaque", EXECUTOR_APP_UI_EMBEDDED: "true" }
++        : {}),
+       EXECUTOR_E2E_MANUAL_CRON: String(input.manualCron ?? false),
+       TEST_STAGE_AUTH_RATE_LIMIT: String(input.authRateLimit),
+       VITE_POSTHOG_KEY: "synthetic-ingestion-key",
+diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.ts
+index 6ab057f..a82a08d 100644
+--- a/e2e/support/cloud-pool-gateway.ts
++++ b/e2e/support/cloud-pool-gateway.ts
+@@ -20,6 +20,7 @@ import { tokenKeyVersion } from "../../apps/hosted/server/src/implementation/poo
+ import { TransportDiagnostic, transportDiagnostic } from "./transport-diagnostic.ts";
+ 
+ import { poolReceiverFaults } from "./pool-receiver-faults.ts";
++import { poolProductPeer } from "./pool-product-peer.ts";
+ 
+ export const poolFixtureSigningKey = "ab".repeat(32);
+ 
+@@ -31,6 +32,7 @@ const Signed = Schema.Struct({
+   action: Schema.String,
+   provider: Schema.optionalKey(Schema.String),
+   reference: Schema.optionalKey(Schema.String),
++  session: Schema.optionalKey(Schema.String),
+   at: Schema.Number,
+   expiresAt: Schema.Number,
+ });
+@@ -68,6 +70,8 @@ export const cloudPoolGateway = (origin: string, directory: string, api: URL) =>
+       }[]
+     >([]);
+     const faults = yield* poolReceiverFaults;
++    const peer = yield* poolProductPeer;
++    let acquisitionSequence = 0;
+     const retirementReference = yield* Ref.make("present");
+     const membershipRefused = yield* Ref.make<ReadonlySet<string>>(new Set());
+     const retirementReadEntered = yield* Deferred.make<void>();
+@@ -116,9 +120,16 @@ export const cloudPoolGateway = (origin: string, directory: string, api: URL) =>
+             JSON.stringify(event) + "\n",
+             { flag: "a", mode: 0o600 },
+           );
+-          return refused
+-            ? HttpServerResponse.empty({ status: 503 })
+-            : HttpServerResponse.jsonUnsafe(null);
++          if (refused) return HttpServerResponse.empty({ status: 503 });
++          const forwarded = yield* peer.forward(
++            member.pool,
++            url,
++            "POST",
++            { "content-type": "application/json" },
++            JSON.stringify({ envelope }),
++          );
++          if (forwarded !== undefined) return forwarded;
++          return HttpServerResponse.jsonUnsafe(null);
+         }
+         const input = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Signed))(text);
+         if (url === access) {
+@@ -137,6 +148,17 @@ export const cloudPoolGateway = (origin: string, directory: string, api: URL) =>
+               : [change.pool],
+           );
+           if (fault !== undefined) return fault;
++          const selected = change.pool ?? change.pools?.find((pool) => pool.pool)?.pool;
++          if (selected !== undefined) {
++            const forwarded = yield* peer.forward(
++              selected,
++              url,
++              "POST",
++              { "content-type": "application/json" },
++              JSON.stringify({ envelope }),
++            );
++            if (forwarded !== undefined) return forwarded;
++          }
+         }
+         const refused =
+           process.env.BASALT_E2E_POOL_CLEANUP_REFUSED === "1" &&
+@@ -168,11 +190,13 @@ export const cloudPoolGateway = (origin: string, directory: string, api: URL) =>
+           });
+         }
+         if (input.action === "start")
+-          return HttpServerResponse.jsonUnsafe({ session: "synthetic-cloud-native-session" });
++          return HttpServerResponse.jsonUnsafe({
++            session: `synthetic-cloud-native-session-${++acquisitionSequence}`,
++          });
+         if (input.action === "status" || input.action === "submit")
+           return HttpServerResponse.jsonUnsafe({
+             state: "connected",
+-            ref: "synthetic-cloud-native-reference",
++            ref: `synthetic-cloud-native-reference-${input.session?.split("-").at(-1) ?? "unknown"}`,
+           });
+         if (input.action === "check") return HttpServerResponse.jsonUnsafe({ result: {} });
+         return HttpServerResponse.jsonUnsafe(null);
+@@ -184,6 +208,9 @@ export const cloudPoolGateway = (origin: string, directory: string, api: URL) =>
+     const keyVersion = yield* Effect.promise(() => tokenKeyVersion(poolFixtureSigningKey));
+     const routes = Layer.mergeAll(
+       faults.routes,
++      peer.configure,
++      peer.control,
++      peer.usage,
+       HttpRouter.add(
+         "GET",
+         "/pool/v1/release",
+diff --git a/e2e/support/legacy-pool-home.ts b/e2e/support/legacy-pool-home.ts
+new file mode 100644
+index 0000000..842adcf
+--- /dev/null
++++ b/e2e/support/legacy-pool-home.ts
+@@ -0,0 +1,129 @@
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import { Effect, Layer, Schema } from "effect";
++import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
++import { createHmac } from "node:crypto";
++import { createServer } from "node:http";
++
++/** Home starts with saved credentials and no channel memberships, as in a retained pool. */
++export const legacyPoolHome = (
++  pool: string,
++  accounts: readonly { id: string; provider: string }[],
++) =>
++  Effect.gen(function* () {
++    const members = new Map<number, string>();
++    const users: { id: number; username: string }[] = [];
++    const writes: string[] = [];
++    let sequence = 0;
++    const handler = Effect.gen(function* () {
++      const request = yield* HttpServerRequest.HttpServerRequest;
++      const url = new URL(request.url, "http://home.test");
++      const path = url.pathname;
++      if (path === "/ready")
++        return HttpServerResponse.jsonUnsafe({
++          boot_id: "synthetic-legacy-boot",
++          started_at: "2026-11-01T12:00:00.000Z",
++        });
++      if (path === "/native-policy") {
++        const input = yield* request.json.pipe(
++          Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ projection: Schema.String }))),
++        );
++        const [kind, encoded] = input.projection.split(".");
++        if (kind !== "sbm-policy1" || encoded === undefined)
++          return HttpServerResponse.empty({ status: 401 });
++        const signed = `${kind}.${encoded}`;
++        const signature = createHmac("sha256", Buffer.from("ab".repeat(32), "hex"))
++          .update(signed)
++          .digest("base64url");
++        if (`${signed}.${signature}` !== input.projection)
++          return HttpServerResponse.empty({ status: 401 });
++        const value = yield* Schema.decodeUnknownEffect(
++          Schema.fromJsonString(Schema.Struct({ revision: Schema.Number })),
++        )(Buffer.from(encoded, "base64url").toString());
++        return HttpServerResponse.jsonUnsafe({ installed: true, revision: value.revision });
++      }
++      if (request.headers["x-management-key"] !== "synthetic-management-key")
++        return HttpServerResponse.empty({ status: 401 });
++      if (path === "/v8/management/users") {
++        if (request.method === "POST") {
++          const value = yield* request.json.pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ username: Schema.String }))),
++          );
++          users.push({ id: users.length + 1, username: value.username });
++        }
++        return HttpServerResponse.jsonUnsafe({ users });
++      }
++      if (path === "/v8/management/channel-groups")
++        return HttpServerResponse.jsonUnsafe({
++          channel_groups: [{ id: 1, channel_name: `signalbox-pool-${pool}` }],
++        });
++      if (path === "/v8/management/channel-group-details") {
++        if (request.method === "POST") {
++          const value = yield* request.json.pipe(
++            Effect.flatMap(
++              Schema.decodeUnknownEffect(
++                Schema.Struct({ auth_id: Schema.String, channel_group_id: Schema.Number }),
++              ),
++            ),
++          );
++          members.set(++sequence, value.auth_id);
++          writes.push(`add:${value.auth_id}`);
++        }
++        return HttpServerResponse.jsonUnsafe({
++          channel_group_details: [...members].map(([id, auth_id]) => ({
++            id,
++            channel_group_id: 1,
++            auth_id,
++          })),
++        });
++      }
++      if (path.startsWith("/v8/management/channel-group-details/") && request.method === "DELETE") {
++        const id = Number(path.split("/").at(-1));
++        writes.push(`remove:${members.get(id)}`);
++        members.delete(id);
++        return HttpServerResponse.jsonUnsafe({ ok: true });
++      }
++      if (path === "/v8/management/credentials")
++        return HttpServerResponse.jsonUnsafe({
++          files: accounts.map((account) => ({
++            ...account,
++            label: account.id,
++            token: "synthetic-private-credential",
++          })),
++        });
++      if (path.startsWith("/v8/management/quota/credentials/"))
++        return HttpServerResponse.jsonUnsafe({
++          credential: { credential_id: path.split("/").at(-1) },
++          windows: [],
++          collection: {
++            status: "success",
++            freshness: "fresh",
++            observed_at: "2026-11-01T12:00:00.000Z",
++          },
++          reset_credits: null,
++        });
++      if (path === "/v8/management/quota/credentials")
++        return HttpServerResponse.jsonUnsafe({
++          items: accounts.map((account) => ({ credential_id: account.id, windows: [] })),
++        });
++      if (path.endsWith("/resets/attempt")) return HttpServerResponse.jsonUnsafe(null);
++      return HttpServerResponse.jsonUnsafe(
++        { error: "unexpected_home_request", path },
++        { status: 404 },
++      );
++    });
++    const context = yield* Layer.build(
++      HttpRouter.serve(HttpRouter.add("*", "/*", handler), {
++        disableLogger: true,
++        disableListenLog: true,
++      }).pipe(
++        Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
++      ),
++    );
++    const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(context));
++    if (!("port" in server.address)) return yield* Effect.die("Expected TCP Home peer");
++    return {
++      origin: `http://127.0.0.1:${server.address.port}`,
++      members: Effect.sync(() => [...members.values()].sort()),
++      writes: Effect.sync(() => [...writes]),
++    };
++  });
+diff --git a/e2e/support/pool-product-peer.ts b/e2e/support/pool-product-peer.ts
+new file mode 100644
+index 0000000..3972b0b
+--- /dev/null
++++ b/e2e/support/pool-product-peer.ts
+@@ -0,0 +1,104 @@
++import { Effect, Schema } from "effect";
++import {
++  FetchHttpClient,
++  HttpBody,
++  HttpClient,
++  HttpRouter,
++  HttpServerRequest,
++  HttpServerResponse,
++} from "effect/http";
++
++/** A scoped external-service route to the production Worker; it still authenticates every call. */
++export const poolProductPeer = Effect.gen(function* () {
++  const origins = new Map<string, string>();
++  const forward = (
++    pool: string,
++    path: string,
++    method: "GET" | "POST",
++    headers: Record<string, string>,
++    body?: string,
++  ) =>
++    Effect.gen(function* () {
++      const origin = origins.get(pool);
++      if (origin === undefined) return undefined;
++      const relative = new URL(path, "http://fixture.invalid");
++      const destination = new URL(relative.pathname + relative.search, origin).href;
++      const client = yield* HttpClient.HttpClient;
++      const response = yield* method === "GET"
++        ? client.get(destination, { headers })
++        : client.post(destination, { headers, body: HttpBody.text(body ?? "") });
++      const bytes = yield* response.arrayBuffer;
++      const forwardedHeaders = { ...response.headers };
++      // Fetch already decoded the response; its original wire encoding cannot describe these bytes.
++      delete forwardedHeaders["content-encoding"];
++      delete forwardedHeaders["content-length"];
++      delete forwardedHeaders["transfer-encoding"];
++      return HttpServerResponse.uint8Array(new Uint8Array(bytes), {
++        status: response.status,
++        headers: forwardedHeaders,
++      });
++    }).pipe(Effect.provide(FetchHttpClient.layer));
++  return {
++    forward,
++    configure: HttpRouter.add(
++      "POST",
++      "/native-provider-fixture/product-peer",
++      Effect.gen(function* () {
++        const input = yield* HttpServerRequest.schemaBodyJson(
++          Schema.Struct({
++            pool: Schema.String,
++            origin: Schema.NullOr(Schema.String),
++          }),
++        );
++        if (input.origin === null) {
++          origins.delete(input.pool);
++          return HttpServerResponse.jsonUnsafe({ configured: false });
++        }
++        const url = new URL(input.origin);
++        if (url.hostname !== "127.0.0.1") return HttpServerResponse.empty({ status: 400 });
++        origins.set(input.pool, url.origin);
++        return HttpServerResponse.jsonUnsafe({ configured: true });
++      }),
++    ),
++    control: HttpRouter.add(
++      "GET",
++      "/pool/v1/*",
++      Effect.gen(function* () {
++        const request = yield* HttpServerRequest.HttpServerRequest;
++        const token = /^Bearer (\S+)$/i.exec(request.headers.authorization ?? "")?.[1];
++        const encoded = token?.split(".")[1];
++        const claims =
++          encoded === undefined
++            ? undefined
++            : yield* Schema.decodeUnknownEffect(
++                Schema.fromJsonString(Schema.Struct({ pool: Schema.String })),
++              )(Buffer.from(encoded, "base64url").toString());
++        if (typeof claims?.pool !== "string") return HttpServerResponse.empty({ status: 401 });
++        return (
++          (yield* forward(claims.pool, request.url, "GET", request.headers)) ??
++          HttpServerResponse.empty({ status: 404 })
++        );
++      }),
++    ),
++    usage: HttpRouter.add(
++      "POST",
++      "/pool/v1/usage/*",
++      Effect.gen(function* () {
++        const request = yield* HttpServerRequest.HttpServerRequest;
++        const raw = yield* request.text;
++        const input = yield* Schema.decodeUnknownEffect(
++          Schema.fromJsonString(Schema.Struct({ envelope: Schema.String })),
++        )(raw);
++        const encoded = input.envelope.split(".")[1];
++        if (encoded === undefined) return HttpServerResponse.empty({ status: 401 });
++        const claims = yield* Schema.decodeUnknownEffect(
++          Schema.fromJsonString(Schema.Struct({ pool: Schema.String })),
++        )(Buffer.from(encoded, "base64url").toString());
++        return (
++          (yield* forward(claims.pool, request.url, "POST", request.headers, raw)) ??
++          HttpServerResponse.empty({ status: 404 })
++        );
++      }),
++    ),
++  };
++});
+diff --git a/e2e/support/pool-worker-runtime.ts b/e2e/support/pool-worker-runtime.ts
+index 54d3fa6..64d1dd1 100644
+--- a/e2e/support/pool-worker-runtime.ts
++++ b/e2e/support/pool-worker-runtime.ts
+@@ -43,6 +43,7 @@ export const poolWorkerRuntime = (toolsOrigin: string, homeOrigin?: string) =>
+             async destroy(){running=false},
+             async setInactivityTimeout(){},
+             getTcpPort(port){return {fetch(input,init){
++              if (!running) throw new Error("The synthetic container is stopped");
+               const request=new Request(input,init);
+               request.headers.set("x-e2e-container-port",String(port));
+               return env.HOME.fetch(request);
+@@ -154,12 +155,13 @@ export const poolWorkerRuntime = (toolsOrigin: string, homeOrigin?: string) =>
+       (runtime) =>
+         driver("dispose production pool Worker", () => runtime.dispose()).pipe(Effect.orDie),
+     );
+-    yield* driver("start production pool Worker", () => runtime.ready);
++    const origin = yield* driver("start production pool Worker", () => runtime.ready);
+     const pool = yield* driver("get production pool Worker", () => runtime.getWorker("pool"));
+     const operations = yield* driver("get private pool operations entrypoint", () =>
+       runtime.getWorker("operations"),
+     );
+     return {
++      origin: origin.origin,
+       request: (
+         path: string,
+         init?: { method?: string; headers?: Record<string, string>; body?: string },
+diff --git a/e2e/tests/pool-legacy-handoff.spec.ts b/e2e/tests/pool-legacy-handoff.spec.ts
+new file mode 100644
+index 0000000..6c9d05a
+--- /dev/null
++++ b/e2e/tests/pool-legacy-handoff.spec.ts
+@@ -0,0 +1,289 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, FileSystem, Path, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { cloudLocks } from "../support/cloud-locks.ts";
++import { Evidence } from "../support/evidence.ts";
++import { legacyPoolHome } from "../support/legacy-pool-home.ts";
++import { driver, Target } from "../support/platform.ts";
++import { poolWorkerRuntime } from "../support/pool-worker-runtime.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Resource = Schema.Struct({ id: Schema.String });
++const App = Schema.Struct({ id: Schema.String, name: Schema.String });
++const Source = Schema.Struct({
++  files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
++});
++const Links = Schema.Array(Schema.Struct({ requirement: Schema.String, account: Resource }));
++const View = Schema.Struct({
++  ok: Schema.Literal(true),
++  value: Schema.Struct({ accounts: Schema.Array(Resource) }),
++});
++
++layer(HostedLive, { excludeTestServices: true })("Legacy pool membership handoff", (it) => {
++  it.effect(scenarios.poolLegacyHandoff.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          database = yield* cloudLocks;
++        const target = yield* Target,
++          evidence = yield* Evidence,
++          browser = yield* Browser;
++        const fs = yield* FileSystem.FileSystem,
++          path = yield* Path.Path;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const viewer = yield* body(
++          Schema.Struct({ userId: Schema.String }),
++          yield* api.request(actors.owner, "GET", "/api/viewer"),
++        );
++        yield* database.run({
++          sql: `update "user" set "emailVerified" = true where id=$1`,
++          params: [viewer.userId],
++        });
++        const created = yield* api.request(actors.owner, "POST", `${prefix}/pools`, {
++          name: "Retained pool",
++          requestId: crypto.randomUUID(),
++          newInstance: true,
++        });
++        if (created.status !== 200)
++          yield* evidence.json("pool-creation-receiver-diagnostic.json", {
++            created: created.body,
++            events: (yield* api.request(
++              actors.owner,
++              "GET",
++              "/native-provider-fixture/backend-events",
++            )).body,
++            release: (yield* api.request(actors.owner, "GET", "/pool/v1/release")).body,
++          });
++        expect(created.status, JSON.stringify(created.body)).toBe(200);
++        const pool = yield* body(App, created);
++        const appPath = `${prefix}/apps/${pool.id}`;
++        const accounts: { id: string; requirement: string }[] = [];
++        for (const [requirement, method, count] of [
++          ["openai", "codex", 1],
++          ["anthropic", "claude", 3],
++        ] as const) {
++          const source = yield* fs
++            .readFileString(path.resolve(`../src/catalog/provider-apps/${requirement}.json`))
++            .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Source))));
++          const provider = yield* body(
++            Resource,
++            yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++              name: `Retained ${requirement}`,
++              files: source.files,
++            }),
++          );
++          for (let index = 0; index < count; index++) {
++            const connection = yield* body(
++              Resource,
++              yield* api.request(
++                actors.owner,
++                "POST",
++                `${prefix}/apps/${provider.id}/accounts/app/${requirement}/connections`,
++                { destination: { kind: "personal" } },
++              ),
++            );
++            const interactive = `${prefix}/connections/${connection.id}/interactive`;
++            expect(
++              (yield* api.request(actors.owner, "POST", `${interactive}/start`, { method })).status,
++            ).toBe(200);
++            const connected = yield* body(
++              Schema.Struct({ state: Schema.Literal("connected"), account: Resource }),
++              yield* api.request(actors.owner, "GET", `${interactive}/status`),
++            );
++            accounts.push({ id: connected.account.id, requirement });
++            expect(
++              (yield* api.request(
++                actors.owner,
++                "PUT",
++                `${appPath}/accounts/app/${requirement}/${connected.account.id}`,
++              )).status,
++            ).toBe(200);
++          }
++        }
++        const links = () =>
++          api
++            .request(actors.owner, "GET", `${appPath}/accounts/app`)
++            .pipe(Effect.flatMap((response) => body(Links, response)));
++        const beforeLinks = yield* links();
++        expect(beforeLinks.filter((link) => link.requirement === "pool")).toHaveLength(1);
++        expect(beforeLinks).toHaveLength(5);
++        const control = beforeLinks.find((link) => link.requirement === "pool")!.account.id;
++        const controlState = () =>
++          database.run({
++            sql: `select id, owner, provider, method, credential_generation from executor_accounts where id=$1`,
++            params: [control],
++          });
++        const beforeControl = yield* controlState();
++        expect(beforeControl).toHaveLength(1);
++        // This is the only historical state: an existing registration predating the membership marker.
++        const legacy = () =>
++          database.run({
++            sql: `update organization set metadata=(select jsonb_set(metadata::jsonb, '{basaltPools}', jsonb_object_agg(entry.key, case when entry.value->>'app'=$2 then entry.value-'membership' else entry.value end))::text from jsonb_each(metadata::jsonb->'basaltPools') entry) where id=$1`,
++            params: [actors.organization.id, pool.id],
++          });
++        yield* legacy();
++        const homeAccounts = ["codex", "claude", "claude", "claude"].map((provider, index) => ({
++          id: `synthetic-cloud-native-reference-${index + 1}`,
++          provider,
++        }));
++        const home = yield* legacyPoolHome(pool.id, homeAccounts);
++        const worker = yield* poolWorkerRuntime(target.metadata.origin, home.origin);
++        expect(yield* home.members).toEqual([]);
++        expect(
++          (yield* api.request(actors.owner, "POST", "/native-provider-fixture/product-peer", {
++            pool: pool.id,
++            origin: worker.origin,
++          })).status,
++        ).toBe(200);
++        // The actor fixture outlives this scoped Worker and still needs its normal deletion peer.
++        yield* Effect.addFinalizer(() =>
++          api
++            .request(actors.owner, "POST", "/native-provider-fixture/product-peer", {
++              pool: pool.id,
++              origin: null,
++            })
++            .pipe(
++              Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))),
++              Effect.orDie,
++            ),
++        );
++        // Apply the production history schema through its private operations API on this run's database.
++        for (const sql of [
++          "DO $$ BEGIN CREATE ROLE basalt_pool_owner NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$",
++          "GRANT USAGE, CREATE ON SCHEMA public TO basalt_pool_owner",
++          "create table usage (id bigint, timestamp timestamptz)",
++          "create table home_data_migration (name text, completed boolean)",
++        ])
++          yield* database.run({ sql });
++        const plan = yield* worker.operations("/model-history/schema/catalog");
++        expect(plan.status).toBe(200);
++        const hashes = yield* driver("Read isolated history schema plan", () => plan.json()).pipe(
++          Effect.flatMap(
++            Schema.decodeUnknownEffect(
++              Schema.Struct({ schemaHash: Schema.String, catalogHash: Schema.String }),
++            ),
++          ),
++        );
++        expect(
++          (yield* worker.operations("/model-history/schema", {
++            method: "POST",
++            headers: { "content-type": "application/json" },
++            body: JSON.stringify({ go: true, ...hashes }),
++          })).status,
++        ).toBe(200);
++        const read = () =>
++          api.request(actors.owner, "POST", `${appPath}/tools/call`, {
++            tool: "view",
++            kind: "query",
++            input: {},
++          });
++        const first = yield* read();
++        yield* evidence.json("first-legacy-pool-read.json", {
++          status: first.status,
++          body: first.body,
++          home: yield* home.members,
++        });
++        expect(first.status, JSON.stringify(first.body)).toBe(200);
++        const view = yield* body(View, first);
++        yield* browser.login(actors.owner);
++        for (const width of [1280, 390]) {
++          const empty = view.value.accounts.length === 0;
++          yield* browser.use(`The retained pool overview at ${width}px`, (page) =>
++            page
++              .setViewportSize({ width, height: 900 })
++              .then(() => page.goto(`/org/${actors.organization.slug}/apps/${pool.id}?view=app`))
++              .then(() =>
++                page
++                  .frameLocator(`iframe[title="${pool.name} app"]`)
++                  .getByText(
++                    empty ? "Pick your first account" : "4 subscription accounts across 2 labs",
++                    { exact: false },
++                  )
++                  .waitFor(),
++              ),
++          );
++          yield* browser.checkpoint(`legacy-pool-${empty ? "empty" : "four-accounts"}-${width}`);
++        }
++        yield* browser.use("Stop overview polling before closing its backend", (page) =>
++          page.goto("about:blank"),
++        );
++        expect(view.value.accounts.map((account) => account.id).sort()).toEqual(
++          homeAccounts.map((account) => account.id).sort(),
++        );
++        expect(yield* home.members).toEqual(homeAccounts.map((account) => account.id).sort());
++        const registration = () =>
++          database.run({
++            sql: `select entry.value as registration from organization o cross join lateral jsonb_each(o.metadata::jsonb->'basaltPools') entry where o.id=$1 and entry.value->>'app'=$2`,
++            params: [actors.organization.id, pool.id],
++          });
++        const stableRegistration = yield* registration();
++        const writes = yield* home.writes;
++        expect((yield* read()).body).toMatchObject({ ok: true });
++        expect(yield* home.writes).toEqual(writes);
++        expect(yield* registration()).toEqual(stableRegistration);
++        expect(yield* links()).toEqual(beforeLinks);
++        expect(yield* controlState()).toEqual(beforeControl);
++
++        const usage = `${appPath}/pool-usage`;
++        const query = {
++          from: "2026-11-01T00:00:00Z",
++          to: "2026-11-02T00:00:00Z",
++          bucket: "day",
++          by: ["account"],
++        };
++        for (const account of accounts) {
++          const reset = yield* api.request(
++            actors.owner,
++            "GET",
++            `${prefix}/pools/${pool.id}/accounts/${account.id}/reset-attempt`,
++          );
++          expect(reset.status, JSON.stringify(reset.body)).toBe(200);
++          expect(reset.body).toBeNull();
++          for (const [route, input] of [
++            ["series", query],
++            ["last-success", {}],
++          ] as const) {
++            const response = yield* api.request(actors.owner, "POST", `${usage}/${route}`, {
++              ...input,
++              accounts: [account.id],
++            });
++            expect(response.status, JSON.stringify(response.body)).toBe(200);
++            expect(
++              (yield* api.request(actors.owner, "POST", `${usage}/${route}`, {
++                ...input,
++                accounts: [control],
++              })).status,
++            ).toBe(403);
++          }
++        }
++
++        // A failed selection handoff must roll back the saved link and its legacy marker together.
++        yield* legacy();
++        const refusal = (refused: boolean) =>
++          api.request(actors.owner, "POST", "/native-provider-fixture/membership-refusal", {
++            pool: pool.id,
++            refused,
++          });
++        expect((yield* refusal(true)).status).toBe(200);
++        const selection = `${appPath}/accounts/app/${accounts[0]!.requirement}/${accounts[0]!.id}`;
++        expect((yield* api.request(actors.owner, "DELETE", selection)).status).toBe(503);
++        expect(yield* links()).toEqual(beforeLinks);
++        expect(yield* home.writes).toEqual(writes);
++        expect((yield* refusal(false)).status).toBe(200);
++        expect((yield* api.request(actors.owner, "DELETE", selection)).status).toBe(200);
++        expect((yield* body(View, yield* read())).value.accounts).toHaveLength(3);
++        expect(yield* home.members).toHaveLength(3);
++        expect((yield* api.request(actors.owner, "PUT", selection)).status).toBe(200);
++        expect((yield* body(View, yield* read())).value.accounts).toHaveLength(4);
++        expect(yield* home.members).toEqual(homeAccounts.map((account) => account.id).sort());
++        expect(yield* links()).toEqual(beforeLinks);
++        expect(yield* controlState()).toEqual(beforeControl);
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/pool-local-egress.spec.ts b/e2e/tests/pool-local-egress.spec.ts
+new file mode 100644
+index 0000000..8370fa1
+--- /dev/null
++++ b/e2e/tests/pool-local-egress.spec.ts
+@@ -0,0 +1,47 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { RuntimeLive } from "../support/platform.ts";
++import { scenarios } from "../test-plan.ts";
++
++const source = `import {defineApp,query,object,string,router} from "apps";
++export default defineApp({}, {tools:router({blocked:query({input:object({url:string()})}, async(ctx,{url})=>{
++  const response=await ctx.fetch(url);
++  return {status:response.status,body:await response.json()};
++})})});`;
++
++layer(RuntimeLive, { excludeTestServices: true })("Local Cloud app network", (it) => {
++  it.effect(scenarios.poolLocalEgress.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors;
++        const prefix = `/api/organizations/${actors.organization.id}/apps`;
++        const created = yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
++          name: "Local egress guard",
++          files: [{ path: "index.ts", content: source }, appsManifest],
++        });
++        expect(created.status, JSON.stringify(created.body)).toBe(200);
++        const app = yield* body(Schema.Struct({ id: Schema.String }), created);
++        // .invalid stays safe even if a regression removes the guard; no real service is contacted.
++        const result = yield* api.request(actors.owner, "POST", `${prefix}/${app.id}/tools/call`, {
++          tool: "blocked",
++          kind: "query",
++          input: { url: "https://e2e-blocked.invalid/must-not-leave-the-machine" },
++        });
++        expect(result.status, JSON.stringify(result.body)).toBe(200);
++        expect(result.body).toEqual({
++          status: 451,
++          body: {
++            error: "e2e_nonlocal_origin",
++            message: "E2E app requests must stay on local origins.",
++          },
++        });
++      }),
++    ),
++  );
++});

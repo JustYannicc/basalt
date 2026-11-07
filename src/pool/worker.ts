@@ -20,6 +20,7 @@ import { ComputerHome } from "./computer-home.ts";
 import { Computers } from "./computers.ts";
 import { accessPath } from "./access-contract.ts";
 import { requirePoolUse } from "./authorization.ts";
+import { isPoolAcquisitionPath } from "./connection-policy.ts";
 import { requireActivePoolOrganization } from "./organization-access.ts";
 import { failureResponse, unavailable } from "./json.ts";
 import { isPublicModelPath, PoolLifecycle, poolLifecycle, poolPort } from "./lifecycle.ts";
@@ -240,6 +241,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       install: async (policy) => {
         const container = ctx.container;
         if (!container) return unavailable();
+        // Durable dirty authority already vetoes model use while a stopped container has no policy.
+        // Warming happens after the host commits, outside its ten-second acknowledgement deadline.
+        if (!container.running && policy.dirty) return;
         await installNativePolicy(
           container,
           {
@@ -410,11 +414,13 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     }
     if (isControlPath(pathname)) {
       try {
-        await requirePoolUse(request, {
+        const claims = await requirePoolUse(request, {
           signingKey: this.env.POOL_APP_SIGNING_KEY,
           previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
           permissions: (pool, user) => this.computers.permissions(pool, user),
         });
+        if (claims && !isPoolAcquisitionPath(request.method, pathname))
+          await this.memberships.ensure(claims.pool, claims.organization);
       } catch (error) {
         return failureResponse(error);
       }
