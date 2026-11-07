@@ -73,7 +73,6 @@ test("AWS catalog provenance pins the self-contained published source and depend
   assert.deepEqual(manifest.dependencies, {
     apps: "0.0.1-beta.104-basalt.13",
     "@modelcontextprotocol/sdk": "1.32.1",
-    effect: "4.0.1",
     react: "19.2.0",
     "react-dom": "19.2.0",
   });
@@ -123,4 +122,38 @@ test("the AWS source route serves the pinned source and the index includes its c
   assert.ok(entry);
   assert.equal(entry.source, "apps/aws.json");
   assert.equal(publisherCalls, 1);
+});
+
+test("AWS signer sends HTTP only through the supplied context fetch", async () => {
+  const vendor = source.files.find((file) => file.path === "vendor/aws4fetch.js");
+  assert.ok(vendor);
+  const { AwsClient } = await import(
+    `data:text/javascript;base64,${Buffer.from(vendor.content).toString("base64")}`
+  );
+  const requests: Request[] = [];
+  const contextFetch: typeof fetch = async (input) => {
+    assert.ok(input instanceof Request);
+    requests.push(input);
+    return new Response("host response", { status: 202 });
+  };
+  const client = new AwsClient({
+    accessKeyId: "ASIASYNTHETIC",
+    secretAccessKey: "synthetic-secret",
+    sessionToken: "synthetic-session",
+    service: "aws-mcp",
+    region: "us-east-1",
+    fetch: contextFetch,
+    retries: 0,
+  });
+  const response = await client.fetch("http://127.0.0.1:0/mcp", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: '{"method":"tools/list"}',
+  });
+  assert.equal(response.status, 202);
+  assert.equal(await response.text(), "host response");
+  assert.equal(requests.length, 1);
+  assert.match(requests[0]!.headers.get("authorization") ?? "", /^AWS4-HMAC-SHA256 /);
+  assert.equal(requests[0]!.headers.get("x-amz-security-token"), "synthetic-session");
+  assert.equal(await requests[0]!.text(), '{"method":"tools/list"}');
 });

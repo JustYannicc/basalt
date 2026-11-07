@@ -4,7 +4,7 @@
     {
       "package": "aws",
       "repository": "JustYannicc/signalbox-app-aws",
-      "commit": "878b8de4f51ec9391aa5c73be31cd7b72cf136d3",
+      "commit": "85353a96a38daa657137e37acecc172ca13c43a6",
       "files": [
         "README.md",
         "connection.ts",

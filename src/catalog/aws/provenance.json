@@ -1,11 +1,10 @@
 {
   "kind": "new-app-contribution",
   "upstreamIssue": "https://github.com/UsefulSoftwareCo/executor/issues/2372",
-  "sourceSha256": "c948e618d23f8284413ceb8bb07fd786c9e21ac5a4ba244cf2f557f8edf88ceb",
+  "sourceSha256": "0caaf5a6c3aff67e14a981ece0deb4826087a675fcc00ff9d501f225440c515e",
   "dependencies": {
-    "apps": "0.0.1-beta.104-basalt.13",
     "@modelcontextprotocol/sdk": "1.32.1",
-    "effect": "4.0.1",
+    "apps": "0.0.1-beta.104-basalt.13",
     "react": "19.2.0",
     "react-dom": "19.2.0"
   },
@@ -28,25 +27,25 @@
   },
   "catalogSource": {
     "repository": "https://github.com/JustYannicc/signalbox-app-aws",
-    "commit": "878b8de4f51ec9391aa5c73be31cd7b72cf136d3",
+    "commit": "85353a96a38daa657137e37acecc172ca13c43a6",
     "fileSha256": {
       "README.md": "4a7f9eff7991585abf3176a103790d729b8af5862c4df8b3c1d90f6e99bb2f61",
-      "connection.ts": "1696bb0d7e7b4bcda0306150a6932c3534120a61630784cae32c1d13db79fa7b",
+      "connection.ts": "c79f17b3854d380d7cf55ccaf1b297880f383606a20e3a728f19e488bc838ccc",
       "errors.ts": "0ef5be4f43f1131f87682772fae61df889d446c86c9ccf91dd3c6043d6debb11",
       "icon.ts": "738bc7fdb56c97bb5529b29249813839ed829b80893cd0ceb60a4cd800fba61c",
-      "identity-client.ts": "b3b8076d466f2d81403613629ff9940b239bb4db6a1013b97fc5322708cc2ece",
+      "identity-client.ts": "2034901cbea79585da029724d67767badb492637ede1223f1a4ba02d53519fea",
       "identity-http.ts": "a57162c0b290a3637f52b33e52057719a11a2597ea8c2ea2428066eaebf790ba",
-      "identity-schema.ts": "b79e42c1d3f107a81a8b4ffb088e365f13e290a4164875a097160481f8d9d9ed",
-      "identity-state.ts": "f50b1e535538242fe481a35fa2c12ff5e7fe342ccddbcfdcfc0a511f845cb417",
+      "identity-schema.ts": "cc30cf646e0e6d075f1193ebed11374b1b5e58aedb6373b173ac75c14add4568",
+      "identity-state.ts": "e9ffc9cdebe97a2a2fe5dd3eeea2ae6a5a3eff2264a154411ea1f08944a8ee91",
       "index.ts": "3d76e00355ce86625f5aa85da400ecae6a866441b8568eedddd6446b3cec2d6c",
       "migrations/0001_identity_center.sql": "39b1b23f0c2eae660367b1804d89361e46d676b2c5551fef279a18789d49e11f",
-      "operations.ts": "90e9c1e1dfef95ebc91c3e7be520b3bca43e95dd093dad9286340909f4e14a9f",
-      "package.json": "4aa3ae2348f79fed9223e779b118a5512c0efad022089b5d33e65b1062241a21",
+      "operations.ts": "54e58542b0d28db990ee83bfae27860baa95d4ab7ce6b0ec725beca725162308",
+      "package.json": "4e57ecf3dc9472e2c79f4f04f6cbc324272a7bf84b848cdd472f46dee0adc767",
       "provider.ts": "417904326e2afa9964dfdddaa932c373bbb251529d17cc6a98635ed697e240a9",
       "requirements.ts": "a7a5c8cd5c77a37a5a6890458b7013d131ed82f86e41e38ab8d4d580ceb430d1",
       "safe-result.ts": "a0458b969cb996cb504f37eb668c808b788834239f2000b77815b3b7b01cedca",
       "saved-connection.ts": "c20fb81d49cb1edf0b5a73a5245789e0ed8e94528d8776c2c2ff00f96e8d276d",
-      "session-store.ts": "633e276e8627140242d18df33ef777126aaa95032ec76df96791b04ccf225ba8",
+      "session-store.ts": "99f78d29415d6d2e6a433e940103038bad03f9b00f288706b6350bd28e52677f",
       "ui/access-check.tsx": "70f60d75e6535da13471eca400bd21e7372a40b3cec7777bc24a28d7801d101d",
       "ui/api.ts": "98392911af558a68f9b51bdcc535318f80a9b724dded336ef291db81f8a4235a",
       "ui/app.tsx": "27ffd1a74964b85602eb79f78ba3dacd278456483e3d14a463cc6cf80d5d06f5",
@@ -61,10 +60,10 @@
       "ui/model.ts": "29ddec94ea6563c53f55164b826f69899194c41d7c46ab8436132ece76dbf808",
       "ui/style.css": "29e278c2a27a7e2386005abb55db509c847177fd66de948b1fdffbdad046db62",
       "vendor/LICENSE": "a9455541e8a4e4766d146a7552ac547c04bfb7a8718f5af516f1b9e346e82a77",
-      "vendor/aws4fetch.d.ts": "171e4b165a5d2caf21d616b4aa258baf9b62da04cbbed00603a8380cf8492728",
-      "vendor/aws4fetch.js": "3049cd99d00a2fb83ce0e77f0e6b3fb22c17d8e708b740821f906145a8f978e9",
+      "vendor/aws4fetch.d.ts": "df222c9f4dc40589be58c01d0d5536acc601bfd5eec572bc00122a1b9001f560",
+      "vendor/aws4fetch.js": "aea0f8576a89a9afea973904bb92e98a642265eb5159ff940ede689ad8e910f0",
       "wire.ts": "b90fe097fdaad8fd83e974cb99fb68a9889b81eef8fbadf819e1535bfef8aa15"
     },
-    "snapshotSha256": "c948e618d23f8284413ceb8bb07fd786c9e21ac5a4ba244cf2f557f8edf88ceb"
+    "snapshotSha256": "0caaf5a6c3aff67e14a981ece0deb4826087a675fcc00ff9d501f225440c515e"
   }
 }
