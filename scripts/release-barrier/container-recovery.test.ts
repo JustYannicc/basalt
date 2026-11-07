@@ -42,6 +42,12 @@ async function fixture() {
         assert.equal(current.activeRolloutId, undefined);
         return current;
       },
+      async advance() {
+        proof.events.push("restore:advance");
+      },
+      async observePromotion() {
+        proof.events.push("observe:promotion");
+      },
       async verify() {
         proof.events.push("verify:all-old-instances");
         return { instanceId: "a".repeat(64), bootId: "old-boot", checkedAt: 123 };
@@ -57,7 +63,7 @@ async function fixture() {
         progress.push(structuredClone(value));
       },
       (manifest, receipt, value, save) =>
-        recoverContainers(manifest, receipt, options, value, save),
+        recoverContainers(manifest, receipt, options, value, save).then(() => undefined),
       options.previous,
     );
   return { ...proof, options, admitted, progress, workers, run };
@@ -68,6 +74,7 @@ test("recovery verifies every saved container image before restoring Worker base
   const result = await proof.run();
   assert.deepEqual(proof.events, [
     "restore:rollout",
+    "restore:advance",
     "verify:all-old-instances",
     "restore:Router",
     "restore:PoolWorker",
@@ -78,6 +85,7 @@ test("recovery verifies every saved container image before restoring Worker base
       container: "PoolContainer",
       version: 3,
       rolloutId: "recovery-rollout",
+      promoted: true,
       verified: true,
       health: { instanceId: "a".repeat(64), bootId: "old-boot", checkedAt: 123 },
     },
@@ -154,6 +162,7 @@ test("an interrupted known recovery rollout is observed without another POST", a
   await proof.run();
   assert.deepEqual(proof.events, [
     "restore:rollout",
+    "restore:advance",
     "verify:all-old-instances",
     "restore:Router",
     "restore:PoolWorker",

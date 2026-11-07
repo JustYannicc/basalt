@@ -216,11 +216,15 @@ export const proveContainerStack = (source, recompile, scenario) =>
           const result = yield* memory.set(input);
           if (
             releaseStarted &&
-            scenario === "native-state-drift" &&
+            ["native-state-drift", "database-dependency-drift"].includes(scenario) &&
             input.fqn === "PoolDatabase" &&
             input.value.status === "updated"
           ) {
-            const key = { stack: input.stack, stage: input.stage, fqn: "Api" };
+            const key = {
+              stack: input.stack,
+              stage: input.stage,
+              fqn: scenario === "database-dependency-drift" ? "PoolDatabaseRole" : "Api",
+            };
             const current = yield* memory.get(key);
             assert.ok(current && "attr" in current);
             yield* memory.set({
@@ -295,6 +299,33 @@ export const proveContainerStack = (source, recompile, scenario) =>
                 events.push("image:retained");
               },
               io: {
+                advanceContainer: (_target, rollout) =>
+                  Effect.sync(() => {
+                    assert.equal(staged.rolloutRequest.kind, "full_manual");
+                    assert.equal(rollout.id, "fixture-rollout-1");
+                    assert.ok(api.manualRollout);
+                    assert.equal(api.app.version, rollout.currentVersion);
+                    api.app = { ...api.manualRollout, active_rollout_id: null };
+                    events.push("container:advance");
+                  }),
+                serving: (container, _worker, candidate) =>
+                  Effect.sync(() => {
+                    assert.equal(api.app.configuration.image, container.configuration.image);
+                    if (scenario === "unhealthy-serving") throw new Error("serving checks failed");
+                    events.push("container:serving");
+                    return {
+                      candidate,
+                      applicationVersion: api.app.version,
+                      digest: container.imageDigest,
+                      inputHash: container.inputHash,
+                      bootId: "fixture-boot",
+                      instanceId: "a".repeat(64),
+                      workerInput: "fixture-input",
+                      checkedAt: 123,
+                      unsignedHealth: 200,
+                      unsignedModels: 401,
+                    };
+                  }),
                 container: (publication) =>
                   Effect.sync(() => {
                     assert.equal(api.writes, 0);
@@ -361,7 +392,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
         const firstAdmission = events.findIndex((event) => event.startsWith("admit:"));
         assert.ok(events.indexOf("image:retained") >= 0);
         if (firstAdmission >= 0) assert.ok(events.indexOf("image:retained") < firstAdmission);
-        if (scenario === "native-state-drift") {
+        if (["native-state-drift", "database-dependency-drift"].includes(scenario)) {
           assert.ok(events.includes("native:drift"));
           assert.equal(receipts.at(-1).failure.reason, "alchemy-state-drift");
         }
@@ -396,6 +427,17 @@ export const proveContainerStack = (source, recompile, scenario) =>
           const next = yield* run(Plan.make(stack));
           unchangedAction = next.resources.PoolContainer.action;
           assert.equal(unchangedAction, "noop");
+        } else if (scenario === "unhealthy-serving") {
+          assert.equal(api.writes, 1);
+          assert.equal(api.rollouts, 1);
+          assert.equal(receipts.at(-1).pendingContainer.phase, "verification");
+          const saved = yield* memory.get({
+            stack: stack.name,
+            stage: stack.stage,
+            fqn: "PoolContainer",
+          });
+          assert.equal(saved.attr.configuration.image, staged.previous.configuration.image);
+          assert.equal(saved.attr.version, staged.previous.version);
         } else {
           assert.equal(api.writes, 0);
           assert.equal(api.rollouts, 0);

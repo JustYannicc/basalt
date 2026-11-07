@@ -150,7 +150,7 @@ export function assertImageOnlyPublication(
     rolloutRequest.accountId !== previous.accountId ||
     rolloutRequest.applicationId !== previous.applicationId ||
     !equalContainerValues(rolloutRequest.targetConfiguration, proposed.configuration) ||
-    rolloutRequest.kind !== "full_auto" ||
+    rolloutRequest.kind !== "full_manual" ||
     rolloutRequest.strategy !== "rolling" ||
     rolloutRequest.stepPercentage !== 100
   )

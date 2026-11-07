@@ -19,6 +19,7 @@ export interface ContainerVersionProvider {
   verifySource(container: FrozenContainer): Promise<void>;
   read(container: FrozenContainer): Promise<ContainerAttributes>;
   rollout(container: FrozenContainer): Promise<ContainerRollout>;
+  advance(container: FrozenContainer, rollout: ContainerRollout): Promise<void>;
   wait(container: FrozenContainer, rollout: ContainerRollout): Promise<ContainerAttributes>;
 }
 
@@ -40,10 +41,16 @@ export interface BarrierReceipt {
   activated: { worker: string; versionId: string }[];
   pending?: { worker: string; versionId: string };
   pendingUpload?: { worker: string; versionId?: string; startupTimeMs?: number };
-  containers?: { container: string; version: number; rolloutId?: string; unchanged?: boolean }[];
+  containers?: {
+    container: string;
+    version: number;
+    rolloutId?: string;
+    unchanged?: boolean;
+    promoted?: boolean;
+  }[];
   pendingContainer?: {
     container: string;
-    phase: "rollout" | "verification";
+    phase: "rollout" | "advance" | "verification";
     version?: number;
     rolloutId?: string;
   };
@@ -179,14 +186,19 @@ export async function releaseWorkers(
         container: container.id,
         version: rollout.targetVersion,
         rolloutId: rollout.id,
+        promoted: false,
       };
       receipt.containers!.push(activation);
       receipt.pendingContainer = {
         container: container.id,
-        phase: "verification",
+        phase: "advance",
         version: rollout.targetVersion,
         rolloutId: rollout.id,
       };
+      await record();
+      await options.containers!.advance(container, rollout);
+      activation.promoted = true;
+      receipt.pendingContainer.phase = "verification";
       await record();
       const observed = await options.containers!.wait(container, rollout);
       assertConfiguredContainer(observed, container);

@@ -1,8 +1,8 @@
 diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
-index d9f23a3d5..a4d9dc88c 100644
+index d9f23a3d5..381095c2d 100644
 --- a/patches/alchemy@2.0.0-beta.80.patch
 +++ b/patches/alchemy@2.0.0-beta.80.patch
-@@ -6060,3 +6060,561 @@ index 000000000..741f7ce5f
+@@ -6060,3 +6060,563 @@ index 000000000..741f7ce5f
  +}>;
  +export declare class WorkerUploadHook extends WorkerUploadHook_base {}
  +export {};
@@ -23,7 +23,7 @@ index d9f23a3d5..a4d9dc88c 100644
 +   },
 +   "publishConfig": {
 +diff --git a/src/Cloudflare/Containers/ContainerProvider.ts b/src/Cloudflare/Containers/ContainerProvider.ts
-+index 93006d8fa..934029713 100644
++index 93006d8fa..a2af03da1 100644
 +--- a/src/Cloudflare/Containers/ContainerProvider.ts
 ++++ b/src/Cloudflare/Containers/ContainerProvider.ts
 +@@ -1,5 +1,9 @@
@@ -100,7 +100,7 @@ index d9f23a3d5..a4d9dc88c 100644
 ++            applicationId: existing.applicationId,
 ++            description: strategy === "immediate" ? "Immediate update" : "Progressive update",
 ++            strategy: "rolling",
-++            kind: news.rollout?.kind ?? "full_auto",
+++            kind: publicationHook.value.rolloutKind ?? news.rollout?.kind ?? "full_auto",
 ++            stepPercentage: strategy === "immediate" ? 100 : (news.rollout?.stepPercentage ?? 25),
 ++            targetConfiguration: configuration,
 ++          });
@@ -168,7 +168,7 @@ index d9f23a3d5..a4d9dc88c 100644
 +           // application to delete on Cloudflare.
 +           if (!isLiveId(output.applicationId)) return;
 +diff --git a/lib/Cloudflare/Containers/ContainerProvider.js b/lib/Cloudflare/Containers/ContainerProvider.js
-+index f5e1a5bbe..98f8e07c5 100644
++index f5e1a5bbe..b0e5b0c40 100644
 +--- a/lib/Cloudflare/Containers/ContainerProvider.js
 ++++ b/lib/Cloudflare/Containers/ContainerProvider.js
 +@@ -1,5 +1,9 @@
@@ -243,7 +243,7 @@ index d9f23a3d5..a4d9dc88c 100644
 ++                applicationId: existing.applicationId,
 ++                description: strategy === "immediate" ? "Immediate update" : "Progressive update",
 ++                strategy: "rolling",
-++                kind: news.rollout?.kind ?? "full_auto",
+++                kind: publicationHook.value.rolloutKind ?? news.rollout?.kind ?? "full_auto",
 ++                stepPercentage: strategy === "immediate" ? 100 : (news.rollout?.stepPercentage ?? 25),
 ++                targetConfiguration: configuration,
 ++            });
@@ -499,10 +499,10 @@ index d9f23a3d5..a4d9dc88c 100644
 ++}) => Effect.Effect<{ context: string; dockerfile: string }, Error | PlatformError, FileSystem.FileSystem | Path.Path | Scope.Scope>;
 +diff --git a/src/Cloudflare/Containers/ContainerPublicationHook.ts b/src/Cloudflare/Containers/ContainerPublicationHook.ts
 +new file mode 100644
-+index 000000000..0baaedd3b
++index 000000000..e9ffe78e1
 +--- /dev/null
 ++++ b/src/Cloudflare/Containers/ContainerPublicationHook.ts
-+@@ -0,0 +1,22 @@
++@@ -0,0 +1,23 @@
 ++import type * as Containers from "@distilled.cloud/cloudflare/containers";
 ++import * as Context from "effect/Context";
 ++import type * as Effect from "effect/Effect";
@@ -523,6 +523,7 @@ index d9f23a3d5..a4d9dc88c 100644
 ++
 ++/** A caller may stage existing applications. Without the service, ordinary reconciliation is unchanged. */
 ++export class ContainerPublicationHook extends Context.Service<ContainerPublicationHook, {
+++  readonly rolloutKind?: "full_manual";
 ++  readonly capture: (publication: PreparedContainerPublication) => Effect.Effect<ContainerApplication["Attributes"], unknown>;
 ++}>()("alchemy/Cloudflare/Containers/ContainerPublicationHook") {}
 +diff --git a/lib/Cloudflare/Containers/ContainerPublicationHook.js b/lib/Cloudflare/Containers/ContainerPublicationHook.js
@@ -538,10 +539,10 @@ index d9f23a3d5..a4d9dc88c 100644
 ++}
 +diff --git a/lib/Cloudflare/Containers/ContainerPublicationHook.d.ts b/lib/Cloudflare/Containers/ContainerPublicationHook.d.ts
 +new file mode 100644
-+index 000000000..d99016c1b
++index 000000000..44ed9e172
 +--- /dev/null
 ++++ b/lib/Cloudflare/Containers/ContainerPublicationHook.d.ts
-+@@ -0,0 +1,22 @@
++@@ -0,0 +1,23 @@
 ++import type * as Containers from "@distilled.cloud/cloudflare/containers";
 ++import * as Context from "effect/Context";
 ++import type * as Effect from "effect/Effect";
@@ -561,6 +562,7 @@ index d9f23a3d5..a4d9dc88c 100644
 ++}
 ++
 ++declare const ContainerPublicationHook_base: Context.ServiceClass<ContainerPublicationHook, "alchemy/Cloudflare/Containers/ContainerPublicationHook", {
-++  readonly capture: (publication: PreparedContainerPublication) => Effect.Effect<ContainerApplication["Attributes"], unknown>;
+++  readonly rolloutKind?: "full_manual";
+++    readonly capture: (publication: PreparedContainerPublication) => Effect.Effect<ContainerApplication["Attributes"], unknown>;
 ++}>;
 ++export declare class ContainerPublicationHook extends ContainerPublicationHook_base {}

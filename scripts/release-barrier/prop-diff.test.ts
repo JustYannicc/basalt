@@ -15,6 +15,7 @@ import { assertSupportedPlan } from "./alchemy-plan.ts";
 import { BarrierRefusal } from "./manifest.ts";
 import { changedProps } from "./prop-diff.ts";
 import { releaseEvidence } from "./evidence.ts";
+import { reportRefusal } from "./refusal-report.ts";
 import { withReleaseRuntime } from "./runtime.ts";
 
 interface FixtureContainer extends Resource<
@@ -289,6 +290,21 @@ test("one refusal receipt reports both blocked nodes and keeps each delta redact
   context.after(() => rm(directory, { recursive: true, force: true }));
   await releaseEvidence(directory, "a".repeat(40)).failure(error);
   const text = await readFile(join(directory, "failure.json"), "utf8");
-  assert.deepEqual(JSON.parse(text).refusals, refusals);
-  assert.ok(!text.includes("private-value"));
+  const failure = JSON.parse(text);
+  assert.deepEqual(failure.refusals, refusals);
+  const summaryPath = join(directory, "summary.md");
+  const errors: string[] = [];
+  await reportRefusal(failure, summaryPath, (message) => {
+    errors.push(message);
+  });
+  const summary = await readFile(summaryPath, "utf8");
+  for (const output of [text, summary, ...errors]) {
+    assert.ok(output.includes("OtherContainer"));
+    assert.ok(output.includes("UnsupportedContainer"));
+    assert.ok(!output.includes("private-value"));
+    assert.ok(output.includes("env.ACCESS_TOKEN"));
+    assert.ok(output.includes(oldHash));
+    assert.ok(output.includes(newHash));
+  }
+  assert.ok(errors.some((message) => message.startsWith("::error ")));
 });

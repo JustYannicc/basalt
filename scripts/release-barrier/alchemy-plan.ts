@@ -15,8 +15,8 @@ import { State } from "alchemy/State/State";
 import type { CompiledStack } from "alchemy/Stack";
 import { Effect, FileSystem, Path } from "effect";
 import * as Retry from "@distilled.cloud/cloudflare/Retry";
-import { BarrierRefusal, type PlanRefusal } from "./manifest.ts";
-import { admitSourceNamespace, commandPhase, supportedCommand } from "./commands.ts";
+import { BarrierRefusal } from "./manifest.ts";
+import { admitSourceNamespace, commandPhase } from "./commands.ts";
 import { cloudflareArtifactsApi } from "../ensure-artifacts.ts";
 import {
   stageContainer,
@@ -24,65 +24,12 @@ import {
   type StagedContainer,
   type FrozenContainer,
 } from "./container.ts";
-import { changedProps } from "./prop-diff.ts";
+import { assertSupportedPlan } from "./plan-admission.ts";
+export { assertSupportedPlan } from "./plan-admission.ts";
 
 const workerType = "Cloudflare.Worker";
-const existing = (node: Plan.Apply) =>
-  node.state?.status === "created" ||
-  node.state?.status === "updated" ||
-  (node.state?.status === "updating" && !node.state.adopting && !!node.state.old);
 function refuse(reason: string, worker?: string): never {
   throw new BarrierRefusal(reason, worker);
-}
-
-/** No live resource lifecycle runs during shadow preparation. Commands expose only their real output contract. */
-export function assertSupportedPlan(plan: Plan.Plan) {
-  const refusals: PlanRefusal[] = [];
-  if (plan.selectedFqns || plan.destroy) refusals.push({ reason: "partial-or-destroy-plan" });
-  if (
-    Object.keys(plan.deletions).length ||
-    Object.keys(plan.actionDeletions).length ||
-    Object.keys(plan.actions).length
-  )
-    refusals.push({ reason: "resource-removal-or-action" });
-  for (const [fqn, node] of Object.entries(plan.resources)) {
-    const refuseNode = (reason: string) => {
-      const recorded =
-        node.state?.status === "updating" ? node.state.old?.props : node.state?.props;
-      refusals.push({
-        reason,
-        fqn,
-        type: node.resource.Type,
-        changed: changedProps(recorded, node.resource.Props),
-      });
-    };
-    if (!existing(node) || !["update", "noop"].includes(node.action) || node.renamedFrom?.length)
-      refuseNode("new-or-unsettled-resource");
-    if (node.resource.Type === workerType) {
-      const props = node.resource.Props as Worker["Props"];
-      if (props.namespace != null || props.preview != null || props.version != null)
-        refuseNode("unsupported-worker-mode");
-    } else if (node.resource.Type === "Cloudflare.Container" && node.action === "update") {
-      if (node.resource.LogicalId !== "PoolContainer") refuseNode("unsupported-container");
-    } else if (
-      node.resource.Type !== "Command.Exec" &&
-      node.resource.Type !== "Command.Build" &&
-      node.action !== "noop"
-    ) {
-      // Returning an old image/application attribute would freeze the wrong PoolWorker input.
-      refuseNode("unsupported-resource-update");
-    }
-    if (node.resource.Type === "Command.Exec" && !supportedCommand(node.resource.LogicalId))
-      refuseNode("unsupported-command");
-    if (node.resource.Type === "Command.Build" && node.resource.LogicalId !== "Site")
-      refuseNode("unsupported-build-command");
-  }
-  const first = refusals[0];
-  if (first) {
-    const delta =
-      "fqn" in first ? { fqn: first.fqn, type: first.type, changed: first.changed } : undefined;
-    throw new BarrierRefusal(first.reason, delta?.fqn, delta, refusals);
-  }
 }
 
 export const preparePlan = (
@@ -135,6 +82,7 @@ export const preparePlan = (
           provider.reconcile(input).pipe(
             Retry.none,
             Effect.provideService(ContainerPublicationHook, {
+              rolloutKind: "full_manual",
               capture: (publication) =>
                 Effect.gen(function* () {
                   const staged = yield* stageContainer(

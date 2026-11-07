@@ -22,11 +22,12 @@ export interface RecoveryReceipt {
     version: number;
     rolloutId?: string;
     verified?: boolean;
+    promoted?: boolean;
     health?: ContainerHealth;
   }[];
   pendingContainer?: {
     container: string;
-    phase: "rollout" | "verification";
+    phase: "rollout" | "advance" | "verification";
     version?: number;
     rolloutId?: string;
   };

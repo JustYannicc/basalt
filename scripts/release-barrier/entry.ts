@@ -11,6 +11,7 @@ import { withReleaseRuntime } from "./runtime.ts";
 import { releaseEvidence } from "./evidence.ts";
 import { openRecovery } from "./recovery-envelope.ts";
 import { canonical, digest, BarrierRefusal } from "./manifest.ts";
+import { reportRefusal } from "./refusal-report.ts";
 import { readRecoveryProgress } from "./recovery-manifest.ts";
 
 if (
@@ -64,6 +65,11 @@ const evidence = releaseEvidence(
   process.env.BASALT_RELEASE_CANDIDATE!,
   process.env.EXECUTOR_ENCRYPTION_KEY,
 );
+await evidence.desired(
+  JSON.parse(
+    await readFile(new URL("../../containers/pool/releases.json", import.meta.url), "utf8"),
+  ),
+);
 const result = await Effect.runPromiseExit(
   Effect.suspend(() =>
     Effect.promise(
@@ -86,6 +92,7 @@ const result = await Effect.runPromiseExit(
                 candidate: process.env.BASALT_RELEASE_CANDIDATE!,
                 record: evidence.record,
                 publication: evidence.publication,
+                serving: evidence.serving,
                 manifest: evidence.manifest,
               })
           ).pipe(
@@ -101,8 +108,6 @@ const result = await Effect.runPromiseExit(
 if (Exit.isFailure(result)) {
   const error = Cause.squash(result.cause);
   const failure = await evidence.failure(error);
-  console.error(
-    `Release barrier refused: ${failure.reason}${failure.worker ? ` (${failure.worker})` : ""}. See release-barrier receipts.`,
-  );
+  await reportRefusal(failure, process.env.GITHUB_STEP_SUMMARY);
   process.exitCode = 1;
 }

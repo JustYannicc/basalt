@@ -10,6 +10,8 @@ import { BarrierRefusal, type ReleaseManifest } from "./manifest.ts";
 import { cloudflareArtifactsApi } from "../ensure-artifacts.ts";
 import { verifyNativeState } from "./native-state.ts";
 import type { FrozenContainer } from "./container.ts";
+import { verifyServingContainer, type ServingContainer } from "./container-serving.ts";
+import { advanceContainer } from "./container-promotion.ts";
 import { freezeUpload } from "./version-request.ts";
 import {
   assertBaselineWorkerInput,
@@ -27,12 +29,15 @@ export interface DeployStackOptions {
   record(receipt: BarrierReceipt): Promise<void>;
   manifest(value: ReleaseManifest): Promise<void>;
   publication?(container: FrozenContainer): Promise<void>;
+  serving?(container: ServingContainer): Promise<void>;
   io?: {
     baseline: typeof readBaseline;
     upload: typeof uploadVersion;
     namespace?: typeof cloudflareArtifactsApi;
     container?: typeof inspectContainer;
     observeContainer?: typeof observeContainer;
+    advanceContainer?: typeof advanceContainer;
+    serving?: typeof verifyServingContainer;
   };
 }
 
@@ -81,6 +86,7 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
       [...prepared.containers].map(([id, staged]) => [id, staged.publication.proposed]),
     );
     const databaseFqns = new Set<string>();
+    const databaseChanges = new Set<string>();
     const database = Effect.gen(function* () {
       for (const admit of prepared.admissions)
         yield* Effect.tryPromise({ try: admit, catch: (error) => error });
@@ -100,9 +106,12 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
         )
       )
         throw new BarrierRefusal("unsafe-database-selection");
-      for (const fqn of Object.keys(databasePlan.resources)) databaseFqns.add(fqn);
+      for (const [fqn, node] of Object.entries(databasePlan.resources)) {
+        databaseFqns.add(fqn);
+        if (node.action !== "noop") databaseChanges.add(fqn);
+      }
       yield* Apply.apply(databasePlan);
-      yield* verifyNativeState(plan, stack.name, stack.stage, databaseFqns);
+      yield* verifyNativeState(plan, stack.name, stack.stage, databaseChanges);
     });
     yield* Effect.tryPromise({
       try: () =>
@@ -134,6 +143,8 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
               if (!staged) throw new BarrierRefusal("missing-prepared-container", container.id);
               return decodeContainerRollout(await Effect.runPromise(staged.publication.rollout()));
             },
+            advance: (container, rollout) =>
+              run((options.io?.advanceContainer ?? advanceContainer)(container.baseline, rollout)),
             async wait(container, rollout) {
               const staged = prepared.containers.get(container.id);
               if (!staged) throw new BarrierRefusal("missing-prepared-container", container.id);
@@ -144,6 +155,17 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
                   () => (options.io?.observeContainer ?? observeContainer)(container.baseline),
                 ),
               );
+              const worker = prepared.captured.get("PoolWorker")?.request;
+              if (!worker) throw new BarrierRefusal("missing-pool-serving-target");
+              const serving = await run(
+                (options.io?.serving ?? verifyServingContainer)(
+                  container,
+                  { worker: worker.scriptName, accountId: worker.accountId },
+                  options.candidate,
+                ),
+              );
+              if (options.serving)
+                await options.serving({ ...serving, applicationVersion: observed.version });
               activatedContainers.set(container.id, {
                 ...staged.publication.proposed,
                 ...observed,

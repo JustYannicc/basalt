@@ -84,6 +84,7 @@ export const recoveryReceipt = Schema.Struct({
         container: Schema.String,
         version: Schema.Number,
         rolloutId: Schema.optional(Schema.String),
+        promoted: Schema.optional(Schema.Boolean),
         unchanged: Schema.optional(Schema.Boolean),
       }),
     ),
@@ -91,7 +92,7 @@ export const recoveryReceipt = Schema.Struct({
   pendingContainer: Schema.optional(
     Schema.Struct({
       container: Schema.String,
-      phase: Schema.Literals(["rollout", "verification"]),
+      phase: Schema.Literals(["rollout", "advance", "verification"]),
       version: Schema.optional(Schema.Number),
       rolloutId: Schema.optional(Schema.String),
     }),
@@ -119,7 +120,7 @@ export const readRecoveryProgress = Schema.decodeUnknownSync(
     pendingContainer: Schema.optional(
       Schema.Struct({
         container: Schema.String,
-        phase: Schema.Literals(["rollout", "verification"]),
+        phase: Schema.Literals(["rollout", "advance", "verification"]),
         version: Schema.optional(Schema.Number),
         rolloutId: Schema.optional(Schema.String),
       }),

@@ -48,7 +48,7 @@ export function containerPublication() {
     applicationId: "pool-app",
     targetConfiguration: structuredClone(proposed.configuration),
     strategy: "rolling",
-    kind: "full_auto",
+    kind: "full_manual",
     stepPercentage: 100,
     description: "Immediate update",
   };
@@ -133,6 +133,9 @@ export function containerRelease() {
       events.push("container:rollout");
       current = { ...setup.proposed, version: 2 };
       return { id: "rollout", currentVersion: 1, targetVersion: 2 };
+    },
+    async advance() {
+      events.push("container:advance");
     },
     async wait() {
       events.push("container:adopted");

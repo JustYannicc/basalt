@@ -57,18 +57,23 @@ export function containerDriftApi({ rolloutOnly = false } = {}) {
         const body = JSON.parse(Buffer.from(request.body.body).toString());
         const currentVersion = state.app.version;
         const previous = state.app.configuration;
-        state.app = {
+        const target = {
           ...state.app,
           configuration: body.target_configuration,
           version: currentVersion + 1,
         };
+        state.manualRollout = body.kind === "full_manual" ? target : undefined;
+        if (state.manualRollout)
+          state.app = { ...state.app, active_rollout_id: `fixture-rollout-${state.rollouts}` };
+        else state.app = target;
         value = {
           id: `fixture-rollout-${state.rollouts}`,
           current_version: currentVersion,
-          target_version: state.app.version,
+          target_version: target.version,
           current_configuration: previous,
-          target_configuration: state.app.configuration,
-          status: "completed",
+          target_configuration: target.configuration,
+          kind: body.kind,
+          status: body.kind === "full_manual" ? "pending" : "completed",
         };
       } else value = { id: "fixture-rollout" };
     } else if (request.method === "DELETE") {
@@ -116,7 +121,7 @@ export function containerDriftApi({ rolloutOnly = false } = {}) {
         Object.assign(body.configuration, resources);
       }
       if (rolloutOnly && request.method === "PATCH") {
-        const { configuration, ...settings } = body;
+        const { configuration: _configuration, ...settings } = body;
         state.app = { ...state.app, ...settings };
       } else state.app = { ...state.app, ...body, version: state.app.version + 1 };
       value = state.app;

@@ -4,18 +4,26 @@ import { Stack, evalStack } from "alchemy/Stack";
 import * as Apply from "alchemy/Apply";
 import * as Plan from "alchemy/Plan";
 import * as Provider from "alchemy/Provider";
+import * as Command from "alchemy/Command";
+import { WorkerUploadHook } from "alchemy/Cloudflare/Workers/WorkerUploadHook";
+import { ContainerPublicationHook } from "alchemy/Cloudflare/Containers/ContainerPublicationHook";
+import { deployStack } from "./deploy-stack.ts";
+import { preparedUpload } from "./fixture.ts";
+import { decodeApplication } from "./container-cloudflare.ts";
 import { Resource } from "alchemy/Resource";
 import { inMemoryState } from "alchemy/State/InMemoryState";
 import { State } from "alchemy/State/State";
+import { assertImageOnlyPublication } from "./container.ts";
+import { containerProps } from "./test/container-fixture.ts";
 import type { Worker } from "alchemy/Cloudflare";
-import { ConfigProvider, Context, Effect, Layer, Redacted } from "effect";
+import { ConfigProvider, Context, Effect, Layer, Redacted, Option } from "effect";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpResponse from "effect/http/HttpClientResponse";
 import { Credentials } from "@distilled.cloud/cloudflare/Credentials";
 import { recoverStack } from "./recover-stack.ts";
 import { withReleaseRuntime } from "./runtime.ts";
 import { containerRelease } from "./test/container-fixture.ts";
-import { releaseWorkers } from "./barrier.ts";
+import { releaseWorkers, type BarrierReceipt } from "./barrier.ts";
 import { attributes } from "./fixture.ts";
 import { readFileSync } from "node:fs";
 import { RuntimeRecovery, handleRuntimeRecovery } from "../../src/pool/runtime-recovery.ts";
@@ -24,12 +32,17 @@ import type { RecoveryReceipt } from "./recovery.ts";
 import type { ContainerAttributes } from "./container.ts";
 
 interface FixtureWorker extends Resource<"Cloudflare.Worker", {}, Worker["Attributes"]> {}
-interface FixtureContainer extends Resource<"Cloudflare.Container", {}, ContainerAttributes> {}
+interface FixtureContainer extends Resource<
+  "Cloudflare.Container",
+  ReturnType<typeof containerProps>,
+  ContainerAttributes
+> {}
 const FixtureWorker = Resource<FixtureWorker>("Cloudflare.Worker");
 const FixtureContainer = Resource<FixtureContainer>("Cloudflare.Container");
 
 for (const scenario of [
   "success",
+  "redeploy",
   "foreign-worker",
   "database-unknown",
   "invalid-instances",
@@ -41,6 +54,7 @@ for (const scenario of [
   test(`public recoverStack uses the SDK and saved container configuration: ${scenario}`, async (context) => {
     const proof = containerRelease();
     let receipt;
+    let nextDeploy = false;
     if (scenario === "initial-baseline-worker") {
       const activate = proof.options.provider.activate;
       proof.options.provider.activate = async (worker, version) => {
@@ -102,6 +116,16 @@ for (const scenario of [
       constraints: { jurisdiction: "eu", regions: ["EEUR", "WEUR"] },
       durable_objects: { namespace_id: "namespace" },
     };
+    let recoveryRollout:
+      | {
+          id: string;
+          current_version: number;
+          target_version: number;
+          kind: string;
+          status: string;
+          configuration: typeof app.configuration;
+        }
+      | undefined;
     const envelope = (result: unknown) =>
       Response.json({ success: true, errors: [], messages: [], result });
     const sdk = HttpClient.make((request, url) =>
@@ -147,11 +171,19 @@ for (const scenario of [
           calls.push("container:rollout");
           const currentVersion = app.version;
           const previous = app.configuration;
-          app = { ...app, configuration: body.target_configuration, version: currentVersion + 1 };
+          assert.equal(body.kind, "full_manual");
+          recoveryRollout = {
+            id: "recorded-recovery-rollout",
+            current_version: currentVersion,
+            target_version: currentVersion + 1,
+            kind: body.kind,
+            status: "pending",
+            configuration: body.target_configuration,
+          };
           result = {
             id: "recorded-recovery-rollout",
             current_version: currentVersion,
-            target_version: app.version,
+            target_version: currentVersion + 1,
             current_configuration: previous,
             target_configuration: app.configuration,
             status: "completed",
@@ -166,6 +198,20 @@ for (const scenario of [
     });
     globalThis.fetch = async (input, init) => {
       const url = new URL(String(input));
+      if (url.pathname.endsWith(`/rollouts/${recoveryRollout?.id}`)) {
+        assert.ok(recoveryRollout);
+        if (init?.method === "POST") {
+          assert.equal(JSON.parse(String(init.body)).action, "next");
+          recoveryRollout.status = "completed";
+          app = {
+            ...app,
+            configuration: recoveryRollout.configuration,
+            version: recoveryRollout.target_version,
+          };
+          calls.push("container:advance");
+        } else assert.equal(init?.method ?? "GET", "GET");
+        return envelope(recoveryRollout);
+      }
       assert.equal(init?.method ?? "GET", "GET");
       if (url.pathname === "/pool/v1/pool") return new Response(null, { status: 401 });
       if (url.pathname.endsWith("/instances-v2")) {
@@ -193,18 +239,82 @@ for (const scenario of [
         state: inMemoryState(),
         providers: Layer.mergeAll(
           Provider.succeed(FixtureWorker, {
-            reconcile: ({ id }) => Effect.succeed(attributes(id)),
+            diff: () => Effect.succeed({ action: "update" }),
+            reconcile: ({ id }) =>
+              Effect.gen(function* () {
+                const hook = yield* Effect.serviceOption(WorkerUploadHook);
+                if (Option.isNone(hook)) return attributes(id);
+                const upload = preparedUpload(id);
+                return yield* hook.value.capture({
+                  ...upload,
+                  previousSettings: {
+                    ...upload.previousSettings,
+                    bindings: [
+                      {
+                        type: "plain_text",
+                        name: "POOL_IMAGE_HASH",
+                        text: proof.frozen.baselineInputHash,
+                      },
+                    ],
+                  },
+                  activate: (version) =>
+                    Effect.sync(() => {
+                      active.set(id, version);
+                      return attributes(id);
+                    }),
+                });
+              }),
             delete: () => Effect.void,
           }),
           Provider.succeed(FixtureContainer, {
-            reconcile: () => Effect.succeed(proof.current()),
+            diff: () => Effect.succeed({ action: nextDeploy ? "update" : "noop" }),
+            reconcile: (input) =>
+              Effect.gen(function* () {
+                const hook = yield* Effect.serviceOption(ContainerPublicationHook);
+                if (Option.isNone(hook)) return proof.current();
+                assert.ok(input.output);
+                const previous = { ...decodeApplication(app), hash: input.output.hash };
+                const proposed = { ...proof.proposed, version: previous.version };
+                return yield* hook.value.capture({
+                  ...proof.publication,
+                  previous,
+                  proposed,
+                  rollout: () =>
+                    Effect.sync(() => {
+                      recoveryRollout = {
+                        id: "next-release-rollout",
+                        current_version: previous.version,
+                        target_version: previous.version + 1,
+                        kind: "full_manual",
+                        status: "pending",
+                        configuration: {
+                          image: proposed.configuration.image,
+                          instance_type: "basic",
+                        },
+                      };
+                      return recoveryRollout;
+                    }),
+                });
+              }),
             delete: () => Effect.void,
           }),
+          Command.ExecProvider().pipe(
+            Layer.provide(
+              Layer.succeed(Command.CommandExecutor, {
+                spawn: () => Effect.die("No child process in recovery proof"),
+                run: () => Effect.succeed({ exitCode: 0, stdout: "", stderr: "" }),
+              }),
+            ),
+          ),
         ),
       },
       Effect.gen(function* () {
+        yield* Command.Exec("PoolDatabase", {
+          command: "node ensure-pool-database.ts",
+          memo: false,
+        });
         for (const id of ["Api", "PoolWorker", "Router"]) yield* FixtureWorker(id, {});
-        yield* FixtureContainer("PoolContainer", {});
+        yield* FixtureContainer("PoolContainer", containerProps());
       }),
     );
     const program = evalStack(
@@ -281,21 +391,91 @@ for (const scenario of [
                 ),
               ),
             );
+          let result;
           if (scenario === "interrupt-after-pool-worker") {
             const interrupted = yield* Effect.exit(attempt());
             assert.equal(interrupted._tag, "Failure");
             assert.equal(active.get("PoolWorker"), "old-PoolWorker");
             assert.equal(active.get("Api"), "new-Api");
-            return yield* attempt(recoveries.at(-1));
+            result = yield* attempt(recoveries.at(-1));
+          } else result = yield* attempt();
+          const state = yield* yield* State;
+          const saved = yield* state.get({
+            stack: compiled.name,
+            stage: compiled.stage,
+            fqn: "PoolContainer",
+          });
+          assert.ok(saved && "attr" in saved && saved.attr);
+          assert.equal(saved.attr.version, app.version);
+          assert.equal(saved.attr.hash.image, proof.frozen.baselineInputHash);
+          assert.equal(saved.attr.hash.digest, proof.previous.hash!.digest);
+          const previous = { ...proof.previous, version: app.version };
+          assertImageOnlyPublication(
+            {
+              ...proof.publication,
+              previous,
+              rolloutRequest: { ...proof.publication.rolloutRequest },
+            },
+            containerProps(),
+            containerProps(),
+            { ...proof.previous, ...saved.attr },
+          );
+          if (scenario === "redeploy") {
+            nextDeploy = true;
+            const version = app.version;
+            const nextReceipts: BarrierReceipt[] = [];
+            yield* deployStack(compiled, {
+              candidate: "b".repeat(40),
+              record: async (value) => {
+                nextReceipts.push(value);
+              },
+              manifest: async () => {},
+              io: {
+                container: () => Effect.succeed(proof.metadata),
+                observeContainer: () => Effect.succeed(decodeApplication(app)),
+                baseline: (worker) =>
+                  Effect.succeed([{ versionId: active.get(worker.scriptName)!, percentage: 100 }]),
+                upload: (worker) =>
+                  Effect.succeed({ versionId: "next-" + worker.id, startupTimeMs: 100 }),
+                serving: (container, _worker, candidate) =>
+                  Effect.succeed({
+                    candidate,
+                    applicationVersion: app.version,
+                    digest: container.imageDigest,
+                    inputHash: container.inputHash,
+                    instanceId: "a".repeat(64),
+                    bootId: "next-boot",
+                    workerInput: "input",
+                    checkedAt: 1,
+                    unsignedHealth: 200,
+                    unsignedModels: 401,
+                  }),
+              },
+            });
+            assert.equal(nextReceipts.at(-1)?.phase, "complete");
+            assert.equal(nextReceipts.at(-1)?.activated.length, 3);
+            assert.equal(app.version, version + 1);
+            assert.equal(app.configuration.image, proof.proposed.configuration.image);
           }
-          return yield* attempt();
+          return result;
         }).pipe(
           Effect.provideContext(compiled.services),
           Effect.provideService(State, Context.get(compiled.services, State)),
         ),
       { stage: "production" },
-    ).pipe(withReleaseRuntime);
-    if (["success", "initial-baseline-worker", "interrupt-after-pool-worker"].includes(scenario)) {
+    ).pipe(
+      withReleaseRuntime,
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({ env: { CLOUDFLARE_API_TOKEN: "synthetic-never-sent" } }),
+        ),
+      ),
+    );
+    if (
+      ["success", "redeploy", "initial-baseline-worker", "interrupt-after-pool-worker"].includes(
+        scenario,
+      )
+    ) {
       await Effect.runPromise(program);
       const rollout = calls.indexOf("container:rollout"),
         verified = calls.indexOf("instances:verified");
@@ -322,7 +502,12 @@ for (const scenario of [
             : [proof.frozen.inputHash],
       );
       assert.equal(recoveries.at(-1)?.containers?.[0]?.health?.bootId, "old-boot");
-      assert.equal(app.configuration.image, proof.previous.configuration.image);
+      assert.equal(
+        app.configuration.image,
+        scenario === "redeploy"
+          ? proof.proposed.configuration.image
+          : proof.previous.configuration.image,
+      );
     } else {
       await assert.rejects(Effect.runPromise(program));
       assert.ok(!calls.some((call) => call.startsWith("restore:")));

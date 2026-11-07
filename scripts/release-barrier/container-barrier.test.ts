@@ -18,11 +18,12 @@ test("all image and Worker admissions precede database work and every activation
     "activate:Router",
     "image:verified",
     "container:rollout",
+    "container:advance",
     "container:adopted",
   ]);
   assert.equal(result.schemaVersion, 2);
   assert.deepEqual(result.containers, [
-    { container: "PoolContainer", version: 2, rolloutId: "rollout" },
+    { container: "PoolContainer", version: 2, rolloutId: "rollout", promoted: true },
   ]);
   assert.equal(result.phase, "complete");
 });
@@ -79,7 +80,7 @@ for (const failure of [
     );
   });
 
-for (const phase of ["rollout", "verification"] as const)
+for (const phase of ["rollout", "advance", "verification"] as const)
   test(`a lost ${phase} response keeps the exact pending container intent`, async () => {
     const proof = containerRelease();
     const rollout = proof.options.containers.rollout;
@@ -87,6 +88,10 @@ for (const phase of ["rollout", "verification"] as const)
       proof.options.containers.rollout = async (container) => {
         await rollout(container);
         throw new Error("lost response");
+      };
+    } else if (phase === "advance") {
+      proof.options.containers.advance = async () => {
+        throw new Error("promotion response lost");
       };
     } else
       proof.options.containers.wait = async () => {
@@ -97,10 +102,10 @@ for (const phase of ["rollout", "verification"] as const)
     assert.deepEqual(last.pendingContainer, {
       container: "PoolContainer",
       phase,
-      ...(phase === "verification" ? { version: 2, rolloutId: "rollout" } : {}),
+      ...(phase !== "rollout" ? { version: 2, rolloutId: "rollout" } : {}),
     });
     assert.equal(last.activated.length, 3);
-    assert.equal(last.containers?.length, phase === "verification" ? 1 : 0);
+    assert.equal(last.containers?.length, phase !== "rollout" ? 1 : 0);
     assert.equal(proof.events.filter((event) => event === "container:rollout").length, 1);
   });
 

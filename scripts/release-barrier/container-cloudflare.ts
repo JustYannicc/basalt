@@ -255,7 +255,7 @@ export const rolloutRestoredContainer = (container: FrozenContainer) =>
     applicationId: container.baseline.applicationId,
     targetConfiguration: structuredClone(container.baseline.configuration),
     strategy: "rolling",
-    kind: "full_auto",
+    kind: "full_manual",
     stepPercentage: 100,
     description: "Recorded container recovery",
   }).pipe(Retry.none, Effect.map(decodeContainerRollout));

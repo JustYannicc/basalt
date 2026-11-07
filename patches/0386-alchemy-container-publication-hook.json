@@ -1,7 +1,7 @@
 {
   "identity": "alchemy-container-publication-hook",
   "file": "0386-alchemy-container-publication-hook.patch",
-  "content_sha256": "6709321e1be0194bac1d046b34cc9f52c3d327de43334ece693add7c5450ff68",
+  "content_sha256": "e2893d7b6adcc3c6acfc97c93e2973094b8a0d0c450d7aaef600ca692d0896cb",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

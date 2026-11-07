@@ -25,6 +25,8 @@ export interface ContainerRecoveryProvider {
     rollout: ContainerRollout,
     restored: boolean,
   ): Promise<ContainerAttributes>;
+  advance(container: FrozenContainer, rollout: ContainerRollout): Promise<void>;
+  observePromotion(container: FrozenContainer, rollout: ContainerRollout): Promise<void>;
   verify(container: FrozenContainer): Promise<ContainerHealth>;
 }
 export interface ContainerRecoveryOptions {
@@ -88,15 +90,17 @@ export async function recoverContainers(
     if (recovered.rolloutId) {
       if (!activation)
         throw new BarrierRefusal("container-recovery-version-unconfirmed", container.id);
-      current = await options.provider.wait(
-        container,
-        {
-          id: recovered.rolloutId,
-          currentVersion: activation.version,
-          targetVersion: recovered.version,
-        },
-        true,
-      );
+      const rollout = {
+        id: recovered.rolloutId,
+        currentVersion: activation.version,
+        targetVersion: recovered.version,
+      };
+      if (!recovered.promoted) {
+        await options.provider.observePromotion(container, rollout);
+        recovered.promoted = true;
+        await save();
+      }
+      current = await options.provider.wait(container, rollout, true);
     }
     if (current.version !== recovered.version || !isRestored(current, container))
       throw new BarrierRefusal("container-recovery-readback-drift", container.id);
@@ -106,15 +110,13 @@ export async function recoverContainers(
   ) {
     if (!activation?.rolloutId || activation.unchanged)
       throw new BarrierRefusal("container-recovery-version-unconfirmed", container.id);
-    current = await options.provider.wait(
-      container,
-      {
-        id: activation.rolloutId,
-        currentVersion: container.baseline.version,
-        targetVersion: activation.version,
-      },
-      false,
-    );
+    const originalRollout = {
+      id: activation.rolloutId,
+      currentVersion: container.baseline.version,
+      targetVersion: activation.version,
+    };
+    if (!activation.promoted) await options.provider.observePromotion(container, originalRollout);
+    current = await options.provider.wait(container, originalRollout, false);
     assertConfiguredContainer(current, container);
     if (current.version !== activation.version || current.activeRolloutId)
       throw new BarrierRefusal("container-recovery-version-unconfirmed", container.id);
@@ -129,14 +131,23 @@ export async function recoverContainers(
     )
       throw new BarrierRefusal("container-recovery-rollout-unconfirmed", container.id);
     progress.containers = [
-      { container: container.id, version: rollout.targetVersion, rolloutId: rollout.id },
+      {
+        container: container.id,
+        version: rollout.targetVersion,
+        rolloutId: rollout.id,
+        promoted: false,
+      },
     ];
     progress.pendingContainer = {
       container: container.id,
-      phase: "verification",
+      phase: "advance",
       version: rollout.targetVersion,
       rolloutId: rollout.id,
     };
+    await save();
+    await options.provider.advance(container, rollout);
+    progress.containers[0]!.promoted = true;
+    progress.pendingContainer.phase = "verification";
     await save();
     current = await options.provider.wait(container, rollout, true);
     if (current.version !== rollout.targetVersion || !isRestored(current, container))
@@ -163,4 +174,5 @@ export async function recoverContainers(
     });
   delete progress.pendingContainer;
   await save();
+  return { container, observed: verified };
 }

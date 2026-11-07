@@ -1,6 +1,9 @@
 import * as Workers from "@distilled.cloud/cloudflare/workers";
+import { advanceContainer, observeContainerPromotion } from "./container-promotion.ts";
 import * as Retry from "@distilled.cloud/cloudflare/Retry";
 import { State } from "alchemy/State/State";
+import { havePropsChanged } from "alchemy/Diff";
+import { imageDigest, type ContainerAttributes, type FrozenContainer } from "./container.ts";
 import type { CompiledStack } from "alchemy/Stack";
 import { Cause, Effect, Exit } from "effect";
 import { readBaseline } from "./cloudflare.ts";
@@ -107,6 +110,9 @@ export const recoverStack = (
       if (!value) throw new BarrierRefusal("unknown-recovery-worker", worker.id);
       return value;
     };
+    let commitContainer:
+      | ((container: FrozenContainer, observed: ContainerAttributes) => Promise<void>)
+      | undefined;
     if ("containers" in parsed) {
       if (
         !containerRecovery ||
@@ -122,15 +128,48 @@ export const recoverStack = (
       });
       if (
         !saved ||
-        !("attr" in saved) ||
-        !saved.attr ||
-        typeof saved.attr.accountId !== "string" ||
-        typeof saved.attr.applicationId !== "string" ||
+        (saved.status !== "created" && saved.status !== "updated" && saved.status !== "updating") ||
+        (saved.status === "updating" && saved.adopting)
+      )
+        throw new BarrierRefusal("container-recovery-target-drift");
+      const recorded = saved.status === "updating" ? saved.old : saved;
+      if (
+        typeof recorded.attr.accountId !== "string" ||
+        typeof recorded.attr.applicationId !== "string" ||
         digest(
-          canonical({ accountId: saved.attr.accountId, applicationId: saved.attr.applicationId }),
+          canonical({
+            accountId: recorded.attr.accountId,
+            applicationId: recorded.attr.applicationId,
+          }),
         ) !== parsed.containers[0].target
       )
         throw new BarrierRefusal("container-recovery-target-drift");
+      const key = { stack: stack.name, stage: stack.stage, fqn: "PoolContainer" };
+      commitContainer = async (container, observed) => {
+        const current = await run(state.get(key));
+        if (havePropsChanged(current ?? {}, saved))
+          throw new BarrierRefusal("container-recovery-native-state-drift", container.id);
+        // Recovery creates a new application version; the next plan must see the restored image and its actual version.
+        await run(
+          state.set({
+            ...key,
+            value: {
+              ...saved,
+              status: "updated",
+              props: recorded.props,
+              bindings: recorded.bindings,
+              attr: {
+                ...recorded.attr,
+                ...observed,
+                hash: {
+                  image: container.baselineInputHash,
+                  digest: imageDigest(container.baseline.configuration.image),
+                },
+              },
+            },
+          }),
+        );
+      };
     }
     return yield* Effect.tryPromise({
       try: () =>
@@ -150,8 +189,8 @@ export const recoverStack = (
           },
           record,
           containerRecovery
-            ? (manifest, admitted, progress, save, deployments) =>
-                recoverContainers(
+            ? async (manifest, admitted, progress, save, deployments) => {
+                const restored = await recoverContainers(
                   manifest,
                   admitted,
                   {
@@ -171,6 +210,10 @@ export const recoverStack = (
                             rollout,
                           ),
                         ),
+                      advance: (container, rollout) =>
+                        run(advanceContainer(container.baseline, rollout)),
+                      observePromotion: (container, rollout) =>
+                        run(observeContainerPromotion(container.baseline, rollout)),
                       verify: (container) => {
                         const poolWorker = targets.get("PoolWorker");
                         const deployment = deployments.get("PoolWorker");
@@ -194,7 +237,10 @@ export const recoverStack = (
                   },
                   progress,
                   save,
-                )
+                );
+                if (!commitContainer) throw new BarrierRefusal("container-recovery-target-drift");
+                await commitContainer(restored.container, restored.observed);
+              }
             : undefined,
           containerRecovery?.previous,
         ),
