@@ -94,9 +94,37 @@ export const verifyLocalGuidance = ({ fixture, directory }) =>
         );
       });
       yield* browser.checkpoint("Local WorkOS key alternative 390");
-      yield* browser.use("Return to sign-in and close without saving", async (page) => {
+      yield* browser.omitNetworkTrace;
+      yield* browser.use("Return to sign-in", async (page) => {
         await page.getByRole("button", { name: "Sign in instead", exact: true }).click();
         await page.getByRole("button", { name: "Sign in with WorkOS", exact: true }).waitFor();
+      });
+      for (const decision of ["Cancel sign-in", "Refuse access", "Deny by policy"]) {
+        yield* browser.use(`Local ${decision} recovery`, async (page) => {
+          await page.getByRole("button", { name: "Sign in with WorkOS", exact: true }).click();
+          await page.getByRole("button", { name: decision, exact: true }).click();
+          const dialog = page.getByRole("dialog", { name: "Connect WorkOS", exact: true });
+          await dialog
+            .getByText(
+              decision === "Cancel sign-in"
+                ? "Sign-in was cancelled."
+                : "Your WorkOS team has disabled sign-in for connected tools. Ask a team admin to enable it in Authentication settings.",
+              { exact: true },
+            )
+            .waitFor();
+          assert.equal(await page.getByText(/Update the OAuth client details/).count(), 0);
+          await dialog.getByRole("button", { name: "Sign in with WorkOS", exact: true }).waitFor();
+        });
+        yield* browser.checkpoint(`Local ${decision} 390`);
+        yield* browser.use("Local recovery keeps reversible connection choices", async (page) => {
+          const dialog = page.getByRole("dialog", { name: "Connect WorkOS", exact: true });
+          await dialog.getByRole("button", { name: "Use an API key instead", exact: true }).click();
+          await dialog.getByLabel("API key", { exact: true }).waitFor();
+          await dialog.getByRole("button", { name: "Sign in instead", exact: true }).click();
+          await dialog.getByRole("button", { name: "Sign in with WorkOS", exact: true }).waitFor();
+        });
+      }
+      yield* browser.use("Close local recovery", async (page) => {
         await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click();
       });
       yield* verifyInstanceGuidance(browser, instance.id);

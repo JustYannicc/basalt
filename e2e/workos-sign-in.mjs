@@ -20,6 +20,7 @@ import { managementBrowser } from "./management-signin/browser.mjs";
 import { startManagementCatalog } from "./management-signin/catalog.mjs";
 import { retainWorkOSKey } from "./management-signin/retained-key.mjs";
 import { verifyManualGuidance } from "./management-signin/manual-guidance.mjs";
+import { verifyOnboardingRecovery } from "./management-signin/onboarding-recovery.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const upstream = join(root, ".upstream");
@@ -203,7 +204,12 @@ const program = Effect.gen(function* () {
             await page.getByRole("button", { name: "Sign in with WorkOS", exact: true }).waitFor();
           });
           yield* browser.omitNetworkTrace;
-          for (const decision of ["Cancel sign-in", "Refuse access"]) {
+          for (const decision of [
+            "Cancel sign-in",
+            "Refuse access",
+            "Deny by policy",
+            "Refuse with service code",
+          ]) {
             yield* browser.use(`WorkOS ${decision}`, async (page) => {
               await page.getByRole("button", { name: "Sign in with WorkOS", exact: true }).click();
               await page
@@ -217,7 +223,7 @@ const program = Effect.gen(function* () {
               await dialog
                 .getByText(
                   decision === "Cancel sign-in"
-                    ? "Sign-in was cancelled. No account was connected."
+                    ? "Sign-in was cancelled."
                     : "Your WorkOS team has disabled sign-in for connected tools. Ask a team admin to enable it in Authentication settings.",
                   { exact: true },
                 )
@@ -320,6 +326,12 @@ const program = Effect.gen(function* () {
             saved(yield* request("GET", `${prefix}/resources/accounts`)),
             beforeManual,
             "Leaving manual setup saves nothing",
+          );
+          yield* verifyOnboardingRecovery(browser, actors.organization.slug, width);
+          assert.deepEqual(
+            saved(yield* request("GET", `${prefix}/resources/accounts`)),
+            beforeManual,
+            "Onboarding refusal saves no account",
           );
         }
       }).pipe(

@@ -97,7 +97,9 @@ export async function startManagementProvider() {
           ${[...url.searchParams].map(([name, value]) => `<input type="hidden" name="${escape(name)}" value="${escape(value)}">`).join("")}
           <button name="decision" value="approve">Approve access</button>
           <button name="decision" value="cancel">Cancel sign-in</button>
-          <button name="decision" value="refuse">Refuse access</button></form>`);
+          <button name="decision" value="refuse">Refuse access</button>
+          <button name="decision" value="policy">Deny by policy</button>
+          <button name="decision" value="unknown">Refuse with service code</button></form>`);
         return;
       }
       const callback = new URL(url.searchParams.get("redirect_uri"));
@@ -112,7 +114,11 @@ export async function startManagementProvider() {
       } else {
         callback.searchParams.set(
           "error",
-          decision === "cancel" ? "access_denied" : "unauthorized_client",
+          decision === "cancel" || decision === "policy"
+            ? "access_denied"
+            : decision === "unknown"
+              ? "workspace_policy"
+              : "unauthorized_client",
         );
         callback.searchParams.set(
           "error_description",
