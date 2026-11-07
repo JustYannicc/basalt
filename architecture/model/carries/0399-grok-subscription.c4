@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "Grok sign-in preserves the server-owned acquisition state when accepting a displayed authorization code or code-bearing URL. A consent address or mismatched state fails before Home without retiring the attempt; a corrected code remains usable in the same dialog. Expired sessions and provider rejection offer a new attempt in that dialog. Device instructions expose only the verification URL and human code, and automatic completion saves the exact returned credential."
+      constraint "Model provider sign-in preserves the server-owned acquisition state when accepting a displayed authorization code or code-bearing URL. A consent address or mismatched state fails before Home without retiring the attempt; a corrected code remains usable in the same dialog. Expired sessions and provider rejection offer a new attempt in that dialog. Device instructions expose only the verification URL and human code, and automatic completion saves the exact returned credential."
     }
   }
 }
