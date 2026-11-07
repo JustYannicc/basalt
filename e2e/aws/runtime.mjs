@@ -114,7 +114,7 @@ const run = Effect.gen(function* () {
       yield* Effect.promise(() => readFile(join(root, "src/catalog/aws/source.json"), "utf8")),
     ),
   );
-  const files = original.files.map((file) => {
+  const rewriteNetwork = (file) => {
     if (file.path === "provider.ts") {
       const networkPath = "https://aws-mcp.us-east-1.api.aws/mcp";
       const host = "aws-mcp.us-east-1.api.aws";
@@ -144,7 +144,15 @@ const run = Effect.gen(function* () {
       );
     }
     return file;
-  });
+  };
+  const files = original.files.map(rewriteNetwork);
+  const legacy = JSON.parse(
+    yield* Effect.promise(() => readFile(join(root, "e2e/aws/legacy-source.json"), "utf8")),
+  );
+  const legacyFiles = [
+    ...files.filter((file) => ["README.md", "icon.ts", "package.json"].includes(file.path)),
+    ...legacy.files.map(rewriteNetwork),
+  ];
   yield* Effect.promise(() =>
     writeFile(
       join(EVIDENCE, "source-rewrites.json"),
@@ -166,10 +174,10 @@ const run = Effect.gen(function* () {
   const deployed = checked(
     yield* request(actors.owner, "POST", `${prefix}/apps/deploy`, {
       name: "AWS self-host MCP acceptance",
-      files,
+      files: legacyFiles,
     }),
     200,
-    "Deploy the maintained AWS source through self-host app management",
+    "Deploy the previous AWS OAuth source through self-host app management",
   );
   const app = deployed;
   yield* Effect.addFinalizer(() =>
@@ -240,6 +248,56 @@ const run = Effect.gen(function* () {
     app,
   });
 
+  enterPhase("upgrade");
+  const kept = [];
+  for (const [actor, id] of [
+    [actors.owner, oauth.ownerAccount],
+    [actors.member, oauth.memberAccount],
+  ]) {
+    const account = checked(
+      yield* request(actor, "GET", `${prefix}/accounts/${id}`),
+      200,
+      "Read the saved OAuth account before upgrade",
+    );
+    kept.push({ actor, id, account });
+  }
+  checked(
+    yield* request(actors.owner, "POST", `${prefix}/apps/${app.id}/deploy`, { files }),
+    200,
+    "Upgrade AWS to Identity Center while retaining OAuth",
+  );
+  const upgraded = checked(
+    yield* request(actors.owner, "GET", `${prefix}/inventory`),
+    200,
+    "Read upgraded AWS requirements",
+  ).apps.find((item) => item.id === app.id);
+  equal(
+    upgraded.requirements.accounts.aws.provider,
+    details.requirements.accounts.aws.provider,
+    "Upgrade must retain the exact original OAuth provider identity",
+  );
+  check(
+    upgraded.requirements.accounts.identityCenter,
+    "Upgrade must add the Identity Center connection independently",
+  );
+  for (const { actor, id, account: before } of kept) {
+    const account = checked(
+      yield* request(actor, "GET", `${prefix}/accounts/${id}`),
+      200,
+      "Read the same saved OAuth account after upgrade",
+    );
+    for (const field of ["id", "provider", "method", "label"])
+      equal(account[field], before[field], `OAuth account ${field} changed during upgrade`);
+    const inventory = checked(
+      yield* request(actor, "GET", `${prefix}/inventory`),
+      200,
+      "Read OAuth app links after upgrade",
+    );
+    check(
+      inventory.links.some((link) => link.app === app.id && link.account === id),
+      "Upgrade lost an existing personal OAuth app link",
+    );
+  }
   enterPhase("health");
   for (const [actor, account] of [
     [actors.owner, oauth.ownerAccount],

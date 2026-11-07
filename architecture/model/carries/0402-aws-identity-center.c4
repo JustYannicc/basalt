@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Identity Center sessions remain encrypted server-side and separate from retained AWS OAuth accounts. Each tool call resolves one assigned account and role before requesting temporary credentials and signing its exact MCP request. Approval binds the target, arguments and saved connection revision; denial never obtains role credentials or dispatches a write. Interactive forms and opted-in reconnect use shared account acquisition, retain the saved account ID and choices, and preserve the previous session on cancellation. Protocol 38 retains protocol 35 attribution, and the served framework pin and generated MCP assets match the prepared source."
+    }
+  }
+}

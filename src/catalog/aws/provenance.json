@@ -1,10 +1,13 @@
 {
   "kind": "new-app-contribution",
   "upstreamIssue": "https://github.com/UsefulSoftwareCo/executor/issues/2372",
-  "sourceSha256": "c40f30b7a1609fb403ec7efc749f1c2b245a08192d5f9677a72c38bd77e557ea",
+  "sourceSha256": "c948e618d23f8284413ceb8bb07fd786c9e21ac5a4ba244cf2f557f8edf88ceb",
   "dependencies": {
-    "apps": "0.0.1-beta.104-basalt.8",
-    "@modelcontextprotocol/sdk": "1.32.1"
+    "apps": "0.0.1-beta.104-basalt.13",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "effect": "4.0.1",
+    "react": "19.2.0",
+    "react-dom": "19.2.0"
   },
   "transport": {
     "kind": "mcp",
@@ -13,9 +16,9 @@
     "scopeStrings": []
   },
   "oneClick": {
-    "status": "cloud-paste-flow-unverified",
-    "reason": "AWS accepts the forced loopback callback. Cloud paste completion still needs isolated and live proof.",
-    "checkedAt": "2026-11-03"
+    "status": "synthetic-hosted-proof",
+    "reason": "Synthetic hosted Identity Center and OAuth paste/reconnect flows pass. Real AWS and company-policy acceptance remain unverified.",
+    "checkedAt": "2026-11-07"
   },
   "vendorLogo": {
     "url": "https://a0.awsstatic.com/libra-css/images/logos/aws_logo_smile_1200x630.png",
@@ -25,14 +28,43 @@
   },
   "catalogSource": {
     "repository": "https://github.com/JustYannicc/signalbox-app-aws",
-    "commit": "51ea8a49c22110d4ba91bf83b231ac58f2d173c4",
+    "commit": "878b8de4f51ec9391aa5c73be31cd7b72cf136d3",
     "fileSha256": {
-      "README.md": "6f5f697b3678e7740f81603fb5d1687400328f9df08cba19f641a46a1f3bf2b5",
-      "icon.ts": "974058d5567c75f3f136da53b81b3e3eb5faaffc9eb12f9c990a99e3ed423943",
-      "index.ts": "97dcc41d692cf6aee69a359dfef15f3cafa4a0416e055ea454ea315cb405ddee",
-      "package.json": "3d9cb1833ed15523c367cd96a253af8300bc63b6e05ec1440f7501e53c993500",
-      "provider.ts": "ea4b956f70c95b7475d4760aa802d6b94c475925c79ce2356a075da7f0f84692"
+      "README.md": "4a7f9eff7991585abf3176a103790d729b8af5862c4df8b3c1d90f6e99bb2f61",
+      "connection.ts": "1696bb0d7e7b4bcda0306150a6932c3534120a61630784cae32c1d13db79fa7b",
+      "errors.ts": "0ef5be4f43f1131f87682772fae61df889d446c86c9ccf91dd3c6043d6debb11",
+      "icon.ts": "738bc7fdb56c97bb5529b29249813839ed829b80893cd0ceb60a4cd800fba61c",
+      "identity-client.ts": "b3b8076d466f2d81403613629ff9940b239bb4db6a1013b97fc5322708cc2ece",
+      "identity-http.ts": "a57162c0b290a3637f52b33e52057719a11a2597ea8c2ea2428066eaebf790ba",
+      "identity-schema.ts": "b79e42c1d3f107a81a8b4ffb088e365f13e290a4164875a097160481f8d9d9ed",
+      "identity-state.ts": "f50b1e535538242fe481a35fa2c12ff5e7fe342ccddbcfdcfc0a511f845cb417",
+      "index.ts": "3d76e00355ce86625f5aa85da400ecae6a866441b8568eedddd6446b3cec2d6c",
+      "migrations/0001_identity_center.sql": "39b1b23f0c2eae660367b1804d89361e46d676b2c5551fef279a18789d49e11f",
+      "operations.ts": "90e9c1e1dfef95ebc91c3e7be520b3bca43e95dd093dad9286340909f4e14a9f",
+      "package.json": "4aa3ae2348f79fed9223e779b118a5512c0efad022089b5d33e65b1062241a21",
+      "provider.ts": "417904326e2afa9964dfdddaa932c373bbb251529d17cc6a98635ed697e240a9",
+      "requirements.ts": "a7a5c8cd5c77a37a5a6890458b7013d131ed82f86e41e38ab8d4d580ceb430d1",
+      "safe-result.ts": "a0458b969cb996cb504f37eb668c808b788834239f2000b77815b3b7b01cedca",
+      "saved-connection.ts": "c20fb81d49cb1edf0b5a73a5245789e0ed8e94528d8776c2c2ff00f96e8d276d",
+      "session-store.ts": "633e276e8627140242d18df33ef777126aaa95032ec76df96791b04ccf225ba8",
+      "ui/access-check.tsx": "70f60d75e6535da13471eca400bd21e7372a40b3cec7777bc24a28d7801d101d",
+      "ui/api.ts": "98392911af558a68f9b51bdcc535318f80a9b724dded336ef291db81f8a4235a",
+      "ui/app.tsx": "27ffd1a74964b85602eb79f78ba3dacd278456483e3d14a463cc6cf80d5d06f5",
+      "ui/assets.d.ts": "35d26ea66c86da9701e4f4b467913481ffeae910761cea34c775c5dacb7f8eaa",
+      "ui/connection-state.ts": "0b87c2b487dad3b8fb7aff91d11e47a7aeadf79e0fa7f668e28ee0ff9049f7f0",
+      "ui/connection.tsx": "b8516a2debd61c430f118b5707c1b9be28a2180cf4def6d9e7c55e26574b3c8c",
+      "ui/controls.tsx": "1ef88e440c8df9d7808d96821b1d8cd7e04da10886b36caec5fb0060000cb660",
+      "ui/host.ts": "8699a482db03685f7c1eddd152dc5fa380d8571995421654b782659ca95e0307",
+      "ui/index.html": "83a1605d1aba7ad3a07ac2ed0e87b23eb1f6ebf8fdfe5063f0b2c33e5a9ce0ee",
+      "ui/inventory.tsx": "2811f4c08c370a2a9b1774d60ae770b225acca57c3ef8ff5bf06833ff965d3a5",
+      "ui/main.tsx": "704503e69848f604adf6c5b2eb5e885f470a8ee3f8bfface3987ef5b740d47e2",
+      "ui/model.ts": "29ddec94ea6563c53f55164b826f69899194c41d7c46ab8436132ece76dbf808",
+      "ui/style.css": "29e278c2a27a7e2386005abb55db509c847177fd66de948b1fdffbdad046db62",
+      "vendor/LICENSE": "a9455541e8a4e4766d146a7552ac547c04bfb7a8718f5af516f1b9e346e82a77",
+      "vendor/aws4fetch.d.ts": "171e4b165a5d2caf21d616b4aa258baf9b62da04cbbed00603a8380cf8492728",
+      "vendor/aws4fetch.js": "3049cd99d00a2fb83ce0e77f0e6b3fb22c17d8e708b740821f906145a8f978e9",
+      "wire.ts": "b90fe097fdaad8fd83e974cb99fb68a9889b81eef8fbadf819e1535bfef8aa15"
     },
-    "snapshotSha256": "c40f30b7a1609fb403ec7efc749f1c2b245a08192d5f9677a72c38bd77e557ea"
+    "snapshotSha256": "c948e618d23f8284413ceb8bb07fd786c9e21ac5a4ba244cf2f557f8edf88ceb"
   }
 }

@@ -1,0 +1,10 @@
+{
+  "identity": "aws-identity-center",
+  "file": "0402-aws-identity-center.patch",
+  "content_sha256": "2f9929fd3680f0ddfdf1309a7fcee3c80d07bc5cade84de3ed41ca937c330628",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "requires": "Per-request MCP signing, shared interactive setup forms and opted-in app-owned reconnect preserve saved connection identity. Protocol 38 and framework .13 retain protocol 35 account-use evidence and keep earlier bundles compatible."
+}

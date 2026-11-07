@@ -1,0 +1,12 @@
+{
+  "files": [
+    {
+      "path": "index.ts",
+      "content": "import { accountRouter, defineApp, router, withApprovals } from \"apps\";\nimport { always } from \"apps/operations/approval\";\nimport { mcpRouter } from \"apps/mcp\";\nimport { aws, endpoint } from \"./provider.js\";\nimport { icons } from \"./icon.js\";\n\nconst requirements = { user: { accounts: { aws: aws.many() } }, icons };\n\nexport default defineApp(requirements, async ({ user, cache, signal }) => ({\n  tools: router(\n    await accountRouter(\n      user?.accounts.aws ?? [],\n      async (account) =>\n        withApprovals(\n          await mcpRouter({ url: endpoint, account, headers: account.headers(), cache, signal }),\n          // AWS's API and script tools can write across services, even when a name looks like a read.\n          () => always(),\n        ),\n      { signal },\n    ),\n    {\n      title: \"AWS\",\n      description: \"Use AWS services through the official AWS MCP server with each person's own permissions. Every tool call asks for approval.\",\n      icons,\n    },\n  ),\n}));\n"
+    },
+    {
+      "path": "provider.ts",
+      "content": "import { bearer, defineProvider, oauth2 } from \"apps\";\nimport { mcpHealth } from \"apps/mcp\";\n\nexport const endpoint = \"https://aws-mcp.us-east-1.api.aws/mcp\";\n\nexport const aws = defineProvider({\n  name: \"AWS\",\n  hosts: [\"aws-mcp.us-east-1.api.aws\"],\n  auth: {\n    oauth: oauth2({\n      discover: endpoint,\n      resource: endpoint,\n      loopbackRedirectUri: \"http://127.0.0.1:43119/oauth/callback\",\n      scopes: [],\n      tokenEndpointAuthMethod: \"none\",\n      request: ({ access_token }) => bearer(access_token),\n    }),\n  },\n  health: (check) => mcpHealth(check, { url: endpoint, headers: check.account.headers() }),\n});\n"
+    }
+  ]
+}

@@ -1,0 +1,113 @@
+{
+  "scenarios": {
+    "awsIdentityCenterSigV4": {
+      "fixtures": "actors",
+      "title": "AWS Identity Center signs every hosted MCP request with the selected temporary role credentials",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The loopback-only synthetic AWS fixture runs beside the self-host workerd runtime, which also executes hosted app code."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "AWS connection acquisition is a hosted app flow; the same workerd transport is proved on self-host."
+        }
+      }
+    },
+    "awsIdentityCenterFormDesktop": {
+      "fixtures": "actors",
+      "title": "AWS Identity Center connection form advances from start URL and region to company sign-in at 1280px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The loopback-only synthetic AWS fixture runs beside the self-host workerd runtime, which also executes hosted app code."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "AWS connection acquisition is a hosted app flow; the same workerd transport is proved on self-host."
+        }
+      }
+    },
+    "awsIdentityCenterFormPhone": {
+      "fixtures": "actors",
+      "title": "AWS Identity Center connection form advances from start URL and region to company sign-in at 390px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The loopback-only synthetic AWS fixture runs beside the self-host workerd runtime, which also executes hosted app code."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "AWS connection acquisition is a hosted app flow; the same workerd transport is proved on self-host."
+        }
+      }
+    },
+    "awsIdentityCenterReconnect": {
+      "fixtures": "actors",
+      "title": "AWS Identity Center re-sign-in preserves the saved account, its name and links after cancellation and completion",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The loopback-only synthetic AWS fixture runs beside the self-host workerd runtime, which also executes hosted app code."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "AWS connection acquisition is a hosted app flow; the same workerd transport is proved on self-host."
+        }
+      }
+    },
+    "awsIdentityCenterSession": {
+      "fixtures": "actors",
+      "title": "AWS Identity Center acquires assigned accounts and roles through the actual hosted catalog app",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The loopback-only synthetic AWS fixture runs beside the self-host workerd runtime, which also executes hosted app code."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "AWS connection acquisition is a hosted app flow; the same workerd transport is proved on self-host."
+        }
+      }
+    }
+  },
+  "runs": {
+    "awsIdentityCenterSigV4": [
+      "host-managed-accounts-adopted:audited-account-compatibility"
+    ],
+    "awsIdentityCenterFormDesktop": [
+      "host-managed-accounts-adopted:audited-account-compatibility"
+    ],
+    "awsIdentityCenterFormPhone": [
+      "host-managed-accounts-adopted:audited-account-compatibility"
+    ],
+    "awsIdentityCenterReconnect": [
+      "host-managed-accounts-adopted:audited-account-compatibility"
+    ],
+    "awsIdentityCenterSession": [
+      "host-managed-accounts-adopted:audited-account-compatibility"
+    ]
+  },
+  "inherited": [],
+  "inputs": [
+    ".upstream/packages/apps/src/implementation/mcp.ts",
+    ".upstream/packages/apps/src/contracts/mcp.ts",
+    ".upstream/packages/apps/src/implementation/mcp-catalog.ts",
+    "src/catalog/aws/source.json"
+  ]
+}
