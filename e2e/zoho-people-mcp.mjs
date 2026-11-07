@@ -21,6 +21,7 @@ import { startZohoMcpFixture } from "./zoho-people-mcp-fixture.mjs";
 import { proveZohoMcpPrivacy } from "./zoho-people-mcp-privacy.mjs";
 import { proveZohoMcpUi } from "./zoho-people-mcp-ui.mjs";
 import { installRetainedPeopleConsumer } from "./zoho-people-mcp-legacy.mjs";
+import { proveZohoMcpRecovery } from "./zoho-people-mcp-recovery.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const upstream = join(root, ".upstream");
@@ -269,6 +270,10 @@ const program = Effect.gen(function* () {
       .status >= 400,
     true,
   );
+  const beforeRejected = [fixture, other].map(({ counts }) => [
+    counts.requests,
+    counts.connections,
+  ]);
   for (const endpoint of [
     fixture.endpoint.replace("https:", "http:"),
     fixture.endpoint.replace("127.0.0.1", "localhost"),
@@ -280,6 +285,17 @@ const program = Effect.gen(function* () {
       true,
     );
   }
+  check(
+    "unconfigured endpoint cannot start discovery",
+    (yield* response("POST", `${prefix}/connections/${pending.id}/oauth/start`, { method: "mcp" }))
+      .status >= 400,
+    true,
+  );
+  check(
+    "invalid endpoint rejection makes no network connection or request",
+    [fixture, other].map(({ counts }) => [counts.requests, counts.connections]),
+    beforeRejected,
+  );
   yield* request("POST", endpointPath, { method: "mcp", endpoint: fixture.endpoint });
   const configured = yield* request("GET", `${prefix}/connections/${pending.id}`);
   check("public connection reports configuration only", configured.mcpEndpointMethod, "mcp");
@@ -348,6 +364,18 @@ const program = Effect.gen(function* () {
   yield* call("mcp.readPeople", account);
   check("first account retains its endpoint", fixture.calls.length, firstCalls + 1);
   check("saved MCP grant refreshes", fixture.counts.refreshes > 0, true);
+  yield* proveZohoMcpRecovery({
+    Effect,
+    fixture,
+    path,
+    prefix,
+    account,
+    restAccount,
+    request,
+    response,
+    call,
+    check,
+  });
   yield* legacy.prove(restAccount);
   yield* call("timeTracker.listTimeLogs", restAccount, { query: { user: "employee-fixture" } });
   if (!red) {

@@ -18,7 +18,18 @@ export async function startZohoMcpFixture(tls) {
   const challenges = new Map();
   const clients = new Set();
   const calls = [];
-  const counts = { requests: 0, registrations: 0, exchanges: 0, refreshes: 0, anonymous: 0 };
+  const counts = {
+    requests: 0,
+    connections: 0,
+    registrations: 0,
+    exchanges: 0,
+    refreshes: 0,
+    anonymous: 0,
+    discoveryFailures: 0,
+    tokenFailures: 0,
+  };
+  let discoveryFails = false;
+  let tokenFails = false;
   let catalog;
   let endpoint;
   let origin;
@@ -52,6 +63,10 @@ export async function startZohoMcpFixture(tls) {
         return json(response, { version: 1, apps: [catalog.entry] });
       if (url.pathname === "/catalog/apps/zoho-people.json" && catalog !== undefined)
         return json(response, catalog.source);
+      if (discoveryFails && url.pathname.startsWith("/.well-known/")) {
+        counts.discoveryFailures++;
+        return json(response, { error: "Synthetic discovery failure" }, 503);
+      }
       if (url.pathname.startsWith("/.well-known/oauth-protected-resource"))
         return json(response, {
           resource: endpoint,
@@ -95,6 +110,10 @@ export async function startZohoMcpFixture(tls) {
         return;
       }
       if (url.pathname === "/token") {
+        if (tokenFails) {
+          counts.tokenFailures++;
+          return json(response, { error: "Synthetic token exchange failure" }, 503);
+        }
         const body = new URLSearchParams(await read(request));
         assert.ok(clients.has(body.get("client_id")));
         assert.equal(body.get("resource"), endpoint);
@@ -168,6 +187,7 @@ export async function startZohoMcpFixture(tls) {
       return json(response, { jsonrpc: "2.0", id: message.id, result });
     })().catch(() => json(response, { error: "Fixture contract failed" }, 500));
   });
+  server.on("connection", () => counts.connections++);
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const address = new URL("https://127.0.0.1");
@@ -179,6 +199,12 @@ export async function startZohoMcpFixture(tls) {
     endpoint,
     calls,
     counts,
+    failDiscovery: (value) => {
+      discoveryFails = value;
+    },
+    failToken: (value) => {
+      tokenFails = value;
+    },
     setCatalog: (value) => {
       catalog = value;
     },
