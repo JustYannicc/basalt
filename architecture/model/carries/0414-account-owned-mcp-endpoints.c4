@@ -1,7 +1,0 @@
-model {
-  extend basalt.toolsGateway {
-    metadata {
-      constraint "An OAuth method may accept an account-owned HTTPS MCP endpoint on declared credential hosts. Connection input, authorization attempts and grants use the existing encrypted credential envelope; public account metadata exposes only whether input is configured, while the account runtime receives the private binding for MCP transport. Discovery, refresh, health and MCP tool calls use that exact account binding and its host grant. Protocol 35 remains frozen while protocol 36 and framework .11 add the runtime-only binding; older bundle invocations and workflow contexts omit the new endpoint declaration and binding. Existing REST methods and tool names remain usable; a strict method addition relies on carry 0411. Catalog account-endpoint reviews bind source bytes without promising a global client or a fixed metadata document. Zoho MCP uses discovered tools and requires approval unless a tool explicitly declares read-only; hidden tools stay blocked."
-    }
-  }
-}
