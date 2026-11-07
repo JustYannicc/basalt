@@ -12,6 +12,10 @@ import { inspectPoolImage } from "../deploy-safety/pool-image-metadata.ts";
 import { BarrierRefusal, canonical, digest } from "./manifest.ts";
 import { changedProps } from "./prop-diff.ts";
 import { observeContainer } from "./container-cloudflare.ts";
+import {
+  equalContainerConfiguration,
+  recoverableConfiguration,
+} from "./container-configuration.ts";
 
 export type ContainerAttributes = ContainerApplication["Attributes"] & {
   readonly activeRolloutId?: string;
@@ -45,6 +49,14 @@ export interface FrozenContainer {
 export interface StagedContainer {
   readonly publication: PreparedContainerPublication;
   readonly frozen: FrozenContainer;
+  readonly normalization?: BaselineNormalization;
+}
+export interface BaselineNormalization {
+  readonly disposition: "observed-baseline";
+  readonly recordedVersion: number;
+  readonly observedVersion: number;
+  readonly imageDigest: string;
+  readonly changed: ReturnType<typeof changedProps>;
 }
 
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
@@ -54,7 +66,7 @@ export function containerSnapshot(value: ContainerAttributes): ContainerSnapshot
     applicationName: value.applicationName,
     accountId: value.accountId,
     version: value.version,
-    configuration: value.configuration,
+    configuration: recoverableConfiguration(value.configuration),
     schedulingPolicy: value.schedulingPolicy,
     maxInstances: value.maxInstances,
     constraints: value.constraints,
@@ -115,7 +127,8 @@ export function assertImageOnlyPublication(
   olds: ContainerApplication["Props"] | undefined,
   cached: ContainerAttributes,
 ) {
-  const { previous, proposed, rolloutRequest } = publication;
+  const previous: ContainerAttributes = publication.previous;
+  const { proposed, rolloutRequest } = publication;
   const refuse = (reason: string, expected: unknown, actual: unknown): never => {
     throw new BarrierRefusal(reason, publication.id, {
       fqn: publication.id,
@@ -153,12 +166,18 @@ export function assertImageOnlyPublication(
     previous.accountId !== cached.accountId ||
     previous.applicationId !== cached.applicationId ||
     previous.applicationName !== cached.applicationName ||
-    previous.version !== cached.version ||
+    !Number.isSafeInteger(cached.version) ||
+    cached.version < 1 ||
+    !Number.isSafeInteger(previous.version) ||
+    (previous.version !== cached.version && previous.version !== cached.version + 1) ||
     !previous.durableObjects?.namespaceId ||
     !equalContainerValues(previous.durableObjects, cached.durableObjects) ||
-    !sameContainerState(previous, containerSnapshot(cached))
+    !sameContainerState({ ...previous, version: cached.version }, containerSnapshot(cached))
   )
-    refuse("container-baseline-drift", containerSnapshot(cached), containerSnapshot(previous));
+    refuse("container-baseline-drift", containerSnapshot(cached), {
+      ...containerSnapshot(previous),
+      ...(previous.activeRolloutId ? { activeRolloutId: previous.activeRolloutId } : {}),
+    });
   if (
     proposed.applicationId !== previous.applicationId ||
     proposed.accountId !== previous.accountId ||
@@ -166,7 +185,7 @@ export function assertImageOnlyPublication(
     !equalApplicationSettings(previous, props) ||
     !equalApplicationSettings(previous, proposed) ||
     proposed.instances !== previous.instances ||
-    !equalContainerValues(
+    !equalContainerConfiguration(
       { ...previous.configuration, image: proposed.configuration.image },
       proposed.configuration,
     ) ||
@@ -205,6 +224,8 @@ export function assertImageOnlyPublication(
       { hash: { image: cached.hash?.image, digest: baselineDigest } },
       { hash: previous.hash },
     );
+  if (cached.hash?.digest !== baselineDigest || cached.hash?.image !== previous.hash?.image)
+    refuse("container-baseline-input-unconfirmed", { hash: cached.hash }, { hash: previous.hash });
   const published = imageDigest(proposed.configuration.image);
   const prefix = `registry.cloudflare.com/${previous.accountId}/`;
   if (
@@ -254,7 +275,28 @@ export const stageContainer = (
       platform: "linux/amd64",
       capabilityLabel: "1",
     };
-    return { publication, frozen } satisfies StagedContainer;
+    const changed = changedProps(
+      { ...containerSnapshot(cached), configuration: cached.configuration },
+      {
+        ...containerSnapshot(publication.previous),
+        configuration: publication.previous.configuration,
+      },
+    );
+    return {
+      publication,
+      frozen,
+      ...(changed.length
+        ? {
+            normalization: {
+              disposition: "observed-baseline" as const,
+              recordedVersion: cached.version,
+              observedVersion: publication.previous.version,
+              imageDigest: imageDigest(cached.configuration.image),
+              changed,
+            },
+          }
+        : {}),
+    } satisfies StagedContainer;
   });
 
 export function sameContainerState(current: ContainerAttributes, expected: ContainerSnapshot) {
@@ -265,7 +307,7 @@ export function sameContainerState(current: ContainerAttributes, expected: Conta
     current.version === expected.version &&
     !current.activeRolloutId &&
     equalContainerValues(current.durableObjects, expected.durableObjects) &&
-    equalContainerValues(current.configuration, expected.configuration) &&
+    equalContainerConfiguration(current.configuration, expected.configuration) &&
     equalApplicationSettings(current, expected)
   );
 }
@@ -277,7 +319,7 @@ export function assertConfiguredContainer(current: ContainerAttributes, frozen: 
     current.applicationName !== frozen.baseline.applicationName ||
     !Number.isFinite(current.version) ||
     !equalContainerValues(current.durableObjects, frozen.baseline.durableObjects) ||
-    !equalContainerValues(current.configuration, frozen.configuration) ||
+    !equalContainerConfiguration(current.configuration, frozen.configuration) ||
     !equalApplicationSettings(current, frozen.baseline)
   )
     throw new BarrierRefusal("container-configuration-unconfirmed", frozen.id, {

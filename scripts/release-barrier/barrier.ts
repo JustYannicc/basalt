@@ -13,7 +13,7 @@ import {
   type ContainerAttributes,
   type FrozenContainer,
 } from "./container.ts";
-import { equalContainerValues } from "alchemy/Cloudflare/Containers/ContainerPublicationHook";
+import { equalContainerConfiguration } from "./container-configuration.ts";
 import { containerDrift } from "./container-diagnostics.ts";
 import type { ContainerRollout } from "./container-cloudflare.ts";
 
@@ -178,7 +178,7 @@ export async function releaseWorkers(
           { ...containerSnapshot(baseline), activeRolloutId: baseline.activeRolloutId },
           container.id,
         );
-      if (equalContainerValues(container.baseline.configuration, container.configuration)) {
+      if (equalContainerConfiguration(container.baseline.configuration, container.configuration)) {
         receipt.containers!.push({
           container: container.id,
           version: container.baseline.version,
