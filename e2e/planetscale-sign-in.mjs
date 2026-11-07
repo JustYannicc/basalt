@@ -58,7 +58,7 @@ const program = Effect.gen(function* () {
   const service = yield* start(() =>
     startPlanetScale({
       dcr: usesDcr,
-      advertised: mode === "rfc" ? hostedScopes : hasHostedClient ? ["read_user"] : metadata.scopes_supported,
+      advertised: mode === "hosted" ? ["read_user"] : hasHostedClient ? hostedScopes : metadata.scopes_supported,
       omitGrantedScope: omitsGrantedScope,
       ...(mode === "refused" ? { refuseScope: refusedScope } : {}),
     }),
@@ -180,7 +180,7 @@ const program = Effect.gen(function* () {
         Effect.provideService(Target, target),
       ),
     );
-    outcomes.push({ width, status: result._tag });
+    outcomes.push({ width, status: result._tag, linkedAccounts: (yield* links()).map(({requirement,account}) => ({requirement,id:account.id,method:account.method})) });
   }
   assert.ok(
     outcomes.every((result) => result.status === "Success"),
