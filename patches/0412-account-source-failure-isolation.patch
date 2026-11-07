@@ -455,7 +455,19 @@ diff --git a/packages/apps/src/implementation/router.ts b/packages/apps/src/impl
                Effect.flatMap((resolved) =>
                  resolved === undefined
                    ? Effect.succeed(undefined)
-@@ -370,6 +370,21 @@
+@@ -328,7 +328,10 @@
+       return [{ ...tool, name, source: tool.name }];
+     });
+   };
+-  const listed = native.summaries ?? native.list;
++  const listed =
++    native.catalog === undefined
++      ? (native.summaries ?? native.list)
++      : () => native.catalog!({ summary: true }).pipe(Effect.map(({ tools }) => tools));
+   /** The source name of an exposed name, read from the listing. */
+   const original = (name: string) =>
+     listed().pipe(Effect.map((tools) => exposed(tools).find((tool) => tool.name === name)?.source));
+@@ -370,6 +373,21 @@
                ),
            },
          }),
@@ -477,7 +489,7 @@ diff --git a/packages/apps/src/implementation/router.ts b/packages/apps/src/impl
      list: () => native.list().pipe(Effect.map((tools) => exposed(tools).map(strip))),
      ...(native.summaries === undefined
        ? {}
-@@ -386,10 +401,12 @@
+@@ -386,10 +404,12 @@
          ),
          Effect.map((tool) => (tool === undefined ? undefined : { ...tool, name })),
        ),
@@ -996,7 +1008,7 @@ new file mode 100644
 +
 +export const accountSourceApp = (
 +  origin: string,
-+) => `import { accountRouter, defineApp, defineProvider, object, secrets, string, withApprovals } from "apps";
++) => `import { accountRouter, defineApp, defineProvider, object, renameTools, secrets, string, withApprovals } from "apps";
 +import { mcpRouter } from "apps/mcp";
 +import { liveOpenapiRouter } from "apps/openapi";
 +const service = defineProvider({ name: "Mixed source service", hosts: [${JSON.stringify(new URL(origin).host)}], auth: {
@@ -1004,9 +1016,9 @@ new file mode 100644
 +  api: secrets({ label: "REST token", fields: object({ token: string() }) })
 +} });
 +export default defineApp({ user: { accounts: { service: service.many() } } }, async ({ user, cache, fetch, signal }) => ({
-+  tools: withApprovals(await accountRouter(user?.accounts.service ?? [], account => account.method === "mcp"
++  tools: withApprovals(renameTools(await accountRouter(user?.accounts.service ?? [], account => account.method === "mcp"
 +    ? mcpRouter({ url: ${JSON.stringify(origin + "/mcp")}, account, headers: { Authorization: "Bearer " + account.fields.token }, cache, signal })
-+    : liveOpenapiRouter({ source: { url: ${JSON.stringify(origin + "/openapi.json")} }, allowedOrigin: ${JSON.stringify(origin)}, baseUrl: ${JSON.stringify(origin)}, securitySchemes: { token: { type: "http", scheme: "bearer" } }, fallbackSecurity: [{ token: [] }], methods: { api: [{ scheme: "token", field: "token", part: "value", prefix: "" }] }, oauth: [], account, cache, fetch, signal }), { signal }), () => undefined)
++    : liveOpenapiRouter({ source: { url: ${JSON.stringify(origin + "/openapi.json")} }, allowedOrigin: ${JSON.stringify(origin)}, baseUrl: ${JSON.stringify(origin)}, securitySchemes: { token: { type: "http", scheme: "bearer" } }, fallbackSecurity: [{ token: [] }], methods: { api: [{ scheme: "token", field: "token", part: "value", prefix: "" }] }, oauth: [], account, cache, fetch, signal }), { signal }), name => name), () => undefined)
 +}));`;
 diff --git a/e2e/tests/account-source-isolation.spec.ts b/e2e/tests/account-source-isolation.spec.ts
 new file mode 100644
