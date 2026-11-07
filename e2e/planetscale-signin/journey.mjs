@@ -42,6 +42,7 @@ export const verifyPlanetScaleConnections = ({
 }) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
+    const setupBefore = yield* links();
     yield* browser.login(session);
     yield* browser.use(`Open PlanetScale at ${width}`, async (page) => {
       await page.setViewportSize({ width, height: 844 });
@@ -82,7 +83,7 @@ export const verifyPlanetScaleConnections = ({
         .waitFor();
       await noOverflow(page);
       await dialog
-        .getByRole("button", { name: "Sign in with PlanetScale instead", exact: true })
+        .getByRole("button", { name: "Sign in with PlanetScale", exact: true })
         .click();
     });
     yield* browser.checkpoint(`PlanetScale service token guidance ${mode} ${width}`);
@@ -109,6 +110,7 @@ export const verifyPlanetScaleConnections = ({
     yield* browser.checkpoint(`PlanetScale own app guidance ${mode} ${width}`);
 
     const before = yield* links();
+    assert.deepEqual(before.map((row) => row.account.id).sort(), setupBefore.map((row) => row.account.id).sort(), "Cancelling own-app setup saves no account");
     if (mode === "refused" || mode === "unreported") {
       yield* verifyRefusedGrant({
         browser,
