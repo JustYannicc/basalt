@@ -281,7 +281,7 @@
     {
       "entry": "atlassian",
       "package": "atlassian",
-      "sourceSha256": "c5deea1766554ae34b180d52df9b17797f7a46fddc67faa271edf90193a980c9",
+      "sourceSha256": "e51b4835acecf2fc15665676980dee14795bbfccf5db42baaedf12c3a5da10c2",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -367,7 +367,7 @@
     {
       "entry": "aws",
       "package": "aws",
-      "sourceSha256": "b27e3e1a7362613d3fa020b33c315897c58125747cba5bb7e11079224e26c60d",
+      "sourceSha256": "d4d961e041c78a1d54ddff8a0ecfc9083370894f84c375a909a168bfdc5d8e90",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -1490,7 +1490,7 @@
     {
       "entry": "elevenlabs",
       "package": "@executor.sh/elevenlabs",
-      "sourceSha256": "57b561d6caa30a24f2f422f53c5bf731cedcbcffc089f52fe6bceb0b46b352ba",
+      "sourceSha256": "26dad4827d62281d8b1f844b536506904d36967aa9f0aa8e8783c8a78da17d2b",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -1903,7 +1903,7 @@
     {
       "entry": "gitlab",
       "package": "@executor.sh/gitlab",
-      "sourceSha256": "ccbfbffe129a19f863dfd13735ac69842ad8ab28b9d383c2270d1c563ef24ef1",
+      "sourceSha256": "49f5363015b518b74688b48e99b07644162fc0bdff0daf1517340fef25198c45",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -1915,7 +1915,7 @@
     {
       "entry": "gitlab-mcp",
       "package": "@signalbox/gitlab-mcp",
-      "sourceSha256": "80c6497f49cc448522162cb7dba909d1a099d1186c7bb7a961643659326b5d4f",
+      "sourceSha256": "8afdd6909dd1d59f7e12b1e55a5e6b0bfabecb9e24120913c7f8a978ba9621f5",
       "methods": {
         "oauth": {
           "kind": "deferred",
@@ -3056,7 +3056,7 @@
     {
       "entry": "miro",
       "package": "@executor.sh/miro",
-      "sourceSha256": "d393cdec7c5d2bd2a1d8746aa364daffa870abc03cbbcd759e85ab9b7fd4d7f0",
+      "sourceSha256": "e9bcad4bd7a32dc37b3fc256f28a016c7e6ef0639637f7df77bcd720e0b2bf75",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -3258,7 +3258,7 @@
     {
       "entry": "notion",
       "package": "@executor.sh/notion",
-      "sourceSha256": "c64b9e092773bb30e5901d9d6ddd1611c5e2ec15b03dd15076666c22b40d1d32",
+      "sourceSha256": "75c7358dc69f63fb57dadf2a8994c74ba1b258c29486bffb3267391123c83254",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -4290,7 +4290,7 @@
     {
       "entry": "slack",
       "package": "@executor.sh/slack",
-      "sourceSha256": "224c8729a362214f53383020183916fa24cf5ad0a33f775239d3bda1574dfccd",
+      "sourceSha256": "b3f64274264cf608579f96017a230e1c31cd1527c59b9f1d95934a61a6964f34",
       "methods": {
         "user": {
           "kind": "hosted",
@@ -4848,7 +4848,7 @@
     {
       "entry": "vercel",
       "package": "@executor.sh/vercel",
-      "sourceSha256": "387afa28b40ba7a3935aebe5adbe59230ee3e087dfbf8a46cf737d9cfd5f87b4",
+      "sourceSha256": "d1c40dcb7b796d82412f51ef38d568b67ad24baf050b6c00085539a8c0dee347",
       "methods": {
         "oauth": {
           "kind": "automatic",

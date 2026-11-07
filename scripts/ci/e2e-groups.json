@@ -315,5 +315,10 @@
     "job": "host-managed-accounts-adopted",
     "target": "self-host",
     "mode": "managed"
+  },
+  "aws-connectors:identity-center": {
+    "job": "aws-connectors",
+    "target": "self-host",
+    "mode": "managed"
   }
 }

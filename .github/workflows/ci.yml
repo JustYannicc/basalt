@@ -1354,6 +1354,12 @@ jobs:
           node scripts/build-basalt-framework.ts
       - name: Install Chromium for the hosted AWS paste proof
         uses: ./.github/actions/setup-browser
+      - name: Verify Identity Center through the hosted app and native MCP
+        working-directory: .upstream
+        run: >-
+          bun run e2e:self-host --test-name
+          "$(node ../scripts/ci/e2e-pattern.ts aws-connectors:identity-center)"
+          --workers 1
       - name: Exercise AWS sign-in and tools through the real runtime
         run: |
           node --test e2e/aws/diagnostics.test.mjs
@@ -1369,6 +1375,16 @@ jobs:
             .generated/aws-proof/run-*/child-output-tail.json
           if-no-files-found: warn
           include-hidden-files: true
+      - name: Collect bounded Identity Center evidence
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/aws-identity-center-evidence" .upstream/.local/e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aws-identity-center-e2e
+          path: ${{ runner.temp }}/aws-identity-center-evidence
+          include-hidden-files: true
+          if-no-files-found: warn
   gitlab-connectors:
     needs: select
     if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'gitlab-connectors')

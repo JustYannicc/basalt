@@ -87,21 +87,11 @@
     }
   },
   "runs": {
-    "awsIdentityCenterSigV4": [
-      "host-managed-accounts-adopted:audited-account-compatibility"
-    ],
-    "awsIdentityCenterFormDesktop": [
-      "host-managed-accounts-adopted:audited-account-compatibility"
-    ],
-    "awsIdentityCenterFormPhone": [
-      "host-managed-accounts-adopted:audited-account-compatibility"
-    ],
-    "awsIdentityCenterReconnect": [
-      "host-managed-accounts-adopted:audited-account-compatibility"
-    ],
-    "awsIdentityCenterSession": [
-      "host-managed-accounts-adopted:audited-account-compatibility"
-    ]
+    "awsIdentityCenterSigV4": ["aws-connectors:identity-center"],
+    "awsIdentityCenterFormDesktop": ["aws-connectors:identity-center"],
+    "awsIdentityCenterFormPhone": ["aws-connectors:identity-center"],
+    "awsIdentityCenterReconnect": ["aws-connectors:identity-center"],
+    "awsIdentityCenterSession": ["aws-connectors:identity-center"]
   },
   "inherited": [],
   "inputs": [
