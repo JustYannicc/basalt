@@ -19,11 +19,7 @@
     }
   },
   "runs": {
-    "hostedAppLinkHeldAccess": [
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
-    ]
+    "hostedAppLinkHeldAccess": ["host-managed-accounts-adopted:audited-account-compatibility"]
   },
-  "inherited": [
-    "hostedMcpLinkHeldAccess"
-  ]
+  "inherited": ["hostedMcpLinkHeldAccess"]
 }

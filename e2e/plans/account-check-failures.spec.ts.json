@@ -20,7 +20,7 @@
   "runs": {
     "accountCheckFailureDetail": [
       "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+      "host-managed-accounts-adopted:audited-account-compatibility"
     ]
   },
   "inherited": []

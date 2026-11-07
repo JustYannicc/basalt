@@ -20,13 +20,10 @@
   "runs": {
     "mcpProtocol": [
       "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+      "host-managed-accounts-adopted:audited-account-compatibility"
     ]
   },
-  "inherited": [
-    "mcpOAuthWithoutResource",
-    "mcpSkills"
-  ],
+  "inherited": ["mcpOAuthWithoutResource", "mcpSkills"],
   "inputs": [
     ".upstream/apps/hosted/cloud/scripts/build-site.ts",
     ".upstream/apps/hosted/cloud/src/app-ui.ts",

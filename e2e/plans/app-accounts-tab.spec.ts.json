@@ -108,19 +108,19 @@
       "human-in-the-loop:the-human-in-the-loop-route-while-cloud-code-and-data-load"
     ],
     "hostedAppAccountReconnectBrowser": [
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+      "host-managed-accounts-adopted:audited-account-compatibility"
     ],
     "hostedAppAccountsManagerBrowser": [
       "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+      "host-managed-accounts-adopted:audited-account-compatibility"
     ],
     "hostedAppAccountsMemberBrowser": [
       "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+      "host-managed-accounts-adopted:audited-account-compatibility"
     ],
     "hostedAppSchedulesBrowser": [
       "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+      "host-managed-accounts-adopted:audited-account-compatibility"
     ]
   },
   "inherited": [],
