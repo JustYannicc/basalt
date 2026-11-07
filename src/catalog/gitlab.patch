@@ -136,7 +136,7 @@
 +// instance advertises registration; a separate provider keeps saved REST accounts and links.
 +// Asking only for mcp also keeps the hosted REST client, limited to api and read_user, off it.
 +export const gitlabSignIn = defineProvider({
-+  name: "GitLab",
++  name: "GitLab MCP",
 +  hosts: ["gitlab.com"],
 +  site: { label: "GitLab instance URL", origin: "https://gitlab.com", defaultOrigin: true },
 +  auth: { mcp: oauth2({ discover: "https://gitlab.com/api/v4/mcp", scopes: ["mcp"] }) },

@@ -291,25 +291,19 @@ index cb622de..77bf511 100644
 +  );
  }
 diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/apps.ts
-index 34a65c5..58e8909 100644
+index 34a65c5..6fc78bf 100644
 --- a/packages/sdk/src/contracts/apps.ts
 +++ b/packages/sdk/src/contracts/apps.ts
-@@ -1,4 +1,5 @@
- import { InteractiveRetirementBusy, InteractiveRetirementFailed } from "./interactive-errors.ts";
-+import { SiteOrigin } from "@executor-js/utils/account-site";
- import { UserFacingError, type ErrorPresentation } from "@executor-js/utils/user-facing-error";
- import { ApiError } from "@executor-js/utils/api-error";
- import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
-@@ -484,6 +485,8 @@ export const AppInputs = {
+@@ -484,6 +484,8 @@ export const AppInputs = {
      provider: ProviderId,
      method: AuthMethodName,
      fields: AccountFieldsInput,
 +    /** The selected provider origin used by the connection form's preflight check. */
-+    site: Schema.optional(SiteOrigin),
++    site: Schema.optional(Schema.String.check(Schema.isMinLength(1))),
    }),
    create: Schema.Struct({ owner: OwnerId, name: AppName, files: SourceFiles }),
    workspace: Schema.Struct({ app: AppId, owner: Schema.optional(OwnerId) }),
-@@ -577,6 +580,7 @@ export const AppsGroup = /* @__PURE__ */ (() =>
+@@ -577,6 +579,7 @@ export const AppsGroup = /* @__PURE__ */ (() =>
            provider: AppInputs.checkCredentials.fields.provider,
            method: AppInputs.checkCredentials.fields.method,
            fields: AppInputs.checkCredentials.fields.fields,

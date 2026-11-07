@@ -5,6 +5,11 @@ import { createServer } from "node:http";
 
 export const restToken = "glpat-synthetic-rest";
 const mcpToken = "synthetic-gitlab-mcp";
+const restOAuthToken = "synthetic-gitlab-rest-oauth";
+export const restOAuthClient = {
+  id: "synthetic-gitlab-rest-client",
+  secret: "synthetic-gitlab-rest-secret",
+};
 const json = (response, body, status = 200) => {
   response.writeHead(status, { "content-type": "application/json" });
   response.end(JSON.stringify(body));
@@ -21,7 +26,7 @@ const escape = (value) =>
  * One self-managed GitLab instance on its own origin: REST with a personal access token, and an
  * MCP server that accepts only its mcp-scoped OAuth token. Registration exists only when `dcr`.
  */
-export async function startGitLabInstance({ dcr }) {
+export async function startGitLabInstance({ dcr, mcpEnabled = true }) {
   const calls = [];
   const failures = [];
   const codes = new Map();
@@ -31,7 +36,17 @@ export async function startGitLabInstance({ dcr }) {
     openapi: "3.0.3",
     info: { title: "GitLab fixture", version: "1" },
     servers: [{ url: origin }],
+    components: {
+      securitySchemes: {
+        apiKey: { type: "apiKey", name: "PRIVATE-TOKEN", in: "header" },
+        http: { type: "http", scheme: "bearer" },
+      },
+    },
+    security: [{ apiKey: [] }, { http: [] }],
     paths: {
+      "/fixture/write": {
+        post: { operationId: "fixture_write", responses: { 200: { description: "OK" } } },
+      },
       "/fixture/read": {
         get: {
           operationId: "fixture_read",
@@ -48,6 +63,14 @@ export async function startGitLabInstance({ dcr }) {
   const handle = async (request, response) => {
     const url = new URL(request.url, origin);
     const authorization = request.headers.authorization;
+    if (
+      !mcpEnabled &&
+      (url.pathname === "/api/v4/mcp" ||
+        url.pathname.startsWith("/.well-known/oauth-protected-resource"))
+    ) {
+      calls.push({ transport: "mcp", phase: "disabled" });
+      return json(response, { error: "MCP server disabled by instance policy" }, 403);
+    }
     if (url.pathname.startsWith("/.well-known/oauth-protected-resource"))
       return json(response, {
         resource: `${origin}/api/v4/mcp`,
@@ -86,6 +109,7 @@ export async function startGitLabInstance({ dcr }) {
           phase: "authorize",
           scope: url.searchParams.get("scope"),
           resource: url.searchParams.get("resource"),
+          client: url.searchParams.get("client_id"),
         });
         response.writeHead(200, { "content-type": "text/html" });
         response.end(`<!doctype html><meta name="viewport" content="width=device-width"><title>GitLab authorization fixture</title>
@@ -100,6 +124,8 @@ export async function startGitLabInstance({ dcr }) {
       codes.set(code, {
         challenge: url.searchParams.get("code_challenge"),
         redirect: url.searchParams.get("redirect_uri"),
+        client: url.searchParams.get("client_id"),
+        scope: url.searchParams.get("scope"),
       });
       callback.searchParams.set("code", code);
       response.writeHead(302, { location: callback.href });
@@ -117,13 +143,23 @@ export async function startGitLabInstance({ dcr }) {
           .digest("base64url"),
         code.challenge,
       );
+      assert.equal(input.get("client_id"), code.client);
+      const rest = code.client === restOAuthClient.id;
+      if (rest) {
+        assert.equal(
+          code.scope,
+          "api read_user",
+          "The own REST app registers both requested scopes",
+        );
+        assert.equal(input.get("client_secret"), restOAuthClient.secret);
+      } else assert.equal(code.scope, "mcp");
       codes.delete(input.get("code"));
-      calls.push({ transport: "oauth", phase: "token" });
+      calls.push({ transport: "oauth", phase: "token", method: rest ? "rest" : "mcp" });
       return json(response, {
-        access_token: mcpToken,
+        access_token: rest ? restOAuthToken : mcpToken,
         token_type: "Bearer",
         refresh_token: "synthetic-gitlab-refresh",
-        scope: "mcp",
+        scope: rest ? "api read_user" : "mcp",
         expires_in: 7200,
       });
     }
@@ -185,12 +221,18 @@ export async function startGitLabInstance({ dcr }) {
       transport: "rest",
       path: url.pathname,
       personalToken: request.headers["private-token"] === restToken,
+      oauthToken: authorization === `Bearer ${restOAuthToken}`,
       mcpToken: authorization === `Bearer ${mcpToken}`,
     });
-    if (request.headers["private-token"] !== restToken)
+    if (
+      request.headers["private-token"] !== restToken &&
+      authorization !== `Bearer ${restOAuthToken}`
+    )
       return json(response, { message: "401 Unauthorized" }, 401);
     if (url.pathname === "/api/v4/user")
       return json(response, { id: 7, username: "synthetic", web_url: `${origin}/synthetic` });
+    if (url.pathname === "/fixture/write")
+      return json(response, { transport: "rest", changed: true });
     if (url.pathname === "/fixture/read")
       return json(response, { transport: "rest", site: origin });
     return json(response, { message: "404 Not Found" }, 404);

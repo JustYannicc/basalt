@@ -16,7 +16,8 @@ import { scenarioEvidence, Telemetry } from "../.upstream/e2e/support/evidence.t
 import { RecordingFocus } from "../.upstream/e2e/support/recording-focus.ts";
 import { provisionSelfHostActors } from "../scripts/connectors-tests/test-accounts.mjs";
 import { startGitLabCatalog } from "./gitlab-signin/catalog.mjs";
-import { restToken, startGitLabInstance } from "./gitlab-signin/instance.mjs";
+import { verifyGitLabConnections } from "./gitlab-signin/journey.mjs";
+import { restToken, restOAuthClient, startGitLabInstance } from "./gitlab-signin/instance.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const upstream = join(root, ".upstream");
@@ -26,7 +27,6 @@ const directory = resolve(
 await mkdir(directory, { recursive: true, mode: 0o700 });
 process.chdir(upstream);
 const outcomes = [];
-const dialogName = /^Connect GitLab(?: · .+)?$/;
 const program = Effect.gen(function* () {
   const start = (acquire) =>
     Effect.acquireRelease(Effect.promise(acquire), (fixture) => Effect.promise(fixture.stop));
@@ -34,6 +34,7 @@ const program = Effect.gen(function* () {
   // One self-managed instance advertises registration; the other requires its own app.
   const automatic = yield* start(() => startGitLabInstance({ dcr: true }));
   const manual = yield* start(() => startGitLabInstance({ dcr: false }));
+  const disabled = yield* start(() => startGitLabInstance({ dcr: true, mcpEnabled: false }));
   yield* Effect.addFinalizer(() =>
     Effect.promise(() =>
       writeFile(
@@ -42,6 +43,7 @@ const program = Effect.gen(function* () {
           {
             automatic: { calls: automatic.calls, failures: automatic.failures },
             manual: { calls: manual.calls, failures: manual.failures },
+            disabled: { calls: disabled.calls, failures: disabled.failures },
           },
           null,
           2,
@@ -77,6 +79,7 @@ const program = Effect.gen(function* () {
       catalog.origin,
       automatic.origin,
       manual.origin,
+      disabled.origin,
     ]),
   });
   const target = Target.of({
@@ -115,190 +118,31 @@ const program = Effect.gen(function* () {
     request("GET", `${prefix}/apps/${app.id}/accounts/user`).pipe(
       Effect.map((rows) => rows.filter((link) => link.requirement === requirement)),
     );
-  const added = (before, after) =>
-    after.filter((link) => !before.some((old) => old.account.id === link.account.id));
-  // Open the sign-in requirement and choose a self-managed instance in place of GitLab.com.
-  const openAt = async (page, origin) => {
-    const region = page.getByRole("region", { name: "Your accounts", exact: true });
-    await region
-      .getByRole("button", { name: "Connect new account for GitLab · Sign in", exact: true })
-      .click();
-    const dialog = page.getByRole("dialog", { name: dialogName });
-    await dialog.getByText("Using https://gitlab.com", { exact: true }).waitFor();
-    await dialog.getByRole("button", { name: "Use another instance", exact: true }).click();
-    await dialog.getByLabel("GitLab instance URL", { exact: true }).fill(origin);
-    await dialog.getByRole("button", { name: "Continue", exact: true }).click();
-    await dialog.getByText(`Using ${origin}`, { exact: true }).waitFor();
-    return dialog;
-  };
-  const noOverflow = async (page) =>
-    assert.equal(
-      await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
-      true,
-      "No horizontal overflow",
-    );
+  for (const site of [`${automatic.origin}/unexpected-path`, "http://127.0.0.1:1"]) {
+    const before = automatic.calls.length;
+    const check = yield* request("POST", `${prefix}/apps/${app.id}/credential-checks`, {
+      provider: app.requirements.accounts.gitlab.provider,
+      method: "token",
+      fields: { token: restToken },
+      site,
+    });
+    assert.equal(check.status, "check_failed", "Preflight refuses an invalid or unapproved site");
+    assert.equal(automatic.calls.length, before, "Rejected sites never receive credentials");
+  }
   for (const width of [1280, 390]) {
     const result = yield* Effect.exit(
-      Effect.gen(function* () {
-        const browser = yield* Browser;
-        yield* browser.login(session);
-        yield* browser.use(`Open GitLab at ${width}`, async (page) => {
-          await page.setViewportSize({ width, height: 844 });
-          await page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`);
-          await page.getByRole("region", { name: "Your accounts", exact: true }).waitFor();
-        });
-        yield* browser.use(
-          "GitLab starts with MCP sign-in on the chosen instance",
-          async (page) => {
-            const dialog = await openAt(page, automatic.origin);
-            await dialog
-              .getByRole("button", { name: "Sign in with GitLab", exact: true })
-              .waitFor();
-            await dialog
-              .getByText("Sign in to use GitLab's MCP tools on this instance.", { exact: true })
-              .waitFor();
-            assert.equal(
-              await dialog.getByRole("link", { name: /^Open GitLab/ }).count(),
-              0,
-              "Advertised registration needs no GitLab app setup",
-            );
-            await dialog.getByText("What does sign-in connect?", { exact: true }).click();
-            await dialog.getByText(/none of the REST API tools/).waitFor();
-            await noOverflow(page);
-          },
-        );
-        yield* browser.checkpoint(`GitLab sign-in ${width}`);
-        yield* browser.use("A personal access token opens on the same instance", async (page) => {
-          const dialog = page.getByRole("dialog", { name: dialogName });
-          await dialog
-            .getByRole("button", {
-              name: "Use a personal access token for the full API",
-              exact: true,
-            })
-            .click();
-          await dialog.getByText(`Using ${automatic.origin}`, { exact: true }).waitFor();
-          const link = dialog.getByRole("link", {
-            name: "Open GitLab personal access tokens",
-            exact: true,
-          });
-          assert.equal(
-            await link.getAttribute("href"),
-            `${automatic.origin}/-/user_settings/personal_access_tokens`,
-            "The token page must open on the selected instance",
-          );
-          assert.equal(
-            await dialog.getByLabel("Personal access token", { exact: true }).count(),
-            1,
-          );
-          await dialog
-            .getByText("Paste the token only, without Bearer.", { exact: true })
-            .waitFor();
-          await dialog.getByText(/Select the api scope for full REST API access/).waitFor();
-          await dialog
-            .getByText(/Your administrator can turn off personal access tokens/)
-            .first()
-            .waitFor();
-          await noOverflow(page);
-        });
-        yield* browser.checkpoint(`GitLab personal access token ${width}`);
-        const tokensBefore = yield* links("gitlab");
-        yield* browser.use("Save the token for the selected instance", async (page) => {
-          const dialog = page.getByRole("dialog", { name: dialogName });
-          await dialog.getByLabel("Personal access token", { exact: true }).fill(restToken);
-          await dialog.locator('button[type="submit"]').click();
-          await dialog.getByText("Signed in as synthetic", { exact: true }).waitFor();
-          await dialog.getByRole("button", { name: "Continue", exact: true }).click();
-          const naming = page.getByRole("dialog", { name: "Name this account", exact: true });
-          await naming.getByLabel("Account name", { exact: true }).fill(`GitLab token ${width}`);
-          await naming.getByRole("button", { name: "Save name", exact: true }).click();
-          await page.getByRole("region", { name: "Your accounts", exact: true }).waitFor();
-        });
-        const [token] = added(tokensBefore, yield* links("gitlab"));
-        assert.ok(token, "The token saves and links one REST account");
-        assert.equal(token.account.method, "token");
-        assert.equal(token.account.site, automatic.origin);
-        const tokenHealth = yield* request("POST", `${prefix}/accounts/${token.account.id}/health`);
-        assert.equal(
-          tokenHealth.apps.find((check) => check.app === app.id)?.check?.status,
-          "healthy",
-        );
-        const rest = yield* call("fixture.read", token.account.id);
-        assert.equal(rest.status, 200, JSON.stringify(rest.body));
-        assert.deepEqual(rest.body, {
-          transport: "rest",
-          site: automatic.origin,
-        });
-
-        const signInBefore = yield* links("signIn");
-        yield* browser.use(
-          "Switching back keeps the instance, then sign-in registers",
-          async (page) => {
-            const dialog = await openAt(page, automatic.origin);
-            await dialog
-              .getByRole("button", {
-                name: "Use a personal access token for the full API",
-                exact: true,
-              })
-              .click();
-            await dialog
-              .getByRole("button", { name: "Sign in with GitLab instead", exact: true })
-              .click();
-            await dialog.getByText(`Using ${automatic.origin}`, { exact: true }).waitFor();
-            await dialog.getByRole("button", { name: "Sign in with GitLab", exact: true }).click();
-            await page
-              .getByRole("heading", { name: "GitLab test instance", exact: true })
-              .waitFor();
-            await page.getByRole("button", { name: "Authorize", exact: true }).click();
-            const naming = page.getByRole("dialog", { name: "Name this account", exact: true });
-            await naming.getByLabel("Account name", { exact: true }).fill(`GitLab MCP ${width}`);
-            await naming.getByRole("button", { name: "Save name", exact: true }).click();
-            await page.getByRole("region", { name: "Your accounts", exact: true }).waitFor();
-          },
-        );
-        yield* browser.checkpoint(`GitLab sign-in complete ${width}`);
-        const [signedIn] = added(signInBefore, yield* links("signIn"));
-        assert.ok(signedIn, "Approval saves and links one MCP account");
-        assert.equal(signedIn.account.method, "mcp");
-        assert.equal(signedIn.account.site, automatic.origin);
-        const health = yield* request("POST", `${prefix}/accounts/${signedIn.account.id}/health`);
-        assert.equal(health.apps.find((check) => check.app === app.id)?.check?.status, "healthy");
-        const mcpTool = yield* call("search", signedIn.account.id);
-        assert.equal(mcpTool.status, 409, "Every GitLab MCP tool call needs approval");
-        assert.equal(mcpTool.body._tag, "ToolApprovalRequired");
-        const restFromMcp = yield* call("fixture.read", signedIn.account.id);
-        assert.equal(restFromMcp.status, 422, "An mcp-scoped sign-in cannot authorize REST tools");
-        const mcpFromToken = yield* call("search", token.account.id);
-        assert.equal(mcpFromToken.status, 422, "A REST token cannot authorize MCP tools");
-
-        yield* browser.use(
-          "Without registration, sign-in explains the own-app setup",
-          async (page) => {
-            const dialog = await openAt(page, manual.origin);
-            await dialog
-              .getByText(/doesn't offer automatic app registration for sign-in/)
-              .waitFor();
-            await dialog.getByText("Advanced", { exact: true }).click();
-            await dialog
-              .getByRole("checkbox", { name: "Use your own GitLab app for this account" })
-              .check();
-            const link = dialog.getByRole("link", {
-              name: "Open GitLab applications",
-              exact: true,
-            });
-            assert.equal(
-              await link.getAttribute("href"),
-              `${manual.origin}/-/user_settings/applications`,
-              "The applications page must open on the selected instance",
-            );
-            await dialog.getByText(/clear Confidential and select the mcp scope/).waitFor();
-            await dialog.getByText("Use GitLab's Application ID.", { exact: true }).waitFor();
-            await noOverflow(page);
-          },
-        );
-        yield* browser.checkpoint(`GitLab own app for sign-in ${width}`);
-        yield* browser.use("Leave own-app setup without saving", async (page) =>
-          page.keyboard.press("Escape"),
-        );
+      verifyGitLabConnections({
+        width,
+        session,
+        actors,
+        app,
+        automatic,
+        manual,
+        disabled,
+        links,
+        call,
+        request,
+        prefix,
       }).pipe(
         Effect.timeout("90 seconds"),
         Effect.scoped,
@@ -321,8 +165,12 @@ const program = Effect.gen(function* () {
   assert.equal(automatic.registrations() > 0, true, "Advertised registration is used");
   assert.equal(manual.registrations(), 0, "Unadvertised registration is never attempted");
   assert.ok(
+    disabled.calls.some((call) => call.phase === "disabled"),
+    "The disabled MCP server is actually reached",
+  );
+  assert.ok(
     automatic.calls
-      .filter((item) => item.phase === "authorize")
+      .filter((item) => item.phase === "authorize" && item.client !== restOAuthClient.id)
       .every((item) => item.scope === "mcp" && item.resource === `${automatic.origin}/api/v4/mcp`),
     "Sign-in asks only for the mcp scope on the instance's MCP server",
   );
@@ -333,7 +181,7 @@ const program = Effect.gen(function* () {
     false,
     "The MCP token is never sent to REST",
   );
-  assert.deepEqual([...automatic.failures, ...manual.failures], []);
+  assert.deepEqual([...automatic.failures, ...manual.failures, ...disabled.failures], []);
 });
 try {
   await Effect.runPromise(

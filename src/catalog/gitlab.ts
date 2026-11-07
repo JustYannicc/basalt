@@ -16,7 +16,7 @@ export const gitlabConnectionGuidance = [
     alternativeLabel: "Sign in with GitLab instead",
     signIn: {
       description: "Sign in to use GitLab's MCP tools on this instance.",
-      note: "Your access follows your GitLab role and your instance's settings.",
+      note: `Your access follows your GitLab role and your instance's settings. ${policy}`,
       details:
         "Sign-in grants the mcp scope only. It reaches the tools this instance's MCP server lists, such as searching and working with issues and merge requests, and none of the REST API tools. For the full REST API, use a personal access token or your own GitLab OAuth app instead.",
     },
@@ -28,7 +28,7 @@ export const gitlabConnectionGuidance = [
       steps: [
         "Choose Add new application and name it.",
         "Paste the redirect URL shown here, clear Confidential and select the mcp scope.",
-        "Save the application and copy its Application ID.",
+        "Save the application and copy its Application ID. Leave Client secret empty.",
       ],
       note: policy,
       fields: { clientId: { expectedFormat: "Use GitLab's Application ID." } },
@@ -69,7 +69,7 @@ export const gitlabConnectionGuidance = [
       steps: [
         "Choose Add new application and name it.",
         "Paste the redirect URL shown here and keep Confidential selected.",
-        "Select the api scope and save the application.",
+        "Select both api and read_user and save the application.",
         "Copy the Application ID and Secret into the fields below.",
       ],
       note: policy,

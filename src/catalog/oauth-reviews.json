@@ -1903,7 +1903,7 @@
     {
       "entry": "gitlab",
       "package": "@executor.sh/gitlab",
-      "sourceSha256": "f38cef793bf3ab217871749fde58fe1c99e92a8ce0c99ef46c8e8f131d336b0f",
+      "sourceSha256": "307cdee8d3e2785011290b92dce321b7ef3810455baf32602ff29f2da7091f16",
       "methods": {
         "mcp": {
           "kind": "deferred",
