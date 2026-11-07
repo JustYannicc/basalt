@@ -208,7 +208,6 @@ const program = Effect.gen(function* () {
   });
   const app = installed;
   const path = `${prefix}/apps/${app.id}`;
-  const provider = app.requirements.accounts.people.provider;
   const connect = (method, endpoint) =>
     Effect.gen(function* () {
       const connection = yield* request("POST", `${path}/accounts/user/people/connections`, {});
@@ -356,8 +355,6 @@ const program = Effect.gen(function* () {
       fixture,
       tls,
       directory,
-      prefix,
-      request,
       check,
     });
   }

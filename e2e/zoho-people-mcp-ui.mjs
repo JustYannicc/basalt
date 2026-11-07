@@ -4,17 +4,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 
 /** One integrated hosted connection, with the provider's consent emulated on its HTTPS fixture. */
-export function proveZohoMcpUi({
-  Effect,
-  target,
-  actors,
-  app,
-  fixture,
-  directory,
-  prefix,
-  request,
-  check,
-}) {
+export function proveZohoMcpUi({ Effect, target, actors, app, fixture, directory, check }) {
   return Effect.gen(function* () {
     const { chromium } = createRequire(join(import.meta.dirname, "../.upstream/package.json"))(
       "playwright",
