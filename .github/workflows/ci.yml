@@ -342,6 +342,43 @@ jobs:
           path: ${{ runner.temp }}/basalt-e2e-evidence
           include-hidden-files: true
           if-no-files-found: warn
+  host-managed-accounts-adopted:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'host-managed-accounts-adopted')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build the isolated self-host test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the scenarios' browser engine
+        uses: ./.github/actions/setup-browser
+      - name: Verify audited account compatibility
+        working-directory: .upstream
+        run: >-
+          bun run e2e:self-host --test-name
+          "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-adopted:audited-account-compatibility)"
+          --workers 1
+      - name: Collect bounded E2E evidence
+        if: always()
+        run: |
+          node --test scripts/ci/collect-e2e-evidence.test.mjs
+          node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: host-managed-accounts-adopted-self-host-e2e
+          path: ${{ runner.temp }}/basalt-e2e-evidence
+          include-hidden-files: true
+          if-no-files-found: warn
   host-managed-accounts-pool:
     needs: select
     if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'host-managed-accounts-pool')
@@ -1907,6 +1944,7 @@ jobs:
         slack-health,
         catalog-compat,
         host-managed-accounts,
+        host-managed-accounts-adopted,
         host-managed-accounts-pool,
         host-managed-accounts-local,
         host-managed-accounts-cloud,

@@ -19,9 +19,7 @@
     }
   },
   "runs": {
-    "oauthCacheScope": [
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
-    ]
+    "oauthCacheScope": ["host-managed-accounts-adopted:audited-account-compatibility"]
   },
   "inherited": []
 }

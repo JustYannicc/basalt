@@ -41,6 +41,7 @@ test("an undeclared client change retains every product and platform job", () =>
   ]).jobs;
   for (const job of [
     "host-managed-accounts",
+    "host-managed-accounts-adopted",
     "host-managed-accounts-pool",
     "host-managed-accounts-local",
     "host-managed-accounts-cloud",
