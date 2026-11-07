@@ -48,7 +48,9 @@ To verify the complete Miro tool list, save the API document at the `specCommit`
 
 Supply `EXECUTOR_OAUTH_GITLAB_CLIENT_ID`, `EXECUTOR_OAUTH_GITLAB_CLIENT_SECRET`, `EXECUTOR_OAUTH_MIRO_CLIENT_ID` and `EXECUTOR_OAUTH_MIRO_CLIENT_SECRET` through GitHub Actions. The GitLab pair is used only for `https://gitlab.com`; it is not used for self-managed instances. These pairs use the same optional-client behavior as Google and GitHub. The tools API receives only the hosted-client metadata and secret bindings; no connector package or API schema is added to its bundle.
 
-Notion, Todoist and Trello keep their official catalog sources and existing custom-client and token methods. Optional hosted clients use the paired `EXECUTOR_OAUTH_NOTION_*`, `EXECUTOR_OAUTH_TODOIST_*` and `EXECUTOR_OAUTH_TRELLO_*` Actions secrets. Each person authorizes a separate account; a shared OAuth registration does not share their grants. Missing or incomplete pairs are omitted during deployment, and previews receive none of these credentials. Registration, vendor review and live acceptance remain separate from this wiring.
+Notion uses a [local catalog override](../src/catalog/notion.json) that reports the workspace name from REST `users/me` for integration secrets and a best-effort MCP `notion-get-self` lookup after OAuth credential verification.
+
+Todoist and Trello keep their official catalog sources and existing custom-client and token methods. Optional hosted clients use the paired `EXECUTOR_OAUTH_NOTION_*`, `EXECUTOR_OAUTH_TODOIST_*` and `EXECUTOR_OAUTH_TRELLO_*` Actions secrets. Each person authorizes a separate account; a shared OAuth registration does not share their grants. Missing or incomplete pairs are omitted during deployment, and previews receive none of these credentials. Registration, vendor review and live acceptance remain separate from this wiring.
 
 Register each application as Signalbox, with callback `https://app.signalbox.run/api/oauth/callback`:
 

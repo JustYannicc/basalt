@@ -18,7 +18,10 @@
     }
   },
   "runs": {
-    "accountToolCalls": ["declared:self-host", "declared:cloud"]
+    "accountToolCalls": [
+      "declared:self-host",
+      "declared:cloud"
+    ]
   },
   "inputs": [
     ".upstream/apps/hosted/server/package.json",
@@ -29,15 +32,21 @@
     ".upstream/apps/hosted/server/src/implementation/proofs/account-access.ts",
     ".upstream/apps/hosted/web/src/contracts/connector-traffic.ts",
     ".upstream/apps/hosted/web/src/implementation/pages/account-traffic.tsx",
+    ".upstream/e2e/support/account-tool-accounting.ts",
+    ".upstream/packages/apps/src/contracts/host.ts",
+    ".upstream/packages/apps/src/contracts/protocols/current.ts",
+    ".upstream/packages/apps/src/implementation/account-router.ts",
+    ".upstream/packages/apps/src/implementation/host.ts",
     ".upstream/packages/sdk/src/contracts/account-traffic.ts",
     ".upstream/packages/sdk/src/contracts/executor.ts",
     ".upstream/packages/sdk/src/core.ts",
+    ".upstream/packages/sdk/src/implementation/account-tool-traffic.ts",
     ".upstream/packages/sdk/src/implementation/account-traffic-store.ts",
+    ".upstream/packages/sdk/src/implementation/app-runtime.ts",
     ".upstream/packages/sdk/src/implementation/create.ts",
     ".upstream/packages/sdk/src/implementation/storage-runtime.ts",
     ".upstream/packages/sdk/src/implementation/storage.ts",
     ".upstream/packages/sdk/src/implementation/tools.ts",
-    ".upstream/packages/ui/src/implementation/dashboard/accounts-client.tsx",
-    ".upstream/e2e/support/account-tool-accounting.ts"
+    ".upstream/packages/ui/src/implementation/dashboard/accounts-client.tsx"
   ]
 }
