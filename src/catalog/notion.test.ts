@@ -9,6 +9,7 @@ import { test } from "node:test";
 import { onServedFramework } from "./framework.ts";
 import { handleCatalog } from "./worker.ts";
 import { notionSource } from "./notion.ts";
+import { catalog } from "./settings.ts";
 
 test("Notion GET and HEAD serve the local override without its publisher", async () => {
   const responses = [];
@@ -22,15 +23,13 @@ test("Notion GET and HEAD serve the local override without its publisher", async
     assert.equal(response.status, 200);
     responses.push(response);
   }
-  assert.deepEqual(
-    await responses[0].json(),
-    JSON.parse(onServedFramework(JSON.stringify(notionSource))),
-  );
+  assert.equal(onServedFramework(JSON.stringify(notionSource)), JSON.stringify(notionSource));
+  assert.equal(await responses[0].text(), JSON.stringify(notionSource));
   assert.equal(await responses[1].text(), "");
   assert.deepEqual([...responses[0].headers], [...responses[1].headers]);
 });
 
-test("Notion preserves the published package except its account check", () => {
+test("Notion preserves the published package except its account check and host framework pin", () => {
   const bytes = (suffix: string) => readFileSync(new URL(`./notion.${suffix}`, import.meta.url));
   const original = JSON.parse(bytes("published.json").toString()) as typeof notionSource;
   const provenance = JSON.parse(bytes("provenance.json").toString());
@@ -43,7 +42,19 @@ test("Notion preserves the published package except its account check", () => {
   assert.deepEqual({ ...notionSource, files: [] }, { ...original, files: [] });
   for (const file of original.files) {
     const carried = notionSource.files.find((candidate) => candidate.path === file.path)!;
-    if (!["index.ts", "README.md"].includes(file.path)) assert.deepEqual(carried, file);
+    if (file.path === "package.json") {
+      const publishedManifest = JSON.parse(file.content);
+      const manifest = JSON.parse(carried.content);
+      assert.equal(manifest.dependencies.apps, provenance.appsVersion);
+      assert.equal(manifest.dependencies.apps, catalog.framework);
+      assert.deepEqual(
+        {
+          ...manifest,
+          dependencies: { ...manifest.dependencies, apps: publishedManifest.dependencies.apps },
+        },
+        publishedManifest,
+      );
+    } else if (!["index.ts", "README.md"].includes(file.path)) assert.deepEqual(carried, file);
   }
 });
 
