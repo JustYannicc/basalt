@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Effect, Redacted, Schema } from "effect";
-import { appProtocol } from "../../.upstream/packages/sdk/src/implementation/app-protocols.ts";
+import {
+  appProtocol,
+  supportedProtocols,
+} from "../../.upstream/packages/sdk/src/implementation/app-protocols.ts";
+import type { WorkflowExecution } from "../../.upstream/packages/apps/src/contracts/workflows.ts";
 import { HostInvocation } from "../../.upstream/packages/apps/src/contracts/host.ts";
 import { oauthScopesProtocol } from "../../.upstream/packages/apps/src/contracts/protocol-version.ts";
 
@@ -38,10 +42,10 @@ test("the current protocol keeps host-recorded metadata without changing credent
 test("workflow steps strip metadata only for retained consumers", async () => {
   const { WorkflowRunId } =
     await import("../../.upstream/packages/apps/src/contracts/workflows.ts");
-  const execution = {
+  const execution: WorkflowExecution = {
     runId: WorkflowRunId.make("metadata-fixture"),
     driver: {
-      do: (_name: string, _options: unknown, run: () => Effect.Effect<null>) => run(),
+      do: (_name, _options, run) => run(),
       sleep: () => Effect.void,
       sleepUntil: () => Effect.void,
     },
@@ -82,17 +86,42 @@ test("managed credentials stay sealed while grant metadata remains readable", as
 });
 
 test("invocation accounts use the supplied grant snapshot, never the credential scope field", async () => {
-  const { invocationAccount } = await import("../../.upstream/packages/sdk/src/implementation/provider.ts");
+  const { invocationAccount } =
+    await import("../../.upstream/packages/sdk/src/implementation/provider.ts");
   const { AccountId } = await import("../../.upstream/packages/apps/src/contracts/schema.ts");
   const { httpsOnlyUrlPolicy } = await import("../../.upstream/packages/utils/src/url-policy.ts");
-  const stored = { id: AccountId.make("acc_metadata_fixture"), method: "oauth", allowedHosts: null, site: null };
+  const stored = {
+    id: AccountId.make("acc_metadata_fixture"),
+    method: "oauth",
+    allowedHosts: null,
+    site: null,
+  };
   const definition = { name: "Metadata fixture", auth: {} };
   const fields = Redacted.make({ scope: "invented-wide-scope", access_token: "synthetic-token" });
   const recorded = ["read"];
-  const known = invocationAccount(stored, definition, { fields, oauthScopes: recorded, generation: 9 }, new Map(), httpsOnlyUrlPolicy);
+  const known = invocationAccount(
+    stored,
+    definition,
+    { fields, oauthScopes: recorded, generation: 9 },
+    new Map(),
+    httpsOnlyUrlPolicy,
+  );
   recorded.push("mutated-after-binding");
   assert.deepEqual(known.oauthScopes, ["read"]);
   assert.equal(known.generation, 9);
-  const unknown = invocationAccount(stored, definition, { fields, generation: 10 }, new Map(), httpsOnlyUrlPolicy);
+  const unknown = invocationAccount(
+    stored,
+    definition,
+    { fields, generation: 10 },
+    new Map(),
+    httpsOnlyUrlPolicy,
+  );
   assert.equal(Object.hasOwn(unknown, "oauthScopes"), false);
+});
+
+test("every retained protocol omits OAuth metadata before its own account reshaping", async () => {
+  for (const version of supportedProtocols.filter((version) => version < oauthScopesProtocol)) {
+    const adapter = await Effect.runPromise(appProtocol(version));
+    assert.equal(adapter.invocation(input).includes('"oauthScopes"'), false, `protocol ${version}`);
+  }
 });

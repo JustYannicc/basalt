@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { once } from "node:events";
-import {operations, planetScaleDocument} from "./api-document.mjs";
+import { operations, planetScaleDocument } from "./api-document.mjs";
 import { createServer } from "node:http";
 
 export const serviceToken = "synthetic-token-id:synthetic-token-secret";
@@ -60,7 +60,13 @@ const pattern = (path) => new RegExp(`^/v1${path.replace(/\{[^}]+\}/g, "[^/]+")}
  * PlanetScale's API, authorization server and documentation on one loopback origin. `dcr`
  * advertises registration; otherwise only a pre-registered (hosted) client can sign in.
  */
-export async function startPlanetScale({ dcr, advertised, omitGrantedScope = false, refuseScope }) {
+export async function startPlanetScale({
+  dcr,
+  advertised,
+  omitGrantedScope = false,
+  refuseScope,
+  refreshScopes,
+}) {
   const calls = [];
   const failures = [];
   const codes = new Map();
@@ -71,8 +77,8 @@ export async function startPlanetScale({ dcr, advertised, omitGrantedScope = fal
     const url = new URL(request.url, origin);
     // OAuth discovery may probe the protected resource before reading authorization metadata.
     if (url.pathname === "/" && request.method === "GET") {
-      calls.push({phase: "resource-discovery"});
-      return json(response, {error: "not_found"}, 404);
+      calls.push({ phase: "resource-discovery" });
+      return json(response, { error: "not_found" }, 404);
     }
     if (url.pathname === "/docs/openapi.yaml") return json(response, planetScaleDocument(origin));
     if (url.pathname.startsWith("/.well-known/oauth-protected-resource"))
@@ -148,8 +154,8 @@ export async function startPlanetScale({ dcr, advertised, omitGrantedScope = fal
       const basic = request.headers.authorization?.match(/^Basic (.+)$/)?.[1];
       const [id, secret] = basic ? Buffer.from(basic, "base64").toString().split(":") : [];
       if (!clients().some((client) => client.id === id && client.secret === secret))
-        return json(response, {error: "invalid_client"}, 401);
-      calls.push({phase: "revoke", client: id, basic: true});
+        return json(response, { error: "invalid_client" }, 401);
+      calls.push({ phase: "revoke", client: id, basic: true });
       for (const [access, grant] of tokens)
         if (grant.client_id === id && (access === body.token || grant.refresh === body.token))
           tokens.delete(access);
@@ -185,7 +191,12 @@ export async function startPlanetScale({ dcr, advertised, omitGrantedScope = fal
       const access = `pscale_oauth_${randomBytes(12).toString("hex")}`;
       const refresh = `pscale_refresh_${randomBytes(12).toString("hex")}`;
       tokens.set(access, { ...grant, refresh });
-      const granted = grant.granted.split(/\s+/u).filter((scope) => scope !== refuseScope);
+      const granted = (
+        body.grant_type === "refresh_token" && refreshScopes !== undefined
+          ? refreshScopes
+          : grant.granted.split(/\s+/u)
+      ).filter((scope) => scope !== refuseScope);
+      calls.at(-1).reportedScopes = omitGrantedScope ? null : granted;
       if (refuseScope !== undefined)
         assert.ok(granted.length < grant.granted.split(/\s+/u).length, `Requested ${refuseScope}`);
       return json(response, {

@@ -26,9 +26,19 @@ import {
 
 import { hostedScopes, sorted } from "./planetscale-signin/expectations.mjs";
 import { verifyPlanetScaleConnections } from "./planetscale-signin/journey.mjs";
+import { appsVersion } from "../.upstream/e2e/support/apps-release.ts";
+import { createPlanetScaleRetainedFixture } from "./planetscale-signin/retained-fixture.mjs";
+import { verifyPlanetScaleRetainedAccounts } from "./planetscale-signin/retained-accounts.mjs";
+import {
+  legacyPlanetScaleScopes,
+  replaceHostedClient,
+  upgradeAndExpireGrant,
+} from "./planetscale-signin/retained-runtime.mjs";
 const mode = process.argv[3] ?? "hosted";
 assert.ok(
-  mode === "hosted" ||
+  mode === "retained" ||
+    mode === "retained-unknown" ||
+    mode === "hosted" ||
     mode === "dcr" ||
     mode === "unknown" ||
     mode === "refused" ||
@@ -36,9 +46,14 @@ assert.ok(
     mode === "rfc",
   "Mode is hosted, dcr, unknown, refused, unreported or rfc",
 );
+const retained = mode.startsWith("retained");
+const oldScopes = retained
+  ? await legacyPlanetScaleScopes(resolve(import.meta.dirname, ".."))
+  : undefined;
 const usesDcr = mode === "dcr" || mode === "unknown";
 const hasHostedClient = !usesDcr;
-const omitsGrantedScope = mode === "unknown" || mode === "unreported" || mode === "rfc";
+const omitsGrantedScope =
+  mode === "unknown" || mode === "unreported" || mode === "rfc" || mode === "retained-unknown";
 const refusedScope = "organization:write_branches";
 const widths = ["unknown", "rfc"].includes(mode) ? [1280] : [1280, 390];
 const root = resolve(import.meta.dirname, "..");
@@ -66,6 +81,9 @@ const program = Effect.gen(function* () {
             ? hostedScopes
             : metadata.scopes_supported,
       omitGrantedScope: omitsGrantedScope,
+      ...(retained
+        ? { refreshScopes: oldScopes.filter((scope) => scope !== "organization:write_comments") }
+        : {}),
       ...(mode === "refused" ? { refuseScope: refusedScope } : {}),
     }),
   );
@@ -79,7 +97,15 @@ const program = Effect.gen(function* () {
     ),
   );
   assert.deepEqual(sorted(planetScaleOAuthClient.defaultScopes), sorted(hostedScopes));
-  assert.deepEqual(sorted(planetScaleOAuthClient.allowedScopes), sorted([...hostedScopes, "organization:read_comments", "organization:write_comments", "organization:read_members"]));
+  assert.deepEqual(
+    sorted(planetScaleOAuthClient.allowedScopes),
+    sorted([
+      ...hostedScopes,
+      "organization:read_comments",
+      "organization:write_comments",
+      "organization:read_members",
+    ]),
+  );
   assert.equal(planetScaleOAuthClient.requireScopeConfirmation, true);
   // The reviewed client, moved to the loopback service as the Slack proof moves its client.
   const fixtureClient = {
@@ -95,6 +121,14 @@ const program = Effect.gen(function* () {
     },
     placement: { hosts: [new URL(service.origin).host] },
   };
+  const oldClient = retained
+    ? {
+        ...fixtureClient,
+        defaultScopes: oldScopes,
+        allowedScopes: oldScopes,
+        requireScopeConfirmation: false,
+      }
+    : undefined;
   const base = yield* startEnvironment({ target: "self-host", headless: true });
   const registry = yield* lockedNpmRegistry;
   const prepared = yield* prepareScenario(base.target, `PlanetScale ${mode} sign-in`);
@@ -122,7 +156,7 @@ const program = Effect.gen(function* () {
     EXECUTOR_URL_ALLOW_HTTP_ORIGINS: JSON.stringify([catalog.origin, service.origin]),
     ...(hasHostedClient
       ? {
-          EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: JSON.stringify([fixtureClient]),
+          EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: JSON.stringify([oldClient ?? fixtureClient]),
           EXECUTOR_OAUTH_PLANETSCALE_E2E_CLIENT_ID: hostedClient.id,
           EXECUTOR_OAUTH_PLANETSCALE_E2E_CLIENT_SECRET: hostedClient.secret,
         }
@@ -170,27 +204,48 @@ const program = Effect.gen(function* () {
     service.calls.filter((entry) => entry.phase === "api" && entry.operation === operation);
   for (const width of widths) {
     const result = yield* Effect.exit(
-      verifyPlanetScaleConnections({
-        width,
-        directory,
-        mode,
-        session,
-        actors,
-        app,
-        links,
-        request,
-        path,
-        prefix,
-        omitsGrantedScope,
-        refusedScope,
-        added,
-        listed,
-        call,
-        apiCalls,
-        client,
-        getTool,
-        service,
-      }).pipe(
+      (retained
+        ? replaceHostedClient(oldClient).pipe(
+            Effect.andThen(
+              verifyPlanetScaleRetainedAccounts({
+                width,
+                request: (method, path, data) => client.request(session, method, path, data),
+                prefix,
+                app,
+                session,
+                service,
+                fixture: createPlanetScaleRetainedFixture({
+                  root,
+                  serviceOrigin: service.origin,
+                  appsVersion,
+                }),
+                upgradeHost: upgradeAndExpireGrant(fixtureClient),
+                unknown: mode === "retained-unknown",
+              }),
+            ),
+          )
+        : verifyPlanetScaleConnections({
+            width,
+            directory,
+            mode,
+            session,
+            actors,
+            app,
+            links,
+            request,
+            path,
+            prefix,
+            omitsGrantedScope,
+            refusedScope,
+            added,
+            listed,
+            call,
+            apiCalls,
+            client,
+            getTool,
+            service,
+          })
+      ).pipe(
         Effect.timeout("120 seconds"),
         Effect.scoped,
         Effect.provide(Browser.layer),
@@ -209,6 +264,7 @@ const program = Effect.gen(function* () {
     outcomes.push({
       width,
       status: result._tag,
+      ...(result._tag === "Success" && retained ? { retainedEvidence: result.value } : {}),
       ...(result._tag === "Failure" ? { error: Cause.pretty(result.cause) } : {}),
       linkedAccounts: (yield* links()).map(({ requirement, account }) => ({
         requirement,
@@ -229,8 +285,8 @@ const program = Effect.gen(function* () {
       assert.equal(authorize.client, hostedClient.id);
       assert.deepEqual(
         sorted(authorize.scope.split(" ")),
-        sorted(hostedScopes),
-        "Exactly the hosted scopes",
+        sorted(retained ? oldScopes : hostedScopes),
+        "Exactly the configured scopes",
       );
     }
     assert.ok(phase("token").every((entry) => entry.client === hostedClient.id && entry.basic));

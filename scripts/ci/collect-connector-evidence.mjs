@@ -22,6 +22,8 @@ const runDirectories = {
     "ci/refused",
     "ci/unreported",
     "ci/rfc",
+    "ci/retained",
+    "ci/retained-unknown",
   ],
 };
 
