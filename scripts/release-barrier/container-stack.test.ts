@@ -7,6 +7,7 @@ const root = fileURLToPath(new URL("../../", import.meta.url));
 for (const scenario of [
   "success",
   "recorded-baseline",
+  "recorded-baseline-same-digest",
   "recorded-baseline-rejected",
   "recorded-baseline-unhealthy",
   "unhealthy-serving",
@@ -31,6 +32,7 @@ for (const scenario of [
     const success = [
       "success",
       "recorded-baseline",
+      "recorded-baseline-same-digest",
       "same-digest",
       "dependency-only",
       "new-runtime-ready",

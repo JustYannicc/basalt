@@ -83,6 +83,12 @@ export const proveContainerStack = (source, recompile, scenario) =>
     const publications = [];
     const normalizations = [];
     const recordedBaseline = scenario.startsWith("recorded-baseline");
+    const sameDigest = [
+      "same-digest",
+      "same-digest-unhealthy",
+      "dependency-only",
+      "recorded-baseline-same-digest",
+    ].includes(scenario);
     let releaseStarted = false;
     let attachmentPending = scenario === "dependency-only";
     let writes = 0,
@@ -363,8 +369,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
         api.rollouts = 0;
         writes = 0;
         events.length = 0;
-        if (!["same-digest", "same-digest-unhealthy", "dependency-only"].includes(scenario))
-          api.publishedDigest = digest("3");
+        if (!sameDigest) api.publishedDigest = digest("3");
         releaseStarted = true;
         const exit = yield* Effect.exit(
           run(
@@ -509,7 +514,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
         if (recordedBaseline) {
           assert.equal(publications[0].baselineVersion, 26);
           assert.equal(publications[0].baselineDigest, staged.previous.hash.digest);
-          assert.notEqual(publications[0].imageDigest, publications[0].baselineDigest);
+          assert.equal(publications[0].imageDigest === publications[0].baselineDigest, sameDigest);
           assert.equal(normalizations.length, 1);
           assert.equal(normalizations[0].recordedVersion, 25);
           assert.equal(normalizations[0].observedVersion, 26);
@@ -530,6 +535,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
           "new-runtime-ready",
           "creating-runtime-ready",
           "recorded-baseline",
+          "recorded-baseline-same-digest",
         ].includes(scenario);
         const workerInputMatches = staged?.proposed.hash.image === capturedPoolInput;
         assert.equal(
@@ -541,14 +547,8 @@ export const proveContainerStack = (source, recompile, scenario) =>
         assert.equal(succeeded, expectedSuccess);
         let unchangedAction;
         if (succeeded) {
-          assert.equal(
-            api.writes,
-            ["same-digest", "same-digest-unhealthy", "dependency-only"].includes(scenario) ? 0 : 1,
-          );
-          assert.equal(
-            api.rollouts,
-            ["same-digest", "same-digest-unhealthy", "dependency-only"].includes(scenario) ? 0 : 1,
-          );
+          assert.equal(api.writes, sameDigest ? 0 : 1);
+          assert.equal(api.rollouts, sameDigest ? 0 : 1);
           assert.equal(api.app.configuration.image, staged.proposed.configuration.image);
           const allWorkers = Object.values(stack.resources).filter(
             (resource) => resource.Type === "Cloudflare.Worker",
@@ -583,11 +583,16 @@ export const proveContainerStack = (source, recompile, scenario) =>
               stage: stack.stage,
               fqn: "PoolContainer",
             });
-            assert.equal(saved.attr.version, 27);
+            assert.equal(saved.attr.version, sameDigest ? 26 : 27);
             assert.equal(saved.attr.hash.digest, staged.proposed.hash.digest);
             assert.equal(saved.attr.hash.image, capturedPoolInput);
-            assert.ok(events.indexOf("container:advance") > firstActivation);
-            assert.ok(events.indexOf("container:serving") > events.indexOf("container:advance"));
+            if (sameDigest) {
+              assert.ok(!events.includes("container:advance"));
+              assert.equal(receipts.at(-1).containers[0].unchanged, true);
+            } else {
+              assert.ok(events.indexOf("container:advance") > firstActivation);
+              assert.ok(events.indexOf("container:serving") > events.indexOf("container:advance"));
+            }
           }
           attachmentPending = false;
           const next = yield* run(Plan.make(stack));
