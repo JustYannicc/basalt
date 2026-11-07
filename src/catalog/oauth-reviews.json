@@ -281,7 +281,7 @@
     {
       "entry": "atlassian",
       "package": "atlassian",
-      "sourceSha256": "c5deea1766554ae34b180d52df9b17797f7a46fddc67faa271edf90193a980c9",
+      "sourceSha256": "f3826cd7f33506c91387084d4a901b489729a578260bf0e82cc4949603f231ad",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -367,7 +367,7 @@
     {
       "entry": "aws",
       "package": "aws",
-      "sourceSha256": "b27e3e1a7362613d3fa020b33c315897c58125747cba5bb7e11079224e26c60d",
+      "sourceSha256": "a68f84472af0bb7abaf2835cabdbbb8651ebd9752aeb59a352bbe00b298dfbe6",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -1490,7 +1490,7 @@
     {
       "entry": "elevenlabs",
       "package": "@executor.sh/elevenlabs",
-      "sourceSha256": "57b561d6caa30a24f2f422f53c5bf731cedcbcffc089f52fe6bceb0b46b352ba",
+      "sourceSha256": "ae7cc56353c8f7f4fdcc785cc195d29f1b37c32351c896f0bc330500fb503f39",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -1903,7 +1903,7 @@
     {
       "entry": "gitlab",
       "package": "@executor.sh/gitlab",
-      "sourceSha256": "ccbfbffe129a19f863dfd13735ac69842ad8ab28b9d383c2270d1c563ef24ef1",
+      "sourceSha256": "05dd9c0b3d2a98f52cbd0706321f4cdc5e9ac83481000f11f0d82f8e2b3bb5bd",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -1915,7 +1915,7 @@
     {
       "entry": "gitlab-mcp",
       "package": "@signalbox/gitlab-mcp",
-      "sourceSha256": "80c6497f49cc448522162cb7dba909d1a099d1186c7bb7a961643659326b5d4f",
+      "sourceSha256": "493ed8b905920626f31786d635c5ff60c26ed340037a66eb39f31045c1caa512",
       "methods": {
         "oauth": {
           "kind": "deferred",
@@ -3056,7 +3056,7 @@
     {
       "entry": "miro",
       "package": "@executor.sh/miro",
-      "sourceSha256": "d393cdec7c5d2bd2a1d8746aa364daffa870abc03cbbcd759e85ab9b7fd4d7f0",
+      "sourceSha256": "36bfa1b7f8c9ed67992149eca06fc7190ea70d6383a8703540aec2b50fd5d463",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -4290,7 +4290,7 @@
     {
       "entry": "slack",
       "package": "@executor.sh/slack",
-      "sourceSha256": "224c8729a362214f53383020183916fa24cf5ad0a33f775239d3bda1574dfccd",
+      "sourceSha256": "77ba6196d6040f1235395b02e95d20fd93ae8c1493090e56d724056fb02ccea9",
       "methods": {
         "user": {
           "kind": "hosted",
@@ -4848,7 +4848,7 @@
     {
       "entry": "vercel",
       "package": "@executor.sh/vercel",
-      "sourceSha256": "387afa28b40ba7a3935aebe5adbe59230ee3e087dfbf8a46cf737d9cfd5f87b4",
+      "sourceSha256": "a74507d282e1859fa60e6e48cefac5f9df666b4b1bdd4dcb63833bba544a1bf3",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -5109,7 +5109,7 @@
     {
       "entry": "workos",
       "package": "@executor.sh/workos",
-      "sourceSha256": "ee9ec44867520194f316cfc481a19774b8886a7d43449bf3abe106ad77875ab2",
+      "sourceSha256": "7a7d8597bb63cc5db82fc72aa79bf479dbdb510effc4b879820cfc579365b731",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -5293,7 +5293,7 @@
     {
       "entry": "zoho-people",
       "package": "@signalbox/zoho-people",
-      "sourceSha256": "31569b52bcae5a1d56d06ca6350b2438b4ac64df78ac3078c8a69219f80527d4",
+      "sourceSha256": "ab2586074a89f1e156ba236011dc8c890260554d28bc7ae78618d09305db0d22",
       "methods": {
         "oauthEu": {
           "kind": "hosted",
@@ -5309,6 +5309,10 @@
           "kind": "hosted",
           "client": "zoho-people-in",
           "message": "Connect your own Zoho People account using the hosted client, or enter a server-based client you own if hosted sign-in is unavailable."
+        },
+        "mcp": {
+          "kind": "account-endpoint",
+          "message": "Paste your own enabled Zoho MCP server URL. OAuth discovery and client setup depend on that server; no shared REST client is used."
         }
       }
     },

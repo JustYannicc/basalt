@@ -18,6 +18,7 @@ export const zohoPeople: Addition = {
       { method: "oauthEu", kind: "oauth2", label: "Europe (EU)" },
       { method: "oauthUs", kind: "oauth2", label: "United States (US)" },
       { method: "oauthIn", kind: "oauth2", label: "India (IN)" },
+      { method: "mcp", kind: "oauth2", label: "Zoho MCP (optional)" },
     ],
     connectionGuidance: peopleConnectionGuidance,
     icons: [{ src: logo, mimeType: "image/png" }],

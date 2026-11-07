@@ -1,0 +1,3030 @@
+diff --git a/apps/hosted/server/src/contracts/accounts.ts b/apps/hosted/server/src/contracts/accounts.ts
+--- a/apps/hosted/server/src/contracts/accounts.ts
++++ b/apps/hosted/server/src/contracts/accounts.ts
+@@ -28,6 +28,7 @@
+   AccountConnectionRefused,
+   AccountConnectionTargetChanged,
+   AccountFieldsInput,
++  SetConnectionMcpEndpoint,
+   AccountFieldsInvalid,
+   AppId,
+   AppNotFound,
+@@ -348,6 +349,17 @@
+       ),
+   )
+   .add(
++    HttpApiEndpoint.post("setMcpEndpoint", `${prefix}/connections/:connection/mcp-endpoint`, {
++      params: connection,
++      payload: Schema.Struct({
++        method: SetConnectionMcpEndpoint.fields.method,
++        endpoint: SetConnectionMcpEndpoint.fields.endpoint,
++      }),
++      success: Schema.Void,
++      error: [...completionErrors, AuthMethodInvalid, AccountFieldsInvalid],
++    }).annotate(RequiredAction, "manage"),
++  )
++  .add(
+     HttpApiEndpoint.post("submit", `${prefix}/connections/:connection/submit`, {
+       params: connection,
+       payload: Schema.Struct({
+diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/server/src/implementation/accounts.ts
+--- a/apps/hosted/server/src/implementation/accounts.ts
++++ b/apps/hosted/server/src/implementation/accounts.ts
+@@ -392,6 +392,22 @@
+     return connection;
+   });
+ /** Save credentials and complete the connection's selected app requirement. */
++export const setMcpEndpoint = (
++  owner: OwnerId,
++  input: Omit<Parameters<Executor["accountConnections"]["setMcpEndpoint"]>[0], "owner">,
++) =>
++  Effect.gen(function* () {
++    const executor = yield* Effect.flatten(HostedExecutor);
++    const connection = yield* ownedConnection(executor, owner, input.connection);
++    yield* checkConnection(connection);
++    yield* requireProviderAccountMethod(
++      yield* executor.apps.get({ owner, app: connection.target.app }),
++      connection.target.requirement,
++      input.method,
++    );
++    return yield* executor.accountConnections.setMcpEndpoint({ ...input, owner });
++  });
++
+ export const submitConnection = (
+   owner: OwnerId,
+   input: Omit<Parameters<Executor["accountConnections"]["submit"]>[0], "owner">,
+@@ -509,6 +525,11 @@
+             checkable: requirement?.health === true,
+           };
+         }),
++      )
++      .handle("setMcpEndpoint", ({ params, payload }) =>
++        Effect.flatMap(currentOwner, (owner) =>
++          setMcpEndpoint(owner, { connection: params.connection, ...payload }),
++        ),
+       )
+       .handle("submit", ({ params, payload }) =>
+         Effect.flatMap(currentOwner, (owner) =>
+diff --git a/apps/hosted/web/src/contracts/apps.ts b/apps/hosted/web/src/contracts/apps.ts
+--- a/apps/hosted/web/src/contracts/apps.ts
++++ b/apps/hosted/web/src/contracts/apps.ts
+@@ -380,6 +380,19 @@
+       get.set(request, undefined),
+     ),
+     oauthSetup: (method: string) => oauthSetup(method),
++    setMcpEndpoint: HostedClient.runtime.fn(
++      (payload: { method: string; endpoint: Redacted.Redacted<string> }, get) =>
++        Effect.gen(function* () {
++          const pending = yield* connection(get);
++          const client = yield* HostedClient;
++          yield* client.accounts.setMcpEndpoint({
++            params: { organization: key.organization, connection: pending.id },
++            payload,
++          });
++          get.refresh(oauthSetup(payload.method));
++          get.set(request, { ...pending, mcpEndpointMethod: payload.method });
++        }),
++    ),
+     create: HostedClient.runtime.fn(
+       (payload: { method: string; fields: typeof AccountFieldsInput.Type }, get) =>
+         Effect.gen(function* () {
+@@ -453,6 +466,26 @@
+       ),
+   ),
+ );
++const setMcpEndpoint = Atom.family((key: ConnectionKey) =>
++  HostedClient.runtime.fn((payload: { method: string; endpoint: Redacted.Redacted<string> }, get) =>
++    Effect.flatMap(HostedClient, (client) =>
++      client.accounts.setMcpEndpoint({ params: key, payload }),
++    ).pipe(
++      Effect.tap(() =>
++        Effect.sync(() => {
++          get.refresh(connectionOAuthSetupAtom({ ...key, method: payload.method }));
++          get.refresh(connectionAtom(key));
++        }),
++      ),
++      Effect.tapErrorTag("AccountConnectionTargetChanged", () => reloadConnection(get, key)),
++    ),
++  ),
++);
++export const setConnectionMcpEndpointAtom = (key: {
++  organization: OrganizationReference;
++  connection: AccountConnectionId;
++}) => setMcpEndpoint(new ConnectionKey(key));
++
+ const completeOAuth = Atom.family((key: ConnectionKey) =>
+   HostedClient.runtime.fn((input: { callbackUrl: Redacted.Redacted<string>; app: AppId }, get) =>
+     Effect.flatMap(HostedClient, (client) =>
+diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+--- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+@@ -808,6 +808,10 @@
+   const { organization, slug: organizationSlug } = useOrganizationRoute();
+   const returnTo = use(OAuthReturnContext);
+   const app = current.id;
++  const [selectedMethod, setSelectedMethod] = useState(form.method);
++  const selectedAuth = form.provider.definition.auth[selectedMethod];
++  const privateEndpoint = selectedAuth?.type === "oauth2" && "mcpEndpoint" in selectedAuth;
++
+   const [atoms] = useState(() =>
+     appConnectionAtoms({
+       organization,
+@@ -831,6 +835,7 @@
+       : connectSubmit(input);
+   };
+   const start = useAtomSet(atoms.startOAuth, { mode: "promiseExit" });
++  const setMcpEndpoint = useAtomSet(atoms.setMcpEndpoint, { mode: "promiseExit" });
+   const interactive = {
+     start: useAtomSet(atoms.interactive.start, { mode: "promiseExit" }),
+     status: useAtomSet(atoms.interactive.status, { mode: "promiseExit" }),
+@@ -850,6 +855,10 @@
+   const fields = (selection: IdentityConsentSelection) => (
+     <HostedAccountForm<HostedOAuthSignIn & { readonly connection: AccountConnectionId }>
+       provider={form.provider}
++      mcpEndpoint={{
++        configuredMethod: pending?.mcpEndpointMethod,
++        save: (method, endpoint) => setMcpEndpoint({ method, endpoint }),
++      }}
+       site={pending?.target.site ?? account?.site ?? site}
+       app={checks ? app : undefined}
+       {...(account ? { account } : {})}
+@@ -858,6 +867,9 @@
+       // has one, so opening the form writes nothing.
+       setupQuery={
+         account !== undefined ||
++        Object.values(form.provider.definition.auth).some(
++          (method) => method.type === "oauth2" && "mcpEndpoint" in method,
++        ) ||
+         (form.provider.definition.site !== undefined &&
+           (form.provider.definition.site.defaultOrigin !== true ||
+             (site !== undefined && site !== form.provider.definition.site.origin)))
+@@ -865,7 +877,8 @@
+           : undefined
+       }
+       redirectUri={form.redirectUri}
+-      initialMethod={form.method}
++      initialMethod={selectedMethod}
++      onMethodChange={setSelectedMethod}
+       unavailable={unavailable}
+       oauthDeferrals={oauthDeferrals}
+       connectionGuidance={connectionGuidance}
+@@ -916,13 +929,13 @@
+       </div>
+     </>
+   );
+-  if (account !== undefined) return withHandoff(fields({}));
++  if (account !== undefined || privateEndpoint) return withHandoff(fields({}));
+   return withHandoff(
+     <IdentityConsent
+       query={resourceInventoryAtom(organization)}
+       Failure={HostedFailure}
+       provider={form.provider}
+-      method={form.method}
++      method={selectedMethod}
+       app={app}
+       initialAccount={initialAccount}
+       disabled={false}
+diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
+--- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
++++ b/apps/hosted/web/src/implementation/pages/connect-account.tsx
+@@ -1,3 +1,4 @@
++import { CredentialGuidance } from "@executor-js/ui/dashboard/credential-guidance";
+ import type { Query } from "@executor-js/ui/contracts/dashboard";
+ import type { HostedError } from "../../contracts/errors.ts";
+ import type { AccountSubmission, OAuthSubmission } from "@executor-js/ui/contracts/credentials";
+@@ -18,7 +19,7 @@
+ } from "@executor-js/hosted-server";
+ import { Link } from "@tanstack/react-router";
+ import { createContext, useContext, useEffect, useRef, useState } from "react";
+-import { Cause, Match, Option, Exit, Schema } from "effect";
++import { Cause, Match, Option, Exit, Schema, type Redacted } from "effect";
+ import { Button } from "@executor-js/ui/components/button";
+ import { OAuthFields, OAuthSetup, oauthDeferral } from "@executor-js/ui/dashboard/oauth-fields";
+ import type {
+@@ -31,6 +32,7 @@
+ import { ProviderDestination } from "@executor-js/ui/dashboard/provider-accounts";
+ import { AsyncResult } from "effect/reactivity";
+ import { appMethodsAtom } from "../../contracts/app-accounts.ts";
++import { McpEndpointFields } from "@executor-js/ui/dashboard/mcp-endpoint-fields";
+ import { AccountForm } from "@executor-js/ui/dashboard/account-form";
+ import {
+   InteractiveSignIn,
+@@ -43,6 +45,7 @@
+   connectionOAuthSetupAtom,
+   startOAuthAtom,
+   submitConnectionAtom,
++  setConnectionMcpEndpointAtom,
+   type OAuthReturn,
+ } from "../../contracts/apps.ts";
+ import { useOAuthHandoff } from "./loopback-oauth.tsx";
+@@ -86,6 +89,7 @@
+   const params = { organization, connection: connection.id };
+   const submit = useAtomSet(submitConnectionAtom(params), { mode: "promiseExit" });
+   const startOAuth = useAtomSet(startOAuthAtom(params), { mode: "promiseExit" });
++  const setMcpEndpoint = useAtomSet(setConnectionMcpEndpointAtom(params), { mode: "promiseExit" });
+   const cancel = useAtomSet(cancelInteractiveConnectionAtom(params), { mode: "promiseExit" });
+   const start = useAtomSet(startInteractiveConnectionAtom(params), { mode: "promiseExit" });
+   // This page has only this one request, so changing methods must not end it: the next start or
+@@ -181,6 +185,10 @@
+           provider={connection.provider}
+           connectionGuidance={connectionGuidance}
+           requirement={connection.target.requirement}
++          mcpEndpoint={{
++            configuredMethod: connection.mcpEndpointMethod,
++            save: (method, endpoint) => setMcpEndpoint({ method, endpoint }),
++          }}
+           site={connection.target.site}
+           app={connection.checkable ? connection.target.app : undefined}
+           {...(connection.reconnectAccount ? { account: connection.reconnectAccount } : {})}
+@@ -237,6 +245,7 @@
+   site,
+   redirectUri,
+   initialMethod,
++  onMethodChange,
+   manualClient,
+   submit,
+   start,
+@@ -249,7 +258,17 @@
+   oauthDeferrals,
+   connectionGuidance,
+   requirement,
++  mcpEndpoint,
+ }: {
++  readonly mcpEndpoint?:
++    | {
++        readonly configuredMethod?: string | undefined;
++        readonly save: (
++          method: string,
++          endpoint: Redacted.Redacted<string>,
++        ) => Promise<Exit.Exit<void, HostedError>>;
++      }
++    | undefined;
+   /** The catalog's guidance for methods with no automatic or registered OAuth client. */
+   readonly oauthDeferrals?: readonly CatalogOAuthDeferral[] | undefined;
+   readonly connectionGuidance?: readonly CatalogConnectionGuidance[] | undefined;
+@@ -266,6 +285,7 @@
+   readonly account?: Account;
+   readonly redirectUri: string;
+   readonly initialMethod?: string | undefined;
++  readonly onMethodChange?: ((method: string) => void) | undefined;
+   readonly manualClient?: boolean | undefined;
+   /** Connection forms preflight against their saved target instead of a caller-supplied provider site. */
+   readonly setupQuery?: ((method: string) => Query<OAuthConnectOptions, HostedError>) | undefined;
+@@ -351,6 +371,7 @@
+       site={site}
+       {...(account ? { account } : {})}
+       initialMethod={method}
++      onMethodChange={onMethodChange}
+       unavailable={unavailable}
+       Failure={HostedFailure}
+       submitLabel={account ? "Save credentials" : "Connect account"}
+@@ -380,78 +401,106 @@
+             ),
+           }
+         : {})}
+-      oauth={({ method, disabled, onPendingChange, access }) => (
+-        <OAuthSetup
+-          query={
+-            setupQuery?.(method) ?? oauthSetupAtom({ organization, provider: provider.id, method })
+-          }
+-        >
+-          {({ setup, action, refresh, loading, failed }) => (
+-            <OAuthFields
+-              providerName={provider.definition.name}
+-              site={site}
+-              guidance={connectionGuidance?.find(
++      oauth={({ method, disabled, onPendingChange, access }) => {
++        const auth = provider.definition.auth[method];
++        const fields = (
++          <OAuthSetup
++            query={
++              setupQuery?.(method) ??
++              oauthSetupAtom({ organization, provider: provider.id, method })
++            }
++          >
++            {({ setup, action, refresh, loading, failed }) => (
++              <OAuthFields
++                providerName={provider.definition.name}
++                site={site}
++                guidance={connectionGuidance?.find(
++                  (entry) => entry.requirement === requirement && entry.method === method,
++                )}
++                Failure={HostedFailure}
++                setup={setup}
++                setupLoading={loading}
++                setupFailed={failed}
++                setupAction={action}
++                access={access}
++                disabled={disabled}
++                manualClient={manualClient}
++                deferral={oauthDeferral(oauthDeferrals ?? inheritedDeferrals, method)}
++                {...(account ? { account } : {})}
++                redirectUri={redirectUri}
++                onPendingChange={onPendingChange}
++                {...(admin && setup !== "unresolved" && setup.grant === "authorization_code"
++                  ? {
++                      missingClient: (
++                        <Button
++                          type="button"
++                          className="w-full"
++                          onClick={() => setRegistering({ method, issuer: setup.issuer })}
++                        >
++                          Register OAuth client
++                        </Button>
++                      ),
++                    }
++                  : {})}
++                requiresClient={(cause) => {
++                  const required = Option.exists(Cause.findErrorOption(cause), (error) =>
++                    Match.value(error).pipe(
++                      Match.tag("OAuthClientUnavailable", () => true),
++                      Match.tag("OAuthSetupFailed", (error) =>
++                        oauthClientEntryReasons.has(error.reason),
++                      ),
++                      Match.orElse(() => false),
++                    ),
++                  );
++                  if (required) refresh();
++                  return required;
++                }}
++                start={(input: OAuthSubmission) =>
++                  inOrder(() => start({ method, ...input })).then((exit) =>
++                    Exit.map(exit, (value) => ({
++                      ...value,
++                      method,
++                      // Entered details reopen after a failed return; chosen clients do not.
++                      manualClient:
++                        input.client !== undefined && Schema.is(OAuthClientInput)(input.client),
++                    })),
++                  )
++                }
++                onAuthorized={(value) => {
++                  refresh();
++                  if (value.status !== "completed") return onAuthorized(value);
++                  saved(value.account);
++                  return "done";
++                }}
++              />
++            )}
++          </OAuthSetup>
++        );
++        if (auth?.type !== "oauth2" || !("mcpEndpoint" in auth)) return fields;
++        if (mcpEndpoint === undefined)
++          return <p>Start a new connection to enter this server’s URL.</p>;
++        return (
++          <McpEndpointFields<HostedError>
++            label={auth.mcpEndpoint.label}
++            guidance={(() => {
++              const guide = connectionGuidance?.find(
+                 (entry) => entry.requirement === requirement && entry.method === method,
+-              )}
+-              Failure={HostedFailure}
+-              setup={setup}
+-              setupLoading={loading}
+-              setupFailed={failed}
+-              setupAction={action}
+-              access={access}
+-              disabled={disabled}
+-              manualClient={manualClient}
+-              deferral={oauthDeferral(oauthDeferrals ?? inheritedDeferrals, method)}
+-              {...(account ? { account } : {})}
+-              redirectUri={redirectUri}
+-              onPendingChange={onPendingChange}
+-              {...(admin && setup !== "unresolved" && setup.grant === "authorization_code"
+-                ? {
+-                    missingClient: (
+-                      <Button
+-                        type="button"
+-                        className="w-full"
+-                        onClick={() => setRegistering({ method, issuer: setup.issuer })}
+-                      >
+-                        Register OAuth client
+-                      </Button>
+-                    ),
+-                  }
+-                : {})}
+-              requiresClient={(cause) => {
+-                const required = Option.exists(Cause.findErrorOption(cause), (error) =>
+-                  Match.value(error).pipe(
+-                    Match.tag("OAuthClientUnavailable", () => true),
+-                    Match.tag("OAuthSetupFailed", (error) =>
+-                      oauthClientEntryReasons.has(error.reason),
+-                    ),
+-                    Match.orElse(() => false),
+-                  ),
+-                );
+-                if (required) refresh();
+-                return required;
+-              }}
+-              start={(input: OAuthSubmission) =>
+-                inOrder(() => start({ method, ...input })).then((exit) =>
+-                  Exit.map(exit, (value) => ({
+-                    ...value,
+-                    method,
+-                    // Entered details reopen after a failed return; chosen clients do not.
+-                    manualClient:
+-                      input.client !== undefined && Schema.is(OAuthClientInput)(input.client),
+-                  })),
+-                )
+-              }
+-              onAuthorized={(value) => {
+-                refresh();
+-                if (value.status !== "completed") return onAuthorized(value);
+-                saved(value.account);
+-                return "done";
+-              }}
+-            />
+-          )}
+-        </OAuthSetup>
+-      )}
++              )?.credentials;
++              return guide === undefined ? undefined : (
++                <CredentialGuidance guidance={guide} site={site} />
++              );
++            })()}
++            disabled={disabled}
++            configured={mcpEndpoint.configuredMethod === method || account?.method === method}
++            reconnect={account !== undefined}
++            save={(endpoint) => inOrder(() => mcpEndpoint.save(method, endpoint))}
++            Failure={HostedFailure}
++            onPendingChange={onPendingChange}
++          >
++            {fields}
++          </McpEndpointFields>
++        );
++      }}
+     />
+   );
+ }
+diff --git a/apps/local/server/src/contracts/account-connections.ts b/apps/local/server/src/contracts/account-connections.ts
+--- a/apps/local/server/src/contracts/account-connections.ts
++++ b/apps/local/server/src/contracts/account-connections.ts
+@@ -33,6 +33,7 @@
+   StorageError,
+   CredentialsError,
+   AccountFieldsInput,
++  SetConnectionMcpEndpoint,
+   AccountFieldsInvalid,
+   AuthMethodInvalid,
+   OAuthClientSelection,
+@@ -194,6 +195,17 @@
+       }),
+     )
+     .add(
++      HttpApiEndpoint.post("setMcpEndpoint", "/account-connect/api/mcp-endpoint", {
++        payload: Schema.Struct({
++          ...ConnectionGrant.fields,
++          method: SetConnectionMcpEndpoint.fields.method,
++          endpoint: SetConnectionMcpEndpoint.fields.endpoint,
++        }),
++        success: Schema.Void,
++        error: [...errors, AccountConnectionRefused, AccountFieldsInvalid, AuthMethodInvalid],
++      }),
++    )
++    .add(
+       HttpApiEndpoint.post("submit", "/account-connect/api/submit", {
+         payload: ConnectionSubmission,
+         success: Account,
+diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
+--- a/apps/local/server/src/contracts/dashboard.ts
++++ b/apps/local/server/src/contracts/dashboard.ts
+@@ -41,6 +41,7 @@
+   PlanTargetOAuth,
+   OAuthConnectionPlan,
+   StartConnectionOAuth,
++  SetConnectionMcpEndpoint,
+   ReuseConnectionOAuth,
+   OAuthGrantReuseResult,
+   AccountConnectionTargetChanged,
+@@ -468,7 +469,7 @@
+ ): typeof HttpUrl.Type | null => {
+   if (definition === undefined) return null;
+   for (const method of Object.values(definition.auth)) {
+-    if (method.type === "oauth2")
++    if (method.type === "oauth2" && !("mcpEndpoint" in method))
+       return HttpUrl.make(
+         new URL(
+           method.discover !== undefined
+@@ -1000,6 +1001,28 @@
+       }),
+     )
+     .add(
++      HttpApiEndpoint.post("setMcpEndpoint", "/dashboard/api/accounts/mcp-endpoint", {
++        payload: Schema.Struct(Struct.omit(SetConnectionMcpEndpoint.fields, ["owner"])),
++        success: Schema.Void,
++        error: [
++          AccessDependencyUnavailable,
++          InteractiveRetirementBusy,
++          InteractiveRetirementFailed,
++          AccountConnectionNotFound,
++          AccountConnectionClosed,
++          AccountConnectionTargetChanged,
++          AccountNotFound,
++          AccountProvisioned,
++          ProviderNotFound,
++          AccountConnectionRefused,
++          AuthMethodInvalid,
++          AccountFieldsInvalid,
++          CredentialsError,
++          StorageError,
++        ],
++      }),
++    )
++    .add(
+       HttpApiEndpoint.post("oauthSetup", "/dashboard/api/accounts/oauth/setup", {
+         payload: Schema.Union([
+           Schema.Struct({ provider: ProviderId, method: AuthMethodName }),
+diff --git a/apps/local/server/src/implementation/account-connections.ts b/apps/local/server/src/implementation/account-connections.ts
+--- a/apps/local/server/src/implementation/account-connections.ts
++++ b/apps/local/server/src/implementation/account-connections.ts
+@@ -149,6 +149,11 @@
+           .handle("cancel", ({ payload }) =>
+             authorize(payload).pipe(Effect.andThen(executor.accountConnections.cancel(payload))),
+           )
++          .handle("setMcpEndpoint", ({ payload }) =>
++            authorize(payload).pipe(
++              Effect.andThen(executor.accountConnections.setMcpEndpoint(payload)),
++            ),
++          )
+           .handle("submit", ({ payload }) =>
+             authorize(payload).pipe(Effect.andThen(executor.accountConnections.submit(payload))),
+           )
+diff --git a/apps/local/server/src/implementation/dashboard.ts b/apps/local/server/src/implementation/dashboard.ts
+--- a/apps/local/server/src/implementation/dashboard.ts
++++ b/apps/local/server/src/implementation/dashboard.ts
+@@ -722,6 +722,9 @@
+           return app;
+         }),
+       )
++      .handle("setMcpEndpoint", ({ payload }) =>
++        executor.accountConnections.setMcpEndpoint({ ...payload, owner }),
++      )
+       .handle("oauthSetup", ({ payload }) =>
+         Effect.gen(function* () {
+           const request = yield* localRequest(config.port, config.browserOrigin).pipe(
+diff --git a/apps/local/web/src/contracts/account-connections.ts b/apps/local/web/src/contracts/account-connections.ts
+--- a/apps/local/web/src/contracts/account-connections.ts
++++ b/apps/local/web/src/contracts/account-connections.ts
+@@ -7,7 +7,7 @@
+   type ConnectionOAuthStart,
+   type ConnectionSubmission,
+ } from "@executor-js/local-server/account-connections";
+-import { HttpUrl } from "@executor-js/sdk";
++import { type SetConnectionMcpEndpoint, HttpUrl } from "@executor-js/sdk";
+ import { Data, Effect, Schema } from "effect";
+ import { Atom, AtomHttpApi } from "effect/reactivity";
+ 
+@@ -67,6 +67,30 @@
+ );
+ /** Cancellation closes the same request observed by the agent. */
+ export const cancelConnectionAtom = ConnectionClient.mutation("accountConnect", "cancel");
++export const setConnectionMcpEndpointAtom = ConnectionClient.runtime.fn(
++  (
++    payload: Pick<typeof SetConnectionMcpEndpoint.Type, "method" | "endpoint"> & ConnectionGrant,
++    get,
++  ) =>
++    Effect.flatMap(ConnectionClient, (client) =>
++      client.accountConnect.setMcpEndpoint({ payload }),
++    ).pipe(
++      Effect.tap(() =>
++        Effect.sync(() => {
++          get.refresh(
++            connectionOAuthSetupAtom({
++              connection: payload.connection,
++              token: payload.token,
++              method: payload.method,
++            }),
++          );
++          get.refresh(connectionDetailsAtom);
++        }),
++      ),
++      Effect.tapErrorTag("AccountConnectionTargetChanged", () => reloadConnection(get)),
++    ),
++);
++
+ class ConnectionSetupKey extends Data.Class<ConnectionGrant & { readonly method: string }> {}
+ /**
+  * Read again whenever the tab returns, which is when an app changed while the page was open is
+diff --git a/apps/local/web/src/contracts/app-connections.ts b/apps/local/web/src/contracts/app-connections.ts
+--- a/apps/local/web/src/contracts/app-connections.ts
++++ b/apps/local/web/src/contracts/app-connections.ts
+@@ -2,7 +2,7 @@
+  * Every dashboard sign-in fills one app requirement, in the scope the dialog names: saving the
+  * account links it to that requirement. Credentials are never entered outside an app.
+  */
+-import { Effect } from "effect";
++import { Effect, type Redacted } from "effect";
+ import { Atom } from "effect/reactivity";
+ import type {
+   Account,
+@@ -64,6 +64,16 @@
+   return {
+     pending,
+     oauthSetup: (method: string) => setup(method),
++    setMcpEndpoint: DashboardClient.runtime.fn(
++      (input: { method: string; endpoint: Redacted.Redacted<string> }, get) =>
++        Effect.gen(function* () {
++          const current = yield* connection(get);
++          const client = yield* DashboardClient;
++          yield* client.dashboard.setMcpEndpoint({ payload: { connection: current.id, ...input } });
++          get.refresh(setup(input.method));
++          get.set(pending, { ...current, mcpEndpointMethod: input.method });
++        }),
++    ),
+     submit: DashboardClient.runtime.fn(
+       (
+         input: {
+diff --git a/apps/local/web/src/implementation/pages/connect-account.tsx b/apps/local/web/src/implementation/pages/connect-account.tsx
+--- a/apps/local/web/src/implementation/pages/connect-account.tsx
++++ b/apps/local/web/src/implementation/pages/connect-account.tsx
+@@ -142,6 +142,7 @@
+         oauth={(props) => (
+           <LinkOAuthFields
+             provider={connection.provider}
++            configuredMethod={connection.mcpEndpointMethod}
+             grant={grant}
+             onSaved={(account) => setState({ status: "completed", account })}
+             {...(connection.reconnectAccount ? { account: connection.reconnectAccount } : {})}
+diff --git a/apps/local/web/src/implementation/pages/oauth-fields.tsx b/apps/local/web/src/implementation/pages/oauth-fields.tsx
+--- a/apps/local/web/src/implementation/pages/oauth-fields.tsx
++++ b/apps/local/web/src/implementation/pages/oauth-fields.tsx
+@@ -1,15 +1,18 @@
++import { CredentialGuidance } from "@executor-js/ui/dashboard/credential-guidance";
++import type { DashboardError } from "../../contracts/errors.ts";
+ import { usePageUrl } from "@executor-js/dashboard-start/page";
+ import type { AccountOAuthProps, OAuthSubmission } from "@executor-js/ui/contracts/credentials";
+ import type { FailureProps } from "@executor-js/ui/contracts/dashboard";
+ import { useRef, useState } from "react";
+ import type { AccountId, AccountScope } from "@executor-js/sdk";
+ import type { IdentityConsentSelection } from "@executor-js/ui/contracts/identity-consent";
++import { McpEndpointFields } from "@executor-js/ui/dashboard/mcp-endpoint-fields";
+ import { IdentityConsent } from "@executor-js/ui/dashboard/identity-consent";
+ import { identityConsentAtoms } from "../../contracts/identity-consent.ts";
+ import { overviewAtom } from "../../contracts/api.ts";
+ import { catalogAtom } from "../../contracts/onboarding.ts";
+ import { useQuery } from "@executor-js/ui/dashboard/context";
+-import { useAtomSet } from "@effect/atom-react";
++import { useAtomSet, useAtomValue } from "@effect/atom-react";
+ import type { Atom } from "effect/reactivity";
+ import { Cause, Effect, Exit, Option, Schema } from "effect";
+ import type { ComponentType, ReactNode } from "react";
+@@ -32,6 +35,7 @@
+ import type { appConnectionAtoms } from "../../contracts/app-connections.ts";
+ import {
+   startConnectionOAuthAtom,
++  setConnectionMcpEndpointAtom,
+   connectionOAuthSetupAtom,
+ } from "../../contracts/account-connections.ts";
+ import { openConnectionOAuth } from "../account-connections.ts";
+@@ -71,6 +75,10 @@
+   readonly onSaved: (account: Account) => void;
+ }) {
+   const start = useAtomSet(atoms.startOAuth, { mode: "promiseExit" });
++  const setEndpoint = useAtomSet(atoms.setMcpEndpoint, { mode: "promiseExit" });
++  const pending = useAtomValue(atoms.pending);
++  const auth = props.provider.definition.auth[props.method];
++  const endpoint = auth?.type === "oauth2" && "mcpEndpoint" in auth ? auth.mcpEndpoint : undefined;
+   const [identityAtoms] = useState(() => identityConsentAtoms({ app, scope, requirement }));
+   const plan = useAtomSet(identityAtoms.plan, { mode: "promiseExit" });
+   const reuse = useAtomSet(identityAtoms.reuse, { mode: "promiseExit" });
+@@ -118,6 +126,7 @@
+       // provider's setup, so opening the form writes nothing.
+       query={
+         reconnect ||
++        endpoint !== undefined ||
+         (props.provider.definition.site !== undefined &&
+           (props.provider.definition.site.defaultOrigin !== true ||
+             (site !== undefined && site !== props.provider.definition.site.origin)))
+@@ -141,6 +150,25 @@
+       open={(authorizationUrl) => openOAuth(authorizationUrl, returnTo())}
+     />
+   );
++  if (endpoint !== undefined)
++    return (
++      <McpEndpointFields<DashboardError>
++        label={endpoint.label}
++        guidance={
++          props.guidance?.credentials === undefined ? undefined : (
++            <CredentialGuidance guidance={props.guidance.credentials} site={site} />
++          )
++        }
++        configured={reconnect || pending?.mcpEndpointMethod === props.method}
++        reconnect={reconnect}
++        disabled={props.disabled}
++        onPendingChange={props.onPendingChange}
++        save={(value) => setEndpoint({ method: props.method, endpoint: value })}
++        Failure={Failure}
++      >
++        {fields({})}
++      </McpEndpointFields>
++    );
+   if (reconnect) return fields({});
+   return (
+     <IdentityConsent
+@@ -170,14 +198,19 @@
+ /** A sign-in on an agent's connection link page, which keeps its grant across the redirect. */
+ export function LinkOAuthFields({
+   grant,
++  configuredMethod,
+   onSaved,
+   ...props
+ }: FieldsProps & {
++  readonly configuredMethod?: string | undefined;
+   readonly grant: ConnectionGrant;
+   readonly onSaved: (account: Account) => void;
+ }) {
+   const start = useAtomSet(startConnectionOAuthAtom, { mode: "promiseExit" });
+-  return (
++  const setEndpoint = useAtomSet(setConnectionMcpEndpointAtom, { mode: "promiseExit" });
++  const auth = props.provider.definition.auth[props.method];
++  const endpoint = auth?.type === "oauth2" && "mcpEndpoint" in auth ? auth.mcpEndpoint : undefined;
++  const fields = (
+     <Fields
+       {...props}
+       query={connectionOAuthSetupAtom({ ...grant, method: props.method })}
+@@ -186,6 +219,25 @@
+       onSaved={onSaved}
+       open={(authorizationUrl) => openConnectionOAuth(authorizationUrl, grant)}
+     />
++  );
++  if (endpoint === undefined) return fields;
++  return (
++    <McpEndpointFields<DashboardError>
++      label={endpoint.label}
++      guidance={
++        props.guidance?.credentials === undefined ? undefined : (
++          <CredentialGuidance guidance={props.guidance.credentials} site={props.site} />
++        )
++      }
++      configured={props.account !== undefined || configuredMethod === props.method}
++      reconnect={props.account !== undefined}
++      disabled={props.disabled}
++      onPendingChange={props.onPendingChange}
++      save={(value) => setEndpoint({ ...grant, method: props.method, endpoint: value })}
++      Failure={ConnectionLinkFailure}
++    >
++      {fields}
++    </McpEndpointFields>
+   );
+ }
+ 
+diff --git a/packages/apps/package.json b/packages/apps/package.json
+--- a/packages/apps/package.json
++++ b/packages/apps/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "apps",
+-  "version": "0.0.1-beta.104-basalt.10",
++  "version": "0.0.1-beta.104-basalt.11",
+   "private": true,
+   "description": "TypeScript apps with typed tools, accounts, storage, and UI.",
+   "type": "module",
+diff --git a/packages/apps/src/contracts/mcp-endpoint.ts b/packages/apps/src/contracts/mcp-endpoint.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/apps/src/contracts/mcp-endpoint.ts
+@@ -0,0 +1,13 @@
++/** A method accepts an account-owned endpoint only on its declared credential hosts. */
++import { Schema } from "effect";
++
++export const CredentialHost = Schema.String.check(
++  Schema.isPattern(
++    /^(\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$/,
++  ),
++);
++
++export const McpEndpoint = Schema.Struct({
++  label: Schema.optionalKey(Schema.NonEmptyString),
++  hosts: Schema.Array(CredentialHost).check(Schema.isMinLength(1)),
++});
+diff --git a/packages/apps/src/contracts/mcp.ts b/packages/apps/src/contracts/mcp.ts
+--- a/packages/apps/src/contracts/mcp.ts
++++ b/packages/apps/src/contracts/mcp.ts
+@@ -61,11 +61,17 @@
+  * share one budget that ends `mcpHealthReserveMs` before the deadline. `timeoutMs` bounds the whole
+  * check too; it can shorten the budget, never extend it.
+  */
+-export type McpHealthOptions = Pick<typeof McpHealthInput.Type, "url" | "headers" | "timeoutMs">;
++export type McpHealthOptions = Partial<
++  Pick<typeof McpHealthInput.Type, "url" | "headers" | "timeoutMs">
++>;
+ 
+ /** What `mcpHealth` reads from the check context the host passes to a provider's `health`. */
+ export type McpHealthCheck = Pick<AccountCheckContext<AuthMethods>, "signal" | "deadline"> & {
+-  readonly account: { readonly id: string };
++  readonly account: {
++    readonly id: string;
++    readonly mcpEndpoint?: string;
++    readonly headers?: () => Readonly<Record<string, string>>;
++  };
+ };
+ 
+ /**
+diff --git a/packages/apps/src/contracts/protocol-version.ts b/packages/apps/src/contracts/protocol-version.ts
+--- a/packages/apps/src/contracts/protocol-version.ts
++++ b/packages/apps/src/contracts/protocol-version.ts
+@@ -3,4 +3,4 @@
+  * snapshot. Its schemas are `protocols/current.ts`; released protocols are frozen. See notes/apps-publishing.md.
+  * This file has no imports so the package build script can read it directly.
+  */
+-export const frameworkProtocol = 35;
++export const frameworkProtocol = 36;
+diff --git a/packages/apps/src/contracts/protocols/35.ts b/packages/apps/src/contracts/protocols/35.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/apps/src/contracts/protocols/35.ts
+@@ -0,0 +1,715 @@
++import {
++  AppCallCommand,
++  AppCallReply,
++  DeclaredAppDependencies,
++  AppToolPolicyCommand,
++  AppToolPolicyReplayReply as AppToolPolicyReply,
++} from "../app-calls.ts";
++import { DeclaredModels, ModelCommand, ModelReply } from "../models.ts";
++import { AccountObservationResult } from "../account-observation.ts";
++/**
++ * The host protocol this framework speaks: every message that crosses between a host and an app
++ * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
++ *
++ * This module is live. The framework and the SDK read the current boundary from here, through
++ * `../host.ts`. `bun run check` records it in `packages/apps/protocols/<frameworkProtocol>.json` and
++ * checks that it stays compatible with every released protocol in `released.ts`: a host that speaks
++ * this module must keep running every bundle a released protocol retained. A change that no longer
++ * does so is a break: freeze this module's previous content as `<frameworkProtocol>.ts`, raise the
++ * number, and give the host an adapter for the frozen one. See notes/apps-publishing.md.
++ *
++ * The frozen protocol modules beside this one are records of released boundaries. Nothing here
++ * imports them, so a change here never edits a released protocol.
++ */
++import { Effect, Schema } from "effect";
++import { AccountFamily } from "../account-family.ts";
++import { McpAppViewObservation, McpAppUi } from "../mcp-apps.ts";
++import { ConnectCommand } from "../connect.ts";
++import { ProviderSite } from "@executor-js/utils/account-site";
++import { CacheCommand, CacheReply } from "@executor-js/app-cache/contracts";
++const frameworkProtocol = 35;
++import {
++  DatabaseFieldReserved,
++  DatabaseLimitExceeded,
++  DatabaseSchema,
++} from "@executor-js/app-data/contracts";
++import { OpenapiResponseError } from "../api-response-error.ts";
++import {
++  ApprovalElicitation,
++  ElicitationFailed,
++  ElicitationReply,
++  FormElicitation,
++} from "../elicitation.ts";
++import { DeclaredEvents, EmittedEvents } from "../events.ts";
++import { FailureDetail, UpstreamError } from "../failure.ts";
++import { AccountCheckResult } from "../provider.ts";
++import { OAuth2Config } from "./oauth-35.ts";
++import { ProviderError } from "../provider-error.ts";
++import { RouterIcon } from "../router.ts";
++import { AppIcons } from "../icons.ts";
++import { Placements } from "../placement.ts";
++import { OperationSchedule } from "../schedules.ts";
++import { AccountId, JsonObject, JsonValue } from "../schema.ts";
++import { AppSkillName, AppSkills } from "../skills.ts";
++import { ToolAnnotations } from "../tools.ts";
++import { WebhookCommand } from "../webhook-protocol.ts";
++import {
++  WorkflowCommand,
++  WorkflowControlCommand,
++  WorkflowFailure,
++  WorkflowReplay,
++  NativeWorkflowRpcCommand as WorkflowRpcCommand,
++  WorkflowRpcResult,
++  WorkflowRunId,
++} from "../workflows.ts";
++
++/** An MCP failure as it crosses the host boundary. Apps throw the author-facing class from `apps/mcp`. */
++export class McpError extends Schema.TaggedError<McpError>()("McpError", {
++  phase: Schema.Literals(["connect", "discover", "call", "schema", "transport"]),
++  reason: Schema.Literals([
++    "request",
++    "unauthorized",
++    "invalid_response",
++    "timeout",
++    "invalid_input",
++  ]),
++  status: Schema.optional(Schema.Number),
++  /** The JSON-RPC error the server stated. */
++  upstream: Schema.optional(UpstreamError),
++  /**
++   * The refused request carried the session ID the server issued at initialization, so a 404 reads
++   * as a session the server may have lost. Chooses the explanation only; the host never decides from
++   * it whose side a failure is on.
++   */
++  session: Schema.optional(Schema.Literal(true)),
++}) {}
++
++/** A skill loader failure as it crosses the host boundary. Apps throw the author-facing class from `apps/skills`. */
++export class SkillLoadFailed extends Schema.TaggedError<SkillLoadFailed>()("SkillLoadFailed", {
++  reason: Schema.Literals([
++    "source",
++    "request",
++    "rate_limited",
++    "document",
++    "limit",
++    "changed",
++    "encoding",
++  ]),
++  message: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
++  status: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 599 }))),
++  /** What the service's answer points to as missing: the repository, or the branch or tag. */
++  missing: Schema.optional(Schema.Literals(["repository", "ref"])),
++}) {}
++
++/**
++ * Where a provider's credentials may be sent: an exact host, `host:port`, or `*.` followed by a
++ * domain, matching exactly one more label. Lowercase, without a scheme or path.
++ */
++export const CredentialHost = Schema.String.check(
++  Schema.isPattern(
++    /^(\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$/,
++  ),
++);
++
++/**
++ * Field names an auth method exposes to app code, and where its secret fields may be sent. Every
++ * other string field is secret.
++ */
++const exposure = {
++  /** Not secret: app code reads the real value and forms show it. */
++  plain: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++  /** Secret, but app code reads the real value, for signing and similar uses. */
++  raw: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++  /**
++   * The only places the outbound network substitutes this method's secret fields: whole header
++   * values and query parameters, each an exact template. Part of the provider's identity. In an
++   * invocation, an account's provider carries the placements granted to that account, which can
++   * be narrower than the app's declaration.
++   */
++  request: Schema.optionalKey(Placements),
++};
++
++/** Serializable authentication declarations interpreted by the trusted host. */
++export const DeclaredAuthMethod = Schema.Union([
++  Schema.Struct({ type: Schema.Literal("interactive"), label: Schema.String, ...exposure }),
++  Schema.Struct({
++    type: Schema.Literal("secrets"),
++    provisioned: Schema.optionalKey(Schema.Literal(true)),
++    label: Schema.String,
++    fields: JsonObject,
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[0].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[1].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[2].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[3].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
++]);
++
++/** A credential-free provider declaration with the hosts its credentials may be sent to. */
++export const DeclaredProvider = Schema.Struct({
++  name: Schema.NonEmptyString,
++  family: Schema.optionalKey(AccountFamily),
++  auth: Schema.Record(Schema.NonEmptyString, DeclaredAuthMethod),
++  site: Schema.optionalKey(ProviderSite),
++  hosts: Schema.optionalKey(Schema.Array(CredentialHost)),
++});
++/** Credential-free provider declaration; content matching remains host policy. */
++export type DeclaredProvider = typeof DeclaredProvider.Type;
++
++/** One requirement: its provider, how many accounts it takes, and whether it has a check. */
++export const DeclaredAccountSlot = Schema.Struct({
++  definition: DeclaredProvider,
++  capabilities: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++  cardinality: Schema.Literals(["one", "many"]),
++  contributed: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
++  /**
++   * The slot's provider defines an account check. Kept beside the definition, not in it, so
++   * adding or editing a check never changes the provider's identity.
++   */
++  health: Schema.optionalKey(Schema.Literal(true)),
++  /** This slot can check app-acquired references through connect.check. */
++  interactiveHealth: Schema.optionalKey(Schema.Literal(true)),
++  hostAcquisition: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++});
++export type DeclaredAccountSlot = typeof DeclaredAccountSlot.Type;
++
++/** One scope's requirements, by name. */
++export const DeclaredAccountSlots = Schema.Record(Schema.NonEmptyString, DeclaredAccountSlot);
++export type DeclaredAccountSlots = typeof DeclaredAccountSlots.Type;
++
++/** Account slots available without binding accounts or evaluating the app factory. */
++export const DeclaredRequirements = Schema.Struct({
++  models: Schema.optionalKey(DeclaredModels),
++  dependencies: Schema.optionalKey(DeclaredAppDependencies),
++  /** Protocol support of this retained framework build, not an author-declared requirement. */
++  capabilities: Schema.optionalKey(
++    Schema.Struct({
++      skills: Schema.Literal(true),
++      /** Accepts inspect detail and tools. Earlier builds reject both as excess fields. */
++      toolIndex: Schema.optionalKey(Schema.Literal(true)),
++      /** Accepts skills sources and reports whether the catalog includes a live loader. */
++      skillSources: Schema.optionalKey(Schema.Literal(true)),
++      /** Accepts scheduled inspection. Earlier builds reject it as an excess field. */
++      scheduledTools: Schema.optionalKey(Schema.Literal(true)),
++      /**
++       * Accepts inspect definitions and answers it with a shared catalog. Earlier builds reject it
++       * as an excess field.
++       */
++      sharedDefinitions: Schema.optionalKey(Schema.Literal(true)),
++      mcpApps: Schema.optionalKey(Schema.Literal(true)),
++    }),
++  ),
++  /**
++   * The document database an app of protocol 9 or earlier declared. Apps of this protocol declare
++   * `sql` instead; the field remains so requirements read from older retained builds keep their meaning.
++   */
++  database: Schema.optionalKey(DatabaseSchema),
++  /**
++   * Requirements by scope. `app` requirements are filled by the accounts the app's managers link for everyone,
++   * for every caller and for background work; `user` requirements by each caller's linked
++   * accounts. A name is used in one scope only. Bundles of protocol 12 and earlier declare user
++   * requirements only.
++   */
++  accounts: Schema.Struct({ app: DeclaredAccountSlots, user: DeclaredAccountSlots }),
++  /** The build has SQL files in `migrations/` and owns a raw SQLite database. */
++  sql: Schema.optionalKey(Schema.Literal(true)),
++  /** The events the app declares, so a host lists them without evaluating the app. */
++  events: Schema.optionalKey(DeclaredEvents),
++  /** The icons the app declares, so a host shows them without evaluating the app. */
++  icons: Schema.optionalKey(AppIcons),
++});
++/** Parsed declared account requirements. */
++export type DeclaredRequirements = typeof DeclaredRequirements.Type;
++
++/**
++ * Host-resolved credentials for one stable saved account. Never a request DTO. When the provider
++ * declares hosts, its secret string fields are sealed handles, not values. The provider carries
++ * the hosts and placements granted to this account.
++ */
++export const ResolvedAccount = Schema.Struct({
++  id: AccountId,
++  site: Schema.optionalKey(Schema.String),
++  provider: DeclaredProvider,
++  method: Schema.NonEmptyString,
++  /**
++   * Changes when the account is reconnected or its credentials replaced, not on renewal. Hosts
++   * send it since credential generations; `apps@0.0.1-beta.0` and `beta.1` ignore it.
++   */
++  generation: Schema.optionalKey(Schema.Int),
++  fields: JsonObject,
++});
++/** Parsed host account binding. */
++export type ResolvedAccount = typeof ResolvedAccount.Type;
++
++/** One scope's resolved accounts by requirement; [] differs from a missing slot. */
++export const ResolvedAccountSlots = Schema.Record(
++  Schema.NonEmptyString,
++  Schema.Union([ResolvedAccount, Schema.Array(ResolvedAccount)]),
++);
++export type ResolvedAccountSlots = typeof ResolvedAccountSlots.Type;
++
++/**
++ * An invocation's accounts by scope, resolved by the trusted caller. `user` is absent for work
++ * without a caller, such as an app schedule or an app-account webhook: its context has no `user`.
++ */
++export const ResolvedAccounts = Schema.Struct({
++  app: ResolvedAccountSlots,
++  user: Schema.optionalKey(ResolvedAccountSlots),
++});
++/** Parsed host selections, kept redacted until native account binding. */
++export type ResolvedAccounts = typeof ResolvedAccounts.Type;
++
++/** Trusted approval for one decoded call. Never accepted in public command JSON. */
++export const TrustedToolApproval = Schema.Struct({ tool: Schema.NonEmptyString, input: JsonValue });
++export type TrustedToolApproval = typeof TrustedToolApproval.Type;
++
++/** Absolute Unix time in milliseconds; remote hosts enforce it inside the operation transaction. */
++export const InvocationDeadline = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
++
++/**
++ * Serializable live tool metadata; executable callbacks never cross this boundary. `name` is the
++ * tool's full dotted path. `router` is the path of the router that owns it, omitted at the root.
++ * `readOnly` marks a query; a tool without it is a mutation.
++ */
++export const HostedTool = Schema.Struct({
++  schedules: Schema.optionalKey(Schema.Array(OperationSchedule)),
++  name: Schema.NonEmptyString,
++  router: Schema.optionalKey(Schema.NonEmptyString),
++  tags: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++  description: Schema.String,
++  inputSchema: JsonObject,
++  readOnly: Schema.optionalKey(Schema.Boolean),
++  title: Schema.optionalKey(Schema.String),
++  outputSchema: Schema.optionalKey(JsonObject),
++  annotations: Schema.optionalKey(ToolAnnotations),
++  _meta: Schema.optionalKey(JsonObject),
++  ui: Schema.optionalKey(McpAppUi),
++});
++/** Parsed live tool description. */
++export type HostedTool = typeof HostedTool.Type;
++
++/** Catalog entry without schemas. Browsing lists these and reads one full tool on selection. */
++export const HostedToolSummary = HostedTool.mapFields(
++  ({ inputSchema: _input, outputSchema: _output, _meta, ...fields }) => fields,
++);
++export type HostedToolSummary = typeof HostedToolSummary.Type;
++
++/**
++ * The module or declared capability shape could not be hosted. The detail names what the app
++ * declared wrongly; declarations bind no accounts.
++ */
++export class HostDeclarationInvalid extends Schema.TaggedError<HostDeclarationInvalid>()(
++  "HostDeclarationInvalid",
++  FailureDetail,
++) {}
++/** Fresh app evaluation failed before calling a tool. */
++export class HostEvaluationFailed extends Schema.TaggedError<HostEvaluationFailed>()(
++  "HostEvaluationFailed",
++  FailureDetail,
++) {}
++
++/** Why one router's tools could not be read. The rest of the app's catalog is unaffected. */
++export const HostRouterError = Schema.Union([
++  ProviderError,
++  McpError,
++  SkillLoadFailed,
++  HostDeclarationInvalid,
++  HostEvaluationFailed,
++]);
++export type HostRouterError = typeof HostRouterError.Type;
++
++/**
++ * One router in a live catalog. `path` is "" for the app's root router. `skill` names the skill
++ * that carries this router's instructions. A router with `error` lists none of its tools.
++ */
++export const HostedRouter = Schema.Struct({
++  path: Schema.String,
++  title: Schema.optionalKey(Schema.String),
++  description: Schema.optionalKey(Schema.String),
++  icons: Schema.optionalKey(Schema.Array(RouterIcon)),
++  tags: Schema.optionalKey(Schema.Record(Schema.NonEmptyString, Schema.String)),
++  skill: Schema.optionalKey(AppSkillName),
++  error: Schema.optionalKey(HostRouterError),
++});
++export type HostedRouter = typeof HostedRouter.Type;
++
++/** A live evaluation's tools and the routers that group them. */
++export const HostedCatalog = Schema.Struct({
++  tools: Schema.Array(HostedTool),
++  routers: Schema.Array(HostedRouter),
++});
++export type HostedCatalog = typeof HostedCatalog.Type;
++
++/** A catalog without tool schemas. Browsing lists these and reads one full tool on selection. */
++export const HostedCatalogSummary = Schema.Struct({
++  tools: Schema.Array(HostedToolSummary),
++  routers: Schema.Array(HostedRouter),
++});
++export type HostedCatalogSummary = typeof HostedCatalogSummary.Type;
++
++/** A tool schema whose `$defs` a shared catalog sends once, beside its tools. */
++export const SharedSchemaKey = Schema.Literals(["inputSchema", "outputSchema"]);
++export type SharedSchemaKey = typeof SharedSchemaKey.Type;
++
++/**
++ * A tool of a shared catalog. The `$defs` of each schema `shared` names is the position of its
++ * entries in the catalog's `defs`; the tool's other fields are as `HostedTool`'s.
++ */
++export const HostedSharedTool = Schema.Struct({
++  ...HostedTool.fields,
++  shared: Schema.optionalKey(Schema.Array(SharedSchemaKey)),
++});
++export type HostedSharedTool = typeof HostedSharedTool.Type;
++
++/**
++ * A catalog that sends each `$defs` its tools' schemas hold once, and each definition in them
++ * once. Routers such as the OpenAPI importer give every tool the definitions its schemas reach,
++ * which for a densely connected document is most of the document again for each tool, under the
++ * same few hundred `$defs`. Putting each tool's `$defs` back gives the `HostedCatalog` the bundle
++ * evaluated. Only builds that declare the sharedDefinitions capability send it, and only when
++ * the inspection asks.
++ */
++export const HostedSharedCatalog = Schema.Struct({
++  tools: Schema.Array(HostedSharedTool),
++  routers: Schema.Array(HostedRouter),
++  definitions: Schema.Array(JsonValue),
++  /** Each distinct `$defs`, its entries naming positions in `definitions`. */
++  defs: Schema.Array(Schema.Record(Schema.String, Schema.Int)),
++});
++export type HostedSharedCatalog = typeof HostedSharedCatalog.Type;
++
++/**
++ * A skill catalog and whether any of it came from `dynamicSkills`. Without a live loader the
++ * catalog is determined by the build and its evaluation inputs; with one it reflects a publisher.
++ * `cached` says the loader read through the app cache, so the cache's freshness and invalidation
++ * govern its publisher reads.
++ */
++export const SkillSources = Schema.Struct({
++  skills: AppSkills,
++  dynamic: Schema.Boolean,
++  cached: Schema.optionalKey(Schema.Boolean),
++});
++export type SkillSources = typeof SkillSources.Type;
++/** Either response shape; `dynamic` is unknown for builds that predate skillSources. */
++export const SkillCatalogResponse = Schema.Union([SkillSources, AppSkills]);
++
++/** Whether a tool reads or writes. */
++export const ToolKind = Schema.Literals(["query", "mutation"]);
++
++/**
++ * Check one account for one declared slot. The invocation supplies only that slot, in its scope,
++ * as a single account even when the slot takes many. The app factory is not evaluated.
++ */
++export const AccountCheckCommand = Schema.Struct({
++  operation: Schema.Literal("account-check"),
++  requirement: Schema.NonEmptyString,
++});
++export type AccountCheckCommand = typeof AccountCheckCommand.Type;
++export const AccountObserveCommand = Schema.Struct({
++  operation: Schema.Literal("account-observe"),
++  requirement: Schema.NonEmptyString,
++});
++
++/** Apply the build's pending SQL migrations. No accounts are bound and the app is not evaluated. */
++export const MigrateCommand = Schema.Struct({ operation: Schema.Literal("migrate") });
++export type MigrateCommand = typeof MigrateCommand.Type;
++
++/** The migrations this command applied, oldest first, by position and file path. Empty when the database was current. */
++export const MigrateResult = Schema.Array(
++  Schema.Struct({ id: Schema.Int, name: Schema.NonEmptyString }),
++);
++export type MigrateResult = typeof MigrateResult.Type;
++
++/** Framework-owned dispatch, independent of app-authored HTTP routing. */
++export const HostRequest = Schema.Union([
++  ...ConnectCommand.members,
++  WorkflowCommand,
++  WebhookCommand,
++  Schema.Struct({ operation: Schema.Literal("requirements") }),
++  Schema.Struct({
++    operation: Schema.Literal("inspect"),
++    uiProfile: Schema.optionalKey(Schema.Literal(true)),
++    /** Omit schemas. Only builds that declare the toolIndex capability accept this. */
++    detail: Schema.optionalKey(Schema.Literal("summary")),
++    /** Describe only these tools. Only builds that declare the toolIndex capability accept this. */
++    tools: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++    /**
++     * Describe only declared operations that have schedules, without dynamic tool discovery.
++     * Only builds that declare the scheduledTools capability accept this.
++     */
++    scheduled: Schema.optionalKey(Schema.Literal(true)),
++    /**
++     * Answer with a HostedSharedCatalog, each shared `$defs` entry sent once. Only builds that
++     * declare the sharedDefinitions capability accept this.
++     */
++    definitions: Schema.optionalKey(Schema.Literal("shared")),
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("skills"),
++    /** Answer with SkillSources. Only builds that declare the skillSources capability accept this. */
++    sources: Schema.optionalKey(Schema.Literal(true)),
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("query"),
++    name: Schema.NonEmptyString,
++    input: JsonValue,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("mutate"),
++    name: Schema.NonEmptyString,
++    input: JsonValue,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("call"),
++    tool: Schema.NonEmptyString,
++    /**
++     * The caller's claim; the bundle rejects a call whose tool has the other kind. The host omits
++     * it for a tool its catalog does not list, and then opens storage for writing.
++     */
++    kind: Schema.optionalKey(ToolKind),
++    input: JsonValue,
++    audience: Schema.optionalKey(Schema.Literal("app")),
++    uiProfile: Schema.optionalKey(Schema.Literal(true)),
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("app-resource"),
++    tool: Schema.NonEmptyString,
++    input: JsonValue,
++    source: Schema.String,
++    selection: JsonValue,
++    uri: Schema.NonEmptyString,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("app-callback"),
++    tool: Schema.NonEmptyString,
++    input: JsonValue,
++    source: Schema.String,
++    selection: JsonValue,
++    name: Schema.NonEmptyString,
++    arguments: JsonValue,
++  }),
++  AccountCheckCommand,
++  AccountObserveCommand,
++  MigrateCommand,
++]);
++/** Parsed portable dispatch request. */
++export type HostRequest = typeof HostRequest.Type;
++
++/** The dispatch request did not match the protocol. */
++export class HostRequestInvalid extends Schema.TaggedError<HostRequestInvalid>()(
++  "HostRequestInvalid",
++  {},
++) {}
++/** Host-supplied accounts did not satisfy the declared slots or native method schemas. */
++export class HostAccountsInvalid extends Schema.TaggedError<HostAccountsInvalid>()(
++  "HostAccountsInvalid",
++  {},
++) {}
++/** No query or mutation matched the requested name. */
++export class HostOperationNotFound extends Schema.TaggedError<HostOperationNotFound>()(
++  "HostOperationNotFound",
++  {},
++) {}
++/** An app operation failed. Carries the app's own error name, code, fields and bounded message. */
++export class HostOperationFailed extends Schema.TaggedError<HostOperationFailed>()(
++  "HostOperationFailed",
++  FailureDetail,
++) {}
++/** The freshly evaluated catalog did not contain the requested tool. */
++export class HostToolNotFound extends Schema.TaggedError<HostToolNotFound>()(
++  "HostToolNotFound",
++  {},
++) {}
++/** The tool exists but is a query called as a mutation, or the reverse. Nothing ran. */
++export class HostKindMismatch extends Schema.TaggedError<HostKindMismatch>()("HostKindMismatch", {
++  tool: Schema.NonEmptyString,
++  requested: ToolKind,
++  actual: ToolKind,
++}) {}
++/** One failing input location and its expected shape; never the supplied value. */
++export const InputProblem = Schema.String.check(Schema.isMaxLength(512));
++/** Input decoding reports at most this many problems. */
++export const maxInputProblems = 10;
++/** Native input decoding failed; supplied values are omitted. Builds before problems were reported send none. */
++export class HostInputInvalid extends Schema.TaggedError<HostInputInvalid>()("HostInputInvalid", {
++  problems: Schema.optionalKey(
++    Schema.Array(InputProblem).check(Schema.isMaxLength(maxInputProblems)),
++  ),
++}) {}
++/** The tool's approval policy blocked this call before its tool body ran. */
++export class HostToolBlocked extends Schema.TaggedError<HostToolBlocked>()("HostToolBlocked", {}) {}
++/** Policy elicitation plus decoded input. No tool body ran; the host owns delivery and resumption. */
++export class HostToolApprovalRequired extends Schema.TaggedError<HostToolApprovalRequired>()(
++  "HostToolApprovalRequired",
++  { input: JsonValue, elicitation: ApprovalElicitation },
++) {}
++/** The tool's approval policy failed or returned an invalid decision. Author failures remain private. */
++export class HostToolPolicyFailed extends Schema.TaggedError<HostToolPolicyFailed>()(
++  "HostToolPolicyFailed",
++  {},
++) {}
++/** A tool result was not JSON; the result is never included in the error. */
++export class HostOutputInvalid extends Schema.TaggedError<HostOutputInvalid>()(
++  "HostOutputInvalid",
++  {},
++) {}
++
++/**
++ * Safe error envelope. Author failures carry only their name, code, scalar fields and bounded
++ * message with account secrets replaced; no stack or cause value is serialized.
++ */
++export const HostError = Schema.Union([
++  OpenapiResponseError,
++  ProviderError,
++  McpError,
++  SkillLoadFailed,
++  WorkflowFailure,
++  HostRequestInvalid,
++  HostAccountsInvalid,
++  HostDeclarationInvalid,
++  HostEvaluationFailed,
++  HostOperationNotFound,
++  HostOperationFailed,
++  DatabaseLimitExceeded,
++  DatabaseFieldReserved,
++  HostToolNotFound,
++  HostInputInvalid,
++  HostOutputInvalid,
++  HostToolBlocked,
++  HostToolApprovalRequired,
++  HostToolPolicyFailed,
++  ElicitationFailed,
++  HostKindMismatch,
++]);
++/** Expected host failures. */
++export type HostError = typeof HostError.Type;
++
++/** Portable response envelope; callers parse the success value for their operation. */
++export const HostResponse = Schema.Union([
++  Schema.Struct({
++    ok: Schema.Literal(true),
++    value: JsonValue,
++    /** Account branches that ran, distinct from all accounts available to the app. */
++    accountsUsed: Schema.optionalKey(Schema.Array(AccountId)),
++    toolError: Schema.optionalKey(Schema.Literal(true)),
++    appView: Schema.optionalKey(McpAppViewObservation),
++    /** The occurrences this invocation emitted, kept only because it succeeded. */
++    events: Schema.optionalKey(EmittedEvents),
++  }),
++  Schema.Struct({
++    ok: Schema.Literal(false),
++    error: HostError,
++    accountsUsed: Schema.optionalKey(Schema.Array(AccountId)),
++  }),
++]);
++/** Parsed response envelope. */
++export type HostResponse = typeof HostResponse.Type;
++
++/**
++ * The JSON body the host sends to a bundle's generated server entry. The entry is compiled into
++ * the retained build, so this shape is part of the protocol too.
++ */
++export const HostInvocation = Schema.Struct({
++  command: HostRequest,
++  accounts: ResolvedAccounts,
++  /** Trusted host identity; never part of the public command. */
++  caller: Schema.optionalKey(Schema.NonEmptyString),
++  approval: Schema.optionalKey(TrustedToolApproval),
++  replay: Schema.optionalKey(WorkflowReplay),
++  deadline: Schema.optionalKey(InvocationDeadline),
++  workflowRun: Schema.optionalKey(WorkflowRunId),
++});
++export type HostInvocation = typeof HostInvocation.Type;
++
++/**
++ * Who sends each message. The host must keep accepting everything a released protocol's bundles
++ * send (`bundle`), and must send a released protocol's bundles only what they accept, or gate the
++ * addition on something the bundle declared (`host`). Names a released protocol used and this one
++ * dropped, such as `tools`, keep their direction here.
++ */
++export const messageDirections = {
++  invocation: "host",
++  request: "host",
++  accounts: "host",
++  elicitationReply: "host",
++  workflowStepReply: "host",
++  cacheReply: "host",
++  response: "bundle",
++  requirements: "bundle",
++  catalog: "bundle",
++  catalogSummary: "bundle",
++  sharedCatalog: "bundle",
++  tools: "bundle",
++  toolSummaries: "bundle",
++  skills: "bundle",
++  elicitationRequest: "bundle",
++  workflowStep: "bundle",
++  workflowControl: "bundle",
++  appCall: "bundle",
++  appCallReply: "host",
++  appToolPolicy: "bundle",
++  appToolPolicyReply: "host",
++  modelRequest: "bundle",
++  modelReply: "host",
++  cacheCommand: "bundle",
++  accountCheck: "bundle",
++  accountObservation: "bundle",
++  migrate: "bundle",
++} as const satisfies Record<string, "host" | "bundle">;
++/** A message name every protocol so far has used. */
++export type MessageName = keyof typeof messageDirections;
++
++/** Every message of the current protocol. The snapshot records them by name. */
++export const current = {
++  version: frameworkProtocol,
++  schemas: {
++    invocation: HostInvocation,
++    request: HostRequest,
++    response: HostResponse,
++    requirements: DeclaredRequirements,
++    catalog: HostedCatalog,
++    catalogSummary: HostedCatalogSummary,
++    sharedCatalog: HostedSharedCatalog,
++    skills: SkillCatalogResponse,
++    elicitationRequest: FormElicitation,
++    elicitationReply: ElicitationReply,
++    workflowStep: WorkflowRpcCommand,
++    workflowStepReply: WorkflowRpcResult,
++    workflowControl: WorkflowControlCommand,
++    appCall: AppCallCommand,
++    appCallReply: AppCallReply,
++    appToolPolicy: AppToolPolicyCommand,
++    appToolPolicyReply: AppToolPolicyReply,
++    modelRequest: ModelCommand,
++    modelReply: ModelReply,
++    cacheCommand: CacheCommand,
++    cacheReply: CacheReply,
++    accountCheck: AccountCheckResult,
++    accountObservation: Schema.NullOr(AccountObservationResult),
++    accounts: ResolvedAccounts,
++    migrate: MigrateResult,
++  },
++} as const satisfies {
++  readonly version: number;
++  readonly schemas: Partial<Record<MessageName, Schema.Top>>;
++};
+diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/src/contracts/protocols/current.ts
+--- a/packages/apps/src/contracts/protocols/current.ts
++++ b/packages/apps/src/contracts/protocols/current.ts
+@@ -104,11 +104,8 @@
+  * Where a provider's credentials may be sent: an exact host, `host:port`, or `*.` followed by a
+  * domain, matching exactly one more label. Lowercase, without a scheme or path.
+  */
+-export const CredentialHost = Schema.String.check(
+-  Schema.isPattern(
+-    /^(\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$/,
+-  ),
+-);
++export { CredentialHost } from "../mcp-endpoint.ts";
++import { CredentialHost } from "../mcp-endpoint.ts";
+ 
+ /**
+  * Field names an auth method exposes to app code, and where its secret fields may be sent. Every
+@@ -130,6 +127,12 @@
+ 
+ /** Serializable authentication declarations interpreted by the trusted host. */
+ export const DeclaredAuthMethod = Schema.Union([
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[4].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
+   Schema.Struct({ type: Schema.Literal("interactive"), label: Schema.String, ...exposure }),
+   Schema.Struct({
+     type: Schema.Literal("secrets"),
+@@ -247,6 +250,7 @@
+  */
+ export const ResolvedAccount = Schema.Struct({
+   id: AccountId,
++  mcpEndpoint: Schema.optionalKey(Schema.String),
+   site: Schema.optionalKey(Schema.String),
+   provider: DeclaredProvider,
+   method: Schema.NonEmptyString,
+diff --git a/packages/apps/src/contracts/protocols/oauth-35.ts b/packages/apps/src/contracts/protocols/oauth-35.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/apps/src/contracts/protocols/oauth-35.ts
+@@ -0,0 +1,198 @@
++/** OAuth declaration frozen for host protocol 35. */
++import { Schema } from "effect";
++import { HttpUrl } from "../schema.ts";
++
++export const OAuthClientAuth = Schema.Literals([
++  "none",
++  "client_secret_post",
++  "client_secret_basic",
++  "client_secret_basic_raw",
++]);
++export type OAuthClientAuth = typeof OAuthClientAuth.Type;
++/** Machine clients always authenticate; public clients cannot use the client-credentials grant. */
++export const OAuthSecretClientAuth = Schema.Literals([
++  "client_secret_post",
++  "client_secret_basic",
++  "client_secret_basic_raw",
++]);
++
++/** Parameters the host sets on every authorization request; a declaration cannot replace them. */
++export const reservedAuthorizationParams = [
++  "response_type",
++  "client_id",
++  "redirect_uri",
++  "state",
++  "scope",
++  "code_challenge",
++  "code_challenge_method",
++  "nonce",
++  "resource",
++  "request",
++  "request_uri",
++] as const;
++/** A protocol parameter only the host sets on the authorization request. */
++export type ReservedAuthorizationParam = (typeof reservedAuthorizationParams)[number];
++const reserved: ReadonlySet<string> = new Set(reservedAuthorizationParams);
++
++/**
++ * Extra authorization request parameters, such as `access_type: "offline"`. RFC 6749 §3.1
++ * lets services define their own; the protocol and security parameters stay host-owned.
++ */
++export const OAuthAuthorizationParams = Schema.Record(Schema.String, Schema.String).check(
++  Schema.makeFilter((params) => Object.keys(params).every((key) => !reserved.has(key)), {
++    message: "Authorization parameters cannot replace protocol parameters such as state or scope.",
++  }),
++);
++
++/**
++ * A declared `authorizationUrl` may carry its own query (RFC 6749 §3.1 keeps it). Each parameter
++ * is declared once, in the URL or in `authorizationParams`, and never names a host-owned one.
++ */
++const declaredAuthorizationQuery = Schema.makeFilter(
++  (config: {
++    readonly authorizationUrl: string;
++    readonly authorizationParams?: Readonly<Record<string, string>>;
++  }) => {
++    const keys = [...new URL(config.authorizationUrl).searchParams.keys()];
++    const owned = keys.filter((key) => reserved.has(key));
++    if (owned.length > 0)
++      return {
++        path: ["authorizationUrl"],
++        issue: `authorizationUrl cannot set protocol parameters: ${owned.join(", ")}.`,
++      };
++    const repeated = keys.filter((key) => Object.hasOwn(config.authorizationParams ?? {}, key));
++    if (repeated.length > 0)
++      return {
++        path: ["authorizationParams"],
++        issue: `Declare each parameter once; authorizationUrl already sets: ${repeated.join(", ")}.`,
++      };
++    return undefined;
++  },
++);
++
++/** How the token endpoint reads requests. RFC 6749 uses a form; some services want JSON. */
++export const OAuthTokenRequestFormat = Schema.Literals(["form", "json"]);
++export type OAuthTokenRequestFormat = typeof OAuthTokenRequestFormat.Type;
++
++/**
++ * Where a service nests the grant in its token response, as a dot-separated member path. Slack
++ * returns a user token under `authed_user`. When `requiredOnExchange` is true, an authorization
++ * code response must include the nested access token; a complete top-level grant cannot replace it.
++ * Refresh responses keep the usual top-level fallback.
++ */
++export const OAuthTokenResponse = Schema.Struct({
++  path: Schema.String.check(Schema.isPattern(/^[^.]+(\.[^.]+)*$/)),
++  requiredOnExchange: Schema.optionalKey(Schema.Boolean),
++});
++export type OAuthTokenResponse = typeof OAuthTokenResponse.Type;
++
++/** Options for services that differ from RFC 6749 in how they read requests. */
++const tokenRequestOptions = {
++  /** Joins requested scopes; Linear wants `","`. Defaults to RFC 6749's space. */
++  scopeSeparator: Schema.optionalKey(Schema.String.check(Schema.isMinLength(1))),
++  /** Encoding of token requests. Defaults to `"form"`; Atlassian, ClickUp and Notion need `"json"`. */
++  tokenRequestFormat: Schema.optionalKey(OAuthTokenRequestFormat),
++};
++
++const oauthOptions = {
++  /** A provider-required browser callback; the cloud completes the pasted URL. */
++  loopbackRedirectUri: Schema.optionalKey(
++    Schema.String.check(
++      Schema.makeFilter((value) => {
++        try {
++          const url = new URL(value);
++          return (
++            url.protocol === "http:" &&
++            ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) &&
++            url.port !== "" &&
++            url.username === "" &&
++            url.password === "" &&
++            url.search === "" &&
++            url.hash === ""
++          );
++        } catch {
++          return false;
++        }
++      }),
++    ),
++  ),
++  ...tokenRequestOptions,
++  /**
++   * Read the grant from this nested member when the top-level response has no access token or no
++   * scope. `requiredOnExchange` makes the nested grant authoritative for authorization-code
++   * exchange while preserving top-level refresh responses. Slack's user tokens use
++   * `{ path: "authed_user" }`.
++   */
++  tokenResponse: Schema.optionalKey(OAuthTokenResponse),
++  grant: Schema.optionalKey(Schema.Literal("authorization_code")),
++  /**
++   * Service-defined authorization request parameters, such as Google's
++   * `{ access_type: "offline", prompt: "consent" }`. Host-owned protocol parameters
++   * (`state`, `scope`, `redirect_uri`, PKCE and the others in `reservedAuthorizationParams`)
++   * are rejected. A discovered endpoint's own query parameter of the same name is replaced.
++   */
++  authorizationParams: Schema.optionalKey(OAuthAuthorizationParams),
++  tokenEndpointAuthMethod: Schema.optionalKey(OAuthClientAuth),
++  /** Preference used only when a person enters a confidential BYO client. */
++  confidentialTokenEndpointAuthMethod: Schema.optionalKey(OAuthSecretClientAuth),
++  /** Omitted uses discovery; null explicitly suppresses the resource parameter. */
++  resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
++  /** The host verifies this issuer's discovery and UserInfo before grouping accounts. */
++  identity: Schema.optionalKey(Schema.Struct({ issuer: HttpUrl, name: Schema.NonEmptyString })),
++};
++
++/**
++ * OAuth endpoints and protocol choices. Omitted grant means authorization code; clients remain
++ * host-owned. Declared endpoints may name an RFC 7009 `revocationUrl`; discovery reads the
++ * server's `revocation_endpoint` metadata instead.
++ */
++export const OAuth2Config = Schema.Union([
++  Schema.Struct({
++    ...oauthOptions,
++    discover: HttpUrl,
++    /** Fetch this exact metadata document and verify its issuer against discovery. */
++    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
++    authorizationUrl: Schema.optionalKey(Schema.Never),
++    tokenUrl: Schema.optionalKey(Schema.Never),
++    revocationUrl: Schema.optionalKey(Schema.Never),
++    scopes: Schema.optionalKey(Schema.Array(Schema.String)),
++  }),
++  Schema.Struct({
++    ...oauthOptions,
++    /** Its query is kept; it cannot set protocol parameters or repeat `authorizationParams`. */
++    authorizationUrl: HttpUrl,
++    tokenUrl: HttpUrl,
++    revocationUrl: Schema.optionalKey(HttpUrl),
++    scopes: Schema.Array(Schema.String),
++    /** RFC 8414 issuer identifier. Declared issuers are checked against the callback's `iss`. */
++    issuer: Schema.optionalKey(HttpUrl),
++    discover: Schema.optionalKey(Schema.Never),
++    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
++  }).check(declaredAuthorizationQuery),
++  Schema.Struct({
++    grant: Schema.Literal("client_credentials"),
++    discover: HttpUrl,
++    /** Fetch this exact metadata document and verify its issuer against discovery. */
++    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
++    authorizationUrl: Schema.optionalKey(Schema.Never),
++    tokenUrl: Schema.optionalKey(Schema.Never),
++    revocationUrl: Schema.optionalKey(Schema.Never),
++    scopes: Schema.optionalKey(Schema.Array(Schema.String)),
++    ...tokenRequestOptions,
++    tokenEndpointAuthMethod: OAuthSecretClientAuth,
++    resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
++  }),
++  Schema.Struct({
++    grant: Schema.Literal("client_credentials"),
++    tokenUrl: HttpUrl,
++    revocationUrl: Schema.optionalKey(HttpUrl),
++    scopes: Schema.Array(Schema.String),
++    ...tokenRequestOptions,
++    tokenEndpointAuthMethod: OAuthSecretClientAuth,
++    resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
++    authorizationUrl: Schema.optionalKey(Schema.Never),
++    discover: Schema.optionalKey(Schema.Never),
++    authorizationServerMetadataUrl: Schema.optionalKey(Schema.Never),
++  }),
++]);
++export type OAuth2Config = typeof OAuth2Config.Type;
+diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/src/contracts/protocols/released.ts
+--- a/packages/apps/src/contracts/protocols/released.ts
++++ b/packages/apps/src/contracts/protocols/released.ts
+@@ -1,3 +1,4 @@
++import { current as protocol35 } from "./35.ts";
+ import { current as protocol34 } from "./34.ts";
+ import { current as protocol33 } from "./33.ts";
+ import { current as protocol31 } from "./31.ts";
+@@ -72,4 +73,5 @@
+   protocol31,
+   protocol33,
+   protocol34,
++  protocol35,
+ ] as const;
+diff --git a/packages/apps/src/contracts/provider.ts b/packages/apps/src/contracts/provider.ts
+--- a/packages/apps/src/contracts/provider.ts
++++ b/packages/apps/src/contracts/provider.ts
+@@ -1,3 +1,4 @@
++import { McpEndpoint } from "./mcp-endpoint.ts";
+ import { AccountObservationResult, type AccountObserver } from "./account-observation.ts";
+ /** Provider declarations use native Effect schemas. The trusted host interprets them. */
+ import { Data, type Effect, Schema } from "effect";
+@@ -224,6 +225,16 @@
+     discover: Schema.optionalKey(Schema.Never),
+     authorizationServerMetadataUrl: Schema.optionalKey(Schema.Never),
+   }),
++  Schema.Struct({
++    ...oauthOptions,
++    mcpEndpoint: McpEndpoint,
++    discover: Schema.optionalKey(Schema.Never),
++    authorizationUrl: Schema.optionalKey(Schema.Never),
++    tokenUrl: Schema.optionalKey(Schema.Never),
++    revocationUrl: Schema.optionalKey(Schema.Never),
++    authorizationServerMetadataUrl: Schema.optionalKey(Schema.Never),
++    scopes: Schema.optionalKey(Schema.Array(Schema.String)),
++  }),
+ ]);
+ export type OAuth2Config = typeof OAuth2Config.Type;
+ 
+@@ -391,6 +402,8 @@
+     /** The canonical origin selected for this saved account, when the provider declares a site. */
+     readonly site?: string;
+     readonly method: Method;
++    /** Host-bound MCP endpoint for this selected account only. */
++    readonly mcpEndpoint?: string;
+     readonly fields: AuthMethodData<Auth[Method]>;
+     /** See `AccountRequest`. */
+     readonly headers: AccountRequest["headers"];
+diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
+--- a/packages/apps/src/implementation/host.ts
++++ b/packages/apps/src/implementation/host.ts
+@@ -380,6 +380,7 @@
+               id: account.id,
+               method: account.method,
+               fields,
++              ...(account.mcpEndpoint === undefined ? {} : { mcpEndpoint: account.mcpEndpoint }),
+               ...(account.site === undefined ? {} : { site: account.site }),
+             },
+             granted,
+diff --git a/packages/apps/src/implementation/mcp-catalog.ts b/packages/apps/src/implementation/mcp-catalog.ts
+--- a/packages/apps/src/implementation/mcp-catalog.ts
++++ b/packages/apps/src/implementation/mcp-catalog.ts
+@@ -24,8 +24,16 @@
+  * A server, the account whose catalog it is, and the metadata policy for HTTP/SSE sources. A
+  * missing cache keeps discovery invocation-local.
+  */
+-export type McpCatalogOptions = Omit<McpToolsOptions, "accountId" | "headers"> &
+-  CatalogCacheOptions &
++export type McpCatalogOptions = Omit<McpToolsOptions, "accountId" | "headers" | "url"> & {
++  readonly url?: string | undefined;
++  readonly account?:
++    | {
++        readonly id: string;
++        readonly mcpEndpoint?: string | undefined;
++        readonly headers?: (() => Readonly<Record<string, string>>) | undefined;
++      }
++    | undefined;
++} & CatalogCacheOptions &
+   CatalogAccount;
+ 
+ /** Browsing metadata; schemas are read per tool. */
+@@ -49,16 +57,17 @@
+ const makeMcpCatalog = (options: McpCatalogOptions, kinds: OperationKinds, profile: boolean) =>
+   Effect.gen(function* () {
+     const invalid = () => new McpError({ phase: "connect", reason: "invalid_input" });
++    const headers = options.headers ?? options.account?.headers?.();
+     const parsed = yield* Schema.decodeUnknownEffect(McpToolsOptions)({
+-      url: options.url,
++      url: options.account?.mcpEndpoint ?? options.url,
+       uiProfile: profile && options.uiProfile !== false,
+       accountId: options.account?.id,
+-      headers: options.headers,
++      headers,
+       signal: options.signal,
+       timeoutMs: options.timeoutMs,
+     }).pipe(Effect.mapError(invalid));
+     // The account's scope separates credentials, so the server alone identifies its catalog.
+-    const cache = yield* catalogScope(options, options.headers, invalid);
++    const cache = yield* catalogScope(options, headers, invalid);
+     const id = yield* cacheKey({ url: parsed.url, uiProfile: parsed.uiProfile === true });
+     const key: JsonValue = ["mcp-catalog-v5-profile", id, "current"];
+     const changed =
+diff --git a/packages/apps/src/implementation/mcp.ts b/packages/apps/src/implementation/mcp.ts
+--- a/packages/apps/src/implementation/mcp.ts
++++ b/packages/apps/src/implementation/mcp.ts
+@@ -467,6 +467,8 @@
+   Effect.gen(function* () {
+     const { deadline, timeoutMs, ...parsed } = yield* Schema.decodeUnknownEffect(McpHealthInput)({
+       ...options,
++      url: check.account.mcpEndpoint ?? options.url,
++      headers: options.headers ?? check.account.headers?.(),
+       accountId: check.account.id,
+       signal: check.signal,
+       deadline: check.deadline,
+diff --git a/packages/apps/src/implementation/provider.ts b/packages/apps/src/implementation/provider.ts
+--- a/packages/apps/src/implementation/provider.ts
++++ b/packages/apps/src/implementation/provider.ts
+@@ -48,7 +48,9 @@
+  */
+ const clientCredentials = Schema.is(Schema.Struct({ grant: Schema.Literal("client_credentials") }));
+ const oauth2Form = (config: unknown) => {
+-  const [discovered, declared, discoveredMachine, declaredMachine] = OAuth2Config.members;
++  const [discovered, declared, discoveredMachine, declaredMachine, endpoint] = OAuth2Config.members;
++  if (typeof config === "object" && config !== null && Object.hasOwn(config, "mcpEndpoint"))
++    return endpoint;
+   const discovers =
+     typeof config === "object" && config !== null && Object.hasOwn(config, "discover");
+   if (clientCredentials(config)) return discovers ? discoveredMachine : declaredMachine;
+diff --git a/packages/apps/src/mcp.ts b/packages/apps/src/mcp.ts
+--- a/packages/apps/src/mcp.ts
++++ b/packages/apps/src/mcp.ts
+@@ -43,7 +43,7 @@
+  */
+ export const mcpHealth = <Auth extends AuthMethods>(
+   check: AccountCheckContext<Auth>,
+-  options: McpHealthOptions,
++  options: McpHealthOptions = {},
+ ): Promise<void> => Effect.runPromise(mcpHealthEffect(check, options), { signal: check.signal });
+ 
+ export type { OperationKinds } from "./implementation/protocol-operations.ts";
+diff --git a/packages/sdk/src/contracts/account-connection.ts b/packages/sdk/src/contracts/account-connection.ts
+--- a/packages/sdk/src/contracts/account-connection.ts
++++ b/packages/sdk/src/contracts/account-connection.ts
+@@ -149,6 +149,7 @@
+   createdAt: Schema.Date,
+   expiresAt: Schema.Date,
+   state: AccountConnectionState,
++  mcpEndpointMethod: Schema.optionalKey(AuthMethodName),
+   sourceAccount: Schema.optionalKey(AccountId),
+   additionalConnections: Schema.optionalKey(Schema.Array(OAuthAdditionalConnection)),
+ });
+@@ -194,6 +195,13 @@
+   connection: AccountConnectionId,
+   owner: Schema.optional(OwnerId),
+ });
++/** The full endpoint is a credential; neither progress nor query arguments return it. */
++export const SetConnectionMcpEndpoint = Schema.Struct({
++  ...GetAccountConnection.fields,
++  method: AuthMethodName,
++  endpoint: Schema.RedactedFromValue(Schema.NonEmptyString),
++});
++
+ /** Save one set of fields. Successful retries return the same account. Without a label, the account is named when created. */
+ export const SubmitAccountConnection = Schema.Struct({
+   ...GetAccountConnection.fields,
+@@ -371,6 +379,13 @@
+ export const AccountConnectionsGroup = /* @__PURE__ */ (() =>
+   HttpApiGroup.make("accountConnections")
+     .add(
++      HttpApiEndpoint.post("setMcpEndpoint", "/v1/account-connections/mcp-endpoint", {
++        payload: SetConnectionMcpEndpoint,
++        success: Schema.Void,
++        error: saveErrors,
++      }),
++    )
++    .add(
+       HttpApiEndpoint.post("planOAuth", "/v1/account-connections/oauth/plan", {
+         payload: PlanConnectionOAuth,
+         success: OAuthConnectionPlan,
+diff --git a/packages/sdk/src/contracts/oauth-families.ts b/packages/sdk/src/contracts/oauth-families.ts
+--- a/packages/sdk/src/contracts/oauth-families.ts
++++ b/packages/sdk/src/contracts/oauth-families.ts
+@@ -7,7 +7,7 @@
+   method: AuthMethod,
+   recipes: readonly OAuthAccountFamilyRecipe[] = defaultAccountFamilies,
+ ) =>
+-  method.type !== "oauth2" || method.grant === "client_credentials"
++  method.type !== "oauth2" || method.grant === "client_credentials" || "mcpEndpoint" in method
+     ? undefined
+     : recipes.find(
+         (recipe) =>
+diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
+--- a/packages/sdk/src/contracts/oauth.ts
++++ b/packages/sdk/src/contracts/oauth.ts
+@@ -1520,6 +1520,7 @@
+ 
+ /** What every sign-in attempt keeps, whichever client it uses. */
+ const attemptFields = {
++  mcpEndpoint: Schema.optionalKey(HttpUrl),
+   connection: AccountConnectionId,
+   account: AccountId,
+   owner: OwnerId,
+@@ -1574,6 +1575,7 @@
+ export type OAuthAttempt = typeof OAuthAttempt.Type;
+ /** Private refresh context. Access-token projections are stored separately on the account. */
+ const grantFields = {
++  mcpEndpoint: Schema.optionalKey(HttpUrl),
+   /** The account origin whose OAuth endpoints and API requests this grant belongs to. */
+   site: Schema.optional(SiteOrigin),
+   resource: Schema.optional(HttpUrl),
+diff --git a/packages/sdk/src/contracts/storage.ts b/packages/sdk/src/contracts/storage.ts
+--- a/packages/sdk/src/contracts/storage.ts
++++ b/packages/sdk/src/contracts/storage.ts
+@@ -86,6 +86,12 @@
+   Schema.Struct({
+     status: Schema.Literal("pending"),
+     failure: Schema.optional(Schema.Json),
++    mcpEndpoint: Schema.optionalKey(
++      Schema.Struct({
++        method: Schema.NonEmptyString,
++        encrypted: Schema.NonEmptyString,
++      }),
++    ),
+     interactive: Schema.optionalKey(InteractiveSession),
+   }),
+   Schema.Struct({ status: Schema.Literal("cancelled") }),
+@@ -142,6 +148,7 @@
+   readonly encrypt: (
+     identity:
+       | AccountId
++      | import("./shared.ts").AccountConnectionId
+       | AppCodeId
+       | OAuthClientId
+       | OAuthAttemptId
+@@ -159,6 +166,7 @@
+   readonly decrypt: (
+     identity:
+       | AccountId
++      | import("./shared.ts").AccountConnectionId
+       | AppCodeId
+       | OAuthClientId
+       | OAuthAttemptId
+diff --git a/packages/sdk/src/implementation/account-connections.ts b/packages/sdk/src/implementation/account-connections.ts
+--- a/packages/sdk/src/implementation/account-connections.ts
++++ b/packages/sdk/src/implementation/account-connections.ts
+@@ -8,6 +8,7 @@
+   type CreateAccountConnection,
+   type GetAccountConnection,
+   type SubmitAccountConnection,
++  type SetConnectionMcpEndpoint,
+ } from "../contracts/account-connection.ts";
+ import { Account } from "../contracts/account.ts";
+ import { AccountSelectionInvalid } from "../contracts/apps.ts";
+@@ -31,6 +32,7 @@
+ import { interactiveBinding } from "./interactive-state.ts";
+ import { canonical } from "./provider.ts";
+ 
++import { setConnectionMcpEndpoint } from "./mcp-endpoint.ts";
+ import { query, transaction, type Query } from "./database.ts";
+ 
+ /** Requests survive host restarts. Pending requests expire after thirty minutes. */
+@@ -82,16 +84,21 @@
+   /** A connection for an app shows that app's declaration, whose hosts it will grant. */
+   const show = (row: ConnectionRow, shown: Provider | undefined) =>
+     Effect.gen(function* () {
+-      return describe(
+-        row,
+-        shown ?? (yield* provider(row.provider)),
+-        row.reconnectAccount === null
+-          ? null
+-          : yield* makeAccounts(db, credentials, crypto, lifecycle).get({
+-              account: row.reconnectAccount,
+-              owner: row.owner,
+-            }),
+-      );
++      return {
++        ...describe(
++          row,
++          shown ?? (yield* provider(row.provider)),
++          row.reconnectAccount === null
++            ? null
++            : yield* makeAccounts(db, credentials, crypto, lifecycle).get({
++                account: row.reconnectAccount,
++                owner: row.owner,
++              }),
++        ),
++        ...(row.storedState.status === "pending" && row.storedState.mcpEndpoint !== undefined
++          ? { mcpEndpointMethod: row.storedState.mcpEndpoint.method }
++          : {}),
++      };
+     });
+   /** Ended requests keep showing the provider they used, even after their app changed. */
+   const endedProvider = (row: ConnectionRow) => targetProvider(db, row.target, row.provider);
+@@ -108,6 +115,8 @@
+     });
+   return {
+     get,
++    setMcpEndpoint: (input: typeof SetConnectionMcpEndpoint.Type) =>
++      setConnectionMcpEndpoint(db, credentials, crypto, sitePolicy, input),
+     create: (input: typeof CreateAccountConnection.Type) =>
+       Effect.gen(function* () {
+         const reconnect =
+@@ -202,13 +211,26 @@
+                 current.state.status === "pending" &&
+                 (current.id === row.id ||
+                   (row.oauthAttempt !== null && current.oauthAttempt === row.oauthAttempt))
+-              )
++              ) {
++                const attempt = current.oauthAttempt;
++                if (
++                  current.storedState.status === "pending" &&
++                  current.storedState.mcpEndpoint !== undefined &&
++                  attempt !== null
++                )
++                  yield* query(() =>
++                    tx.updateMany("oauthAttempts", {
++                      where: (b) => b("id", "=", attempt),
++                      set: { status: "completed", encrypted: new Uint8Array() },
++                    }),
++                  );
+                 yield* query(() =>
+                   tx.updateMany("accountConnections", {
+                     where: (b) => b("id", "=", current.id),
+                     set: { state: { status: "cancelled" }, oauthAttempt: null },
+                   }),
+                 );
++              }
+           }
+           // A request whose app has changed can still be cancelled.
+           const cancelled = yield* readConnection(db, input);
+diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
+--- a/packages/sdk/src/implementation/account-health.ts
++++ b/packages/sdk/src/implementation/account-health.ts
+@@ -368,6 +368,9 @@
+                     provider: definition,
+                     method: account.method,
+                     fields: Redacted.value(credential.fields),
++                    ...(credential.mcpEndpoint === undefined
++                      ? {}
++                      : { mcpEndpoint: Redacted.value(credential.mcpEndpoint) }),
+                   },
+                 },
+               }),
+diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
+--- a/packages/sdk/src/implementation/app-protocols.ts
++++ b/packages/sdk/src/implementation/app-protocols.ts
+@@ -312,6 +312,7 @@
+ const protocol33: AppProtocol = { ...protocol31, version: 33, nodeEntry: nodeAppEntry(33) };
+ const protocol34: AppProtocol = { ...protocol33, version: 34, nodeEntry: nodeAppEntry(34) };
+ const protocol35: AppProtocol = { ...protocol34, version: 35, nodeEntry: nodeAppEntry(35) };
++const protocol36: AppProtocol = { ...protocol35, version: 36, nodeEntry: nodeAppEntry(36) };
+ 
+ /**
+  * Bundles of protocol 12 and earlier read one flat record of requirements and accounts. They
+@@ -540,6 +541,7 @@
+     protocol33,
+     protocol34,
+     protocol35,
++    protocol36,
+   ].map((protocol) => [protocol.version, protocol]),
+ );
+ 
+diff --git a/packages/sdk/src/implementation/connection-state.ts b/packages/sdk/src/implementation/connection-state.ts
+--- a/packages/sdk/src/implementation/connection-state.ts
++++ b/packages/sdk/src/implementation/connection-state.ts
+@@ -44,13 +44,35 @@
+     );
+     if (row === null || (input.owner !== undefined && row.owner !== input.owner))
+       return yield* new AccountConnectionNotFound(input);
+-    const stored = yield* Schema.decodeUnknownEffect(StoredState)(row.state).pipe(
++    let stored = yield* Schema.decodeUnknownEffect(StoredState)(row.state).pipe(
+       Effect.mapError(() => new StorageError()),
+     );
+     const target = yield* Schema.decodeUnknownEffect(StoredConnectionTarget)(row.target).pipe(
+       Effect.mapError(() => new StorageError()),
+     );
+     const now = yield* Clock.currentTimeMillis;
++    if (
++      stored.status === "pending" &&
++      stored.mcpEndpoint !== undefined &&
++      row.expiresAt.getTime() <= now
++    ) {
++      const { mcpEndpoint: _expired, ...withoutEndpoint } = stored;
++      stored = withoutEndpoint;
++      yield* query(() =>
++        db.updateMany("accountConnections", {
++          where: (b) => b.and(b("id", "=", row.id), b("revision", "=", row.revision)),
++          set: { state: encodeState(stored), oauthAttempt: null },
++        }),
++      );
++      const attempt = row.oauthAttempt;
++      if (attempt !== null)
++        yield* query(() =>
++          db.updateMany("oauthAttempts", {
++            where: (b) => b("id", "=", attempt),
++            set: { status: "completed", encrypted: new Uint8Array() },
++          }),
++        );
++    }
+     // An expired request keeps the failure that ended its latest sign-in.
+     const state: AccountConnectionState =
+       stored.status === "pending"
+@@ -108,6 +130,7 @@
+   lifecycle: ResourceLifecycle | undefined,
+   interactive?: import("../contracts/interactive-accounts.ts").InteractiveBinding,
+   hostGrant: "replace" | "extend" = "replace",
++  credentialHost?: string,
+ ) =>
+   Effect.gen(function* () {
+     // Acquisition provenance is visible to the product link guard in this same transaction.
+@@ -126,6 +149,7 @@
+       account,
+       lifecycle,
+       hostGrant,
++      credentialHost,
+     );
+     yield* query(() =>
+       db.updateMany("accountConnections", {
+@@ -150,7 +174,15 @@
+   query(() =>
+     db.updateMany("accountConnections", {
+       where: (b) => b("id", "=", row.id),
+-      set: { state: encodeState({ status: "pending" }), oauthAttempt: attempt },
++      set: {
++        state: encodeState({
++          status: "pending",
++          ...(row.storedState.status === "pending" && row.storedState.mcpEndpoint !== undefined
++            ? { mcpEndpoint: row.storedState.mcpEndpoint }
++            : {}),
++        }),
++        oauthAttempt: attempt,
++      },
+     }),
+   );
+ 
+@@ -177,7 +209,14 @@
+           tx.updateMany("accountConnections", {
+             where: (b) => b("id", "=", row.id),
+             set: {
+-              state: encodeState({ status: "pending", failure: encodeFailure({ at, error }) }),
++              state: encodeState({
++                status: "pending",
++                failure: encodeFailure({ at, error }),
++                ...(row.storedState.status === "pending" &&
++                row.storedState.mcpEndpoint !== undefined
++                  ? { mcpEndpoint: row.storedState.mcpEndpoint }
++                  : {}),
++              }),
+             },
+           }),
+         );
+diff --git a/packages/sdk/src/implementation/connection-target.ts b/packages/sdk/src/implementation/connection-target.ts
+--- a/packages/sdk/src/implementation/connection-target.ts
++++ b/packages/sdk/src/implementation/connection-target.ts
+@@ -1,3 +1,4 @@
++import { intersectCredentialHosts } from "./credential-handles.ts";
+ /** Capture and apply one app requirement, independently of account authentication. */
+ import { Effect, Schema } from "effect";
+ import type { UrlPolicy } from "@executor-js/utils/url-policy";
+@@ -150,6 +151,7 @@
+   account: Account,
+   lifecycle: ResourceLifecycle | undefined,
+   hostGrant: "replace" | "extend" = "replace",
++  credentialHost?: string,
+ ) =>
+   Effect.gen(function* () {
+     const changed = () =>
+@@ -183,11 +185,16 @@
+         app: target.app,
+         requirement: target.requirement,
+       });
+-    let allowedHosts = siteCredentialHosts(
+-      required.definition.hosts,
+-      required.definition.site,
+-      target.site,
+-    );
++    const method = required.definition.auth[account.method];
++    let allowedHosts =
++      method?.type === "oauth2" && "mcpEndpoint" in method
++        ? method.mcpEndpoint.hosts
++        : siteCredentialHosts(required.definition.hosts, required.definition.site, target.site);
++    if (credentialHost !== undefined)
++      allowedHosts =
++        allowedHosts === undefined
++          ? [credentialHost]
++          : intersectCredentialHosts([credentialHost], allowedHosts);
+     if (hostGrant === "extend") {
+       const saved = yield* query(() =>
+         db.findFirst("accounts", {
+diff --git a/packages/sdk/src/implementation/handlers.ts b/packages/sdk/src/implementation/handlers.ts
+--- a/packages/sdk/src/implementation/handlers.ts
++++ b/packages/sdk/src/implementation/handlers.ts
+@@ -78,6 +78,9 @@
+         .handle("cancel", ({ params, query }) =>
+           executor.accountConnections.cancel({ ...params, ...query }),
+         )
++        .handle("setMcpEndpoint", ({ payload }) =>
++          executor.accountConnections.setMcpEndpoint(payload),
++        )
+         .handle("submit", ({ payload }) => executor.accountConnections.submit(payload))
+         .handle("startInteractive", ({ payload }) =>
+           executor.accountConnections.startInteractive(payload),
+diff --git a/packages/sdk/src/implementation/mcp-endpoint.ts b/packages/sdk/src/implementation/mcp-endpoint.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/mcp-endpoint.ts
+@@ -0,0 +1,163 @@
++/** Private endpoint bindings share connection transactions and the existing credential envelope. */
++import { type Crypto, Effect, Redacted, Result, Schema } from "effect";
++import { Base64 } from "effect/encoding";
++import { parseDestination, type UrlPolicy } from "@executor-js/utils/url-policy";
++import { AccountFieldsInvalid } from "../contracts/account.ts";
++import { AuthMethodInvalid, type ProviderAuthMethod } from "../contracts/provider.ts";
++import type { SetConnectionMcpEndpoint } from "../contracts/account-connection.ts";
++import { OAuthSetupFailed, OAuthGrant } from "../contracts/oauth.ts";
++import {
++  type AccountConnectionId,
++  type OwnerId,
++  type ProviderId,
++  StorageError,
++} from "../contracts/shared.ts";
++import type { Credentials } from "../contracts/storage.ts";
++import { accountGrantId } from "./account-identities.ts";
++import { ownedAccount } from "./accounts.ts";
++import { credentialHostMatches } from "./credential-handles.ts";
++import {
++  lockConnection,
++  readConnection,
++  requireOpen,
++  type ConnectionRow,
++} from "./connection-state.ts";
++import { requireTargetProvider } from "./connection-target.ts";
++import { requireAccountConsumerMethod } from "./account-consumer-plan.ts";
++import { query, transaction, type Query } from "./database.ts";
++
++export const endpointMethod = (method: ProviderAuthMethod) =>
++  method.type === "oauth2" && "mcpEndpoint" in method ? method.mcpEndpoint : undefined;
++
++/** Validation does no I/O and its error never includes the submitted value. */
++export const validateMcpEndpoint = (
++  value: string,
++  method: ProviderAuthMethod,
++  policy: UrlPolicy,
++) => {
++  const rule = endpointMethod(method);
++  const url = parseDestination(value, policy);
++  return rule !== undefined &&
++    url !== undefined &&
++    url.protocol === "https:" &&
++    rule.hosts.some((host) => credentialHostMatches(host, url))
++    ? url.href
++    : undefined;
++};
++
++export const setConnectionMcpEndpoint = (
++  db: Query,
++  credentials: Credentials,
++  crypto: Crypto.Crypto,
++  policy: UrlPolicy,
++  input: typeof SetConnectionMcpEndpoint.Type,
++) =>
++  transaction(db, (tx) =>
++    Effect.gen(function* () {
++      const row = yield* lockConnection(tx, input, crypto);
++      yield* requireOpen(input, row);
++      const provider = yield* requireTargetProvider(tx, row);
++      yield* requireAccountConsumerMethod(tx, row.target, row.provider, input.method);
++      const method = provider.definition.auth[input.method];
++      if (
++        method === undefined ||
++        endpointMethod(method) === undefined ||
++        row.reconnectAccount !== null
++      )
++        return yield* new AuthMethodInvalid({ provider: row.provider, method: input.method });
++      const endpoint = validateMcpEndpoint(Redacted.value(input.endpoint), method, policy);
++      if (endpoint === undefined)
++        return yield* new AccountFieldsInvalid({ provider: row.provider, method: input.method });
++      const encrypted = Base64.encode(
++        yield* credentials.encrypt(row.id, Redacted.make({ endpoint })),
++      );
++      // Replacing pending input invalidates the browser attempt that used the previous binding.
++      const previous = row.oauthAttempt;
++      if (previous !== null)
++        yield* query(() =>
++          tx.updateMany("oauthAttempts", {
++            where: (b) => b("id", "=", previous),
++            set: { status: "completed", encrypted: new Uint8Array() },
++          }),
++        );
++      yield* query(() =>
++        tx.updateMany("accountConnections", {
++          where: (b) => b("id", "=", row.id),
++          set: {
++            state: { status: "pending", mcpEndpoint: { method: input.method, encrypted } },
++            oauthAttempt: null,
++          },
++        }),
++      );
++    }),
++  );
++
++/** Reconnects read their saved grant; uncommitted input belongs only to this connection. */
++export const connectionMcpEndpoint = (
++  db: Query,
++  credentials: Credentials,
++  row: ConnectionRow,
++  method: string,
++) =>
++  Effect.gen(function* () {
++    if (row.reconnectAccount !== null) {
++      const account = yield* ownedAccount(db, { account: row.reconnectAccount, owner: row.owner });
++      if (account.method !== method) return undefined;
++      const id = accountGrantId(account);
++      const grant = yield* query(() =>
++        db.findFirst("oauthGrants", { where: (b) => b("id", "=", id) }),
++      );
++      if (grant === null) return undefined;
++      const value = yield* credentials.decrypt(id, Redacted.make(grant.encrypted));
++      const parsed = yield* Schema.decodeUnknownEffect(OAuthGrant)(Redacted.value(value)).pipe(
++        Effect.mapError(() => new StorageError()),
++      );
++      return "mcpEndpoint" in parsed ? parsed.mcpEndpoint : undefined;
++    }
++    const binding = row.storedState.status === "pending" ? row.storedState.mcpEndpoint : undefined;
++    if (binding?.method !== method) return undefined;
++    const bytes = yield* Base64.decode(binding.encrypted).pipe(
++      Result.mapError(() => new StorageError()),
++      Effect.fromResult,
++    );
++    const value = yield* credentials.decrypt(row.id, Redacted.make(bytes));
++    const parsed = yield* Schema.decodeUnknownEffect(Schema.Struct({ endpoint: Schema.String }))(
++      Redacted.value(value),
++    ).pipe(Effect.mapError(() => new StorageError()));
++    return parsed.endpoint;
++  });
++
++/** Discovery receives the private resource only after its connection has been checked. */
++export const bindConnectionMcpMethod = (
++  db: Query,
++  credentials: Credentials,
++  policy: UrlPolicy,
++  method: Extract<ProviderAuthMethod, { type: "oauth2" }>,
++  input: {
++    readonly provider: ProviderId;
++    readonly method: string;
++    readonly connection?: AccountConnectionId | undefined;
++    readonly owner?: OwnerId | undefined;
++  },
++) =>
++  Effect.gen(function* () {
++    if (!("mcpEndpoint" in method)) return { method, mcpEndpoint: undefined };
++    if (input.connection === undefined) return yield* new AuthMethodInvalid(input);
++    const connection = input.connection;
++    const value = yield* Effect.gen(function* () {
++      const row = yield* readConnection(db, { connection, owner: input.owner });
++      yield* requireOpen({ connection: row.id }, row);
++      return yield* connectionMcpEndpoint(db, credentials, row, input.method);
++    }).pipe(
++      Effect.catchTags({
++        AccountConnectionNotFound: () =>
++          Effect.fail(new OAuthSetupFailed({ reason: "unsupported" })),
++        AccountConnectionClosed: () => Effect.fail(new OAuthSetupFailed({ reason: "unsupported" })),
++        AccountNotFound: () => Effect.fail(new OAuthSetupFailed({ reason: "unsupported" })),
++      }),
++    );
++    const endpoint = value === undefined ? undefined : validateMcpEndpoint(value, method, policy);
++    if (endpoint === undefined) return yield* new OAuthSetupFailed({ reason: "unsupported" });
++    const { mcpEndpoint: _declaration, ...rest } = method;
++    return { method: { ...rest, discover: endpoint }, mcpEndpoint: endpoint };
++  });
+diff --git a/packages/sdk/src/implementation/oauth-connection-plan.ts b/packages/sdk/src/implementation/oauth-connection-plan.ts
+--- a/packages/sdk/src/implementation/oauth-connection-plan.ts
++++ b/packages/sdk/src/implementation/oauth-connection-plan.ts
+@@ -130,6 +130,8 @@
+     const method = provider.definition.auth[methodName];
+     if (method?.type !== "oauth2" || method.grant === "client_credentials")
+       return yield* new AuthMethodInvalid({ provider: provider.id, method: methodName });
++    if ("mcpEndpoint" in method)
++      return yield* new OAuthSetupFailed({ reason: "resource_mismatch" });
+     const discovered = yield* protocol
+       .discover(method)
+       .pipe(Effect.mapError(() => new OAuthSetupFailed({ reason: "discovery_invalid" })));
+diff --git a/packages/sdk/src/implementation/oauth-protocol-native.ts b/packages/sdk/src/implementation/oauth-protocol-native.ts
+--- a/packages/sdk/src/implementation/oauth-protocol-native.ts
++++ b/packages/sdk/src/implementation/oauth-protocol-native.ts
+@@ -1403,6 +1403,8 @@
+       }).pipe(Effect.withSpan("oauth.identify")),
+     discover: (method: OAuthMethod) =>
+       Effect.gen(function* () {
++        if ("mcpEndpoint" in method)
++          return yield* new OAuthProtocolFailed({ reason: "invalid_response" });
+         const resolved = yield* Effect.gen(function* () {
+           if (method.discover === undefined) {
+             const authored = yield* decode(OAuthTokenServer, {
+@@ -1724,7 +1726,12 @@
+         },
+         {
+           format: input.tokenRequestFormat,
+-          sent: [parameters.get("code"), input.verifier, ...clientSecrets(input.client)],
++          sent: [
++            parameters.get("code"),
++            input.verifier,
++            input.resource,
++            ...clientSecrets(input.client),
++          ],
+         },
+       ).pipe(protocolStage("exchange")),
+     clientCredentials: (input: {
+@@ -1796,7 +1803,7 @@
+         },
+         {
+           format: input.tokenRequestFormat,
+-          sent: [input.refreshToken, ...clientSecrets(input.client)],
++          sent: [input.refreshToken, input.resource, ...clientSecrets(input.client)],
+         },
+       ).pipe(protocolStage("refresh")),
+     /** RFC 7009 revocation with the grant's own client authentication. */
+diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
+--- a/packages/sdk/src/implementation/oauth.ts
++++ b/packages/sdk/src/implementation/oauth.ts
+@@ -45,6 +45,7 @@
+   recordSignInFailure,
+   startSignIn,
+ } from "./connection-state.ts";
++import { bindConnectionMcpMethod } from "./mcp-endpoint.ts";
+ import { requireTargetProvider } from "./connection-target.ts";
+ import { Account } from "../contracts/account.ts";
+ import {
+@@ -743,6 +744,8 @@
+     input: {
+       readonly provider: ProviderId;
+       readonly method: string;
++      readonly connection?: import("../contracts/shared.ts").AccountConnectionId | undefined;
++      readonly owner?: OwnerId | undefined;
+       readonly redirectUri?: string | undefined;
+       readonly site?: string | undefined;
+     },
+@@ -774,7 +777,15 @@
+       const site =
+         input.site ??
+         (definition.site?.defaultOrigin === true ? definition.site.origin : undefined);
+-      const method = oauthMethodAtSite(declared, definition.site, site);
++      const binding = yield* bindConnectionMcpMethod(
++        db,
++        credentials,
++        options.urlPolicy,
++        declared,
++        input,
++      );
++      const { mcpEndpoint } = binding;
++      const method = oauthMethodAtSite(binding.method, definition.site, site);
+       const callback =
+         method.grant === "client_credentials"
+           ? undefined
+@@ -809,7 +820,12 @@
+           : method;
+       const discovered = yield* protocol
+         .discover(discoveryMethod)
+-        .pipe(Effect.mapError(discoveryFailed));
++        .pipe(
++          Effect.mapError(discoveryFailed),
++          Effect.withTracerEnabled(mcpEndpoint === undefined),
++        );
++      if (mcpEndpoint !== undefined && oauthClientIssuer(discovered.server) === mcpEndpoint)
++        return yield* new OAuthSetupFailed({ reason: "discovery_invalid" });
+       // Import checks report the same choice for the providers they generate.
+       const registration =
+         discovered.grant === "authorization_code"
+@@ -830,14 +846,14 @@
+             });
+       // Stored clients belong to the server the sign-in discovered, not to the provider.
+       const issuer = oauthClientIssuer(discovered.server);
+-      return { method, redirect, discovered, registration, previous, issuer, site };
++      return { method, redirect, discovered, registration, previous, issuer, site, mcpEndpoint };
+     });
+   type Resolved = Effect.Success<ReturnType<typeof resolveSetup>>;
+ 
+   const operatorChoices = (resolved: Resolved, reconnecting?: FirstPartyOAuthClientId) =>
+     Effect.gen(function* () {
+       const choices = [];
+-      for (const id of firstPartyClients.keys()) {
++      for (const id of resolved.mcpEndpoint === undefined ? firstPartyClients.keys() : []) {
+         const selected = firstPartyClient(resolved.discovered, reconnecting, resolved.site, id);
+         if (selected === undefined) continue;
+         const redirectUri = selected.client.loopbackRedirectUri ?? resolved.redirect?.href;
+@@ -1214,6 +1230,7 @@
+               return {
+                 owner: connection.owner,
+                 provider: connection.provider,
++                connection: connection.id,
+                 method: request.method,
+                 ...(request.redirectUri === undefined ? {} : { redirectUri: request.redirectUri }),
+                 ...(connection.target.site === undefined ? {} : { site: connection.target.site }),
+@@ -1783,6 +1800,11 @@
+         definition,
+       });
+ 
++      if (
++        original.mcpEndpoint !== undefined &&
++        (input.sourceAccount != null || (input.additionalConnections?.length ?? 0) > 0)
++      )
++        return yield* new OAuthSetupFailed({ reason: "resource_mismatch" });
+       const prepared =
+         input.sourceAccount == null && (input.additionalConnections?.length ?? 0) === 0
+           ? undefined
+@@ -1993,6 +2015,7 @@
+       const account = existing?.id ?? AccountId.make(`acc_${yield* nextId}`);
+       const attempt = yield* decode(OAuthAttempt, {
+         ...input,
++        ...(resolved.mcpEndpoint === undefined ? {} : { mcpEndpoint: resolved.mcpEndpoint }),
+         ...authorization,
+         ...discovered,
+         redirectUri: redirect.href,
+@@ -2590,6 +2613,7 @@
+             );
+       const completedAt = yield* Clock.currentTimeMillis;
+       const issued = {
++        ...(attempt.mcpEndpoint === undefined ? {} : { mcpEndpoint: attempt.mcpEndpoint }),
+         ...(attempt.site === undefined ? {} : { site: attempt.site }),
+         authorizationClient: operating.client.client_id,
+         ...(verified === undefined
+@@ -2808,7 +2832,15 @@
+               lifecycle,
+             );
+             const completed = { ...saved, ...(identity === undefined ? {} : { identity }) };
+-            yield* finishConnection(tx, current, completed, lifecycle);
++            yield* finishConnection(
++              tx,
++              current,
++              completed,
++              lifecycle,
++              undefined,
++              "replace",
++              attempt.mcpEndpoint === undefined ? undefined : new URL(attempt.mcpEndpoint).host,
++            );
+             // Credentials a client was registered with during this sign-in are that client's and
+             // are not saved again. The grant then names a client that does not exist, which is
+             // harmless: its copy of the credentials still resolves to the client holding them.
+@@ -2955,6 +2987,9 @@
+         /** These values as the credential this grant holds: managed or not, and its generation. */
+         const held = (fields: JsonObject): AccountCredential => ({
+           fields: Redacted.make(fields),
++          ...(!("mcpEndpoint" in grant) || grant.mcpEndpoint === undefined
++            ? {}
++            : { mcpEndpoint: Redacted.make(grant.mcpEndpoint) }),
+           firstParty: isFirstPartyGrant(grant) ? grant.firstParty : undefined,
+           generation:
+             grantId === account.id
+diff --git a/packages/sdk/src/implementation/promise.ts b/packages/sdk/src/implementation/promise.ts
+--- a/packages/sdk/src/implementation/promise.ts
++++ b/packages/sdk/src/implementation/promise.ts
+@@ -33,6 +33,7 @@
+   CreateAccountConnection,
+   GetAccountConnection,
+   SubmitAccountConnection,
++  SetConnectionMcpEndpoint,
+   ReuseConnectionOAuth,
+   PlanConnectionOAuth,
+   PlanTargetOAuth,
+@@ -127,6 +128,8 @@
+         run(AccountObservationInput, input, executor.accounts.refreshObservations),
+     },
+     accountConnections: {
++      setMcpEndpoint: (input) =>
++        run(SetConnectionMcpEndpoint, input, executor.accountConnections.setMcpEndpoint),
+       planOAuth: (input) => run(PlanConnectionOAuth, input, executor.accountConnections.planOAuth),
+       planTargetOAuth: (input) =>
+         run(PlanTargetOAuth, input, executor.accountConnections.planTargetOAuth),
+diff --git a/packages/sdk/src/implementation/provider.ts b/packages/sdk/src/implementation/provider.ts
+--- a/packages/sdk/src/implementation/provider.ts
++++ b/packages/sdk/src/implementation/provider.ts
+@@ -221,6 +221,7 @@
+  * selected the account.
+  */
+ export interface AccountCredential {
++  readonly mcpEndpoint?: Redacted.Redacted<string>;
+   readonly fields: Redacted.Redacted<JsonObject>;
+   /** The operator's OAuth client that issued it, when it is managed. */
+   readonly firstParty: FirstPartyOAuthClientId | undefined;
+@@ -244,13 +245,35 @@
+     method: account.method,
+     generation: credential.generation,
+     fields: Redacted.value(credential.fields),
++    ...(credential.mcpEndpoint === undefined
++      ? {}
++      : { mcpEndpoint: Redacted.value(credential.mcpEndpoint) }),
+     ...(account.site === null ? {} : { site: account.site }),
+   };
+-  if (credential.firstParty === undefined)
++  if (credential.firstParty === undefined) {
++    if (credential.mcpEndpoint === undefined)
++      return {
++        ...bound,
++        provider: grantedDefinition(definition, account.allowedHosts, account.site ?? undefined),
++      };
++    const endpointHosts = [new URL(Redacted.value(credential.mcpEndpoint)).host];
++    const saved =
++      account.allowedHosts === null
++        ? endpointHosts
++        : intersectCredentialHosts(endpointHosts, account.allowedHosts);
++    const method = definition.auth[account.method];
++    const declared =
++      method?.type === "oauth2" && "mcpEndpoint" in method
++        ? method.mcpEndpoint.hosts
++        : siteCredentialHosts(definition.hosts, definition.site, account.site ?? undefined);
+     return {
+       ...bound,
+-      provider: grantedDefinition(definition, account.allowedHosts, account.site ?? undefined),
++      provider: {
++        ...definition,
++        hosts: declared === undefined ? saved : intersectCredentialHosts(saved, declared),
++      },
+     };
++  }
+   const client = clients.get(credential.firstParty);
+   return {
+     ...bound,
+diff --git a/packages/ui/src/contracts/dashboard.ts b/packages/ui/src/contracts/dashboard.ts
+--- a/packages/ui/src/contracts/dashboard.ts
++++ b/packages/ui/src/contracts/dashboard.ts
+@@ -268,7 +268,7 @@
+ export function providerDisplayUrl(definition: ProviderDefinition | undefined): string | null {
+   if (definition)
+     for (const method of Object.values(definition.auth)) {
+-      if (method.type === "oauth2")
++      if (method.type === "oauth2" && !("mcpEndpoint" in method))
+         return new URL(
+           method.discover !== undefined
+             ? method.discover
+diff --git a/packages/ui/src/implementation/dashboard/account-form.tsx b/packages/ui/src/implementation/dashboard/account-form.tsx
+--- a/packages/ui/src/implementation/dashboard/account-form.tsx
++++ b/packages/ui/src/implementation/dashboard/account-form.tsx
+@@ -50,6 +50,7 @@
+   Failure,
+   onPendingChange,
+   initialMethod,
++  onMethodChange,
+   unavailable,
+   check,
+   disabled = false,
+@@ -76,6 +77,7 @@
+   readonly disabled?: boolean;
+   readonly onPendingChange?: (pending: boolean) => void;
+   readonly initialMethod?: string | undefined;
++  readonly onMethodChange?: ((method: string) => void) | undefined;
+   /**
+    * The host's reason a method can't be connected here, if any. Such methods stay listed, greyed
+    * out with the reason, and can't be chosen. Reconnect keeps the account's method.
+@@ -84,10 +86,6 @@
+   readonly guidance?: ((method: string) => CatalogConnectionGuidance | undefined) | undefined;
+ }) {
+   const selectedSite = site ?? account?.site;
+-  const hosts =
+-    provider.definition.site !== undefined && selectedSite === undefined
+-      ? undefined
+-      : siteCredentialHosts(provider.definition.hosts, provider.definition.site, selectedSite);
+   const methods = Object.entries(provider.definition.auth)
+     .filter(([, method]) => method.type !== "secrets" || method.provisioned !== true)
+     .sort(([, a], [, b]) => Number(b.type === "oauth2") - Number(a.type === "oauth2"));
+@@ -115,6 +113,13 @@
+   const pending = submitting || disabled;
+   const [error, setError] = useState<Cause.Cause<E>>();
+   const auth = provider.definition.auth[method];
++  const hosts =
++    auth?.type === "oauth2" && "mcpEndpoint" in auth
++      ? auth.mcpEndpoint.hosts
++      : provider.definition.site !== undefined && selectedSite === undefined
++        ? undefined
++        : siteCredentialHosts(provider.definition.hosts, provider.definition.site, selectedSite);
++
+   const guide = guidance?.(method);
+   const parsed = auth && accountFields(auth);
+   const fields = parsed && Option.isSome(parsed) ? parsed.value : undefined;
+@@ -181,6 +186,7 @@
+             disabled={pending}
+             onValueChange={(value) => {
+               setMethod(value);
++              onMethodChange?.(value);
+               changeValues({});
+               setError(undefined);
+             }}
+diff --git a/packages/ui/src/implementation/dashboard/mcp-endpoint-fields.tsx b/packages/ui/src/implementation/dashboard/mcp-endpoint-fields.tsx
+new file mode 100644
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/mcp-endpoint-fields.tsx
+@@ -0,0 +1,226 @@
++import {
++  useEffect,
++  useId,
++  useRef,
++  useState,
++  type ComponentType,
++  type KeyboardEvent,
++  type ReactNode,
++} from "react";
++import { Exit, Redacted, type Cause } from "effect";
++import { HugeiconsIcon } from "@hugeicons/react";
++import { SquareLock02Icon, ViewIcon, ViewOffSlashIcon } from "@hugeicons/core-free-icons";
++import type { FailureProps } from "../../contracts/dashboard.ts";
++import { Button } from "../components/button.tsx";
++import { Input } from "../components/input.tsx";
++import { useProductBrand } from "../hooks/product-brand.ts";
++
++/**
++ * Whether the entry can be offered to the server: a parseable https URL. Only action availability;
++ * the server owns allowed hosts and egress, and gets the full path and query as entered.
++ */
++const offerable = (value: string) => URL.parse(value)?.protocol === "https:";
++
++/**
++ * The account's own MCP server URL, asked for before the usual OAuth sign-in. The URL can carry a
++ * private path or key, so it stays masked, lives only in this component's state until saved, and
++ * never reaches attributes, copy or callbacks except as a Redacted value. Once the host reports it
++ * configured (or the save succeeds), the sign-in in `children` mounts; a saved URL is never shown
++ * or asked for again. Renders inside the account form, so it is fields and a button, not a form.
++ */
++export function McpEndpointFields<E>({
++  label = "Server URL",
++  disabled = false,
++  configured,
++  reconnect = false,
++  guidance,
++  children,
++  save,
++  Failure,
++  onPendingChange,
++}: {
++  readonly label?: string | undefined;
++  readonly disabled?: boolean | undefined;
++  /** The host's word that this connection or account already holds an endpoint. */
++  readonly configured: boolean;
++  /** Reconnecting an account, which keeps its saved endpoint. */
++  readonly reconnect?: boolean | undefined;
++  /** The catalog's steps for getting this URL, shown above the field. */
++  readonly guidance?: ReactNode;
++  /** The sign-in, mounted only once an endpoint is saved, so discovery never starts without one. */
++  readonly children: ReactNode;
++  readonly save: (endpoint: Redacted.Redacted<string>) => Promise<Exit.Exit<void, E>>;
++  readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
++  readonly onPendingChange?: ((pending: boolean) => void) | undefined;
++}) {
++  const brand = useProductBrand();
++  const inputId = useId();
++  const hintId = useId();
++  const problemId = useId();
++  const [value, setValue] = useState("");
++  const [shown, setShown] = useState(false);
++  const [touched, setTouched] = useState(false);
++  const [pending, setPending] = useState(false);
++  const [error, setError] = useState<Cause.Cause<E>>();
++  const [saved, setSaved] = useState(false);
++  const savedRef = useRef<HTMLParagraphElement>(null);
++  const live = useRef(true);
++  const pendingRef = useRef(false);
++  const pendingChange = useRef(onPendingChange);
++  useEffect(() => {
++    pendingChange.current = onPendingChange;
++  }, [onPendingChange]);
++
++  // Unmounting mid-save, as a method change does, must not leave the host form stuck busy.
++  useEffect(() => {
++    live.current = true;
++    return () => {
++      live.current = false;
++      if (pendingRef.current) pendingChange.current?.(false);
++    };
++  }, []);
++
++  const ready = configured || saved;
++  // The field unmounts on success; move focus to the confirmation so keyboard users continue on.
++  useEffect(() => {
++    if (saved) savedRef.current?.focus();
++  }, [saved]);
++
++  const updatePending = (next: boolean) => {
++    pendingRef.current = next;
++    setPending(next);
++    onPendingChange?.(next);
++  };
++
++  // Surrounding whitespace from a paste is never part of a URL; everything inside is kept as is.
++  const entry = value.trim();
++  const valid = offerable(entry);
++  const busy = pending || disabled;
++  const problem = touched && entry !== "" && !valid;
++
++  const submit = () => {
++    setTouched(true);
++    if (busy || !valid) return;
++    updatePending(true);
++    setError(undefined);
++    void save(Redacted.make(entry)).then((exit) => {
++      if (!live.current) return;
++      updatePending(false);
++      if (Exit.isFailure(exit)) setError(exit.cause);
++      else {
++        setValue("");
++        setShown(false);
++        setTouched(false);
++        setSaved(true);
++      }
++    });
++  };
++
++  if (ready)
++    return (
++      <>
++        <p
++          ref={savedRef}
++          tabIndex={-1}
++          role="status"
++          className="flex items-start gap-1.5 rounded-sm text-xs leading-relaxed text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
++          data-mcp-endpoint="configured"
++        >
++          <HugeiconsIcon
++            icon={SquareLock02Icon}
++            className="mt-0.5 size-3.5 shrink-0 text-emerald-600"
++            aria-hidden
++          />
++          <span>
++            {reconnect && !saved
++              ? `Uses this account’s saved ${lower(label)}.`
++              : `${label} saved. ${brand.name} keeps it private to this account.`}
++          </span>
++        </p>
++        {children}
++      </>
++    );
++
++  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
++    if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
++    // Enter here means Continue, never a submit of the surrounding account form.
++    event.preventDefault();
++    submit();
++  };
++
++  return (
++    <div className="flex flex-col gap-4" data-mcp-endpoint="entry">
++      {guidance}
++      <div className="field-label flex flex-col gap-2.25 text-[13px] font-medium">
++        <label htmlFor={inputId}>{label}</label>
++        <div className="relative" data-private>
++          <Input
++            id={inputId}
++            // Masked like other credentials; shown as plain text so the browser never validates it.
++            type={shown ? "text" : "password"}
++            inputMode="url"
++            autoComplete="off"
++            autoCapitalize="none"
++            autoCorrect="off"
++            spellCheck={false}
++            placeholder="https://"
++            aria-required
++            aria-invalid={problem || error !== undefined}
++            aria-describedby={problem ? `${problemId} ${hintId}` : hintId}
++            value={value}
++            disabled={busy}
++            className="pr-10 max-[740px]:pr-12"
++            onChange={(event) => {
++              setValue(event.target.value);
++              // A failure belongs to the URL it was about.
++              setError(undefined);
++            }}
++            onBlur={() => setTouched(true)}
++            onKeyDown={onKeyDown}
++          />
++          <Button
++            type="button"
++            variant="ghost"
++            size="icon-sm"
++            className="absolute top-1/2 right-0.5 -translate-y-1/2 text-muted-foreground hover:text-foreground max-[740px]:right-0"
++            aria-label={shown ? `Hide ${lower(label)}` : `Show ${lower(label)}`}
++            aria-pressed={shown}
++            aria-controls={inputId}
++            disabled={busy}
++            onClick={() => setShown((current) => !current)}
++          >
++            <HugeiconsIcon icon={shown ? ViewOffSlashIcon : ViewIcon} strokeWidth={2} aria-hidden />
++          </Button>
++        </div>
++        {problem && (
++          <span id={problemId} className="text-[12px] font-normal leading-normal text-destructive">
++            Enter a full URL that starts with https://.
++          </span>
++        )}
++        <span
++          id={hintId}
++          className="field-hint text-[12px] font-normal leading-normal text-muted-foreground"
++        >
++          Paste the whole URL, including any key in it. {brand.name} keeps it private to this
++          account.
++        </span>
++      </div>
++      {error && <Failure cause={error} layout="compact" />}
++      <div className="form-actions flex flex-col pt-1">
++        <Button
++          type="button"
++          className="w-full"
++          loading={pending}
++          disabled={disabled || !valid}
++          onClick={submit}
++        >
++          Continue
++        </Button>
++      </div>
++    </div>
++  );
++}
++
++/** A label mid-sentence: "Server URL" reads "server URL", while "MCP server URL" keeps its acronym. */
++const lower = (label: string) =>
++  /^[A-Z][a-z]/.test(label) ? `${label.charAt(0).toLowerCase()}${label.slice(1)}` : label;
+diff --git a/packages/ui/src/implementation/dashboard/method-labels.ts b/packages/ui/src/implementation/dashboard/method-labels.ts
+--- a/packages/ui/src/implementation/dashboard/method-labels.ts
++++ b/packages/ui/src/implementation/dashboard/method-labels.ts
+@@ -6,6 +6,7 @@
+ 
+ /** What tells a method from its others: its name without an OAuth prefix, in words. */
+ export const methodVariant = (name: string) => {
++  if (name.toLowerCase() === "mcp") return "MCP";
+   const words = name
+     .replace(/^oauth2?/i, "")
+     .replace(/[_-]+/g, " ")
+diff --git a/packages/utils/src/account-secrets.ts b/packages/utils/src/account-secrets.ts
+--- a/packages/utils/src/account-secrets.ts
++++ b/packages/utils/src/account-secrets.ts
+@@ -28,7 +28,10 @@
+       if (Predicate.isObject(scope))
+         for (const slot of Object.values(scope))
+           for (const account of Array.isArray(slot) ? slot : [slot])
+-            if (Predicate.hasProperty(account, "fields"))
++            if (Predicate.hasProperty(account, "fields")) {
+               secretValues(account.fields, found, minimum);
++              if (Predicate.hasProperty(account, "mcpEndpoint"))
++                secretValues(account.mcpEndpoint, found, minimum);
++            }
+   return [...found].sort((a, b) => b.length - a.length);
+ };
