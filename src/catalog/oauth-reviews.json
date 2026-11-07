@@ -1903,23 +1903,16 @@
     {
       "entry": "gitlab",
       "package": "@executor.sh/gitlab",
-      "sourceSha256": "262e3318f4acd9aa37c62db3845fa41088d5675e542fd002b0f9c765497ac10a",
+      "sourceSha256": "f38cef793bf3ab217871749fde58fe1c99e92a8ce0c99ef46c8e8f131d336b0f",
       "methods": {
+        "mcp": {
+          "kind": "deferred",
+          "message": "This GitLab instance doesn't offer automatic app registration for sign-in. Use your own GitLab app with the mcp scope, or connect the full REST API with a personal access token."
+        },
         "oauth": {
           "kind": "hosted",
           "client": "gitlab",
           "message": "GitLab.com sign-in is not configured on this host. For a self-managed GitLab site, use an OAuth app registered on that site."
-        }
-      }
-    },
-    {
-      "entry": "gitlab-mcp",
-      "package": "@signalbox/gitlab-mcp",
-      "sourceSha256": "1377042ecddd4e0a9d5b7e2f4ef7c9d3de195b62b939fbe53f383171287e8e6c",
-      "methods": {
-        "oauth": {
-          "kind": "deferred",
-          "message": "GitLab MCP uses an OAuth app registered on your selected instance with the mcp scope. Automatic client registration is not configured for this app. You can connect with your own OAuth app or a fine-grained personal token."
         }
       }
     },

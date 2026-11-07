@@ -1,0 +1,445 @@
+diff --git a/apps/hosted/server/src/contracts/accounts.ts b/apps/hosted/server/src/contracts/accounts.ts
+index cf3e272..fec43d3 100644
+--- a/apps/hosted/server/src/contracts/accounts.ts
++++ b/apps/hosted/server/src/contracts/accounts.ts
+@@ -237,6 +237,7 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
+         provider: ProviderId,
+         method: AuthMethodName,
+         fields: AccountFieldsInput,
++        site: Schema.optional(Schema.String.check(Schema.isMinLength(1))),
+       }),
+       success: Schema.NullOr(CredentialCheck),
+       error: [
+diff --git a/apps/hosted/web/src/contracts/accounts.ts b/apps/hosted/web/src/contracts/accounts.ts
+index 4de6f1d..49e3b79 100644
+--- a/apps/hosted/web/src/contracts/accounts.ts
++++ b/apps/hosted/web/src/contracts/accounts.ts
+@@ -229,11 +229,17 @@ export const checkCredentialsAtom = HostedClient.runtime.fn(
+     readonly provider: ProviderId;
+     readonly method: string;
+     readonly fields: typeof AccountFieldsInput.Type;
++    readonly site?: string;
+   }) =>
+     Effect.flatMap(HostedClient, (client) =>
+       client.accounts.checkCredentials({
+         params: { organization: input.organization, app: input.app },
+-        payload: { provider: input.provider, method: input.method, fields: input.fields },
++        payload: {
++          provider: input.provider,
++          method: input.method,
++          fields: input.fields,
++          ...(input.site === undefined ? {} : { site: input.site }),
++        },
+       }),
+     ),
+ );
+diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+index 916f9d8..384a1ab 100644
+--- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+@@ -579,6 +579,8 @@ type ConnectionDialog = {
+ 
+ /** Keep one provider snapshot and draft from the first dialog through submission. */
+ export function AppConnectionDialogContent(props: Parameters<typeof BoundConnectionDialog>[0]) {
++  // A chosen instance stays chosen while the person switches between this app's methods.
++  const [chosenSite, setChosenSite] = useState<ChosenSite>();
+   return (
+     <ConnectionMethodChoices
+       app={props.app}
+@@ -600,6 +602,8 @@ export function AppConnectionDialogContent(props: Parameters<typeof BoundConnect
+           unavailable={choice.slot === props.slot ? props.unavailable : choice.unavailable}
+           onPendingChange={choice.onPendingChange}
+           alternatives={choice.actions}
++          chosenSite={chosenSite}
++          onSiteChosen={setChosenSite}
+         />
+       )}
+     </ConnectionMethodChoices>
+@@ -617,6 +621,8 @@ function BoundConnectionDialog({
+   oauthDeferrals,
+   connectionGuidance,
+   alternatives,
++  chosenSite,
++  onSiteChosen,
+   redirectUri,
+   account,
+   initialAccount,
+@@ -625,6 +631,9 @@ function BoundConnectionDialog({
+   onSaved,
+ }: {
+   readonly app: App;
++  /** A site chosen under another requirement; reused when this one declares the same template. */
++  readonly chosenSite?: ChosenSite | undefined;
++  readonly onSiteChosen?: ((site: ChosenSite) => void) | undefined;
+   /** The requirement's title where the app lists it; the service's name when absent. */
+   readonly title?: string | undefined;
+   /** Set when replacing this account's credentials rather than adding an account. */
+@@ -651,11 +660,18 @@ function BoundConnectionDialog({
+     redirectUri,
+   }));
+   const siteRule = form.provider.definition.site;
++  const carriedSite =
++    siteRule !== undefined && chosenSite?.template === siteRule.origin
++      ? chosenSite.site
++      : undefined;
+   const [site, setSite] = useState(
+-    account?.site ?? (siteRule?.defaultOrigin === true ? siteRule.origin : ""),
++    account?.site ?? carriedSite ?? (siteRule?.defaultOrigin === true ? siteRule.origin : ""),
+   );
+   const [siteReady, setSiteReady] = useState(
+-    siteRule === undefined || siteRule?.defaultOrigin === true || account?.site !== undefined,
++    siteRule === undefined ||
++      siteRule?.defaultOrigin === true ||
++      account?.site !== undefined ||
++      carriedSite !== undefined,
+   );
+   const oldAccountNeedsSite =
+     account !== undefined &&
+@@ -688,7 +704,9 @@ function BoundConnectionDialog({
+           className="flex flex-col gap-4"
+           onSubmit={(event) => {
+             event.preventDefault();
+-            if (site.trim() !== "") setSiteReady(true);
++            if (site.trim() === "") return;
++            setSiteReady(true);
++            onSiteChosen?.({ template: siteRule.origin, site });
+           }}
+         >
+           <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium">
+@@ -750,6 +768,8 @@ function BoundConnectionDialog({
+   );
+ }
+ 
++type ChosenSite = { readonly template: string; readonly site: string };
++
+ /** This form renders the page's cached provider and host metadata without a connection read. */
+ function AppConnectionFields({
+   app: current,
+@@ -849,6 +869,7 @@ function AppConnectionFields({
+       oauthDeferrals={oauthDeferrals}
+       connectionGuidance={connectionGuidance}
+       requirement={slot}
++      chosenSite={site}
+       submit={submit}
+       start={(input) =>
+         account !== undefined ||
+diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
+index bf41f96..e580f42 100644
+--- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
++++ b/apps/hosted/web/src/implementation/pages/connect-account.tsx
+@@ -21,6 +21,7 @@ import { createContext, useContext, useEffect, useRef, useState } from "react";
+ import { Cause, Match, Option, Exit, Schema } from "effect";
+ import { Button } from "@executor-js/ui/components/button";
+ import { OAuthFields, OAuthSetup, oauthDeferral } from "@executor-js/ui/dashboard/oauth-fields";
++import { GuidanceSiteProvider } from "@executor-js/ui/dashboard/credential-guidance";
+ import type {
+   CatalogOAuthDeferral,
+   CatalogConnectionGuidance,
+@@ -249,7 +250,10 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+   oauthDeferrals,
+   connectionGuidance,
+   requirement,
++  chosenSite,
+ }: {
++  /** The site chosen in this dialog before the host saves one; guide links open there. */
++  readonly chosenSite?: string | undefined;
+   /** The catalog's guidance for methods with no automatic or registered OAuth client. */
+   readonly oauthDeferrals?: readonly CatalogOAuthDeferral[] | undefined;
+   readonly connectionGuidance?: readonly CatalogConnectionGuidance[] | undefined;
+@@ -316,6 +320,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+     readonly issuer: typeof HttpUrl.Type;
+   }>();
+   const [method, setMethod] = useState(initialMethod);
++  const selectedSite = site ?? chosenSite;
+   // Reconnects keep their name; a new account is named once saved.
+   const saved = (value: Account) => {
+     if (!account)
+@@ -338,7 +343,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+         }}
+       />
+     );
+-  return (
++  const form = (
+     <AccountForm
+       provider={provider}
+       guidance={(method) =>
+@@ -346,7 +351,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+           (entry) => entry.requirement === requirement && entry.method === method,
+         )
+       }
+-      site={site}
++      site={selectedSite}
+       {...(account ? { account } : {})}
+       initialMethod={method}
+       unavailable={unavailable}
+@@ -357,7 +362,13 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+         ? {}
+         : {
+             check: (input: AccountSubmission) =>
+-              checkCredentials({ organization, app, provider: provider.id, ...input }),
++              checkCredentials({
++                organization,
++                app,
++                provider: provider.id,
++                ...input,
++                ...(selectedSite === undefined ? {} : { site: selectedSite }),
++              }),
+           })}
+       onSaved={saved}
+       {...(onPendingChange ? { onPendingChange } : {})}
+@@ -450,4 +461,9 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+       )}
+     />
+   );
++  return (
++    <GuidanceSiteProvider rule={provider.definition.site} site={selectedSite}>
++      {form}
++    </GuidanceSiteProvider>
++  );
+ }
+diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
+index 5f8924a..4ee87be 100644
+--- a/apps/local/server/src/contracts/dashboard.ts
++++ b/apps/local/server/src/contracts/dashboard.ts
+@@ -950,6 +950,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+           provider: ProviderId,
+           method: AuthMethodName,
+           fields: AccountFieldsInput,
++          site: Schema.optional(Schema.String.check(Schema.isMinLength(1))),
+         }),
+         success: Schema.NullOr(CredentialCheck),
+         error: [StorageError, AppNotFound, AuthMethodInvalid, AccountFieldsInvalid],
+diff --git a/apps/local/web/src/contracts/accounts.ts b/apps/local/web/src/contracts/accounts.ts
+index e5ad178..72db321 100644
+--- a/apps/local/web/src/contracts/accounts.ts
++++ b/apps/local/web/src/contracts/accounts.ts
+@@ -155,11 +155,17 @@ export const checkCredentialsAtom = DashboardClient.runtime.fn(
+     readonly provider: ProviderId;
+     readonly method: string;
+     readonly fields: typeof AccountFieldsInput.Type;
++    readonly site?: string;
+   }) =>
+     Effect.flatMap(DashboardClient, (client) =>
+       client.dashboard.checkCredentials({
+         params: { app: input.app },
+-        payload: { provider: input.provider, method: input.method, fields: input.fields },
++        payload: {
++          provider: input.provider,
++          method: input.method,
++          fields: input.fields,
++          ...(input.site === undefined ? {} : { site: input.site }),
++        },
+       }),
+     ),
+ );
+diff --git a/apps/local/web/src/implementation/pages/account-form.tsx b/apps/local/web/src/implementation/pages/account-form.tsx
+index cb622de..77bf511 100644
+--- a/apps/local/web/src/implementation/pages/account-form.tsx
++++ b/apps/local/web/src/implementation/pages/account-form.tsx
+@@ -19,6 +19,7 @@ import type { DashboardError } from "../../contracts/errors.ts";
+ import { Failure, ProviderIcon } from "../components/common.tsx";
+ import { AppOAuthFields } from "./oauth-fields.tsx";
+ import { useCatalogConnectionGuidance } from "./catalog-connection-guidance.ts";
++import { GuidanceSiteProvider } from "@executor-js/ui/dashboard/credential-guidance";
+ 
+ /**
+  * Connect an account for one app requirement, or replace a linked account's credentials. Saving a
+@@ -144,6 +145,7 @@ function BoundAppAccountForm({
+   );
+   const submit = useAtomSet(atoms.submit, { mode: "promiseExit" });
+   const pending = useAtomValue(atoms.pending);
++  const selectedSite = pending?.target.site ?? account?.site ?? site;
+   const checkCredentials = useAtomSet(checkCredentialsAtom, { mode: "promiseExit" });
+   const requestName = useAtomSet(accountToNameAtom);
+   // A new account is named once saved; a reconnect keeps its name.
+@@ -152,11 +154,11 @@ function BoundAppAccountForm({
+       requestName({ account: saved.id, saved: { account: saved, provider }, app });
+     onSaved(saved);
+   };
+-  return (
++  const form = (
+     <SharedAccountForm<Account, DashboardError>
+       guidance={(method) => guidance?.find((entry) => entry.method === method)}
+       provider={provider}
+-      site={pending?.target.site ?? account?.site}
++      site={selectedSite}
+       {...(account ? { account } : {})}
+       Failure={Failure}
+       submitLabel={account ? "Save credentials" : "Add account"}
+@@ -179,7 +181,12 @@ function BoundAppAccountForm({
+       {...(checkWith
+         ? {
+             check: (input: AccountSubmission) =>
+-              checkCredentials({ app, provider: provider.id, ...input }),
++              checkCredentials({
++                app,
++                provider: provider.id,
++                ...input,
++                ...(selectedSite === undefined ? {} : { site: selectedSite }),
++              }),
+           }
+         : {})}
+       oauth={(props) => (
+@@ -199,4 +206,9 @@ function BoundAppAccountForm({
+       )}
+     />
+   );
++  return (
++    <GuidanceSiteProvider rule={provider.definition.site} site={selectedSite}>
++      {form}
++    </GuidanceSiteProvider>
++  );
+ }
+diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/apps.ts
+index 34a65c5..58e8909 100644
+--- a/packages/sdk/src/contracts/apps.ts
++++ b/packages/sdk/src/contracts/apps.ts
+@@ -1,4 +1,5 @@
+ import { InteractiveRetirementBusy, InteractiveRetirementFailed } from "./interactive-errors.ts";
++import { SiteOrigin } from "@executor-js/utils/account-site";
+ import { UserFacingError, type ErrorPresentation } from "@executor-js/utils/user-facing-error";
+ import { ApiError } from "@executor-js/utils/api-error";
+ import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
+@@ -484,6 +485,8 @@ export const AppInputs = {
+     provider: ProviderId,
+     method: AuthMethodName,
+     fields: AccountFieldsInput,
++    /** The selected provider origin used by the connection form's preflight check. */
++    site: Schema.optional(SiteOrigin),
+   }),
+   create: Schema.Struct({ owner: OwnerId, name: AppName, files: SourceFiles }),
+   workspace: Schema.Struct({ app: AppId, owner: Schema.optional(OwnerId) }),
+@@ -577,6 +580,7 @@ export const AppsGroup = /* @__PURE__ */ (() =>
+           provider: AppInputs.checkCredentials.fields.provider,
+           method: AppInputs.checkCredentials.fields.method,
+           fields: AppInputs.checkCredentials.fields.fields,
++          site: AppInputs.checkCredentials.fields.site,
+         }),
+         success: Schema.NullOr(CredentialCheck),
+         error: [StorageError, AppNotFound, AuthMethodInvalid, AccountFieldsInvalid],
+diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
+index 115937f..e470ecd 100644
+--- a/packages/sdk/src/implementation/account-health.ts
++++ b/packages/sdk/src/implementation/account-health.ts
+@@ -36,7 +36,12 @@ import {
+   type OwnerId,
+ } from "../contracts/shared.ts";
+ import { AppNotFound } from "../contracts/apps.ts";
+-import { type AccountCredential, invocationAccount, validateFields } from "./provider.ts";
++import {
++  type AccountCredential,
++  grantedDefinition,
++  invocationAccount,
++  validateFields,
++} from "./provider.ts";
+ import { StoredVersion, type StoredAccount } from "../contracts/storage.ts";
+ import { accountMetadata, storedAccount } from "./accounts.ts";
+ import { interactiveBinding, interactiveBindings } from "./interactive-state.ts";
+@@ -51,6 +56,7 @@ import { query, type Query } from "./database.ts";
+ import type { makeOAuth } from "./oauth.ts";
+ import type { FirstPartyOAuthClient } from "../contracts/oauth.ts";
+ import type { UrlPolicy } from "@executor-js/utils/url-policy";
++import { resolveSiteOrigin } from "@executor-js/utils/account-site";
+ 
+ /** The one account an account check binds, in its requirement's scope. */
+ const checkedAccounts = (scope: AccountScope, slot: string, account: HostAccount): HostAccounts =>
+@@ -526,6 +532,22 @@ export const makeAccountHealth = (
+       const version = yield* Schema.decodeUnknownEffect(StoredVersion)(row).pipe(
+         Effect.mapError(() => new StorageError()),
+       );
++      const siteRule = target.required.definition.site;
++      const site =
++        siteRule === undefined
++          ? input.site
++          : resolveSiteOrigin(
++              siteRule,
++              input.site ?? (siteRule.defaultOrigin === true ? siteRule.origin : ""),
++              sitePolicy,
++            );
++      const invalidSite = siteRule === undefined ? input.site !== undefined : site === undefined;
++      if (invalidSite)
++        return {
++          status: "check_failed" as const,
++          info: null,
++          message: "The selected site is not allowed by the provider and host network policy.",
++        };
+       const deadline = (yield* Clock.currentTimeMillis) + checkMillis - reportMillis;
+       const outcome = yield* runtime
+         .checkAccount({
+@@ -536,8 +558,9 @@ export const makeAccountHealth = (
+           accounts: Redacted.make(
+             checkedAccounts(target.required.scope, target.slot, {
+               id: unsavedAccount,
+-              provider: target.required.definition,
++              provider: grantedDefinition(target.required.definition, null, site),
+               method: input.method,
++              ...(site === undefined ? {} : { site }),
+               generation: 0,
+               fields,
+             }),
+diff --git a/packages/ui/src/implementation/dashboard/credential-guidance.tsx b/packages/ui/src/implementation/dashboard/credential-guidance.tsx
+index 1961a22..18bb098 100644
+--- a/packages/ui/src/implementation/dashboard/credential-guidance.tsx
++++ b/packages/ui/src/implementation/dashboard/credential-guidance.tsx
+@@ -1,11 +1,59 @@
++import { createContext, useContext, type ReactNode } from "react";
+ import type { CredentialGuidance as Guidance } from "@executor-js/catalog/contracts";
++import { rebaseSiteUrl, type ProviderSite } from "@executor-js/utils/account-site";
++
++type GuidanceSite = { readonly template: string; readonly origin: string | undefined };
++const GuidanceSiteContext = createContext<GuidanceSite | undefined>(undefined);
++
++/**
++ * The site a connect form targets, so a guide's links on the provider's site template open on the
++ * selected instance. Pass the saved site when the host has one, else the site chosen in the form.
++ */
++export function GuidanceSiteProvider({
++  rule,
++  site,
++  children,
++}: {
++  readonly rule: ProviderSite | undefined;
++  readonly site: string | undefined;
++  readonly children: ReactNode;
++}) {
++  return (
++    <GuidanceSiteContext.Provider
++      value={rule === undefined ? undefined : { template: rule.origin, origin: site }}
++    >
++      {children}
++    </GuidanceSiteContext.Provider>
++  );
++}
++
++/**
++ * A link on the site template moves to the selected site, keeping that site's scheme, which the
++ * host's URL policy already admitted. It is hidden while a chosen site can't be read. Any other
++ * link needs HTTPS.
++ */
++const guideLink = (url: string, site: GuidanceSite | undefined) => {
++  const link = URL.parse(url);
++  if (link === null) return undefined;
++  const template = site === undefined ? null : URL.parse(site.template);
++  if (template === null || link.origin !== template.origin || site?.origin === undefined)
++    return link.protocol === "https:" ? link : undefined;
++  const selected = URL.parse(site.origin);
++  const rebased = URL.parse(rebaseSiteUrl(url, template.origin, site.origin) ?? "");
++  return selected !== null &&
++    rebased !== null &&
++    rebased.origin === selected.origin &&
++    (rebased.protocol === "https:" || rebased.protocol === "http:")
++    ? rebased
++    : undefined;
++};
+ 
+ /** External setup stays beside the empty credential fields that need it. */
+ export function CredentialGuidance({ guidance }: { readonly guidance: Guidance }) {
+-  const url = URL.canParse(guidance.link.url) ? new URL(guidance.link.url) : undefined;
++  const url = guideLink(guidance.link.url, useContext(GuidanceSiteContext));
+   return (
+     <div className="grid min-w-0 gap-3 text-[13px] leading-5 text-muted-foreground">
+-      {url?.protocol === "https:" && (
++      {url !== undefined && (
+         <a
+           href={url.href}
+           target="_blank"

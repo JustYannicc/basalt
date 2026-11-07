@@ -20,7 +20,9 @@ import { googleMapsAddition } from "./google-maps/index.ts";
 import { workosSource, withWorkOSSignIn } from "./workos.ts";
 
 // AWS source stays in the catalog until maintainers identify a maintained destination.
-const sourceAdditions: readonly Addition[] = [aws, gitlabMcp, ...providerApps];
+const sourceAdditions: readonly Addition[] = [aws, ...providerApps];
+// GitLab sign-in moved into the one GitLab app. Installed copies still read their source.
+const retiredSources: readonly Addition[] = [gitlabMcp];
 const reviewedOAuth = oauthReviews(oauthReviewData);
 const headers = {
   "Content-Type": "application/json; charset=utf-8",
@@ -92,7 +94,7 @@ export async function handleCatalog(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(workosSource)),
       { headers },
     );
-  const added = additions.find(
+  const added = [...additions, ...retiredSources].find(
     (item) => relative === `apps/${encodeURIComponent(item.entry.id)}.json`,
   );
   if (added) {

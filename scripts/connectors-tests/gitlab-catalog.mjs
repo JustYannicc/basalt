@@ -23,18 +23,30 @@ export async function loadGitLabCatalogSource({ root, catalogOrigin }) {
   const expected = JSON.parse(carriedBytes.toString("utf8"));
   const published = JSON.parse(publishedBytes.toString("utf8"));
   const provenance = JSON.parse(provenanceBytes.toString("utf8"));
-  assert.equal(digest(carriedBytes), provenance.carriedSha256, "GitLab catalog source digest changed");
+  assert.equal(
+    digest(carriedBytes),
+    provenance.carriedSha256,
+    "GitLab catalog source digest changed",
+  );
   assert.equal(digest(patchBytes), provenance.patchSha256, "GitLab source patch digest changed");
-  assert.equal(digest(publishedBytes), provenance.publishedSha256, "GitLab published snapshot digest changed");
+  assert.equal(
+    digest(publishedBytes),
+    provenance.publishedSha256,
+    "GitLab published snapshot digest changed",
+  );
   assert.deepEqual(source, expected, "The catalog Worker changed the reviewed GitLab source");
   assert.equal(source.package, "@executor.sh/gitlab");
   assert.equal(published.package, source.package);
   assert.deepEqual(
     source.files.map(({ path }) => path).sort(),
-    published.files.map(({ path }) => path).sort(),
-    "The GitLab carry must keep every published source file",
+    [...published.files.map(({ path }) => path), "mcp.ts"].sort(),
+    "The GitLab carry must keep every published source file and add only its MCP sign-in",
   );
   for (const file of source.files)
-    assert.equal(digest(file.content), provenance.carriedFileSha256[file.path], "GitLab carried file digest changed");
+    assert.equal(
+      digest(file.content),
+      provenance.carriedFileSha256[file.path],
+      "GitLab carried file digest changed",
+    );
   return { source, provenance, published };
 }

@@ -166,6 +166,7 @@ test("our connectors list like every other app, with no notice beside their desc
     const source = feed.apps.find((app) => app.id === entry.id);
     if (entry.id === "gitlab")
       assert.deepEqual(entry.auth, [
+        { method: "mcp", kind: "oauth2", label: "Sign in with GitLab" },
         { method: "oauth", kind: "oauth2", label: "OAuth 2.0" },
         { method: "token", kind: "secrets", label: "Personal access token" },
       ]);
@@ -216,7 +217,7 @@ test("GitLab serves the site-aware source while Miro serves its full REST source
     else {
       assert.deepEqual(
         (entry.auth as { method: string }[]).map((method) => method.method),
-        ["oauth", "token"],
+        ["mcp", "oauth", "token"],
       );
       assert.match(entry.description, /GitLab\.com or your own GitLab server/);
     }

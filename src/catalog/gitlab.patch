@@ -1,32 +1,43 @@
 --- a/README.md
 +++ b/README.md
-@@ -1,15 +1,15 @@
+@@ -1,15 +1,19 @@
  # GitLab
  
 -Projects, merge requests, issues, pipelines and jobs, repositories and files, branches, commits, groups, members, runners, packages, deploy keys, users and the rest of the GitLab.com REST API (v4): 1867 tools, 1036 of them mutations (each requires approval).
 +Connect GitLab.com or a self-managed GitLab instance. Each account saves its exact instance origin. Use a separate account for each instance.
  
 -Interface: OpenAPI, GitLab's own generated OpenAPI 3.0 document at https://gitlab.com/gitlab-org/gitlab/-/raw/master/doc/api/openapi/openapi_v3.yaml (the one integrations.sh lists for the GitLab REST API). It declares http bearer, oauth2 and `PRIVATE-TOKEN` apiKey auth; the package sends the token as `PRIVATE-TOKEN` and OAuth access tokens as bearer. GitLab also publishes a Swagger 2.0 document (`openapi_v2.yaml`) with 1151 operations; the v3 document has 1867 (about 60% more), so v3 is used. It compiles with 0 skipped operations.
-+## OAuth
++## Sign in
  
 -## Auth
-+GitLab.com uses the hosted OAuth client when it is configured. For a self-managed instance, create a confidential OAuth application on that instance. Set its callback to the URL shown on the connection form, enable authorization-code and refresh-token access, and request the api and read_user scopes. Enter that instance's client ID and secret when you connect. The api scope already includes read_user.
++Sign-in connects the selected instance's GitLab MCP server with the mcp scope. It needs no GitLab app when the instance advertises automatic client registration; otherwise register an application on that instance with the connection form's callback, the mcp scope and Confidential cleared, then enter its Application ID. A signed-in account reaches only the tools that the instance's MCP server lists, never the REST API tools, and every MCP tool call requires approval. Administrators can turn off the MCP server and automatic registration.
  
 -- **Access token** (`token`): a personal, project or group access token created at https://gitlab.com/-/user_settings/personal_access_tokens (project/group tokens under Settings > Access tokens). Use the `api` scope for full access, or `read_api` for read-only use. Sent as the `PRIVATE-TOKEN` header.
 -- **OAuth 2.0** (`oauth`): create an application at https://gitlab.com/-/user_settings/applications (or a group/instance application), tick "Confidential", set the redirect URI to the one shown on Executor's connect page, and enter the application's id and secret there. Scopes requested: `api read_user`. `api` already covers `read_user`; the latter is listed explicitly so the profile endpoint used by the health check stays available if the scope is ever narrowed. GitLab rotates the refresh token on every refresh (access tokens last 2 hours); Executor stores the newly issued refresh token each time.
-+## Access tokens
++## OAuth
  
 -## Known gaps
-+Create a personal, project, or group access token on the selected instance. Use api for full access or read_api for read-only access. The app sends the token in the PRIVATE-TOKEN header only to the saved instance. Mutating tools still require approval.
++GitLab.com uses the hosted OAuth client when it is configured. For a self-managed instance, create a confidential OAuth application on that instance. Set its callback to the URL shown on the connection form, enable authorization-code and refresh-token access, and request the api and read_user scopes. Enter that instance's client ID and secret when you connect. The api scope already includes read_user.
  
 -- Only GitLab.com is supported. Self-managed instances need a different host, which the package does not accept.
 -- GraphQL-only features and the experimental `glab` MCP server are not covered.
++## Access tokens
++
++Create a personal, project, or group access token on the selected instance. Use api for full access or read_api for read-only access. The app sends the token in the PRIVATE-TOKEN header only to the saved instance. Mutating tools still require approval.
++
 +## Instance origins
 +
 +Enter the HTTPS origin without a path. A private origin needs an exact entry in EXECUTOR_URL_ALLOW_HTTP_ORIGINS on the deployment and network access from the tools service. This setting does not allow sibling hosts or ports. Redirects to origins outside the deployment policy are refused.
 --- a/index.ts
 +++ b/index.ts
-@@ -21,6 +21,7 @@
+@@ -15,12 +15,14 @@
+ import { liveOpenapiRouter } from "apps/openapi";
+ import { icons } from "./icon.js";
+ import { options } from "./openapi.js";
++import { gitlabSignIn, signedInRouter } from "./mcp.js";
+ 
+ const User = object({ id: number(), username: string(), web_url: string() });
+ 
  const gitlab = defineProvider({
    name: "GitLab",
    hosts: ["gitlab.com"],
@@ -34,7 +45,7 @@
    auth: {
      token: secrets({
        label: "Access token",
-@@ -36,18 +37,19 @@
+@@ -36,29 +38,55 @@
      }),
    },
    async health({ account, fetch, signal }) {
@@ -55,45 +66,90 @@
 +  "Projects, merge requests, issues, pipelines, repositories, groups, users and the REST API on GitLab.com or a self-managed instance.";
  
  export default defineApp(
-   { user: { accounts: { gitlab: gitlab.many() } }, icons },
-@@ -55,10 +57,26 @@
+-  { user: { accounts: { gitlab: gitlab.many() } }, icons },
++  { user: { accounts: { signIn: gitlabSignIn.many(), gitlab: gitlab.many() } }, icons },
+   async ({ user, cache, fetch, signal }) => ({
      tools: router(
        await accountRouter(
-         user?.accounts.gitlab ?? [],
+-        user?.accounts.gitlab ?? [],
 -        (account) =>
 -          withApprovals(liveOpenapiRouter({ ...options, cache, fetch, signal, account }), (tool) =>
 -            tool.kind === "mutation" ? always() : undefined,
 -          ),
-+        (account) => {
-+          const site = account.site ?? "https://gitlab.com";
-+          const documentUrl = new URL(
-+            "/gitlab-org/gitlab/-/raw/master/doc/api/openapi/openapi_v3.yaml",
-+            site,
-+          ).href;
-+          return withApprovals(
-+            liveOpenapiRouter({
-+              ...options,
-+              source: { ...options.source, url: documentUrl },
-+              allowedOrigin: site,
-+              baseUrl: site,
-+              cache,
-+              fetch,
-+              signal,
-+              account,
-+            }),
-+            (tool) => (tool.kind === "mutation" ? always() : undefined),
-+          );
-+        },
++        [
++          ...(user?.accounts.gitlab ?? []).map((account) => ({
++            id: account.id,
++            discover: () => {
++              const site = account.site ?? "https://gitlab.com";
++              const documentUrl = new URL(
++                "/gitlab-org/gitlab/-/raw/master/doc/api/openapi/openapi_v3.yaml",
++                site,
++              ).href;
++              return withApprovals(
++                liveOpenapiRouter({
++                  ...options,
++                  source: { ...options.source, url: documentUrl },
++                  allowedOrigin: site,
++                  baseUrl: site,
++                  cache,
++                  fetch,
++                  signal,
++                  account,
++                }),
++                (tool) => (tool.kind === "mutation" ? always() : undefined),
++              );
++            },
++          })),
++          ...(user?.accounts.signIn ?? []).map((account) => ({
++            id: account.id,
++            discover: () => signedInRouter(account, { cache, signal }),
++          })),
++        ],
++        (account) => account.discover(),
          { signal },
        ),
        { title: "GitLab", description, icons },
 --- a/package.json
 +++ b/package.json
-@@ -7,6 +7,6 @@
+@@ -7,6 +7,7 @@
      "title": "GitLab"
    },
    "dependencies": {
 -    "apps": "0.0.1-beta.100"
-+    "apps": "0.0.1-beta.104-basalt.9"
++    "apps": "0.0.1-beta.104-basalt.9",
++    "@modelcontextprotocol/sdk": "1.32.1"
    }
  }
+--- /dev/null
++++ b/mcp.ts
+@@ -0,0 +1,30 @@
++import { defineProvider, oauth2, withApprovals, type AccountOf, type AppCache } from "apps";
++import { mcpHealth, mcpRouter } from "apps/mcp";
++import { always } from "apps/operations/approval";
++
++const mcpUrl = (site: string | undefined) => new URL("/api/v4/mcp", site ?? "https://gitlab.com").href;
++const headers = (account: { fields: { access_token: string } }) => ({
++  Authorization: `Bearer ${account.fields.access_token}`,
++});
++
++// GitLab's MCP server on the selected instance. Discovery registers a client only when the
++// instance advertises registration; a separate provider keeps saved REST accounts and links.
++// Asking only for mcp also keeps the hosted REST client, limited to api and read_user, off it.
++export const gitlabSignIn = defineProvider({
++  name: "GitLab",
++  hosts: ["gitlab.com"],
++  site: { label: "GitLab instance URL", origin: "https://gitlab.com", defaultOrigin: true },
++  auth: { mcp: oauth2({ discover: "https://gitlab.com/api/v4/mcp", scopes: ["mcp"] }) },
++  health: (check) =>
++    mcpHealth(check, { url: mcpUrl(check.account.site), headers: headers(check.account) }),
++});
++
++// An mcp-scoped token reaches only the tools this instance's MCP server lists, never REST tools.
++export const signedInRouter = async (
++  account: AccountOf<typeof gitlabSignIn>,
++  context: { cache: AppCache; signal: AbortSignal },
++) =>
++  withApprovals(
++    await mcpRouter({ url: mcpUrl(account.site), account, headers: headers(account), ...context }),
++    () => always(),
++  );
