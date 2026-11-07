@@ -890,7 +890,7 @@
     {
       "entry": "clerk",
       "package": "@executor.sh/clerk",
-      "sourceSha256": "5137dbfdb92fb247a05b465dbb550ac335fadba3bf1a6369b49d0311792b58e7",
+      "sourceSha256": "b7a3290c037ee7e7d84d700940594923bd9e7137045a465e1e944f5004a848bf",
       "methods": {
         "oauth": {
           "kind": "automatic",

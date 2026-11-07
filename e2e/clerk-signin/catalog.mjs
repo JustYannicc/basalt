@@ -21,7 +21,6 @@ export async function startClerkCatalog() {
       "applications:manage",
       "users:read",
       "users:manage",
-      "organizations:read",
       "application_domains:read",
       "application_domains:manage",
     ],

@@ -96,9 +96,10 @@ export async function startManagementProvider({
       assert.equal(url.searchParams.get("code_challenge_method"), "S256");
       if (name === "Clerk") {
         const requested = new Set((url.searchParams.get("scope") ?? "").split(" "));
-        assert.ok(
-          scopes.every((scope) => requested.has(scope)),
-          "Every declared Clerk permission reaches consent",
+        assert.deepEqual(
+          [...requested].sort(),
+          [...scopes].sort(),
+          "Consent asks for exactly the seven permissions in Clerk’s documented table",
         );
       }
       const decision = url.searchParams.get("decision");
@@ -138,7 +139,7 @@ export async function startManagementProvider({
             ? "Sign-in was cancelled."
             : name === "WorkOS"
               ? "Your WorkOS team has disabled sign-in for connected tools. Ask a team admin to enable it in Authentication settings."
-              : `Your ${name} workspace has disabled sign-in for connected tools. Ask a workspace admin to review access.`,
+              : "Access was declined.",
         );
       }
       response.writeHead(302, { location: callback.href });

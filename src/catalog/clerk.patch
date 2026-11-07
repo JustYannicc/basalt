@@ -82,7 +82,7 @@ index 11c13b7..8da9fd6 100644
      "title": "Clerk"
 diff --git a/after b/mcp.ts
 new file mode 100644
-index 0000000..5646032
+index 0000000..4d57e5a
 --- /dev/null
 +++ b/mcp.ts
 @@ -0,0 +1,24 @@
@@ -99,7 +99,7 @@ index 0000000..5646032
 +export const clerkSignIn = defineProvider({
 +  name: "Clerk",
 +  hosts: ["mcp.clerk.com"],
-+  auth: { oauth: oauth2({ discover: url, scopes: ["user:org:read","applications:read","applications:manage","users:read","users:manage","organizations:read","application_domains:read","application_domains:manage"] }) },
++  auth: { oauth: oauth2({ discover: url, scopes: ["user:org:read","applications:read","applications:manage","users:read","users:manage","application_domains:read","application_domains:manage"] }) },
 +  health: (check) => mcpHealth(check, { url, headers: headers(check.account) }),
 +});
 +

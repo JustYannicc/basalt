@@ -13,12 +13,7 @@ export const verifyOnboardingRecovery = (browser, organization, width) =>
       await page.getByRole("button", { name: "Sign in with Clerk", exact: true }).click();
       await page.getByRole("button", { name: "Deny by policy", exact: true }).click();
       const dialog = page.getByRole("dialog", { name: "Connect Clerk", exact: true });
-      await dialog
-        .getByText(
-          "Your Clerk workspace has disabled sign-in for connected tools. Ask a workspace admin to review access.",
-          { exact: true },
-        )
-        .waitFor();
+      await dialog.getByText("Access was declined.", { exact: true }).waitFor();
       assert.ok(new URL(page.url()).pathname.endsWith("/setup/accounts"));
       assert.equal(await page.getByText("Update client details", { exact: true }).count(), 0);
       await dialog.getByRole("button", { name: "Sign in with Clerk", exact: true }).waitFor();

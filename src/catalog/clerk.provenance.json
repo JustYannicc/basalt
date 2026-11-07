@@ -2,8 +2,8 @@
   "package": "@executor.sh/clerk",
   "publishedUrl": "https://catalog.executor.sh/apps/clerk.json",
   "publishedSha256": "b2b30977e63ca2da1b1c4524c690ff7cc3a9dbda50611e99adbdf284bd4a8597",
-  "carriedSha256": "76887b968905c93d5e286b4f21ab65c856d2e6c38f4782aa1f3759f5cf3dd12d",
-  "patchSha256": "2c962af014d63a8d4ae4caaf5ffa546a8f145568670ea00a1c715e8ba1448f93",
+  "carriedSha256": "b495830d0db6c56f3790f18c1adedc1b12dc9ae39ab22e72dad144b55adc9515",
+  "patchSha256": "bcd88ab74ee81e549ceb50b99ee62b6e2bc2d814854f7a6e743edd5e051f46c8",
   "appsVersion": "0.0.1-beta.104-basalt.9",
   "license": "Not declared in the published package",
   "contribution": {

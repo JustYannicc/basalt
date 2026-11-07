@@ -125,9 +125,7 @@ export const verifyLocalGuidance = ({ fixture, directory }) =>
           const dialog = page.getByRole("dialog", { name: "Connect Clerk", exact: true });
           await dialog
             .getByText(
-              decision === "Cancel sign-in"
-                ? "Sign-in was cancelled."
-                : "Your Clerk workspace has disabled sign-in for connected tools. Ask a workspace admin to review access.",
+              decision === "Cancel sign-in" ? "Sign-in was cancelled." : "Access was declined.",
               { exact: true },
             )
             .waitFor();

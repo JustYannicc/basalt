@@ -117,9 +117,7 @@ export const clerkJourney = ({
           await dialog.getByRole("button", { name: "Sign in with Clerk", exact: true }).waitFor();
           await dialog
             .getByText(
-              decision === "Cancel sign-in"
-                ? "Sign-in was cancelled."
-                : "Your Clerk workspace has disabled sign-in for connected tools. Ask a workspace admin to review access.",
+              decision === "Cancel sign-in" ? "Sign-in was cancelled." : "Access was declined.",
               { exact: true },
             )
             .waitFor();
