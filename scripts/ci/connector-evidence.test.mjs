@@ -23,6 +23,7 @@ const layouts = {
     "planetscale-sign-in/ci/unknown",
     "planetscale-sign-in/ci/refused",
     "planetscale-sign-in/ci/unreported",
+    "planetscale-sign-in/ci/rfc",
   ],
   "vercel-sign-in": ["vercel-sign-in/ci"],
   "elevenlabs-sign-in": ["elevenlabs-sign-in/ci"],

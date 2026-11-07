@@ -265,6 +265,9 @@ jobs:
       - name: Verify an unreported hosted grant is refused before account save
         if: success() || failure()
         run: bun e2e/planetscale-sign-in.mjs .generated/planetscale-sign-in/ci unreported
+      - name: Verify clients without confirmation keep OAuth scope omission behavior
+        if: success() || failure()
+        run: bun e2e/planetscale-sign-in.mjs .generated/planetscale-sign-in/ci rfc
       - name: Collect sanitized connector diagnostics
         if: always()
         run: node scripts/ci/collect-connector-evidence.mjs planetscale-sign-in "$RUNNER_TEMP/connector-evidence.json"
