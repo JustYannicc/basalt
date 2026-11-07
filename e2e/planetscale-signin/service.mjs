@@ -118,6 +118,11 @@ export async function startPlanetScale({ dcr, advertised, omitGrantedScope = fal
   const clients = () => (dcr ? [hostedClient, registeredClient] : [hostedClient]);
   const handle = async (request, response) => {
     const url = new URL(request.url, origin);
+    // OAuth discovery may probe the protected resource before reading authorization metadata.
+    if (url.pathname === "/" && request.method === "GET") {
+      calls.push({phase: "resource-discovery"});
+      return json(response, {error: "not_found"}, 404);
+    }
     if (url.pathname === "/docs/openapi.yaml") return json(response, document());
     if (url.pathname.startsWith("/.well-known/oauth-protected-resource"))
       return json(response, { error: "not_found" }, 404);
