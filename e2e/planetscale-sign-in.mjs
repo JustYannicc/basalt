@@ -17,12 +17,7 @@ import { RecordingFocus } from "../.upstream/e2e/support/recording-focus.ts";
 import { planetScaleOAuthClient } from "../.upstream/apps/hosted/server/src/implementation/planetscale-oauth.ts";
 import { provisionSelfHostActors } from "../scripts/connectors-tests/test-accounts.mjs";
 import { startPlanetScaleCatalog } from "./planetscale-signin/catalog.mjs";
-import {
-  hostedClient,
-  registrationDefault,
-  serviceToken,
-  startPlanetScale,
-} from "./planetscale-signin/service.mjs";
+import { hostedClient, startPlanetScale } from "./planetscale-signin/service.mjs";
 
 import { hostedScopes, sorted } from "./planetscale-signin/expectations.mjs";
 import { verifyPlanetScaleConnections } from "./planetscale-signin/journey.mjs";

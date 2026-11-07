@@ -102,7 +102,7 @@ test("invocation accounts use the supplied grant snapshot, never the credential 
   const known = invocationAccount(
     stored,
     definition,
-    { fields, oauthScopes: recorded, generation: 9 },
+    { fields, firstParty: undefined, oauthScopes: recorded, generation: 9 },
     new Map(),
     httpsOnlyUrlPolicy,
   );
@@ -112,7 +112,7 @@ test("invocation accounts use the supplied grant snapshot, never the credential 
   const unknown = invocationAccount(
     stored,
     definition,
-    { fields, generation: 10 },
+    { fields, firstParty: undefined, generation: 10 },
     new Map(),
     httpsOnlyUrlPolicy,
   );
