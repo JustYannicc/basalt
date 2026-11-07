@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Normal browser navigation promises wait for dashboard hydration and revealed streamed regions before a chained action can run, within the existing readiness deadline. Explicit commit navigation preserves intentional early-input and first-paint evidence; raw first-paint and intentional startup-failure reads retain their original load-state wait. A delayed-hydration driver regression runs in the existing Local account job after browser preparation."
+    }
+  }
+}
