@@ -1,5 +1,4 @@
 import type { UsageImportFormat, UsageImportPage } from "../../../apps/pool/import-contract.ts";
-import { digest } from "../backend-users.ts";
 import { maximumImportBytes, parseUsageImport } from "./import.ts";
 import type { ModelRequest } from "./record.ts";
 import { HistoryInputError, historyObject, invalidHistory } from "./record.ts";

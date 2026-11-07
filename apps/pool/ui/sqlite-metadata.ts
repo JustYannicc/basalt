@@ -1,7 +1,7 @@
 import type { SqlValue } from "@sqlite.org/sqlite-wasm";
 
 const safeLabel = (value: SqlValue | undefined) =>
-  typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_./:@+\-]{0,255}$/.test(value) ? value : null;
+  typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_./:@+-]{0,255}$/.test(value) ? value : null;
 const counter = (value: SqlValue | undefined) => {
   if (value === null) return null;
   if (

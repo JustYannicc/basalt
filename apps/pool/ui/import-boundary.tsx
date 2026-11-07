@@ -35,7 +35,7 @@ export function ImportBoundary({
   const [hash, setHash] = useState(() => location.hash);
   const [manager, setManager] = useState<boolean>();
   const [accessError, setAccessError] = useState<string>();
-  const retryAccess = useRef<() => void>(() => {});
+  const [retryAccess, setRetryAccess] = useState<() => void>(() => () => {});
   const previousHash = useRef("");
   const [previous] = useState(() => {
     try {
@@ -47,9 +47,9 @@ export function ImportBoundary({
   // The existing usage read checks current management access; isOwner only names the original owner.
   const observedApi = useMemo(() => {
     const overviewUsage: PoolApi["overviewUsage"] = async (input) => {
-      retryAccess.current = () => {
+      setRetryAccess(() => () => {
         void overviewUsage(input);
-      };
+      });
       const result = await api.overviewUsage(input);
       if (result.ok) {
         setManager(true);
@@ -95,7 +95,7 @@ export function ImportBoundary({
               <>
                 <Problem>{accessError}</Problem>
                 <div>
-                  <Button variant="outline" onClick={() => retryAccess.current()}>
+                  <Button variant="outline" onClick={retryAccess}>
                     Check again
                   </Button>
                 </div>
