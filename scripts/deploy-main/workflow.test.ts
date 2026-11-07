@@ -150,7 +150,7 @@ test("Deploy looks for a newer passing commit first, then skips whichever commit
       step,
     );
   const after = steps.slice(4 + gated.length);
-  assert.equal(after.length, 4);
+  assert.equal(after.length, 5);
   for (const step of after.slice(0, 3))
     assert.match(step, /\n        if: steps\.report\.outputs\./, step);
   assert.match(
@@ -158,6 +158,11 @@ test("Deploy looks for a newer passing commit first, then skips whichever commit
     /^name: Retain database budget receipts\n        if: always\(\)\n        uses: actions\/upload-artifact@v4/,
   );
   assert.match(after[3]!, /\.local\/database-budget\/\*\.json/);
+  assert.match(
+    after[4]!,
+    /^name: Retain release barrier receipts\n        if: always\(\)\n        uses: actions\/upload-artifact@v4/,
+  );
+  assert.match(after[4]!, /\.local\/release-barrier\/\*\.json/);
   assert.match(after[3]!, /include-hidden-files: true/);
   // A report that succeeds without saying which path it needs fails Deploy rather than releasing nothing.
   assert.match(

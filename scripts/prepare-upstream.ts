@@ -25,21 +25,11 @@ const upstream = join(root, ".upstream");
 const patchManifest = readPatchManifest(root);
 const pin = JSON.parse(readFileSync(join(root, "upstream.json"), "utf8"));
 if (!/^[a-f0-9]{40}$/.test(pin.commit)) throw new Error("Expected an immutable upstream commit");
-await prepareUpstreamCheckout(upstream, pin);
-for (const { file: patch } of patchManifest.patches) {
-  const path = join(root, "patches", patch);
-  const additions = [
-    ...readFileSync(path, "utf8").matchAll(/--- \/dev\/null\n\+\+\+ b\/(.+)\n/g),
-  ].map((match) => match[1]!);
-  for (const added of additions) {
-    if (added.startsWith("/") || added.split("/").includes(".."))
-      throw new Error("Invalid patch path");
-  }
-  // Remove only patch-created, untracked source files from this generated checkout.
-  if (additions.length) run("git", ["clean", "-f", "--", ...additions], upstream);
-  run("git", ["apply", "--check", path], upstream);
-  run("git", ["apply", path], upstream);
-}
+await prepareUpstreamCheckout(
+  upstream,
+  pin,
+  patchManifest.patches.map(({ file }) => join(root, "patches", file)),
+);
 prepareTestPlans(root, upstream);
 bundlePoolApp(root, upstream);
 // Installed catalog apps roll forward once per deployed Basalt revision.

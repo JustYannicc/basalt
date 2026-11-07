@@ -81,12 +81,16 @@ test("a count the runtime cannot save fails visibly with its SQLSTATE instead of
   assert.deepEqual(value, { failed: true, recreated: false });
   assert.deepEqual(
     logs
-      .filter((log) => JSON.stringify(log.message).includes("Account tool calls were not counted"))
+      .filter((log) =>
+        JSON.stringify(log.message).includes("Account tool call persistence is unconfirmed"),
+      )
       .map((log) => log.annotations),
     [
       {
+        "executor.account_traffic.outcome": "unconfirmed",
         "executor.account_traffic.failure": "storage",
         "executor.account_traffic.sqlstate": "42P01",
+        "executor.account_traffic.accounts": 1,
       },
     ],
   );

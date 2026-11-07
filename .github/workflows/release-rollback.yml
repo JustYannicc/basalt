@@ -157,6 +157,7 @@ jobs:
       MCP_SESSION_KEY_PREVIOUS: ${{ secrets.MCP_SESSION_KEY_PREVIOUS }}
       APP_DOMAIN_CONTROL_SECRET: ${{ secrets.APP_DOMAIN_CONTROL_SECRET }}
       POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
+      POOL_DEPLOYMENT_KEY: ${{ secrets.POOL_DEPLOYMENT_KEY }}
       POOL_APP_SIGNING_KEY: ${{ secrets.POOL_APP_SIGNING_KEY }}
       GOOGLE_MAPS_ROUTES_API_KEY: ${{ secrets.GOOGLE_MAPS_ROUTES_API_KEY }}
       POOL_APP_SIGNING_KEY_PREVIOUS: ${{ secrets.POOL_APP_SIGNING_KEY_PREVIOUS }}
@@ -220,3 +221,15 @@ jobs:
           RELEASE_SHA: ${{ inputs.release_sha }}
           RESTORED_BACKUP: ${{ inputs.restored_backup }}
           EXPECTED_DEPLOYMENT_ID: ${{ needs.plan.outputs.deployment_id }}
+
+      - name: Retain release barrier receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-barrier
+          include-hidden-files: true
+          path: |
+            .local/release-barrier/*.json
+            ${{ runner.temp }}/candidate/.local/release-barrier/*.json
+            ${{ runner.temp }}/rollback-source/.local/release-barrier/*.json
+          if-no-files-found: ignore
