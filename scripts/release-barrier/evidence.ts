@@ -93,6 +93,8 @@ export function releaseEvidence(directory: string, candidate: string, encryption
         ...(latest?.pendingContainer ? { pendingContainer: latest.pendingContainer } : {}),
         reason: error instanceof BarrierRefusal ? error.reason : "preparation-or-provider-failed",
         ...(error instanceof BarrierRefusal && error.worker ? { worker: error.worker } : {}),
+        ...(error instanceof BarrierRefusal && error.delta ? { delta: error.delta } : {}),
+        ...(error instanceof BarrierRefusal && error.refusals ? { refusals: error.refusals } : {}),
       };
       await write(directory, "failure.json", failure);
       return failure;

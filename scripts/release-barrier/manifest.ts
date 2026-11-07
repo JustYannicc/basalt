@@ -1,6 +1,7 @@
 import type * as Workers from "@distilled.cloud/cloudflare/workers";
 import { createHash } from "node:crypto";
 import { describeContainer, type FrozenContainer } from "./container.ts";
+import type { ResourceDelta } from "./prop-diff.ts";
 
 export interface ModulePart {
   readonly name: string;
@@ -27,14 +28,25 @@ export interface ReleaseManifest {
   readonly containers?: readonly FrozenContainer[];
 }
 
+export type PlanRefusal = { reason: string } | ({ reason: string } & ResourceDelta);
+
 export class BarrierRefusal extends Error {
   readonly reason: string;
   readonly worker: string | undefined;
+  readonly delta: ResourceDelta | undefined;
+  readonly refusals: readonly PlanRefusal[] | undefined;
 
-  constructor(reason: string, worker?: string) {
+  constructor(
+    reason: string,
+    worker?: string,
+    delta?: ResourceDelta,
+    refusals?: readonly PlanRefusal[],
+  ) {
     super(`Release barrier refused: ${reason}${worker ? ` (${worker})` : ""}`);
     this.reason = reason;
     this.worker = worker;
+    this.delta = delta;
+    this.refusals = refusals;
   }
 }
 
