@@ -56,10 +56,16 @@ for (const snapshot of [false, true])
             ({ app, reads }) =>
               Effect.gen(function* () {
                 yield* links.listAppAccountLinks(app.id, scope);
-                assert.ok((reads.accountRows ?? 0) <= 3, JSON.stringify(reads));
+                assert.equal(reads.accountRows, 3, JSON.stringify(reads));
                 assert.equal(reads.accountList, 1);
                 assert.equal(reads.accountGet ?? 0, 0);
-                assert.ok((reads.healthRows ?? 0) <= 3);
+                assert.equal(
+                  reads.healthRows ?? 0,
+                  snapshot ? 0 : 3,
+                  snapshot
+                    ? "snapshot reads no health"
+                    : "linked accounts read exactly three health rows",
+                );
               }),
             { snapshot, count },
           ),

@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.contributedLinks {
+    metadata {
+      constraint "Only device account bindings are checked before an outside-service call, and each binding receives one execution decision."
+    }
+  }
+}
