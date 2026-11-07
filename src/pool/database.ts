@@ -131,8 +131,10 @@ export const poolDatabaseInfrastructure = Effect.gen(function* () {
     runtimeUrl: Output.all(runtime.pooledOrigin, readyHash).pipe(
       Output.map(([origin]) => Redacted.make(poolDatabaseUrl(Redacted.value(postgresUrl(origin))))),
     ),
-    workerOrigin: Output.all(runtime.pooledOrigin, readyHash).pipe(
-      Output.map(([origin]) => ({ ...origin, database: poolDatabase.name })),
-    ),
+    // Fresh previews need initialization; production admission runs it before activation.
+    workerOrigin: (isPreview
+      ? Output.all(runtime.pooledOrigin, readyHash).pipe(Output.map(([origin]) => origin))
+      : runtime.pooledOrigin
+    ).pipe(Output.map((origin) => ({ ...origin, database: poolDatabase.name }))),
   };
 });

@@ -15,7 +15,12 @@ import { BarrierRefusal } from "./manifest.ts";
 import { databasePhaseResources } from "../release-phases/deploy.ts";
 
 /** Real declarations, Plan, Apply and provider diffs; only effects and stored state are synthetic. */
-export const proveConnectionPlan = (stack, recompile, change) =>
+export const proveConnectionPlan = (
+  stack,
+  recompile,
+  change,
+  connectionId = "DatabaseConnection",
+) =>
   Effect.gen(function* () {
     const dependencies = (node, source = stack) =>
       Object.keys(Output.upstreamAny([node.Props, source.bindings[node.FQN] ?? []]));
@@ -27,7 +32,8 @@ export const proveConnectionPlan = (stack, recompile, change) =>
       assert.ok(resource);
       for (const dependency of dependencies(resource)) include(dependency);
     };
-    for (const id of ["DatabaseConnection", "Migrations", "RuntimeDatabaseBudget"]) include(id);
+    for (const id of [connectionId, "Migrations", "RuntimeDatabaseBudget", "PoolDatabase"])
+      include(id);
     const isolate = (source) => ({
       ...source,
       resources: Object.fromEntries([...selected].map((id) => [id, source.resources[id]])),
@@ -35,7 +41,7 @@ export const proveConnectionPlan = (stack, recompile, change) =>
       actions: {},
       output: {},
     });
-    const actual = yield* Provider.findProviderByType(stack.resources.DatabaseConnection.Type);
+    const actual = yield* Provider.findProviderByType(stack.resources[connectionId].Type);
     const origin = {
       host: "fixture.invalid",
       port: 6432,
@@ -58,12 +64,12 @@ export const proveConnectionPlan = (stack, recompile, change) =>
       .filter((type) => type !== "Command.Exec")
       .map((type) =>
         Provider.succeed(Resource(type), {
-          ...(type === stack.resources.DatabaseConnection.Type
+          ...(type === stack.resources[connectionId].Type
             ? { diff: actual.diff, stables: actual.stables }
             : {}),
           reconcile: () =>
             Effect.sync(() => {
-              if (type === stack.resources.DatabaseConnection.Type) connectionWrites++;
+              if (type === stack.resources[connectionId].Type) connectionWrites++;
               return attributes;
             }),
           delete: () => Effect.void,
@@ -86,8 +92,7 @@ export const proveConnectionPlan = (stack, recompile, change) =>
     const providers = Layer.mergeAll(...layers);
     const memory = InMemoryService();
     const store = yield* memory;
-    const read = () =>
-      store.get({ stack: stack.name, stage: stack.stage, fqn: "DatabaseConnection" });
+    const read = () => store.get({ stack: stack.name, stage: stack.stage, fqn: connectionId });
     const run = (program, source) =>
       program.pipe(
         Effect.provideService(State, memory),
@@ -106,7 +111,9 @@ export const proveConnectionPlan = (stack, recompile, change) =>
     return yield* recompile((next) =>
       run(
         Effect.gen(function* () {
-          const connection = next.resources.DatabaseConnection;
+          const connection = next.resources[connectionId];
+          if (change === "name")
+            connection.Props = { ...connection.Props, name: "fixture-replacement" };
           if (change === "origin")
             connection.Props = {
               ...connection.Props,
@@ -125,7 +132,7 @@ export const proveConnectionPlan = (stack, recompile, change) =>
               mtls: { ...connection.Props.mtls, sslmode: "require" },
             };
           const plan = yield* Plan.make(isolate(next));
-          const node = plan.resources.DatabaseConnection;
+          const node = plan.resources[connectionId];
           let refusal = null;
           try {
             assertSupportedPlan(plan);
@@ -140,6 +147,13 @@ export const proveConnectionPlan = (stack, recompile, change) =>
           );
           const result = {
             action: node.action,
+            connectionIds: Object.values(next.resources)
+              .filter((resource) => resource.Type === connection.Type)
+              .map((resource) => resource.FQN)
+              .sort(),
+            poolWorkerDependencies: dependencies(next.resources.PoolWorker, next).sort(),
+            poolAction: plan.resources.PoolDatabase.action,
+            databasePhaseContainsPool: databasePhase.has("PoolDatabase"),
             storedOriginResolved: isResolved(node.state.props.origin),
             candidateOriginResolved: isResolved(
               node.action === "noop" ? node.state.props.origin : node.props.origin,

@@ -1,0 +1,23 @@
+{
+  "scenarios": {
+    "hitlInventoryDocumentLifetime": {
+      "fixtures": "actors",
+      "title": "Inventory waits follow the current document, ignore late old completion or abort, and preserve current failures",
+      "targets": {
+        "self-host": { "status": "scheduled" },
+        "cloud": { "status": "scheduled" },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The regression uses the hosted organization's inventory endpoint."
+        }
+      }
+    }
+  },
+  "runs": {
+    "hitlInventoryDocumentLifetime": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab",
+      "human-in-the-loop:the-human-in-the-loop-route-while-cloud-code-and-data-load"
+    ]
+  },
+  "inputs": ["e2e/hitl-inventory-lifetime.patch"]
+}
