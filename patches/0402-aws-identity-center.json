@@ -6,5 +6,5 @@
   "upstream_pull_request": null,
   "database_sensitive": false,
   "workflow_sensitive": false,
-  "requires": "Per-request MCP signing, shared interactive setup forms and opted-in app-owned reconnect preserve saved connection identity. Protocol 38 and framework .13 retain protocol 35 account-use evidence and keep earlier bundles compatible."
+  "requires": "Per-request MCP signing, shared interactive forms and opted-in reconnect retain saved account identity. Protocol 38 and framework .13 preserve protocol 35 account-use evidence and earlier bundles."
 }
