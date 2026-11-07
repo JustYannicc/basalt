@@ -67,6 +67,17 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         assert.match(patch.retirement.requires, /stable schema owner/);
         assert.match(patch.retirement.requires, /commit and rollback/);
         assert.match(patch.retirement.requires, /multi-process shared-budget/);
+      } else if (patch.identity === "cliproxy-home-xai-device") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0399-home-xai-device.patch");
+        assert.match(patch.retirement.requires, /xAI device authorization/);
+        assert.match(patch.retirement.requires, /keeps device secrets server-side/);
+        assert.match(patch.retirement.requires, /provider expiry and cancellation/);
+        assert.match(patch.retirement.requires, /atomic exact-ID completion receipt/);
+        assert.match(
+          patch.retirement.requires,
+          /expiry, denial, pending, slow-down and cancellation regressions/,
+        );
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&
