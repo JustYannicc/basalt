@@ -12,6 +12,8 @@ import {
   resetAttempt,
   useReset,
 } from "./account-actions.ts";
+import { publicHistory } from "./history-query.ts";
+export { publicHistory } from "./history-query.ts";
 import type { Computer, PoolChoice } from "./ui/computer-types.ts";
 
 type Context = QueryContext<typeof requirements>;
@@ -78,6 +80,7 @@ export default defineApp(requirements, {
     view,
     usage,
     capacity,
+    publicHistory,
     computerContext,
     refreshUsage,
     pauseAccount,

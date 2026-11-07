@@ -10,6 +10,6 @@ const root = document.getElementById("root");
 if (root === null) throw new Error("Missing app root");
 createRoot(root).render(
   <StrictMode>
-    <App api={pool} />
+    <App api={pool} publicHistory={pool.publicHistory} />
   </StrictMode>,
 );

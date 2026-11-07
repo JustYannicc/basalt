@@ -1,0 +1,9 @@
+{
+  "identity": "view-all-history",
+  "file": "0392-view-all-history.patch",
+  "content_sha256": "d505647cfb09b72137c81bd72098f734895141c1ec53e1dabde679b3604a7ca8",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
