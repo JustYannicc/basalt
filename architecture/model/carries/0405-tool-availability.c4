@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "App managers control generic, per-app tool availability independently of approval rules. Availability only narrows existing grants; it filters discovery before pagination and search ranking, and is rechecked on calls, nested app operations and resumed approvals. Agent management uses the built-in management app's ordinary approval flow. Hosted migration 18 adds state without rewriting existing tables; managers can reveal hidden inventory and restore tools."
+    }
+  }
+}
