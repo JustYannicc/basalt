@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The callback-once PostgreSQL fixture starts its lock sibling only after INSERT completes. A separate case delays initial connection readiness by 30 ms and preserves all five original outcomes; production pool code and existing deadlines stay unchanged."
+    }
+  }
+}

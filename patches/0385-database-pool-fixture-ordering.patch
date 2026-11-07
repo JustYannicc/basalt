@@ -1,0 +1,172 @@
+diff --git a/apps/hosted/testing/database-pool-fixture.ts b/apps/hosted/testing/database-pool-fixture.ts
+--- a/apps/hosted/testing/database-pool-fixture.ts
++++ b/apps/hosted/testing/database-pool-fixture.ts
+@@ -37,6 +37,7 @@ import {
+   Effect,
+   Cause,
+   Context,
++  Deferred,
+   Exit,
+   Fiber,
+   FileSystem,
+@@ -51,6 +52,7 @@ import { LocalDatabaseUrl } from "../cloud/src/contracts/database.ts";
+
+ const cases = [
+   "use-once",
++  "use-once-delayed",
+   "held-nested",
+   "held-shared",
+   "held-unawaited",
+@@ -67,7 +69,7 @@ const cancelRequestCode = 80877102;
+  * A TCP proxy to the database that counts `CancelRequest`s and, with `dropCancels`, closes their
+  * connections without passing them on, as a cancel lost on the way does.
+  */
+-const proxy = (target: URL, dropCancels: boolean) =>
++const proxy = (target: URL, dropCancels: boolean, readyDelay = 0) =>
+   Effect.acquireRelease(
+     Effect.callback<{ readonly server: Net.Server; readonly cancels: { count: number } }>(
+       (resume) => {
+@@ -95,7 +97,45 @@ const proxy = (target: URL, dropCancels: boolean) =>
+             upstream.on("error", () => client.destroy());
+             client.on("error", () => upstream.destroy());
+             upstream.write(first);
+-            client.pipe(upstream).pipe(client);
++            client.pipe(upstream);
++            if (readyDelay === 0) upstream.pipe(client);
++            else {
++              let buffer = Buffer.alloc(0);
++              let ready = false;
++              let delaying = false;
++              let timer: ReturnType<typeof setTimeout> | undefined;
++              const pending: Buffer[] = [];
++              client.once("close", () => clearTimeout(timer));
++              upstream.on("data", (chunk: Buffer) => {
++                if (ready) {
++                  if (delaying) pending.push(chunk);
++                  else client.write(chunk);
++                  return;
++                }
++                buffer = Buffer.concat([buffer, chunk]);
++                let offset = 0;
++                while (buffer.length - offset >= 5) {
++                  const length = buffer.readInt32BE(offset + 1) + 1;
++                  if (buffer.length - offset < length) break;
++                  if (buffer[offset] === 90) {
++                    // Delay only the first ReadyForQuery, preserving PostgreSQL frame order.
++                    ready = true;
++                    delaying = true;
++                    client.write(buffer.subarray(0, offset));
++                    pending.push(buffer.subarray(offset));
++                    buffer = Buffer.alloc(0);
++                    timer = setTimeout(() => {
++                      for (const bytes of pending.splice(0)) client.write(bytes);
++                      delaying = false;
++                    }, readyDelay);
++                    return;
++                  }
++                  offset += length;
++                }
++                client.write(buffer.subarray(0, offset));
++                buffer = buffer.subarray(offset);
++              });
++            }
+           });
+         });
+         server.on("close", () => {
+@@ -155,6 +195,7 @@ const command = Command.make("database-pool-fixture", {
+           readonly multiplex?: boolean;
+           readonly maxConnections: number;
+           readonly cancels?: "dropped" | "delivered";
++          readonly readyDelay?: number;
+         }): Effect.Effect<
+           { readonly pool: PgPool.PgPool; readonly cancels: { count: number } },
+           never,
+@@ -164,7 +205,11 @@ const command = Command.make("database-pool-fixture", {
+             let url = target;
+             let cancels = { count: 0 };
+             if (options.cancels !== undefined) {
+-              const proxied = yield* proxy(target, options.cancels === "dropped");
++              const proxied = yield* proxy(
++                target,
++                options.cancels === "dropped",
++                options.readyDelay,
++              );
+               const address = proxied.server.address();
+               if (address === null || typeof address === "string")
+                 return yield* Effect.die("The proxy has no port");
+@@ -228,12 +273,19 @@ const command = Command.make("database-pool-fixture", {
+
+         const result: Record<string, unknown> = yield* Effect.gen(function* () {
+           switch (args.case) {
+-            case "use-once": {
++            case "use-once":
++            case "use-once-delayed": {
+               yield* adminQuery(`CREATE TABLE ${table} (id serial PRIMARY KEY)`);
+               yield* Effect.addFinalizer(() => adminQuery(`DROP TABLE IF EXISTS ${table}`));
+               yield* holdLock;
+               // Cancels never land, so the abandoned lock wait keeps its connection refusing.
+-              const { pool: shared } = yield* pool({ maxConnections: 4, cancels: "dropped" });
++              const { pool: shared } = yield* pool({
++                maxConnections: 4,
++                cancels: "dropped",
++                readyDelay: args.case === "use-once-delayed" ? 30 : 0,
++              });
++              // The lock must not reach the shared connection before the INSERT.
++              const inserted = yield* Deferred.make<void>();
+               // One group: a callback inserts, then reads after its sibling on the same connection
+               // has given up on a lock wait. The read is refused unsent; the insert was sent.
+               const [twoStatements, sibling] = yield* PgPool.grouped(
+@@ -241,15 +293,14 @@ const command = Command.make("database-pool-fixture", {
+                   [
+                     shared
+                       .use((connection) =>
+-                        connection
+-                          .query(`INSERT INTO ${table} DEFAULT VALUES`, [], false)
+-                          .pipe(
+-                            Effect.andThen(Effect.sleep("150 millis")),
+-                            Effect.andThen(connection.query("SELECT 1", [], false)),
+-                          ),
++                        connection.query(`INSERT INTO ${table} DEFAULT VALUES`, [], false).pipe(
++                          Effect.ensuring(Deferred.succeed(inserted, undefined)),
++                          Effect.andThen(Effect.sleep("150 millis")),
++                          Effect.andThen(connection.query("SELECT 1", [], false)),
++                        ),
+                       )
+                       .pipe(Effect.exit),
+-                    Effect.sleep("20 millis").pipe(Effect.andThen(lockWait(shared, 40))),
++                    Deferred.await(inserted).pipe(Effect.andThen(lockWait(shared, 40))),
+                   ],
+                   { concurrency: "unbounded" },
+                 ),
+diff --git a/e2e/tests/cloud-database-placement.spec.ts b/e2e/tests/cloud-database-placement.spec.ts
+--- a/e2e/tests/cloud-database-placement.spec.ts
++++ b/e2e/tests/cloud-database-placement.spec.ts
+@@ -1281,12 +1281,22 @@ return listed;`;
+
+           // A callback's second statement is refused after a sibling on its connection gave up;
+           // the callback's insert was sent, so the callback is not run again.
+-          const once = yield* step("A callback that sent a statement runs once", "use-once");
+-          expect(once.siblingGaveUp, "The sibling gave up on its lock wait").toBe(true);
+-          expect(once.twoStatements, "The refused read fails the callback").toBe("refused");
+-          expect(once.rows, "The callback's insert ran once").toBe(1);
+-          expect(once.otherSiblingGaveUp, "The second sibling gave up on its lock wait").toBe(true);
+-          expect(once.firstRead, "A callback refused before sending runs again").toBe("ok");
++          for (const [title, name] of [
++            ["A callback that sent a statement runs once", "use-once"],
++            [
++              "The same callback ordering survives delayed connection readiness",
++              "use-once-delayed",
++            ],
++          ] as const) {
++            const once = yield* step(title, name);
++            expect(once.siblingGaveUp, "The sibling gave up on its lock wait").toBe(true);
++            expect(once.twoStatements, "The refused read fails the callback").toBe("refused");
++            expect(once.rows, "The callback's insert ran once").toBe(1);
++            expect(once.otherSiblingGaveUp, "The second sibling gave up on its lock wait").toBe(
++              true,
++            );
++            expect(once.firstRead, "A callback refused before sending runs again").toBe("ok");
++          }
+
+           const nested = yield* step("A hold inside a hold uses its connection", "held-nested");
+           expect(nested.split, "Rounds whose inner hold took another connection").toBe(0);
