@@ -1,3 +1,4 @@
+import { CloudflareHttpError } from "@distilled.cloud/cloudflare/Errors";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Stack, evalStack } from "alchemy/Stack";
@@ -10,12 +11,17 @@ import { Resource } from "alchemy/Resource";
 import { State } from "alchemy/State/State";
 import { InMemoryService } from "alchemy/State/InMemoryState";
 import { WorkerUploadHook } from "alchemy/Cloudflare/Workers/WorkerUploadHook";
-import { Context, Effect, Exit, Layer, Option } from "effect";
+import { Cause, Context, Effect, Exit, Layer, Option } from "effect";
 import type { Worker } from "alchemy/Cloudflare";
 import { withReleaseRuntime } from "./runtime.ts";
 import { deployStack } from "./deploy-stack.ts";
 import { attributes, preparedUpload } from "./fixture.ts";
 import { cloudflareArtifactsApi } from "../ensure-artifacts.ts";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { releaseEvidence } from "./evidence.ts";
+import { reportRefusal } from "./refusal-report.ts";
 import type { BarrierReceipt } from "./barrier.ts";
 
 interface FixtureWorker extends Resource<
@@ -27,6 +33,9 @@ const FixtureWorker = Resource<FixtureWorker>("Cloudflare.Worker");
 
 const fixture = (
   options: {
+    baselineError?: CloudflareHttpError;
+    preparationError?: unknown;
+    freezeError?: unknown;
     reject?: boolean;
     omitCapture?: boolean;
     newResource?: boolean;
@@ -52,9 +61,19 @@ const fixture = (
           hash: { ...attributes(input.id).hash!, input: input.news.revision },
         };
         if (Option.isSome(hook)) {
+          if (options.preparationError && input.id === "Api")
+            return yield* Effect.fail(options.preparationError);
+          const upload = preparedUpload(input.id);
+          if (options.freezeError && input.id === "Api") {
+            const file = new File(["fixture"], "main.js");
+            file.arrayBuffer = async () => {
+              throw options.freezeError;
+            };
+            upload.request.files = [file];
+          }
           if (options.omitCapture && input.id === "Router") return result;
           return yield* hook.value.capture({
-            ...preparedUpload(input.id),
+            ...upload,
             proposed: result,
             activate: (version) =>
               Effect.sync(() => {
@@ -185,7 +204,10 @@ const fixture = (
                       ],
                 });
               }),
-            baseline: () => Effect.succeed([{ versionId: "previous", percentage: 100 }]),
+            baseline: (worker) =>
+              options.baselineError && worker.scriptName === "Api"
+                ? Effect.fail(options.baselineError)
+                : Effect.succeed([{ versionId: "previous", percentage: 100 }]),
             upload: (worker) =>
               Effect.sync(() => {
                 events.push(`validate:${worker.id}`);
@@ -281,3 +303,49 @@ test("database Commands outside the explicit database dependency plan cannot run
   assert.deepEqual(proof.events, ["validate:Api", "validate:Router"]);
   assert.equal(proof.writes(), 0);
 });
+
+for (const [field, operation] of [
+  ["baselineError", "read-worker-baseline"],
+  ["preparationError", "prepare-resource"],
+  ["freezeError", "freeze-worker-upload"],
+] as const) {
+  test(`public deployStack retains a safe ${operation} cause through Effect and Promise`, async (context) => {
+    const directory = await mkdtemp(join(tmpdir(), "release-cause-"));
+    context.after(() => rm(directory, { recursive: true, force: true }));
+    const secret = "credential@private.example/worker?token=private-value";
+    const proof = fixture({
+      [field]: Object.assign(
+        new CloudflareHttpError({ status: 503, statusText: secret, message: secret, body: secret }),
+        { code: 10001, request: secret, stack: secret },
+      ),
+    });
+    const exit = await Effect.runPromiseExit(proof.effect);
+    assert.ok(Exit.isFailure(exit));
+    const evidence = releaseEvidence(directory, "a".repeat(40));
+    const failure = await evidence.failure(Cause.squash(exit.cause));
+    assert.equal(failure.reason, "release-operation-failed");
+    assert.equal(failure.worker, "Api");
+    assert.equal(Reflect.get(failure, "operation"), operation);
+    assert.deepEqual(Reflect.get(failure, "provider"), {
+      type: "CloudflareHttpError",
+      status: 503,
+      codes: [10001],
+    });
+    const lines: string[] = [];
+    const summary = join(directory, "summary.md");
+    await reportRefusal(failure, summary, (line) => lines.push(line));
+    const outputs = [
+      await readFile(join(directory, "failure.json"), "utf8"),
+      await readFile(summary, "utf8"),
+      ...lines,
+    ];
+    for (const output of outputs) {
+      for (const expected of ["Api", operation, "CloudflareHttpError", "503", "10001"])
+        assert.ok(output.includes(expected), `${expected} absent from ${output}`);
+      for (const privatePart of [secret, "private.example", "private-value"])
+        assert.ok(!output.includes(privatePart));
+    }
+    assert.deepEqual(proof.events, []);
+    assert.equal(proof.writes(), 0);
+  });
+}
