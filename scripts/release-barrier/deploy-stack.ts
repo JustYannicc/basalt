@@ -3,6 +3,7 @@ import * as Plan from "alchemy/Plan";
 import type { CompiledStack } from "alchemy/Stack";
 import type { Worker } from "alchemy/Cloudflare";
 import { Effect } from "effect";
+import { verificationAdmissions, type VerificationAdmission } from "./plan-admission.ts";
 import { preparePlan, finishPlan } from "./alchemy-plan.ts";
 import { readBaseline, uploadVersion } from "./cloudflare.ts";
 import { releaseWorkers, type BarrierReceipt } from "./barrier.ts";
@@ -29,6 +30,7 @@ export interface DeployStackOptions {
   record(receipt: BarrierReceipt): Promise<void>;
   manifest(value: ReleaseManifest): Promise<void>;
   publication?(container: FrozenContainer): Promise<void>;
+  admission?(verifications: readonly VerificationAdmission[]): Promise<void>;
   serving?(container: ServingContainer): Promise<void>;
   io?: {
     baseline: typeof readBaseline;
@@ -54,6 +56,8 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
       options.io?.container,
       options.publication,
     );
+    const recordAdmission = options.admission;
+    if (recordAdmission) yield* Effect.promise(() => recordAdmission(verificationAdmissions(plan)));
     for (const { frozen } of prepared.containers.values())
       assertBaselineWorkerInput(frozen, prepared.captured.get("PoolWorker")?.previousSettings);
     const context = yield* Effect.context<Services>();

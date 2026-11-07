@@ -92,6 +92,7 @@ const result = await Effect.runPromiseExit(
                 candidate: process.env.BASALT_RELEASE_CANDIDATE!,
                 record: evidence.record,
                 publication: evidence.publication,
+                admission: evidence.admission,
                 serving: evidence.serving,
                 manifest: evidence.manifest,
               })
