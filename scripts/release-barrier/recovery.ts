@@ -1,3 +1,4 @@
+import type { ContainerHealth } from "./container-health.ts";
 import { Schema } from "effect";
 import { BarrierRefusal, canonical, digest } from "./manifest.ts";
 import {
@@ -16,7 +17,13 @@ export interface RecoveryReceipt {
   restored: string[];
   pending?: string;
   failure?: string;
-  containers?: { container: string; version: number; rolloutId?: string; verified?: boolean }[];
+  containers?: {
+    container: string;
+    version: number;
+    rolloutId?: string;
+    verified?: boolean;
+    health?: ContainerHealth;
+  }[];
   pendingContainer?: {
     container: string;
     phase: "rollout" | "verification";

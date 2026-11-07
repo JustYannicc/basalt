@@ -85,6 +85,7 @@ const result = await Effect.runPromiseExit(
             : deployStack(compiled, {
                 candidate: process.env.BASALT_RELEASE_CANDIDATE!,
                 record: evidence.record,
+                publication: evidence.publication,
                 manifest: evidence.manifest,
               })
           ).pipe(

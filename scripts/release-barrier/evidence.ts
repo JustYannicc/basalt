@@ -7,7 +7,7 @@ import {
   manifestDigest,
   type ReleaseManifest,
 } from "./manifest.ts";
-import { describeContainer } from "./container.ts";
+import { describeContainer, type FrozenContainer } from "./container.ts";
 import { sealRecovery } from "./recovery-envelope.ts";
 
 const write = async (directory: string, name: string, value: unknown) => {
@@ -23,6 +23,12 @@ export function releaseEvidence(directory: string, candidate: string, encryption
   let fingerprint: string | undefined;
   let latest: BarrierReceipt | undefined;
   return {
+    async publication(container: FrozenContainer) {
+      await write(directory, "publication.json", {
+        candidate,
+        containers: [describeContainer(container)],
+      });
+    },
     async manifest(manifest: ReleaseManifest) {
       await write(resolve(directory, "../release-barrier-private"), "frozen.json", {
         schemaVersion: manifest.schemaVersion ?? 1,

@@ -204,13 +204,15 @@ export async function waitForPoolImage(
   return verified;
 }
 
-export async function waitForContainerImage(
+export async function waitForContainerImage<Health>(
   target: ContainerImageTarget,
   credentials: CloudflareCredentials,
   origin: string,
   fetcher: Fetcher = fetch,
   options: Parameters<typeof waitForPoolStatus>[3] = {},
+  verifyHealth?: (signal: AbortSignal) => Promise<Health>,
 ) {
+  let health: Health | undefined;
   await waitForPoolStatus(
     "Pool recovered container image",
     200,
@@ -227,6 +229,7 @@ export async function waitForContainerImage(
             signal: AbortSignal.any([signal, ...(init?.signal ? [init.signal] : [])]),
           }),
         );
+        health = await verifyHealth?.(signal);
         return new Response(null, { status: 200 });
       } catch (error) {
         if (error instanceof PoolImagePending) return new Response(null, { status: 503 });
@@ -235,4 +238,5 @@ export async function waitForContainerImage(
     },
     options,
   );
+  return health;
 }

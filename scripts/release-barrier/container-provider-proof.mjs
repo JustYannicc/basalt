@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readlinkSync,
+  statSync,
+  symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect, Redacted } from "effect";
@@ -57,6 +66,41 @@ const props = {
 const session = { note: () => Effect.void };
 let publication;
 let captures = 0;
+let racingBuild = false;
+let builds = 0;
+let builtContext;
+let builtTag;
+let snapshotVerified = false;
+const frozenDockerfile = "FROM scratch\nLABEL revision=frozen-publication\n";
+const docker = {
+  image: {
+    build: (options) =>
+      Effect.sync(() => {
+        assert.equal(
+          racingBuild,
+          true,
+          "Docker build is allowed only in the frozen-context fixture",
+        );
+        builds++;
+        builtContext = options.context;
+        builtTag = options.tag[0];
+        assert.notEqual(options.context, context);
+        writeFileSync(
+          join(context, "Dockerfile"),
+          "FROM scratch\nLABEL revision=changed-during-build\n",
+        );
+        chmodSync(join(context, "executable"), 0o644);
+        assert.equal(readFileSync(options.file, "utf8"), frozenDockerfile);
+        assert.equal(statSync(join(options.context, "executable")).mode & 0o777, 0o755);
+        assert.equal(statSync(join(options.context, "empty")).mode & 0o777, 0o750);
+        assert.equal(readlinkSync(join(options.context, "relative-link")), "executable");
+        assert.equal(existsSync(join(options.context, "ignored")), false);
+        snapshotVerified = true;
+        api.registryMiss = false;
+        api.publishedDigest = digest("5");
+      }),
+  },
+};
 const hook = {
   capture: (value) =>
     Effect.sync(() => {
@@ -108,6 +152,51 @@ const program = Effect.gen(function* () {
   assert.equal(api.rollouts, 1);
   assert.equal(api.updates.length, 0);
   assert.equal(api.writes, 1);
+  // A source edit while Docker reads cannot publish different bytes under the earlier hash.
+  const active = { ...staged, version: rolled.target_version };
+  writeFileSync(join(context, "Dockerfile"), frozenDockerfile);
+  writeFileSync(join(context, "executable"), "fixture executable");
+  chmodSync(join(context, "executable"), 0o755);
+  mkdirSync(join(context, "empty"), { mode: 0o750 });
+  symlinkSync("executable", join(context, "relative-link"));
+  writeFileSync(join(context, ".dockerignore"), "ignored\n");
+  writeFileSync(join(context, "ignored"), "not a build input");
+  api.registryMiss = true;
+  racingBuild = true;
+  const raced = yield* Effect.exit(
+    provider
+      .reconcile({
+        id: "PoolContainer",
+        news: props,
+        olds: props,
+        bindings,
+        output: active,
+        session,
+      })
+      .pipe(Effect.provideService(ContainerPublicationHook, hook)),
+  );
+  assert.equal(raced._tag, "Failure");
+  assert.equal(captures, 1);
+  assert.equal(builds, 1);
+  assert.equal(
+    snapshotVerified,
+    true,
+    "Docker must consume the frozen bytes and modes despite the source edit",
+  );
+  assert.equal(existsSync(builtContext), false, "the publisher owns and closes its snapshot");
+  writeFileSync(join(context, "Dockerfile"), frozenDockerfile);
+  chmodSync(join(context, "executable"), 0o755);
+  const reused = yield* provider
+    .reconcile({ id: "PoolContainer", news: props, olds: props, bindings, output: active, session })
+    .pipe(Effect.provideService(ContainerPublicationHook, hook));
+  assert.equal(reused.hash.image, builtTag.slice(builtTag.lastIndexOf(":") + 1));
+  assert.equal(reused.hash.digest, digest("5"));
+  assert.equal(
+    builds,
+    1,
+    "a later clean attempt reuses only bytes built from the matching frozen snapshot",
+  );
+  assert.equal(api.writes, 1, "publishing unused image bytes never activates an application");
   // A hook refuses identity/attachment recovery before the ordinary delete/create paths.
   const before = api.writes;
   const missing = yield* Effect.exit(
@@ -140,9 +229,7 @@ const program = Effect.gen(function* () {
   Effect.provide(LiveContainerProvider()),
   Effect.provideService(AlchemyContext, { dotAlchemy: ".alchemy" }),
   Effect.provideService(InstanceId, "1".repeat(32)),
-  Effect.provideService(Docker, {
-    image: { build: () => Effect.die("Docker build forbidden in registry-cache proof") },
-  }),
+  Effect.provideService(Docker, docker),
   Effect.provideService(CloudflareEnvironment, Effect.succeed({ accountId: "fixture" })),
   Effect.provideService(HttpClient.HttpClient, api.http),
   Effect.provideService(

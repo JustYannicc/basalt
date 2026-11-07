@@ -1,7 +1,7 @@
 model {
   extend basalt.deployment {
     metadata {
-      constraint "An optional Alchemy Container publication hook stages an immutable registry image and freezes the existing application baseline, proposed native attributes and rollout request before any activation. It refuses creation, deletion, attachment replacement and implicit adoption, performs no mutation retry, and leaves ordinary reconciliation unchanged when absent."
+      constraint "An optional Alchemy Container publication hook builds from a private effective-context snapshot with unchanged content identity, stages an immutable registry image and freezes the existing application baseline, proposed native attributes and rollout request before any activation. It refuses creation, deletion, attachment replacement and implicit adoption, performs no mutation retry, and leaves ordinary reconciliation unchanged when absent."
     }
   }
 }

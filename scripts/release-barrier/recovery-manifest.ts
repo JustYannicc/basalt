@@ -1,3 +1,4 @@
+import { containerHealth } from "./container-health.ts";
 import { Schema } from "effect";
 import { BarrierRefusal } from "./manifest.ts";
 import { describeContainer } from "./container.ts";
@@ -110,6 +111,7 @@ export const readRecoveryProgress = Schema.decodeUnknownSync(
           version: Schema.Number,
           rolloutId: Schema.optional(Schema.String),
           verified: Schema.optional(Schema.Boolean),
+          health: Schema.optional(containerHealth),
         }),
       ),
     ),

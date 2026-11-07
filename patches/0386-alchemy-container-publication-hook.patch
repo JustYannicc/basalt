@@ -1,8 +1,8 @@
 diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
-index d9f23a3d5..b25f0e074 100644
+index d9f23a3d5..a4d9dc88c 100644
 --- a/patches/alchemy@2.0.0-beta.80.patch
 +++ b/patches/alchemy@2.0.0-beta.80.patch
-@@ -6060,3 +6060,369 @@ index 000000000..741f7ce5f
+@@ -6060,3 +6060,561 @@ index 000000000..741f7ce5f
  +}>;
  +export declare class WorkerUploadHook extends WorkerUploadHook_base {}
  +export {};
@@ -23,23 +23,68 @@ index d9f23a3d5..b25f0e074 100644
 +   },
 +   "publishConfig": {
 +diff --git a/src/Cloudflare/Containers/ContainerProvider.ts b/src/Cloudflare/Containers/ContainerProvider.ts
-+index 93006d8fa..19378647f 100644
++index 93006d8fa..934029713 100644
 +--- a/src/Cloudflare/Containers/ContainerProvider.ts
 ++++ b/src/Cloudflare/Containers/ContainerProvider.ts
-+@@ -1,5 +1,8 @@
++@@ -1,5 +1,9 @@
 + import * as Containers from "@distilled.cloud/cloudflare/containers";
 + import * as Effect from "effect/Effect";
 ++import * as Option from "effect/Option";
 ++import * as Retry from "@distilled.cloud/cloudflare/Retry";
+++import { snapshotContainerBuild } from "./ContainerBuildSnapshot.ts";
 ++import { ContainerPublicationHook } from "./ContainerPublicationHook.ts";
 + import * as Exit from "effect/Exit";
 + import * as FileSystem from "effect/FileSystem";
 + import * as Path from "effect/Path";
-+@@ -989,6 +992,51 @@ export const LiveContainerProvider = () =>
++@@ -954,28 +958,22 @@ export const LiveContainerProvider = () =>
++           `Cloudflare Container update: preparing ${existing.applicationName}`,
++         );
++         const env = makeContainerEnv(news, accountId, bindings);
++-        const { build, imageRef, imageHash, dev } = yield* computeImage(
++-          id,
++-          news,
++-          env,
++-        );
++-        const published =
++-          imageHash === existing.hash?.image &&
++-          existing.hash?.digest !== undefined &&
++-          isRegistryDigest(existing.hash.digest)
++-            ? {
++-                imageRef: `${repositoryFromImageRef(imageRef)}@${existing.hash.digest}`,
++-                digest: existing.hash.digest,
++-              }
++-            : yield* buildAndPushImage(
++-                id,
++-                news,
++-                build,
++-                imageRef,
++-                imageHash,
++-                undefined,
++-                session,
++-              );
+++        const publicationHook = yield* Effect.serviceOption(ContainerPublicationHook);
+++        const image = yield* computeImage(id, news, env);
+++        const { imageRef, imageHash, dev } = image;
+++        const published = yield* Effect.scoped(Effect.gen(function* () {
+++          let build = image.build;
+++          if (Option.isSome(publicationHook) && build.kind === "external") {
+++            const frozen = yield* snapshotContainerBuild(build);
+++            const verified = yield* computeImage(id, { ...news, context: frozen.context, dockerfile: frozen.dockerfile }, env);
+++            if (verified.imageHash !== imageHash)
+++              return yield* Effect.fail(new Error("Container image inputs changed while freezing"));
+++            build = { kind: "external", ...frozen };
+++          }
+++          return imageHash === existing.hash?.image && existing.hash?.digest !== undefined && isRegistryDigest(existing.hash.digest)
+++            ? { imageRef: `${repositoryFromImageRef(imageRef)}@${existing.hash.digest}`, digest: existing.hash.digest }
+++            : yield* buildAndPushImage(id, news, build, imageRef, imageHash, undefined, session);
+++        }));
++         const deploymentImageRef = published.imageRef;
++         const imageDigest = published.digest;
++         const configuration = desiredConfiguration(
++@@ -989,6 +987,50 @@ export const LiveContainerProvider = () =>
 +           news.affinities,
 +           configuration,
 +         );
-++        const publicationHook = yield* Effect.serviceOption(ContainerPublicationHook);
 ++        if (Option.isSome(publicationHook)) {
 ++          // Hash both sides of publication so changed inputs cannot retain an earlier identity.
 ++          const verifySource = Effect.gen(function* () {
@@ -87,7 +132,7 @@ index d9f23a3d5..b25f0e074 100644
 +         if (
 +           deepEqual(existing.configuration, configuration) &&
 +           equalApplicationSettings(existing, news)
-+@@ -1209,6 +1257,9 @@ export const LiveContainerProvider = () =>
++@@ -1209,6 +1251,9 @@ export const LiveContainerProvider = () =>
 +           }
 +         }),
 +         precreate: Effect.fn(function* ({ id, news = {}, session }) {
@@ -97,7 +142,7 @@ index d9f23a3d5..b25f0e074 100644
 +           const name = yield* createApplicationName(id, news.name);
 +           yield* Effect.logInfo(
 +             `Cloudflare Container precreate: starting ${name}`,
-+@@ -1318,6 +1369,14 @@ export const LiveContainerProvider = () =>
++@@ -1318,6 +1363,14 @@ export const LiveContainerProvider = () =>
 +               ),
 +             );
 +           }
@@ -112,7 +157,7 @@ index d9f23a3d5..b25f0e074 100644
 +           if (!existing) {
 +             const found = yield* findApplicationByName(name);
 +             if (found) {
-+@@ -1523,6 +1582,9 @@ export const LiveContainerProvider = () =>
++@@ -1523,6 +1576,9 @@ export const LiveContainerProvider = () =>
 +           };
 +         }),
 +         delete: Effect.fn(function* ({ output }) {
@@ -123,32 +168,31 @@ index d9f23a3d5..b25f0e074 100644
 +           // application to delete on Cloudflare.
 +           if (!isLiveId(output.applicationId)) return;
 +diff --git a/lib/Cloudflare/Containers/ContainerProvider.js b/lib/Cloudflare/Containers/ContainerProvider.js
-+index f5e1a5bbe..5dac54d17 100644
++index f5e1a5bbe..98f8e07c5 100644
 +--- a/lib/Cloudflare/Containers/ContainerProvider.js
 ++++ b/lib/Cloudflare/Containers/ContainerProvider.js
-+@@ -1,5 +1,8 @@
++@@ -1,5 +1,9 @@
 + import * as Containers from "@distilled.cloud/cloudflare/containers";
 + import * as Effect from "effect/Effect";
 ++import * as Option from "effect/Option";
 ++import * as Retry from "@distilled.cloud/cloudflare/Retry";
+++import { snapshotContainerBuild } from "./ContainerBuildSnapshot.js";
 ++import { ContainerPublicationHook } from "./ContainerPublicationHook.js";
 + import * as Exit from "effect/Exit";
 + import * as FileSystem from "effect/FileSystem";
 + import * as Path from "effect/Path";
-+@@ -621,32 +624,59 @@ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Ef
++@@ -620,33 +624,66 @@ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Ef
++         const { accountId } = yield* yield* CloudflareEnvironment;
 +         yield* Effect.logInfo(`Cloudflare Container update: preparing ${existing.applicationName}`);
 +         const env = makeContainerEnv(news, accountId, bindings);
-+         const { build, imageRef, imageHash, dev } = yield* computeImage(id, news, env);
++-        const { build, imageRef, imageHash, dev } = yield* computeImage(id, news, env);
 +-        const published =
 +-          imageHash === existing.hash?.image &&
 +-          existing.hash?.digest !== undefined &&
 +-          isRegistryDigest(existing.hash.digest)
-++        const published = imageHash === existing.hash?.image &&
-++            existing.hash?.digest !== undefined &&
-++            isRegistryDigest(existing.hash.digest)
-+             ? {
-+                 imageRef: `${repositoryFromImageRef(imageRef)}@${existing.hash.digest}`,
-+                 digest: existing.hash.digest,
++-            ? {
++-                imageRef: `${repositoryFromImageRef(imageRef)}@${existing.hash.digest}`,
++-                digest: existing.hash.digest,
 +-              }
 +-            : yield* buildAndPushImage(
 +-                id,
@@ -159,8 +203,22 @@ index d9f23a3d5..b25f0e074 100644
 +-                undefined,
 +-                session,
 +-              );
+++        const publicationHook = yield* Effect.serviceOption(ContainerPublicationHook);
+++        const image = yield* computeImage(id, news, env);
+++        const { imageRef, imageHash, dev } = image;
+++        const published = yield* Effect.scoped(Effect.gen(function* () {
+++            let build = image.build;
+++            if (Option.isSome(publicationHook) && build.kind === "external") {
+++                const frozen = yield* snapshotContainerBuild(build);
+++                const verified = yield* computeImage(id, { ...news, context: frozen.context, dockerfile: frozen.dockerfile }, env);
+++                if (verified.imageHash !== imageHash)
+++                    return yield* Effect.fail(new Error("Container image inputs changed while freezing"));
+++                build = { kind: "external", ...frozen };
 ++            }
-++            : yield* buildAndPushImage(id, news, build, imageRef, imageHash, undefined, session);
+++            return imageHash === existing.hash?.image && existing.hash?.digest !== undefined && isRegistryDigest(existing.hash.digest)
+++                ? { imageRef: `${repositoryFromImageRef(imageRef)}@${existing.hash.digest}`, digest: existing.hash.digest }
+++                : yield* buildAndPushImage(id, news, build, imageRef, imageHash, undefined, session);
+++        }));
 +         const deploymentImageRef = published.imageRef;
 +         const imageDigest = published.digest;
 +         const configuration = desiredConfiguration(news, env, deploymentImageRef);
@@ -170,7 +228,6 @@ index d9f23a3d5..b25f0e074 100644
 +-          deepEqual(existing.configuration, configuration) &&
 +-          equalApplicationSettings(existing, news)
 +-        ) {
-++        const publicationHook = yield* Effect.serviceOption(ContainerPublicationHook);
 ++        if (Option.isSome(publicationHook)) {
 ++            // Hash both sides of publication so changed inputs cannot retain an earlier identity.
 ++            const verifySource = Effect.gen(function* () {
@@ -213,7 +270,7 @@ index d9f23a3d5..b25f0e074 100644
 +             yield* Effect.logInfo(`Cloudflare Container update: ${existing.applicationName} has no effective changes`);
 +             yield* session.note(`Container application ${existing.applicationName} is unchanged.`);
 +             return {
-+@@ -735,6 +765,9 @@ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Ef
++@@ -735,6 +772,9 @@ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Ef
 +                 return undefined;
 +             }
 +             if (!isResolved(newBindings)) {
@@ -223,7 +280,7 @@ index d9f23a3d5..b25f0e074 100644
 +                 if (output && typeof news.context === "string") {
 +                     const { imageHash } = yield* computeImage(id, news, {});
 +                     if (imageHash !== output.hash?.image) {
-+@@ -784,17 +817,20 @@ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Ef
++@@ -784,17 +824,20 @@ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Ef
 +             }
 +             const { imageHash, dev } = yield* computeImage(id, news, makeContainerEnv(news, accountId, newBindings));
 +             if (!application || !output.hash?.digest || !isRegistryDigest(output.hash.digest)) {
@@ -251,7 +308,7 @@ index d9f23a3d5..b25f0e074 100644
 +             const name = yield* createApplicationName(id, news.name);
 +             yield* Effect.logInfo(`Cloudflare Container precreate: starting ${name}`);
 +             const { accountId } = yield* yield* CloudflareEnvironment;
-+@@ -861,6 +897,14 @@ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Ef
++@@ -861,6 +904,14 @@ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Ef
 +                     hash: output.hash,
 +                 })), Effect.catchTag("ContainerApplicationNotFound", () => Effect.succeed(undefined)));
 +             }
@@ -266,7 +323,7 @@ index d9f23a3d5..b25f0e074 100644
 +             if (!existing) {
 +                 const found = yield* findApplicationByName(name);
 +                 if (found) {
-+@@ -916,23 +960,14 @@ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Ef
++@@ -916,23 +967,14 @@ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Ef
 +                         });
 +                     }
 +                 }
@@ -295,7 +352,7 @@ index d9f23a3d5..b25f0e074 100644
 +                 const deploymentImageRef = published.imageRef;
 +                 const imageDigest = published.digest;
 +                 const configuration = desiredConfiguration(news, env, deploymentImageRef);
-+@@ -1010,6 +1045,9 @@ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Ef
++@@ -1010,6 +1052,9 @@ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Ef
 +             };
 +         }),
 +         delete: Effect.fn(function* ({ output }) {
@@ -305,6 +362,141 @@ index d9f23a3d5..b25f0e074 100644
 +             // A `dev:` applicationId only exists locally — there is no live
 +             // application to delete on Cloudflare.
 +             if (!isLiveId(output.applicationId))
++diff --git a/src/Cloudflare/Containers/ContainerBuildSnapshot.ts b/src/Cloudflare/Containers/ContainerBuildSnapshot.ts
++new file mode 100644
++index 000000000..6cf9aedd2
++--- /dev/null
+++++ b/src/Cloudflare/Containers/ContainerBuildSnapshot.ts
++@@ -0,0 +1,54 @@
+++import * as Effect from "effect/Effect";
+++import * as FileSystem from "effect/FileSystem";
+++import * as Path from "effect/Path";
+++import * as Result from "effect/Result";
+++import { selectDockerBuildContext } from "../../Docker/BuildHash.ts";
+++
+++/** Docker consumes this private copy, so later source edits cannot poison a content-keyed registry entry. */
+++export const snapshotContainerBuild = Effect.fn(function* (source: {
+++  readonly context: string;
+++  readonly dockerfile: string;
+++}) {
+++  const fs = yield* FileSystem.FileSystem;
+++  const path = yield* Path.Path;
+++  const selected = yield* selectDockerBuildContext(source);
+++  const root = yield* fs.makeTempDirectoryScoped({ prefix: "alchemy-container-publication-" });
+++  const context = path.join(root, "context");
+++  yield* fs.makeDirectory(context);
+++  const directories: Array<{ path: string; mode: number }> = [];
+++  const links: string[] = [];
+++  yield* Effect.addFinalizer(() => Effect.forEach(directories, (directory) =>
+++    fs.chmod(directory.path, directory.mode | 0o700).pipe(Effect.ignore), { discard: true }));
+++  for (const entry of (yield* fs.readDirectory(selected.context, { recursive: true })).sort()) {
+++    if (!selected.includes(entry)) continue;
+++    if (links.some((link) => entry.startsWith(`${link}${path.sep}`)))
+++      return yield* Effect.fail(new Error("Container context changed entry type while freezing"));
+++    const original = path.join(selected.context, entry);
+++    const target = path.join(context, entry);
+++    yield* fs.makeDirectory(path.dirname(target), { recursive: true });
+++    const link = yield* Effect.result(fs.readLink(original));
+++    if (Result.isSuccess(link)) {
+++      yield* fs.symlink(link.success, target);
+++      links.push(entry);
+++      continue;
+++    }
+++    const info = yield* fs.stat(original);
+++    if (info.type === "Directory") {
+++      yield* fs.makeDirectory(target, { recursive: true });
+++      directories.push({ path: target, mode: info.mode & 0o7777 });
+++    } else if (info.type === "File") {
+++      yield* fs.copyFile(original, target);
+++      yield* fs.chmod(target, info.mode & 0o7777);
+++    } else return yield* Effect.fail(new Error("Unsupported container build context entry"));
+++  }
+++  for (const directory of [...directories].reverse()) yield* fs.chmod(directory.path, directory.mode);
+++  const dockerfile = selected.dockerfilePath === undefined
+++    ? path.join(root, "Dockerfile")
+++    : path.join(context, selected.dockerfilePath);
+++  if (selected.dockerfilePath === undefined) {
+++    yield* fs.copyFile(selected.dockerfile, dockerfile);
+++    if (yield* fs.exists(`${selected.dockerfile}.dockerignore`))
+++      yield* fs.copyFile(`${selected.dockerfile}.dockerignore`, `${dockerfile}.dockerignore`);
+++  }
+++  return { context, dockerfile };
+++});
++diff --git a/lib/Cloudflare/Containers/ContainerBuildSnapshot.js b/lib/Cloudflare/Containers/ContainerBuildSnapshot.js
++new file mode 100644
++index 000000000..95ed5e6d8
++--- /dev/null
+++++ b/lib/Cloudflare/Containers/ContainerBuildSnapshot.js
++@@ -0,0 +1,54 @@
+++import * as Effect from "effect/Effect";
+++import * as FileSystem from "effect/FileSystem";
+++import * as Path from "effect/Path";
+++import * as Result from "effect/Result";
+++import { selectDockerBuildContext } from "../../Docker/BuildHash.js";
+++/** Docker consumes this private copy, so later source edits cannot poison a content-keyed registry entry. */
+++export const snapshotContainerBuild = Effect.fn(function* (source) {
+++    const fs = yield* FileSystem.FileSystem;
+++    const path = yield* Path.Path;
+++    const selected = yield* selectDockerBuildContext(source);
+++    const root = yield* fs.makeTempDirectoryScoped({ prefix: "alchemy-container-publication-" });
+++    const context = path.join(root, "context");
+++    yield* fs.makeDirectory(context);
+++    const directories = [];
+++    const links = [];
+++    yield* Effect.addFinalizer(() => Effect.forEach(directories, (directory) => fs.chmod(directory.path, directory.mode | 0o700).pipe(Effect.ignore), { discard: true }));
+++    for (const entry of (yield* fs.readDirectory(selected.context, { recursive: true })).sort()) {
+++        if (!selected.includes(entry))
+++            continue;
+++        if (links.some((link) => entry.startsWith(`${link}${path.sep}`)))
+++            return yield* Effect.fail(new Error("Container context changed entry type while freezing"));
+++        const original = path.join(selected.context, entry);
+++        const target = path.join(context, entry);
+++        yield* fs.makeDirectory(path.dirname(target), { recursive: true });
+++        const link = yield* Effect.result(fs.readLink(original));
+++        if (Result.isSuccess(link)) {
+++            yield* fs.symlink(link.success, target);
+++            links.push(entry);
+++            continue;
+++        }
+++        const info = yield* fs.stat(original);
+++        if (info.type === "Directory") {
+++            yield* fs.makeDirectory(target, { recursive: true });
+++            directories.push({ path: target, mode: info.mode & 0o7777 });
+++        }
+++        else if (info.type === "File") {
+++            yield* fs.copyFile(original, target);
+++            yield* fs.chmod(target, info.mode & 0o7777);
+++        }
+++        else
+++            return yield* Effect.fail(new Error("Unsupported container build context entry"));
+++    }
+++    for (const directory of [...directories].reverse())
+++        yield* fs.chmod(directory.path, directory.mode);
+++    const dockerfile = selected.dockerfilePath === undefined
+++        ? path.join(root, "Dockerfile")
+++        : path.join(context, selected.dockerfilePath);
+++    if (selected.dockerfilePath === undefined) {
+++        yield* fs.copyFile(selected.dockerfile, dockerfile);
+++        if (yield* fs.exists(`${selected.dockerfile}.dockerignore`))
+++            yield* fs.copyFile(`${selected.dockerfile}.dockerignore`, `${dockerfile}.dockerignore`);
+++    }
+++    return { context, dockerfile };
+++});
++diff --git a/lib/Cloudflare/Containers/ContainerBuildSnapshot.d.ts b/lib/Cloudflare/Containers/ContainerBuildSnapshot.d.ts
++new file mode 100644
++index 000000000..2dcf01258
++--- /dev/null
+++++ b/lib/Cloudflare/Containers/ContainerBuildSnapshot.d.ts
++@@ -0,0 +1,9 @@
+++import type * as Effect from "effect/Effect";
+++import type * as FileSystem from "effect/FileSystem";
+++import type * as Path from "effect/Path";
+++import type * as Scope from "effect/Scope";
+++import type { PlatformError } from "effect/PlatformError";
+++export declare const snapshotContainerBuild: (source: {
+++  readonly context: string;
+++  readonly dockerfile: string;
+++}) => Effect.Effect<{ context: string; dockerfile: string }, Error | PlatformError, FileSystem.FileSystem | Path.Path | Scope.Scope>;
 +diff --git a/src/Cloudflare/Containers/ContainerPublicationHook.ts b/src/Cloudflare/Containers/ContainerPublicationHook.ts
 +new file mode 100644
 +index 000000000..0baaedd3b

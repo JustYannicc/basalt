@@ -12,6 +12,7 @@ for (const scenario of [
   "over-ceiling",
   "container-drift",
   "source-drift",
+  "native-state-drift",
 ])
   test(`actual root deployStack container staging: ${scenario}`, () => {
     const result = discoverContainerBarrierProof(root, scenario);

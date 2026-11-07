@@ -6,6 +6,8 @@ import {
   type ContainerAttributes,
   type FrozenContainer,
 } from "./container.ts";
+import type { ContainerHealth } from "./container-health.ts";
+import type { PoolOperationsTarget } from "../pool-operations.ts";
 import type { ContainerRollout } from "./container-cloudflare.ts";
 import {
   readFrozenContainers,
@@ -23,13 +25,14 @@ export interface ContainerRecoveryProvider {
     rollout: ContainerRollout,
     restored: boolean,
   ): Promise<ContainerAttributes>;
-  verify(container: FrozenContainer): Promise<void>;
+  verify(container: FrozenContainer): Promise<ContainerHealth>;
 }
 export interface ContainerRecoveryOptions {
   frozen: unknown;
   databaseCompatible: boolean;
   provider: ContainerRecoveryProvider;
   previous?: ReturnType<typeof readRecoveryProgress>;
+  connect?: PoolOperationsTarget["connect"];
 }
 
 function isRestored(current: ContainerAttributes, container: FrozenContainer) {
@@ -145,14 +148,19 @@ export async function recoverContainers(
     version: current.version,
   };
   await save();
-  await options.provider.verify(container);
+  const health = await options.provider.verify(container);
   const verified = await options.provider.read(container);
   if (verified.version !== current.version || !isRestored(verified, container))
     throw new BarrierRefusal("container-recovery-verification-drift", container.id);
   const result = progress.containers.find((item) => item.container === container.id);
-  if (result) result.verified = true;
+  if (result) Object.assign(result, { verified: true, health });
   else
-    progress.containers.push({ container: container.id, version: current.version, verified: true });
+    progress.containers.push({
+      container: container.id,
+      version: current.version,
+      verified: true,
+      health,
+    });
   delete progress.pendingContainer;
   await save();
 }

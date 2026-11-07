@@ -1,7 +1,5 @@
 import * as Apply from "alchemy/Apply";
 import * as Plan from "alchemy/Plan";
-import { havePropsChanged } from "alchemy/Diff";
-import { State } from "alchemy/State/State";
 import type { CompiledStack } from "alchemy/Stack";
 import type { Worker } from "alchemy/Cloudflare";
 import { Effect } from "effect";
@@ -10,6 +8,8 @@ import { readBaseline, uploadVersion } from "./cloudflare.ts";
 import { releaseWorkers, type BarrierReceipt } from "./barrier.ts";
 import { BarrierRefusal, type ReleaseManifest } from "./manifest.ts";
 import { cloudflareArtifactsApi } from "../ensure-artifacts.ts";
+import { verifyNativeState } from "./native-state.ts";
+import type { FrozenContainer } from "./container.ts";
 import { freezeUpload } from "./version-request.ts";
 import { inspectContainer, type ContainerAttributes } from "./container.ts";
 import {
@@ -22,6 +22,7 @@ export interface DeployStackOptions {
   candidate: string;
   record(receipt: BarrierReceipt): Promise<void>;
   manifest(value: ReleaseManifest): Promise<void>;
+  publication?(container: FrozenContainer): Promise<void>;
   io?: {
     baseline: typeof readBaseline;
     upload: typeof uploadVersion;
@@ -37,7 +38,13 @@ type Services = Effect.Services<ReturnType<typeof readBaseline> | ReturnType<typ
 export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =>
   Effect.gen(function* () {
     const plan = yield* Plan.make(stack);
-    const prepared = yield* preparePlan(stack, plan, options.io?.namespace, options.io?.container);
+    const prepared = yield* preparePlan(
+      stack,
+      plan,
+      options.io?.namespace,
+      options.io?.container,
+      options.publication,
+    );
     const context = yield* Effect.context<Services>();
     const run = <A, E>(effect: Effect.Effect<A, E, Services>) =>
       Effect.runPromise(effect.pipe(Effect.provideContext(context)));
@@ -71,16 +78,7 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
     const database = Effect.gen(function* () {
       for (const admit of prepared.admissions)
         yield* Effect.tryPromise({ try: admit, catch: (error) => error });
-      const state = yield* yield* State;
-      const current = yield* Effect.all(
-        Object.entries(plan.resources).map(([fqn, node]) =>
-          state
-            .get({ stack: stack.name, stage: stack.stage, fqn })
-            .pipe(Effect.map((value) => ({ fqn, value, expected: node.state }))),
-        ),
-      );
-      if (current.some(({ value, expected }) => havePropsChanged(value ?? {}, expected ?? {})))
-        throw new BarrierRefusal("alchemy-state-drift");
+      yield* verifyNativeState(plan, stack.name, stack.stage);
       const databasePlan = yield* Plan.make(stack, { include: ["PoolDatabase"] });
       if (
         Object.values(databasePlan.resources).some(
@@ -98,6 +96,7 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
         throw new BarrierRefusal("unsafe-database-selection");
       for (const fqn of Object.keys(databasePlan.resources)) databaseFqns.add(fqn);
       yield* Apply.apply(databasePlan);
+      yield* verifyNativeState(plan, stack.name, stack.stage, databaseFqns);
     });
     yield* Effect.tryPromise({
       try: () =>

@@ -17,6 +17,10 @@ import { withReleaseRuntime } from "./runtime.ts";
 import { containerRelease } from "./container-fixture.ts";
 import { releaseWorkers } from "./barrier.ts";
 import { attributes } from "./fixture.ts";
+import { readFileSync } from "node:fs";
+import { RuntimeRecovery, handleRuntimeRecovery } from "../../src/pool/runtime-recovery.ts";
+import { readRuntimeHealth } from "../../src/pool/runtime-health.ts";
+import type { RecoveryReceipt } from "./recovery.ts";
 import type { ContainerAttributes } from "./container.ts";
 
 interface FixtureWorker extends Resource<"Cloudflare.Worker", {}, Worker["Attributes"]> {}
@@ -29,11 +33,36 @@ for (const scenario of [
   "foreign-worker",
   "database-unknown",
   "invalid-instances",
+  "unhealthy-runtime",
+  "missing-runtime-health",
 ] as const)
   test(`public recoverStack uses the SDK and saved container configuration: ${scenario}`, async (context) => {
     const proof = containerRelease();
     const receipt = await releaseWorkers(proof.manifest, proof.options);
     const calls: string[] = [];
+    const recoveries: RecoveryReceipt[] = [];
+    const runtime = new RuntimeRecovery(
+      {
+        instanceId: "a".repeat(64),
+        imageHash: proof.frozen.inputHash,
+        running: () => true,
+        status: () =>
+          readRuntimeHealth(
+            {
+              fetch: async () =>
+                scenario === "unhealthy-runtime"
+                  ? new Response(null, { status: 503 })
+                  : Response.json({ boot_id: "old-boot", started_at: "2026-01-01T00:00:00Z" }),
+            },
+            "synthetic-never-sent",
+            new AbortController().signal,
+          ),
+        restart: async () => {
+          throw new Error("No restart during recovery health inspection");
+        },
+      },
+      { get: async () => undefined, put: async () => {} },
+    );
     const active = new Map(proof.manifest.workers.map((worker) => [worker.id, `new-${worker.id}`]));
     if (scenario === "foreign-worker") active.set("Router", "foreign");
     let app = {
@@ -156,10 +185,54 @@ for (const scenario of [
       (compiled) =>
         Effect.gen(function* () {
           yield* Apply.apply(yield* Plan.make(compiled));
-          return yield* recoverStack(compiled, proof.description, receipt, async () => {}, {
-            frozen: proof.manifest,
-            databaseCompatible: scenario !== "database-unknown",
-          }).pipe(
+          return yield* recoverStack(
+            compiled,
+            proof.description,
+            receipt,
+            async (value) => {
+              recoveries.push(value);
+            },
+            {
+              frozen: proof.manifest,
+              databaseCompatible: scenario !== "database-unknown",
+              connect: async (path) => {
+                const config = JSON.parse(readFileSync(path, "utf8"));
+                assert.deepEqual(config.services, [
+                  {
+                    binding: "POOL_OPERATIONS",
+                    service: "PoolWorker",
+                    entrypoint: "PoolOperations",
+                    remote: true,
+                  },
+                ]);
+                return {
+                  env: {
+                    POOL_OPERATIONS: {
+                      fetch: async (request) => {
+                        calls.push("health:inspect");
+                        assert.equal(request.method, "GET");
+                        assert.equal(app.configuration.image, proof.previous.configuration.image);
+                        if (scenario === "missing-runtime-health") return Response.json({});
+                        return handleRuntimeRecovery(
+                          request,
+                          {
+                            inspectRuntimeRecovery: (id) => runtime.inspect(id),
+                            recoverRuntime: async () => {
+                              throw new Error("No runtime mutation");
+                            },
+                          },
+                          "synthetic-never-sent",
+                        );
+                      },
+                    },
+                  },
+                  dispose: async () => {
+                    calls.push("health:closed");
+                  },
+                };
+              },
+            },
+          ).pipe(
             Effect.provideService(HttpClient.HttpClient, sdk),
             Effect.provideService(
               Credentials,
@@ -191,11 +264,14 @@ for (const scenario of [
         calls.filter((call) => call.startsWith("restore:")),
         ["restore:Router", "restore:PoolWorker", "restore:Api"],
       );
-      assert.ok(calls.indexOf("restore:Router") > verified);
+      assert.ok(calls.indexOf("health:inspect") > verified);
+      assert.ok(calls.indexOf("restore:Router") > calls.indexOf("health:closed"));
+      assert.equal(recoveries.at(-1)?.containers?.[0]?.health?.bootId, "old-boot");
       assert.equal(app.configuration.image, proof.previous.configuration.image);
     } else {
       await assert.rejects(Effect.runPromise(program));
       assert.ok(!calls.some((call) => call.startsWith("restore:")));
-      if (scenario !== "invalid-instances") assert.ok(!calls.includes("container:rollout"));
+      if (["foreign-worker", "database-unknown"].includes(scenario))
+        assert.ok(!calls.includes("container:rollout"));
     }
   });

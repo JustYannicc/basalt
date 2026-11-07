@@ -44,6 +44,7 @@ async function fixture() {
       },
       async verify() {
         proof.events.push("verify:all-old-instances");
+        return { instanceId: "a".repeat(64), bootId: "old-boot", checkedAt: 123 };
       },
     },
   };
@@ -73,7 +74,13 @@ test("recovery verifies every saved container image before restoring Worker base
     "restore:Api",
   ]);
   assert.deepEqual(result.containers, [
-    { container: "PoolContainer", version: 3, rolloutId: "recovery-rollout", verified: true },
+    {
+      container: "PoolContainer",
+      version: 3,
+      rolloutId: "recovery-rollout",
+      verified: true,
+      health: { instanceId: "a".repeat(64), bootId: "old-boot", checkedAt: 123 },
+    },
   ]);
   assert.deepEqual(proof.current().configuration, proof.previous.configuration);
   assert.equal(proof.current().instances, 1);

@@ -20,6 +20,7 @@ import { Credentials } from "@distilled.cloud/cloudflare/Credentials";
 import { CloudflareEnvironment } from "alchemy/Cloudflare";
 import { Docker } from "alchemy/Docker/Docker";
 import { attributes, preparedUpload } from "./fixture.ts";
+import { describeContainer } from "./container.ts";
 import { deployStack } from "./deploy-stack.ts";
 import { cloudflareArtifactsApi } from "../ensure-artifacts.ts";
 import { containerDriftApi, digest } from "../upstream-tests/fixtures/container-drift-api.mjs";
@@ -75,6 +76,8 @@ export const proveContainerStack = (source, recompile, scenario) =>
     api.applicationExists = false;
     const events = [];
     const receipts = [];
+    const publications = [];
+    let releaseStarted = false;
     let writes = 0,
       dockerCalls = 0;
     const docker = {
@@ -196,9 +199,26 @@ export const proveContainerStack = (source, recompile, scenario) =>
     const state = {
       ...memory,
       set: (input) =>
-        Effect.sync(() => {
+        Effect.gen(function* () {
           writes++;
-        }).pipe(Effect.andThen(memory.set(input))),
+          const result = yield* memory.set(input);
+          if (
+            releaseStarted &&
+            scenario === "native-state-drift" &&
+            input.fqn === "PoolDatabase" &&
+            input.value.status === "updated"
+          ) {
+            const key = { stack: input.stack, stage: input.stage, fqn: "Api" };
+            const current = yield* memory.get(key);
+            assert.ok(current && "attr" in current);
+            yield* memory.set({
+              ...key,
+              value: { ...current, attr: { ...current.attr, workerId: "foreign-native-record" } },
+            });
+            events.push("native:drift");
+          }
+          return result;
+        }),
       setOutput: (input) =>
         Effect.sync(() => {
           writes++;
@@ -249,6 +269,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
         writes = 0;
         events.length = 0;
         if (scenario !== "same-digest") api.publishedDigest = digest("3");
+        releaseStarted = true;
         const exit = yield* Effect.exit(
           run(
             deployStack(stack, {
@@ -257,6 +278,10 @@ export const proveContainerStack = (source, recompile, scenario) =>
                 receipts.push(receipt);
               },
               manifest: async () => {},
+              publication: async (container) => {
+                publications.push(describeContainer(container));
+                events.push("image:retained");
+              },
               io: {
                 container: (publication) =>
                   Effect.sync(() => {
@@ -315,6 +340,20 @@ export const proveContainerStack = (source, recompile, scenario) =>
             }),
           ),
         );
+        assert.equal(
+          publications.length,
+          1,
+          "publication survives later preparation or admission failure",
+        );
+        assert.equal(publications[0].inputHash, staged.proposed.hash.image);
+        assert.ok(
+          events.indexOf("image:retained") <
+            events.findIndex((event) => event.startsWith("admit:")),
+        );
+        if (scenario === "native-state-drift") {
+          assert.ok(events.includes("native:drift"));
+          assert.equal(receipts.at(-1).failure.reason, "alchemy-state-drift");
+        }
         const succeeded = Exit.isSuccess(exit);
         const expectedSuccess = scenario === "success" || scenario === "same-digest";
         const workerInputMatches = staged?.proposed.hash.image === capturedPoolInput;

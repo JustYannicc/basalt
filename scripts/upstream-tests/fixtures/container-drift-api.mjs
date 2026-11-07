@@ -22,6 +22,7 @@ export function containerDriftApi({ rolloutOnly = false } = {}) {
     writes: 0,
     rollouts: 0,
     registryReads: 0,
+    registryMiss: false,
     applicationExists: true,
     updates: [],
   };
@@ -33,8 +34,8 @@ export function containerDriftApi({ rolloutOnly = false } = {}) {
         Response.fromWeb(
           request,
           new globalThis.Response(null, {
-            status: 200,
-            headers: { "docker-content-digest": state.publishedDigest },
+            status: state.registryMiss ? 404 : 200,
+            headers: state.registryMiss ? {} : { "docker-content-digest": state.publishedDigest },
           }),
         ),
       );

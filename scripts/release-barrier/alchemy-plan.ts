@@ -18,7 +18,12 @@ import * as Retry from "@distilled.cloud/cloudflare/Retry";
 import { BarrierRefusal } from "./manifest.ts";
 import { admitSourceNamespace, commandPhase, supportedCommand } from "./commands.ts";
 import { cloudflareArtifactsApi } from "../ensure-artifacts.ts";
-import { stageContainer, inspectContainer, type StagedContainer } from "./container.ts";
+import {
+  stageContainer,
+  inspectContainer,
+  type StagedContainer,
+  type FrozenContainer,
+} from "./container.ts";
 
 const workerType = "Cloudflare.Worker";
 const existing = (node: Plan.Apply) =>
@@ -67,6 +72,7 @@ export const preparePlan = (
   plan: Plan.Plan,
   namespaceApi = cloudflareArtifactsApi,
   inspect = inspectContainer,
+  recordPublication?: (container: FrozenContainer) => Promise<void>,
 ) =>
   Effect.gen(function* () {
     assertSupportedPlan(plan);
@@ -120,6 +126,11 @@ export const preparePlan = (
                     cached as ContainerApplication["Attributes"],
                     inspect,
                   );
+                  if (recordPublication)
+                    yield* Effect.tryPromise({
+                      try: () => recordPublication(staged.frozen),
+                      catch: (error) => error,
+                    });
                   containers.set(fqn, staged);
                   inputs.set(fqn, { news: input.news, bindings: input.bindings });
                   return publication.proposed;

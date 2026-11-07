@@ -13,6 +13,8 @@ import { BarrierRefusal } from "./manifest.ts";
 import { imageDigest, type ContainerAttributes, type FrozenContainer } from "./container.ts";
 import { brand } from "../../brand.ts";
 import { applicationCodec } from "./container-schema.ts";
+import { verifyContainerHealth } from "./container-health.ts";
+import type { PoolOperationsTarget } from "../pool-operations.ts";
 import { waitForPoolStatus } from "../pool-readiness.ts";
 import { sameContainerState, type ContainerSnapshot } from "./container.ts";
 
@@ -258,12 +260,12 @@ export const rolloutRestoredContainer = (container: FrozenContainer) =>
     description: "Recorded container recovery",
   }).pipe(Retry.none, Effect.map(decodeContainerRollout));
 
-export const verifyRestoredContainer = (container: FrozenContainer) =>
+export const verifyRestoredContainer = (container: FrozenContainer, worker: PoolOperationsTarget) =>
   Effect.gen(function* () {
     const token = yield* Config.Redacted("CLOUDFLARE_API_TOKEN");
-    yield* Effect.tryPromise({
-      try: () =>
-        waitForContainerImage(
+    return yield* Effect.tryPromise({
+      try: async () => {
+        const health = await waitForContainerImage(
           {
             applicationId: container.baseline.applicationId,
             accountId: container.baseline.accountId,
@@ -271,7 +273,16 @@ export const verifyRestoredContainer = (container: FrozenContainer) =>
           },
           { accountId: container.baseline.accountId, apiToken: Redacted.value(token) },
           `https://${brand.host}`,
-        ),
-      catch: () => new BarrierRefusal("container-recovery-image-not-adopted", container.id),
+          fetch,
+          {},
+          (signal) => verifyContainerHealth(worker, container.inputHash, signal),
+        );
+        if (!health) throw new BarrierRefusal("container-recovery-runtime-unhealthy");
+        return health;
+      },
+      catch: (error) =>
+        error instanceof BarrierRefusal
+          ? error
+          : new BarrierRefusal("container-recovery-image-not-adopted", container.id),
     });
   });

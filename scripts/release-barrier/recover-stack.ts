@@ -171,7 +171,17 @@ export const recoverStack = (
                             rollout,
                           ),
                         ),
-                      verify: (container) => run(verifyRestoredContainer(container)),
+                      verify: (container) => {
+                        const poolWorker = targets.get("PoolWorker");
+                        if (!poolWorker) throw new BarrierRefusal("missing-pool-recovery-target");
+                        return run(
+                          verifyRestoredContainer(container, {
+                            worker: poolWorker.scriptName,
+                            accountId: poolWorker.accountId,
+                            connect: containerRecovery.connect,
+                          }),
+                        );
+                      },
                     },
                   },
                   progress,
