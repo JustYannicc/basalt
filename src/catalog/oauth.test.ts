@@ -26,6 +26,7 @@ test("reviewed carried sources match the packages the catalog serves", async () 
     "notion",
     "slack",
     "vercel",
+    "workos",
     "zoho-people",
   ]) {
     const response = await handleCatalog(
