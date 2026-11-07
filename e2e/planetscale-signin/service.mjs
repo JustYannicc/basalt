@@ -66,12 +66,7 @@ const pattern = (path) => new RegExp(`^/v1${path.replace(/\{[^}]+\}/g, "[^/]+")}
  * PlanetScale's API, authorization server and documentation on one loopback origin. `dcr`
  * advertises registration; otherwise only a pre-registered (hosted) client can sign in.
  */
-export async function startPlanetScale({
-  dcr,
-  advertised,
-  omitGrantedScope = false,
-  refuseScope,
-}) {
+export async function startPlanetScale({ dcr, advertised, omitGrantedScope = false, refuseScope }) {
   const calls = [];
   const failures = [];
   const codes = new Map();
@@ -245,7 +240,8 @@ export async function startPlanetScale({
             : undefined;
       const operation = operations.find(
         (candidate) =>
-          candidate.method === request.method.toLowerCase() && pattern(candidate.path).test(url.pathname),
+          candidate.method === request.method.toLowerCase() &&
+          pattern(candidate.path).test(url.pathname),
       );
       calls.push({
         phase: "api",

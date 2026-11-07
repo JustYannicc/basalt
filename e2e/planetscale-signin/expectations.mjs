@@ -1,6 +1,6 @@
-import {readFile} from "node:fs/promises";
-import {join} from "node:path";
-import {registrationDefault} from "./service.mjs";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { registrationDefault } from "./service.mjs";
 /** The hosted app's reviewed permissions; the hosted client must ask for exactly these. */
 export const hostedScopes = [
   "read_user",
@@ -42,7 +42,12 @@ export const legacyOperations = JSON.parse(
   await readFile(join(import.meta.dirname, "legacy-operations.json"), "utf8"),
 );
 export const legacyNames = legacyOperations.map((operation) => operation.name);
-export const api = legacyOperations.filter((operation) => operation.oauthScopes.length > 0).map((operation) => operation.name);
-export const tokenOnly = legacyOperations.filter((operation) => operation.oauthScopes.length === 0).map((operation) => `serviceToken.${operation.name}`);
-export const limited = legacyOperations.filter((operation) => operation.oauthScopes.some((scope) => registrationDefault.includes(scope))).map((operation) => operation.name);
-
+export const api = legacyOperations
+  .filter((operation) => operation.oauthScopes.length > 0)
+  .map((operation) => operation.name);
+export const tokenOnly = legacyOperations
+  .filter((operation) => operation.oauthScopes.length === 0)
+  .map((operation) => `serviceToken.${operation.name}`);
+export const limited = legacyOperations
+  .filter((operation) => operation.oauthScopes.some((scope) => registrationDefault.includes(scope)))
+  .map((operation) => operation.name);

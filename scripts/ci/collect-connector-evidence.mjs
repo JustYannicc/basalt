@@ -15,7 +15,14 @@ const jobs = {
   "catalog-compat": ["catalog-compat", "elevenlabs-discovery"],
 };
 const runDirectories = {
-  "planetscale-sign-in": ["ci/hosted", "ci/dcr", "ci/unknown", "ci/refused", "ci/unreported", "ci/rfc"],
+  "planetscale-sign-in": [
+    "ci/hosted",
+    "ci/dcr",
+    "ci/unknown",
+    "ci/refused",
+    "ci/unreported",
+    "ci/rfc",
+  ],
 };
 
 const files = {

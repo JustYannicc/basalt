@@ -95,19 +95,29 @@ export function withPlanetScaleAccess(feed: Feed): Feed {
         ...entry,
         auth: [
           { method: "signIn", kind: "oauth2", label: "Sign in with PlanetScale" },
-          ...entry.auth.filter((method) => !(typeof method === "object" && method !== null && "method" in method && method.method === "signIn")).map((method) =>
-          typeof method === "object" &&
-          method !== null &&
-          "method" in method &&
-          method.method === "oauth2"
-            ? { ...method, label: "Existing PlanetScale OAuth" }
-            : typeof method === "object" &&
-                method !== null &&
-                "method" in method &&
-                method.method === "signIn"
-              ? { ...method, label: "Sign in with PlanetScale" }
-              : method,
-        ),
+          ...entry.auth
+            .filter(
+              (method) =>
+                !(
+                  typeof method === "object" &&
+                  method !== null &&
+                  "method" in method &&
+                  method.method === "signIn"
+                ),
+            )
+            .map((method) =>
+              typeof method === "object" &&
+              method !== null &&
+              "method" in method &&
+              method.method === "oauth2"
+                ? { ...method, label: "Existing PlanetScale OAuth" }
+                : typeof method === "object" &&
+                    method !== null &&
+                    "method" in method &&
+                    method.method === "signIn"
+                  ? { ...method, label: "Sign in with PlanetScale" }
+                  : method,
+            ),
         ],
         connectionGuidance: planetscaleConnectionGuidance,
         toolSections: planetscaleToolSections,

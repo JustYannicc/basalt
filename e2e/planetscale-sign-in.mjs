@@ -24,15 +24,16 @@ import {
   startPlanetScale,
 } from "./planetscale-signin/service.mjs";
 
-import {hostedScopes, sorted} from "./planetscale-signin/expectations.mjs";
-import {verifyPlanetScaleConnections} from "./planetscale-signin/journey.mjs";
+import { hostedScopes, sorted } from "./planetscale-signin/expectations.mjs";
+import { verifyPlanetScaleConnections } from "./planetscale-signin/journey.mjs";
 const mode = process.argv[3] ?? "hosted";
 assert.ok(
   mode === "hosted" ||
     mode === "dcr" ||
     mode === "unknown" ||
     mode === "refused" ||
-    mode === "unreported" || mode === "rfc",
+    mode === "unreported" ||
+    mode === "rfc",
   "Mode is hosted, dcr, unknown, refused, unreported or rfc",
 );
 const usesDcr = mode === "dcr" || mode === "unknown";
@@ -58,7 +59,12 @@ const program = Effect.gen(function* () {
   const service = yield* start(() =>
     startPlanetScale({
       dcr: usesDcr,
-      advertised: mode === "hosted" ? ["read_user"] : hasHostedClient ? hostedScopes : metadata.scopes_supported,
+      advertised:
+        mode === "hosted"
+          ? ["read_user"]
+          : hasHostedClient
+            ? hostedScopes
+            : metadata.scopes_supported,
       omitGrantedScope: omitsGrantedScope,
       ...(mode === "refused" ? { refuseScope: refusedScope } : {}),
     }),
@@ -164,7 +170,26 @@ const program = Effect.gen(function* () {
     service.calls.filter((entry) => entry.phase === "api" && entry.operation === operation);
   for (const width of widths) {
     const result = yield* Effect.exit(
-      verifyPlanetScaleConnections({width,mode,session,actors,app,links,request,path,prefix,omitsGrantedScope,refusedScope,added,listed,call,apiCalls,client,getTool,service}).pipe(
+      verifyPlanetScaleConnections({
+        width,
+        mode,
+        session,
+        actors,
+        app,
+        links,
+        request,
+        path,
+        prefix,
+        omitsGrantedScope,
+        refusedScope,
+        added,
+        listed,
+        call,
+        apiCalls,
+        client,
+        getTool,
+        service,
+      }).pipe(
         Effect.timeout("120 seconds"),
         Effect.scoped,
         Effect.provide(Browser.layer),
@@ -180,7 +205,15 @@ const program = Effect.gen(function* () {
         Effect.provideService(Target, target),
       ),
     );
-    outcomes.push({ width, status: result._tag, linkedAccounts: (yield* links()).map(({requirement,account}) => ({requirement,id:account.id,method:account.method})) });
+    outcomes.push({
+      width,
+      status: result._tag,
+      linkedAccounts: (yield* links()).map(({ requirement, account }) => ({
+        requirement,
+        id: account.id,
+        method: account.method,
+      })),
+    });
   }
   assert.ok(
     outcomes.every((result) => result.status === "Success"),

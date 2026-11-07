@@ -12,7 +12,7 @@ diff --git a/apps/hosted/server/src/implementation/planetscale-oauth.ts b/apps/h
  const scopes = [
    "read_user",
    "read_organization",
-@@ -17,20 +22,44 @@
+@@ -17,19 +22,43 @@
    "organization:write_deploy_requests",
    "organization:approve_deploy_requests",
    "organization:deploy_deploy_requests",
@@ -37,7 +37,7 @@ diff --git a/apps/hosted/server/src/implementation/planetscale-oauth.ts b/apps/h
 +  "organization:write_payment_method",
 +  "organization:read_invoices",
  ];
- 
++
 +// PlanetScale advertises each unprefixed scope as an alias of its resource-prefixed form and may
 +// report either one in a grant.
 +const scopeImplications = {
@@ -56,11 +56,10 @@ diff --git a/apps/hosted/server/src/implementation/planetscale-oauth.ts b/apps/h
 +  write_databases: ["organization:write_databases"],
 +  "organization:write_databases": ["write_databases"],
 +};
-+
+ 
  /** Shared hosted client for the catalog app; credentials remain optional host settings. */
  export const planetScaleOAuthClient: FirstPartyOAuthClientDefinition = {
-   id: "planetscale",
-@@ -39,7 +68,9 @@
+@@ -39,8 +68,10 @@
      issuer: "https://api.planetscale.com",
      authorizationUrl: "https://app.planetscale.com/oauth/authorize",
      tokenUrl: "https://auth.planetscale.com/oauth/token",
@@ -70,6 +69,7 @@ diff --git a/apps/hosted/server/src/implementation/planetscale-oauth.ts b/apps/h
 +  requireScopeConfirmation: true,
    defaultScopes: scopes,
    allowedScopes: scopes,
+   placement: { hosts: ["api.planetscale.com"] },
 diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
 --- a/packages/sdk/src/contracts/oauth.ts
 +++ b/packages/sdk/src/contracts/oauth.ts
@@ -93,18 +93,19 @@ diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/impleme
  import { AccountFamilyConfiguration } from "../contracts/account-family-recipes.ts";
  import { requireAccountConsumerMethod } from "./account-consumer-plan.ts";
  import type { BackgroundWork } from "../contracts/declarations.ts";
-@@ -691,7 +692,9 @@
+@@ -691,7 +692,10 @@
          continue;
        const allowed = allowedScopes(client);
        if (discovered.scopesAdvertised === true && discovered.scopes.length > 0) {
 -        const scopes = discovered.scopes.filter((scope) => allowed.includes(scope));
-+        const scopes = client.requireScopeConfirmation === true
-+          ? client.defaultScopes
-+          : discovered.scopes.filter((scope) => allowed.includes(scope));
++        const scopes =
++          client.requireScopeConfirmation === true
++            ? client.defaultScopes
++            : discovered.scopes.filter((scope) => allowed.includes(scope));
          if (scopes.length === 0) continue;
          return { client, scopes };
        }
-@@ -2566,6 +2569,34 @@
+@@ -2566,6 +2570,34 @@
            reason: "scope_exceeded",
            cause: { stage: "exchange", field: "scope" },
          });
