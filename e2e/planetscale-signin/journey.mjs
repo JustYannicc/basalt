@@ -97,16 +97,16 @@ export const verifyPlanetScaleConnections = ({
         })
         .waitFor();
       await noOverflow(page);
-      await dialog
-        .getByRole("button", { name: "Sign in with PlanetScale", exact: true })
-        .click();
+      await dialog.getByRole("button", { name: "Sign in with PlanetScale", exact: true }).click();
     });
     yield* browser.checkpoint(`PlanetScale service token guidance ${mode} ${width}`);
     yield* browser.use("Own OAuth app guidance names the Client ID", async (page) => {
       const dialog = page.getByRole("dialog", { name: dialogName });
       await dialog.getByText("Advanced", { exact: true }).click();
-      await dialog.getByRole("combobox", {name: "OAuth client", exact: true}).click();
-      await page.getByRole("option", {name: "Your own PlanetScale app (OAuth)", exact: true}).click();
+      await dialog.getByRole("combobox", { name: "OAuth client", exact: true }).click();
+      await page
+        .getByRole("option", { name: "Your own PlanetScale app (OAuth)", exact: true })
+        .click();
       const link = dialog.getByRole("link", {
         name: "Open PlanetScale's OAuth app guide",
         exact: true,
@@ -124,7 +124,11 @@ export const verifyPlanetScaleConnections = ({
     yield* browser.checkpoint(`PlanetScale own app guidance ${mode} ${width}`);
 
     const before = yield* links();
-    assert.deepEqual(before.map((row) => row.account.id).sort(), setupBefore.map((row) => row.account.id).sort(), "Cancelling own-app setup saves no account");
+    assert.deepEqual(
+      before.map((row) => row.account.id).sort(),
+      setupBefore.map((row) => row.account.id).sort(),
+      "Cancelling own-app setup saves no account",
+    );
     yield* browser.use("Sign in once and approve at PlanetScale", async (page) => {
       const dialog = await openConnect(page);
       await dialog.getByRole("button", { name: "Sign in with PlanetScale", exact: true }).click();
