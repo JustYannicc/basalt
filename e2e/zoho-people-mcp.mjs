@@ -205,13 +205,14 @@ const program = Effect.gen(function* () {
     true,
   );
   const legacy = yield* installRetainedPeopleConsumer({ Effect, files, request, prefix, check });
+  fixture.setCatalog({ entry: zohoPeople.entry, source: { ...source, files: legacy.files } });
   const installed = yield* request("POST", `${prefix}/apps/install`, {
     entry: "zoho-people",
     name: "Zoho People MCP proof",
   });
-  const app = installed;
+  let app = installed;
   check(
-    "MCP method addition retains the earlier REST provider",
+    "REST installation shares the retained consumer provider",
     app.requirements.accounts.people.provider,
     legacy.app.requirements.accounts.people.provider,
   );
@@ -251,6 +252,20 @@ const program = Effect.gen(function* () {
     });
   const restAccount = yield* connect("oauthEu");
   yield* legacy.prove(restAccount);
+  fixture.setCatalog({ entry: zohoPeople.entry, source: { ...source, files } });
+  const upgraded = yield* request("POST", `${path}/deploy`, { files });
+  app = upgraded.app;
+  check(
+    "MCP method addition retains the earlier REST provider",
+    app.requirements.accounts.people.provider,
+    installed.requirements.accounts.people.provider,
+  );
+  const selected = yield* request("GET", `${path}/accounts/user`);
+  check(
+    "MCP upgrade keeps the selected REST account",
+    selected.some((link) => link.account.id === restAccount.id),
+    true,
+  );
   const restIndex = yield* request("GET", `${path}/tools/index`);
   check("REST tools remain usable with MCP disabled", restIndex.items.length, 184);
   const invoke = (tool, account, input = {}) => ({ tool, input: { accountId: account.id, input } });

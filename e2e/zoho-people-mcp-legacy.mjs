@@ -46,6 +46,7 @@ export default defineApp({ user: { accounts: { people: people.many() } } }, asyn
     const path = `${prefix}/apps/${app.id}`;
     return {
       app,
+      files: legacyFiles,
       prove: (account) =>
         Effect.gen(function* () {
           yield* request("PUT", `${path}/accounts/user/people/${account.id}`);
