@@ -2,8 +2,8 @@
   "package": "@executor.sh/planetscale",
   "publishedUrl": "https://catalog.executor.sh/apps/planetscale.json",
   "publishedSha256": "dcc21f91df4eb2af17e05bcc76c1b7c3ccf5d92902923de1b0d55a9da2a8e2de",
-  "carriedSha256": "7dab6e8b8ccc65ae4c2471a7a256e519d45ada531b1557d5dc60485651fa40af",
-  "patchSha256": "9296986c6edc35284185c0ae1c56f73546afc6dbc2df438fdc7be822fb537c29",
+  "carriedSha256": "50b13199100d5fbc9d919115a3eec8f20e750b385fffa1a01da05a5b0a6071d7",
+  "patchSha256": "6e9a8b0210efbd7c09530d08b7b5969e0055d8e9c7cae2ec80acb965a8e2dbf0",
   "appsVersion": "0.0.1-beta.104-basalt.10",
   "license": "Not declared in the published package",
   "contribution": {

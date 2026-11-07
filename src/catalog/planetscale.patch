@@ -137,11 +137,11 @@
 +    const tools = (account: Account, grantAware: boolean, serviceTokenAliases = false) => {
 +      const openapi = {
 +        ...options,
-+        oauth: account.method === "signIn" ? ["signIn"] : options.oauth,
 +        cache,
 +        fetch,
 +        signal,
-+        account,
++        // The API document calls its OAuth security scheme `oauth2`, independently of our method name.
++        account: account.method === "signIn" ? { ...account, method: "oauth2" } : account,
 +      };
 +      return withApprovals(
 +        renameTools(liveOpenapiRouter(openapi), (name) => {
