@@ -219,7 +219,10 @@ test(
         const page = await context.newPage();
         await page.goto(`${fixture.origin}/#usage-import`);
         await page
-          .getByText("Only a pool manager can import usage history.", { exact: true })
+          .getByText(
+            "Importing usage requires permission to manage and use this pool. Ask a pool manager to check your access.",
+            { exact: true },
+          )
           .waitFor();
         assert.equal(await page.locator('input[type="file"]').count(), 0);
         const response = await page.request.post(`${fixture.origin}/_executor/api/mutate`, {
