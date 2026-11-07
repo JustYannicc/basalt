@@ -1,0 +1,27 @@
+{
+  "scenarios": {
+    "cloudMcpObjectPool": {
+      "fixtures": "actors",
+      "title": "Cloud MCP session objects' database pool runs a callback once, holds one connection, and settles abandoned statements off the caller's path",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Self-host uses PGlite, not this PostgreSQL pool."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local uses PGlite, not this PostgreSQL pool."
+        }
+      }
+    }
+  },
+  "runs": {
+    "cloudMcpObjectPool": [
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement"
+    ]
+  }
+}
