@@ -135,13 +135,7 @@ export const verifyLocalGitLabGuidance = ({ catalog, instance, directory }) =>
                     exact: true,
                   })
                   .click();
-                await d.getByText("Advanced", { exact: true }).click();
-                await d
-                  .getByRole("checkbox", {
-                    name: "Use your own GitLab app for this account",
-                    exact: true,
-                  })
-                  .check();
+                await d.getByLabel("Client ID", { exact: true }).waitFor();
                 assert.equal(
                   await d
                     .getByRole("link", { name: "Open GitLab applications", exact: true })
