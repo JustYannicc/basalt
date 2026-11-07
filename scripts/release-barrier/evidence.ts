@@ -10,6 +10,7 @@ import {
 import { describeContainer, type FrozenContainer } from "./container.ts";
 import { Schema } from "effect";
 import type { ServingContainer } from "./container-serving.ts";
+import type { VerificationAdmission } from "./plan-admission.ts";
 import { sealRecovery } from "./recovery-envelope.ts";
 
 const write = async (directory: string, name: string, value: unknown) => {
@@ -34,6 +35,9 @@ export function releaseEvidence(directory: string, candidate: string, encryption
         Schema.Struct({ artifacts: Schema.Struct({ node: identity, home: identity }) }),
       )(value);
       await write(directory, "desired-upstream.json", { candidate, desired: desired.artifacts });
+    },
+    async admission(verifications: readonly VerificationAdmission[]) {
+      await write(directory, "admission.json", { candidate, verifications });
     },
     async serving(value: ServingContainer) {
       await write(directory, "serving.json", value);

@@ -118,6 +118,9 @@ for (const change of ["image", "interrupted"] as const) {
       fqn: "UnsupportedContainer",
       type: "Cloudflare.Container",
       changed: [{ path: "hash.image", old: oldHash, new: newHash }],
+      why: [
+        `recorded lifecycle is ${change === "interrupted" ? "updating" : "created"}; planned action is update`,
+      ],
     });
     const directory = await mkdtemp(join(tmpdir(), "barrier-diff-"));
     context.after(() => rm(directory, { recursive: true, force: true }));
@@ -270,12 +273,14 @@ test("one refusal receipt reports both blocked nodes and keeps each delta redact
       fqn: "OtherContainer",
       type: "Cloudflare.Container",
       changed: [{ path: "env.ACCESS_TOKEN", changed: true }],
+      why: ["recorded lifecycle is created; planned action is update"],
     },
     {
       reason: "unsupported-container",
       fqn: "UnsupportedContainer",
       type: "Cloudflare.Container",
       changed: [{ path: "hash.image", old: oldHash, new: newHash }],
+      why: ["recorded lifecycle is created; planned action is update"],
     },
   ];
   const refusals = error?.refusals;
@@ -305,6 +310,7 @@ test("one refusal receipt reports both blocked nodes and keeps each delta redact
     assert.ok(output.includes("env.ACCESS_TOKEN"));
     assert.ok(output.includes(oldHash));
     assert.ok(output.includes(newHash));
+    assert.ok(output.includes("recorded lifecycle is created"));
   }
   assert.ok(errors.some((message) => message.startsWith("::error ")));
 });

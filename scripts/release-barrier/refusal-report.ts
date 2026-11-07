@@ -24,21 +24,16 @@ export function refusalTable(failure: Failure) {
   const rows = refusals.flatMap((refusal) => {
     const resource = "fqn" in refusal ? refusal.fqn : (failure.worker ?? "(plan)");
     const changes = "changed" in refusal ? refusal.changed : [];
-    return changes.length
-      ? changes.map((change) => [
-          resource,
-          change.path,
-          "old" in change
-            ? `${JSON.stringify(change.old)} → ${JSON.stringify(change.new)}`
-            : "changed (redacted)",
-        ])
-      : [
-          [
-            resource,
-            "$plan",
-            "why" in refusal && refusal.why?.length ? refusal.why.join("; ") : refusal.reason,
-          ],
-        ];
+    const details = changes.map((change) => [
+      resource,
+      change.path,
+      "old" in change
+        ? `${JSON.stringify(change.old)} → ${JSON.stringify(change.new)}`
+        : "changed (redacted)",
+    ]);
+    if ("why" in refusal && refusal.why?.length)
+      details.push([resource, "$plan", refusal.why.join("; ")]);
+    return details.length ? details : [[resource, "$plan", refusal.reason]];
   });
   return [
     "| Resource | Property | Old → new |",
