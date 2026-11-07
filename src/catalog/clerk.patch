@@ -1,0 +1,112 @@
+diff --git a/README.md b/README.md
+index cbf1c39..db8d1dd 100644
+--- a/README.md
++++ b/README.md
+@@ -1,11 +1,5 @@
+ # Clerk
+ 
+-Manage a Clerk instance: users, organizations and memberships, invitations, sessions, allow/block lists, domains, JWT templates, OAuth applications, SAML and instance settings.
++Sign in with Clerk’s official management MCP server at https://mcp.clerk.com/mcp. Choose a workspace and review its permissions. The tools act with your workspace role and manage supported applications, users, configuration and domains. They do not cover every Backend API operation or return instance secret keys.
+ 
+-Interface: OpenAPI, Clerk's official Backend API specification, versioned (2026-05-12) at https://raw.githubusercontent.com/clerk/openapi-specs/main/bapi/2026-05-12.yml (repository https://github.com/clerk/openapi-specs). Requests go to https://api.clerk.com/v1.
+-
+-Auth: secret key (`apiKey`). Create it in the Clerk Dashboard under API keys; it starts with `sk_test_` or `sk_live_` and is sent as a bearer token. A key belongs to one instance (development or production); add one account per instance. Clerk's Backend API has no user-created OAuth app flow, so OAuth is not offered.
+-
+-Known gaps: only the Backend API is covered. The Frontend API (browser-oriented), the Platform API (beta) and Clerk's MCP server (https://mcp.clerk.com/mcp, for docs and SDK snippets) are not mounted. The health check calls `GET /users/count`. Every mutation requires approval.
+-
+-Note: 2026-05-12 is Clerk's latest published API version. It is a breaking version: user, organization and /me update endpoints no longer accept metadata fields, which are written through the dedicated metadata endpoints instead.
++The separate Secret key connection retains the existing Backend API tools and saved accounts. Select the application and Development or Production at https://dashboard.clerk.com/~/api-keys, then add a secret key. Every mutation requires approval on both transports.
+diff --git a/index.ts b/index.ts
+index e476491..509dfaf 100644
+--- a/index.ts
++++ b/index.ts
+@@ -13,6 +13,7 @@ import { always } from "apps/operations/approval";
+ import { liveOpenapiRouter } from "apps/openapi";
+ import { icons } from "./icon.js";
+ import { options } from "./openapi.js";
++import { clerkSignIn, signedInRouter } from "./mcp.js";
+ 
+ const clerk = defineProvider({
+   name: "Clerk",
+@@ -33,21 +34,29 @@ const clerk = defineProvider({
+ });
+ 
+ export default defineApp(
+-  { user: { accounts: { clerk: clerk.many() } }, icons },
++  { user: { accounts: { signIn: clerkSignIn.many(), clerk: clerk.many() } }, icons },
+   async ({ user, cache, fetch, signal }) => ({
+     tools: router(
+       await accountRouter(
+-        user?.accounts.clerk ?? [],
+-        (account) =>
+-          withApprovals(liveOpenapiRouter({ ...options, cache, fetch, signal, account }), (tool) =>
+-            tool.kind === "mutation" ? always() : undefined,
+-          ),
++        [
++          ...(user?.accounts.clerk ?? []).map((account) => ({
++            id: account.id,
++            discover: () => withApprovals(
++              liveOpenapiRouter({ ...options, cache, fetch, signal, account }),
++              (tool) => tool.kind === "mutation" ? always() : undefined,
++            ),
++          })),
++          ...(user?.accounts.signIn ?? []).map((account) => ({
++            id: account.id,
++            discover: () => signedInRouter(account, { cache, signal }),
++          })),
++        ],
++        (account) => account.discover(),
+         { signal },
+       ),
+       {
+         title: "Clerk",
+-        description:
+-          "Manage Clerk users, organizations, memberships, invitations, sessions, domains, JWT templates and instance settings.",
++        description: "Manage Clerk applications, users, organizations, domains and instance settings.",
+         icons,
+       },
+     ),
+diff --git a/package.json b/package.json
+index 11c13b7..8da9fd6 100644
+--- a/package.json
++++ b/package.json
+@@ -4,7 +4,8 @@
+   "private": true,
+   "type": "module",
+   "dependencies": {
+-    "apps": "0.0.1-beta.100"
++    "apps": "0.0.1-beta.104-basalt.9",
++    "@modelcontextprotocol/sdk": "1.32.1"
+   },
+   "executor": {
+     "title": "Clerk"
+diff --git a/after b/mcp.ts
+new file mode 100644
+index 0000000..5646032
+--- /dev/null
++++ b/mcp.ts
+@@ -0,0 +1,24 @@
++import { defineProvider, oauth2, withApprovals, type AccountOf, type AppCache } from "apps";
++import { mcpHealth, mcpRouter } from "apps/mcp";
++import { always } from "apps/operations/approval";
++
++const url = "https://mcp.clerk.com/mcp";
++const headers = (account: { fields: { access_token: string } }) => ({
++  Authorization: `Bearer ${account.fields.access_token}`,
++});
++
++// A separate provider preserves existing API-key accounts and their links.
++export const clerkSignIn = defineProvider({
++  name: "Clerk",
++  hosts: ["mcp.clerk.com"],
++  auth: { oauth: oauth2({ discover: url, scopes: ["user:org:read","applications:read","applications:manage","users:read","users:manage","organizations:read","application_domains:read","application_domains:manage"] }) },
++  health: (check) => mcpHealth(check, { url, headers: headers(check.account) }),
++});
++
++export const signedInRouter = async (
++  account: AccountOf<typeof clerkSignIn>,
++  context: { cache: AppCache; signal: AbortSignal },
++) => withApprovals(
++  await mcpRouter({ url, account, headers: headers(account), ...context }),
++  (tool) => tool.kind === "mutation" ? always() : undefined,
++);
