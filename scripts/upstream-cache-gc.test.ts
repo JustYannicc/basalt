@@ -18,7 +18,7 @@ import {
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { withCacheLock } from "./upstream-cache.ts";
@@ -38,6 +38,7 @@ function fixture(t: TestContext) {
   const usage = { files: new Set<string>(), unavailable: false };
   const run = childProcess.spawnSync;
   const repository = realpathSync(fileURLToPath(new URL("../", import.meta.url)));
+  const inventory = { matches: 0, unexpected: new Set<string>() };
   // Unit fixtures own their usage snapshot; unrelated worktrees and host lsof failures cannot alter it.
   const probe = t.mock.method(
     childProcess,
@@ -55,9 +56,23 @@ function fixture(t: TestContext) {
           signal: null,
         };
       }
-      if (command === "git" && args?.[0] === "-C" && args[1] === repository) {
+      if (
+        command === "git" &&
+        args?.[0] === "-C" &&
+        typeof args[1] === "string" &&
+        realpathSync(args[1]) === repository
+      ) {
+        inventory.matches++;
         assert.deepEqual(args.slice(2), ["worktree", "list", "--porcelain", "-z"]);
         return { pid: 0, output: [null, "", ""], stdout: "", stderr: "", status: 0, signal: null };
+      }
+      if (command === "git") {
+        const target =
+          args?.[0] === "-C" && typeof args[1] === "string" ? realpathSync(args[1]) : "";
+        if (target !== root && !target.startsWith(root + sep)) {
+          inventory.unexpected.add(target);
+          throw new Error("Fixture refused Git outside its temporary worktrees");
+        }
       }
       return run(...parameters);
     },
@@ -72,6 +87,12 @@ function fixture(t: TestContext) {
     else process.env.BASALT_UPSTREAM_CACHE = previous;
     execFileSync("chmod", ["-R", "u+w", root]);
     rmSync(root, { recursive: true, force: true });
+    assert.deepEqual(
+      [...inventory.unexpected],
+      [],
+      "Fixture must not query a real worktree inventory",
+    );
+    assert.ok(inventory.matches > 0, "Repository worktree inventory mock did not match");
   });
   const key = (number: number, pin = "current") => {
     const name = number.toString(16).padStart(64, "0");
@@ -90,8 +111,23 @@ function fixture(t: TestContext) {
     utimesSync(join(entry, "last-used"), number, number);
     return { entry, store };
   };
-  return { root, cache, key, usage };
+  return { root, cache, key, usage, inventory };
 }
+
+test("fixture intercepts repository inventory with or without trailing separators", (t) => {
+  const { inventory } = fixture(t);
+  const repository = realpathSync(fileURLToPath(new URL("../", import.meta.url)));
+  for (const path of [repository, repository + sep]) {
+    const result = childProcess.spawnSync(
+      "git",
+      ["-C", path, "worktree", "list", "--porcelain", "-z"],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout, "");
+  }
+  assert.equal(inventory.matches, 2);
+});
 
 test("collection evicts every unleased key, including recent keys, and keeps a live consumer", async (t) => {
   const { root, key } = fixture(t);
