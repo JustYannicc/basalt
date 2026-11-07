@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "App redeployment preserves a provider ref for a strict auth-map addition only when every old named method is credential-equivalent after existing normalization, name/site/family are unchanged, and exactly one previous provider ref qualifies. Changed or removed methods and ambiguous candidates receive new refs, including when removing a newly added method would otherwise reproduce a retained historical hash. Provider writes lock both retained and canonical candidate rows in sorted order, accumulate compatible methods across app versions, and assign a distinct ref for conflicting method contracts or incompatible historical hashes. The four hosted continuity scenarios stay scheduled in the owned account job with its unchanged command and execution inputs. Existing account grants and provider-mismatch checks remain authoritative."
+    }
+  }
+}

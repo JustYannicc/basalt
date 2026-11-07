@@ -1,0 +1,832 @@
+diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
+index 381095c2d..f460ab1f8 100644
+--- a/patches/alchemy@2.0.0-beta.80.patch
++++ b/patches/alchemy@2.0.0-beta.80.patch
+@@ -6620,3 +6620,827 @@ index 000000000..44ed9e172
+ +    readonly capture: (publication: PreparedContainerPublication) => Effect.Effect<ContainerApplication["Attributes"], unknown>;
+ +}>;
+ +export declare class ContainerPublicationHook extends ContainerPublicationHook_base {}
++diff --git a/package.json b/package.json
++index b261ca81e..857941bce 100644
++--- a/package.json
+++++ b/package.json
++@@ -322,6 +322,11 @@
++       "types": "./lib/Cloudflare/Containers/ContainerPublicationHook.d.ts",
++       "bun": "./src/Cloudflare/Containers/ContainerPublicationHook.ts",
++       "default": "./lib/Cloudflare/Containers/ContainerPublicationHook.js"
+++    },
+++    "./Cloudflare/StateStore/ReadOnlyAccess": {
+++      "types": "./lib/Cloudflare/StateStore/ReadOnlyAccess.d.ts",
+++      "bun": "./src/Cloudflare/StateStore/ReadOnlyAccess.ts",
+++      "default": "./lib/Cloudflare/StateStore/ReadOnlyAccess.js"
++     }
++   },
++   "publishConfig": {
++diff --git a/src/State/HttpStateApi.ts b/src/State/HttpStateApi.ts
++index 9530033cb..9bf147f54 100644
++--- a/src/State/HttpStateApi.ts
+++++ b/src/State/HttpStateApi.ts
++@@ -10,6 +10,7 @@ import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
++ import * as HttpApiMiddleware from "effect/http-api/HttpApiMiddleware";
++ import * as HttpApiSchema from "effect/http-api/HttpApiSchema";
++ import * as HttpApiSecurity from "effect/http-api/HttpApiSecurity";
+++import * as HttpServerRequest from "effect/http/HttpServerRequest";
++ 
++ /**
++  * Resource-state payload shape on the wire.
++@@ -32,6 +33,7 @@ export class BearerTokenValidator extends Context.Service<
++   {
++     readonly validate: (
++       token: string,
+++      request: { readonly method: string; readonly url: string },
++     ) => Effect.Effect<void, HttpApiError.Unauthorized>;
++   }
++ >()("alchemy/State/BearerTokenValidator") {}
++@@ -46,19 +48,16 @@ export class StateAuth extends HttpApiMiddleware.Service<
++   error: HttpApiError.UnauthorizedNoContent,
++ }) {}
++ 
++-export const StateAuthLive: Layer.Layer<
++-  StateAuth,
++-  never,
++-  BearerTokenValidator
++-> = Layer.effect(
+++export const StateAuthLive: Layer.Layer<StateAuth, never, BearerTokenValidator> = Layer.effect(
++   StateAuth,
++   Effect.gen(function* () {
++     const validator = yield* BearerTokenValidator;
++     return {
++       bearer: (httpEffect, { credential }) =>
++-        validator
++-          .validate(Redacted.value(credential))
++-          .pipe(Effect.flatMap(() => httpEffect)),
+++        HttpServerRequest.HttpServerRequest.pipe(
+++          Effect.flatMap((request) => validator.validate(Redacted.value(credential), request)),
+++          Effect.flatMap(() => httpEffect),
+++        ),
++     };
++   }),
++ );
++@@ -90,14 +89,10 @@ export const ListStacks = HttpApiEndpoint.get("listStacks", "/state/stacks", {
++   success: Schema.Array(Schema.String),
++ });
++ 
++-export const ListStages = HttpApiEndpoint.get(
++-  "listStages",
++-  "/state/stacks/:stack/stages",
++-  {
++-    params: StackParams,
++-    success: Schema.Array(Schema.String),
++-  },
++-);
+++export const ListStages = HttpApiEndpoint.get("listStages", "/state/stacks/:stack/stages", {
+++  params: StackParams,
+++  success: Schema.Array(Schema.String),
+++});
++ 
++ export const ListResources = HttpApiEndpoint.get(
++   "listResources",
++@@ -136,15 +131,11 @@ export const DeleteState = HttpApiEndpoint.delete(
++   },
++ );
++ 
++-export const DeleteStack = HttpApiEndpoint.delete(
++-  "deleteStack",
++-  "/state/stacks/:stack",
++-  {
++-    params: StackParams,
++-    query: OptionalStageQuery,
++-    success: HttpApiSchema.NoContent,
++-  },
++-);
+++export const DeleteStack = HttpApiEndpoint.delete("deleteStack", "/state/stacks/:stack", {
+++  params: StackParams,
+++  query: OptionalStageQuery,
+++  success: HttpApiSchema.NoContent,
+++});
++ 
++ export const GetReplacedResources = HttpApiEndpoint.get(
++   "getReplacedResources",
++@@ -213,10 +204,6 @@ export class StateGroup extends HttpApiGroup.make("state")
++   .add(SetStackOutput)
++   .middleware(StateAuth) {}
++ 
++-export class VersionGroup extends HttpApiGroup.make("version").add(
++-  GetVersion,
++-) {}
+++export class VersionGroup extends HttpApiGroup.make("version").add(GetVersion) {}
++ 
++-export class StateApi extends HttpApi.make("alchemy-state")
++-  .add(StateGroup)
++-  .add(VersionGroup) {}
+++export class StateApi extends HttpApi.make("alchemy-state").add(StateGroup).add(VersionGroup) {}
++diff --git a/lib/State/HttpStateApi.js b/lib/State/HttpStateApi.js
++index b0fd77b47..5568ded86 100644
++--- a/lib/State/HttpStateApi.js
+++++ b/lib/State/HttpStateApi.js
++@@ -10,6 +10,7 @@ import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
++ import * as HttpApiMiddleware from "effect/http-api/HttpApiMiddleware";
++ import * as HttpApiSchema from "effect/http-api/HttpApiSchema";
++ import * as HttpApiSecurity from "effect/http-api/HttpApiSecurity";
+++import * as HttpServerRequest from "effect/http/HttpServerRequest";
++ /**
++  * Resource-state payload shape on the wire.
++  *
++@@ -37,9 +38,7 @@ export class StateAuth extends HttpApiMiddleware.Service()("alchemy/State/StateA
++ export const StateAuthLive = Layer.effect(StateAuth, Effect.gen(function* () {
++     const validator = yield* BearerTokenValidator;
++     return {
++-        bearer: (httpEffect, { credential }) => validator
++-            .validate(Redacted.value(credential))
++-            .pipe(Effect.flatMap(() => httpEffect)),
+++        bearer: (httpEffect, { credential }) => HttpServerRequest.HttpServerRequest.pipe(Effect.flatMap((request) => validator.validate(Redacted.value(credential), request)), Effect.flatMap(() => httpEffect)),
++     };
++ }));
++ /** `stack` path segment for nested REST resources. */
++@@ -141,8 +140,6 @@ export class StateGroup extends HttpApiGroup.make("state")
++ }
++ export class VersionGroup extends HttpApiGroup.make("version").add(GetVersion) {
++ }
++-export class StateApi extends HttpApi.make("alchemy-state")
++-    .add(StateGroup)
++-    .add(VersionGroup) {
+++export class StateApi extends HttpApi.make("alchemy-state").add(StateGroup).add(VersionGroup) {
++ }
++ //# sourceMappingURL=HttpStateApi.js.map
++\ No newline at end of file
++diff --git a/lib/State/HttpStateApi.d.ts b/lib/State/HttpStateApi.d.ts
++index 57e24c578..7e4b401f1 100644
++--- a/lib/State/HttpStateApi.d.ts
+++++ b/lib/State/HttpStateApi.d.ts
++@@ -25,7 +25,7 @@ import * as HttpApiSecurity from "effect/http-api/HttpApiSecurity";
++  */
++ export declare const ResourceStateSchema: Schema.Any;
++ declare const BearerTokenValidator_base: Context.ServiceClass<BearerTokenValidator, "alchemy/State/BearerTokenValidator", {
++-    readonly validate: (token: string) => Effect.Effect<void, HttpApiError.Unauthorized>;
+++    readonly validate: (token: string, request: { readonly method: string; readonly url: string }) => Effect.Effect<void, HttpApiError.Unauthorized>;
++ }>;
++ export declare class BearerTokenValidator extends BearerTokenValidator_base {
++ }
++diff --git a/src/State/ReadOnlyHttpStateStore.ts b/src/State/ReadOnlyHttpStateStore.ts
++new file mode 100644
++index 000000000..4c3e2b402
++--- /dev/null
+++++ b/src/State/ReadOnlyHttpStateStore.ts
++@@ -0,0 +1,159 @@
+++import * as Effect from "effect/Effect";
+++import * as Option from "effect/Option";
+++import * as Redacted from "effect/Redacted";
+++import * as HttpApiClient from "effect/http-api/HttpApiClient";
+++import * as HttpApiError from "effect/http-api/HttpApiError";
+++import * as HttpClient from "effect/http/HttpClient";
+++import * as HttpClientRequest from "effect/http/HttpClientRequest";
+++import * as FetchHttpClient from "effect/http/FetchHttpClient";
+++import * as HttpClientError from "effect/http/HttpClientError";
+++import { StateApi } from "./HttpStateApi.ts";
+++import { StateStoreError, type StateService, type PersistedState } from "./State.ts";
+++import type { ReplacedResourceState } from "./ResourceState.ts";
+++import { reviveStateRecursive } from "./StateEncoding.ts";
+++
+++export interface ReadOnlyHttpStateStoreProps {
+++  readonly url: string;
+++  readonly authToken: Redacted.Redacted<string>;
+++  readonly stack: string;
+++  readonly stage: string;
+++  readonly expectedVersion: number;
+++}
+++
+++export class ReadOnlyStateStoreVersionMismatch extends StateStoreError {
+++  constructor(
+++    readonly expected: number,
+++    readonly observed: number,
+++  ) {
+++    super({
+++      message: `Read-only state store version differs (expected ${expected}, observed ${observed}). Upgrade it through the deployment path.`,
+++    });
+++  }
+++}
+++
+++const refused = () => new StateStoreError({ message: "Read-only state request refused." });
+++const scoped = (
+++  options: ReadOnlyHttpStateStoreProps,
+++  request: { readonly stack: string; readonly stage: string },
+++) => request.stack === options.stack && request.stage === options.stage;
+++
+++/** Direct HTTP access only. This never loads profiles, bootstraps a store or refreshes credentials. */
+++export const makeReadOnlyHttpStateStore = (options: ReadOnlyHttpStateStoreProps) =>
+++  Effect.gen(function* () {
+++    const origin = yield* Effect.try({
+++      try: () => {
+++        const url = new URL(options.url);
+++        if (
+++          url.protocol !== "https:" ||
+++          url.username ||
+++          url.password ||
+++          url.search ||
+++          url.hash ||
+++          url.pathname !== "/" ||
+++          !Number.isInteger(options.expectedVersion) ||
+++          options.expectedVersion < 1 ||
+++          !/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/u.test(options.stack) ||
+++          !/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/u.test(options.stage)
+++        )
+++          throw refused();
+++        return url.origin;
+++      },
+++      catch: refused,
+++    });
+++    const prefix = `/state/stacks/${encodeURIComponent(options.stack)}/stages/${encodeURIComponent(options.stage)}/`;
+++    const client = (yield* HttpClient.HttpClient).pipe(
+++      HttpClient.mapRequest(HttpClientRequest.prependUrl(origin)),
+++      HttpClient.mapRequestEffect((request) => {
+++        const url = HttpClientRequest.toUrl(request);
+++        if (
+++          request.method !== "GET" ||
+++          Option.isNone(url) ||
+++          url.value.origin !== origin ||
+++          url.value.search ||
+++          url.value.hash ||
+++          (url.value.pathname !== "/version" && !url.value.pathname.startsWith(prefix))
+++        )
+++          return Effect.fail(refused());
+++        return Effect.succeed(
+++          HttpClientRequest.bearerToken(request, Redacted.value(options.authToken)),
+++        );
+++      }),
+++    );
+++    const api = yield* HttpApiClient.makeWith(StateApi, {
+++      httpClient: client,
+++    });
+++    const safe = <A, E>(effect: Effect.Effect<A, E>) =>
+++      effect.pipe(
+++        Effect.provideService(FetchHttpClient.RequestInit, {
+++          redirect: "error",
+++          credentials: "omit",
+++        }),
+++        Effect.catch((error) =>
+++          Effect.fail(
+++            new StateStoreError({
+++              message: "Read-only state request failed.",
+++              http: HttpClientError.isHttpClientError(error)
+++                ? { status: error.response?.status }
+++                : error instanceof HttpApiError.Unauthorized
+++                  ? { status: 401 }
+++                  : undefined,
+++            }),
+++          ),
+++        ),
+++      );
+++    const read = <A, E>(
+++      request: { readonly stack: string; readonly stage: string },
+++      effect: () => Effect.Effect<A, E>,
+++    ) => (scoped(options, request) ? safe(Effect.suspend(effect)) : Effect.fail(refused()));
+++    const service: StateService = {
+++      id: "read-only-http",
+++      getVersion: () => safe(api.version.getVersion()).pipe(Effect.map((v) => v.version)),
+++      listStacks: () => Effect.succeed([options.stack]),
+++      listStages: (stack) =>
+++        stack === options.stack ? Effect.succeed([options.stage]) : Effect.fail(refused()),
+++      list: (request) => read(request, () => api.state.listResources({ params: request })),
+++      get: (request) =>
+++        read(request, () =>
+++          api.state
+++            .getState({
+++              params: { ...request, fqn: encodeURIComponent(request.fqn) },
+++            })
+++            .pipe(
+++              Effect.map((value) =>
+++                value == null ? undefined : (reviveStateRecursive(value) as PersistedState),
+++              ),
+++            ),
+++        ),
+++      getReplacedResources: (request) =>
+++        read(request, () =>
+++          api.state
+++            .getReplacedResources({
+++              params: request,
+++            })
+++            .pipe(
+++              Effect.map((values) =>
+++                values.map((value) => reviveStateRecursive(value) as ReplacedResourceState),
+++              ),
+++            ),
+++        ),
+++      getOutput: (request) =>
+++        read(request, () =>
+++          api.state
+++            .getStackOutput({
+++              params: request,
+++            })
+++            .pipe(Effect.map((value) => (value == null ? undefined : reviveStateRecursive(value)))),
+++        ),
+++      set: () => Effect.fail(refused()),
+++      delete: () => Effect.fail(refused()),
+++      deleteStack: () => Effect.fail(refused()),
+++      setOutput: () => Effect.fail(refused()),
+++    };
+++    const version = yield* service.getVersion();
+++    if (version !== options.expectedVersion)
+++      return yield* Effect.fail(
+++        new ReadOnlyStateStoreVersionMismatch(options.expectedVersion, version),
+++      );
+++    yield* service.list({ stack: options.stack, stage: options.stage });
+++    return service;
+++  }).pipe(Effect.provide(FetchHttpClient.layer));
++diff --git a/lib/State/ReadOnlyHttpStateStore.js b/lib/State/ReadOnlyHttpStateStore.js
++new file mode 100644
++index 000000000..8f7f2254d
++--- /dev/null
+++++ b/lib/State/ReadOnlyHttpStateStore.js
++@@ -0,0 +1,104 @@
+++import * as Effect from "effect/Effect";
+++import * as Option from "effect/Option";
+++import * as Redacted from "effect/Redacted";
+++import * as HttpApiClient from "effect/http-api/HttpApiClient";
+++import * as HttpApiError from "effect/http-api/HttpApiError";
+++import * as HttpClient from "effect/http/HttpClient";
+++import * as HttpClientRequest from "effect/http/HttpClientRequest";
+++import * as FetchHttpClient from "effect/http/FetchHttpClient";
+++import * as HttpClientError from "effect/http/HttpClientError";
+++import { StateApi } from "./HttpStateApi.js";
+++import { StateStoreError } from "./State.js";
+++import { reviveStateRecursive } from "./StateEncoding.js";
+++export class ReadOnlyStateStoreVersionMismatch extends StateStoreError {
+++    expected;
+++    observed;
+++    constructor(expected, observed) {
+++        super({
+++            message: `Read-only state store version differs (expected ${expected}, observed ${observed}). Upgrade it through the deployment path.`,
+++        });
+++        this.expected = expected;
+++        this.observed = observed;
+++    }
+++}
+++const refused = () => new StateStoreError({ message: "Read-only state request refused." });
+++const scoped = (options, request) => request.stack === options.stack && request.stage === options.stage;
+++/** Direct HTTP access only. This never loads profiles, bootstraps a store or refreshes credentials. */
+++export const makeReadOnlyHttpStateStore = (options) => Effect.gen(function* () {
+++    const origin = yield* Effect.try({
+++        try: () => {
+++            const url = new URL(options.url);
+++            if (url.protocol !== "https:" ||
+++                url.username ||
+++                url.password ||
+++                url.search ||
+++                url.hash ||
+++                url.pathname !== "/" ||
+++                !Number.isInteger(options.expectedVersion) ||
+++                options.expectedVersion < 1 ||
+++                !/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/u.test(options.stack) ||
+++                !/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/u.test(options.stage))
+++                throw refused();
+++            return url.origin;
+++        },
+++        catch: refused,
+++    });
+++    const prefix = `/state/stacks/${encodeURIComponent(options.stack)}/stages/${encodeURIComponent(options.stage)}/`;
+++    const client = (yield* HttpClient.HttpClient).pipe(HttpClient.mapRequest(HttpClientRequest.prependUrl(origin)), HttpClient.mapRequestEffect((request) => {
+++        const url = HttpClientRequest.toUrl(request);
+++        if (request.method !== "GET" ||
+++            Option.isNone(url) ||
+++            url.value.origin !== origin ||
+++            url.value.search ||
+++            url.value.hash ||
+++            (url.value.pathname !== "/version" && !url.value.pathname.startsWith(prefix)))
+++            return Effect.fail(refused());
+++        return Effect.succeed(HttpClientRequest.bearerToken(request, Redacted.value(options.authToken)));
+++    }));
+++    const api = yield* HttpApiClient.makeWith(StateApi, {
+++        httpClient: client,
+++    });
+++    const safe = (effect) => effect.pipe(Effect.provideService(FetchHttpClient.RequestInit, {
+++        redirect: "error",
+++        credentials: "omit",
+++    }), Effect.catch((error) => Effect.fail(new StateStoreError({
+++        message: "Read-only state request failed.",
+++        http: HttpClientError.isHttpClientError(error)
+++            ? { status: error.response?.status }
+++            : error instanceof HttpApiError.Unauthorized
+++                ? { status: 401 }
+++                : undefined,
+++    }))));
+++    const read = (request, effect) => (scoped(options, request) ? safe(Effect.suspend(effect)) : Effect.fail(refused()));
+++    const service = {
+++        id: "read-only-http",
+++        getVersion: () => safe(api.version.getVersion()).pipe(Effect.map((v) => v.version)),
+++        listStacks: () => Effect.succeed([options.stack]),
+++        listStages: (stack) => stack === options.stack ? Effect.succeed([options.stage]) : Effect.fail(refused()),
+++        list: (request) => read(request, () => api.state.listResources({ params: request })),
+++        get: (request) => read(request, () => api.state
+++            .getState({
+++            params: { ...request, fqn: encodeURIComponent(request.fqn) },
+++        })
+++            .pipe(Effect.map((value) => value == null ? undefined : reviveStateRecursive(value)))),
+++        getReplacedResources: (request) => read(request, () => api.state
+++            .getReplacedResources({
+++            params: request,
+++        })
+++            .pipe(Effect.map((values) => values.map((value) => reviveStateRecursive(value))))),
+++        getOutput: (request) => read(request, () => api.state
+++            .getStackOutput({
+++            params: request,
+++        })
+++            .pipe(Effect.map((value) => (value == null ? undefined : reviveStateRecursive(value))))),
+++        set: () => Effect.fail(refused()),
+++        delete: () => Effect.fail(refused()),
+++        deleteStack: () => Effect.fail(refused()),
+++        setOutput: () => Effect.fail(refused()),
+++    };
+++    const version = yield* service.getVersion();
+++    if (version !== options.expectedVersion)
+++        return yield* Effect.fail(new ReadOnlyStateStoreVersionMismatch(options.expectedVersion, version));
+++    yield* service.list({ stack: options.stack, stage: options.stage });
+++    return service;
+++}).pipe(Effect.provide(FetchHttpClient.layer));
++diff --git a/lib/State/ReadOnlyHttpStateStore.d.ts b/lib/State/ReadOnlyHttpStateStore.d.ts
++new file mode 100644
++index 000000000..16e78ee69
++--- /dev/null
+++++ b/lib/State/ReadOnlyHttpStateStore.d.ts
++@@ -0,0 +1,17 @@
+++import * as Effect from "effect/Effect";
+++import * as Redacted from "effect/Redacted";
+++import { StateStoreError, type StateService } from "./State.ts";
+++export interface ReadOnlyHttpStateStoreProps {
+++    readonly url: string;
+++    readonly authToken: Redacted.Redacted<string>;
+++    readonly stack: string;
+++    readonly stage: string;
+++    readonly expectedVersion: number;
+++}
+++export declare class ReadOnlyStateStoreVersionMismatch extends StateStoreError {
+++    readonly expected: number;
+++    readonly observed: number;
+++    constructor(expected: number, observed: number);
+++}
+++/** Direct HTTP access only. This never loads profiles, bootstraps a store or refreshes credentials. */
+++export declare const makeReadOnlyHttpStateStore: (options: ReadOnlyHttpStateStoreProps) => Effect.Effect<StateService, StateStoreError, never>;
++diff --git a/src/Cloudflare/StateStore/ReadOnlyAccess.ts b/src/Cloudflare/StateStore/ReadOnlyAccess.ts
++new file mode 100644
++index 000000000..5238d02a1
++--- /dev/null
+++++ b/src/Cloudflare/StateStore/ReadOnlyAccess.ts
++@@ -0,0 +1,63 @@
+++import * as Effect from "effect/Effect";
+++import * as Option from "effect/Option";
+++import * as Schema from "effect/Schema";
+++import * as HttpApiError from "effect/http-api/HttpApiError";
+++import { BearerTokenValidator } from "../../State/HttpStateApi.ts";
+++
+++// Grant outputs are outside every application stack and survive state-store upgrades.
+++export const READ_ONLY_GRANTS_STACK = "__alchemy_state_readers__" as const;
+++const ScopeSegment = Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/u));
+++export const ReadOnlyGrant = Schema.Struct({
+++  version: Schema.Literal(1),
+++  access: Schema.Literal("read-only"),
+++  stack: ScopeSegment,
+++  stage: ScopeSegment,
+++});
+++export type ReadOnlyGrant = typeof ReadOnlyGrant.Type;
+++const decodeGrant = Schema.decodeUnknownOption(ReadOnlyGrant, {
+++  onExcessProperty: "error",
+++});
+++
+++/** The full-access client stores this digest's grant as an output in READ_ONLY_GRANTS_STACK. */
+++export const readOnlyTokenId = (token: string) =>
+++  Effect.promise(async () => {
+++    const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token.trim()));
+++    return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
+++  });
+++
+++/** Global listings and the grant store are never readable with a scoped credential. */
+++export const permitsReadOnlyRequest = (
+++  grant: ReadOnlyGrant,
+++  request: { readonly method: string; readonly url: string },
+++): boolean => {
+++  if (request.method !== "GET" || grant.stack === READ_ONLY_GRANTS_STACK) return false;
+++  const match =
+++    /^\/state\/stacks\/([^/?#]+)\/stages\/([^/?#]+)\/(?:resources(?:\/[^/?#]+)?|replaced-resources|output)$/u.exec(
+++      request.url,
+++    );
+++  if (!match) return false;
+++  try {
+++    return (
+++      decodeURIComponent(match[1]!) === grant.stack && decodeURIComponent(match[2]!) === grant.stage
+++    );
+++  } catch {
+++    return false;
+++  }
+++};
+++
+++export const makeReadOnlyBearerTokenValidator = (options: {
+++  readonly validateFullAccess: (token: string) => Effect.Effect<boolean>;
+++  readonly readGrant: (id: string) => Effect.Effect<unknown>;
+++}) =>
+++  BearerTokenValidator.of({
+++    validate: Effect.fn(function* (token, request) {
+++      const value = token.trim();
+++      if (yield* options.validateFullAccess(value)) return;
+++      if (request.method !== "GET" || value.length < 32 || value.length > 512)
+++        return yield* new HttpApiError.Unauthorized();
+++      // Read on every request so deleting a grant revokes the next request.
+++      const grant = decodeGrant(yield* options.readGrant(yield* readOnlyTokenId(value)));
+++      if (Option.isNone(grant) || !permitsReadOnlyRequest(grant.value, request))
+++        return yield* new HttpApiError.Unauthorized();
+++    }),
+++  });
++diff --git a/lib/Cloudflare/StateStore/ReadOnlyAccess.js b/lib/Cloudflare/StateStore/ReadOnlyAccess.js
++new file mode 100644
++index 000000000..67b26135c
++--- /dev/null
+++++ b/lib/Cloudflare/StateStore/ReadOnlyAccess.js
++@@ -0,0 +1,49 @@
+++import * as Effect from "effect/Effect";
+++import * as Option from "effect/Option";
+++import * as Schema from "effect/Schema";
+++import * as HttpApiError from "effect/http-api/HttpApiError";
+++import { BearerTokenValidator } from "../../State/HttpStateApi.js";
+++// Grant outputs are outside every application stack and survive state-store upgrades.
+++export const READ_ONLY_GRANTS_STACK = "__alchemy_state_readers__";
+++const ScopeSegment = Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/u));
+++export const ReadOnlyGrant = Schema.Struct({
+++    version: Schema.Literal(1),
+++    access: Schema.Literal("read-only"),
+++    stack: ScopeSegment,
+++    stage: ScopeSegment,
+++});
+++const decodeGrant = Schema.decodeUnknownOption(ReadOnlyGrant, {
+++    onExcessProperty: "error",
+++});
+++/** The full-access client stores this digest's grant as an output in READ_ONLY_GRANTS_STACK. */
+++export const readOnlyTokenId = (token) => Effect.promise(async () => {
+++    const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token.trim()));
+++    return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
+++});
+++/** Global listings and the grant store are never readable with a scoped credential. */
+++export const permitsReadOnlyRequest = (grant, request) => {
+++    if (request.method !== "GET" || grant.stack === READ_ONLY_GRANTS_STACK)
+++        return false;
+++    const match = /^\/state\/stacks\/([^/?#]+)\/stages\/([^/?#]+)\/(?:resources(?:\/[^/?#]+)?|replaced-resources|output)$/u.exec(request.url);
+++    if (!match)
+++        return false;
+++    try {
+++        return (decodeURIComponent(match[1]) === grant.stack && decodeURIComponent(match[2]) === grant.stage);
+++    }
+++    catch {
+++        return false;
+++    }
+++};
+++export const makeReadOnlyBearerTokenValidator = (options) => BearerTokenValidator.of({
+++    validate: Effect.fn(function* (token, request) {
+++        const value = token.trim();
+++        if (yield* options.validateFullAccess(value))
+++            return;
+++        if (request.method !== "GET" || value.length < 32 || value.length > 512)
+++            return yield* new HttpApiError.Unauthorized();
+++        // Read on every request so deleting a grant revokes the next request.
+++        const grant = decodeGrant(yield* options.readGrant(yield* readOnlyTokenId(value)));
+++        if (Option.isNone(grant) || !permitsReadOnlyRequest(grant.value, request))
+++            return yield* new HttpApiError.Unauthorized();
+++    }),
+++});
++diff --git a/lib/Cloudflare/StateStore/ReadOnlyAccess.d.ts b/lib/Cloudflare/StateStore/ReadOnlyAccess.d.ts
++new file mode 100644
++index 000000000..17daf6477
++--- /dev/null
+++++ b/lib/Cloudflare/StateStore/ReadOnlyAccess.d.ts
++@@ -0,0 +1,27 @@
+++import * as Effect from "effect/Effect";
+++import * as Schema from "effect/Schema";
+++import * as HttpApiError from "effect/http-api/HttpApiError";
+++export declare const READ_ONLY_GRANTS_STACK: "__alchemy_state_readers__";
+++export declare const ReadOnlyGrant: Schema.Struct<{
+++    readonly version: Schema.Literal<1>;
+++    readonly access: Schema.Literal<"read-only">;
+++    readonly stack: Schema.String;
+++    readonly stage: Schema.String;
+++}>;
+++export type ReadOnlyGrant = typeof ReadOnlyGrant.Type;
+++/** The full-access client stores this digest's grant as an output in READ_ONLY_GRANTS_STACK. */
+++export declare const readOnlyTokenId: (token: string) => Effect.Effect<string, never, never>;
+++/** Global listings and the grant store are never readable with a scoped credential. */
+++export declare const permitsReadOnlyRequest: (grant: ReadOnlyGrant, request: {
+++    readonly method: string;
+++    readonly url: string;
+++}) => boolean;
+++export declare const makeReadOnlyBearerTokenValidator: (options: {
+++    readonly validateFullAccess: (token: string) => Effect.Effect<boolean>;
+++    readonly readGrant: (id: string) => Effect.Effect<unknown>;
+++}) => {
+++    readonly validate: (token: string, request: {
+++        readonly method: string;
+++        readonly url: string;
+++    }) => Effect.Effect<void, HttpApiError.Unauthorized>;
+++};
++diff --git a/src/Cloudflare/StateStore/Api.ts b/src/Cloudflare/StateStore/Api.ts
++index efac8363d..4ea7eee35 100644
++--- a/src/Cloudflare/StateStore/Api.ts
+++++ b/src/Cloudflare/StateStore/Api.ts
++@@ -7,14 +7,10 @@ import * as Etag from "effect/http/Etag";
++ import * as HttpPlatform from "effect/http/HttpPlatform";
++ import * as HttpRouter from "effect/http/HttpRouter";
++ import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
++-import * as HttpApiError from "effect/http-api/HttpApiError";
++ import crypto from "node:crypto";
++ import { RuntimeContext } from "../../RuntimeContext.ts";
++-import {
++-  BearerTokenValidator,
++-  StateApi,
++-  StateAuthLive,
++-} from "../../State/HttpStateApi.ts";
+++import { BearerTokenValidator, StateApi, StateAuthLive } from "../../State/HttpStateApi.ts";
+++import { makeReadOnlyBearerTokenValidator, READ_ONLY_GRANTS_STACK } from "./ReadOnlyAccess.ts";
++ import { ReadSecret } from "../SecretsStore/ReadSecret.ts";
++ import { ReadSecretBinding } from "../SecretsStore/ReadSecretBinding.ts";
++ import { Worker } from "../Workers/Worker.ts";
++@@ -32,7 +28,7 @@ export const STATE_STORE_SCRIPT_NAME = "alchemy-state-store" as const;
++  * compare against this constant; a mismatch (or 404) triggers a
++  * forced redeploy via the bootstrap flow.
++  */
++-export const STATE_STORE_VERSION = 7 as const;
+++export const STATE_STORE_VERSION = 8 as const;
++ 
++ /**
++  * Hard-coded OTLP/HTTP endpoints. Point at the public ingest relay
++@@ -115,16 +111,18 @@ export default Worker(
++ 
++     const bearerTokenValidator = Layer.succeed(
++       BearerTokenValidator,
++-      BearerTokenValidator.of({
++-        validate: Effect.fn(function* (token) {
+++      makeReadOnlyBearerTokenValidator({
+++        validateFullAccess: Effect.fn(function* (token) {
++           const expected = yield* remoteSecret
++             .get()
++             .pipe(Effect.orDie, Effect.provide(RuntimeContext.phantom));
++-          return !!expected &&
++-            timingSafeEqual(token.trim(), Redacted.value(expected).trim())
++-            ? yield* Effect.void
++-            : yield* new HttpApiError.Unauthorized();
+++          return !!expected && timingSafeEqual(token, Redacted.value(expected).trim());
++         }),
+++        readGrant: (id) =>
+++          store
+++            .getByName(READ_ONLY_GRANTS_STACK)
+++            .getOutput({ stage: id })
+++            .pipe(Effect.provide(RuntimeContext.phantom)),
++       }),
++     );
++ 
++@@ -200,9 +198,7 @@ export default Worker(
++             .set({ stage: params.stage, fqn, value: payload as any })
++             .pipe(
++               Effect.tap(() =>
++-                store
++-                  .getByName(Store.ROOT_DO_NAME)
++-                  .registerStack({ stack: params.stack }),
+++                store.getByName(Store.ROOT_DO_NAME).registerStack({ stack: params.stack }),
++               ),
++               Effect.withSpan("state_store.setState", {
++                 attributes: {
++@@ -267,9 +263,7 @@ export default Worker(
++             .setOutput({ stage: params.stage, value: payload as any })
++             .pipe(
++               Effect.tap(() =>
++-                store
++-                  .getByName(Store.ROOT_DO_NAME)
++-                  .registerStack({ stack: params.stack }),
+++                store.getByName(Store.ROOT_DO_NAME).registerStack({ stack: params.stack }),
++               ),
++               Effect.withSpan("state_store.setStackOutput", {
++                 attributes: {
++@@ -283,15 +277,14 @@ export default Worker(
++         .handle("deleteStack", ({ params, query }) =>
++           store
++             .getByName(params.stack)
++-            .deleteStack(
++-              query.stage === undefined ? {} : { stage: query.stage },
++-            )
+++            .deleteStack(query.stage === undefined ? {} : { stage: query.stage })
++             .pipe(
++               Effect.flatMap(() =>
++                 query.stage === undefined
++                   ? store
++                       .getByName(Store.ROOT_DO_NAME)
++                       .unregisterStack({ stack: params.stack })
+++                      .pipe(Effect.asVoid)
++                   : Effect.void,
++               ),
++               Effect.asVoid,
++@@ -300,8 +293,7 @@ export default Worker(
++                   "alchemy.state_store.op": "deleteStack",
++                   "alchemy.state_store.stack": params.stack,
++                   "alchemy.state_store.stage": query.stage ?? "",
++-                  "alchemy.state_store.scope":
++-                    query.stage === undefined ? "stack" : "stage",
+++                  "alchemy.state_store.scope": query.stage === undefined ? "stack" : "stage",
++                 },
++               }),
++             ),
++@@ -339,8 +331,7 @@ const HttpPlatformStub = Layer.succeed(HttpPlatform.HttpPlatform, {
++     compressResponse: (response) => Effect.succeed(response),
++   },
++   fileResponse: () => Effect.die("HttpPlatform.fileResponse not supported"),
++-  fileWebResponse: () =>
++-    Effect.die("HttpPlatform.fileWebResponse not supported"),
+++  fileWebResponse: () => Effect.die("HttpPlatform.fileWebResponse not supported"),
++ });
++ 
++ /**
++diff --git a/lib/Cloudflare/StateStore/Api.js b/lib/Cloudflare/StateStore/Api.js
++index bb6c00808..a930b8d02 100644
++--- a/lib/Cloudflare/StateStore/Api.js
+++++ b/lib/Cloudflare/StateStore/Api.js
++@@ -7,10 +7,10 @@ import * as Etag from "effect/http/Etag";
++ import * as HttpPlatform from "effect/http/HttpPlatform";
++ import * as HttpRouter from "effect/http/HttpRouter";
++ import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
++-import * as HttpApiError from "effect/http-api/HttpApiError";
++ import crypto from "node:crypto";
++ import { RuntimeContext } from "../../RuntimeContext.js";
++-import { BearerTokenValidator, StateApi, StateAuthLive, } from "../../State/HttpStateApi.js";
+++import { BearerTokenValidator, StateApi, StateAuthLive } from "../../State/HttpStateApi.js";
+++import { makeReadOnlyBearerTokenValidator, READ_ONLY_GRANTS_STACK } from "./ReadOnlyAccess.js";
++ import { ReadSecret } from "../SecretsStore/ReadSecret.js";
++ import { ReadSecretBinding } from "../SecretsStore/ReadSecretBinding.js";
++ import { Worker } from "../Workers/Worker.js";
++@@ -26,7 +26,7 @@ export const STATE_STORE_SCRIPT_NAME = "alchemy-state-store";
++  * compare against this constant; a mismatch (or 404) triggers a
++  * forced redeploy via the bootstrap flow.
++  */
++-export const STATE_STORE_VERSION = 7;
+++export const STATE_STORE_VERSION = 8;
++ /**
++  * Hard-coded OTLP/HTTP endpoints. Point at the public ingest relay
++  * defined in `stacks/otel.ts` (bound to `otel.alchemy.run`), which
++@@ -99,16 +99,17 @@ export default Worker("Api", {
++ }, Effect.gen(function* () {
++     const remoteSecret = yield* ReadSecret(AuthToken);
++     const store = yield* Store;
++-    const bearerTokenValidator = Layer.succeed(BearerTokenValidator, BearerTokenValidator.of({
++-        validate: Effect.fn(function* (token) {
+++    const bearerTokenValidator = Layer.succeed(BearerTokenValidator, makeReadOnlyBearerTokenValidator({
+++        validateFullAccess: Effect.fn(function* (token) {
++             const expected = yield* remoteSecret
++                 .get()
++                 .pipe(Effect.orDie, Effect.provide(RuntimeContext.phantom));
++-            return !!expected &&
++-                timingSafeEqual(token.trim(), Redacted.value(expected).trim())
++-                ? yield* Effect.void
++-                : yield* new HttpApiError.Unauthorized();
+++            return !!expected && timingSafeEqual(token, Redacted.value(expected).trim());
++         }),
+++        readGrant: (id) => store
+++            .getByName(READ_ONLY_GRANTS_STACK)
+++            .getOutput({ stage: id })
+++            .pipe(Effect.provide(RuntimeContext.phantom)),
++     }));
++     const versionApi = HttpApiBuilder.group(StateApi, "version", (handlers) => handlers.handle("getVersion", () => Effect.succeed({ version: STATE_STORE_VERSION }).pipe(Effect.withSpan("state_store.getVersion", {
++         attributes: { "alchemy.state_store.op": "getVersion" },
++@@ -158,9 +159,7 @@ export default Worker("Api", {
++         return store
++             .getByName(params.stack)
++             .set({ stage: params.stage, fqn, value: payload })
++-            .pipe(Effect.tap(() => store
++-            .getByName(Store.ROOT_DO_NAME)
++-            .registerStack({ stack: params.stack })), Effect.withSpan("state_store.setState", {
+++            .pipe(Effect.tap(() => store.getByName(Store.ROOT_DO_NAME).registerStack({ stack: params.stack })), Effect.withSpan("state_store.setState", {
++             attributes: {
++                 "alchemy.state_store.op": "setState",
++                 "alchemy.state_store.stack": params.stack,
++@@ -208,9 +207,7 @@ export default Worker("Api", {
++         .handle("setStackOutput", ({ params, payload }) => store
++         .getByName(params.stack)
++         .setOutput({ stage: params.stage, value: payload })
++-        .pipe(Effect.tap(() => store
++-        .getByName(Store.ROOT_DO_NAME)
++-        .registerStack({ stack: params.stack })), Effect.withSpan("state_store.setStackOutput", {
+++        .pipe(Effect.tap(() => store.getByName(Store.ROOT_DO_NAME).registerStack({ stack: params.stack })), Effect.withSpan("state_store.setStackOutput", {
++         attributes: {
++             "alchemy.state_store.op": "setStackOutput",
++             "alchemy.state_store.stack": params.stack,
++@@ -224,6 +221,7 @@ export default Worker("Api", {
++         ? store
++             .getByName(Store.ROOT_DO_NAME)
++             .unregisterStack({ stack: params.stack })
+++            .pipe(Effect.asVoid)
++         : Effect.void), Effect.asVoid, Effect.withSpan("state_store.deleteStack", {
++         attributes: {
++             "alchemy.state_store.op": "deleteStack",
++diff --git a/lib/Cloudflare/StateStore/Api.d.ts b/lib/Cloudflare/StateStore/Api.d.ts
++index 1781bb46e..d25689846 100644
++--- a/lib/Cloudflare/StateStore/Api.d.ts
+++++ b/lib/Cloudflare/StateStore/Api.d.ts
++@@ -10,7 +10,7 @@ export declare const STATE_STORE_SCRIPT_NAME: "alchemy-state-store";
++  * compare against this constant; a mismatch (or 404) triggers a
++  * forced redeploy via the bootstrap flow.
++  */
++-export declare const STATE_STORE_VERSION: 7;
+++export declare const STATE_STORE_VERSION: 8;
++ /**
++  * Hard-coded OTLP/HTTP endpoints. Point at the public ingest relay
++  * defined in `stacks/otel.ts` (bound to `otel.alchemy.run`), which

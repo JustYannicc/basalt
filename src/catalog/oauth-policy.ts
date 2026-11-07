@@ -3,6 +3,7 @@ import type { Feed, FeedEntry } from "./feed.ts";
 export type OAuthDecision =
   | { kind: "deferred"; message: string }
   | { kind: "hosted"; client: string; message: string }
+  | { kind: "account-endpoint"; message: string }
   | { kind: "automatic"; protocol: "dcr" | "cimd"; metadata: string; metadataSha256: string };
 
 export interface OAuthReview {
@@ -45,6 +46,8 @@ export function oauthReviews(value: unknown): readonly OAuthReview[] {
         throw new Error(`Invalid OAuth decision for ${entry.entry}`);
       if (decision.kind === "deferred" && text(decision.message))
         methods[method] = { kind: "deferred", message: decision.message };
+      else if (decision.kind === "account-endpoint" && text(decision.message))
+        methods[method] = { kind: "account-endpoint", message: decision.message };
       else if (decision.kind === "hosted" && text(decision.client) && text(decision.message))
         methods[method] = { kind: "hosted", client: decision.client, message: decision.message };
       else if (
@@ -154,7 +157,9 @@ export function withOAuthDeferrals(feed: Feed, reviews: readonly OAuthReview[]):
       if (review?.package !== entry.package) return entry;
       const oauthDeferrals = oauthMethods(entry).flatMap((method) => {
         const decision = review.methods[method];
-        return decision === undefined || decision.kind === "automatic"
+        return decision === undefined ||
+          decision.kind === "automatic" ||
+          decision.kind === "account-endpoint"
           ? []
           : [{ method, message: decision.message }];
       });

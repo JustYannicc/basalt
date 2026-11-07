@@ -454,6 +454,26 @@ index 1b299f6..a6bd0d3 100644
        onPendingChange={onPendingChange}
        onDone={onDone}
      />
+diff --git a/e2e/support/account-rows.ts b/e2e/support/account-rows.ts
+index 9c249f0..c40d0e2 100644
+--- a/e2e/support/account-rows.ts
++++ b/e2e/support/account-rows.ts
+@@ -10,6 +10,15 @@ const menuName = (label: string | RegExp) =>
+     ? { name: `Manage ${label}`, exact: true }
+     : { name: new RegExp(`^Manage (?:${label.source})$`, label.flags) };
+ 
++/**
++ * The name of an account's usage and health group, like its menu (see `menuName`): the name it
++ * was given, or its row title when it was saved without one.
++ */
++export const usageGroupName = (label: string | RegExp) =>
++  typeof label === "string"
++    ? { name: `Usage and health of ${label}`, exact: true }
++    : { name: new RegExp(`^Usage and health of (?:${label.source})$`, label.flags) };
++
+ /** The Accounts list row of the account its ⋯ menu names `label` (see `menuName`). */
+ export const accountRow = (page: Page, label: string | RegExp) =>
+   page.locator(".inventory-row").filter({ has: page.getByRole("button", menuName(label)) });
 diff --git a/e2e/support/local-name-account-check.ts b/e2e/support/local-name-account-check.ts
 new file mode 100644
 index 0000000..0c416e2
@@ -1347,6 +1367,132 @@ index 19ee840..ecc20a5 100644
          expect(prompt.url.pathname).toBe(`/org/${actors.organization.slug}/apps/${app.id}`);
          expect(prompt.url.searchParams.get("view")).toBe("accounts");
          expect(prompt.url.searchParams.has("rename")).toBe(false);
+diff --git a/e2e/tests/account-observation-row-polling.spec.ts b/e2e/tests/account-observation-row-polling.spec.ts
+index c13da40..e7a405d 100644
+--- a/e2e/tests/account-observation-row-polling.spec.ts
++++ b/e2e/tests/account-observation-row-polling.spec.ts
+@@ -11,7 +11,7 @@ import {
+   holdQuery,
+   installBrowserClock,
+ } from "../support/query-transition.ts";
+-import { accountRow, openRowDetails } from "../support/account-rows.ts";
++import { accountRow, openRowDetails, usageGroupName } from "../support/account-rows.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ const Detail = Schema.Struct({ account: Schema.Struct({ label: Schema.String }) });
+@@ -64,8 +64,13 @@ layer(HostedLive, { excludeTestServices: true })("Account observation row pollin
+         const f = yield* observationFixture({ observe: true, health: true, shared: true });
+         yield* f.backend.answer({ status: 200, body: allowance() });
+         const label = (yield* body(Detail, yield* f.detail())).account.label || "Unnamed account";
+-        const block = (page: Page) =>
+-          page.getByRole("group", { name: `Usage and health of ${label}`, exact: true });
++        // An unnamed account's own menu is named by its row title: its provider until the account
++        // reports its identity.
++        const menuName =
++          label === "Unnamed account" || /^Default( \d+)?$/.test(label)
++            ? /Observation service account|Observed identity/
++            : label;
++        const block = (page: Page) => page.getByRole("group", usageGroupName(menuName));
+         const source = (page: Page) => block(page).locator("[data-usage-source] time");
+ 
+         yield* installBrowserClock;
+@@ -85,12 +90,6 @@ layer(HostedLive, { excludeTestServices: true })("Account observation row pollin
+             .then((usage) => expect(usage, "nothing retained shows no usage line").toBe(0));
+         });
+ 
+-        // An unnamed account's own menu is named by its row title: its provider until the account
+-        // reports its identity.
+-        const menuName =
+-          label === "Unnamed account" || /^Default( \d+)?$/.test(label)
+-            ? /Observation service account|Observed identity/
+-            : label;
+         yield* browser.use("Keep the row's reading details open", (page) =>
+           openRowDetails(page, accountRow(page, menuName), menuName),
+         );
+diff --git a/e2e/tests/account-observation-rows.spec.ts b/e2e/tests/account-observation-rows.spec.ts
+index 458fbf3..e001d76 100644
+--- a/e2e/tests/account-observation-rows.spec.ts
++++ b/e2e/tests/account-observation-rows.spec.ts
+@@ -9,7 +9,7 @@ import { Evidence } from "../support/evidence.ts";
+ import { allowance, observationFixture } from "../support/account-observation-fixture.ts";
+ import { linkAccount } from "../support/app-accounts.ts";
+ import { serverControl } from "../support/server-control.ts";
+-import { accountRow, openRowDetails } from "../support/account-rows.ts";
++import { accountRow, openRowDetails, usageGroupName } from "../support/account-rows.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ const Revision = Schema.Struct({ revision: Schema.String });
+@@ -59,8 +59,7 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+             ? /Observation service account|Observed identity/
+             : label;
+         const accounts = `/org/${f.actors.organization.slug}/accounts`;
+-        const block = (page: Page) =>
+-          page.getByRole("group", { name: `Usage and health of ${label}`, exact: true });
++        const block = (page: Page) => page.getByRole("group", usageGroupName(menuName));
+         const refreshButton = (page: Page) =>
+           block(page).getByRole("button", { name: "Refresh", exact: true });
+         const reading = (page: Page) => block(page).locator('[data-reading="requests"]');
+@@ -263,21 +262,23 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+           ),
+         ).toBe("true");
+         yield* browser.use("Open the app's accounts", (page) =>
+-          page.goto(`/org/${f.actors.organization.slug}/apps/${f.app.id}?view=accounts`).then(() =>
+-            page
+-              .getByRole("region", { name: "Your accounts", exact: true })
+-              .getByRole("group", { name: `Usage and health of ${label}`, exact: true })
+-              .locator('[data-reading="requests"]')
+-              .getByText("Rem 88%")
+-              .waitFor(),
+-          ),
++          page
++            .goto(`/org/${f.actors.organization.slug}/apps/${f.app.id}?view=accounts`)
++            .then(() =>
++              page
++                .getByRole("region", { name: "Your accounts", exact: true })
++                .getByRole("group", usageGroupName(menuName))
++                .locator('[data-reading="requests"]')
++                .getByText("Rem 88%")
++                .waitFor(),
++            ),
+         );
+         const appLayout = yield* browser.use(
+           "Keep the app account details inside its card",
+           (page) =>
+             page
+               .getByRole("region", { name: "Your accounts", exact: true })
+-              .getByRole("group", { name: `Usage and health of ${label}`, exact: true })
++              .getByRole("group", usageGroupName(menuName))
+               .evaluate((element) => ({
+                 width: element.clientWidth,
+                 scrollWidth: element.scrollWidth,
+diff --git a/e2e/tests/account-usage-cells.spec.ts b/e2e/tests/account-usage-cells.spec.ts
+index 5c3a3be..1a88a98 100644
+--- a/e2e/tests/account-usage-cells.spec.ts
++++ b/e2e/tests/account-usage-cells.spec.ts
+@@ -19,6 +19,7 @@ import {
+   openRowDetails,
+   openRowMenu,
+   refreshRowUsage,
++  usageGroupName,
+ } from "../support/account-rows.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+@@ -168,7 +169,14 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+         });
+         const accounts = `/org/${studio.actors.organization.slug}/accounts`;
+         const block = (page: Page, label: string) =>
+-          page.getByRole("group", { name: `Usage and health of ${label}`, exact: true });
++          page.getByRole(
++            "group",
++            usageGroupName(
++              /^Default( \d+)?$/.test(label)
++                ? /Observation service account|Observed identity/
++                : label,
++            ),
++          );
+         const cell = (page: Page, label: string, window: string) =>
+           block(page, label).locator(`[data-reading="${window}"]`);
+         const ready = (page: Page) =>
 diff --git a/e2e/tests/local-account-naming.spec.ts b/e2e/tests/local-account-naming.spec.ts
 index 1ccaf03..89740b3 100644
 --- a/e2e/tests/local-account-naming.spec.ts
@@ -1450,6 +1596,30 @@ index 0000000..9a362f1
 +    withHostedCase(context, nameAccountNoEmailJourney(false, 390)),
 +  );
 +});
+diff --git a/e2e/tests/native-subscription-health.spec.ts b/e2e/tests/native-subscription-health.spec.ts
+index 9a92713..26e43f8 100644
+--- a/e2e/tests/native-subscription-health.spec.ts
++++ b/e2e/tests/native-subscription-health.spec.ts
+@@ -13,7 +13,7 @@ import { legacyStorage } from "../support/legacy-storage.ts";
+ import { providerAccountProduct } from "../support/provider-account-product.ts";
+ import { serverControl } from "../support/server-control.ts";
+ import { subscriptionHealthBackend } from "../support/subscription-health-backend.ts";
+-import { accountRow, openRowDetails } from "../support/account-rows.ts";
++import { accountRow, openRowDetails, usageGroupName } from "../support/account-rows.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ const source = `import { defineApp, defineProvider, interactive, object, secrets, string } from "apps";
+@@ -96,9 +96,7 @@ layer(HostedLive, { excludeTestServices: true })("Native subscription health", (
+             : label;
+         const show = (page: Page) => openRowDetails(page, accountRow(page, menuLabel), menuLabel);
+         const line = (page: Page) =>
+-          page
+-            .getByRole("group", { name: `Usage and health of ${label}`, exact: true })
+-            .locator("[data-account-health]");
++          page.getByRole("group", usageGroupName(menuLabel)).locator("[data-account-health]");
+         const driverStatus = (page: Page) =>
+           line(page).locator('[data-check-source="driver"] [data-check-status]');
+         const checkNow = (page: Page) =>
 diff --git a/e2e/tests/oauth-client-credentials.spec.ts b/e2e/tests/oauth-client-credentials.spec.ts
 index 9397e86..94df203 100644
 --- a/e2e/tests/oauth-client-credentials.spec.ts

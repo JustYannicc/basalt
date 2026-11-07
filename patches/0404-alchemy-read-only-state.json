@@ -1,0 +1,11 @@
+{
+  "identity": "alchemy-read-only-state",
+  "file": "0404-alchemy-read-only-state.patch",
+  "content_sha256": "bd7591a29a178d17788cc3095b8703b949577b6745ba4b17b2e701abecf9a699",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "alchemy-dependency-upgrade",
+  "requires": "The pinned Alchemy state store must preserve deployed reader grants, scope GET requests and revoke readers independently of deployment access; remove after source and packaged authorization and read-only planning proofs pass."
+}

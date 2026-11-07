@@ -6,6 +6,10 @@ import { discoverContainerBarrierProof } from "../architecture/native-stack.ts";
 const root = fileURLToPath(new URL("../../", import.meta.url));
 for (const scenario of [
   "success",
+  "recorded-baseline",
+  "recorded-baseline-same-digest",
+  "recorded-baseline-rejected",
+  "recorded-baseline-unhealthy",
   "unhealthy-serving",
   "same-digest",
   "same-digest-unhealthy",
@@ -27,6 +31,8 @@ for (const scenario of [
     const result = discoverContainerBarrierProof(root, scenario);
     const success = [
       "success",
+      "recorded-baseline",
+      "recorded-baseline-same-digest",
       "same-digest",
       "dependency-only",
       "new-runtime-ready",
@@ -38,17 +44,27 @@ for (const scenario of [
     assert.equal(result.workerInputMatches, true);
     assert.equal(
       result.applicationWrites,
-      ["success", "unhealthy-serving", "new-runtime-ready", "creating-runtime-ready"].includes(
-        scenario,
-      )
+      [
+        "success",
+        "unhealthy-serving",
+        "new-runtime-ready",
+        "creating-runtime-ready",
+        "recorded-baseline",
+        "recorded-baseline-unhealthy",
+      ].includes(scenario)
         ? 1
         : 0,
     );
     assert.equal(
       result.rollouts,
-      ["success", "unhealthy-serving", "new-runtime-ready", "creating-runtime-ready"].includes(
-        scenario,
-      )
+      [
+        "success",
+        "unhealthy-serving",
+        "new-runtime-ready",
+        "creating-runtime-ready",
+        "recorded-baseline",
+        "recorded-baseline-unhealthy",
+      ].includes(scenario)
         ? 1
         : 0,
     );

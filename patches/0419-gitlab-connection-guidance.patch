@@ -1,8 +1,8 @@
 diff --git a/apps/hosted/server/src/contracts/accounts.ts b/apps/hosted/server/src/contracts/accounts.ts
-index 1bfb2f6..bbacf06 100644
+index d4789bc..6d081da 100644
 --- a/apps/hosted/server/src/contracts/accounts.ts
 +++ b/apps/hosted/server/src/contracts/accounts.ts
-@@ -252,6 +252,7 @@ export const HostedAccounts = /* @__PURE__ */ (() =>
+@@ -253,6 +253,7 @@ export const HostedAccounts = /* @__PURE__ */ (() =>
            provider: ProviderId,
            method: AuthMethodName,
            fields: AccountFieldsInput,
@@ -34,7 +34,7 @@ index 4de6f1d..49e3b79 100644
      ),
  );
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
-index d2d24fd..a846e14 100644
+index 68b83d5..e67e311 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 @@ -581,6 +581,7 @@ type ConnectionDialog = {
@@ -114,7 +114,7 @@ index d2d24fd..a846e14 100644
  /** This form renders the page's cached provider and host metadata without a connection read. */
  function AppConnectionFields({
    app: current,
-@@ -875,6 +894,7 @@ function AppConnectionFields({
+@@ -888,6 +907,7 @@ function AppConnectionFields({
        oauthDeferrals={oauthDeferrals}
        connectionGuidance={connectionGuidance}
        requirement={slot}
@@ -123,21 +123,22 @@ index d2d24fd..a846e14 100644
        start={(input) =>
          account !== undefined ||
 diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
-index 7d81160..5075e58 100644
+index 7ae92cd..e2fb419 100644
 --- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
 +++ b/apps/hosted/web/src/implementation/pages/connect-account.tsx
-@@ -249,7 +249,10 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -258,8 +258,11 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
    oauthDeferrals,
    connectionGuidance,
    requirement,
 +  chosenSite,
+   mcpEndpoint,
  }: {
 +  /** The site chosen in this dialog before the host saves one; guide links open there. */
 +  readonly chosenSite?: string | undefined;
-   /** The catalog's guidance for methods with no automatic or registered OAuth client. */
-   readonly oauthDeferrals?: readonly CatalogOAuthDeferral[] | undefined;
-   readonly connectionGuidance?: readonly CatalogConnectionGuidance[] | undefined;
-@@ -318,6 +321,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+   readonly mcpEndpoint?:
+     | {
+         readonly configuredMethod?: string | undefined;
+@@ -338,6 +341,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
      readonly issuer: typeof HttpUrl.Type;
    }>();
    const [method, setMethod] = useState(initialMethod);
@@ -145,7 +146,7 @@ index 7d81160..5075e58 100644
    // Reconnects keep their name; a new account is named once saved.
    const saved = (value: Account) => {
      if (!account)
-@@ -348,7 +352,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -368,7 +372,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
            (entry) => entry.requirement === requirement && entry.method === method,
          )
        }
@@ -153,8 +154,8 @@ index 7d81160..5075e58 100644
 +      site={selectedSite}
        {...(account ? { account } : {})}
        initialMethod={method}
-       unavailable={unavailable}
-@@ -359,7 +363,13 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+       onMethodChange={onMethodChange}
+@@ -380,7 +384,13 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
          ? {}
          : {
              check: (input: AccountSubmission) =>
@@ -170,10 +171,10 @@ index 7d81160..5075e58 100644
        onSaved={saved}
        {...(onPendingChange ? { onPendingChange } : {})}
 diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
-index 5f8924a..4ee87be 100644
+index efafa57..936c56d 100644
 --- a/apps/local/server/src/contracts/dashboard.ts
 +++ b/apps/local/server/src/contracts/dashboard.ts
-@@ -950,6 +950,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+@@ -951,6 +951,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
            provider: ProviderId,
            method: AuthMethodName,
            fields: AccountFieldsInput,
@@ -331,7 +332,7 @@ index a5dffa2..b87828b 100644
          success: Schema.NullOr(CredentialCheck),
          error: [StorageError, AppNotFound, AuthMethodInvalid, AccountFieldsInvalid],
 diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
-index 115937f..e470ecd 100644
+index 3fec624..6399a06 100644
 --- a/packages/sdk/src/implementation/account-health.ts
 +++ b/packages/sdk/src/implementation/account-health.ts
 @@ -36,7 +36,12 @@ import {
@@ -356,7 +357,7 @@ index 115937f..e470ecd 100644
  
  /** The one account an account check binds, in its requirement's scope. */
  const checkedAccounts = (scope: AccountScope, slot: string, account: HostAccount): HostAccounts =>
-@@ -526,6 +532,22 @@ export const makeAccountHealth = (
+@@ -529,6 +535,22 @@ export const makeAccountHealth = (
        const version = yield* Schema.decodeUnknownEffect(StoredVersion)(row).pipe(
          Effect.mapError(() => new StorageError()),
        );
@@ -379,7 +380,7 @@ index 115937f..e470ecd 100644
        const deadline = (yield* Clock.currentTimeMillis) + checkMillis - reportMillis;
        const outcome = yield* runtime
          .checkAccount({
-@@ -536,8 +558,9 @@ export const makeAccountHealth = (
+@@ -539,8 +561,9 @@ export const makeAccountHealth = (
            accounts: Redacted.make(
              checkedAccounts(target.required.scope, target.slot, {
                id: unsavedAccount,

@@ -8,24 +8,19 @@
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "skipLibCheck": true,
-    "types": [
-      "node"
-    ],
-    "lib": [
-      "ES2024",
-      "DOM"
-    ],
+    "types": ["node"],
+    "lib": ["ES2024", "DOM"],
     "typeRoots": [
       "./.upstream/node_modules/@types",
       "./.upstream/apps/hosted/cloud/node_modules/@types"
-    ]
+    ],
+    "paths": {
+      "@sqlite.org/sqlite-wasm": [
+        "./.upstream/node_modules/@sqlite.org/sqlite-wasm/dist/index.d.mts"
+      ]
+    }
   },
-  "include": [
-    "brand.ts",
-    "scripts/**/*.ts",
-    "src/**/*.ts",
-    "e2e/**/*.ts"
-  ],
+  "include": ["brand.ts", "scripts/**/*.ts", "src/**/*.ts", "e2e/**/*.ts"],
   "exclude": [
     "src/pool/worker.ts",
     "src/pool/runtime.worker.ts",

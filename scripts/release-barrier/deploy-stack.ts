@@ -1,3 +1,4 @@
+import { operationFailure, withOperation } from "./operation-failure.ts";
 import * as Apply from "alchemy/Apply";
 import * as Plan from "alchemy/Plan";
 import type { CompiledStack } from "alchemy/Stack";
@@ -10,7 +11,7 @@ import { releaseWorkers, type BarrierReceipt } from "./barrier.ts";
 import { BarrierRefusal, type ReleaseManifest } from "./manifest.ts";
 import { cloudflareArtifactsApi } from "../ensure-artifacts.ts";
 import { verifyNativeState } from "./native-state.ts";
-import type { FrozenContainer } from "./container.ts";
+import type { BaselineNormalization, FrozenContainer } from "./container.ts";
 import { verifyServingContainer, type ServingContainer } from "./container-serving.ts";
 import { advanceContainer } from "./container-promotion.ts";
 import { freezeUpload } from "./version-request.ts";
@@ -29,7 +30,7 @@ export interface DeployStackOptions {
   candidate: string;
   record(receipt: BarrierReceipt): Promise<void>;
   manifest(value: ReleaseManifest): Promise<void>;
-  publication?(container: FrozenContainer): Promise<void>;
+  publication?(container: FrozenContainer, normalization?: BaselineNormalization): Promise<void>;
   admission?(verifications: readonly VerificationAdmission[]): Promise<void>;
   serving?(container: ServingContainer): Promise<void>;
   io?: {
@@ -48,7 +49,7 @@ type Services = Effect.Services<ReturnType<typeof readBaseline> | ReturnType<typ
 /** The ordinary release entry uses this full-stack path, including transitive Commands. */
 export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =>
   Effect.gen(function* () {
-    const plan = yield* Plan.make(stack);
+    const plan = yield* Plan.make(stack).pipe(withOperation("(plan)", "plan-stack"));
     const prepared = yield* preparePlan(
       stack,
       plan,
@@ -80,7 +81,16 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
         Promise.all(
           [...prepared.captured.values()]
             .sort((a, b) => a.fqn.localeCompare(b.fqn))
-            .map(async (upload) => freezeUpload(upload, await run(io.baseline(upload.request)))),
+            .map(async (upload) => {
+              const baseline = await run(
+                io.baseline(upload.request).pipe(withOperation(upload.fqn, "read-worker-baseline")),
+              );
+              try {
+                return await freezeUpload(upload, baseline);
+              } catch (error) {
+                throw operationFailure(error, upload.fqn, "freeze-worker-upload");
+              }
+            }),
         ),
       ),
     };

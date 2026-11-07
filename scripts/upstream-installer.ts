@@ -3,6 +3,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { withDependencyStoreLock } from "./upstream-store.ts";
 import { currentProcessOwner } from "./process-owner.ts";
+import { dependencyInstallBackend, requirePreparedBun } from "./upstream-inputs.ts";
 
 const attempt = process.argv[2];
 if (!attempt) throw new Error("Expected a private dependency attempt");
@@ -23,9 +24,14 @@ await withDependencyStoreLock(() => {
     },
   );
 });
-const result = spawnSync("bun", ["install", "--frozen-lockfile", "--backend=copyfile"], {
-  cwd: attempt,
-  stdio: "inherit",
-});
+requirePreparedBun();
+const result = spawnSync(
+  "bun",
+  ["install", "--frozen-lockfile", `--backend=${dependencyInstallBackend}`],
+  {
+    cwd: attempt,
+    stdio: "inherit",
+  },
+);
 if (result.error) throw result.error;
 process.exitCode = result.status ?? 1;

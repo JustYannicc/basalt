@@ -21,6 +21,7 @@ const accounts = [
   "gitlab-connectors",
   "workos-sign-in",
   "gitlab-sign-in",
+  "clerk-sign-in",
   "vercel-sign-in",
   "elevenlabs-sign-in",
   "mcp-apps",
@@ -61,6 +62,7 @@ export const heavyJobs = [
   "gitlab-connectors",
   "workos-sign-in",
   "gitlab-sign-in",
+  "clerk-sign-in",
   "vercel-sign-in",
   "elevenlabs-sign-in",
   "mcp-apps",
@@ -111,7 +113,11 @@ export const sharedInputs = [
 ];
 
 export const areas = [
-  { paths: ["e2e/workos-sign-in.mjs", "e2e/management-signin/**"], jobs: ["workos-sign-in"] },
+  {
+    paths: ["e2e/workos-sign-in.mjs", "e2e/management-signin/**"],
+    jobs: ["workos-sign-in", "clerk-sign-in"],
+  },
+  { paths: ["e2e/clerk-sign-in.mjs", "e2e/clerk-signin/**"], jobs: ["clerk-sign-in"] },
   { paths: ["e2e/gitlab-sign-in.mjs", "e2e/gitlab-signin/**"], jobs: ["gitlab-sign-in"] },
   { paths: ["clients/**"], jobs: ["client-mobile", "client-desktop", "client-native-product"] },
   {
@@ -131,6 +137,10 @@ export const areas = [
   {
     paths: ["src/catalog/**", "recipes/**", "scripts/connectors*", "scripts/connectors*/**"],
     jobs: accounts,
+  },
+  {
+    paths: ["e2e/zoho-people*.mjs"],
+    jobs: ["catalog-compat"],
   },
   {
     paths: ["src/catalog/slack.json", "e2e/slack*/**", "e2e/slack*.mjs", ".upstream/**/slack*/**"],

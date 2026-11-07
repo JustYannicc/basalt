@@ -18,7 +18,7 @@ const migrationSources = [
   "packages/fumadb-effect/src/implementation/sql/sqlite-transformer.ts",
 ];
 
-/** Deployment owns schema changes. No MCP request may load that engine, even on first boot. */
+/** Deployment owns migrations and the API owns OAuth. MCP keeps only its local bearer checks. */
 export function assertMcpRuntimeBundle(upload: WorkerUpload) {
   if (upload.worker !== "mcp-server" || Object.keys(upload.sources).length === 0)
     throw new Error("Expected the attributed production MCP upload");
@@ -31,6 +31,16 @@ export function assertMcpRuntimeBundle(upload: WorkerUpload) {
         source,
       ),
   );
+  const authentication = Object.keys(upload.sources).filter(
+    (source) =>
+      source === "apps/hosted/cloud/src/infrastructure/mcp-auth.ts" ||
+      source === "apps/hosted/cloud/src/infrastructure/auth-database.ts" ||
+      source.includes("node_modules/@better-auth/oauth-provider/"),
+  );
+  if (authentication.length)
+    throw new Error(
+      `The MCP Worker must not upload an OAuth server or auth database: ${authentication.join(", ")}`,
+    );
   if (retained.length)
     throw new Error(
       `The MCP Worker must not upload migration or schema introspection code: ${retained.join(", ")}`,

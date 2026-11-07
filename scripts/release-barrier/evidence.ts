@@ -1,3 +1,4 @@
+import { operationFailure, ReleaseOperationFailure } from "./operation-failure.ts";
 import { chmod, mkdir, rename, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { BarrierReceipt } from "./barrier.ts";
@@ -7,7 +8,11 @@ import {
   manifestDigest,
   type ReleaseManifest,
 } from "./manifest.ts";
-import { describeContainer, type FrozenContainer } from "./container.ts";
+import {
+  describeContainer,
+  type BaselineNormalization,
+  type FrozenContainer,
+} from "./container.ts";
 import { Schema } from "effect";
 import type { ServingContainer } from "./container-serving.ts";
 import type { VerificationAdmission } from "./plan-admission.ts";
@@ -42,10 +47,11 @@ export function releaseEvidence(directory: string, candidate: string, encryption
     async serving(value: ServingContainer) {
       await write(directory, "serving.json", value);
     },
-    async publication(container: FrozenContainer) {
+    async publication(container: FrozenContainer, normalization?: BaselineNormalization) {
       await write(directory, "publication.json", {
         candidate,
         containers: [describeContainer(container)],
+        ...(normalization ? { baselineNormalization: normalization } : {}),
       });
     },
     async manifest(manifest: ReleaseManifest) {
@@ -99,6 +105,10 @@ export function releaseEvidence(directory: string, candidate: string, encryption
       await write(directory, "recovery.json", value);
     },
     async failure(error: unknown) {
+      const refusal =
+        error instanceof BarrierRefusal
+          ? error
+          : operationFailure(error, "(plan)", "release-stack");
       const failure = {
         schemaVersion: 1,
         candidate,
@@ -110,10 +120,13 @@ export function releaseEvidence(directory: string, candidate: string, encryption
         ...(latest?.pendingUpload ? { pendingUpload: latest.pendingUpload } : {}),
         ...(latest?.containers ? { containers: latest.containers } : {}),
         ...(latest?.pendingContainer ? { pendingContainer: latest.pendingContainer } : {}),
-        reason: error instanceof BarrierRefusal ? error.reason : "preparation-or-provider-failed",
-        ...(error instanceof BarrierRefusal && error.worker ? { worker: error.worker } : {}),
-        ...(error instanceof BarrierRefusal && error.delta ? { delta: error.delta } : {}),
-        ...(error instanceof BarrierRefusal && error.refusals ? { refusals: error.refusals } : {}),
+        reason: refusal.reason,
+        ...(refusal instanceof ReleaseOperationFailure
+          ? { operation: refusal.operation, provider: refusal.provider }
+          : {}),
+        ...(refusal.worker ? { worker: refusal.worker } : {}),
+        ...(refusal.delta ? { delta: refusal.delta } : {}),
+        ...(refusal.refusals ? { refusals: refusal.refusals } : {}),
       };
       await write(directory, "failure.json", failure);
       return failure;

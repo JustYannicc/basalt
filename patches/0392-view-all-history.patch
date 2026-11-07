@@ -1,0 +1,148 @@
+diff --git a/apps/hosted/web/src/implementation/pages/app-screen.tsx b/apps/hosted/web/src/implementation/pages/app-screen.tsx
+--- a/apps/hosted/web/src/implementation/pages/app-screen.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-screen.tsx
+@@ -4,6 +4,7 @@
+ import { AsyncResult } from "effect/reactivity";
+ import { Option } from "effect";
+ import { useEffect, useRef } from "react";
++import { useLocation, useNavigate } from "@tanstack/react-router";
+ import { appUiError, appUiLocationAtom, retainAppUiFailure } from "../../contracts/app-ui.ts";
+ import { AppSkeleton } from "../components/app-frame-view.tsx";
+ import { AppFrameSlot, useEvictAppFrame } from "../components/app-frames.tsx";
+@@ -40,6 +41,9 @@
+ /** `active` says whether the host shows the screen; a prewarmed one stays mounted while hidden. */
+ export function AppScreen({ app, active }: { readonly app: App; readonly active: boolean }) {
+   const { result, refresh } = useAppUiLocation(app);
++  const { slug: organizationSlug } = useOrganizationRoute();
++  const navigate = useNavigate();
++  const historyRoute = useLocation({ select: (location) => location.hash === "usage-history" });
+   const denied = AsyncResult.isFailure(result) && !retainAppUiFailure(result.cause);
+   const location = denied ? undefined : Option.getOrUndefined(AsyncResult.value(result));
+   const frame =
+@@ -52,13 +56,42 @@
+       ? location.url
+       : undefined;
+   useEvictAppFrame(app.id, denied || (AsyncResult.isSuccess(result) && frame === undefined));
+-  if (frame !== undefined)
++  const frameRoute =
++    frame !== undefined && historyRoute
++      ? (() => {
++          const url = new URL(frame);
++          url.hash = "usage-history";
++          return url.toString();
++        })()
++      : frame;
++  useEffect(() => {
++    if (!active || !historyRoute || frameRoute === undefined) return;
++    const origin = new URL(frameRoute).origin;
++    const back = (event: MessageEvent) => {
++      if (event.origin !== origin || event.data?.type !== "basalt:usage-history-back") return;
++      // The retained app frame lives at the organization layout, outside this screen's subtree.
++      const sender = Array.from(document.querySelectorAll("iframe")).some(
++        (frame) => frame.contentWindow === event.source && new URL(frame.src).origin === origin,
++      );
++      if (!sender) return;
++      void navigate({
++        to: "/org/$organizationSlug/apps/$appId",
++        params: { organizationSlug, appId: app.id },
++        search: { view: "settings" },
++        hash: "",
++        replace: true,
++      });
++    };
++    window.addEventListener("message", back);
++    return () => window.removeEventListener("message", back);
++  }, [active, historyRoute, frameRoute, navigate, organizationSlug, app.id]);
++  if (frameRoute !== undefined)
+     return (
+       <>
+         {AsyncResult.isFailure(result) && (
+           <ScreenStatus message={appUiError(result.cause)} retry={refresh} inline />
+         )}
+-        <AppFrameSlot app={app.id} url={frame} name={app.name} active={active} />
++        <AppFrameSlot app={app.id} url={frameRoute} name={app.name} active={active} />
+       </>
+     );
+   if (AsyncResult.isFailure(result))
+diff --git a/apps/hosted/web/src/implementation/pages/pool-usage.tsx b/apps/hosted/web/src/implementation/pages/pool-usage.tsx
+--- a/apps/hosted/web/src/implementation/pages/pool-usage.tsx
++++ b/apps/hosted/web/src/implementation/pages/pool-usage.tsx
+@@ -5,6 +5,7 @@
+ import { useEffect, useId, useRef, useState } from "react";
+ import type { AppId } from "@executor-js/sdk";
+ import { Button } from "@executor-js/ui/components/button";
++import { Link } from "@tanstack/react-router";
+ import { LocalTime } from "@executor-js/ui/components/local-time";
+ import { useQuery } from "@executor-js/ui/dashboard/context";
+ import { useDisplayFormat } from "@executor-js/ui/hooks/display-format";
+@@ -33,7 +34,7 @@
+   readonly app: AppId;
+   readonly canUse: boolean;
+ }) {
+-  const { organization } = useOrganizationRoute();
++  const { organization, slug: organizationSlug } = useOrganizationRoute();
+   const format = formats(useDisplayFormat());
+   const session = AsyncResult.value(useAtomValue(sessionAtom));
+   const viewer = Option.isSome(session) ? session.value?.user.id : undefined;
+@@ -89,27 +90,40 @@
+         <h2 ref={heading} id={titleId} tabIndex={-1} className="text-base font-medium outline-none">
+           Pool usage
+         </h2>
+-        {page !== undefined && (
+-          <span className="text-xs text-muted-foreground tabular-nums">
+-            {range !== null && (
+-              <>
+-                Last {format.count(range.days)} days · {format.day(range.first)} –{" "}
+-                {format.day(range.last)}
+-              </>
+-            )}
+-            {page.readAt !== null && (
+-              <>
+-                {range !== null && " · "}as of{" "}
+-                <LocalTime
+-                  value={page.readAt}
+-                  options={{ hour: "numeric", minute: "2-digit" }}
+-                  title={{ dateStyle: "medium", timeStyle: "long" }}
+-                />
+-              </>
+-            )}
+-            {loaded !== undefined && result.waiting && <span role="status"> · updating…</span>}
+-          </span>
+-        )}
++        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
++          {page !== undefined && (
++            <span className="text-xs text-muted-foreground tabular-nums">
++              {range !== null && (
++                <>
++                  Last {format.count(range.days)} days · {format.day(range.first)} –{" "}
++                  {format.day(range.last)}
++                </>
++              )}
++              {page.readAt !== null && (
++                <>
++                  {range !== null && " · "}as of{" "}
++                  <LocalTime
++                    value={page.readAt}
++                    options={{ hour: "numeric", minute: "2-digit" }}
++                    title={{ dateStyle: "medium", timeStyle: "long" }}
++                  />
++                </>
++              )}
++              {loaded !== undefined && result.waiting && <span role="status"> · updating…</span>}
++            </span>
++          )}
++          {canUse && (
++            <Link
++              to="/org/$organizationSlug/apps/$appId"
++              params={{ organizationSlug, appId: app }}
++              search={{ view: "app" }}
++              hash="usage-history"
++              className="inline-flex min-h-11 items-center rounded-sm text-xs font-medium text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
++            >
++              View all history
++            </Link>
++          )}
++        </div>
+       </div>
+       <p className="mt-2 max-w-xl text-sm text-pretty text-muted-foreground">
+         Each person&apos;s requests through this pool. API cost is what the same tokens would cost

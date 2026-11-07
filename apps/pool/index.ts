@@ -2,6 +2,8 @@ import { defineApp, boolean, number, object, query, type QueryContext, router } 
 import { type PoolView, type UsageSummary } from "./contract.ts";
 import { requirements } from "./requirements.ts";
 import { control, type Result } from "./control.ts";
+import { importUsage } from "./import-actions.ts";
+export { importUsage } from "./import-actions.ts";
 export type { Result } from "./control.ts";
 import {
   refreshUsage,
@@ -12,6 +14,8 @@ import {
   resetAttempt,
   useReset,
 } from "./account-actions.ts";
+import { publicHistory } from "./history-query.ts";
+export { publicHistory } from "./history-query.ts";
 import type { Computer, PoolChoice } from "./ui/computer-types.ts";
 
 type Context = QueryContext<typeof requirements>;
@@ -75,9 +79,11 @@ export const computerContext = query(
 
 export default defineApp(requirements, {
   tools: router({
+    importUsage,
     view,
     usage,
     capacity,
+    publicHistory,
     computerContext,
     refreshUsage,
     pauseAccount,

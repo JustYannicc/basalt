@@ -194,6 +194,9 @@ export class NativeMemberships {
       current.installedUntil <= this.now()
     )
       await this.refresh(pool);
+    // A signed invalidation alone does not convert retained Home bindings to native authority.
+    // The host's registration decides that handoff; native model use remains vetoed by authority().
+    if (!(await this.run(async (state) => state[pool]?.native))) return;
     await this.authority(pool);
   }
   async tick(): Promise<void> {

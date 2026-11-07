@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The HR connector keeps its own regional OAuth definitions, declared People scopes and product API hosts separate from CRM. Both products use the existing operator-owned Multi-DC credential pair. EU is the first native method, with US and IN alternatives; token exchange and refresh stay on the selected method's accounts server. The selected native method owns the API origin as well; token API-domain metadata is omitted because managed OAuth seals every string. Automatic data-center routing is unavailable and disclosed before connection. Every write, including a documented HTTP GET with side effects, uses native approval. Forms metadata uses forms.READ from the scope catalog, correcting the singular typo in two operation pages. Individual scope strings are used where documented; module-wide permissions required by the reference are disclosed before connection. Catalog guidance annotates existing account inputs without changing provider or protocol identity. Tests use synthetic OAuth and API fixtures; source checks and fixture success do not establish live employer-account consent or automation acceptance."
+    }
+  }
+}

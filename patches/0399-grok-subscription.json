@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-grok-subscription",
+  "file": "0399-grok-subscription.patch",
+  "content_sha256": "529c0f338e98e5791f0e2b9db62f627703ff93af94fc751c37e34b9127da04b3",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

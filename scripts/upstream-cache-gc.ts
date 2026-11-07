@@ -10,8 +10,6 @@ import {
   realpathSync,
   renameSync,
   rmSync,
-  statSync,
-  writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,9 +24,6 @@ const directories = (path: string) =>
         .filter((entry) => entry.isDirectory())
         .map((entry) => join(path, entry.name))
     : [];
-
-/** Last use changes on cache hits too; generation publication time alone is not LRU. */
-export const touchPreparedKey = (entry: string) => writeFileSync(join(entry, "last-used"), "");
 
 function references(prepared: string) {
   const found = new Set<string>();
@@ -120,11 +115,7 @@ function removeRetired(path: string) {
 }
 
 /** Plan every protection before deleting anything. The caller holds collection.lock. */
-export function preparedCacheCollection(
-  pin: string | undefined,
-  stores: ReadonlySet<string>,
-  attempts: readonly string[],
-) {
+export function preparedCacheCollection(stores: ReadonlySet<string>, attempts: readonly string[]) {
   try {
     const location = resolve(upstreamCache(), "prepared");
     const prepared = existsSync(location) ? realpathSync(location) : location;
@@ -145,26 +136,8 @@ export function preparedCacheCollection(
         }
     }
     const current = new Map(entries.map((entry) => [entry, currentGeneration(entry)]));
-    const usedAt = (entry: string) =>
-      statSync(existsSync(join(entry, "last-used")) ? join(entry, "last-used") : entry).mtimeMs;
-    const recent = new Set(
-      pin === undefined
-        ? []
-        : entries
-            .filter((entry) => dirname(entry) === join(prepared, pin) && current.get(entry))
-            .sort((a, b) => usedAt(b) - usedAt(a) || a.localeCompare(b))
-            .slice(0, 3),
-    );
-    const evicted = new Set(
-      pin === undefined
-        ? []
-        : entries.filter(
-            (entry) => !recent.has(entry) && !locked.has(entry) && !protectedPath(entry),
-          ),
-    );
-    const retained = new Set(
-      pin === undefined ? [] : entries.filter((entry) => !evicted.has(entry)),
-    );
+    const evicted = new Set(entries.filter((entry) => !locked.has(entry) && !protectedPath(entry)));
+    const retained = new Set(entries.filter((entry) => !evicted.has(entry)));
     const preserved = new Set([...retained].flatMap((entry) => current.get(entry) ?? []));
     const retired = all.filter((path) => retiredName.test(basename(path)) && !protectedPath(path));
     return {

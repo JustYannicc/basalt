@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "New xAI sign-ins use the supported device grant rather than the obsolete PKCE browser redirect. Home retains the device secret, respects provider polling intervals, expiry and cancellation within the existing twenty-minute session cap, and commits the existing credential shape with its exact-ID completion receipt. Pending secrets leave the completed session. Legacy pending code callbacks retain their state and verifier."
+    }
+  }
+}

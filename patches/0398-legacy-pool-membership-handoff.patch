@@ -45,7 +45,7 @@ index c89c57a..3a897e3 100644
      };`,
      ...(yield* platformObservability),
 diff --git a/apps/hosted/cloud/src/infrastructure/pool-app-source.ts b/apps/hosted/cloud/src/infrastructure/pool-app-source.ts
-index 032f891..ac3267a 100644
+index 032f891..7ead5fe 100644
 --- a/apps/hosted/cloud/src/infrastructure/pool-app-source.ts
 +++ b/apps/hosted/cloud/src/infrastructure/pool-app-source.ts
 @@ -1,8 +1,8 @@
@@ -68,7 +68,7 @@ index 032f891..ac3267a 100644
      Effect.gen(function* () {
        const assets = yield* Schema.decodeUnknownEffect(Assets)(environment.ASSETS).pipe(
          Effect.mapError(() => new StorageError()),
-@@ -26,4 +26,64 @@ export const cloudPoolAppSource = Effect.gen(function* () {
+@@ -26,4 +26,75 @@ export const cloudPoolAppSource = Effect.gen(function* () {
        });
      }),
    );
@@ -95,6 +95,17 @@ index 032f891..ac3267a 100644
 +          deployment.content.match(/^export const poolOrigin = [^\n]+;$/gm)?.length !== 1
 +        )
 +          return yield* new StorageError();
++        const declaration = /^export const poolOrigin = (.+);$/m.exec(deployment.content);
++        const configured = yield* Effect.try({
++          try: () => new URL(JSON.parse(declaration![1]!)),
++          catch: () => new StorageError(),
++        });
++        const configuredLocal =
++          ["http:", "https:"].includes(configured.protocol) &&
++          (["localhost", "127.0.0.1", "[::1]"].includes(configured.hostname) ||
++            configured.hostname.endsWith(".localhost"));
++        // Recipe harnesses already bind a local Home peer with their own signing key.
++        const poolOrigin = configuredLocal ? configured.origin : origin.origin;
 +        return yield* Schema.decodeUnknownEffect(SourceFiles)(
 +          files.map((file) =>
 +            !("content" in file)
@@ -104,7 +115,7 @@ index 032f891..ac3267a 100644
 +                    ...file,
 +                    content: file.content.replace(
 +                      /^export const poolOrigin = [^\n]+;$/m,
-+                      `export const poolOrigin = ${JSON.stringify(origin.origin)};`,
++                      `export const poolOrigin = ${JSON.stringify(poolOrigin)};`,
 +                    ),
 +                  }
 +                : file.path === "ui/public/fonts.css"
@@ -1074,3 +1085,27 @@ index 0000000..8370fa1
 +    ),
 +  );
 +});
+diff --git a/e2e/tests/product-analytics.spec.ts b/e2e/tests/product-analytics.spec.ts
+index 1d1527b..dc98cca 100644
+--- a/e2e/tests/product-analytics.spec.ts
++++ b/e2e/tests/product-analytics.spec.ts
+@@ -326,6 +326,19 @@ export default defineApp({}, async () => ({ tools: router({
+         yield* browser.use("Enter private sign-in value", (page) =>
+           page.getByRole("textbox").first().fill("PRIVATE_LOGIN@example.test"),
+         );
++        yield* browser.use("Serve public homepage dependencies from fixtures", (page) =>
++          page
++            .route(
++              (url) => url.origin === "https://fonts.googleapis.com" && url.pathname === "/css2",
++              (route) => route.fulfill({ contentType: "text/css", body: "" }),
++            )
++            .then(() =>
++              page.route(
++                "https://api.github.com/repos/UsefulSoftwareCo/executor/releases?per_page=100",
++                (route) => route.fulfill({ json: [] }),
++              ),
++            ),
++        );
+         yield* open("/home");
+         expect(snapshots()).toHaveLength(signedOut);
+         yield* browser.use("Render captured dashboard replay", (page) =>

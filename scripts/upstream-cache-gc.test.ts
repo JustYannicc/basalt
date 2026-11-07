@@ -18,12 +18,17 @@ import {
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { withCacheLock } from "./upstream-cache.ts";
 import { installUpstreamDependencies } from "./upstream-dependencies.ts";
-import { collectUpstreamDependencies, createInstallAttempt } from "./upstream-store.ts";
+import {
+  collectUpstreamDependencies,
+  createInstallAttempt,
+  rememberDependencyConsumer,
+  withDependencyStoreLock,
+} from "./upstream-store.ts";
 
 function fixture(t: TestContext) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "basalt-key-gc-")));
@@ -33,6 +38,7 @@ function fixture(t: TestContext) {
   const usage = { files: new Set<string>(), unavailable: false };
   const run = childProcess.spawnSync;
   const repository = realpathSync(fileURLToPath(new URL("../", import.meta.url)));
+  const inventory = { matches: 0, unexpected: new Set<string>() };
   // Unit fixtures own their usage snapshot; unrelated worktrees and host lsof failures cannot alter it.
   const probe = t.mock.method(
     childProcess,
@@ -50,9 +56,23 @@ function fixture(t: TestContext) {
           signal: null,
         };
       }
-      if (command === "git" && args?.[0] === "-C" && args[1] === repository) {
+      if (
+        command === "git" &&
+        args?.[0] === "-C" &&
+        typeof args[1] === "string" &&
+        realpathSync(args[1]) === repository
+      ) {
+        inventory.matches++;
         assert.deepEqual(args.slice(2), ["worktree", "list", "--porcelain", "-z"]);
         return { pid: 0, output: [null, "", ""], stdout: "", stderr: "", status: 0, signal: null };
+      }
+      if (command === "git") {
+        const target =
+          args?.[0] === "-C" && typeof args[1] === "string" ? realpathSync(args[1]) : "";
+        if (target !== root && !target.startsWith(root + sep)) {
+          inventory.unexpected.add(target);
+          throw new Error("Fixture refused Git outside its temporary worktrees");
+        }
       }
       return run(...parameters);
     },
@@ -67,6 +87,12 @@ function fixture(t: TestContext) {
     else process.env.BASALT_UPSTREAM_CACHE = previous;
     execFileSync("chmod", ["-R", "u+w", root]);
     rmSync(root, { recursive: true, force: true });
+    assert.deepEqual(
+      [...inventory.unexpected],
+      [],
+      "Fixture must not query a real worktree inventory",
+    );
+    assert.ok(inventory.matches > 0, "Repository worktree inventory mock did not match");
   });
   const key = (number: number, pin = "current") => {
     const name = number.toString(16).padStart(64, "0");
@@ -85,21 +111,74 @@ function fixture(t: TestContext) {
     utimesSync(join(entry, "last-used"), number, number);
     return { entry, store };
   };
-  return { root, cache, key, usage };
+  return { root, cache, key, usage, inventory };
 }
 
-test("prepare collection retains the three most recently used keys and evicts older pins", async (t) => {
-  const { key } = fixture(t);
-  const entries = Array.from({ length: 5 }, (_, index) => key(index + 1));
-  const oldPin = key(100, "old");
-  await collectUpstreamDependencies("current");
-  assert.deepEqual(
-    entries.map(({ entry }) => existsSync(entry)),
-    [false, false, true, true, true],
+test("fixture intercepts repository inventory with or without trailing separators", (t) => {
+  const { inventory } = fixture(t);
+  const repository = realpathSync(fileURLToPath(new URL("../", import.meta.url)));
+  for (const path of [repository, repository + sep]) {
+    const result = childProcess.spawnSync(
+      "git",
+      ["-C", path, "worktree", "list", "--porcelain", "-z"],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout, "");
+  }
+  assert.equal(inventory.matches, 2);
+});
+
+test("collection evicts every unleased key, including recent keys, and keeps a live consumer", async (t) => {
+  const { root, key } = fixture(t);
+  const unused = key(100);
+  const leased = key(1);
+  const consumer = join(root, "consumer");
+  mkdirSync(consumer);
+  writeFileSync(
+    join(consumer, ".basalt-dependencies.json"),
+    JSON.stringify({ store: leased.store }),
   );
-  for (const { store } of entries.slice(2))
-    assert.equal(readFileSync(join(store, "node_modules", "payload"), "utf8"), "package bytes");
-  assert.equal(existsSync(oldPin.entry), false);
+  await withDependencyStoreLock(() => rememberDependencyConsumer(consumer, leased.store, false));
+  await collectUpstreamDependencies("current");
+  assert.equal(existsSync(unused.entry), false, "recent but unleased keys are evicted");
+  assert.equal(
+    readFileSync(join(leased.store, "node_modules", "payload"), "utf8"),
+    "package bytes",
+  );
+  rmSync(consumer, { recursive: true });
+  await collectUpstreamDependencies();
+  assert.equal(existsSync(leased.entry), false, "explicit GC needs no pin to evict unused keys");
+});
+
+test("an abandoned pending consumer does not retain keys it never installed", async (t) => {
+  const { root, cache, key } = fixture(t);
+  const abandoned = key(1),
+    installed = key(2);
+  const consumer = join(root, "consumer");
+  mkdirSync(consumer);
+  writeFileSync(
+    join(consumer, ".basalt-dependencies.json"),
+    JSON.stringify({ store: installed.store }),
+  );
+  mkdirSync(join(cache, "consumers"), { recursive: true });
+  writeFileSync(
+    join(cache, "consumers", "legacy.json"),
+    JSON.stringify({ root: consumer, stores: [abandoned.store, installed.store], pending: true }),
+  );
+  await collectUpstreamDependencies();
+  assert.equal(existsSync(abandoned.entry), false);
+  assert.equal(existsSync(installed.entry), true);
+});
+
+test("a live pending consumer retains its selected generation until installation finishes", async (t) => {
+  const { root, key } = fixture(t);
+  const selected = key(1);
+  const consumer = join(root, "consumer");
+  mkdirSync(consumer);
+  await withDependencyStoreLock(() => rememberDependencyConsumer(consumer, selected.store, true));
+  await collectUpstreamDependencies();
+  assert.equal(existsSync(selected.store), true);
 });
 
 test("an open file protects its generation and key beyond the recent-key bound", async (t) => {
@@ -208,22 +287,15 @@ function packageFixture(t: TestContext) {
   return { ...fixtureState, consumer: root, create };
 }
 
-test("a cache hit refreshes recency before the next eviction", async (t) => {
-  const { key, consumer } = packageFixture(t);
+test("a cache hit keeps its consumer until that consumer releases it", async (t) => {
+  const { consumer } = packageFixture(t);
   const first = await installUpstreamDependencies(consumer, "current");
-  const entry = dirname(dirname(first.store));
-  utimesSync(join(entry, "last-used"), 1, 1);
-  const others = [key(2), key(3), key(4)];
   const hit = await installUpstreamDependencies(consumer, "current");
   assert.equal(hit.store, first.store, "the published generation is reused");
-  // Release the consumer so only the cache hit's recency can retain this key.
+  assert.equal(existsSync(first.store), true);
   rmSync(consumer, { recursive: true });
   await collectUpstreamDependencies("current");
-  assert.equal(existsSync(first.store), true);
-  assert.deepEqual(
-    others.map(({ entry }) => existsSync(entry)),
-    [false, true, true],
-  );
+  assert.equal(existsSync(first.store), false);
 });
 
 test("interrupted eviction retires the key before deletion and prepare rebuilds it", async (t) => {
@@ -235,7 +307,6 @@ test("interrupted eviction retires the key before deletion and prepare rebuilds 
   const first = await installUpstreamDependencies(consumer, "current");
   const entry = dirname(dirname(first.store));
   rmSync(consumer, { recursive: true });
-  utimesSync(join(entry, "last-used"), 1, 1);
   for (let index = 2; index <= 4; index++) key(index);
   let retired: string | undefined;
   const remove = fs.rmSync;
@@ -273,14 +344,15 @@ test("live key locks and install attempts protect keys until their owners releas
   const { key } = fixture(t);
   const locked = key(1, "old"),
     pending = key(2, "old");
-  const attempt = await createInstallAttempt(pending.entry);
-  for (let index = 3; index <= 6; index++) key(index);
+  let attempt: string;
   await withCacheLock(`${locked.entry}.lock`, async () => {
+    attempt = await createInstallAttempt(pending.entry);
+    for (let index = 3; index <= 6; index++) key(index);
     await collectUpstreamDependencies("current");
     assert.equal(existsSync(locked.store), true);
-    assert.equal(existsSync(attempt), true);
+    assert.equal(existsSync(attempt!), true);
   });
-  rmSync(join(attempt, "parent.json"));
+  rmSync(join(attempt!, "parent.json"));
   await collectUpstreamDependencies("current");
   assert.equal(existsSync(locked.entry), false);
   assert.equal(existsSync(pending.entry), false);
@@ -295,7 +367,7 @@ test("legacy sibling attempts retain their parent key's live PID-only lock", asy
   writeFileSync(join(attempt, "package.json"), "{}");
   symlinkSync(JSON.stringify({ pid: process.pid, id: "legacy-fixture" }), `${legacy.entry}.lock`);
   await collectUpstreamDependencies("current");
-  assert.equal(existsSync(attempt), true, "format-2 input copying holds the parent key lock");
+  assert.equal(existsSync(attempt!), true, "format-2 input copying holds the parent key lock");
   assert.equal(existsSync(legacy.store), true);
   rmSync(`${legacy.entry}.lock`);
   await collectUpstreamDependencies("current");
