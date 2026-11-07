@@ -1100,12 +1100,13 @@ index 7432b7d..1b49a57 100644
              Connect an account for {app.name}.
 diff --git a/apps/local/web/src/implementation/pages/catalog-connection-guidance.ts b/apps/local/web/src/implementation/pages/catalog-connection-guidance.ts
 new file mode 100644
-index 0000000..c1612fb
+index 0000000..2b8b70d
 --- /dev/null
 +++ b/apps/local/web/src/implementation/pages/catalog-connection-guidance.ts
-@@ -0,0 +1,23 @@
+@@ -0,0 +1,29 @@
 +import type { AppId } from "@executor-js/sdk";
 +import { Option } from "effect";
++import { AsyncResult } from "effect/reactivity";
 +import { useQuery } from "@executor-js/ui/dashboard/context";
 +import { overviewAtom } from "../../contracts/api.ts";
 +import { catalogAtom } from "../../contracts/onboarding.ts";
@@ -1119,7 +1120,12 @@ index 0000000..c1612fb
 +  const guidance = Option.getOrUndefined(catalog.data)?.find(
 +    (entry) => entry.package === copiedFrom,
 +  )?.connectionGuidance;
-+  return { app, guidance };
++  const waiting =
++    AsyncResult.isInitial(overview.result) ||
++    overview.result.waiting ||
++    AsyncResult.isInitial(catalog.result) ||
++    catalog.result.waiting;
++  return { app, guidance, waiting };
 +}
 +
 +export function useCatalogConnectionGuidance(app: AppId, requirement: string) {
@@ -1129,11 +1135,11 @@ index 0000000..c1612fb
 +}
 diff --git a/apps/local/web/src/implementation/pages/guided-oauth-recovery.tsx b/apps/local/web/src/implementation/pages/guided-oauth-recovery.tsx
 new file mode 100644
-index 0000000..611ba01
+index 0000000..b80868c
 --- /dev/null
 +++ b/apps/local/web/src/implementation/pages/guided-oauth-recovery.tsx
-@@ -0,0 +1,84 @@
-+import { Failure } from "../components/common.tsx";
+@@ -0,0 +1,86 @@
++import { Empty, Failure } from "../components/common.tsx";
 +import { useState } from "react";
 +import { useNavigate } from "@tanstack/react-router";
 +import { Cause } from "effect";
@@ -1157,13 +1163,15 @@ index 0000000..611ba01
 +  readonly saved: typeof OAuthReturn.Type;
 +  readonly cause: Cause.Cause<DashboardError>;
 +}) {
-+  const { app, guidance } = useCatalogConnectionMetadata(saved.app);
++  const { app, guidance, waiting } = useCatalogConnectionMetadata(saved.app);
 +  const navigate = useNavigate();
 +  const [pending, setPending] = useState(false);
 +  const target = saved.guided;
 +  const requirement =
 +    target === undefined ? undefined : app?.requirements.accounts[target.requirement];
 +  const message = guidedOAuthFailure(cause);
++  if (message !== undefined && waiting)
++    return <Empty title="Connecting your account">Loading connection options…</Empty>;
 +  if (
 +    saved.reconnect ||
 +    target === undefined ||

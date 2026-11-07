@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { Context, Effect, Layer, Redacted } from "effect";
 import { startEnvironment } from "../../.upstream/e2e/sdk/environment.ts";
 import { prepareScenario } from "../../.upstream/e2e/sdk/scenario.ts";
@@ -63,6 +65,7 @@ export const verifyLocalGuidance = ({ fixture, directory }) =>
       name: "Instance guide",
     });
     const before = (yield* request("GET", "/dashboard/api/overview")).accounts;
+    const loadingAdvice = [];
     const paired = yield* request("POST", "/auth/pair");
     yield* Effect.gen(function* () {
       const browser = yield* Browser;
@@ -96,6 +99,22 @@ export const verifyLocalGuidance = ({ fixture, directory }) =>
       yield* browser.checkpoint("Local WorkOS key alternative 390");
       yield* browser.omitNetworkTrace;
       yield* browser.use("Return to sign-in", async (page) => {
+        await page.addInitScript(() => {
+          window.__workosClientAdviceSeen = false;
+          const inspect = () => {
+            if (
+              /OAuth client not accepted|Update the OAuth client details/.test(
+                document.body?.textContent ?? "",
+              )
+            )
+              window.__workosClientAdviceSeen = true;
+          };
+          new MutationObserver(inspect).observe(document, {
+            childList: true,
+            subtree: true,
+            characterData: true,
+          });
+        });
         await page.getByRole("button", { name: "Sign in instead", exact: true }).click();
         await page.getByRole("button", { name: "Sign in with WorkOS", exact: true }).waitFor();
       });
@@ -113,6 +132,18 @@ export const verifyLocalGuidance = ({ fixture, directory }) =>
             )
             .waitFor();
           assert.equal(await page.getByText(/Update the OAuth client details/).count(), 0);
+          const seen = await page.evaluate(() => window.__workosClientAdviceSeen);
+          loadingAdvice.push({ decision, seen });
+          await writeFile(
+            join(directory, "local-loading-advice.json"),
+            JSON.stringify(loadingAdvice, null, 2),
+            { mode: 0o600 },
+          );
+          assert.equal(
+            seen,
+            false,
+            "Guided recovery never flashes manual-client advice while loading",
+          );
           await dialog.getByRole("button", { name: "Sign in with WorkOS", exact: true }).waitFor();
         });
         yield* browser.checkpoint(`Local ${decision} 390`);
