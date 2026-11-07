@@ -5304,6 +5304,28 @@
       }
     },
     {
+      "entry": "zoho-people",
+      "package": "@signalbox/zoho-people",
+      "sourceSha256": "31569b52bcae5a1d56d06ca6350b2438b4ac64df78ac3078c8a69219f80527d4",
+      "methods": {
+        "oauthEu": {
+          "kind": "hosted",
+          "client": "zoho-people-eu",
+          "message": "Connect your own Zoho People account using the hosted client, or enter a server-based client you own if hosted sign-in is unavailable."
+        },
+        "oauthUs": {
+          "kind": "hosted",
+          "client": "zoho-people-us",
+          "message": "Connect your own Zoho People account using the hosted client, or enter a server-based client you own if hosted sign-in is unavailable."
+        },
+        "oauthIn": {
+          "kind": "hosted",
+          "client": "zoho-people-in",
+          "message": "Connect your own Zoho People account using the hosted client, or enter a server-based client you own if hosted sign-in is unavailable."
+        }
+      }
+    },
+    {
       "entry": "zohobigin",
       "package": "@executor.sh/zohobigin",
       "methods": {

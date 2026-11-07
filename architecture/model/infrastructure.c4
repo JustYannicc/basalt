@@ -123,12 +123,29 @@ model {
   basalt.catalog -[sync]-> accountManagement "publish connection guidance and management tool definitions"
   basalt.build -[sync]-> accountManagement "verify management contracts with isolated local fixtures"
 
+  zohoSignIn = adapter "Zoho account authorization" {
+    #external
+    technology "Regional Zoho OAuth"
+    metadata { hosts "accounts.zoho.com|accounts.zoho.eu|accounts.zoho.in|accounts.zoho.com.au|accounts.zoho.jp|accounts.zohocloud.ca|accounts.zoho.sa|accounts.zoho.com.cn" }
+  }
+  basalt.toolsGateway -[sync]-> zohoSignIn "exchange and refresh each product's regional consent"
+  basalt.build -[sync]-> zohoSignIn "verify regional sign-in using isolated fixtures"
+
   crmService = adapter "CRM service" {
     #external
     technology "Zoho CRM API and regional OAuth"
-    metadata { hosts "accounts.zoho.com|accounts.zoho.eu|accounts.zoho.in|accounts.zoho.com.au|accounts.zoho.jp|accounts.zohocloud.ca|accounts.zoho.sa|accounts.zoho.com.cn|www.zohoapis.com|www.zohoapis.eu|www.zohoapis.in|www.zohoapis.com.au|www.zohoapis.jp|www.zohoapis.ca|www.zohoapis.sa|www.zohoapis.com.cn" }
+    metadata { hosts "www.zohoapis.com|www.zohoapis.eu|www.zohoapis.in|www.zohoapis.com.au|www.zohoapis.jp|www.zohoapis.ca|www.zohoapis.sa|www.zohoapis.com.cn" }
   }
   basalt.toolsGateway -[sync]-> crmService "authorize and call the person's regional CRM account"
+
+  hrService = adapter "HR service" {
+    #external
+    technology "Zoho People API and regional OAuth"
+    metadata { hosts "people.zoho.eu|people.zoho.com|people.zoho.in|api-console.zoho.eu|api-console.zoho.com|api-console.zoho.in" }
+  }
+  basalt.toolsGateway -[sync]-> hrService "authorize and call the person's regional HR account"
+  basalt.build -[sync]-> hrService "verify the documented contracts using isolated fixtures"
+  basalt.catalog -[sync]-> hrService "publish regional developer registration links"
 
   emailService = adapter "Email service" {
     #external

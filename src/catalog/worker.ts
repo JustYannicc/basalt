@@ -1,3 +1,4 @@
+import { zohoPeople } from "./zoho-people/index.ts";
 import { gitlabMcp } from "./gitlab-mcp/index.ts";
 import { withServiceIdentities } from "./service-identities.ts";
 import { mergeFeed, type Addition, type FeedAddition, type Feed } from "./feed.ts";
@@ -22,7 +23,7 @@ import { workosSource, withWorkOSSignIn } from "./workos.ts";
 import { clerkSource, withClerkSignIn } from "./clerk.ts";
 
 // AWS source stays in the catalog until maintainers identify a maintained destination.
-const sourceAdditions: readonly Addition[] = [aws, gitlabMcp, ...providerApps];
+const sourceAdditions: readonly Addition[] = [aws, gitlabMcp, zohoPeople, ...providerApps];
 const reviewedOAuth = oauthReviews(oauthReviewData);
 const headers = {
   "Content-Type": "application/json; charset=utf-8",
