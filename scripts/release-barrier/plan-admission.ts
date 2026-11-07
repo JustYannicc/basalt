@@ -1,16 +1,80 @@
 import type * as Plan from "alchemy/Plan";
 import type { Worker } from "alchemy/Cloudflare";
 import { BarrierRefusal, type PlanRefusal } from "./manifest.ts";
-import { changedProps } from "./prop-diff.ts";
+import { havePropsChanged } from "alchemy/Diff";
+import { changedProps, publicPropPath } from "./prop-diff.ts";
 import { firstVerificationCommand, supportedCommand } from "./commands.ts";
 
 import { plannedReasons } from "./plan-reasons.ts";
 
+const readinessId = "PoolBackendBudgetRuntimeReady";
+const deploymentEnvironment = new Set([
+  "CLOUDFLARE_ACCOUNT_ID",
+  "DATABASE_BUDGET_WORKER",
+  "GITHUB_SHA",
+  "POOL_DEPLOYMENT_KEY",
+  "DATABASE_BUDGET_IMAGE_HASH",
+  "DATABASE_BUDGET_WORKER_INPUT",
+  "DATABASE_BUDGET_RECEIPT",
+  "DATABASE_BUDGET_DEPLOYMENT",
+]);
+const environment = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+const nonDeploymentProps = ({ env, ...props }: Record<string, unknown>) => ({
+  ...props,
+  env: environment(env)
+    ? Object.fromEntries(Object.entries(env).filter(([name]) => !deploymentEnvironment.has(name)))
+    : (env ?? {}),
+});
+const recordedProps = (node: Plan.Apply) =>
+  node.state?.status === "updating" ? node.state.old?.props : node.state?.props;
+const lifecycle = (node: Plan.Apply) => node.state?.status ?? "absent";
+function verificationEnvChanges(node: Plan.Apply) {
+  const old = recordedProps(node)?.env;
+  const next = node.resource.Props.env;
+  const before = environment(old) ? old : {};
+  const after = environment(next) ? next : {};
+  return [...new Set([...Object.keys(before), ...Object.keys(after)])]
+    .sort()
+    .filter((name) => havePropsChanged({ value: before[name] }, { value: after[name] }))
+    .map((name) =>
+      deploymentEnvironment.has(name) ? name : publicPropPath(["env", name]).slice(4),
+    );
+}
+export interface VerificationAdmission {
+  fqn: string;
+  lifecycle: string;
+  envChanges: string[];
+}
+export const verificationAdmissions = (plan: Plan.Plan): VerificationAdmission[] =>
+  Object.values(plan.resources)
+    .filter(
+      (node) =>
+        node.resource.FQN === readinessId &&
+        node.resource.Type === "Command.Exec" &&
+        firstVerificationCommand(node.resource.LogicalId, node.resource.Props),
+    )
+    .map((node) => ({
+      fqn: readinessId,
+      lifecycle: lifecycle(node),
+      envChanges: verificationEnvChanges(node),
+    }));
+
 const workerType = "Cloudflare.Worker";
 export const newVerification = (node: Plan.Apply) =>
   node.action === "create" &&
-  node.state === undefined &&
+  (node.state === undefined ||
+    (node.state.status === "creating" &&
+      node.state.attr === undefined &&
+      node.state.fqn === node.resource.FQN &&
+      node.state.resourceType === node.resource.Type &&
+      node.state.logicalId === node.resource.LogicalId &&
+      !havePropsChanged(
+        nonDeploymentProps(node.state.props),
+        nonDeploymentProps(node.resource.Props),
+      ))) &&
   node.resource.Type === "Command.Exec" &&
+  node.resource.FQN === readinessId &&
   firstVerificationCommand(node.resource.LogicalId, node.resource.Props);
 const existing = (node: Plan.Apply) =>
   node.state?.status === "created" ||
@@ -43,17 +107,26 @@ export function assertSupportedPlan(
       });
   for (const [fqn, node] of Object.entries(plan.resources)) {
     const refuseNode = (reason: string) => {
-      const recorded =
-        node.state?.status === "updating" ? node.state.old?.props : node.state?.props;
-      const changed = changedProps(recorded, node.resource.Props);
+      let changed = changedProps(recordedProps(node), node.resource.Props);
+      if (node.resource.LogicalId === readinessId && node.resource.Type === "Command.Exec")
+        changed = [
+          ...changed.filter((change) => !/^env(?:\.|$)/u.test(change.path)),
+          ...verificationEnvChanges(node).map((name) => ({
+            path: `env.${name}`,
+            changed: true as const,
+          })),
+        ];
       refusals.push({
         reason,
         fqn,
         type: node.resource.Type,
         changed,
-        ...(!changed.length
-          ? { why: [...plannedReasons(plan, node), ...(imageReasons.get(fqn) ?? [])] }
-          : {}),
+        why: [
+          `recorded lifecycle is ${lifecycle(node)}; planned action is ${node.action}`,
+          ...(!changed.length
+            ? [...plannedReasons(plan, node), ...(imageReasons.get(fqn) ?? [])]
+            : []),
+        ],
       });
     };
     if (
