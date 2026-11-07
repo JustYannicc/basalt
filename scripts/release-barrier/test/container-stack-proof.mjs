@@ -291,9 +291,26 @@ export const proveContainerStack = (source, recompile, scenario) =>
             stage: stack.stage,
             fqn: "PoolBackendBudgetRuntimeReady",
           });
+        if (["creating-runtime-ready", "creating-ready-late-rejection"].includes(scenario)) {
+          const key = {
+            stack: stack.name,
+            stage: stack.stage,
+            fqn: "PoolBackendBudgetRuntimeReady",
+          };
+          const saved = yield* memory.get(key);
+          assert.ok(saved && "props" in saved);
+          const { attr: _attr, ...creating } = saved;
+          yield* memory.set({ ...key, value: { ...creating, status: "creating" } });
+        }
         pins(scenario === "dependency-only" ? production : "candidate");
         const plan = yield* run(Plan.make(stack));
         assert.equal(plan.resources.PoolContainer.action, "update");
+        if (["creating-runtime-ready", "creating-ready-late-rejection"].includes(scenario)) {
+          const ready = plan.resources.PoolBackendBudgetRuntimeReady;
+          assert.equal(ready.action, "create");
+          assert.equal(ready.state.status, "creating");
+          assert.equal(ready.state.attr, undefined);
+        }
         const planReasons = [
           ...plannedReasons(plan, plan.resources.PoolContainer),
           ...((yield* run(imagePlanReasons(plan))).get("PoolContainer") ?? []),
@@ -313,6 +330,17 @@ export const proveContainerStack = (source, recompile, scenario) =>
                 receipts.push(receipt);
               },
               manifest: async () => {},
+              admission: async (verifications) => {
+                assert.equal(verifications.length, 1);
+                const readiness = verifications[0];
+                assert.equal(readiness.fqn, "PoolBackendBudgetRuntimeReady");
+                assert.equal(
+                  readiness.lifecycle,
+                  plan.resources.PoolBackendBudgetRuntimeReady.state?.status ?? "absent",
+                );
+                assert.ok(readiness.envChanges.includes("DATABASE_BUDGET_IMAGE_HASH"));
+                events.push("verification:admitted");
+              },
               publication: async (container) => {
                 publications.push(describeContainer(container));
                 events.push("image:retained");
@@ -383,7 +411,11 @@ export const proveContainerStack = (source, recompile, scenario) =>
                     events.push(`admit:${worker.id}`);
                     if (
                       worker.id === "Router" &&
-                      ["late-worker-rejection", "new-ready-late-rejection"].includes(scenario)
+                      [
+                        "late-worker-rejection",
+                        "new-ready-late-rejection",
+                        "creating-ready-late-rejection",
+                      ].includes(scenario)
                     )
                       throw new Error("Rejected late upload");
                     if (worker.id === "Router" && scenario === "source-drift")
@@ -425,6 +457,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
           "same-digest",
           "dependency-only",
           "new-runtime-ready",
+          "creating-runtime-ready",
         ].includes(scenario);
         const workerInputMatches = staged?.proposed.hash.image === capturedPoolInput;
         assert.equal(
@@ -461,7 +494,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
             events.includes("container:serving"),
             "every staged container verifies serving before native commit",
           );
-          if (scenario === "new-runtime-ready") {
+          if (["new-runtime-ready", "creating-runtime-ready"].includes(scenario)) {
             const ready = events.indexOf("command:node verify-database-budget.ts --ready");
             assert.ok(ready > events.indexOf("container:serving"));
             assert.equal(
@@ -470,6 +503,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
               1,
             );
           }
+          assert.ok(events.includes("verification:admitted"));
           assert.equal(receipts.at(-1).phase, "complete");
           attachmentPending = false;
           const next = yield* run(Plan.make(stack));
@@ -495,6 +529,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
             [
               "late-worker-rejection",
               "new-ready-late-rejection",
+              "creating-ready-late-rejection",
               "missing-startup",
               "over-ceiling",
             ].includes(scenario)
