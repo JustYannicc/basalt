@@ -2,15 +2,25 @@ import type * as Plan from "alchemy/Plan";
 import type { Worker } from "alchemy/Cloudflare";
 import { BarrierRefusal, type PlanRefusal } from "./manifest.ts";
 import { changedProps } from "./prop-diff.ts";
-import { supportedCommand } from "./commands.ts";
+import { firstVerificationCommand, supportedCommand } from "./commands.ts";
+
+import { plannedReasons } from "./plan-reasons.ts";
 
 const workerType = "Cloudflare.Worker";
+export const newVerification = (node: Plan.Apply) =>
+  node.action === "create" &&
+  node.state === undefined &&
+  node.resource.Type === "Command.Exec" &&
+  firstVerificationCommand(node.resource.LogicalId, node.resource.Props);
 const existing = (node: Plan.Apply) =>
   node.state?.status === "created" ||
   node.state?.status === "updated" ||
   (node.state?.status === "updating" && !node.state.adopting && !!node.state.old);
 /** No live resource lifecycle runs during shadow preparation. Commands expose only their real output contract. */
-export function assertSupportedPlan(plan: Plan.Plan) {
+export function assertSupportedPlan(
+  plan: Plan.Plan,
+  imageReasons: ReadonlyMap<string, string[]> = new Map(),
+) {
   const refusals: PlanRefusal[] = [];
   if (plan.selectedFqns || plan.destroy) refusals.push({ reason: "partial-or-destroy-plan" });
   for (const [fqn, saved] of Object.entries(plan.deletions))
@@ -35,14 +45,21 @@ export function assertSupportedPlan(plan: Plan.Plan) {
     const refuseNode = (reason: string) => {
       const recorded =
         node.state?.status === "updating" ? node.state.old?.props : node.state?.props;
+      const changed = changedProps(recorded, node.resource.Props);
       refusals.push({
         reason,
         fqn,
         type: node.resource.Type,
-        changed: changedProps(recorded, node.resource.Props),
+        changed,
+        ...(!changed.length
+          ? { why: [...plannedReasons(plan, node), ...(imageReasons.get(fqn) ?? [])] }
+          : {}),
       });
     };
-    if (!existing(node) || !["update", "noop"].includes(node.action) || node.renamedFrom?.length)
+    if (
+      (!newVerification(node) && (!existing(node) || !["update", "noop"].includes(node.action))) ||
+      node.renamedFrom?.length
+    )
       refuseNode("new-or-unsettled-resource");
     if (node.resource.Type === workerType) {
       const props = node.resource.Props as Worker["Props"];
@@ -66,7 +83,14 @@ export function assertSupportedPlan(plan: Plan.Plan) {
   const first = refusals[0];
   if (first) {
     const delta =
-      "fqn" in first ? { fqn: first.fqn, type: first.type, changed: first.changed } : undefined;
+      "fqn" in first
+        ? {
+            fqn: first.fqn,
+            type: first.type,
+            changed: first.changed,
+            ...(first.why ? { why: first.why } : {}),
+          }
+        : undefined;
     throw new BarrierRefusal(first.reason, delta?.fqn, delta, refusals);
   }
 }

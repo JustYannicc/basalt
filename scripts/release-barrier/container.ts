@@ -10,6 +10,7 @@ import { havePropsChanged } from "alchemy/Diff";
 import { Config, Effect, Redacted } from "effect";
 import { inspectPoolImage } from "../deploy-safety/pool-image-metadata.ts";
 import { BarrierRefusal, canonical, digest } from "./manifest.ts";
+import { changedProps } from "./prop-diff.ts";
 import { observeContainer } from "./container-cloudflare.ts";
 
 export type ContainerAttributes = ContainerApplication["Attributes"] & {
@@ -91,7 +92,11 @@ export const inspectContainer = (publication: PreparedContainerPublication) =>
   Effect.gen(function* () {
     const observed = yield* observeContainer(publication.previous);
     if (!sameContainerState(observed, containerSnapshot(publication.previous)))
-      throw new BarrierRefusal("container-baseline-drift", publication.id);
+      throw new BarrierRefusal("container-baseline-drift", publication.id, {
+        fqn: publication.id,
+        type: "Cloudflare.Container",
+        changed: changedProps(containerSnapshot(publication.previous), observed),
+      });
     const token = yield* Config.Redacted("CLOUDFLARE_API_TOKEN");
     return yield* Effect.tryPromise({
       try: () =>
@@ -111,11 +116,15 @@ export function assertImageOnlyPublication(
   cached: ContainerAttributes,
 ) {
   const { previous, proposed, rolloutRequest } = publication;
-  const refuse = (reason: string): never => {
-    throw new BarrierRefusal(reason, publication.id);
+  const refuse = (reason: string, expected: unknown, actual: unknown): never => {
+    throw new BarrierRefusal(reason, publication.id, {
+      fqn: publication.id,
+      type: "Cloudflare.Container",
+      changed: changedProps(expected, actual),
+    });
   };
   if (publication.id !== "PoolContainer" || !olds || havePropsChanged(props, olds))
-    refuse("unsupported-container-declaration-change");
+    refuse("unsupported-container-declaration-change", olds, props);
   if (
     props.instanceType !== "basic" ||
     props.maxInstances !== 1 ||
@@ -123,9 +132,23 @@ export function assertImageOnlyPublication(
     props.schedulingPolicy !== "default" ||
     props.rollout !== undefined
   )
-    refuse("unsupported-container-policy");
+    refuse(
+      "unsupported-container-policy",
+      { instanceType: "basic", maxInstances: 1, schedulingPolicy: "default" },
+      {
+        instanceType: props.instanceType,
+        maxInstances: props.maxInstances,
+        instances: props.instances,
+        schedulingPolicy: props.schedulingPolicy,
+        rollout: props.rollout,
+      },
+    );
   if (canonical(props.constraints) !== canonical({ jurisdiction: "eu", regions: ["EEUR", "WEUR"] }))
-    refuse("unsupported-container-placement");
+    refuse(
+      "unsupported-container-placement",
+      { constraints: { jurisdiction: "eu", regions: ["EEUR", "WEUR"] } },
+      { constraints: props.constraints },
+    );
   if (
     previous.accountId !== cached.accountId ||
     previous.applicationId !== cached.applicationId ||
@@ -135,7 +158,7 @@ export function assertImageOnlyPublication(
     !equalContainerValues(previous.durableObjects, cached.durableObjects) ||
     !sameContainerState(previous, containerSnapshot(cached))
   )
-    refuse("container-baseline-drift");
+    refuse("container-baseline-drift", containerSnapshot(cached), containerSnapshot(previous));
   if (
     proposed.applicationId !== previous.applicationId ||
     proposed.accountId !== previous.accountId ||
@@ -154,22 +177,50 @@ export function assertImageOnlyPublication(
     rolloutRequest.strategy !== "rolling" ||
     rolloutRequest.stepPercentage !== 100
   )
-    refuse("unsupported-container-configuration-change");
+    refuse(
+      "unsupported-container-configuration-change",
+      {
+        ...containerSnapshot(previous),
+        configuration: { ...previous.configuration, image: proposed.configuration.image },
+        rolloutRequest: {
+          ...rolloutRequest,
+          accountId: previous.accountId,
+          applicationId: previous.applicationId,
+          targetConfiguration: proposed.configuration,
+          kind: "full_manual",
+          strategy: "rolling",
+          stepPercentage: 100,
+        },
+      },
+      { ...containerSnapshot(proposed), rolloutRequest },
+    );
   const baselineDigest = imageDigest(previous.configuration.image);
   if (
     !/^[a-f0-9]{16}$/.test(previous.hash?.image ?? "") ||
     previous.hash?.digest !== baselineDigest
   )
-    refuse("container-baseline-input-unconfirmed");
+    refuse(
+      "container-baseline-input-unconfirmed",
+      { hash: { image: cached.hash?.image, digest: baselineDigest } },
+      { hash: previous.hash },
+    );
   const published = imageDigest(proposed.configuration.image);
   const prefix = `registry.cloudflare.com/${previous.accountId}/`;
   if (
     !previous.configuration.image.startsWith(prefix) ||
     !proposed.configuration.image.startsWith(prefix)
   )
-    refuse("unsupported-container-registry");
+    refuse(
+      "unsupported-container-registry",
+      { image: previous.configuration.image },
+      { image: proposed.configuration.image },
+    );
   if (published !== proposed.hash?.digest || !/^[a-f0-9]{16}$/.test(proposed.hash?.image ?? ""))
-    refuse("invalid-container-publication");
+    refuse(
+      "invalid-container-publication",
+      { hash: { digest: published } },
+      { hash: proposed.hash },
+    );
 }
 
 export const stageContainer = (
@@ -228,7 +279,14 @@ export function assertConfiguredContainer(current: ContainerAttributes, frozen: 
     !equalContainerValues(current.configuration, frozen.configuration) ||
     !equalApplicationSettings(current, frozen.baseline)
   )
-    throw new BarrierRefusal("container-configuration-unconfirmed", frozen.id);
+    throw new BarrierRefusal("container-configuration-unconfirmed", frozen.id, {
+      fqn: frozen.id,
+      type: "Cloudflare.Container",
+      changed: changedProps(
+        { ...frozen.baseline, configuration: frozen.configuration, version: current.version },
+        containerSnapshot(current),
+      ),
+    });
 }
 
 /** Pair the saved container input with the actual baseline Worker binding, not its desired new props. */

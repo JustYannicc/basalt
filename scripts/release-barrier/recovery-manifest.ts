@@ -112,6 +112,7 @@ export const readRecoveryProgress = Schema.decodeUnknownSync(
           container: Schema.String,
           version: Schema.Number,
           rolloutId: Schema.optional(Schema.String),
+          promoted: Schema.optional(Schema.Boolean),
           verified: Schema.optional(Schema.Boolean),
           health: Schema.optional(containerHealth),
         }),

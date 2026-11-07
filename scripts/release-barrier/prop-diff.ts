@@ -10,6 +10,7 @@ export interface ResourceDelta {
   fqn: string;
   type: string;
   changed: PropChange[];
+  why?: string[];
 }
 
 const privatePath = /env|secret|binding|credential|password|token|authorization|cookie|key/i;
@@ -59,6 +60,11 @@ function pathKey(key: string, parents: string[]) {
     return "[changed]";
   return key;
 }
+
+export const publicPropPath = (keys: string[]) =>
+  keys
+    .map((key, index) => (/^[0-9]+$/u.test(key) ? key : pathKey(key, keys.slice(0, index))))
+    .join(".");
 
 function publicScalar(value: unknown, keys: string[]): Scalar | undefined {
   if (value == null) return null;

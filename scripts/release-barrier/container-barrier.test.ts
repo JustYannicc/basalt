@@ -20,6 +20,7 @@ test("all image and Worker admissions precede database work and every activation
     "container:rollout",
     "container:advance",
     "container:adopted",
+    "container:serving",
   ]);
   assert.equal(result.schemaVersion, 2);
   assert.deepEqual(result.containers, [
@@ -39,7 +40,12 @@ test("new image inputs that publish the existing digest do not PATCH or roll out
     { ...proof.manifest, containers: [container] },
     proof.options,
   );
-  assert.ok(!proof.events.some((event) => event.startsWith("container:")));
+  assert.ok(
+    !proof.events.some((event) =>
+      ["container:rollout", "container:advance", "container:adopted"].includes(event),
+    ),
+  );
+  assert.equal(proof.events.filter((event) => event === "container:serving").length, 1);
   assert.deepEqual(result.containers, [
     { container: "PoolContainer", version: 1, unchanged: true },
   ]);

@@ -137,6 +137,9 @@ export function containerRelease() {
     async advance() {
       events.push("container:advance");
     },
+    async verify() {
+      events.push("container:serving");
+    },
     async wait() {
       events.push("container:adopted");
       return structuredClone(current);

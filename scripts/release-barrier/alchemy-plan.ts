@@ -24,7 +24,8 @@ import {
   type StagedContainer,
   type FrozenContainer,
 } from "./container.ts";
-import { assertSupportedPlan } from "./plan-admission.ts";
+import { imagePlanReasons } from "./plan-reasons.ts";
+import { assertSupportedPlan, newVerification } from "./plan-admission.ts";
 export { assertSupportedPlan } from "./plan-admission.ts";
 
 const workerType = "Cloudflare.Worker";
@@ -40,7 +41,7 @@ export const preparePlan = (
   recordPublication?: (container: FrozenContainer) => Promise<void>,
 ) =>
   Effect.gen(function* () {
-    assertSupportedPlan(plan);
+    assertSupportedPlan(plan, yield* imagePlanReasons(plan));
     const files = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
     const captured = new Map<string, PreparedWorkerUpload>();
     const containers = new Map<string, StagedContainer>();
@@ -51,12 +52,13 @@ export const preparePlan = (
     const databaseCommands = new Set<string>();
     const resources: Plan.Plan["resources"] = {};
     for (const [fqn, node] of Object.entries(plan.resources)) {
-      if (node.action !== "update" && node.action !== "noop")
+      if (!newVerification(node) && node.action !== "update" && node.action !== "noop")
         return refuse("unsupported-plan", fqn);
       if (
-        node.state.status !== "created" &&
-        node.state.status !== "updated" &&
-        node.state.status !== "updating"
+        !newVerification(node) &&
+        node.state?.status !== "created" &&
+        node.state?.status !== "updated" &&
+        node.state?.status !== "updating"
       )
         return refuse("unsettled-resource", fqn);
       const provider = node.provider;
@@ -77,7 +79,12 @@ export const preparePlan = (
             }),
           );
       } else if (node.resource.Type === "Cloudflare.Container" && node.action === "update") {
-        const cached = node.state.status === "updating" ? node.state.old.attr : node.state.attr;
+        const cached =
+          node.state?.status === "updating"
+            ? node.state.old.attr
+            : node.state && "attr" in node.state
+              ? node.state.attr
+              : undefined;
         reconcile = (input) =>
           provider.reconcile(input).pipe(
             Retry.none,
@@ -145,20 +152,30 @@ export const preparePlan = (
         reconcile = () => Effect.sync(() => refuse("unexpected-preparation-lifecycle", fqn));
       }
       const wrapped = { ...provider, precreate: undefined, reconcile };
-      resources[fqn] =
+      if (
         node.resource.Type === workerType ||
         (node.resource.Type === "Command.Exec" && node.resource.LogicalId === "AppSourceNamespace")
-          ? {
-              ...node,
-              action: "update",
-              props: node.resource.Props,
-              state: node.state,
-              provider: wrapped,
-            }
-          : { ...node, provider: wrapped };
+      ) {
+        if (!node.state) return refuse("unsettled-resource", fqn);
+        if (
+          node.state.status !== "created" &&
+          node.state.status !== "updated" &&
+          node.state.status !== "updating"
+        )
+          return refuse("unsettled-resource", fqn);
+        resources[fqn] = {
+          ...node,
+          action: "update",
+          props: node.resource.Props,
+          state: node.state,
+          provider: wrapped,
+        };
+      } else resources[fqn] = { ...node, provider: wrapped };
     }
     const states = Object.fromEntries(
-      Object.entries(plan.resources).map(([fqn, node]) => [fqn, node.state!]),
+      Object.entries(plan.resources)
+        .filter(([, node]) => node.state !== undefined)
+        .map(([fqn, node]) => [fqn, node.state!]),
     );
     const shadow = yield* InMemoryService({ [stack.name]: { [stack.stage]: states } });
     yield* Apply.apply({ ...plan, resources }).pipe(

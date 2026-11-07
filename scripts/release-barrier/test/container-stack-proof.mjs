@@ -6,6 +6,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as Apply from "alchemy/Apply";
 import * as Plan from "alchemy/Plan";
+import * as Output from "alchemy/Output";
+import { isResolved } from "alchemy/Diff";
+import { plannedReasons, imagePlanReasons } from "../plan-reasons.ts";
 import * as Command from "alchemy/Command";
 import * as Provider from "alchemy/Provider";
 import { Resource } from "alchemy/Resource";
@@ -78,6 +81,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
     const receipts = [];
     const publications = [];
     let releaseStarted = false;
+    let attachmentPending = scenario === "dependency-only";
     let writes = 0,
       dockerCalls = 0;
     const docker = {
@@ -152,7 +156,11 @@ export const proveContainerStack = (source, recompile, scenario) =>
             assert.deepEqual(output.durableObjectNamespaces, namespaces);
             return {
               action: "update",
-              stables: ["workerId", "workerName", "durableObjectNamespaces"],
+              stables: [
+                "workerId",
+                "workerName",
+                ...(attachmentPending ? [] : ["durableObjectNamespaces"]),
+              ],
             };
           }),
         reconcile: (input) =>
@@ -277,14 +285,25 @@ export const proveContainerStack = (source, recompile, scenario) =>
         pins(without631);
         const intermediate = yield* run(Plan.make(stack));
         assert.equal(intermediate.resources.PoolContainer.action, "update");
-        pins("candidate");
+        if (["new-runtime-ready", "new-ready-late-rejection"].includes(scenario))
+          yield* memory.delete({
+            stack: stack.name,
+            stage: stack.stage,
+            fqn: "PoolBackendBudgetRuntimeReady",
+          });
+        pins(scenario === "dependency-only" ? production : "candidate");
         const plan = yield* run(Plan.make(stack));
         assert.equal(plan.resources.PoolContainer.action, "update");
+        const planReasons = [
+          ...plannedReasons(plan, plan.resources.PoolContainer),
+          ...((yield* run(imagePlanReasons(plan))).get("PoolContainer") ?? []),
+        ];
         api.writes = 0;
         api.rollouts = 0;
         writes = 0;
         events.length = 0;
-        if (scenario !== "same-digest") api.publishedDigest = digest("3");
+        if (!["same-digest", "same-digest-unhealthy", "dependency-only"].includes(scenario))
+          api.publishedDigest = digest("3");
         releaseStarted = true;
         const exit = yield* Effect.exit(
           run(
@@ -311,7 +330,8 @@ export const proveContainerStack = (source, recompile, scenario) =>
                 serving: (container, _worker, candidate) =>
                   Effect.sync(() => {
                     assert.equal(api.app.configuration.image, container.configuration.image);
-                    if (scenario === "unhealthy-serving") throw new Error("serving checks failed");
+                    if (["unhealthy-serving", "same-digest-unhealthy"].includes(scenario))
+                      throw new Error("serving checks failed");
                     events.push("container:serving");
                     return {
                       candidate,
@@ -361,7 +381,10 @@ export const proveContainerStack = (source, recompile, scenario) =>
                     assert.equal(api.writes, 0);
                     assert.equal(api.rollouts, 0);
                     events.push(`admit:${worker.id}`);
-                    if (worker.id === "Router" && scenario === "late-worker-rejection")
+                    if (
+                      worker.id === "Router" &&
+                      ["late-worker-rejection", "new-ready-late-rejection"].includes(scenario)
+                    )
                       throw new Error("Rejected late upload");
                     if (worker.id === "Router" && scenario === "source-drift")
                       writeFileSync(
@@ -397,7 +420,12 @@ export const proveContainerStack = (source, recompile, scenario) =>
           assert.equal(receipts.at(-1).failure.reason, "alchemy-state-drift");
         }
         const succeeded = Exit.isSuccess(exit);
-        const expectedSuccess = scenario === "success" || scenario === "same-digest";
+        const expectedSuccess = [
+          "success",
+          "same-digest",
+          "dependency-only",
+          "new-runtime-ready",
+        ].includes(scenario);
         const workerInputMatches = staged?.proposed.hash.image === capturedPoolInput;
         assert.equal(
           workerInputMatches,
@@ -408,8 +436,14 @@ export const proveContainerStack = (source, recompile, scenario) =>
         assert.equal(succeeded, expectedSuccess);
         let unchangedAction;
         if (succeeded) {
-          assert.equal(api.writes, scenario === "same-digest" ? 0 : 1);
-          assert.equal(api.rollouts, scenario === "same-digest" ? 0 : 1);
+          assert.equal(
+            api.writes,
+            ["same-digest", "same-digest-unhealthy", "dependency-only"].includes(scenario) ? 0 : 1,
+          );
+          assert.equal(
+            api.rollouts,
+            ["same-digest", "same-digest-unhealthy", "dependency-only"].includes(scenario) ? 0 : 1,
+          );
           assert.equal(api.app.configuration.image, staged.proposed.configuration.image);
           const allWorkers = Object.values(stack.resources).filter(
             (resource) => resource.Type === "Cloudflare.Worker",
@@ -423,13 +457,27 @@ export const proveContainerStack = (source, recompile, scenario) =>
             ),
           );
           assert.ok(events.indexOf("image:admitted") < firstActivation);
+          assert.ok(
+            events.includes("container:serving"),
+            "every staged container verifies serving before native commit",
+          );
+          if (scenario === "new-runtime-ready") {
+            const ready = events.indexOf("command:node verify-database-budget.ts --ready");
+            assert.ok(ready > events.indexOf("container:serving"));
+            assert.equal(
+              events.filter((event) => event === "command:node verify-database-budget.ts --ready")
+                .length,
+              1,
+            );
+          }
           assert.equal(receipts.at(-1).phase, "complete");
+          attachmentPending = false;
           const next = yield* run(Plan.make(stack));
           unchangedAction = next.resources.PoolContainer.action;
           assert.equal(unchangedAction, "noop");
-        } else if (scenario === "unhealthy-serving") {
-          assert.equal(api.writes, 1);
-          assert.equal(api.rollouts, 1);
+        } else if (["unhealthy-serving", "same-digest-unhealthy"].includes(scenario)) {
+          assert.equal(api.writes, scenario === "unhealthy-serving" ? 1 : 0);
+          assert.equal(api.rollouts, scenario === "unhealthy-serving" ? 1 : 0);
           assert.equal(receipts.at(-1).pendingContainer.phase, "verification");
           const saved = yield* memory.get({
             stack: stack.name,
@@ -438,11 +486,19 @@ export const proveContainerStack = (source, recompile, scenario) =>
           });
           assert.equal(saved.attr.configuration.image, staged.previous.configuration.image);
           assert.equal(saved.attr.version, staged.previous.version);
+          assert.equal(saved.attr.hash.image, staged.previous.hash.image);
         } else {
           assert.equal(api.writes, 0);
           assert.equal(api.rollouts, 0);
           assert.ok(!events.some((event) => event.startsWith("activate:")));
-          if (["late-worker-rejection", "missing-startup", "over-ceiling"].includes(scenario)) {
+          if (
+            [
+              "late-worker-rejection",
+              "new-ready-late-rejection",
+              "missing-startup",
+              "over-ceiling",
+            ].includes(scenario)
+          ) {
             assert.ok(!events.some((event) => event.startsWith("command:")));
             assert.equal(writes, 0);
           }
@@ -460,6 +516,14 @@ export const proveContainerStack = (source, recompile, scenario) =>
           events,
           ...(unchangedAction ? { unchangedAction } : {}),
           liveStateWrites: writes,
+          planReasons,
+          containerDependencies: Object.keys(
+            Output.upstreamAny(stack.bindings.PoolContainer ?? []),
+          ),
+          containerBindingUnresolved: !isResolved(plan.resources.PoolContainer.bindings),
+          readinessDependencies: Object.keys(
+            Output.upstreamAny(stack.resources.PoolBackendBudgetRuntimeReady.Props),
+          ),
         };
       }),
     );

@@ -246,5 +246,9 @@ export function discoverContainerBarrierProof(root: string, scenario: string) {
     events: string[];
     unchangedAction?: string;
     liveStateWrites: number;
+    planReasons: string[];
+    containerDependencies: string[];
+    containerBindingUnresolved: boolean;
+    readinessDependencies: string[];
   };
 }

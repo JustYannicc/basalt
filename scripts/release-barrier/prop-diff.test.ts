@@ -33,7 +33,7 @@ const oldHash = "a".repeat(16);
 const newHash = "b".repeat(16);
 
 function containerPlan(
-  change: "image" | "env" | "noop" | "interrupted" | "key" | "key-map" | "multiple",
+  change: "image" | "env" | "noop" | "interrupted" | "key" | "key-map" | "multiple" | "provider",
   primary = "UnsupportedContainer",
 ) {
   let action: "update" | "noop" = "update";
@@ -307,4 +307,13 @@ test("one refusal receipt reports both blocked nodes and keeps each delta redact
     assert.ok(output.includes(newHash));
   }
   assert.ok(errors.some((message) => message.startsWith("::error ")));
+});
+
+test("a provider update with unchanged props explains why instead of rendering an empty delta", async () => {
+  const error = await containerPlan("provider");
+  assert.ok(error);
+  assert.deepEqual(error.delta?.changed, []);
+  const messages: string[] = [];
+  await reportRefusal(error, undefined, (value) => messages.push(value));
+  assert.match(messages.join("\n"), /provider.*reconciliation/i);
 });

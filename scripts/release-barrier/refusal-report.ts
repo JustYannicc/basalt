@@ -32,7 +32,13 @@ export function refusalTable(failure: Failure) {
             ? `${JSON.stringify(change.old)} → ${JSON.stringify(change.new)}`
             : "changed (redacted)",
         ])
-      : [[resource, refusal.reason, "refused"]];
+      : [
+          [
+            resource,
+            "$plan",
+            "why" in refusal && refusal.why?.length ? refusal.why.join("; ") : refusal.reason,
+          ],
+        ];
   });
   return [
     "| Resource | Property | Old → new |",

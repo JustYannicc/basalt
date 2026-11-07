@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { BarrierRefusal } from "./manifest.ts";
+import { refusalTable } from "./refusal-report.ts";
 import { Effect } from "effect";
 import { assertImageOnlyPublication, stageContainer } from "./container.ts";
 import { containerProps, containerPublication } from "./test/container-fixture.ts";
@@ -163,4 +165,20 @@ test("native attributes use only the observed target version, and foreign rollou
       Effect.runPromise(waitForContainerVersion(target, rollout, () => Effect.succeed(current))),
       /container-(version|rollout|configuration)-drift/,
     );
+});
+
+test("container declaration refusals name every changed property and hide private values", () => {
+  const proof = containerPublication();
+  const news = { ...containerProps(), maxInstances: 2, env: { ACCESS_TOKEN: "private-value" } };
+  assert.throws(
+    () => assertImageOnlyPublication(proof.publication, news, containerProps(), proof.previous),
+    (error) => {
+      assert.ok(error instanceof BarrierRefusal);
+      const table = refusalTable(error);
+      assert.match(table, /maxInstances.*1 → 2/);
+      assert.match(table, /env.ACCESS_TOKEN/);
+      assert.ok(!table.includes("private-value"));
+      return true;
+    },
+  );
 });

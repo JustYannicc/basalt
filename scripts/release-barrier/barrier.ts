@@ -20,6 +20,7 @@ export interface ContainerVersionProvider {
   read(container: FrozenContainer): Promise<ContainerAttributes>;
   rollout(container: FrozenContainer): Promise<ContainerRollout>;
   advance(container: FrozenContainer, rollout: ContainerRollout): Promise<void>;
+  verify(container: FrozenContainer, observed: ContainerAttributes): Promise<void>;
   wait(container: FrozenContainer, rollout: ContainerRollout): Promise<ContainerAttributes>;
 }
 
@@ -169,6 +170,14 @@ export async function releaseWorkers(
           version: container.baseline.version,
           unchanged: true,
         });
+        receipt.pendingContainer = {
+          container: container.id,
+          phase: "verification",
+          version: container.baseline.version,
+        };
+        await record();
+        await options.containers!.verify(container, await options.containers!.read(container));
+        delete receipt.pendingContainer;
         await record();
         continue;
       }
@@ -204,6 +213,7 @@ export async function releaseWorkers(
       assertConfiguredContainer(observed, container);
       if (observed.version !== rollout.targetVersion || observed.activeRolloutId)
         throw new BarrierRefusal("container-version-drift", container.id);
+      await options.containers!.verify(container, observed);
       delete receipt.pendingContainer;
       await record();
     }

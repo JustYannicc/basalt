@@ -29,6 +29,7 @@ import { readFileSync } from "node:fs";
 import { RuntimeRecovery, handleRuntimeRecovery } from "../../src/pool/runtime-recovery.ts";
 import { readRuntimeHealth } from "../../src/pool/runtime-health.ts";
 import type { RecoveryReceipt } from "./recovery.ts";
+import { readRecoveryProgress } from "./recovery-manifest.ts";
 import type { ContainerAttributes } from "./container.ts";
 
 interface FixtureWorker extends Resource<"Cloudflare.Worker", {}, Worker["Attributes"]> {}
@@ -322,7 +323,7 @@ for (const scenario of [
       (compiled) =>
         Effect.gen(function* () {
           yield* Apply.apply(yield* Plan.make(compiled));
-          const attempt = (previous?: RecoveryReceipt) =>
+          const attempt = (previous?: ReturnType<typeof readRecoveryProgress>) =>
             recoverStack(
               compiled,
               proof.description,
@@ -397,7 +398,9 @@ for (const scenario of [
             assert.equal(interrupted._tag, "Failure");
             assert.equal(active.get("PoolWorker"), "old-PoolWorker");
             assert.equal(active.get("Api"), "new-Api");
-            result = yield* attempt(recoveries.at(-1));
+            result = yield* attempt(
+              readRecoveryProgress(JSON.parse(JSON.stringify(recoveries.at(-1)))),
+            );
           } else result = yield* attempt();
           const state = yield* yield* State;
           const saved = yield* state.get({

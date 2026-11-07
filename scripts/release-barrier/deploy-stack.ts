@@ -155,6 +155,11 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
                   () => (options.io?.observeContainer ?? observeContainer)(container.baseline),
                 ),
               );
+              return observed;
+            },
+            async verify(container, observed) {
+              const staged = prepared.containers.get(container.id);
+              if (!staged) throw new BarrierRefusal("missing-prepared-container", container.id);
               const worker = prepared.captured.get("PoolWorker")?.request;
               if (!worker) throw new BarrierRefusal("missing-pool-serving-target");
               const serving = await run(
@@ -172,7 +177,6 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
                 hash: staged.publication.proposed.hash,
                 dev: staged.publication.proposed.dev,
               });
-              return observed;
             },
           },
         }),

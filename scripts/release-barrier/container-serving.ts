@@ -21,6 +21,7 @@ export const verifyServingContainer = (
     return yield* Effect.tryPromise({
       try: async () => {
         // Move the existing 240-second image verification before native commit. Keep readiness within its existing 180-second bound.
+        const origin = `https://${brand.host}`;
         const deadline = liveDeadline(240_000);
         const started = Date.now();
         const opening = openDeploymentReadiness({
@@ -57,7 +58,7 @@ export const verifyServingContainer = (
             ["/v1/models", 401],
           ] as const) {
             const response = await bounded(
-              fetcher(`https://${brand.host}${path}`, {
+              fetcher(`${origin}${path}`, {
                 method: "GET",
                 redirect: "manual",
                 signal: AbortSignal.any([deadline.signal, AbortSignal.timeout(15_000)]),
