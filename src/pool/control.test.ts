@@ -231,7 +231,6 @@ test("only GET pool is available to a non-owner; empty reads create no Home reso
       readAt: {
         membership: f.deps.now().toISOString(),
         credentials: f.deps.now().toISOString(),
-        quota: f.deps.now().toISOString(),
       },
     },
   });
@@ -410,6 +409,62 @@ test("GET pool bypasses an in-flight attribution request and never loads its sta
     release.resolve();
     await Promise.all([poll, read]);
   }
+});
+
+test("empty pool view ignores a failed global credential read", async () => {
+  const f = await fixture();
+  f.home.override = (path) =>
+    path.endsWith("/credentials") ? Response.json({}, { status: 503 }) : undefined;
+  const response = await f.call("/pool");
+  assert.equal(response.status, 200);
+  const view = (await response.json()) as PoolView;
+  assert.deepEqual(view.accounts, []);
+  assert.equal(view.reading?.source, "live");
+  assert.equal(view.reading?.revalidationFailed, false);
+  assert.equal(view.reading?.readAt.credentials, undefined);
+  assert.equal(view.reading?.readAt.quota, undefined);
+});
+
+test("empty pool view cancels a hung credential read without waiting for it", async () => {
+  const f = await fixture();
+  const entered = deferred(),
+    release = deferred();
+  let aborted = false;
+  f.home.override = async (path, init) => {
+    if (path.endsWith("/credentials")) {
+      init?.signal?.addEventListener(
+        "abort",
+        () => {
+          aborted = true;
+        },
+        { once: true },
+      );
+      entered.resolve();
+      await release.promise;
+    }
+    return undefined;
+  };
+  const reading = f.call("/pool");
+  await entered.promise;
+  try {
+    await withoutWaitingForGate(reading);
+    const response = await reading;
+    assert.equal(response.status, 200);
+    assert.deepEqual(((await response.json()) as PoolView).accounts, []);
+    assert.equal(aborted, true);
+  } finally {
+    release.resolve();
+    await reading;
+  }
+});
+
+test("populated pool view still refuses a failed required credential read", async () => {
+  const f = await fixture();
+  f.home.addFile("a");
+  f.home.addGroup("pool-a", 10, ["a"]);
+  f.home.override = (path) =>
+    path.endsWith("/credentials") ? Response.json({}, { status: 503 }) : undefined;
+  await error(await f.call("/pool"), "backend_unavailable", 503);
 });
 
 test("pool view starts credentials before membership finishes", async () => {

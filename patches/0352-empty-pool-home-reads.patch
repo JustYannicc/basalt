@@ -1,0 +1,508 @@
+diff --git a/e2e/support/pool-empty-home.ts b/e2e/support/pool-empty-home.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..9ba29998d2442b9791371089c9ee30168fe436b5
+--- /dev/null
++++ b/e2e/support/pool-empty-home.ts
+@@ -0,0 +1,183 @@
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import { Deferred, Effect, Layer, Ref, Schema } from "effect";
++import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
++import { createHmac } from "node:crypto";
++import { createServer } from "node:http";
++
++const key = Buffer.from("ab".repeat(32), "hex");
++export const poolMessage = (kind: string, value: unknown) => {
++  const signed = `${kind}.${Buffer.from(JSON.stringify(value)).toString("base64url")}`;
++  return `${signed}.${createHmac("sha256", key).update(signed).digest("base64url")}`;
++};
++export const emptyHomeAccount = "synthetic-linked-account";
++export const unrelatedHomeAccount = "synthetic-unrelated-account";
++export const homeSecret = "synthetic-private-home-secret";
++export const observedAt = "2026-11-01T12:00:00.000Z";
++
++/** Only Home's external HTTP and container lifecycle are synthetic. Worker policy stays real. */
++export const poolEmptyHome = (pool: string) =>
++  Effect.gen(function* () {
++    const calls = yield* Ref.make<readonly string[]>([]);
++    let linked = false;
++    let remaining = 0.75;
++    let credentialsAvailable = true;
++    const users: { id: number; username: string }[] = [];
++    let gate:
++      | {
++          credentials: Deferred.Deferred<void>;
++          quota: Deferred.Deferred<void>;
++          release: Deferred.Deferred<void>;
++        }
++      | undefined;
++    const handler = Effect.gen(function* () {
++      const request = yield* HttpServerRequest.HttpServerRequest;
++      const url = new URL(request.url, "http://home.test");
++      const path = url.pathname;
++      yield* Ref.update(calls, (items) => [...items, `${request.method} ${path}`]);
++      if (path === "/ready")
++        return HttpServerResponse.jsonUnsafe({
++          boot_id: "synthetic-home-boot",
++          started_at: observedAt,
++        });
++      if (path === "/native-policy") {
++        const body = yield* request.json.pipe(
++          Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ projection: Schema.String }))),
++        );
++        const [kind, encoded] = body.projection.split(".");
++        if (kind !== "sbm-policy1" || encoded === undefined)
++          return HttpServerResponse.empty({ status: 401 });
++        const signed = `${kind}.${encoded}`;
++        const expected = `${signed}.${createHmac("sha256", key).update(signed).digest("base64url")}`;
++        if (expected !== body.projection) return HttpServerResponse.empty({ status: 401 });
++        const value = yield* Schema.decodeUnknownEffect(
++          Schema.fromJsonString(Schema.Struct({ revision: Schema.Number })),
++        )(Buffer.from(encoded, "base64url").toString());
++        return HttpServerResponse.jsonUnsafe({ installed: true, revision: value.revision });
++      }
++      if (request.headers["x-management-key"] !== "synthetic-management-key")
++        return HttpServerResponse.empty({ status: 401 });
++      if (path === "/v8/management/users") {
++        if (request.method === "POST") {
++          const user = yield* request.json.pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ username: Schema.String }))),
++          );
++          users.push({ id: users.length + 1, username: user.username });
++        }
++        return HttpServerResponse.jsonUnsafe({ users });
++      }
++      if (path === "/v8/management/channel-groups")
++        return HttpServerResponse.jsonUnsafe({
++          channel_groups: [
++            { id: 1, channel_name: `signalbox-pool-${pool}` },
++            { id: 2, channel_name: "signalbox-pool-unrelated" },
++          ],
++        });
++      if (path === "/v8/management/channel-group-details") {
++        const group = url.searchParams.get("channel_group_id");
++        return HttpServerResponse.jsonUnsafe({
++          channel_group_details:
++            group === "2"
++              ? [{ id: 2, channel_group_id: 2, auth_id: unrelatedHomeAccount }]
++              : linked
++                ? [{ id: 1, channel_group_id: 1, auth_id: emptyHomeAccount }]
++                : [],
++        });
++      }
++      if (path === "/v8/management/credentials") {
++        const held = gate;
++        if (held) {
++          yield* Deferred.succeed(held.credentials, undefined);
++          yield* Deferred.await(held.release);
++        }
++        if (!credentialsAvailable) return HttpServerResponse.empty({ status: 503 });
++        return HttpServerResponse.jsonUnsafe({
++          files: [
++            {
++              id: emptyHomeAccount,
++              provider: "codex",
++              label: "Selected account",
++              token: homeSecret,
++            },
++            {
++              id: unrelatedHomeAccount,
++              provider: "codex",
++              label: "Unrelated private label",
++              token: homeSecret,
++            },
++          ],
++        });
++      }
++      if (path === `/v8/management/quota/credentials/${emptyHomeAccount}`) {
++        const held = gate;
++        if (held) {
++          yield* Deferred.succeed(held.quota, undefined);
++          yield* Deferred.await(held.release);
++        }
++        return HttpServerResponse.jsonUnsafe({
++          credential: { credential_id: emptyHomeAccount, token: homeSecret },
++          windows: [
++            {
++              id: "five-hour",
++              scope: "account",
++              scope_id: "codex",
++              window_seconds: 18_000,
++              remaining_ratio: remaining,
++              observed_at: observedAt,
++            },
++          ],
++          collection: { status: "success", freshness: "fresh", observed_at: observedAt },
++          reset_credits: null,
++        });
++      }
++      return HttpServerResponse.jsonUnsafe({ error: "unexpected_home_request" }, { status: 404 });
++    });
++    const services = yield* Layer.build(
++      HttpRouter.serve(HttpRouter.add("*", "/*", handler), {
++        disableLogger: true,
++        disableListenLog: true,
++      }).pipe(
++        Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
++      ),
++    );
++    const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
++    if (!("port" in server.address)) return yield* Effect.die("Home fixture requires TCP");
++    return {
++      origin: `http://127.0.0.1:${server.address.port}`,
++      calls: Ref.get(calls),
++      clearCalls: Ref.set(calls, []),
++      link: Effect.sync(() => {
++        linked = true;
++      }),
++      unlink: Effect.sync(() => {
++        linked = false;
++      }),
++      remaining: (value: number) =>
++        Effect.sync(() => {
++          remaining = value;
++        }),
++      credentialsAvailable: (value: boolean) =>
++        Effect.sync(() => {
++          credentialsAvailable = value;
++        }),
++      hold: Effect.gen(function* () {
++        const held = {
++          credentials: yield* Deferred.make<void>(),
++          quota: yield* Deferred.make<void>(),
++          release: yield* Deferred.make<void>(),
++        };
++        gate = held;
++        yield* Effect.addFinalizer(() => Deferred.succeed(held.release, undefined));
++        return {
++          credentials: Deferred.await(held.credentials),
++          quota: Deferred.await(held.quota),
++          release: Deferred.succeed(held.release, undefined).pipe(
++            Effect.tap(() =>
++              Effect.sync(() => {
++                if (gate === held) gate = undefined;
++              }),
++            ),
++          ),
++        };
++      }),
++    };
++  });
+diff --git a/e2e/support/pool-worker-runtime.ts b/e2e/support/pool-worker-runtime.ts
+index a578f1ec843e7cfbc55cd9a33bf4ead429cbbfdd..54d3fa69e843998ac18a5eb9f717980cbe7bbe16 100644
+--- a/e2e/support/pool-worker-runtime.ts
++++ b/e2e/support/pool-worker-runtime.ts
+@@ -5,16 +5,16 @@ import {
+   Response as RuntimeResponse,
+   Request as RuntimeRequest,
+ } from "miniflare";
+-import { Effect, FileSystem, Path, Redacted, Schema } from "effect";
++import { Config, Effect, FileSystem, Path, Redacted, Schema } from "effect";
+ import { driver, Target } from "./platform.ts";
+ 
+ /** Full production pool routes and durable storage, forwarding authority reads to managed Cloud. */
+-export const poolWorkerRuntime = (toolsOrigin: string) =>
++export const poolWorkerRuntime = (toolsOrigin: string, homeOrigin?: string) =>
+   Effect.gen(function* () {
+     const path = yield* Path.Path,
+       fs = yield* FileSystem.FileSystem,
+       target = yield* Target;
+-    const root = path.resolve("..");
++    const root = yield* Config.String("BASALT_ROOT").pipe(Config.withDefault(path.resolve("..")));
+     const configuration = yield* fs
+       .readFileString(`${target.directory}/sso-database.json`)
+       .pipe(
+@@ -26,9 +26,35 @@ export const poolWorkerRuntime = (toolsOrigin: string) =>
+           ),
+         ),
+       );
+-    // Local workerd has no jurisdiction placement. Only that namespace capability is adapted.
++    // The optional Home peer emulates container ports; production policy and storage stay intact.
+     const entry = `import worker from "./src/pool/worker.ts";
+-      export {PoolContainer,PoolOperations} from "./src/pool/worker.ts";
++      export {PoolOperations} from "./src/pool/worker.ts";
++      ${
++        homeOrigin === undefined
++          ? 'export {PoolContainer} from "./src/pool/worker.ts";'
++          : `
++      import {PoolContainer as ProductionPoolContainer} from "./src/pool/worker.ts";
++      export class PoolContainer extends ProductionPoolContainer {
++        constructor(ctx,env) {
++          let running=false;
++          const container={
++            get running(){return running},
++            start(){running=true},
++            async destroy(){running=false},
++            async setInactivityTimeout(){},
++            getTcpPort(port){return {fetch(input,init){
++              const request=new Request(input,init);
++              request.headers.set("x-e2e-container-port",String(port));
++              return env.HOME.fetch(request);
++            }}}
++          };
++          // Native DurableObject construction requires the original branded state.
++          Object.defineProperty(ctx,"container",{value:container,configurable:true});
++          super(ctx,env);
++        }
++      }`
++      }
++
+       export default {fetch(request,env){return worker.fetch(request,{...env,
+         PoolContainer:{jurisdiction:()=>({getByName:(name)=>
+           env.PoolContainer.get(env.PoolContainer.idFromName(name))})}})}};`;
+@@ -69,6 +95,31 @@ export const poolWorkerRuntime = (toolsOrigin: string) =>
+                 },
+                 hyperdrives: { POOL_AUTH_DATABASE: Redacted.value(configuration.database) },
+                 serviceBindings: {
++                  ...(homeOrigin === undefined
++                    ? {}
++                    : {
++                        HOME: (request: RuntimeRequest) => {
++                          const url = new URL(request.url);
++                          const init = {
++                            method: request.method,
++                            headers: Object.fromEntries(request.headers),
++                            body: request.body,
++                            duplex: "half",
++                            redirect: "manual",
++                            signal: request.signal,
++                          } satisfies Parameters<typeof runtimeFetch>[1] & { duplex: "half" };
++                          return runtimeFetch(
++                            new URL(url.pathname + url.search, homeOrigin),
++                            init,
++                          ).then(
++                            (response) =>
++                              new RuntimeResponse(response.body, {
++                                status: response.status,
++                                headers: Object.fromEntries(response.headers),
++                              }),
++                          );
++                        },
++                      }),
+                   TOOLS_SERVICE: (request: RuntimeRequest) => {
+                     if (!authorityAvailable) return new RuntimeResponse(null, { status: 503 });
+                     const url = new URL(request.url);
+diff --git a/e2e/tests/pool-empty-home.spec.ts b/e2e/tests/pool-empty-home.spec.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..738ea0c88fe5f379df03ad149f997cd689127633
+--- /dev/null
++++ b/e2e/tests/pool-empty-home.spec.ts
+@@ -0,0 +1,219 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Fiber, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { Evidence } from "../support/evidence.ts";
++import { driver, RuntimeLive, Target } from "../support/platform.ts";
++import { poolWorkerRuntime } from "../support/pool-worker-runtime.ts";
++import {
++  emptyHomeAccount,
++  homeSecret,
++  observedAt,
++  poolEmptyHome,
++  poolMessage,
++  unrelatedHomeAccount,
++} from "../support/pool-empty-home.ts";
++import { scenarios } from "../test-plan.ts";
++
++const View = Schema.Struct({
++  isOwner: Schema.Boolean,
++  accounts: Schema.Array(
++    Schema.Struct({
++      id: Schema.String,
++      observedAt: Schema.NullOr(Schema.String),
++      freshness: Schema.String,
++      windows: Schema.Array(Schema.Struct({ remainingRatio: Schema.NullOr(Schema.Number) })),
++    }),
++  ),
++  reading: Schema.Struct({
++    source: Schema.Literals(["snapshot", "live"]),
++    revalidationFailed: Schema.Boolean,
++    readAt: Schema.Struct({
++      membership: Schema.String,
++      credentials: Schema.optionalKey(Schema.String),
++      quota: Schema.optionalKey(Schema.String),
++    }),
++  }),
++});
++const credentials = "GET /v8/management/credentials";
++const quota = `GET /v8/management/quota/credentials/${emptyHomeAccount}`;
++
++layer(RuntimeLive, { excludeTestServices: true })("Empty Home pool reads", (it) => {
++  it.effect(scenarios.poolEmptyHome.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors,
++          api = yield* Api,
++          target = yield* Target,
++          evidence = yield* Evidence;
++        const pool = `app_${crypto.randomUUID()}`;
++        const identities = yield* Effect.forEach(
++          [actors.owner, actors.member, actors.admin],
++          (actor) =>
++            api
++              .request(actor, "GET", "/api/viewer")
++              .pipe(
++                Effect.flatMap((response) =>
++                  body(Schema.Struct({ userId: Schema.String }), response),
++                ),
++              ),
++        );
++        const owner = identities[0]!.userId,
++          member = identities[1]!.userId,
++          outsider = identities[2]!.userId;
++        const home = yield* poolEmptyHome(pool);
++        const worker = yield* poolWorkerRuntime(target.metadata.origin, home.origin);
++        // This is a retained-token contract fixture, not a second account-link implementation.
++        const token = poolMessage("sbp1", { pool, owner, organization: actors.organization.id });
++        const headers = (user: string) => ({
++          authorization: `Bearer ${token}`,
++          "x-signalbox-caller": user,
++        });
++        const signed = (path: string, kind: string, value: object) => {
++          const at = Date.now();
++          return worker.request(path, {
++            method: "POST",
++            headers: { "content-type": "application/json" },
++            body: JSON.stringify({
++              envelope: poolMessage(kind, { ...value, at, expiresAt: at + 30_000 }),
++            }),
++          });
++        };
++        const audience = (users: readonly string[]) =>
++          signed("/pool/v1/access", "sba1", {
++            action: "audience",
++            pools: [
++              {
++                pool,
++                owner,
++                organization: actors.organization.id,
++                name: "Empty Home test pool",
++                authorization: "executor-app-v1",
++                users,
++                managers: [owner],
++              },
++            ],
++          });
++        const invalidate = () =>
++          signed("/pool/v1/membership", "sbm1", {
++            pool,
++            organization: actors.organization.id,
++          });
++        const timings: { phase: string; durationMs: number }[] = [];
++        const read = (user: string, phase: string, fresh = true) =>
++          Effect.gen(function* () {
++            const started = performance.now();
++            const response = yield* worker.request(`/pool/v1/pool${fresh ? "?fresh=true" : ""}`, {
++              headers: headers(user),
++            });
++            expect(response.status).toBe(200);
++            const raw = yield* driver("read public pool view", () => response.text());
++            timings.push({ phase, durationMs: performance.now() - started });
++            expect(raw).not.toContain(homeSecret);
++            expect(raw).not.toContain(unrelatedHomeAccount);
++            expect(raw).not.toContain("Unrelated private label");
++            return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(View))(raw);
++          });
++        expect((yield* audience([owner, member])).status).toBe(200);
++        yield* home.credentialsAvailable(false);
++        yield* home.clearCalls;
++        const empty = yield* read(owner, "empty-fresh");
++        expect(
++          (yield* home.calls).filter((call) => call === credentials).length,
++        ).toBeLessThanOrEqual(1);
++        expect((yield* home.calls).some((call) => call.includes("/quota/credentials/"))).toBe(
++          false,
++        );
++        expect(empty.accounts).toEqual([]);
++        expect(empty.reading.source).toBe("live");
++        expect(Number.isFinite(Date.parse(empty.reading.readAt.membership))).toBe(true);
++        expect(empty.reading.readAt).not.toHaveProperty("credentials");
++        expect(empty.reading.readAt).not.toHaveProperty("quota");
++        expect((yield* read(member, "empty-member")).isOwner).toBe(false);
++        expect(empty.isOwner).toBe(true);
++        const beforeDenied = yield* home.calls;
++        expect(
++          (yield* worker.request("/pool/v1/pool", { headers: headers(outsider) })).status,
++        ).toBe(403);
++        expect(
++          (yield* worker.request(`/pool/v1/accounts/${emptyHomeAccount}`, {
++            method: "DELETE",
++            headers: headers(member),
++          })).status,
++        ).toBe(403);
++        expect(
++          (yield* worker.request("/pool/v1/pool", {
++            headers: {
++              authorization: "Bearer invalid",
++              "x-signalbox-caller": owner,
++            },
++          })).status,
++        ).toBe(401);
++        expect(yield* home.calls).toEqual(beforeDenied);
++
++        // Home owns actual channel membership; its signed reservation invalidates the old empty view.
++        yield* home.credentialsAvailable(true);
++        yield* home.link;
++        expect((yield* invalidate()).status).toBe(204);
++        yield* home.clearCalls;
++        const held = yield* home.hold;
++        const pending = yield* read(owner, "linked-live", false).pipe(Effect.forkChild);
++        yield* Effect.all([held.credentials, held.quota], { concurrency: 2 });
++        yield* held.release;
++        const linked = yield* Fiber.join(pending);
++        expect(linked.reading.source).toBe("live");
++        expect(linked.accounts.map((account) => account.id)).toEqual([emptyHomeAccount]);
++        expect(linked.accounts[0]!.observedAt).toBe(observedAt);
++        expect(linked.accounts[0]!.windows[0]!.remainingRatio).toBe(0.75);
++        expect(Number.isFinite(Date.parse(linked.reading.readAt.credentials ?? ""))).toBe(true);
++        expect(Number.isFinite(Date.parse(linked.reading.readAt.quota ?? ""))).toBe(true);
++        expect((yield* home.calls).filter((call) => call === credentials)).toHaveLength(1);
++        expect((yield* home.calls).filter((call) => call === quota)).toHaveLength(1);
++        expect(
++          (yield* home.calls).some((call) =>
++            call.includes(`/quota/credentials/${unrelatedHomeAccount}`),
++          ),
++        ).toBe(false);
++        yield* home.remaining(0.25);
++        const reread = yield* read(member, "linked-fresh");
++        expect(reread.accounts[0]!.windows[0]!.remainingRatio).toBe(0.25);
++        expect(reread.accounts[0]!.observedAt).toBe(observedAt);
++        expect((yield* home.calls).filter((call) => call === credentials)).toHaveLength(2);
++        expect((yield* home.calls).filter((call) => call === quota)).toHaveLength(2);
++
++        // Unlink retains both global accounts and makes the populated saved view unusable immediately.
++        yield* home.unlink;
++        expect((yield* invalidate()).status).toBe(204);
++        yield* home.credentialsAvailable(false);
++        yield* home.clearCalls;
++        const unlinked = yield* read(owner, "unlinked-live", false);
++        expect(unlinked.reading.source).toBe("live");
++        expect(unlinked.accounts).toEqual([]);
++        expect(unlinked.reading.readAt).not.toHaveProperty("credentials");
++        expect(unlinked.reading.readAt).not.toHaveProperty("quota");
++        expect(
++          (yield* home.calls).filter((call) => call === credentials).length,
++        ).toBeLessThanOrEqual(1);
++        expect((yield* home.calls).includes(quota)).toBe(false);
++        const retained = yield* read(member, "empty-snapshot", false);
++        expect(retained.reading.source).toBe("snapshot");
++        expect(retained.reading.readAt).toEqual(unlinked.reading.readAt);
++        expect(retained.accounts).toEqual([]);
++        expect((yield* audience([owner])).status).toBe(200);
++        expect((yield* worker.request("/pool/v1/pool", { headers: headers(member) })).status).toBe(
++          403,
++        );
++        yield* evidence.json("pool-empty-home-public-proof.json", {
++          timings,
++          calls: yield* home.calls,
++          emptyIndependentOfCredentialFailure: true,
++          credentialReadMayStartSpeculatively: true,
++          nonemptyReadsConcurrent: true,
++          retainedSnapshotInvalidatedOnLinkAndUnlink: true,
++        });
++      }),
++    ),
++  );
++});
