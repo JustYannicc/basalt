@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-name-account-pending-identity",
+  "file": "0390-name-account-pending-identity.patch",
+  "content_sha256": "445073aa75a0e4fd76196230b6bb1580a34e210724234f540e163bb663d797a9",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
