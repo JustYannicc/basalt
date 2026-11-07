@@ -1,3 +1,29 @@
+diff --git a/apps/hosted/web/src/contracts/apps.ts b/apps/hosted/web/src/contracts/apps.ts
+index 6c3bb54..6a34ec9 100644
+--- a/apps/hosted/web/src/contracts/apps.ts
++++ b/apps/hosted/web/src/contracts/apps.ts
+@@ -566,9 +566,21 @@ export const PendingOAuth = Schema.Struct({
+   /** A reconnect keeps its account name, so completion does not ask for one. */
+   reconnect: Schema.optionalKey(Schema.Boolean),
+   manualClient: Schema.optionalKey(Schema.Boolean),
++  guided: Schema.optionalKey(
++    Schema.Struct({ requirement: Schema.NonEmptyString, method: Schema.NonEmptyString }),
++  ),
+   /** The page the sign-in started from when it is not the app's own: onboarding's account step. */
+   returnTo: Schema.optionalKey(OAuthReturn),
+ });
++/** The authorized callback's service response is shown once, never persisted or logged. */
++export const guidedOAuthFailureAtom = Atom.make<
++  | {
++      readonly context: typeof PendingOAuth.Type;
++      readonly message: string;
++    }
++  | undefined
++>(undefined).pipe(Atom.keepAlive);
++
+ export { appError } from "./errors.ts";
+ 
+ const liveApps = Atom.family((key: AppKey) => pollingQuery(appQuery(key)));
 diff --git a/apps/hosted/web/src/implementation/pages/accounts-client.tsx b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
 index 9c3388b..d86c38f 100644
 --- a/apps/hosted/web/src/implementation/pages/accounts-client.tsx
@@ -28,7 +54,7 @@ index ca0c961..b197323 100644
              onPendingChange={setPending}
              onSaved={() => setConnection(undefined)}
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
-index 494d4bb..916f9d8 100644
+index 494d4bb..afb68e1 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 @@ -1,4 +1,5 @@
@@ -58,12 +84,13 @@ index 494d4bb..916f9d8 100644
                redirectUri={redirectUri}
                account={connection.account}
                unavailable={(method) =>
-@@ -572,7 +578,35 @@ type ConnectionDialog = {
+@@ -572,7 +578,49 @@ type ConnectionDialog = {
  };
  
  /** Keep one provider snapshot and draft from the first dialog through submission. */
 -export function AppConnectionDialogContent({
 +export function AppConnectionDialogContent(props: Parameters<typeof BoundConnectionDialog>[0]) {
++  const [notice, setNotice] = useState(props.notice);
 +  return (
 +    <ConnectionMethodChoices
 +      app={props.app}
@@ -72,7 +99,11 @@ index 494d4bb..916f9d8 100644
 +      method={props.method}
 +      guidance={props.connectionGuidance}
 +      fixed={props.account !== undefined}
-+      onPendingChange={props.onPendingChange}
++      onChange={() => setNotice(undefined)}
++      onPendingChange={(pending) => {
++        if (pending) setNotice(undefined);
++        props.onPendingChange(pending);
++      }}
 +    >
 +      {(choice) => (
 +        <BoundConnectionDialog
@@ -81,10 +112,19 @@ index 494d4bb..916f9d8 100644
 +          slot={choice.slot}
 +          requirement={props.app.requirements.accounts[choice.slot]!}
 +          method={choice.method}
-+          title={choice.slot === props.slot ? props.title : undefined}
++          title={
++            props.connectionGuidance?.some(
++              (entry) => entry.requirement === choice.slot && entry.method === choice.method,
++            )
++              ? undefined
++              : choice.slot === props.slot
++                ? props.title
++                : undefined
++          }
 +          unavailable={choice.slot === props.slot ? props.unavailable : choice.unavailable}
 +          onPendingChange={choice.onPendingChange}
 +          alternatives={choice.actions}
++          notice={notice}
 +        />
 +      )}
 +    </ConnectionMethodChoices>
@@ -95,25 +135,27 @@ index 494d4bb..916f9d8 100644
    app,
    scope,
    slot,
-@@ -581,6 +615,8 @@ export function AppConnectionDialogContent({
+@@ -581,6 +629,9 @@ export function AppConnectionDialogContent({
    title,
    connectionNotices = [],
    oauthDeferrals,
 +  connectionGuidance,
 +  alternatives,
++  notice,
    redirectUri,
    account,
    initialAccount,
-@@ -603,6 +639,8 @@ export function AppConnectionDialogContent({
+@@ -603,6 +654,9 @@ export function AppConnectionDialogContent({
    readonly connectionNotices?: readonly CatalogConnectionNotice[] | undefined;
    /** The catalog's guidance for methods with no automatic or registered OAuth client. */
    readonly oauthDeferrals?: readonly CatalogOAuthDeferral[] | undefined;
 +  readonly connectionGuidance?: readonly CatalogConnectionGuidance[] | undefined;
 +  readonly alternatives?: ReactNode;
++  readonly notice?: string | undefined;
    readonly redirectUri: string;
    readonly onPendingChange: (pending: boolean) => void;
    readonly onSaved: () => void;
-@@ -627,6 +665,7 @@ export function AppConnectionDialogContent({
+@@ -627,11 +681,17 @@ export function AppConnectionDialogContent({
    return (
      <>
        <ConnectionDialogHeader
@@ -121,7 +163,17 @@ index 494d4bb..916f9d8 100644
          provider={form.provider}
          title={title}
          action={account ? "Reconnect" : "Connect"}
-@@ -699,6 +738,8 @@ export function AppConnectionDialogContent({
+         notice={account ? `Apps using ${account.label} will use the new credentials.` : undefined}
+       />
++      {notice && (
++        <p role="alert" className="text-sm leading-relaxed text-muted-foreground">
++          {notice}
++        </p>
++      )}
+       <ConnectionNotices provider={form.provider} notices={connectionNotices} />
+       {siteRule !== undefined && account !== undefined && !oldAccountNeedsSite && (
+         <p className="text-sm text-muted-foreground">
+@@ -699,6 +759,8 @@ export function AppConnectionDialogContent({
              form={form}
              unavailable={unavailable}
              oauthDeferrals={oauthDeferrals}
@@ -130,7 +182,7 @@ index 494d4bb..916f9d8 100644
              checks={requirement.health === true}
              onPendingChange={onPendingChange}
              onSaved={onSaved}
-@@ -723,12 +764,16 @@ function AppConnectionFields({
+@@ -723,12 +785,16 @@ function AppConnectionFields({
    initialAccount,
    unavailable,
    oauthDeferrals,
@@ -147,7 +199,16 @@ index 494d4bb..916f9d8 100644
    /** The slot's provider defines a check, so entered credentials can be validated. */
    readonly checks: boolean;
    readonly app: App;
-@@ -802,6 +847,8 @@ function AppConnectionFields({
+@@ -784,7 +850,7 @@ function AppConnectionFields({
+   const fields = (selection: IdentityConsentSelection) => (
+     <HostedAccountForm<HostedOAuthSignIn & { readonly connection: AccountConnectionId }>
+       provider={form.provider}
+-      site={pending?.target.site ?? account?.site}
++      site={pending?.target.site ?? account?.site ?? site}
+       app={checks ? app : undefined}
+       {...(account ? { account } : {})}
+       // Only a reconnect or a chosen site needs the connection's own setup, and reading it creates
+@@ -802,6 +868,8 @@ function AppConnectionFields({
        initialMethod={form.method}
        unavailable={unavailable}
        oauthDeferrals={oauthDeferrals}
@@ -156,7 +217,24 @@ index 494d4bb..916f9d8 100644
        submit={submit}
        start={(input) =>
          account !== undefined ||
-@@ -833,7 +880,10 @@ function AppConnectionFields({
+@@ -822,6 +890,16 @@ function AppConnectionFields({
+             redirectUri: value.redirectUri,
+             ...(account ? { reconnect: true } : {}),
+             manualClient: value.manualClient,
++            ...(account === undefined &&
++            returnTo === undefined &&
++            connectionGuidance?.some(
++              (entry) =>
++                entry.requirement === slot &&
++                entry.method === value.method &&
++                entry.signIn !== undefined,
++            )
++              ? { guided: { requirement: slot, method: value.method } }
++              : {}),
+             ...(returnTo === undefined ? {} : { returnTo }),
+           },
+           value,
+@@ -833,7 +911,10 @@ function AppConnectionFields({
    const withHandoff = (content: ReactNode) => (
      <>
        {handoff.step}
@@ -168,8 +246,24 @@ index 494d4bb..916f9d8 100644
      </>
    );
    if (account !== undefined) return withHandoff(fields({}));
+@@ -865,6 +946,15 @@ function AppConnectionFields({
+             connection: value.connection,
+             redirectUri: value.redirectUri,
+             manualClient: false,
++            ...(returnTo === undefined &&
++            connectionGuidance?.some(
++              (entry) =>
++                entry.requirement === slot &&
++                entry.method === form.method &&
++                entry.signIn !== undefined,
++            )
++              ? { guided: { requirement: slot, method: form.method } }
++              : {}),
+             ...(returnTo === undefined ? {} : { returnTo }),
+           },
+           value,
 diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
-index ff7774b..bf41f96 100644
+index ff7774b..7d81160 100644
 --- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
 +++ b/apps/hosted/web/src/implementation/pages/connect-account.tsx
 @@ -21,7 +21,10 @@ import { createContext, useContext, useEffect, useRef, useState } from "react";
@@ -222,7 +316,18 @@ index ff7774b..bf41f96 100644
    /** The host's reason a method can't be connected here; such methods show greyed out. */
    readonly unavailable?: ((method: string) => string | undefined) | undefined;
    /** Absent where the product can't run app sign-ins; the form then says it can't connect them. */
-@@ -330,6 +341,11 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -266,7 +277,9 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+   >;
+   readonly onSaved: (account: Account) => void;
+   /** "navigating" keeps the action busy while the browser leaves; "done" keeps this page. */
+-  readonly onAuthorized: (value: A & { readonly manualClient: boolean }) => "navigating" | "done";
++  readonly onAuthorized: (
++    value: A & { readonly manualClient: boolean; readonly method: string },
++  ) => "navigating" | "done";
+   readonly onPendingChange?: (pending: boolean) => void;
+ }) {
+   const { organization } = useOrganizationRoute();
+@@ -330,6 +343,11 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
    return (
      <AccountForm
        provider={provider}
@@ -234,18 +339,27 @@ index ff7774b..bf41f96 100644
        site={site}
        {...(account ? { account } : {})}
        initialMethod={method}
-@@ -371,6 +387,9 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -371,6 +389,10 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
            {({ setup, action, refresh, loading, failed }) => (
              <OAuthFields
                providerName={provider.definition.name}
++              site={site}
 +              guidance={connectionGuidance?.find(
 +                (entry) => entry.requirement === requirement && entry.method === method,
 +              )}
                Failure={HostedFailure}
                setup={setup}
                setupLoading={loading}
+@@ -413,6 +435,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+                 inOrder(() => start({ method, ...input })).then((exit) =>
+                   Exit.map(exit, (value) => ({
+                     ...value,
++                    method,
+                     // Entered details reopen after a failed return; chosen clients do not.
+                     manualClient:
+                       input.client !== undefined && Schema.is(OAuthClientInput)(input.client),
 diff --git a/apps/hosted/web/src/implementation/pages/connection-dialog.tsx b/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
-index 9b49b1d..caa375e 100644
+index 9b49b1d..facd149 100644
 --- a/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
 +++ b/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
 @@ -1,6 +1,6 @@
@@ -256,7 +370,7 @@ index 9b49b1d..caa375e 100644
  import type { HostedAccountConnection } from "@executor-js/hosted-server";
  import type { CatalogConnectionNotice } from "@executor-js/catalog/contracts";
  import { AsyncResult } from "effect/reactivity";
-@@ -11,7 +11,7 @@ import {
+@@ -11,10 +11,11 @@ import {
    DialogTitle,
    DialogDescription,
  } from "@executor-js/ui/components/dialog";
@@ -265,7 +379,11 @@ index 9b49b1d..caa375e 100644
  import { providerDisplayUrl } from "@executor-js/ui/contracts/dashboard";
  import { DetailSkeleton } from "@executor-js/ui/dashboard/loading";
  import { QueryResult, useQuery } from "@executor-js/ui/dashboard/context";
-@@ -49,12 +49,14 @@ export function ConnectionModal({
++import { useGuidedConnectionRecovery } from "./guided-connection-recovery.tsx";
+ import { appAtom, connectionAtom } from "../../contracts/apps.ts";
+ import { catalogAtom } from "../../contracts/api.ts";
+ import { useOrganizationRoute } from "../components/organization.tsx";
+@@ -49,12 +50,14 @@ export function ConnectionModal({
  
  /** Use the same provider identity and accessible heading for new accounts and resumed requests. */
  export function ConnectionDialogHeader({
@@ -280,7 +398,7 @@ index 9b49b1d..caa375e 100644
    /** What the dialog connects, such as an app requirement's title; the service's name otherwise. */
    readonly title?: string | undefined;
    readonly action: "Connect" | "Reconnect";
-@@ -63,7 +65,14 @@ export function ConnectionDialogHeader({
+@@ -63,7 +66,14 @@ export function ConnectionDialogHeader({
    const name = title ?? provider.definition.name;
    return (
      <div className="flex items-center gap-3 pr-7">
@@ -296,7 +414,18 @@ index 9b49b1d..caa375e 100644
        <div className="min-w-0">
          <DialogTitle className="text-base">
            {action} {name}
-@@ -179,6 +188,7 @@ function ResumedConnectionDetails({
+@@ -175,10 +185,18 @@ function ResumedConnectionDetails({
+   const catalogEntries = Option.getOrUndefined(AsyncResult.value(catalog.result));
+   const catalogEntry = catalogEntries?.find((entry) => entry.package === app?.copiedFrom?.name);
+   const catalogUnavailable = app?.copiedFrom?.name !== undefined && catalogEntries === undefined;
++  const recovery = useGuidedConnectionRecovery({
++    app,
++    connection,
++    guidance: catalogEntry,
++    onPendingChange,
++  });
++  if (recovery !== undefined) return recovery;
+ 
    return (
      <>
        <ConnectionDialogHeader
@@ -304,7 +433,7 @@ index 9b49b1d..caa375e 100644
          provider={connection.provider}
          action={connection.reconnectAccount ? "Reconnect" : "Connect"}
        />
-@@ -207,6 +217,7 @@ function ResumedConnectionDetails({
+@@ -207,6 +225,7 @@ function ResumedConnectionDetails({
            <OAuthDeferralsContext.Provider value={catalogEntry?.oauthDeferrals}>
              <ConnectionFields
                connection={connection}
@@ -314,114 +443,525 @@ index 9b49b1d..caa375e 100644
                onSaved={() => {
 diff --git a/apps/hosted/web/src/implementation/pages/connection-method-choices.tsx b/apps/hosted/web/src/implementation/pages/connection-method-choices.tsx
 new file mode 100644
-index 0000000..df4e97f
+index 0000000..4dcba73
 --- /dev/null
 +++ b/apps/hosted/web/src/implementation/pages/connection-method-choices.tsx
-@@ -0,0 +1,91 @@
-+import { useState, type ReactNode } from "react";
+@@ -0,0 +1,29 @@
 +import { Option } from "effect";
-+import type { App, AccountScope } from "@executor-js/sdk";
-+import type { CatalogConnectionGuidance } from "@executor-js/catalog/contracts";
-+import { Button } from "@executor-js/ui/components/button";
++import { ConnectionMethodChoices as SharedChoices } from "@executor-js/ui/dashboard/connection-method-choices";
 +import { useQuery } from "@executor-js/ui/dashboard/context";
 +import { appMethodsAtom } from "../../contracts/app-accounts.ts";
 +import { useOrganizationRoute } from "../components/organization.tsx";
 +
-+/** Alternatives can only target this app's declared, currently connectable requirements. */
-+export function ConnectionMethodChoices({
++/** Hosted alternatives follow the destination organization's current connection policy. */
++export function ConnectionMethodChoices(
++  props: Omit<Parameters<typeof SharedChoices>[0], "canConnect" | "unavailable">,
++) {
++  const { organization } = useOrganizationRoute();
++  const policy = useQuery(appMethodsAtom({ organization, app: props.app.id }));
++  const current = Option.getOrUndefined(policy.data);
++  return (
++    <SharedChoices
++      {...props}
++      canConnect={(requirement) =>
++        current?.connections.find((entry) => entry.requirement === requirement)?.canConnect === true
++      }
++      unavailable={(requirement, method) =>
++        current === undefined
++          ? "Sign-in methods are unavailable. Retry loading them."
++          : current.unavailable.find(
++              (entry) => entry.requirement === requirement && entry.method === method,
++            )?.reason
++      }
++    />
++  );
++}
+diff --git a/apps/hosted/web/src/implementation/pages/guided-connection-recovery.tsx b/apps/hosted/web/src/implementation/pages/guided-connection-recovery.tsx
+new file mode 100644
+index 0000000..d525e8f
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/guided-connection-recovery.tsx
+@@ -0,0 +1,106 @@
++import { useEffect } from "react";
++import { useAtomSet, useAtomValue } from "@effect/atom-react";
++import { useNavigate } from "@tanstack/react-router";
++import type { App } from "@executor-js/sdk";
++import type { HostedAccountConnection } from "@executor-js/hosted-server";
++import type { CatalogEntry } from "@executor-js/catalog/contracts";
++import { guidedOAuthFailureAtom } from "../../contracts/apps.ts";
++import { useOrganizationRoute } from "../components/organization.tsx";
++import { AppConnectionDialogContent } from "./app-accounts.tsx";
++
++/** Only the callback tab's exact, still-declared guided target may reopen with alternatives. */
++export function useGuidedConnectionRecovery({
 +  app,
-+  scope,
-+  slot,
-+  method,
++  connection,
 +  guidance,
-+  fixed,
 +  onPendingChange,
-+  children,
++}: {
++  readonly app?: App | undefined;
++  readonly connection: HostedAccountConnection;
++  readonly guidance?: CatalogEntry | undefined;
++  readonly onPendingChange: (pending: boolean) => void;
++}) {
++  const failure = useAtomValue(guidedOAuthFailureAtom);
++  const guided = failure?.context.guided;
++  const requirement = app?.requirements.accounts[connection.target.requirement];
++  if (
++    app !== undefined &&
++    requirement !== undefined &&
++    failure !== undefined &&
++    guided !== undefined &&
++    failure.context.connection === connection.id &&
++    failure.context.app === app.id &&
++    guided.requirement === connection.target.requirement &&
++    connection.reconnectAccount === null &&
++    requirement.provider === connection.provider.id &&
++    requirement.definition.auth[guided.method]?.type === "oauth2" &&
++    guidance?.connectionGuidance?.some(
++      (entry) =>
++        entry.requirement === guided.requirement &&
++        entry.method === guided.method &&
++        entry.signIn !== undefined,
++    )
++  )
++    return (
++      <GuidedConnectionRecovery
++        app={app}
++        connection={connection}
++        failure={failure}
++        guidance={guidance}
++        onPendingChange={onPendingChange}
++      />
++    );
++
++  return undefined;
++}
++
++/** A refused dashboard attempt returns to normal, permission-checked connection choices. */
++function GuidedConnectionRecovery({
++  app,
++  connection,
++  failure,
++  guidance,
++  onPendingChange,
 +}: {
 +  readonly app: App;
-+  readonly scope: AccountScope;
-+  readonly slot: string;
-+  readonly method: string;
-+  readonly guidance?: readonly CatalogConnectionGuidance[] | undefined;
-+  readonly fixed: boolean;
++  readonly connection: HostedAccountConnection;
++  readonly failure: NonNullable<
++    import("effect/reactivity").Atom.Type<typeof guidedOAuthFailureAtom>
++  >;
++  readonly guidance: CatalogEntry;
 +  readonly onPendingChange: (pending: boolean) => void;
-+  readonly children: (choice: {
-+    readonly slot: string;
-+    readonly method: string;
-+    readonly actions: ReactNode;
-+    readonly unavailable: (method: string) => string | undefined;
-+    readonly onPendingChange: (pending: boolean) => void;
-+  }) => ReactNode;
 +}) {
-+  const { organization } = useOrganizationRoute();
-+  const policy = useQuery(appMethodsAtom({ organization, app: app.id }));
-+  const currentPolicy = Option.getOrUndefined(policy.data);
-+  const [selected, setSelected] = useState({ slot, method });
-+  const [pending, setPending] = useState(false);
-+  const unavailable = (slot: string, method: string) =>
-+    currentPolicy === undefined
-+      ? "Sign-in methods are unavailable. Retry loading them."
-+      : currentPolicy.unavailable.find(
-+          (entry) => entry.requirement === slot && entry.method === method,
-+        )?.reason;
-+  const currentGuide = guidance?.find(
-+    (entry) => entry.requirement === selected.slot && entry.method === selected.method,
++  const clear = useAtomSet(guidedOAuthFailureAtom);
++  const navigate = useNavigate();
++  const { slug: organizationSlug } = useOrganizationRoute();
++  useEffect(
++    () => () =>
++      clear((current) => (current?.context.connection === connection.id ? undefined : current)),
++    [clear, connection.id],
 +  );
-+  const alternatives =
-+    fixed || currentGuide === undefined
-+      ? []
-+      : (guidance ?? []).filter((entry) => {
-+          const requirement = app.requirements.accounts[entry.requirement];
-+          const auth = requirement?.definition.auth[entry.method];
-+          return (
-+            entry.alternativeLabel !== undefined &&
-+            !(entry.requirement === selected.slot && entry.method === selected.method) &&
-+            requirement?.scope === scope &&
-+            auth !== undefined &&
-+            !(auth.type === "secrets" && auth.provisioned === true) &&
-+            currentPolicy?.connections.find((policy) => policy.requirement === entry.requirement)
-+              ?.canConnect === true &&
-+            unavailable(entry.requirement, entry.method) === undefined
-+          );
++  const guided = failure.context.guided!;
++  const requirement = app.requirements.accounts[guided.requirement]!;
++  return (
++    <AppConnectionDialogContent
++      app={app}
++      scope={requirement.scope}
++      slot={guided.requirement}
++      requirement={requirement}
++      method={guided.method}
++      redirectUri={failure.context.redirectUri}
++      notice={failure.message}
++      connectionGuidance={guidance.connectionGuidance}
++      connectionNotices={guidance.connectionNotices}
++      oauthDeferrals={guidance.oauthDeferrals}
++      onPendingChange={onPendingChange}
++      onSaved={() => {
++        void navigate({
++          to: "/org/$organizationSlug/apps/$appId",
++          params: { organizationSlug, appId: app.id },
++          search: { view: "accounts" },
++          replace: true,
 +        });
-+  return children({
-+    ...selected,
-+    unavailable: (method) => unavailable(selected.slot, method),
-+    onPendingChange: (value) => {
-+      setPending(value);
-+      onPendingChange(value);
-+    },
-+    actions: alternatives.length > 0 && (
-+      <div className="border-t border-border pt-3">
-+        {alternatives.map((entry) => (
-+          <Button
-+            key={`${entry.requirement}:${entry.method}`}
-+            type="button"
-+            variant="ghost"
-+            className="w-full text-muted-foreground"
-+            disabled={pending}
-+            onClick={() => setSelected({ slot: entry.requirement, method: entry.method })}
++      }}
++    />
++  );
++}
+diff --git a/apps/hosted/web/src/implementation/pages/oauth-callback.tsx b/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
+index 0d9e3e9..84abd45 100644
+--- a/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
++++ b/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
+@@ -1,6 +1,6 @@
+ import { AtomRegistry } from "effect/reactivity";
+ import { RegistryContext } from "@effect/atom-react";
+-import { Link, useNavigate } from "@tanstack/react-router";
++import { useNavigate } from "@tanstack/react-router";
+ import { Effect, Exit, Option, Redacted, Schema, Cause } from "effect";
+ import {
+   AccountConnectionClosed,
+@@ -12,11 +12,11 @@ import {
+ } from "@executor-js/sdk";
+ import { UserFacingError } from "@executor-js/utils/user-facing-error";
+ import { useContext, useEffect, useRef, useState } from "react";
+-import { Button } from "@executor-js/ui/components/button";
+-import { CopyButton } from "@executor-js/ui/dashboard/code";
++import { OAuthRecoveryActions } from "./oauth-recovery-actions.tsx";
+ import { ConnectionStatusPage } from "../components/connection-status.tsx";
+ import { MissingOAuthAccess } from "@executor-js/ui/dashboard/oauth-scopes";
+ import {
++  guidedOAuthFailureAtom,
+   appError,
+   completeOAuthAtom,
+   PendingOAuth,
+@@ -75,7 +75,7 @@ export function OAuthCallbackPage() {
+       return;
+     }
+     /** Map a failed step to the SDK's recovery for its reason. */
+-    const fail = (cause: Cause.Cause<HostedError>) => {
++    const fail = (cause: Cause.Cause<HostedError>, context?: typeof PendingOAuth.Type) => {
+       const error = Cause.findErrorOption(cause);
+       const completion = Option.filter(error, Schema.is(OAuthCompletionFailed));
+       const recovery = Option.match(completion, {
+@@ -91,6 +91,32 @@ export function OAuthCallbackPage() {
+             ? ("setup" as const)
+             : ("restart" as const),
+       });
++      if (
++        context?.guided !== undefined &&
++        context.manualClient !== true &&
++        !context.reconnect &&
++        Option.isSome(completion) &&
++        ["cancelled", "client", "restart"].includes(recovery)
++      ) {
++        const response = completion.value.serviceError;
++        registry.set(guidedOAuthFailureAtom, {
++          context,
++          message:
++            recovery === "cancelled"
++              ? "Sign-in was cancelled. No account was connected."
++              : response !== undefined && "description" in response && response.description
++                ? response.description
++                : "The service refused sign-in. Try again, or use another connection method.",
++        });
++        sessionStorage.removeItem("executor:hosted:oauth");
++        void navigate({
++          to: "/org/$organizationSlug/apps/$appId",
++          params: { organizationSlug: context.organizationSlug, appId: context.app },
++          search: { view: "accounts", connection: context.connection },
++          replace: true,
++        });
++        return;
++      }
+       if (recovery === "cancelled") {
+         sessionStorage.removeItem("executor:hosted:oauth");
+         setState({
+@@ -147,12 +173,18 @@ export function OAuthCallbackPage() {
+       // The organization's pages key their state by the route's slug reference.
+       const organization = organizationSlug;
+       // Only the tab that started this connection knows the page it started from.
+-      const started = Option.filter(stored, (value) => value.connection === connection);
++      const started = Option.filter(
++        stored,
++        (value) => value.connection === connection && value.app === app,
++      );
+       const returnTo = Option.getOrUndefined(started)?.returnTo;
+       const context = {
+         ...resolved.value,
+         organization,
+         manualClient: Option.exists(started, (value) => value.manualClient === true),
++        ...(Option.getOrUndefined(started)?.guided === undefined
++          ? {}
++          : { guided: Option.getOrUndefined(started)!.guided }),
+         ...(returnTo === undefined ? {} : { returnTo }),
+       };
+       setPending(Option.some(context));
+@@ -163,7 +195,7 @@ export function OAuthCallbackPage() {
+       const result = await Effect.runPromiseExit(
+         AtomRegistry.getResult(registry, mutation, { suspendOnWaiting: true }),
+       );
+-      if (Exit.isFailure(result)) return fail(result.cause);
++      if (Exit.isFailure(result)) return fail(result.cause, context);
+       sessionStorage.removeItem("executor:hosted:oauth");
+       // Reconnects keep their name; a new account is named on the page that follows.
+       if (!reconnect)
+@@ -222,92 +254,3 @@ export function OAuthCallbackPage() {
+     </ConnectionStatusPage>
+   );
+ }
+-
+-/** Recovery links resume the original connection or return to the page that started it. */
+-function OAuthRecoveryActions({
+-  pending,
+-  recovery,
+-  fixPrompt,
+-  partial = false,
+-  canRetry = true,
+-}: {
+-  readonly pending: Option.Option<typeof PendingOAuth.Type>;
+-  readonly recovery: Recovery | "cancelled";
+-  readonly fixPrompt?: string | undefined;
+-  /** The service granted only part of the request; a retry asks for the same access again. */
+-  readonly partial?: boolean | undefined;
+-  readonly canRetry?: boolean | undefined;
+-}) {
+-  const brand = useProductBrand();
+-  if (Option.isNone(pending))
+-    return (
+-      <Button asChild>
+-        <Link to="/">Open {brand.name}</Link>
+-      </Button>
+-    );
+-  const context = pending.value;
+-  // Entered clients are saved only after a successful sign-in, so a retry reopens their fields.
+-  const retry =
+-    canRetry && (recovery === "restart" || recovery === "client")
+-      ? {
+-          label:
+-            recovery === "client"
+-              ? "Update client details"
+-              : partial
+-                ? "Grant access again"
+-                : "Try again",
+-          search:
+-            recovery === "client" || context.manualClient === true
+-              ? { client: "change" as const }
+-              : {},
+-        }
+-      : undefined;
+-  const primary = retry === undefined && fixPrompt === undefined;
+-  return (
+-    <>
+-      {fixPrompt !== undefined && (
+-        <CopyButton
+-          code={fixPrompt}
+-          label="Copy fix prompt"
+-          text="Copy fix prompt"
+-          variant="default"
+-          size="default"
+-          inline
+-        />
+-      )}
+-      {retry !== undefined && (
+-        <Button asChild>
+-          <Link
+-            to="/org/$organizationSlug/connections/$connectionId"
+-            params={{
+-              organizationSlug: context.organizationSlug,
+-              connectionId: context.connection,
+-            }}
+-            search={retry.search}
+-          >
+-            {retry.label}
+-          </Link>
+-        </Button>
+-      )}
+-      <Button variant={primary ? "default" : "outline"} asChild>
+-        {context.returnTo !== undefined ? (
+-          <Link
+-            to="/org/$organizationSlug/setup/accounts"
+-            params={{ organizationSlug: context.organizationSlug }}
+-            search={context.returnTo.handoff ?? {}}
+-          >
+-            Back to setup
+-          </Link>
+-        ) : (
+-          <Link
+-            to="/org/$organizationSlug/apps/$appId"
+-            params={{ organizationSlug: context.organizationSlug, appId: context.app }}
+-            search={{ view: "accounts" }}
+-          >
+-            Back to app
+-          </Link>
+-        )}
+-      </Button>
+-    </>
+-  );
+-}
+diff --git a/apps/hosted/web/src/implementation/pages/oauth-recovery-actions.tsx b/apps/hosted/web/src/implementation/pages/oauth-recovery-actions.tsx
+new file mode 100644
+index 0000000..3734b67
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/oauth-recovery-actions.tsx
+@@ -0,0 +1,96 @@
++import { Link } from "@tanstack/react-router";
++import { Option } from "effect";
++import type { OAuthCompletionRecovery } from "@executor-js/sdk";
++import { Button } from "@executor-js/ui/components/button";
++import { CopyButton } from "@executor-js/ui/dashboard/code";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
++import type { PendingOAuth } from "../../contracts/apps.ts";
++
++/** Recovery links resume the original connection or return to the page that started it. */
++export function OAuthRecoveryActions({
++  pending,
++  recovery,
++  fixPrompt,
++  partial = false,
++  canRetry = true,
++}: {
++  readonly pending: Option.Option<typeof PendingOAuth.Type>;
++  readonly recovery: OAuthCompletionRecovery | "setup";
++  readonly fixPrompt?: string | undefined;
++  /** The service granted only part of the request; a retry asks for the same access again. */
++  readonly partial?: boolean | undefined;
++  readonly canRetry?: boolean | undefined;
++}) {
++  const brand = useProductBrand();
++  if (Option.isNone(pending))
++    return (
++      <Button asChild>
++        <Link to="/">Open {brand.name}</Link>
++      </Button>
++    );
++  const context = pending.value;
++  // Entered clients are saved only after a successful sign-in, so a retry reopens their fields.
++  const retry =
++    canRetry && (recovery === "restart" || recovery === "client")
++      ? {
++          label:
++            recovery === "client"
++              ? "Update client details"
++              : partial
++                ? "Grant access again"
++                : "Try again",
++          search:
++            recovery === "client" || context.manualClient === true
++              ? { client: "change" as const }
++              : {},
++        }
++      : undefined;
++  const primary = retry === undefined && fixPrompt === undefined;
++  return (
++    <>
++      {fixPrompt !== undefined && (
++        <CopyButton
++          code={fixPrompt}
++          label="Copy fix prompt"
++          text="Copy fix prompt"
++          variant="default"
++          size="default"
++          inline
++        />
++      )}
++      {retry !== undefined && (
++        <Button asChild>
++          <Link
++            to="/org/$organizationSlug/connections/$connectionId"
++            params={{
++              organizationSlug: context.organizationSlug,
++              connectionId: context.connection,
++            }}
++            search={retry.search}
 +          >
-+            {entry.alternativeLabel}
-+          </Button>
-+        ))}
-+      </div>
-+    ),
-+  });
++            {retry.label}
++          </Link>
++        </Button>
++      )}
++      <Button variant={primary ? "default" : "outline"} asChild>
++        {context.returnTo !== undefined ? (
++          <Link
++            to="/org/$organizationSlug/setup/accounts"
++            params={{ organizationSlug: context.organizationSlug }}
++            search={context.returnTo.handoff ?? {}}
++          >
++            Back to setup
++          </Link>
++        ) : (
++          <Link
++            to="/org/$organizationSlug/apps/$appId"
++            params={{ organizationSlug: context.organizationSlug, appId: context.app }}
++            search={{ view: "accounts" }}
++          >
++            Back to app
++          </Link>
++        )}
++      </Button>
++    </>
++  );
 +}
 diff --git a/apps/local/web/src/implementation/pages/account-form.tsx b/apps/local/web/src/implementation/pages/account-form.tsx
-index ca12ed8..cb622de 100644
+index ca12ed8..cba324e 100644
 --- a/apps/local/web/src/implementation/pages/account-form.tsx
 +++ b/apps/local/web/src/implementation/pages/account-form.tsx
-@@ -18,6 +18,7 @@ import { appConnectionAtoms } from "../../contracts/app-connections.ts";
+@@ -18,6 +18,11 @@ import { appConnectionAtoms } from "../../contracts/app-connections.ts";
  import type { DashboardError } from "../../contracts/errors.ts";
  import { Failure, ProviderIcon } from "../components/common.tsx";
  import { AppOAuthFields } from "./oauth-fields.tsx";
-+import { useCatalogConnectionGuidance } from "./catalog-connection-guidance.ts";
++import { ConnectionMethodChoices } from "@executor-js/ui/dashboard/connection-method-choices";
++import {
++  useCatalogConnectionMetadata,
++  useCatalogConnectionGuidance,
++} from "./catalog-connection-guidance.ts";
  
  /**
   * Connect an account for one app requirement, or replace a linked account's credentials. Saving a
-@@ -129,6 +130,7 @@ function BoundAppAccountForm({
+@@ -25,6 +30,7 @@ import { AppOAuthFields } from "./oauth-fields.tsx";
+  */
+ type AppAccountFormProps = {
+   readonly app: AppId;
++  readonly initialMethod?: string | undefined;
+   /** The version whose discovery the page shows, read again once the account is linked. */
+   readonly version: VersionId | null;
+   readonly scope: AccountScope;
+@@ -43,6 +49,48 @@ type AppAccountFormProps = {
+ 
+ /** Capture the site before mounting any pending connection or OAuth metadata query. */
+ export function AppAccountForm(props: AppAccountFormProps) {
++  const metadata = useCatalogConnectionMetadata(props.app);
++  const method =
++    props.initialMethod ??
++    Object.entries(props.provider.definition.auth).find(
++      ([, auth]) => !(auth.type === "secrets" && auth.provisioned === true),
++    )?.[0];
++  if (metadata.app === undefined || method === undefined || props.account !== undefined)
++    return <SiteAppAccountForm {...props} />;
++  return (
++    <ConnectionMethodChoices
++      app={metadata.app}
++      scope={props.scope}
++      slot={props.requirement}
++      method={method}
++      guidance={metadata.guidance}
++      fixed={false}
++      canConnect={() => true}
++      unavailable={() => undefined}
++      onPendingChange={props.onPendingChange ?? (() => {})}
++    >
++      {(choice) => {
++        const requirement = metadata.app!.requirements.accounts[choice.slot]!;
++        return (
++          <>
++            <SiteAppAccountForm
++              {...props}
++              key={`${choice.slot}:${choice.method}`}
++              requirement={choice.slot}
++              initialMethod={choice.method}
++              provider={{ id: requirement.provider, definition: requirement.definition }}
++              checkWith={requirement.health === true}
++              onPendingChange={choice.onPendingChange}
++            />
++            {choice.actions}
++          </>
++        );
++      }}
++    </ConnectionMethodChoices>
++  );
++}
++
++function SiteAppAccountForm(props: AppAccountFormProps) {
+   const rule = props.provider.definition.site;
+   const [site, setSite] = useState(
+     props.account?.site ?? (rule?.defaultOrigin === true ? rule.origin : ""),
+@@ -117,6 +165,7 @@ export function AppAccountForm(props: AppAccountFormProps) {
+ function BoundAppAccountForm({
+   site,
+   initialAccount,
++  initialMethod,
+   app,
+   version,
+   scope,
+@@ -129,6 +178,7 @@ function BoundAppAccountForm({
    onSaved,
    onPendingChange,
  }: AppAccountFormProps & { readonly site?: string | undefined }) {
@@ -429,15 +969,19 @@ index ca12ed8..cb622de 100644
    // One dialog is one attempt.
    const [atoms] = useState(() =>
      appConnectionAtoms({
-@@ -152,6 +154,7 @@ function BoundAppAccountForm({
+@@ -152,8 +202,10 @@ function BoundAppAccountForm({
    };
    return (
      <SharedAccountForm<Account, DashboardError>
 +      guidance={(method) => guidance?.find((entry) => entry.method === method)}
        provider={provider}
-       site={pending?.target.site ?? account?.site}
+-      site={pending?.target.site ?? account?.site}
++      initialMethod={initialMethod}
++      site={pending?.target.site ?? account?.site ?? site}
        {...(account ? { account } : {})}
-@@ -181,6 +184,7 @@ function BoundAppAccountForm({
+       Failure={Failure}
+       submitLabel={account ? "Save credentials" : "Add account"}
+@@ -181,6 +233,7 @@ function BoundAppAccountForm({
          : {})}
        oauth={(props) => (
          <AppOAuthFields
@@ -445,12 +989,42 @@ index ca12ed8..cb622de 100644
            provider={provider}
            app={app}
            scope={scope}
+diff --git a/apps/local/web/src/implementation/pages/app-accounts.tsx b/apps/local/web/src/implementation/pages/app-accounts.tsx
+index 7432b7d..1b49a57 100644
+--- a/apps/local/web/src/implementation/pages/app-accounts.tsx
++++ b/apps/local/web/src/implementation/pages/app-accounts.tsx
+@@ -1,3 +1,4 @@
++import { useCatalogConnectionMetadata } from "./catalog-connection-guidance.ts";
+ import { useContext, useState } from "react";
+ import { RegistryContext } from "@effect/atom-react";
+ import { AtomRegistry } from "effect/reactivity";
+@@ -60,6 +61,7 @@ export function AppAccounts({
+   /** Every saved account. */
+   readonly accounts: readonly AccountSummary[];
+ }) {
++  const { guidance } = useCatalogConnectionMetadata(app.id);
+   const registry = useContext(RegistryContext);
+   const revalidate = (account: AccountId) => {
+     const check = checkAccountAtom(account);
+@@ -159,7 +161,11 @@ export function AppAccounts({
+       >
+         <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-[560px]">
+           <DialogTitle>
+-            Connect {connection?.title ?? connection?.requirement.definition.name}
++            Connect{" "}
++            {connection !== undefined &&
++            guidance?.some((entry) => entry.requirement === connection.slot)
++              ? connection.requirement.definition.name
++              : (connection?.title ?? connection?.requirement.definition.name)}
+           </DialogTitle>
+           <DialogDescription className="sr-only">
+             Connect an account for {app.name}.
 diff --git a/apps/local/web/src/implementation/pages/catalog-connection-guidance.ts b/apps/local/web/src/implementation/pages/catalog-connection-guidance.ts
 new file mode 100644
-index 0000000..249158e
+index 0000000..c1612fb
 --- /dev/null
 +++ b/apps/local/web/src/implementation/pages/catalog-connection-guidance.ts
-@@ -0,0 +1,16 @@
+@@ -0,0 +1,23 @@
 +import type { AppId } from "@executor-js/sdk";
 +import { Option } from "effect";
 +import { useQuery } from "@executor-js/ui/dashboard/context";
@@ -458,20 +1032,27 @@ index 0000000..249158e
 +import { catalogAtom } from "../../contracts/onboarding.ts";
 +
 +/** An app's copied package identifies its guidance; a provider's display name does not. */
-+export function useCatalogConnectionGuidance(app: AppId, requirement: string) {
++export function useCatalogConnectionMetadata(id: AppId) {
 +  const overview = useQuery(overviewAtom);
 +  const catalog = useQuery(catalogAtom);
-+  const copiedFrom = Option.getOrUndefined(overview.data)?.apps.find((entry) => entry.id === app)
-+    ?.copiedFrom?.name;
-+  return Option.getOrUndefined(catalog.data)
-+    ?.find((entry) => entry.package === copiedFrom)
-+    ?.connectionGuidance?.filter((entry) => entry.requirement === requirement);
++  const app = Option.getOrUndefined(overview.data)?.apps.find((entry) => entry.id === id);
++  const copiedFrom = app?.copiedFrom?.name;
++  const guidance = Option.getOrUndefined(catalog.data)?.find(
++    (entry) => entry.package === copiedFrom,
++  )?.connectionGuidance;
++  return { app, guidance };
++}
++
++export function useCatalogConnectionGuidance(app: AppId, requirement: string) {
++  return useCatalogConnectionMetadata(app).guidance?.filter(
++    (entry) => entry.requirement === requirement,
++  );
 +}
 diff --git a/apps/local/web/src/implementation/pages/oauth-fields.tsx b/apps/local/web/src/implementation/pages/oauth-fields.tsx
-index cf3f85b..7a2bb0b 100644
+index cf3f85b..e384bd9 100644
 --- a/apps/local/web/src/implementation/pages/oauth-fields.tsx
 +++ b/apps/local/web/src/implementation/pages/oauth-fields.tsx
-@@ -40,6 +40,9 @@ import { oauthSetupAtom, type OAuthConsentRetry } from "../../contracts/oauth.ts
+@@ -40,7 +40,11 @@ import { oauthSetupAtom, type OAuthConsentRetry } from "../../contracts/oauth.ts
  import { ConnectionLinkFailure, Failure } from "../components/common.tsx";
  
  type FieldsProps = AccountOAuthProps & {
@@ -479,21 +1060,35 @@ index cf3f85b..7a2bb0b 100644
 +    | import("@executor-js/catalog/contracts").CatalogConnectionGuidance
 +    | undefined;
    readonly provider: Provider;
++  readonly site?: string | undefined;
    readonly account?: Account;
    /** Where the sign-in goes once saved; the shared form shows it above Connect. */
-@@ -183,6 +186,7 @@ function Fields<E, S extends OAuthStartResult = OAuthStartResult>({
+   readonly access?: ReactNode;
+@@ -103,6 +107,7 @@ export function AppOAuthFields({
+   const fields = (selection: IdentityConsentSelection) => (
+     <Fields
+       {...props}
++      site={site}
+       deferral={deferral}
+       // Only a reconnect or a chosen site needs the connection's own setup, and reading it creates
+       // the connection. A new account at its provider's default origin, or with no site, reads the
+@@ -181,8 +186,10 @@ export function LinkOAuthFields({
+ 
+ function Fields<E, S extends OAuthStartResult = OAuthStartResult>({
    provider,
++  site,
    account,
    deferral,
 +  guidance,
    onSaved,
    onPendingChange,
    access,
-@@ -204,6 +208,7 @@ function Fields<E, S extends OAuthStartResult = OAuthStartResult>({
+@@ -204,6 +211,8 @@ function Fields<E, S extends OAuthStartResult = OAuthStartResult>({
      <OAuthSetup<Atom.Failure<typeof query>> query={query}>
        {({ setup, action, refresh, loading, failed }) => (
          <SharedFields<S, E>
 +          guidance={guidance}
++          site={site}
            providerName={provider.definition.name}
            {...(account ? { account } : {})}
            Failure={Failure}
@@ -643,19 +1238,23 @@ index 4ee9da3..77250e6 100644
              <span className="field-hint text-muted-foreground text-[12px] font-normal leading-[1.5] [.mcp-install-content_>_&]:mt-5">
                {field.description}
 diff --git a/packages/ui/src/implementation/dashboard/account-form.tsx b/packages/ui/src/implementation/dashboard/account-form.tsx
-index 638099f..a832052 100644
+index 638099f..29be266 100644
 --- a/packages/ui/src/implementation/dashboard/account-form.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-form.tsx
-@@ -31,6 +31,8 @@ import {
+@@ -29,8 +29,11 @@ import {
+   SelectValue,
+ } from "../components/select.tsx";
  import { useProductBrand } from "../hooks/product-brand.ts";
- import { siteCredentialHosts } from "@executor-js/utils/account-site";
+-import { siteCredentialHosts } from "@executor-js/utils/account-site";
++import { httpsOnlyUrlPolicy } from "@executor-js/utils/url-policy";
++import { resolveSiteOrigin, siteCredentialHosts } from "@executor-js/utils/account-site";
  import { methodLabels } from "./method-labels.ts";
 +import type { CatalogConnectionGuidance } from "@executor-js/catalog/contracts";
 +import { CredentialGuidance } from "./credential-guidance.tsx";
  
  /** One credential form for creation, reconnection and agent handoff; the host owns saving, naming and navigation. */
  export function AccountForm<A, E>({
-@@ -50,6 +52,7 @@ export function AccountForm<A, E>({
+@@ -50,6 +53,7 @@ export function AccountForm<A, E>({
    unavailable,
    check,
    disabled = false,
@@ -663,7 +1262,7 @@ index 638099f..a832052 100644
  }: {
    /**
     * Check complete credentials before saving, with the app that will use them. The form shows
-@@ -77,6 +80,7 @@ export function AccountForm<A, E>({
+@@ -77,6 +81,7 @@ export function AccountForm<A, E>({
     * out with the reason, and can't be chosen. Reconnect keeps the account's method.
     */
    readonly unavailable?: ((method: string) => string | undefined) | undefined;
@@ -671,7 +1270,7 @@ index 638099f..a832052 100644
  }) {
    const selectedSite = site ?? account?.site;
    const hosts =
-@@ -110,6 +114,7 @@ export function AccountForm<A, E>({
+@@ -110,6 +115,7 @@ export function AccountForm<A, E>({
    const pending = submitting || disabled;
    const [error, setError] = useState<Cause.Cause<E>>();
    const auth = provider.definition.auth[method];
@@ -679,7 +1278,7 @@ index 638099f..a832052 100644
    const parsed = auth && accountFields(auth);
    const fields = parsed && Option.isSome(parsed) ? parsed.value : undefined;
    const updatePending = (value: boolean) => {
-@@ -218,11 +223,15 @@ export function AccountForm<A, E>({
+@@ -218,11 +224,22 @@ export function AccountForm<A, E>({
          </div>
        ) : fields ? (
          <>
@@ -689,7 +1288,14 @@ index 638099f..a832052 100644
 -              : `Get these credentials from your ${provider.definition.name} account settings.`}
 -          </p>
 +          {guide?.credentials ? (
-+            <CredentialGuidance guidance={guide.credentials} />
++            <CredentialGuidance
++              guidance={guide.credentials}
++              site={
++                provider.definition.site === undefined || selectedSite === undefined
++                  ? undefined
++                  : resolveSiteOrigin(provider.definition.site, selectedSite, httpsOnlyUrlPolicy)
++              }
++            />
 +          ) : (
 +            <p className="text-xs leading-relaxed text-muted-foreground">
 +              {Object.keys(fields.properties).length === 0
@@ -700,7 +1306,7 @@ index 638099f..a832052 100644
            <CredentialAccess hosts={hosts} {...secretAccess(fields, hosts)} />
            <CredentialFields
              fields={fields}
-@@ -230,6 +239,7 @@ export function AccountForm<A, E>({
+@@ -230,6 +247,7 @@ export function AccountForm<A, E>({
              values={values}
              onChange={changeValues}
              pending={pending}
@@ -708,20 +1314,127 @@ index 638099f..a832052 100644
            />
            {validates && auth?.type === "secrets" && (
              <CredentialVerdict
+diff --git a/packages/ui/src/implementation/dashboard/connection-method-choices.tsx b/packages/ui/src/implementation/dashboard/connection-method-choices.tsx
+new file mode 100644
+index 0000000..b513a1d
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/connection-method-choices.tsx
+@@ -0,0 +1,86 @@
++import { useState, type ReactNode } from "react";
++import type { App, AccountScope } from "@executor-js/sdk";
++import type { CatalogConnectionGuidance } from "@executor-js/catalog/contracts";
++import { Button } from "../components/button.tsx";
++/** Alternatives can only target this app's declared, currently connectable requirements. */
++export function ConnectionMethodChoices({
++  app,
++  scope,
++  slot,
++  method,
++  guidance,
++  fixed,
++  onChange,
++  canConnect,
++  unavailable: unavailableFor,
++  onPendingChange,
++  children,
++}: {
++  readonly app: App;
++  readonly scope: AccountScope;
++  readonly slot: string;
++  readonly method: string;
++  readonly guidance?: readonly CatalogConnectionGuidance[] | undefined;
++  readonly fixed: boolean;
++  readonly onChange?: (() => void) | undefined;
++  readonly canConnect: (requirement: string) => boolean;
++  readonly unavailable: (requirement: string, method: string) => string | undefined;
++  readonly onPendingChange: (pending: boolean) => void;
++  readonly children: (choice: {
++    readonly slot: string;
++    readonly method: string;
++    readonly actions: ReactNode;
++    readonly unavailable: (method: string) => string | undefined;
++    readonly onPendingChange: (pending: boolean) => void;
++  }) => ReactNode;
++}) {
++  const [selected, setSelected] = useState({ slot, method });
++  const [pending, setPending] = useState(false);
++  const unavailable = unavailableFor;
++  const currentGuide = guidance?.find(
++    (entry) => entry.requirement === selected.slot && entry.method === selected.method,
++  );
++  const alternatives =
++    fixed || currentGuide === undefined
++      ? []
++      : (guidance ?? []).filter((entry) => {
++          const requirement = app.requirements.accounts[entry.requirement];
++          const auth = requirement?.definition.auth[entry.method];
++          return (
++            entry.alternativeLabel !== undefined &&
++            !(entry.requirement === selected.slot && entry.method === selected.method) &&
++            requirement?.scope === scope &&
++            auth !== undefined &&
++            !(auth.type === "secrets" && auth.provisioned === true) &&
++            canConnect(entry.requirement) &&
++            unavailable(entry.requirement, entry.method) === undefined
++          );
++        });
++  return children({
++    ...selected,
++    unavailable: (method) => unavailable(selected.slot, method),
++    onPendingChange: (value) => {
++      setPending(value);
++      onPendingChange(value);
++    },
++    actions: alternatives.length > 0 && (
++      <div className="border-t border-border pt-3">
++        {alternatives.map((entry) => (
++          <Button
++            key={`${entry.requirement}:${entry.method}`}
++            type="button"
++            variant="ghost"
++            className="w-full text-muted-foreground"
++            disabled={pending}
++            onClick={() => {
++              onChange?.();
++              setSelected({ slot: entry.requirement, method: entry.method });
++            }}
++          >
++            {entry.alternativeLabel}
++          </Button>
++        ))}
++      </div>
++    ),
++  });
++}
 diff --git a/packages/ui/src/implementation/dashboard/credential-guidance.tsx b/packages/ui/src/implementation/dashboard/credential-guidance.tsx
 new file mode 100644
-index 0000000..1961a22
+index 0000000..81ab1f6
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/credential-guidance.tsx
-@@ -0,0 +1,27 @@
+@@ -0,0 +1,42 @@
 +import type { CredentialGuidance as Guidance } from "@executor-js/catalog/contracts";
 +
 +/** External setup stays beside the empty credential fields that need it. */
-+export function CredentialGuidance({ guidance }: { readonly guidance: Guidance }) {
-+  const url = URL.canParse(guidance.link.url) ? new URL(guidance.link.url) : undefined;
++export function CredentialGuidance({
++  guidance,
++  site,
++}: {
++  readonly guidance: Guidance;
++  readonly site?: string | undefined;
++}) {
++  const base = site === undefined ? null : URL.parse(site);
++  const relative =
++    guidance.link.url.startsWith("/") &&
++    !guidance.link.url.startsWith("//") &&
++    !guidance.link.url.includes("\\");
++  const url = relative
++    ? base?.protocol === "https:" && !base.username && !base.password
++      ? URL.parse(guidance.link.url, base.origin)
++      : null
++    : URL.parse(guidance.link.url);
 +  return (
 +    <div className="grid min-w-0 gap-3 text-[13px] leading-5 text-muted-foreground">
-+      {url?.protocol === "https:" && (
++      {url?.protocol === "https:" && !url.username && !url.password && (
 +        <a
 +          href={url.href}
 +          target="_blank"
@@ -742,7 +1455,7 @@ index 0000000..1961a22
 +  );
 +}
 diff --git a/packages/ui/src/implementation/dashboard/oauth-fields.tsx b/packages/ui/src/implementation/dashboard/oauth-fields.tsx
-index 2220bdb..3f1bb3d 100644
+index 2220bdb..b2fa7ee 100644
 --- a/packages/ui/src/implementation/dashboard/oauth-fields.tsx
 +++ b/packages/ui/src/implementation/dashboard/oauth-fields.tsx
 @@ -1,4 +1,4 @@
@@ -759,7 +1472,15 @@ index 2220bdb..3f1bb3d 100644
  
  /** Keep forms mounted through cached setup reads, refresh failures, and retries. */
  export function OAuthSetup<E>({
-@@ -144,6 +145,7 @@ export function OAuthFields<A, E>({
+@@ -129,6 +130,7 @@ const clientChoices = (
+ /** Choose an OAuth client or enter one; each host owns the sign-in and return flow. */
+ export function OAuthFields<A, E>({
+   providerName,
++  site,
+   account,
+   redirectUri,
+   start,
+@@ -144,9 +146,11 @@ export function OAuthFields<A, E>({
    setupAction,
    missingClient,
    deferral,
@@ -767,7 +1488,11 @@ index 2220bdb..3f1bb3d 100644
    disabled = false,
  }: {
    readonly providerName: string;
-@@ -177,8 +179,12 @@ export function OAuthFields<A, E>({
++  readonly site?: string | undefined;
+   readonly account?: Pick<Account, "label">;
+   readonly redirectUri: string;
+   readonly start: (input: OAuthSubmission) => Promise<Exit.Exit<A, E>>;
+@@ -177,8 +181,12 @@ export function OAuthFields<A, E>({
     * setup offers no automatic, registered or current client.
     */
    readonly deferral?: string | undefined;
@@ -780,7 +1505,7 @@ index 2220bdb..3f1bb3d 100644
    const googleProvider = /^(?:Google(?:\s|$)|Gmail$)/i.test(providerName);
    const ownAppName = googleProvider ? "Google" : providerName;
    const choices =
-@@ -387,6 +393,20 @@ export function OAuthFields<A, E>({
+@@ -387,6 +395,20 @@ export function OAuthFields<A, E>({
    );
    return (
      <>
@@ -801,7 +1526,7 @@ index 2220bdb..3f1bb3d 100644
        {prominent && clientSelect}
        {setupFailed && setupAction}
        {error ? (
-@@ -399,7 +419,7 @@ export function OAuthFields<A, E>({
+@@ -399,7 +421,7 @@ export function OAuthFields<A, E>({
                  `No OAuth client is registered for ${providerName}, and ${brand.name} doesn’t provide one.`}
              </p>
            )}
@@ -810,12 +1535,12 @@ index 2220bdb..3f1bb3d 100644
              <p className="text-[13px] leading-5 text-pretty text-muted-foreground">{guidance}</p>
            )}
            {unavailable !== undefined && (
-@@ -423,27 +443,51 @@ export function OAuthFields<A, E>({
+@@ -423,27 +445,51 @@ export function OAuthFields<A, E>({
        {manual && !machine && <CopyableValue label="Redirect URL" value={redirectUri} />}
        {manual && (
          <>
 +          {connectionGuide?.oauthClient && (
-+            <CredentialGuidance guidance={connectionGuide.oauthClient} />
++            <CredentialGuidance guidance={connectionGuide.oauthClient} site={site} />
 +          )}
            <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium [&_[data-slot='select-trigger']]:w-full">
 -            Client ID
@@ -864,7 +1589,7 @@ index 2220bdb..3f1bb3d 100644
          </>
        )}
        <div className="form-actions flex flex-col gap-3 pt-1">
-@@ -459,7 +503,9 @@ export function OAuthFields<A, E>({
+@@ -459,7 +505,9 @@ export function OAuthFields<A, E>({
                      ? machine
                        ? "Connecting…"
                        : "Preparing sign-in…"

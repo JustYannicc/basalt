@@ -21,8 +21,10 @@ const listen = async (handler, failures) => {
   );
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
+  const address = new URL("http://127.0.0.1");
+  address.port = String(server.address().port);
   return {
-    origin: `http://127.0.0.1:${server.address().port}`,
+    origin: address.origin,
     stop: () =>
       new Promise((resolve) => {
         server.close(resolve);
@@ -116,7 +118,7 @@ export async function startManagementProvider() {
           "error_description",
           decision === "cancel"
             ? "Sign-in was cancelled."
-            : "Your WorkOS team has disabled sign-in for connected tools.",
+            : "Your WorkOS team has disabled sign-in for connected tools. Ask a team admin to enable it in Authentication settings.",
         );
       }
       response.writeHead(302, { location: callback.href });

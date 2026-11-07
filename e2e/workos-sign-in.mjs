@@ -11,10 +11,12 @@ import { startManagedServer } from "../.upstream/e2e/support/managed-server.ts";
 import { Target } from "../.upstream/e2e/support/platform.ts";
 import { SessionClients } from "../.upstream/e2e/support/api.ts";
 import { lockedNpmRegistry } from "../.upstream/e2e/support/npm-registry.ts";
-import { Browser, BrowserDriver } from "../.upstream/e2e/support/browser.ts";
+import { Browser } from "../.upstream/e2e/support/browser.ts";
 import { scenarioEvidence, Telemetry } from "../.upstream/e2e/support/evidence.ts";
 import { RecordingFocus } from "../.upstream/e2e/support/recording-focus.ts";
 import { provisionSelfHostActors } from "../scripts/connectors-tests/test-accounts.mjs";
+import { verifyLocalGuidance } from "./management-signin/local-guidance.mjs";
+import { managementBrowser } from "./management-signin/browser.mjs";
 import { startManagementCatalog } from "./management-signin/catalog.mjs";
 import { retainWorkOSKey } from "./management-signin/retained-key.mjs";
 import { verifyManualGuidance } from "./management-signin/manual-guidance.mjs";
@@ -49,6 +51,11 @@ const program = Effect.gen(function* () {
       ),
     ),
   );
+  if (phase === "local") {
+    yield* verifyLocalGuidance({ fixture, directory });
+    outcomes.push({ target: "local", width: 390, status: "Success" });
+    return;
+  }
   const base = yield* startEnvironment({ target: "self-host", headless: true });
   const registry = yield* lockedNpmRegistry;
   const prepared = yield* prepareScenario(base.target, "WorkOS connection guidance");
@@ -113,8 +120,25 @@ const program = Effect.gen(function* () {
         const browser = yield* Browser;
         yield* browser.login(session);
         yield* browser.use(`Open WorkOS at ${width}`, async (page) => {
+          const stylesheetFailures = [];
+          page.on("requestfailed", (request) => {
+            if (request.resourceType() === "stylesheet")
+              stylesheetFailures.push({
+                url: request.url(),
+                failure: request.failure()?.errorText,
+              });
+          });
           await page.setViewportSize({ width, height: 844 });
           await page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`);
+          await page.waitForFunction(() => {
+            const styles = [...document.querySelectorAll('link[rel="stylesheet"]')];
+            return styles.length > 0 && styles.every((link) => link.sheet !== null);
+          });
+          assert.deepEqual(stylesheetFailures, [], "The visual proof requires every stylesheet");
+          assert.match(
+            await page.locator("body").evaluate((body) => getComputedStyle(body).fontFamily),
+            /Geist|sans-serif/i,
+          );
           const region = page.getByRole("region", { name: "Your accounts", exact: true });
           await region
             .getByRole("button", {
@@ -186,20 +210,25 @@ const program = Effect.gen(function* () {
                 .getByRole("heading", { name: "WorkOS test workspace", exact: true })
                 .waitFor();
               await page.getByRole("button", { name: decision, exact: true }).click();
-              await page.getByRole("link", { name: "Back to app", exact: true }).waitFor();
-              await page
-                .getByRole("heading", {
-                  name:
-                    decision === "Cancel sign-in"
-                      ? "Connection cancelled"
-                      : "Account not connected",
-                  exact: true,
-                })
+              const dialog = page.getByRole("dialog", { name: "Connect WorkOS", exact: true });
+              await dialog
+                .getByRole("button", { name: "Sign in with WorkOS", exact: true })
                 .waitFor();
-              if (decision === "Refuse access")
-                await page
-                  .getByRole("link", { name: "Update client details", exact: true })
-                  .waitFor();
+              await dialog
+                .getByText(
+                  decision === "Cancel sign-in"
+                    ? "Sign-in was cancelled. No account was connected."
+                    : "Your WorkOS team has disabled sign-in for connected tools. Ask a team admin to enable it in Authentication settings.",
+                  { exact: true },
+                )
+                .waitFor();
+              assert.equal(
+                await page.getByText("Update client details", { exact: true }).count(),
+                0,
+              );
+              await dialog
+                .getByRole("button", { name: "Use an API key instead", exact: true })
+                .waitFor();
             });
             yield* browser.checkpoint(`${decision} ${width}`);
             const links = yield* request("GET", `${prefix}/apps/${app.id}/accounts/user`);
@@ -213,23 +242,19 @@ const program = Effect.gen(function* () {
               savedBefore,
               "Cancellation and refusal leave saved accounts unchanged",
             );
-            yield* browser.use("Return to the app and try again", async (page) => {
-              await page.getByRole("link", { name: "Back to app", exact: true }).click();
-              const region = page.getByRole("region", { name: "Your accounts", exact: true });
-              await region
-                .getByRole("button", {
-                  name:
-                    phase === "signin"
-                      ? "Connect new account for WorkOS · Sign in"
-                      : "Connect new account",
-                  exact: true,
-                })
-                .first()
-                .click();
-              await page
-                .getByRole("button", { name: "Sign in with WorkOS", exact: true })
-                .waitFor();
-            });
+            yield* browser.use(
+              "The key alternative remains reversible after a refusal",
+              async (page) => {
+                await page
+                  .getByRole("button", { name: "Use an API key instead", exact: true })
+                  .click();
+                await page.getByLabel("API key", { exact: true }).waitFor();
+                await page.getByRole("button", { name: "Sign in instead", exact: true }).click();
+                await page
+                  .getByRole("button", { name: "Sign in with WorkOS", exact: true })
+                  .waitFor();
+              },
+            );
           }
           yield* browser.use(
             "Complete WorkOS authorization through the real callback",
@@ -306,11 +331,15 @@ const program = Effect.gen(function* () {
         ),
         Effect.provide(Telemetry.layer),
         Effect.provide(RecordingFocus.layer),
-        Effect.provide(BrowserDriver.layer),
+        Effect.provide(managementBrowser(server.tlsCertificate)),
         Effect.provideService(Target, target),
       ),
     );
     outcomes.push({ width, status: result._tag });
+  }
+  if (phase === "signin") {
+    yield* verifyLocalGuidance({ fixture, directory });
+    outcomes.push({ target: "local", width: 390, status: "Success" });
   }
   assert.ok(
     outcomes.every((result) => result.status === "Success"),
@@ -351,6 +380,7 @@ try {
     JSON.stringify(
       {
         code: process.exitCode ?? 0,
+        phase,
         results: outcomes.map((outcome) => ({
           width: outcome.width,
           passed: outcome.status === "Success",
