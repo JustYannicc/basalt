@@ -1,7 +1,5 @@
 {
   "scenarios": {},
   "runs": {},
-  "inherited": [
-    "mcpDeferredSetup"
-  ]
+  "inherited": ["mcpDeferredSetup"]
 }
