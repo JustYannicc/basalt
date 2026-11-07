@@ -227,7 +227,7 @@ export const verifyGitLabConnections = ({
           })
           .click();
         await dialog
-          .getByRole("button", { name: "Sign in with GitLab instead", exact: true })
+          .getByRole("button", { name: "Sign in with GitLab MCP instead", exact: true })
           .click();
         await dialog.getByText(`Using ${automatic.origin}`, { exact: true }).waitFor();
         await dialog.getByRole("button", { name: "Sign in with GitLab MCP", exact: true }).click();
@@ -259,6 +259,7 @@ export const verifyGitLabConnections = ({
     const mcpFromToken = yield* call("search", token.account.id);
     assert.equal(mcpFromToken.status, 422, "A REST token cannot authorize MCP tools");
 
+    const cancelBefore = (yield* links("signIn")).map((link) => link.account.id).sort();
     yield* browser.use("Without registration, sign-in explains the own-app setup", async (page) => {
       const dialog = await openAt(page, manual.origin);
       await dialog.getByText(/doesn't offer automatic app registration for sign-in/).waitFor();
@@ -279,6 +280,11 @@ export const verifyGitLabConnections = ({
     yield* browser.checkpoint(`GitLab own app for sign-in ${width}`);
     yield* browser.use("Leave own-app setup without saving", async (page) =>
       page.keyboard.press("Escape"),
+    );
+    assert.deepEqual(
+      (yield* links("signIn")).map((link) => link.account.id).sort(),
+      cancelBefore,
+      "Opening and cancelling own-app setup saves no account or link",
     );
     const blockedBefore = yield* links("signIn");
     yield* browser.use(

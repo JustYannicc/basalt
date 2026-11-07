@@ -17,6 +17,7 @@ import { RecordingFocus } from "../.upstream/e2e/support/recording-focus.ts";
 import { provisionSelfHostActors } from "../scripts/connectors-tests/test-accounts.mjs";
 import { startGitLabCatalog } from "./gitlab-signin/catalog.mjs";
 import { verifyGitLabConnections } from "./gitlab-signin/journey.mjs";
+import { verifyLocalGitLabGuidance } from "./gitlab-signin/local.mjs";
 import { restToken, restOAuthClient, startGitLabInstance } from "./gitlab-signin/instance.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -180,6 +181,16 @@ const program = Effect.gen(function* () {
     ),
     false,
     "The MCP token is never sent to REST",
+  );
+  const local = yield* verifyLocalGitLabGuidance({
+    catalog,
+    instance: automatic,
+    directory: join(directory, "local"),
+  });
+  outcomes.push(...local.map((outcome) => ({ client: "local", ...outcome })));
+  assert.ok(
+    outcomes.every((result) => result.status === "Success"),
+    JSON.stringify(outcomes),
   );
   assert.deepEqual([...automatic.failures, ...manual.failures, ...disabled.failures], []);
 });
