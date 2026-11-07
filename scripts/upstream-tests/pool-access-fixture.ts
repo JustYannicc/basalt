@@ -93,7 +93,7 @@ export async function fixture(run: (value: any) => Effect.Effect<unknown, unknow
             "create table organization (id text primary key, metadata text)",
             'create table "user" (id text primary key, name text, email text, "emailVerified" boolean)',
             'create table member (id text primary key, "organizationId" text, "userId" text, role text)',
-            "create table executor_apps (id text primary key, owner text, name text)",
+            "create table executor_apps (id text primary key, owner text, name text, active_deployment text)",
             "create table hosted_app_access (id text primary key, organization_id text, creator_id text, audience text, revision text default gen_random_uuid()::text)",
             "create table hosted_app_groups (organization_id text, app_id text, group_id text references hosted_groups(id) on delete cascade)",
             "create table hosted_app_account_links (app text)",

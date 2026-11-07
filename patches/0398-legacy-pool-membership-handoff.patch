@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/src/infrastructure/app-outbound.ts b/apps/hosted/cloud/src/infrastructure/app-outbound.ts
-index c89c57a..8ee2f85 100644
+index c89c57a..3a897e3 100644
 --- a/apps/hosted/cloud/src/infrastructure/app-outbound.ts
 +++ b/apps/hosted/cloud/src/infrastructure/app-outbound.ts
 @@ -2,7 +2,7 @@
@@ -11,7 +11,7 @@ index c89c57a..8ee2f85 100644
  import { HttpServerRequest, HttpServerResponse } from "effect/http";
  import { recordRoute } from "@executor-js/telemetry";
  import type { Fetcher } from "@cloudflare/workers-types";
-@@ -18,18 +18,29 @@ import { platformObservability } from "./telemetry.ts";
+@@ -18,18 +18,30 @@ import { platformObservability } from "./telemetry.ts";
  
  export const AppOutbound = Effect.gen(function* () {
    if (globalThis.__ALCHEMY_RUNTIME__) return yield* Cloudflare.Worker.ref("AppOutbound");
@@ -27,10 +27,11 @@ index c89c57a..8ee2f85 100644
      script: `export default {
 -      fetch(request) {
 +      fetch(request, env) {
-+        if (env.E2E_LOCAL_ORIGIN) {
++        const localOrigin = env?.E2E_LOCAL_ORIGIN;
++        if (localOrigin) {
 +          const local = (url) => ["http:", "https:"].includes(url.protocol) &&
 +            (["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) || url.hostname.endsWith(".localhost"));
-+          if (!local(new URL(env.E2E_LOCAL_ORIGIN)) || !local(new URL(request.url)))
++          if (!local(new URL(localOrigin)) || !local(new URL(request.url)))
 +            return Response.json({ error: "e2e_nonlocal_origin", message: "E2E app requests must stay on local origins." }, { status: 451 });
 +        }
          if (!request.headers.has("User-Agent")) {
@@ -39,7 +40,7 @@ index c89c57a..8ee2f85 100644
            request = new Request(request, { headers });
          }
 -        return fetch(request);
-+        return fetch(request, env.E2E_LOCAL_ORIGIN ? { redirect: "manual" } : undefined);
++        return fetch(request, localOrigin ? { redirect: "manual" } : undefined);
        }
      };`,
      ...(yield* platformObservability),
@@ -180,7 +181,7 @@ index f594e08..7971036 100644
      Effect.tapError(() => Effect.logWarning("Pool setup failed; member job will retry")),
      Effect.mapError(() => new StorageError()),
 diff --git a/apps/hosted/server/src/implementation/pool-membership-hook.ts b/apps/hosted/server/src/implementation/pool-membership-hook.ts
-index ac67e4b..6112f6e 100644
+index ac67e4b..12fc7eb 100644
 --- a/apps/hosted/server/src/implementation/pool-membership-hook.ts
 +++ b/apps/hosted/server/src/implementation/pool-membership-hook.ts
 @@ -5,6 +5,7 @@ import { withOrganizationAccessLock } from "./organization-access-lock.ts";
@@ -200,7 +201,7 @@ index ac67e4b..6112f6e 100644
        cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
        join executor_apps app on app.id = entry.value ->> 'app' and app.owner = 'organization:' || o.id
 -      where entry.value ->> 'membership' = 'executor-links-v1'
-+      where app.active_deployment is not null
++      where (entry.value ->> 'membership' = 'executor-links-v1' or app.active_deployment is not null)
          ${input.organization === undefined ? sql`` : sql`and o.id = ${input.organization}`}
          ${input.apps === undefined ? sql`` : sql`and ${sql.in("app.id", input.apps)}`}
        order by o.id, app.id`;
@@ -218,13 +219,13 @@ index ac67e4b..6112f6e 100644
 +            from organization o
 +            cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
 +            join executor_apps app on app.id = entry.value ->> 'app' and app.owner = 'organization:' || o.id
-+            where o.id = ${pool.organization} and app.id = ${pool.pool} and app.active_deployment is not null
-+              and (entry.value ->> 'membership' = 'executor-links-v1' or not exists (
++            where o.id = ${pool.organization} and app.id = ${pool.pool}
++              and (entry.value ->> 'membership' = 'executor-links-v1' or (app.active_deployment is not null and not exists (
 +                select 1 from hosted_app_account_links l where l.app = app.id
 +                  and l.subject is null and l.requirement = 'subscriptions'
 +                  and not exists (select 1 from executor_account_acquisitions acquisition
 +                    where acquisition.account = l.account and acquisition.driver = 'basalt-home'
-+                      and acquisition.removal is null)))`;
++                      and acquisition.removal is null))))`;
 +          const records = yield* Schema.decodeUnknownEffect(Schema.Array(Registration))(rows);
 +          if (records.length === 0) return;
 +          if (records.length !== 1) return yield* new StorageError();
