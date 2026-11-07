@@ -881,10 +881,15 @@ index 0000000..3734b67
 +  );
 +}
 diff --git a/apps/local/web/src/implementation/pages/account-form.tsx b/apps/local/web/src/implementation/pages/account-form.tsx
-index ca12ed8..cba324e 100644
+index ca12ed8..218c70c 100644
 --- a/apps/local/web/src/implementation/pages/account-form.tsx
 +++ b/apps/local/web/src/implementation/pages/account-form.tsx
-@@ -18,6 +18,11 @@ import { appConnectionAtoms } from "../../contracts/app-connections.ts";
+@@ -1,3 +1,4 @@
++import { requirementMethods } from "@executor-js/ui/contracts/app-accounts";
+ import { Button } from "@executor-js/ui/components/button";
+ import { Input } from "@executor-js/ui/components/input";
+ import type { AccountSubmission } from "@executor-js/ui/contracts/credentials";
+@@ -18,6 +19,11 @@ import { appConnectionAtoms } from "../../contracts/app-connections.ts";
  import type { DashboardError } from "../../contracts/errors.ts";
  import { Failure, ProviderIcon } from "../components/common.tsx";
  import { AppOAuthFields } from "./oauth-fields.tsx";
@@ -896,7 +901,7 @@ index ca12ed8..cba324e 100644
  
  /**
   * Connect an account for one app requirement, or replace a linked account's credentials. Saving a
-@@ -25,6 +30,7 @@ import { AppOAuthFields } from "./oauth-fields.tsx";
+@@ -25,6 +31,7 @@ import { AppOAuthFields } from "./oauth-fields.tsx";
   */
  type AppAccountFormProps = {
    readonly app: AppId;
@@ -904,18 +909,16 @@ index ca12ed8..cba324e 100644
    /** The version whose discovery the page shows, read again once the account is linked. */
    readonly version: VersionId | null;
    readonly scope: AccountScope;
-@@ -43,6 +49,48 @@ type AppAccountFormProps = {
+@@ -43,6 +50,46 @@ type AppAccountFormProps = {
  
  /** Capture the site before mounting any pending connection or OAuth metadata query. */
  export function AppAccountForm(props: AppAccountFormProps) {
 +  const metadata = useCatalogConnectionMetadata(props.app);
-+  const method =
-+    props.initialMethod ??
-+    Object.entries(props.provider.definition.auth).find(
-+      ([, auth]) => !(auth.type === "secrets" && auth.provisioned === true),
-+    )?.[0];
-+  if (metadata.app === undefined || method === undefined || props.account !== undefined)
++  const requirement = metadata.app?.requirements.accounts[props.requirement];
++  if (metadata.app === undefined || requirement === undefined || props.account !== undefined)
 +    return <SiteAppAccountForm {...props} />;
++  const method = props.initialMethod ?? requirementMethods(requirement)[0]?.[0];
++  if (method === undefined) return <SiteAppAccountForm {...props} />;
 +  return (
 +    <ConnectionMethodChoices
 +      app={metadata.app}
@@ -953,7 +956,7 @@ index ca12ed8..cba324e 100644
    const rule = props.provider.definition.site;
    const [site, setSite] = useState(
      props.account?.site ?? (rule?.defaultOrigin === true ? rule.origin : ""),
-@@ -117,6 +165,7 @@ export function AppAccountForm(props: AppAccountFormProps) {
+@@ -117,6 +164,7 @@ export function AppAccountForm(props: AppAccountFormProps) {
  function BoundAppAccountForm({
    site,
    initialAccount,
@@ -961,7 +964,7 @@ index ca12ed8..cba324e 100644
    app,
    version,
    scope,
-@@ -129,6 +178,7 @@ function BoundAppAccountForm({
+@@ -129,6 +177,7 @@ function BoundAppAccountForm({
    onSaved,
    onPendingChange,
  }: AppAccountFormProps & { readonly site?: string | undefined }) {
@@ -969,7 +972,7 @@ index ca12ed8..cba324e 100644
    // One dialog is one attempt.
    const [atoms] = useState(() =>
      appConnectionAtoms({
-@@ -152,8 +202,10 @@ function BoundAppAccountForm({
+@@ -152,8 +201,10 @@ function BoundAppAccountForm({
    };
    return (
      <SharedAccountForm<Account, DashboardError>
@@ -981,7 +984,7 @@ index ca12ed8..cba324e 100644
        {...(account ? { account } : {})}
        Failure={Failure}
        submitLabel={account ? "Save credentials" : "Add account"}
-@@ -181,6 +233,7 @@ function BoundAppAccountForm({
+@@ -181,6 +232,7 @@ function BoundAppAccountForm({
          : {})}
        oauth={(props) => (
          <AppOAuthFields

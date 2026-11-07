@@ -38,9 +38,9 @@ export const instanceGuideSource = {
     },
     {
       path: "index.ts",
-      content: `import {defineApp, defineProvider, secrets, object, string, router} from "apps";
+      content: `import {defineApp, defineProvider, secrets, oauth2, object, string, router} from "apps";
 const service = defineProvider({name: "Instance guide", site: {label: "Service instance", origin: "https://one.example.test"},
-  hosts: ["one.example.test"], auth: {key: secrets({label: "Personal token", fields: object({token: string({minLength: 1})})})}});
+  hosts: ["one.example.test"], auth: {key: secrets({label: "Personal token", fields: object({token: string({minLength: 1})})}), oauth: oauth2({authorizationUrl: "https://one.example.test/authorize", tokenUrl: "https://one.example.test/token", tokenEndpointAuthMethod: "none", scopes: ["read", "write"]})}});
 export default defineApp({user: {accounts: {service: service.many()}}}, () => ({tools: router({})}));`,
     },
   ],
@@ -56,6 +56,15 @@ export const verifyInstanceGuidance = (browser, app) =>
         const dialog = page.getByRole("dialog");
         await dialog.getByLabel("Service instance", { exact: true }).fill(origin);
         await dialog.getByRole("button", { name: "Continue", exact: true }).click();
+        const method = dialog.getByRole("combobox", { name: "Sign-in method", exact: true });
+        await method.waitFor();
+        assert.equal(
+          await method.textContent(),
+          "Sign in with Instance guide",
+          "OAuth stays first even when the provider declares its key first and has no OAuth guide",
+        );
+        await method.click();
+        await page.getByRole("option", { name: "Personal token", exact: true }).click();
         await dialog.getByLabel("Personal token", { exact: true }).waitFor();
         assert.equal(
           await dialog
