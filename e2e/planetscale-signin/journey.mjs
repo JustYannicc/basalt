@@ -1,5 +1,5 @@
-import {writeFile} from "node:fs/promises";
-import {join} from "node:path";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import { Effect } from "effect";
 import { Browser } from "../../.upstream/e2e/support/browser.ts";
@@ -159,7 +159,13 @@ export const verifyPlanetScaleConnections = ({
     });
     assert.equal(permissions.status, 200, JSON.stringify(permissions.body));
     const own = permissions.body.find((row) => row.accountId === signedIn.account.id);
-    yield* Effect.promise(() => writeFile(join(directory, `access-${width}.json`), JSON.stringify({permissions: own},null,2), {mode:0o600}));
+    yield* Effect.promise(() =>
+      writeFile(
+        join(directory, `access-${width}.json`),
+        JSON.stringify({ permissions: own }, null, 2),
+        { mode: 0o600 },
+      ),
+    );
     if (omitsGrantedScope) {
       assert.equal(
         own.permissions,
@@ -183,7 +189,7 @@ export const verifyPlanetScaleConnections = ({
     assert.equal(read.status, 200, JSON.stringify(read.body));
     assert.deepEqual(read.body, { operation: "list_databases", credential: "oauth" });
     const write = yield* call("databaseBranches.demoteBranch", signedIn.account.id, {
-      path: {organization: "acme", database: "app", branch: "main"},
+      path: { organization: "acme", database: "app", branch: "main" },
     });
     if (mode !== "dcr") {
       assert.equal(write.status, 409, "Every PlanetScale change needs approval");
