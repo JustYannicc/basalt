@@ -118,7 +118,10 @@ test("PlanetScale guides bind exact methods and declare the service-token sectio
     ],
   );
   assert.equal(
-    planetscale.connectionGuidance.find((guide: { requirement: string; method: string }) => guide.requirement === "planetscale" && guide.method === "token").credentials.fields.token.label,
+    planetscale.connectionGuidance.find(
+      (guide: { requirement: string; method: string }) =>
+        guide.requirement === "planetscale" && guide.method === "token",
+    ).credentials.fields.token.label,
     "Service token",
   );
   assert.deepEqual(
@@ -251,7 +254,10 @@ test("PlanetScale scope table covers every operation exactly once", async () => 
     assert.ok(oauth.includes(name) || table.serviceTokenOnly.has(name), `${name} is unknown`);
 
   const inventory = JSON.parse(
-    readFileSync(new URL("../../e2e/planetscale-signin/legacy-operations.json", import.meta.url), "utf8"),
+    readFileSync(
+      new URL("../../e2e/planetscale-signin/legacy-operations.json", import.meta.url),
+      "utf8",
+    ),
   ) as Array<{ name: string; namespace: string }>;
   assert.equal(inventory.length, 291);
   assert.deepEqual(
