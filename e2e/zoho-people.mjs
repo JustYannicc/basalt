@@ -237,6 +237,22 @@ const program = Effect.gen(function* () {
     fixture.calls.filter((call) => call.path.endsWith("/addtimelog")).length,
     1,
   );
+  const unbounded = yield* response(
+    "POST",
+    `${path}/tools/call`,
+    call("attendance.deleteEntriesForDay", {}),
+  );
+  check("day deletion requires employee and date", unbounded.status, 422);
+  check(
+    "invalid day deletion never reaches Zoho",
+    fixture.calls.some((entry) => entry.method === "DELETE"),
+    false,
+  );
+  yield* approve(
+    call("attendance.deleteEntriesForDay", {
+      query: { employee_zoho_id: "employee-fixture", date: "07-Nov-2026" },
+    }),
+  );
   const failed = yield* response(
     "POST",
     `${path}/tools/call`,

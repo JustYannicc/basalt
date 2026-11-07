@@ -72,6 +72,11 @@ export async function startZohoPeopleFixture(scopes) {
           return json(response, { response: { status: 1, errors: { code: 9001 } } });
         return json(response, { response: { status: 0, result: logs } });
       }
+      if (url.pathname === "/people/api/v3/attendance/entries" && request.method === "DELETE") {
+        assert.equal(url.searchParams.get("employee_zoho_id"), "employee-fixture");
+        assert.equal(url.searchParams.get("date"), "07-Nov-2026");
+        return json(response, { status: "success" });
+      }
       if (url.pathname === "/people/api/v3/leave-tracker/leaves") {
         assert.deepEqual(JSON.parse(url.searchParams.get("leave_type_ids")), ["leave-fixture"]);
         return json(response, { status: "success", data: { leaves: [] } });
