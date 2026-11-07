@@ -1,0 +1,18 @@
+{
+  "scenarios": {
+    "poolLegacyHandoff": {
+      "fixtures": "actors",
+      "appOrigin": true,
+      "deferOnboarding": true,
+      "title": "Legacy pools hand off four saved subscriptions on read without changing selections or the control account",
+      "targets": {
+        "cloud": { "status": "scheduled", "runtime": "managed" },
+        "self-host": { "status": "not-applicable", "reason": "Uses managed Cloud's retained pool registration and runner-owned Postgres." },
+        "local": { "status": "not-applicable", "reason": "Local has no hosted pool registration." }
+      }
+    }
+  },
+  "runs": { "poolLegacyHandoff": ["declared:cloud"] },
+  "inputs": ["src/pool/**", ".upstream/apps/hosted/server/src/implementation/pool-membership*.ts", ".upstream/apps/hosted/server/src/implementation/pool-defaults.ts", ".upstream/apps/hosted/server/src/implementation/account-resets.ts"],
+  "fixture": "pool-setup"
+}

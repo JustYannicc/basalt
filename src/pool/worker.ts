@@ -20,6 +20,7 @@ import { ComputerHome } from "./computer-home.ts";
 import { Computers } from "./computers.ts";
 import { accessPath } from "./access-contract.ts";
 import { requirePoolUse } from "./authorization.ts";
+import { isPoolAcquisitionPath } from "./connection-policy.ts";
 import { requireActivePoolOrganization } from "./organization-access.ts";
 import { failureResponse, unavailable } from "./json.ts";
 import { isPublicModelPath, PoolLifecycle, poolLifecycle, poolPort } from "./lifecycle.ts";
@@ -241,6 +242,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       install: async (policy) => {
         const container = ctx.container;
         if (!container) return unavailable();
+        // Durable dirty authority already vetoes model use while a stopped container has no policy.
+        // Warming happens after the host commits, outside its ten-second acknowledgement deadline.
+        if (!container.running && policy.dirty) return;
         await installNativePolicy(
           container,
           {
@@ -409,9 +413,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         return failureResponse(error);
       }
     }
+    let poolClaims: Awaited<ReturnType<typeof requirePoolUse>>;
     if (isControlPath(pathname)) {
       try {
-        await requirePoolUse(request, {
+        poolClaims = await requirePoolUse(request, {
           signingKey: this.env.POOL_APP_SIGNING_KEY,
           previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
           permissions: (pool, user) => this.computers.permissions(pool, user),
@@ -463,7 +468,16 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         connectionString: this.env.POOL_AUTH_DATABASE?.connectionString,
         permissions: (pool, caller) => this.computers.permissions(pool, caller),
       });
-    if (isControlPath(pathname)) return this.control.handle(request);
+    if (isControlPath(pathname)) {
+      try {
+        // History, capacity and setup reads above do not depend on Home membership or readiness.
+        if (poolClaims && !isPoolAcquisitionPath(request.method, pathname))
+          await this.memberships.ensure(poolClaims.pool, poolClaims.organization);
+      } catch (error) {
+        return failureResponse(error);
+      }
+      return this.control.handle(request);
+    }
     const port = poolPort(pathname);
     if (!port && pathname !== "/__warm") return new Response(null, { status: 404 });
     return this.forward(request);

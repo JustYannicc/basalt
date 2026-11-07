@@ -6,6 +6,25 @@ import {
   type FrozenWorker,
   type ReleaseManifest,
 } from "./manifest.ts";
+import {
+  assertConfiguredContainer,
+  containerSnapshot,
+  sameContainerState,
+  type ContainerAttributes,
+  type FrozenContainer,
+} from "./container.ts";
+import { equalContainerConfiguration } from "./container-configuration.ts";
+import { containerDrift } from "./container-diagnostics.ts";
+import type { ContainerRollout } from "./container-cloudflare.ts";
+
+export interface ContainerVersionProvider {
+  verifySource(container: FrozenContainer): Promise<void>;
+  read(container: FrozenContainer): Promise<ContainerAttributes>;
+  rollout(container: FrozenContainer): Promise<ContainerRollout>;
+  advance(container: FrozenContainer, rollout: ContainerRollout): Promise<void>;
+  verify(container: FrozenContainer, observed: ContainerAttributes): Promise<void>;
+  wait(container: FrozenContainer, rollout: ContainerRollout): Promise<ContainerAttributes>;
+}
 
 export interface VersionProvider {
   upload(
@@ -16,20 +35,34 @@ export interface VersionProvider {
 }
 
 export interface BarrierReceipt {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   candidate: string;
   manifest: string;
   ceilingMs: number;
-  phase: "upload" | "admitted" | "baseline" | "activation" | "complete";
+  phase: "upload" | "admitted" | "baseline" | "activation" | "container-activation" | "complete";
   accepted: { worker: string; versionId: string; startupTimeMs: number }[];
   activated: { worker: string; versionId: string }[];
   pending?: { worker: string; versionId: string };
   pendingUpload?: { worker: string; versionId?: string; startupTimeMs?: number };
+  containers?: {
+    container: string;
+    version: number;
+    rolloutId?: string;
+    unchanged?: boolean;
+    promoted?: boolean;
+  }[];
+  pendingContainer?: {
+    container: string;
+    phase: "rollout" | "advance" | "verification";
+    version?: number;
+    rolloutId?: string;
+  };
   failure?: { reason: string; worker?: string };
 }
 
 export interface BarrierOptions {
   provider: VersionProvider;
+  containers?: ContainerVersionProvider;
   record(receipt: BarrierReceipt): Promise<void>;
   beforeActivate?(): Promise<void>;
   ceilingMs?: number;
@@ -46,13 +79,14 @@ export async function releaseWorkers(
     throw new BarrierRefusal("invalid-ceiling");
   const fingerprint = manifestDigest(manifest);
   const receipt: BarrierReceipt = {
-    schemaVersion: 1,
+    schemaVersion: manifest.schemaVersion ?? 1,
     candidate: manifest.candidate,
     manifest: fingerprint,
     ceilingMs,
     phase: "upload",
     accepted: [],
     activated: [],
+    ...(manifest.schemaVersion === 2 ? { containers: [] } : {}),
   };
   const record = () => options.record(structuredClone(receipt));
   const unchanged = () => {
@@ -61,6 +95,10 @@ export async function releaseWorkers(
   };
   try {
     await record();
+    if (manifest.containers?.length && !options.containers)
+      throw new BarrierRefusal("missing-container-provider");
+    for (const container of manifest.containers ?? [])
+      await options.containers!.verifySource(container);
     for (const worker of manifest.workers) {
       unchanged();
       receipt.pendingUpload = { worker: worker.id };
@@ -104,6 +142,17 @@ export async function releaseWorkers(
       if (canonical(current) !== canonical(worker.baseline))
         throw new BarrierRefusal("deployment-drift", worker.id);
     }
+    for (const container of manifest.containers ?? []) {
+      await options.containers!.verifySource(container);
+      const baseline = await options.containers!.read(container);
+      if (!sameContainerState(baseline, container.baseline))
+        throw containerDrift(
+          "container-baseline-drift",
+          container.baseline,
+          { ...containerSnapshot(baseline), activeRolloutId: baseline.activeRolloutId },
+          container.id,
+        );
+    }
     receipt.phase = "activation";
     for (const accepted of receipt.accepted) {
       unchanged();
@@ -116,6 +165,85 @@ export async function releaseWorkers(
       delete receipt.pending;
       await record();
     }
+    for (const container of manifest.containers ?? []) {
+      unchanged();
+      receipt.phase = "container-activation";
+      // Worker activation can take time. Recheck the application immediately before its only write.
+      await options.containers!.verifySource(container);
+      const baseline = await options.containers!.read(container);
+      if (!sameContainerState(baseline, container.baseline))
+        throw containerDrift(
+          "container-baseline-drift",
+          container.baseline,
+          { ...containerSnapshot(baseline), activeRolloutId: baseline.activeRolloutId },
+          container.id,
+        );
+      if (equalContainerConfiguration(container.baseline.configuration, container.configuration)) {
+        receipt.containers!.push({
+          container: container.id,
+          version: container.baseline.version,
+          unchanged: true,
+        });
+        receipt.pendingContainer = {
+          container: container.id,
+          phase: "verification",
+          version: container.baseline.version,
+        };
+        await record();
+        const unchanged = await options.containers!.read(container);
+        if (!sameContainerState(unchanged, container.baseline))
+          throw containerDrift(
+            "container-baseline-drift",
+            container.baseline,
+            { ...containerSnapshot(unchanged), activeRolloutId: unchanged.activeRolloutId },
+            container.id,
+          );
+        await options.containers!.verify(container, unchanged);
+        delete receipt.pendingContainer;
+        await record();
+        continue;
+      }
+      receipt.pendingContainer = { container: container.id, phase: "rollout" };
+      await record();
+      const rollout = await options.containers!.rollout(container);
+      if (
+        !rollout.id ||
+        rollout.currentVersion !== container.baseline.version ||
+        !Number.isSafeInteger(rollout.targetVersion) ||
+        rollout.targetVersion <= rollout.currentVersion
+      )
+        throw new BarrierRefusal("container-rollout-unconfirmed", container.id);
+      const activation = {
+        container: container.id,
+        version: rollout.targetVersion,
+        rolloutId: rollout.id,
+        promoted: false,
+      };
+      receipt.containers!.push(activation);
+      receipt.pendingContainer = {
+        container: container.id,
+        phase: "advance",
+        version: rollout.targetVersion,
+        rolloutId: rollout.id,
+      };
+      await record();
+      await options.containers!.advance(container, rollout);
+      activation.promoted = true;
+      receipt.pendingContainer.phase = "verification";
+      await record();
+      const observed = await options.containers!.wait(container, rollout);
+      assertConfiguredContainer(observed, container);
+      if (observed.version !== rollout.targetVersion || observed.activeRolloutId)
+        throw containerDrift(
+          "container-version-drift",
+          { version: rollout.targetVersion, activeRolloutId: undefined },
+          { version: observed.version, activeRolloutId: observed.activeRolloutId },
+          container.id,
+        );
+      await options.containers!.verify(container, observed);
+      delete receipt.pendingContainer;
+      await record();
+    }
     receipt.phase = "complete";
     await record();
     return receipt;
@@ -125,13 +253,16 @@ export async function releaseWorkers(
         ? { reason: error.reason, ...(error.worker ? { worker: error.worker } : {}) }
         : {
             reason:
-              receipt.phase === "activation"
+              receipt.phase === "activation" || receipt.phase === "container-activation"
                 ? "activation-unconfirmed"
                 : "barrier-operation-failed",
           };
     await record();
     throw error instanceof BarrierRefusal
       ? error
-      : new BarrierRefusal(receipt.failure.reason, receipt.pending?.worker);
+      : new BarrierRefusal(
+          receipt.failure.reason,
+          receipt.pending?.worker ?? receipt.pendingContainer?.container,
+        );
   }
 }

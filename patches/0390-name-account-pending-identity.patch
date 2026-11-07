@@ -1,0 +1,1939 @@
+diff --git a/apps/hosted/web/src/implementation/pages/account-actions.tsx b/apps/hosted/web/src/implementation/pages/account-actions.tsx
+index 2174816..674beff 100644
+--- a/apps/hosted/web/src/implementation/pages/account-actions.tsx
++++ b/apps/hosted/web/src/implementation/pages/account-actions.tsx
+@@ -1,3 +1,4 @@
++import { providerAccountTitle } from "@executor-js/sdk";
+ import { AccountAccessSettings, ReadAccountSharingEarly } from "./resource-settings.tsx";
+ import { AccountUsageSettings } from "./account-observations.tsx";
+ import { DetailSkeleton } from "@executor-js/ui/dashboard/loading";
+@@ -250,6 +251,11 @@ function EditDialogBody({
+   return (
+     <EditAccountForm<HostedError>
+       account={data?.account}
++      placeholder={
++        data
++          ? providerAccountTitle({ ...data.account, health: data.health }, data.provider.definition)
++          : undefined
++      }
+       listed={listed?.account}
+       update={update}
+       Failure={HostedFailure}
+diff --git a/apps/hosted/web/src/implementation/pages/accounts-setup.tsx b/apps/hosted/web/src/implementation/pages/accounts-setup.tsx
+index ca0c961..781750a 100644
+--- a/apps/hosted/web/src/implementation/pages/accounts-setup.tsx
++++ b/apps/hosted/web/src/implementation/pages/accounts-setup.tsx
+@@ -1,3 +1,5 @@
++import { accountKindLabel } from "@executor-js/ui/contracts/account-identities";
++import { accountTitle } from "@executor-js/sdk";
+ import { useEffect, useRef, useState, type ReactNode } from "react";
+ import { useAtomMount, useAtomRefresh, useAtomValue } from "@effect/atom-react";
+ import { useLocation } from "@tanstack/react-router";
+@@ -62,13 +64,15 @@ const pageSize = 12;
+ 
+ type Inventory = Atom.Success<ReturnType<typeof inventoryAtom>>;
+ 
++type SetupAccount = Account & { readonly kind: string | undefined };
++
+ /** One catalog app as this step lists it: its installed copy, if any, and the accounts it can use. */
+ interface SetupApp {
+   readonly entry: CatalogEntry;
+   readonly detail: string;
+   readonly app: App | undefined;
+   /** The accounts linked to the installed app first, then other saved accounts of its providers. */
+-  readonly accounts: readonly Account[];
++  readonly accounts: readonly SetupAccount[];
+ }
+ 
+ /**
+@@ -95,7 +99,15 @@ function setupApps(entries: readonly CatalogEntry[], inventory: Inventory): read
+           (item) => providers.has(item.provider) && !linked.some((link) => link.id === item.id),
+         )
+         .toSorted((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+-      return { entry, detail, app, accounts: [...linked, ...others] };
++      return {
++        entry,
++        detail,
++        app,
++        accounts: [...linked, ...others].map((account) => ({
++          ...account,
++          kind: accountKindLabel(inventory, account),
++        })),
++      };
+     });
+ }
+ 
+@@ -533,7 +545,9 @@ function AppRow({
+         ) : (
+           <div className="flex h-5 min-w-0 items-center gap-1.75 text-[13px]">
+             <Check />
+-            <span className="truncate">{first.label || "Unnamed account"}</span>
++            <span className="truncate">
++              {accountTitle({ ...first, providerName: entry.name }, undefined, first.kind)}
++            </span>
+             {accounts.length > 1 && (
+               <AccountsPopover
+                 name={entry.name}
+@@ -599,7 +613,7 @@ function AccountsPopover({
+   onAccountAction,
+ }: {
+   readonly name: string;
+-  readonly accounts: readonly Account[];
++  readonly accounts: readonly SetupAccount[];
+   readonly busy: boolean;
+   readonly onAdd: () => void;
+   readonly onAccountAction: (account: Account, kind: AccountDialogKind) => void;
+@@ -627,7 +641,9 @@ function AccountsPopover({
+               className="flex items-center gap-2 rounded-md py-0.5 pr-0.5 pl-2 text-[13px] hover:bg-muted/60"
+             >
+               <Check />
+-              <span className="min-w-0 flex-1 truncate">{account.label || "Unnamed account"}</span>
++              <span className="min-w-0 flex-1 truncate">
++                {accountTitle({ ...account, providerName: name }, undefined, account.kind)}
++              </span>
+               <HostedAccountActions
+                 account={account}
+                 access={undefined}
+diff --git a/apps/hosted/web/src/implementation/pages/agent-setup.tsx b/apps/hosted/web/src/implementation/pages/agent-setup.tsx
+index dc275e1..ad369f8 100644
+--- a/apps/hosted/web/src/implementation/pages/agent-setup.tsx
++++ b/apps/hosted/web/src/implementation/pages/agent-setup.tsx
+@@ -1,3 +1,5 @@
++import { accountKindLabel } from "@executor-js/ui/contracts/account-identities";
++import { accountTitle } from "@executor-js/sdk";
+ import { Suspense, useEffect, useEffectEvent, useState, type ReactNode } from "react";
+ import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
+ import { Link, useLocation, useNavigate } from "@tanstack/react-router";
+@@ -769,7 +771,13 @@ function connectedAccounts(inventory: Inventory) {
+       link.app === app.id
+         ? inventory.accounts
+             .filter((account) => account.id === link.account)
+-            .map((account) => account.label)
++            .map((account) =>
++              accountTitle(
++                { ...account, providerName: app.name },
++                undefined,
++                accountKindLabel(inventory, account),
++              ),
++            )
+         : [],
+     );
+     return labels.length === 0 ? [] : [{ app: app.name, accounts: labels }];
+diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+index 494d4bb..1367826 100644
+--- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+@@ -1,3 +1,4 @@
++import { providerAccountTitle } from "@executor-js/sdk";
+ import { methodsOf } from "./app-account-methods.ts";
+ export { methodsOf } from "./app-account-methods.ts";
+ import { IdentityConsent } from "@executor-js/ui/dashboard/identity-consent";
+@@ -630,7 +631,11 @@ export function AppConnectionDialogContent({
+         provider={form.provider}
+         title={title}
+         action={account ? "Reconnect" : "Connect"}
+-        notice={account ? `Apps using ${account.label} will use the new credentials.` : undefined}
++        notice={
++          account
++            ? `Apps using ${providerAccountTitle(account, requirement.definition)} will use the new credentials.`
++            : undefined
++        }
+       />
+       <ConnectionNotices provider={form.provider} notices={connectionNotices} />
+       {siteRule !== undefined && account !== undefined && !oldAccountNeedsSite && (
+diff --git a/apps/hosted/web/src/implementation/pages/name-account-dialog.tsx b/apps/hosted/web/src/implementation/pages/name-account-dialog.tsx
+index 2f42dbc..1925653 100644
+--- a/apps/hosted/web/src/implementation/pages/name-account-dialog.tsx
++++ b/apps/hosted/web/src/implementation/pages/name-account-dialog.tsx
+@@ -1,7 +1,7 @@
+ import { useAtomSet, useAtomValue } from "@effect/atom-react";
+ import { useEffect, useState } from "react";
+ import { Exit, Option } from "effect";
+-import type { Account, AccountId } from "@executor-js/sdk";
++import type { Account, AccountId, Provider } from "@executor-js/sdk";
+ import { DetailSkeleton } from "@executor-js/ui/dashboard/loading";
+ import { QueryResult, useQuery } from "@executor-js/ui/dashboard/context";
+ import {
+@@ -9,6 +9,7 @@ import {
+   NameAccountHeader,
+   NameAccountModal,
+   suggestedAccountName,
++  accountNameCheckFailed,
+ } from "@executor-js/ui/dashboard/name-account";
+ import {
+   accountAtom,
+@@ -40,8 +41,8 @@ export function NameAccountDialog() {
+         <>
+           <NameAccountHeader provider={pending.saved.provider} />
+           <HostedNameAccount
+-            account={{ id: pending.account, label: pending.saved.account.label }}
+-            providerName={pending.saved.provider.definition.name}
++            account={{ id: pending.account, ...pending.saved.account }}
++            provider={pending.saved.provider}
+             onPendingChange={setBusy}
+             onDone={close}
+           />
+@@ -66,7 +67,7 @@ function LoadedNameAccount({
+   onDone,
+ }: {
+   readonly accountId: AccountId;
+-  readonly connected: Pick<Account, "label"> | undefined;
++  readonly connected: Pick<Account, "label" | "method" | "provider" | "identity"> | undefined;
+   readonly onPendingChange: (pending: boolean) => void;
+   readonly onDone: () => void;
+ }) {
+@@ -80,7 +81,7 @@ function LoadedNameAccount({
+         <NameAccountHeader provider={loaded?.provider} />
+         <HostedNameAccount
+           account={account}
+-          providerName={loaded?.provider.definition.name}
++          provider={loaded?.provider}
+           onPendingChange={onPendingChange}
+           onDone={onDone}
+         />
+@@ -103,7 +104,7 @@ function LoadedNameAccount({
+           <NameAccountHeader provider={provider} />
+           <HostedNameAccount
+             account={account}
+-            providerName={provider.definition.name}
++            provider={provider}
+             onPendingChange={onPendingChange}
+             onDone={onDone}
+           />
+@@ -116,12 +117,12 @@ function LoadedNameAccount({
+ /** Name a just-connected account through the organization's account API. */
+ function HostedNameAccount({
+   account,
+-  providerName,
++  provider,
+   onPendingChange,
+   onDone,
+ }: {
+-  readonly account: Pick<Account, "id" | "label">;
+-  readonly providerName: string | undefined;
++  readonly account: Pick<Account, "id" | "label" | "method" | "provider" | "identity">;
++  readonly provider: Provider | undefined;
+   readonly onPendingChange?: (pending: boolean) => void;
+   readonly onDone: () => void;
+ }) {
+@@ -133,29 +134,39 @@ function HostedNameAccount({
+     mode: "promiseExit",
+   });
+   // A targeted connection is selected before this prompt opens, so one check can name it.
+-  const [identity, setIdentity] = useState<
+-    { readonly resolving: true } | { readonly resolving: false; readonly name: string | undefined }
+-  >({ resolving: true });
++  const [result, setResult] = useState<Awaited<ReturnType<typeof check>>>();
++  const [attempt, setAttempt] = useState(0);
+   useEffect(() => {
+     let active = true;
+     void check().then((exit) => {
+-      if (active)
+-        setIdentity({
+-          resolving: false,
+-          name: Exit.isSuccess(exit) ? suggestedAccountName(exit.value) : undefined,
+-        });
++      if (active) setResult(exit);
+     });
+     return () => {
+       active = false;
+     };
+-  }, [check]);
++  }, [check, attempt]);
+   return (
+     <NameAccountForm
+       account={account}
+-      providerName={providerName}
++      provider={provider}
+       update={update}
+       Failure={HostedFailure}
+-      identity={identity}
++      identity={
++        result === undefined
++          ? { resolving: true }
++          : {
++              resolving: false,
++              name: suggestedAccountName(
++                Exit.isSuccess(result) ? result.value : undefined,
++                account.identity,
++              ),
++              failed: Exit.isFailure(result) || accountNameCheckFailed(result.value),
++            }
++      }
++      retry={() => {
++        setResult(undefined);
++        setAttempt((current) => current + 1);
++      }}
+       {...(onPendingChange ? { onPendingChange } : {})}
+       onDone={onDone}
+     />
+diff --git a/apps/hosted/web/src/implementation/pages/oauth-callback.tsx b/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
+index 0d9e3e9..b9fbb2e 100644
+--- a/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
++++ b/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
+@@ -170,7 +170,7 @@ export function OAuthCallbackPage() {
+         registry.set(accountToNameAtom, {
+           organization,
+           account: result.value.id,
+-          connected: { label: result.value.label },
++          connected: result.value,
+         });
+       await (returnTo !== undefined
+         ? navigate({
+diff --git a/apps/local/web/src/implementation/pages/account-actions.tsx b/apps/local/web/src/implementation/pages/account-actions.tsx
+index 070fc48..b9c928f 100644
+--- a/apps/local/web/src/implementation/pages/account-actions.tsx
++++ b/apps/local/web/src/implementation/pages/account-actions.tsx
+@@ -1,3 +1,4 @@
++import { providerAccountTitle } from "@executor-js/sdk";
+ import type { DashboardError } from "../../contracts/errors.ts";
+ import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
+ import {
+@@ -144,6 +145,10 @@ function EditBody({
+   return (
+     <EditAccountForm<DashboardError>
+       account={data.account}
++      placeholder={providerAccountTitle(
++        { ...data.account, health: data.health },
++        data.provider.definition,
++      )}
+       update={update}
+       Failure={Failure}
+       disabledReason={data.canManage ? undefined : managed}
+diff --git a/apps/local/web/src/implementation/pages/account-credentials.tsx b/apps/local/web/src/implementation/pages/account-credentials.tsx
+index 6b2d242..79f7a66 100644
+--- a/apps/local/web/src/implementation/pages/account-credentials.tsx
++++ b/apps/local/web/src/implementation/pages/account-credentials.tsx
+@@ -1,3 +1,4 @@
++import { providerAccountTitle } from "@executor-js/sdk";
+ import type { DashboardAccountDetail } from "@executor-js/local-server/contracts";
+ import type { AccountRequirement, AccountScope, App } from "@executor-js/sdk";
+ import { Button } from "@executor-js/ui/components/button";
+@@ -38,7 +39,7 @@ export function ReplaceCredentials({
+         <>
+           <div className="setup-provider flex items-center gap-3.25 [&_h2]:text-[16px] [&_h2]:[font-weight:550] [&_>_div]:min-w-0 [&_>_div]:wrap-anywhere">
+             <ProviderIcon name={account.providerName} url={account.providerUrl} large />
+-            <h2>{account.label || "Unnamed account"}</h2>
++            <h2>{providerAccountTitle(account, requirement.definition)}</h2>
+           </div>
+           <p className="field-hint text-muted-foreground text-[12px] font-normal leading-[1.5]">
+             Apps using this account will use the new credentials.
+diff --git a/apps/local/web/src/implementation/pages/connect-account.tsx b/apps/local/web/src/implementation/pages/connect-account.tsx
+index edf4eff..db8cddd 100644
+--- a/apps/local/web/src/implementation/pages/connect-account.tsx
++++ b/apps/local/web/src/implementation/pages/connect-account.tsx
+@@ -1,3 +1,4 @@
++import { authoredLabel, providerAccountTitle } from "@executor-js/sdk";
+ import type { AccountSubmission } from "@executor-js/ui/contracts/credentials";
+ import type { DashboardError } from "../../contracts/errors.ts";
+ import { AsyncResult } from "effect/reactivity";
+@@ -100,7 +101,9 @@ function ConnectionForm({
+         </h1>
+         <p>
+           {state.status === "completed"
+-            ? `${state.account.label} · ${connection.provider.definition.name}`
++            ? authoredLabel(state.account.label) !== undefined
++              ? state.account.label + " · " + connection.provider.definition.name
++              : providerAccountTitle(state.account, connection.provider.definition)
+             : state.status === "expired"
+               ? "Ask your agent for a new connection link."
+               : "No credentials were saved."}
+diff --git a/apps/local/web/src/implementation/pages/name-account-dialog.tsx b/apps/local/web/src/implementation/pages/name-account-dialog.tsx
+index 1b299f6..a6bd0d3 100644
+--- a/apps/local/web/src/implementation/pages/name-account-dialog.tsx
++++ b/apps/local/web/src/implementation/pages/name-account-dialog.tsx
+@@ -2,13 +2,14 @@ import { useAtomSet, useAtomValue } from "@effect/atom-react";
+ import { useEffect, useState } from "react";
+ import { Exit, Option } from "effect";
+ import { AsyncResult } from "effect/reactivity";
+-import type { Account, AppId } from "@executor-js/sdk";
++import type { Account, AppId, Provider } from "@executor-js/sdk";
+ import { QueryView } from "@executor-js/ui/dashboard/context";
+ import {
+   NameAccountForm,
+   NameAccountHeader,
+   NameAccountModal,
+   suggestedAccountName,
++  accountNameCheckFailed,
+ } from "@executor-js/ui/dashboard/name-account";
+ import {
+   accountAtom,
+@@ -36,8 +37,8 @@ export function NameAccountDialog() {
+         <>
+           <NameAccountHeader provider={pending.saved.provider} />
+           <LocalNameAccount
+-            account={{ id: pending.account, label: pending.saved.account.label }}
+-            providerName={pending.saved.provider.definition.name}
++            account={{ id: pending.account, ...pending.saved.account }}
++            provider={pending.saved.provider}
+             app={pending.app}
+             onPendingChange={setBusy}
+             onDone={close}
+@@ -60,7 +61,7 @@ export function NameAccountDialog() {
+               <NameAccountHeader provider={data.provider} />
+               <LocalNameAccount
+                 account={data.account}
+-                providerName={data.provider.definition.name}
++                provider={data.provider}
+                 app={pending.app}
+                 onPendingChange={setBusy}
+                 onDone={close}
+@@ -78,13 +79,13 @@ const identityWaitMillis = 10_000;
+ 
+ function LocalNameAccount({
+   account,
+-  providerName,
++  provider,
+   app,
+   onPendingChange,
+   onDone,
+ }: {
+-  readonly account: Pick<Account, "id" | "label">;
+-  readonly providerName: string;
++  readonly account: Pick<Account, "id" | "label" | "method" | "provider" | "identity">;
++  readonly provider: Provider;
+   readonly app: AppId | undefined;
+   readonly onPendingChange: (pending: boolean) => void;
+   readonly onDone: () => void;
+@@ -102,28 +103,51 @@ function LocalNameAccount({
+       .map((entry) => entry.app)
+       .join(",") ?? "";
+   const [settled, setSettled] = useState(false);
++  const [retrying, setRetrying] = useState(false);
++  const [failed, setFailed] = useState(false);
+   useEffect(() => {
+     if (waiting === "") return;
+     void check().then((exit) => {
+-      if (Exit.isFailure(exit)) setSettled(true);
++      setSettled(true);
++      setFailed(Exit.isFailure(exit));
+     });
+   }, [waiting, check]);
+-  useEffect(() => {
+-    const timer = setTimeout(() => setSettled(true), identityWaitMillis);
+-    return () => clearTimeout(timer);
+-  }, []);
+   const selecting =
+     app !== undefined && !(health?.apps.some((entry) => entry.app === app) ?? false);
+   const resolving = !settled && (health === undefined || waiting !== "" || selecting);
++  useEffect(() => {
++    if (!resolving && !retrying) return;
++    const timer = setTimeout(() => {
++      setSettled(true);
++      setRetrying(false);
++      setFailed(true);
++    }, identityWaitMillis);
++    return () => clearTimeout(timer);
++  }, [resolving, retrying]);
+   return (
+     <NameAccountForm
+       account={account}
+-      providerName={providerName}
++      provider={provider}
+       update={update}
+       Failure={Failure}
+       identity={
+-        resolving ? { resolving: true } : { resolving: false, name: suggestedAccountName(health) }
++        resolving || retrying
++          ? { resolving: true }
++          : {
++              resolving: false,
++              name: suggestedAccountName(health, account.identity),
++              failed: failed || accountNameCheckFailed(health),
++            }
+       }
++      retry={() => {
++        setRetrying(true);
++        setFailed(false);
++        void check().then((exit) => {
++          setFailed(Exit.isFailure(exit));
++          setSettled(true);
++          setRetrying(false);
++        });
++      }}
+       onPendingChange={onPendingChange}
+       onDone={onDone}
+     />
+diff --git a/e2e/support/account-rows.ts b/e2e/support/account-rows.ts
+index 9c249f0..c40d0e2 100644
+--- a/e2e/support/account-rows.ts
++++ b/e2e/support/account-rows.ts
+@@ -10,6 +10,15 @@ const menuName = (label: string | RegExp) =>
+     ? { name: `Manage ${label}`, exact: true }
+     : { name: new RegExp(`^Manage (?:${label.source})$`, label.flags) };
+ 
++/**
++ * The name of an account's usage and health group, like its menu (see `menuName`): the name it
++ * was given, or its row title when it was saved without one.
++ */
++export const usageGroupName = (label: string | RegExp) =>
++  typeof label === "string"
++    ? { name: `Usage and health of ${label}`, exact: true }
++    : { name: new RegExp(`^Usage and health of (?:${label.source})$`, label.flags) };
++
+ /** The Accounts list row of the account its ⋯ menu names `label` (see `menuName`). */
+ export const accountRow = (page: Page, label: string | RegExp) =>
+   page.locator(".inventory-row").filter({ has: page.getByRole("button", menuName(label)) });
+diff --git a/e2e/support/local-name-account-check.ts b/e2e/support/local-name-account-check.ts
+new file mode 100644
+index 0000000..0c416e2
+--- /dev/null
++++ b/e2e/support/local-name-account-check.ts
+@@ -0,0 +1,156 @@
++import { expect } from "@effect/vitest";
++import { Effect, Redacted, Schema } from "effect";
++import { Api, body } from "./api.ts";
++import { Browser } from "./browser.ts";
++import { Target } from "./platform.ts";
++import { appsManifest } from "./apps-release.ts";
++import { providerAppsCatalog } from "./provider-apps-catalog.ts";
++import { accountNameField, accountNamePrompt, nameAccountDialog } from "./name-account.ts";
++
++/** An ordinary local connection whose external check is held, refused and retried. */
++export const localNameAccountCheck = (width: number) =>
++  Effect.gen(function* () {
++    const api = yield* Api,
++      browser = yield* Browser,
++      target = yield* Target;
++    const backend = yield* providerAppsCatalog,
++      session = yield* api.session();
++    const headers = { authorization: "Bearer " + Redacted.value(target.apiKey) };
++    const source = [
++      'import { defineApp, defineProvider, secrets, object, string, router, decodeJson } from "apps";',
++      'const service = defineProvider({ name:"Local check fixture", hosts:[' +
++        JSON.stringify(new URL(backend.origin).host) +
++        '], auth:{ key:secrets({label:"API key",fields:object({token:string()})}) },',
++      "async health({fetch,signal}) { return decodeJson(await fetch(" +
++        JSON.stringify(backend.origin + "/name-check") +
++        ",{signal}),object({accountInfo:object({displayName:string()}).optional()})); }});",
++      "export default defineApp({user:{accounts:{service}}},{tools:router({})});",
++    ].join("\n");
++    const deployed = yield* session.send(
++      "POST",
++      "/v1/apps/deploy",
++      {
++        owner: "local",
++        name: "Local account check",
++        files: [{ path: "index.ts", content: source }, appsManifest],
++      },
++      headers,
++    );
++    expect(deployed.status).toBe(200);
++    const { app } = yield* body(
++      Schema.Struct({ app: Schema.Struct({ id: Schema.String }) }),
++      deployed,
++    );
++    let account: string | undefined;
++    yield* Effect.addFinalizer(() =>
++      Effect.gen(function* () {
++        yield* session.send("DELETE", "/v1/apps/" + app.id, undefined, headers);
++        if (account) yield* session.send("DELETE", "/v1/accounts/" + account, undefined, headers);
++      }).pipe(Effect.orDie),
++    );
++    const pairing = yield* session.send("POST", "/auth/pair", undefined, headers);
++    const { url } = yield* body(Schema.Struct({ url: Schema.String }), pairing);
++    yield* browser.use("Control the account-check deadline", (page) => page.clock.install());
++    yield* browser.use("Pair the local account-check browser", (page) =>
++      page.goto(url).then(() => page.getByRole("heading", { name: /^Apps/ }).waitFor()),
++    );
++    yield* backend.answerCheck({ result: {} });
++    yield* browser.use("Validate the local synthetic credentials", (page) =>
++      page
++        .setViewportSize({ width, height: 900 })
++        .then(() => page.goto("/apps/" + app.id + "?view=accounts"))
++        .then(() => page.getByRole("button", { name: "Connect new account", exact: true }).click())
++        .then(() =>
++          page
++            .getByRole("dialog", { name: "Connect Local check fixture", exact: true })
++            .getByLabel("Token", { exact: true })
++            .fill("synthetic-local-check"),
++        )
++        .then(() =>
++          page
++            .getByRole("dialog", { name: "Connect Local check fixture", exact: true })
++            .getByRole("button", { name: "Validate API key", exact: true })
++            .click(),
++        )
++        .then(() =>
++          page
++            .getByRole("dialog", { name: "Connect Local check fixture", exact: true })
++            .getByRole("button", { name: "Continue", exact: true })
++            .waitFor(),
++        ),
++    );
++    yield* backend.answerCheck({ failure: "unavailable" });
++    const held = yield* backend.holdCheck;
++    const created = yield* browser.use("Save the local synthetic credentials", (page) =>
++      Promise.all([
++        page.waitForResponse(
++          (response) =>
++            response.request().method() === "POST" &&
++            new URL(response.url()).pathname.endsWith("/accounts/user/service/connections"),
++        ),
++        page
++          .getByRole("dialog", { name: "Connect Local check fixture", exact: true })
++          .getByRole("button", { name: "Continue", exact: true })
++          .click(),
++      ]).then(([response]) => response.json() as Promise<unknown>),
++    );
++    account = (yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))(created)).id;
++    yield* browser.use("The local account asks for a name", accountNamePrompt);
++    yield* held.started;
++    const status = yield* browser.use("The pending check is announced", (page) =>
++      nameAccountDialog(page)
++        .getByRole("status")
++        .filter({ hasText: "Checking account…" })
++        .elementHandle(),
++    );
++    expect(
++      yield* browser.use("An unnamed pending account cannot save", (page) =>
++        nameAccountDialog(page)
++          .getByRole("button", { name: "Save name", exact: true })
++          .isDisabled(),
++      ),
++    ).toBe(true);
++    yield* browser.use("The local check reaches its ten-second fallback", (page) =>
++      page.clock.fastForward(10_001),
++    );
++    yield* browser.use("A timed-out check offers recovery", (page) =>
++      nameAccountDialog(page).getByText("Couldn't check this account.", { exact: true }).waitFor(),
++    );
++    yield* held.release;
++    yield* browser.use("The failed local check offers retry", (page) =>
++      nameAccountDialog(page).getByText("Couldn't check this account.", { exact: true }).waitFor(),
++    );
++    expect(
++      yield* browser.use("The same live region announces the failure", (page) =>
++        nameAccountDialog(page)
++          .getByRole("status")
++          .evaluate((node, previous) => node === previous, status),
++      ),
++    ).toBe(true);
++    yield* backend.answerCheck({ result: { accountInfo: { displayName: "Local workspace" } } });
++    const retried = yield* backend.holdCheck;
++    yield* browser.use("Retry the local check", (page) =>
++      nameAccountDialog(page).getByRole("button", { name: "Try again", exact: true }).click(),
++    );
++    yield* retried.started;
++    yield* browser.use("The retry is announced", (page) =>
++      nameAccountDialog(page).getByText("Checking account…", { exact: true }).waitFor(),
++    );
++    yield* retried.release;
++    yield* browser.use("The successful check supplies a workspace", (page) =>
++      accountNameField(page).and(page.locator('input[value="Local workspace"]')).waitFor(),
++    );
++    expect(
++      yield* browser.use("The live region remains after success", (page) =>
++        nameAccountDialog(page)
++          .getByRole("status")
++          .evaluate((node, previous) => node === previous, status),
++      ),
++    ).toBe(true);
++    yield* browser.use("Save the checked local account", (page) =>
++      nameAccountDialog(page)
++        .getByRole("button", { name: "Save name", exact: true })
++        .click()
++        .then(() => nameAccountDialog(page).waitFor({ state: "hidden" })),
++    );
++  });
+diff --git a/e2e/support/name-account-authored.ts b/e2e/support/name-account-authored.ts
+new file mode 100644
+index 0000000..a938f7d
+--- /dev/null
++++ b/e2e/support/name-account-authored.ts
+@@ -0,0 +1,59 @@
++import { expect } from "@effect/vitest";
++import { Effect } from "effect";
++import { Actors } from "./actors.ts";
++import { Browser } from "./browser.ts";
++import { pendingSignIn } from "./oauth-link-sign-in.ts";
++import { holdQuery } from "./query-transition.ts";
++import { accountNameField, nameAccountDialog } from "./name-account.ts";
++
++/** An authored name stays usable while optional identity and health arrive. */
++export const nameAccountAuthored = (width: number) =>
++  Effect.gen(function* () {
++    const browser = yield* Browser,
++      actors = yield* Actors;
++    yield* browser.login(actors.owner);
++    const signIn = yield* pendingSignIn("Suggested account", "Work account");
++    const health = yield* holdQuery(/\/accounts\/[^/]+\/health$/, "continue", {
++      method: "POST",
++      allRequests: true,
++    });
++    yield* browser.use("Return to an authored account", (page) =>
++      page
++        .setViewportSize({ width, height: 900 })
++        .then(() => page.goto(signIn.callbackUrl.pathname + signIn.callbackUrl.search))
++        .then(() => nameAccountDialog(page).waitFor()),
++    );
++    yield* health.requested;
++    const completed = yield* signIn.read;
++    const account = completed.state.account;
++    if (!account) return yield* Effect.die("Sign-in did not save its account");
++    yield* signIn.removeAccount(account.id);
++    expect(
++      yield* browser.use("The authored name is not gated by the check", (page) =>
++        Promise.all([
++          accountNameField(page).inputValue(),
++          nameAccountDialog(page)
++            .getByRole("button", { name: "Save name", exact: true })
++            .isEnabled(),
++        ]),
++      ),
++    ).toEqual(["Work account", true]);
++    const response = yield* browser.use("Observe the authored account check", (page) =>
++      Promise.resolve({
++        finished: page.waitForResponse(
++          (reply) =>
++            reply.request().method() === "POST" &&
++            new URL(reply.url()).pathname.endsWith("/accounts/" + account.id + "/health"),
++        ),
++      }),
++    );
++    yield* health.release;
++    yield* browser.use("The check completes without replacing the authored name", () =>
++      response.finished.then((reply) => expect(reply.status()).toBe(200)),
++    );
++    expect(
++      yield* browser.use("Read the authored prefill after the check", (page) =>
++        accountNameField(page).inputValue(),
++      ),
++    ).toBe("Work account");
++  });
+diff --git a/e2e/support/name-account-identity.ts b/e2e/support/name-account-identity.ts
+new file mode 100644
+index 0000000..f83057b
+--- /dev/null
++++ b/e2e/support/name-account-identity.ts
+@@ -0,0 +1,209 @@
++import { expect } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "./actors.ts";
++import { Api, body } from "./api.ts";
++import { Browser } from "./browser.ts";
++import { Resource } from "./contracts.ts";
++import { Evidence } from "./evidence.ts";
++import { accountNameField, accountNamePrompt, nameAccountDialog } from "./name-account.ts";
++import { providerAccountProduct } from "./provider-account-product.ts";
++import { providerAppsCatalog } from "./provider-apps-catalog.ts";
++import { serverControl } from "./server-control.ts";
++
++const email = "subscriber@example.test";
++const named = { result: { accountInfo: { email } } };
++const generated = /^Default(?: \d+)?$/;
++
++/** Real subscription sign-in and health checks; only the external credential service is held. */
++export const nameAccountIdentityJourney = (width: number) =>
++  Effect.gen(function* () {
++    const api = yield* Api,
++      actors = yield* Actors,
++      browser = yield* Browser,
++      evidence = yield* Evidence,
++      backend = yield* providerAppsCatalog;
++    const prefix = `/api/organizations/${actors.organization.id}`;
++    const accounts: string[] = [];
++    yield* providerAccountProduct(backend.origin, `${backend.origin}/catalog/index.json`);
++    const installed = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++      entry: "provider-openai",
++      name: "OpenAI",
++    });
++    expect(installed.status, JSON.stringify(installed.body)).toBe(200);
++    const app = (yield* body(Resource, installed)).id;
++    yield* Effect.addFinalizer(() =>
++      Effect.gen(function* () {
++        yield* serverControl("start");
++        yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`);
++        for (const id of accounts)
++          yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${id}`);
++      }).pipe(Effect.orDie),
++    );
++    const appUrl = `/org/${actors.organization.slug}/apps/${app}?view=accounts`;
++    const listUrl = `/org/${actors.organization.slug}/accounts`;
++    yield* browser.login(actors.owner);
++    yield* browser.use("Open subscription accounts", (page) =>
++      page.setViewportSize({ width, height: 900 }).then(() => page.goto(appUrl)),
++    );
++    const connect = Effect.gen(function* () {
++      const saved = yield* browser.use("Sign in to the synthetic subscription", (page) =>
++        page
++          .getByRole("button", { name: "Connect new account", exact: true })
++          .click()
++          .then(() =>
++            Promise.all([
++              page.waitForResponse(
++                (response) =>
++                  response.request().method() === "GET" &&
++                  /\/connections\/[^/]+\/interactive\/status$/.test(
++                    new URL(response.url()).pathname,
++                  ),
++              ),
++              page
++                .getByRole("button", { name: "Sign in with ChatGPT subscription", exact: true })
++                .click(),
++            ]),
++          )
++          .then(([response]) => response.json() as Promise<unknown>),
++      );
++      const { account } = yield* Schema.decodeUnknownEffect(Schema.Struct({ account: Resource }))(
++        saved,
++      );
++      accounts.push(account.id);
++      yield* browser.use("The connected subscription asks for a name", accountNamePrompt);
++      return account.id;
++    });
++    const capture = (stage: string) =>
++      Effect.gen(function* () {
++        const image = yield* browser.use(`Capture ${stage} naming at ${width}px`, (page) =>
++          page.screenshot({ fullPage: true, animations: "disabled" }),
++        );
++        yield* evidence.attach(`name-${width}-${stage}.png`, "image/png", image);
++      });
++    const state = browser.use("Read the naming input and status", (page) =>
++      Promise.all([
++        accountNameField(page).inputValue(),
++        accountNameField(page).getAttribute("placeholder"),
++        nameAccountDialog(page)
++          .getByRole("status")
++          .allTextContents()
++          .then((texts) => texts.filter(Boolean)),
++        nameAccountDialog(page)
++          .getByRole("button", { name: "Save name", exact: true })
++          .isDisabled(),
++        page.locator("[data-account-name]").allTextContents(),
++      ]).then(([value, placeholder, statuses, disabled, rows]) => ({
++        value,
++        placeholder,
++        statuses,
++        disabled,
++        rows,
++      })),
++    );
++    const expectRows = (rows: readonly string[]) => {
++      expect(rows.length).toBeGreaterThan(0);
++      expect(rows.some((title) => generated.test(title.trim()))).toBe(false);
++    };
++    const inspectRows = (url: string) =>
++      browser.use("Read saved rows while the naming check is held", (page) =>
++        page
++          .context()
++          .newPage()
++          .then((listed) =>
++            listed
++              .goto(url)
++              .then(() => listed.locator("[data-account-name]").first().waitFor())
++              .then(() => listed.locator("[data-account-name]").allTextContents())
++              .finally(() => listed.close()),
++          ),
++      );
++    const waitForEmail = browser.use("The check fills the email", (page) =>
++      accountNameField(page)
++        .and(page.locator(`input[value="${email}"]`))
++        .waitFor(),
++    );
++    const dismiss = browser.use("Closing keeps the saved account", (page) =>
++      page.keyboard
++        .press("Escape")
++        .then(() => nameAccountDialog(page).waitFor({ state: "hidden" })),
++    );
++
++    yield* backend.answerCheck(named);
++    const first = yield* backend.holdCheck;
++    yield* connect;
++    yield* first.started;
++    yield* browser.use("The saved subscription row arrives", (page) =>
++      page.locator("[data-account-name]").first().waitFor(),
++    );
++    yield* capture("pending");
++    const pending = yield* state;
++    expectRows(pending.rows);
++    expectRows(yield* inspectRows(listUrl));
++    expectRows(yield* inspectRows(appUrl));
++    yield* first.release;
++    yield* waitForEmail;
++    yield* capture("settled");
++    yield* evidence.json("initial-name-states.json", { pending, settled: yield* state });
++    expect(pending.value, "a generated saved label never prefills the pending name").toBe("");
++    expect(pending.placeholder).toBe("OpenAI Subscription");
++    expect(pending.statuses).toEqual(["Checking account…"]);
++    expect(pending.disabled).toBe(true);
++    expect((yield* state).statuses).toEqual([]);
++    yield* dismiss;
++
++    yield* backend.answerCheck({ failure: "unavailable" });
++    const failed = yield* backend.holdCheck;
++    yield* connect;
++    yield* failed.started;
++    yield* failed.release;
++    const failure = browser.use("The unsuccessful check explains recovery", (page) =>
++      nameAccountDialog(page).getByText("Couldn't check this account.", { exact: true }).waitFor(),
++    );
++    yield* failure;
++    yield* capture("failed");
++    expect((yield* state).value).toBe("");
++    expect((yield* state).disabled).toBe(false);
++    expect(
++      yield* browser.use("A failed check leaves the name editable", (page) =>
++        accountNameField(page).isEnabled(),
++      ),
++    ).toBe(true);
++    yield* backend.answerCheck(named);
++    const retry = yield* backend.holdCheck;
++    yield* browser.use("Retry checking this account", (page) =>
++      nameAccountDialog(page).getByRole("button", { name: "Try again", exact: true }).click(),
++    );
++    yield* retry.started;
++    expect((yield* state).statuses).toEqual(["Checking account…"]);
++    expect((yield* state).value).toBe("");
++    yield* retry.release;
++    yield* waitForEmail;
++    yield* capture("retried");
++    expect((yield* state).statuses).toEqual([]);
++    yield* dismiss;
++
++    const typing = yield* backend.holdCheck;
++    const typedAccount = yield* connect;
++    yield* typing.started;
++    yield* browser.use("A person can name the subscription while it is checked", (page) =>
++      accountNameField(page).fill("Work subscription"),
++    );
++    expect((yield* state).disabled).toBe(false);
++    yield* typing.release;
++    yield* browser.use("The check settles without replacing the draft", (page) =>
++      nameAccountDialog(page)
++        .getByText("Checking account…", { exact: true })
++        .waitFor({ state: "hidden" }),
++    );
++    expect((yield* state).value).toBe("Work subscription");
++    yield* browser.use("Save the person's name", (page) =>
++      nameAccountDialog(page)
++        .getByRole("button", { name: "Save name", exact: true })
++        .click()
++        .then(() => nameAccountDialog(page).waitFor({ state: "hidden" })),
++    );
++    const stored = yield* api.request(actors.owner, "GET", `${prefix}/accounts/${typedAccount}`);
++    expect(stored.body).toMatchObject({ account: { label: "Work subscription" } });
++    expectRows(yield* inspectRows(listUrl));
++    expectRows(yield* inspectRows(appUrl));
++  });
+diff --git a/e2e/support/name-account-no-email.ts b/e2e/support/name-account-no-email.ts
+new file mode 100644
+index 0000000..4959dfd
+--- /dev/null
++++ b/e2e/support/name-account-no-email.ts
+@@ -0,0 +1,207 @@
++import { expect } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "./actors.ts";
++import { Api, body } from "./api.ts";
++import { Browser } from "./browser.ts";
++import { Resource } from "./contracts.ts";
++import { Evidence } from "./evidence.ts";
++import { accountNameField, accountNamePrompt, nameAccountDialog } from "./name-account.ts";
++import { accountRow } from "./account-rows.ts";
++import { providerAccountProduct } from "./provider-account-product.ts";
++import { providerAppsCatalog } from "./provider-apps-catalog.ts";
++
++/** The real connection path with a synthetic check that supplies no email. */
++export const nameAccountNoEmailJourney = (
++  workspace: boolean,
++  width = 1280,
++  descriptionOnly?: "prompt" | "edit",
++) =>
++  Effect.gen(function* () {
++    const actors = yield* Actors,
++      api = yield* Api,
++      browser = yield* Browser;
++    const backend = yield* providerAppsCatalog,
++      evidence = yield* Evidence;
++    const prefix = `/api/organizations/${actors.organization.id}`;
++    yield* providerAccountProduct(backend.origin, `${backend.origin}/catalog/index.json`);
++    const installed = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++      entry: "provider-openai",
++      name: "OpenAI",
++    });
++    expect(installed.status).toBe(200);
++    const app = (yield* body(Resource, installed)).id;
++    const accounts: string[] = [];
++    yield* Effect.addFinalizer(() =>
++      Effect.gen(function* () {
++        yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`);
++        for (const id of accounts)
++          yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${id}`);
++      }).pipe(Effect.orDie),
++    );
++    yield* backend.answerCheck({
++      result: workspace
++        ? { accountInfo: { displayName: "Design workspace", username: "designer" } }
++        : {},
++    });
++    const held = yield* backend.holdCheck;
++    yield* browser.login(actors.owner);
++    yield* browser.use("Set the naming viewport", (page) =>
++      page.setViewportSize({ width, height: 900 }),
++    );
++    yield* browser.use("Open the no-email service", (page) =>
++      page.goto(`/org/${actors.organization.slug}/apps/${app}?view=accounts`),
++    );
++    const submitted = yield* browser.use("Connect the synthetic no-email account", (page) =>
++      page
++        .getByRole("button", { name: "Connect new account", exact: true })
++        .click()
++        .then(() =>
++          Promise.all([
++            page.waitForResponse(
++              (response) =>
++                response.request().method() === "GET" &&
++                /\/connections\/[^/]+\/interactive\/status$/.test(new URL(response.url()).pathname),
++            ),
++            page
++              .getByRole("button", { name: "Sign in with ChatGPT subscription", exact: true })
++              .click(),
++          ]),
++        )
++        .then(([response]) => response.json() as Promise<unknown>),
++    );
++    const { account } = yield* Schema.decodeUnknownEffect(Schema.Struct({ account: Resource }))(
++      submitted,
++    );
++    accounts.push(account.id);
++    yield* browser.use("The no-email account asks for a name", accountNamePrompt);
++    yield* held.started;
++    yield* Effect.all(
++      [
++        browser.use("The account check completes", (page) =>
++          page.waitForResponse(
++            (response) =>
++              new URL(response.url()).pathname === `${prefix}/accounts/${account.id}/health`,
++          ),
++        ),
++        held.release,
++      ],
++      { concurrency: "unbounded" },
++    );
++    if (workspace)
++      yield* browser.use("The workspace name is suggested", (page) =>
++        accountNameField(page).and(page.locator('input[value="Design workspace"]')).waitFor(),
++      );
++    else
++      yield* browser.use("The successful unnamed check settles", (page) =>
++        nameAccountDialog(page)
++          .getByText("Checking account…", { exact: true })
++          .waitFor({ state: "hidden" }),
++      );
++    const naming = yield* browser.use("Read the no-email suggestion", (page) =>
++      Promise.all([
++        accountNameField(page).inputValue(),
++        accountNameField(page).getAttribute("placeholder"),
++        nameAccountDialog(page)
++          .getByRole("status")
++          .allTextContents()
++          .then((texts) => texts.filter(Boolean)),
++        nameAccountDialog(page).getByRole("button", { name: "Try again", exact: true }).count(),
++        nameAccountDialog(page)
++          .getByRole("button", { name: "Save name", exact: true })
++          .isDisabled(),
++      ]),
++    );
++    if (descriptionOnly === "prompt") {
++      yield* browser.use("Save a description without naming", (page) => {
++        const dialog = nameAccountDialog(page);
++        return dialog
++          .getByRole("textbox", { name: "Description for agents", exact: true })
++          .fill("Workspace used for reading.")
++          .then(() => dialog.getByRole("button", { name: "Save name", exact: true }).click())
++          .then(() => dialog.waitFor({ state: "hidden" }));
++      });
++      expect(
++        (yield* api.request(actors.owner, "GET", prefix + "/accounts/" + account.id)).body,
++      ).toMatchObject({
++        account: { label: "Default", description: "Workspace used for reading." },
++      });
++      return;
++    }
++    yield* browser.use("Close without naming", (page) =>
++      page.keyboard
++        .press("Escape")
++        .then(() => nameAccountDialog(page).waitFor({ state: "hidden" }))
++        .then(() => page.goto(`/org/${actors.organization.slug}/accounts`)),
++    );
++    const title = workspace ? "Design workspace" : "OpenAI Subscription";
++    yield* browser.use("Setup uses the account kind and never a generated label", (page) =>
++      page
++        .goto("/org/" + actors.organization.slug + "/setup/accounts")
++        .then(() =>
++          page
++            .getByRole("group", { name: "OpenAI", exact: true })
++            .getByText(title, { exact: true })
++            .waitFor(),
++        )
++        .then(() => page.getByRole("group", { name: "OpenAI", exact: true }).textContent())
++        .then((text) => expect(text).not.toContain("Default"))
++        .then(() => page.goto("/org/" + actors.organization.slug + "/accounts")),
++    );
++    yield* browser.use("The saved row uses its fallback", (page) =>
++      accountRow(page, title).waitFor(),
++    );
++    yield* browser.use("Rename the saved generated label", (page) =>
++      accountRow(page, title)
++        .getByRole("button", { name: `Manage ${title}`, exact: true })
++        .click()
++        .then(() => page.getByRole("menuitem", { name: "Edit details", exact: true }).click())
++        .then(() => page.getByRole("dialog", { name: "Edit account", exact: true }).waitFor()),
++    );
++    yield* browser.use("The saved account is ready to edit", (page) =>
++      page
++        .getByRole("dialog", { name: "Edit account", exact: true })
++        .getByRole("button", { name: "Save", exact: true })
++        .and(page.locator(":enabled"))
++        .waitFor(),
++    );
++    if (descriptionOnly === "edit") {
++      yield* browser.use("Save only the generated account's description", (page) => {
++        const dialog = page.getByRole("dialog", { name: "Edit account", exact: true });
++        return dialog
++          .getByRole("textbox", { name: "Description for agents", exact: true })
++          .fill("Workspace used for reading.")
++          .then(() => dialog.getByRole("button", { name: "Save", exact: true }).click())
++          .then(() => dialog.waitFor({ state: "hidden" }));
++      });
++      expect(
++        (yield* api.request(actors.owner, "GET", prefix + "/accounts/" + account.id)).body,
++      ).toMatchObject({
++        account: { label: "Default", description: "Workspace used for reading." },
++      });
++      return;
++    }
++    const rename = yield* browser.use("Read the rename field", (page) => {
++      const field = page
++        .getByRole("dialog", { name: "Edit account", exact: true })
++        .getByRole("textbox", { name: "Account name", exact: true });
++      return Promise.all([field.inputValue(), field.getAttribute("placeholder")]);
++    });
++    yield* evidence.json("no-email-name-states.json", { workspace, naming, rename });
++    expect(naming[0]).toBe(workspace ? "Design workspace" : "");
++    expect(naming[2]).toEqual([]);
++    expect(naming[3]).toBe(0);
++    expect(naming[4]).toBe(false);
++    expect(rename).toEqual(["", title]);
++    yield* browser.use("Save an authored name", (page) => {
++      const dialog = page.getByRole("dialog", { name: "Edit account", exact: true });
++      return dialog
++        .getByRole("textbox", { name: "Account name", exact: true })
++        .fill("My workspace")
++        .then(() => dialog.getByRole("button", { name: "Save", exact: true }).click())
++        .then(() => dialog.waitFor({ state: "hidden" }))
++        .then(() => accountRow(page, "My workspace").waitFor());
++    });
++    expect(
++      (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${account.id}`)).body,
++    ).toMatchObject({ account: { label: "My workspace" } });
++  });
+diff --git a/e2e/support/name-account-reconnect.ts b/e2e/support/name-account-reconnect.ts
+new file mode 100644
+index 0000000..8746f1e
+--- /dev/null
++++ b/e2e/support/name-account-reconnect.ts
+@@ -0,0 +1,78 @@
++import { randomUUID } from "node:crypto";
++import { expect } from "@effect/vitest";
++import { Effect } from "effect";
++import { Actors } from "./actors.ts";
++import { Api, body } from "./api.ts";
++import { Browser } from "./browser.ts";
++import { Resource } from "./contracts.ts";
++import { appsManifest } from "./apps-release.ts";
++import { rowMenuName } from "./account-choices.ts";
++
++/** Saved unnamed credentials keep a readable title in the reconnect notice. */
++export const nameAccountReconnect = (width: number) =>
++  Effect.gen(function* () {
++    const actors = yield* Actors,
++      api = yield* Api,
++      browser = yield* Browser;
++    const prefix = "/api/organizations/" + actors.organization.id;
++    const deployed = yield* api.request(actors.owner, "POST", prefix + "/apps/deploy", {
++      name: "Reconnect fixture",
++      files: [
++        {
++          path: "index.ts",
++          content:
++            'import {defineApp,defineProvider,secrets,object,string,router} from "apps"; const service=defineProvider({name:"Reconnect fixture",auth:{key:secrets({label:"API key",fields:object({token:string()})})}}); export default defineApp({user:{accounts:{service}}},{tools:router({})});',
++        },
++        appsManifest,
++      ],
++    });
++    expect(deployed.status).toBe(200);
++    const app = (yield* body(Resource, deployed)).id;
++    const connected = yield* api.request(
++      actors.owner,
++      "POST",
++      prefix + "/apps/" + app + "/accounts/user/service",
++      { creation: randomUUID(), method: "key", fields: { token: "synthetic-reconnect" } },
++    );
++    expect(connected.status).toBe(200);
++    const account = (yield* body(Resource, connected)).id;
++    expect(
++      (yield* api.request(
++        actors.owner,
++        "PUT",
++        prefix + "/apps/" + app + "/accounts/user/service/" + account,
++      )).status,
++    ).toBe(200);
++    yield* Effect.addFinalizer(() =>
++      Effect.gen(function* () {
++        yield* api.request(actors.owner, "DELETE", prefix + "/apps/" + app);
++        yield* api.request(actors.owner, "DELETE", prefix + "/accounts/" + account);
++      }).pipe(Effect.orDie),
++    );
++    yield* browser.login(actors.owner);
++    yield* browser.use("Reconnect an unnamed account", (page) =>
++      page
++        .setViewportSize({ width, height: 900 })
++        .then(() =>
++          page.goto("/org/" + actors.organization.slug + "/apps/" + app + "?view=accounts"),
++        )
++        .then(() => page.locator("[data-account-name]").first().waitFor()),
++    );
++    const title = yield* browser.use("Read the generated account's display title", (page) =>
++      page.locator("[data-account-name]").first().innerText(),
++    );
++    expect(title).not.toContain("Default");
++    yield* browser.use("The reconnect notice uses the fallback title", (page) =>
++      page
++        .getByRole("button", { name: rowMenuName(title, "Your accounts"), exact: true })
++        .click()
++        .then(() => page.getByRole("menuitem", { name: "Update credentials", exact: true }).click())
++        .then(() =>
++          page
++            .getByText("Apps using " + title + " will use the new credentials.", { exact: true })
++            .waitFor(),
++        )
++        .then(() => page.getByRole("dialog").innerText())
++        .then((text) => expect(text).not.toContain("Default")),
++    );
++  });
+diff --git a/e2e/support/name-account.ts b/e2e/support/name-account.ts
+index ebe6037..c894fe3 100644
+--- a/e2e/support/name-account.ts
++++ b/e2e/support/name-account.ts
+@@ -17,14 +17,16 @@ export const accountNamePrompt = (page: Page) =>
+   accountNameField(page).waitFor({ state: "visible" });
+ 
+ /**
+- * Wait for the prompt, optionally replace the server's default name, save it and wait for the
+- * dialog to close. Saving an unchanged name keeps the default.
++ * Save a typed or suggested name. Closing an empty prompt keeps the generated saved label.
+  */
+ export const nameConnectedAccount = (page: Page, label?: string) =>
+   accountNamePrompt(page)
+     .then(() => (label === undefined ? undefined : accountNameField(page).fill(label)))
+-    .then(() =>
+-      nameAccountDialog(page).getByRole("button", { name: "Save name", exact: true }).click(),
++    .then(() => accountNameField(page).inputValue())
++    .then((name) =>
++      name.trim()
++        ? nameAccountDialog(page).getByRole("button", { name: "Save name", exact: true }).click()
++        : page.keyboard.press("Escape"),
+     )
+     .then(() => nameAccountDialog(page).waitFor({ state: "hidden" }));
+ 
+diff --git a/e2e/support/oauth-link-sign-in.ts b/e2e/support/oauth-link-sign-in.ts
+index b51fe1e..bc60e5d 100644
+--- a/e2e/support/oauth-link-sign-in.ts
++++ b/e2e/support/oauth-link-sign-in.ts
+@@ -20,7 +20,7 @@ const Connection = Schema.Struct({
+  * The owner starts sign-in through the API, so no browser holds its context, and the service
+  * returns the callback URL it would put in the emailed link.
+  */
+-export const pendingSignIn = (displayName?: string) =>
++export const pendingSignIn = (displayName?: string, label?: string) =>
+   Effect.gen(function* () {
+     const api = yield* Api,
+       actors = yield* Actors,
+@@ -61,7 +61,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
+       actors.owner,
+       "POST",
+       `${prefix}/connections/${connection.id}/oauth/start`,
+-      { method: "oauth" },
++      { method: "oauth", ...(label === undefined ? {} : { label }) },
+     );
+     expect(started.status, JSON.stringify(started.body)).toBe(200);
+     const { authorizationUrl } = yield* body(SignIn, started);
+diff --git a/e2e/support/provider-apps-catalog.ts b/e2e/support/provider-apps-catalog.ts
+index 9efe802..8cd093c 100644
+--- a/e2e/support/provider-apps-catalog.ts
++++ b/e2e/support/provider-apps-catalog.ts
+@@ -1,5 +1,5 @@
+ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+-import { Clock, Effect, FileSystem, Layer, Path, Ref, Schema } from "effect";
++import { Clock, Deferred, Effect, FileSystem, Layer, Path, Ref, Schema } from "effect";
+ import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
+ import { createHmac, timingSafeEqual } from "node:crypto";
+ import { createServer } from "node:http";
+@@ -56,9 +56,32 @@ export default defineApp({ app: { accounts: { openai: providers.openai.many() }
+   const mirrors = yield* Ref.make<readonly (typeof Mirror.Type)[]>([]);
+   const calls = yield* Ref.make<readonly (typeof Acquisition.Type)[]>([]);
+   const observation = yield* Ref.make<Schema.Json | null>(null);
++  const checkAnswer = yield* Ref.make<Schema.Json>(null);
++  const checkGate = yield* Ref.make<
++    | { readonly started: Deferred.Deferred<void>; readonly release: Deferred.Deferred<void> }
++    | undefined
++  >(undefined);
+   const clockOffset = yield* Ref.make(0);
+   const failMirror = yield* Ref.make(false);
+   const routes = Layer.mergeAll(
++    HttpRouter.add(
++      "GET",
++      "/name-check",
++      Effect.gen(function* () {
++        const gate = yield* Ref.get(checkGate);
++        if (gate) {
++          yield* Deferred.succeed(gate.started, undefined);
++          yield* Deferred.await(gate.release);
++        }
++        const answer = yield* Ref.get(checkAnswer);
++        if (typeof answer === "object" && answer !== null && !Array.isArray(answer)) {
++          if ("failure" in answer)
++            return HttpServerResponse.jsonUnsafe({ message: "Unavailable" }, { status: 503 });
++          if ("result" in answer) return HttpServerResponse.jsonUnsafe(answer.result);
++        }
++        return HttpServerResponse.jsonUnsafe({});
++      }),
++    ),
+     HttpRouter.add(
+       "POST",
+       "/pool/v1/account-mirrors",
+@@ -150,6 +173,14 @@ export default defineApp({ app: { accounts: { openai: providers.openai.many() }
+         if (input.at > now || input.expiresAt <= now || input.expiresAt > input.at + 30_000)
+           return HttpServerResponse.empty({ status: 401 });
+         yield* Ref.update(calls, (items) => [...items, input]);
++        if (input.action === "check") {
++          const gate = yield* Ref.get(checkGate);
++          if (gate !== undefined) {
++            yield* Deferred.succeed(gate.started, undefined);
++            yield* Deferred.await(gate.release);
++          }
++          return HttpServerResponse.jsonUnsafe(yield* Ref.get(checkAnswer));
++        }
+         if (input.action === "observe")
+           return HttpServerResponse.jsonUnsafe({ result: yield* Ref.get(observation) });
+         if (input.action === "start")
+@@ -179,6 +210,17 @@ export default defineApp({ app: { accounts: { openai: providers.openai.many() }
+     calls: Ref.get(calls),
+     mirrors: Ref.get(mirrors),
+     failNextMirror: Ref.set(failMirror, true),
++    answerCheck: (value: Schema.Json) => Ref.set(checkAnswer, value),
++    holdCheck: Effect.gen(function* () {
++      const started = yield* Deferred.make<void>();
++      const release = yield* Deferred.make<void>();
++      yield* Ref.set(checkGate, { started, release });
++      const resume = Deferred.succeed(release, undefined).pipe(
++        Effect.andThen(Ref.set(checkGate, undefined)),
++      );
++      yield* Effect.addFinalizer(() => resume);
++      return { started: Deferred.await(started), release: resume };
++    }),
+     observation: (value: Schema.Json) => Ref.set(observation, value),
+     advance: (milliseconds: number) => Ref.update(clockOffset, (offset) => offset + milliseconds),
+   };
+diff --git a/e2e/tests/account-connection-query.spec.ts b/e2e/tests/account-connection-query.spec.ts
+index 5fc468a..97e875f 100644
+--- a/e2e/tests/account-connection-query.spec.ts
++++ b/e2e/tests/account-connection-query.spec.ts
+@@ -192,10 +192,10 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
+             ),
+         );
+         expect(
+-          yield* browser.use("The name starts as the server's default", (page) =>
++          yield* browser.use("A generated saved label leaves the naming input empty", (page) =>
+             accountNameField(page).inputValue(),
+           ),
+-        ).toBe("Default");
++        ).toBe("");
+         // Saving the connection linked the account to the app, once.
+         expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`)).toEqual([
+           account,
+diff --git a/e2e/tests/account-naming.spec.ts b/e2e/tests/account-naming.spec.ts
+index 19ee840..ecc20a5 100644
+--- a/e2e/tests/account-naming.spec.ts
++++ b/e2e/tests/account-naming.spec.ts
+@@ -200,7 +200,7 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
+               .then(() => accountNameField(page).inputValue())
+               .then((name) => ({ name, url: new URL(page.url()) })),
+         );
+-        expect(prompt.name).toBe("Default");
++        expect(prompt.name).toBe("");
+         expect(prompt.url.pathname).toBe(`/org/${actors.organization.slug}/apps/${app.id}`);
+         expect(prompt.url.searchParams.get("view")).toBe("accounts");
+         expect(prompt.url.searchParams.has("rename")).toBe(false);
+diff --git a/e2e/tests/account-observation-row-polling.spec.ts b/e2e/tests/account-observation-row-polling.spec.ts
+index c13da40..e7a405d 100644
+--- a/e2e/tests/account-observation-row-polling.spec.ts
++++ b/e2e/tests/account-observation-row-polling.spec.ts
+@@ -11,7 +11,7 @@ import {
+   holdQuery,
+   installBrowserClock,
+ } from "../support/query-transition.ts";
+-import { accountRow, openRowDetails } from "../support/account-rows.ts";
++import { accountRow, openRowDetails, usageGroupName } from "../support/account-rows.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ const Detail = Schema.Struct({ account: Schema.Struct({ label: Schema.String }) });
+@@ -64,8 +64,13 @@ layer(HostedLive, { excludeTestServices: true })("Account observation row pollin
+         const f = yield* observationFixture({ observe: true, health: true, shared: true });
+         yield* f.backend.answer({ status: 200, body: allowance() });
+         const label = (yield* body(Detail, yield* f.detail())).account.label || "Unnamed account";
+-        const block = (page: Page) =>
+-          page.getByRole("group", { name: `Usage and health of ${label}`, exact: true });
++        // An unnamed account's own menu is named by its row title: its provider until the account
++        // reports its identity.
++        const menuName =
++          label === "Unnamed account" || /^Default( \d+)?$/.test(label)
++            ? /Observation service account|Observed identity/
++            : label;
++        const block = (page: Page) => page.getByRole("group", usageGroupName(menuName));
+         const source = (page: Page) => block(page).locator("[data-usage-source] time");
+ 
+         yield* installBrowserClock;
+@@ -85,12 +90,6 @@ layer(HostedLive, { excludeTestServices: true })("Account observation row pollin
+             .then((usage) => expect(usage, "nothing retained shows no usage line").toBe(0));
+         });
+ 
+-        // An unnamed account's own menu is named by its row title: its provider until the account
+-        // reports its identity.
+-        const menuName =
+-          label === "Unnamed account" || /^Default( \d+)?$/.test(label)
+-            ? /Observation service account|Observed identity/
+-            : label;
+         yield* browser.use("Keep the row's reading details open", (page) =>
+           openRowDetails(page, accountRow(page, menuName), menuName),
+         );
+diff --git a/e2e/tests/account-observation-rows.spec.ts b/e2e/tests/account-observation-rows.spec.ts
+index 458fbf3..e001d76 100644
+--- a/e2e/tests/account-observation-rows.spec.ts
++++ b/e2e/tests/account-observation-rows.spec.ts
+@@ -9,7 +9,7 @@ import { Evidence } from "../support/evidence.ts";
+ import { allowance, observationFixture } from "../support/account-observation-fixture.ts";
+ import { linkAccount } from "../support/app-accounts.ts";
+ import { serverControl } from "../support/server-control.ts";
+-import { accountRow, openRowDetails } from "../support/account-rows.ts";
++import { accountRow, openRowDetails, usageGroupName } from "../support/account-rows.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ const Revision = Schema.Struct({ revision: Schema.String });
+@@ -59,8 +59,7 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+             ? /Observation service account|Observed identity/
+             : label;
+         const accounts = `/org/${f.actors.organization.slug}/accounts`;
+-        const block = (page: Page) =>
+-          page.getByRole("group", { name: `Usage and health of ${label}`, exact: true });
++        const block = (page: Page) => page.getByRole("group", usageGroupName(menuName));
+         const refreshButton = (page: Page) =>
+           block(page).getByRole("button", { name: "Refresh", exact: true });
+         const reading = (page: Page) => block(page).locator('[data-reading="requests"]');
+@@ -263,21 +262,23 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+           ),
+         ).toBe("true");
+         yield* browser.use("Open the app's accounts", (page) =>
+-          page.goto(`/org/${f.actors.organization.slug}/apps/${f.app.id}?view=accounts`).then(() =>
+-            page
+-              .getByRole("region", { name: "Your accounts", exact: true })
+-              .getByRole("group", { name: `Usage and health of ${label}`, exact: true })
+-              .locator('[data-reading="requests"]')
+-              .getByText("Rem 88%")
+-              .waitFor(),
+-          ),
++          page
++            .goto(`/org/${f.actors.organization.slug}/apps/${f.app.id}?view=accounts`)
++            .then(() =>
++              page
++                .getByRole("region", { name: "Your accounts", exact: true })
++                .getByRole("group", usageGroupName(menuName))
++                .locator('[data-reading="requests"]')
++                .getByText("Rem 88%")
++                .waitFor(),
++            ),
+         );
+         const appLayout = yield* browser.use(
+           "Keep the app account details inside its card",
+           (page) =>
+             page
+               .getByRole("region", { name: "Your accounts", exact: true })
+-              .getByRole("group", { name: `Usage and health of ${label}`, exact: true })
++              .getByRole("group", usageGroupName(menuName))
+               .evaluate((element) => ({
+                 width: element.clientWidth,
+                 scrollWidth: element.scrollWidth,
+diff --git a/e2e/tests/account-usage-cells.spec.ts b/e2e/tests/account-usage-cells.spec.ts
+index 5c3a3be..1a88a98 100644
+--- a/e2e/tests/account-usage-cells.spec.ts
++++ b/e2e/tests/account-usage-cells.spec.ts
+@@ -19,6 +19,7 @@ import {
+   openRowDetails,
+   openRowMenu,
+   refreshRowUsage,
++  usageGroupName,
+ } from "../support/account-rows.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+@@ -168,7 +169,14 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+         });
+         const accounts = `/org/${studio.actors.organization.slug}/accounts`;
+         const block = (page: Page, label: string) =>
+-          page.getByRole("group", { name: `Usage and health of ${label}`, exact: true });
++          page.getByRole(
++            "group",
++            usageGroupName(
++              /^Default( \d+)?$/.test(label)
++                ? /Observation service account|Observed identity/
++                : label,
++            ),
++          );
+         const cell = (page: Page, label: string, window: string) =>
+           block(page, label).locator(`[data-reading="${window}"]`);
+         const ready = (page: Page) =>
+diff --git a/e2e/tests/local-account-naming.spec.ts b/e2e/tests/local-account-naming.spec.ts
+index 1ccaf03..89740b3 100644
+--- a/e2e/tests/local-account-naming.spec.ts
++++ b/e2e/tests/local-account-naming.spec.ts
+@@ -228,10 +228,10 @@ export default defineApp({ user: { accounts: { service: service.many() } } }, as
+             ),
+         );
+         expect(
+-          yield* browser.use("The dialog's name starts as the saved default", (page) =>
++          yield* browser.use("The generated saved label leaves the name empty", (page) =>
+             accountNameField(page).inputValue(),
+           ),
+-        ).toBe("Default 3");
++        ).toBe("");
+         yield* browser.checkpoint("Name the account over the app's accounts");
+         yield* browser.use("Save the dialog account's name", (page) =>
+           nameConnectedAccount(page, "Dialog key"),
+@@ -481,7 +481,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
+                 .then((name) => ({ name, url: new URL(page.url()) })),
+             ),
+         );
+-        expect(returned.name).toBe("Default");
++        expect(returned.name).toBe("");
+         // The return names only the app's accounts view and carries no other state.
+         expect([...returned.url.searchParams.keys()]).toEqual(["view"]);
+         yield* browser.checkpoint("Name a local OAuth account after sign-in returns");
+diff --git a/e2e/tests/local-name-account-check.spec.ts b/e2e/tests/local-name-account-check.spec.ts
+new file mode 100644
+index 0000000..ad05bfe
+--- /dev/null
++++ b/e2e/tests/local-name-account-check.spec.ts
+@@ -0,0 +1,13 @@
++import { layer } from "@effect/vitest";
++import { TestLive, withCase } from "../support/case.ts";
++import { localNameAccountCheck } from "../support/local-name-account-check.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(TestLive, { excludeTestServices: true })("Local naming checks", (it) => {
++  it.effect(scenarios.localNameAccountCheckDesktop.title, (context) =>
++    withCase(context, localNameAccountCheck(1280)),
++  );
++  it.effect(scenarios.localNameAccountCheckPhone.title, (context) =>
++    withCase(context, localNameAccountCheck(390)),
++  );
++});
+diff --git a/e2e/tests/name-account-identity.spec.ts b/e2e/tests/name-account-identity.spec.ts
+new file mode 100644
+index 0000000..9a362f1
+--- /dev/null
++++ b/e2e/tests/name-account-identity.spec.ts
+@@ -0,0 +1,52 @@
++import { nameAccountAuthored } from "../support/name-account-authored.ts";
++import { nameAccountReconnect } from "../support/name-account-reconnect.ts";
++import { layer } from "@effect/vitest";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { nameAccountIdentityJourney } from "../support/name-account-identity.ts";
++import { nameAccountNoEmailJourney } from "../support/name-account-no-email.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Subscription account names", (it) => {
++  it.effect(scenarios.nameAccountIdentityDesktop.title, (context) =>
++    withHostedCase(context, nameAccountIdentityJourney(1280)),
++  );
++  it.effect(scenarios.nameAccountIdentityPhone.title, (context) =>
++    withHostedCase(context, nameAccountIdentityJourney(390)),
++  );
++  it.effect(scenarios.nameAccountWorkspace.title, (context) =>
++    withHostedCase(context, nameAccountNoEmailJourney(true)),
++  );
++  it.effect(scenarios.nameAccountUnnamed.title, (context) =>
++    withHostedCase(context, nameAccountNoEmailJourney(false)),
++  );
++  it.effect(scenarios.nameAccountDescriptionPrompt1280.title, (context) =>
++    withHostedCase(context, nameAccountNoEmailJourney(false, 1280, "prompt")),
++  );
++  it.effect(scenarios.nameAccountDescriptionPrompt390.title, (context) =>
++    withHostedCase(context, nameAccountNoEmailJourney(false, 390, "prompt")),
++  );
++  it.effect(scenarios.nameAccountDescriptionEdit1280.title, (context) =>
++    withHostedCase(context, nameAccountNoEmailJourney(false, 1280, "edit")),
++  );
++  it.effect(scenarios.nameAccountDescriptionEdit390.title, (context) =>
++    withHostedCase(context, nameAccountNoEmailJourney(false, 390, "edit")),
++  );
++  it.effect(scenarios.nameAccountReconnect1280.title, (context) =>
++    withHostedCase(context, nameAccountReconnect(1280)),
++  );
++  it.effect(scenarios.nameAccountReconnect390.title, (context) =>
++    withHostedCase(context, nameAccountReconnect(390)),
++  );
++  it.effect(scenarios.nameAccountAuthored1280.title, (context) =>
++    withHostedCase(context, nameAccountAuthored(1280)),
++  );
++  it.effect(scenarios.nameAccountAuthored390.title, (context) =>
++    withHostedCase(context, nameAccountAuthored(390)),
++  );
++  it.effect(scenarios.nameAccountWorkspacePhone.title, (context) =>
++    withHostedCase(context, nameAccountNoEmailJourney(true, 390)),
++  );
++  it.effect(scenarios.nameAccountUnnamedPhone.title, (context) =>
++    withHostedCase(context, nameAccountNoEmailJourney(false, 390)),
++  );
++});
+diff --git a/e2e/tests/native-subscription-health.spec.ts b/e2e/tests/native-subscription-health.spec.ts
+index 9a92713..26e43f8 100644
+--- a/e2e/tests/native-subscription-health.spec.ts
++++ b/e2e/tests/native-subscription-health.spec.ts
+@@ -13,7 +13,7 @@ import { legacyStorage } from "../support/legacy-storage.ts";
+ import { providerAccountProduct } from "../support/provider-account-product.ts";
+ import { serverControl } from "../support/server-control.ts";
+ import { subscriptionHealthBackend } from "../support/subscription-health-backend.ts";
+-import { accountRow, openRowDetails } from "../support/account-rows.ts";
++import { accountRow, openRowDetails, usageGroupName } from "../support/account-rows.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ const source = `import { defineApp, defineProvider, interactive, object, secrets, string } from "apps";
+@@ -96,9 +96,7 @@ layer(HostedLive, { excludeTestServices: true })("Native subscription health", (
+             : label;
+         const show = (page: Page) => openRowDetails(page, accountRow(page, menuLabel), menuLabel);
+         const line = (page: Page) =>
+-          page
+-            .getByRole("group", { name: `Usage and health of ${label}`, exact: true })
+-            .locator("[data-account-health]");
++          page.getByRole("group", usageGroupName(menuLabel)).locator("[data-account-health]");
+         const driverStatus = (page: Page) =>
+           line(page).locator('[data-check-source="driver"] [data-check-status]');
+         const checkNow = (page: Page) =>
+diff --git a/e2e/tests/oauth-client-credentials.spec.ts b/e2e/tests/oauth-client-credentials.spec.ts
+index 9397e86..94df203 100644
+--- a/e2e/tests/oauth-client-credentials.spec.ts
++++ b/e2e/tests/oauth-client-credentials.spec.ts
+@@ -156,13 +156,13 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+                 .then((name) => ({ name, url: new URL(page.url()) })),
+             ),
+         );
+-        expect(prompt.name).toBe("Default");
++        expect(prompt.name).toBe("");
+         expect(prompt.url.pathname).toBe(`/org/${actors.organization.slug}/apps/${app.id}`);
+         expect(prompt.url.searchParams.has("rename")).toBe(false);
+         yield* browser.checkpoint("Machine account asks for a name");
+         yield* browser.use("Keep the default name", (page) => nameConnectedAccount(page));
+         yield* browser.use("The app shows the account without navigation", (page) =>
+-          linkedChoice(page, "Reporting", "Default")
++          linkedChoice(page, "Reporting", "Reporting OAuth")
+             .waitFor({ state: "visible" })
+             .then(() => {
+               expect(page.url()).toContain(`/apps/${app.id}`);
+diff --git a/e2e/tests/oauth-connect-storyboard.spec.ts b/e2e/tests/oauth-connect-storyboard.spec.ts
+index 2524c40..0d407de 100644
+--- a/e2e/tests/oauth-connect-storyboard.spec.ts
++++ b/e2e/tests/oauth-connect-storyboard.spec.ts
+@@ -374,10 +374,11 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+         yield* click("Allow access");
+         yield* heading("Name this account");
+         expect(
+-          yield* browser.use("The connected account starts with the default name", (page) =>
+-            accountNamePrompt(page).then(() => accountNameField(page).inputValue()),
++          yield* browser.use(
++            "The connected account asks for a name without showing its generated label",
++            (page) => accountNamePrompt(page).then(() => accountNameField(page).inputValue()),
+           ),
+-        ).toBe("Default");
++        ).toBe("");
+         yield* capture("Name-connected-account");
+         yield* browser.use("Name the connected account", (page) =>
+           nameConnectedAccount(page, "Work reports"),
+@@ -704,7 +705,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
+         );
+ 
+         const first = yield* connect();
+-        expect(yield* prefilled()).toBe("Default");
++        expect(yield* prefilled()).toBe("");
+         yield* browser.checkpoint("Name a new OAuth account");
+         yield* browser.use("Close the dialog without saving", (page) => dismissAccountName(page));
+         const afterClose = yield* dismissed();
+@@ -720,7 +721,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
+ 
+         const second = yield* connect();
+         expect(second).not.toBe(first);
+-        expect(yield* prefilled()).toBe("Default 2");
++        expect(yield* prefilled()).toBe("");
+         yield* browser.use("Name the second account", (page) =>
+           nameConnectedAccount(page, "Work reports"),
+         );
+diff --git a/e2e/tests/oauth-name-ready.spec.ts b/e2e/tests/oauth-name-ready.spec.ts
+index dd2b831..722ce59 100644
+--- a/e2e/tests/oauth-name-ready.spec.ts
++++ b/e2e/tests/oauth-name-ready.spec.ts
+@@ -73,7 +73,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth naming readiness", (it)
+                       .isEnabled(),
+                   ]),
+               );
+-              expect(state).toEqual([true, "Default", true, true, true]);
++              expect(state).toEqual([true, "", true, true, false]);
+               const label = typeDraft ? `Work ${width}` : "Suggested account";
+               const description = `Synthetic description ${width}`;
+               yield* browser.use("Type a name and description while details are held", (page) =>
+diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/packages/ui/src/implementation/dashboard/account-actions.tsx
+index 9da7754..8de4c01 100644
+--- a/packages/ui/src/implementation/dashboard/account-actions.tsx
++++ b/packages/ui/src/implementation/dashboard/account-actions.tsx
+@@ -41,7 +41,7 @@ import {
+ } from "./account-row.tsx";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+ import { accountMethodKindLabel, accountTitle } from "../../contracts/account-identities.ts";
+-import { accountMenuName } from "../../contracts/account-title.ts";
++import { accountMenuName, authoredLabel } from "../../contracts/account-title.ts";
+ import { ownMethodLabel } from "./method-labels.ts";
+ 
+ /**
+@@ -288,6 +288,7 @@ export function AccountDialogIdentity({
+ export function EditAccountForm<E>({
+   account,
+   listed,
++  placeholder,
+   update,
+   Failure,
+   disabledReason,
+@@ -298,7 +299,8 @@ export function EditAccountForm<E>({
+   /** The saved account that changes are computed against; undefined while it is read. */
+   readonly account: Pick<Account, "label" | "description"> | undefined;
+   /** Shown until `account` arrives. */
+-  readonly listed?: Pick<ListedAccount, "label" | "description"> | undefined;
++  readonly listed?: Pick<ListedAccount, "label" | "description" | "providerName"> | undefined;
++  readonly placeholder?: string | undefined;
+   readonly update: (changes: AccountMetadataUpdate) => Promise<Exit.Exit<unknown, E>>;
+   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
+   readonly disabledReason?: string | undefined;
+@@ -312,7 +314,8 @@ export function EditAccountForm<E>({
+   const [descriptionDraft, setDescription] = useState<string>();
+   const [pending, setPending] = useState(false);
+   const [error, setError] = useState<Cause.Cause<E>>();
+-  const label = labelDraft ?? account?.label ?? listed?.label ?? "";
++  const label = labelDraft ?? authoredLabel(account?.label ?? listed?.label ?? "") ?? "";
++  const needsName = authoredLabel(account?.label ?? listed?.label ?? "") !== undefined;
+   const saved = account === undefined ? listed?.description : account.description;
+   // Undefined while neither the account nor its row knows the description.
+   const description = descriptionDraft ?? (saved === undefined ? undefined : (saved ?? ""));
+@@ -326,10 +329,16 @@ export function EditAccountForm<E>({
+       onSubmit={async (event) => {
+         event.preventDefault();
+         const nextLabel = label.trim();
+-        if (disabledReason !== undefined || pending || account === undefined || !nextLabel) return;
++        if (
++          disabledReason !== undefined ||
++          pending ||
++          account === undefined ||
++          (!nextLabel && needsName)
++        )
++          return;
+         const nextDescription = accountDescriptionValue(description ?? "");
+         const changes = {
+-          ...(nextLabel === account.label ? {} : { label: nextLabel }),
++          ...(nextLabel === "" || nextLabel === account.label ? {} : { label: nextLabel }),
+           ...(nextDescription === account.description ? {} : { description: nextDescription }),
+         };
+         if (Object.keys(changes).length === 0) return onDone();
+@@ -346,9 +355,10 @@ export function EditAccountForm<E>({
+         <Input
+           autoFocus
+           value={label}
++          placeholder={placeholder ?? accountMenuName(listed ?? { label: "" })}
+           onChange={(event) => setLabel(event.target.value)}
+-          required
+-          pattern=".*\S.*"
++          required={needsName}
++          pattern={needsName ? ".*\\S.*" : undefined}
+           maxLength={120}
+           disabled={pending}
+           disabledReason={disabledReason}
+diff --git a/packages/ui/src/implementation/dashboard/account-observations.tsx b/packages/ui/src/implementation/dashboard/account-observations.tsx
+index d328b7f..d945ad5 100644
+--- a/packages/ui/src/implementation/dashboard/account-observations.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observations.tsx
+@@ -1,3 +1,4 @@
++import { accountTitle } from "@executor-js/sdk";
+ import type { AccountObservationRecord, App } from "@executor-js/sdk";
+ import { useAtomValue } from "@effect/atom-react";
+ import { Exit, Option, type Cause } from "effect";
+@@ -118,7 +119,7 @@ export function AccountObservations<E>({
+   useEffect(() => {
+     latest.current = run;
+   });
+-  const label = account.label || "Unnamed account";
++  const label = accountTitle(account);
+   // Accounts with no reporter, such as most connectors, and callers who may not see usage get no
+   // usage area at all; only the account's own health, when given, remains.
+   const reported =
+diff --git a/packages/ui/src/implementation/dashboard/name-account.tsx b/packages/ui/src/implementation/dashboard/name-account.tsx
+index 896c180..766577c 100644
+--- a/packages/ui/src/implementation/dashboard/name-account.tsx
++++ b/packages/ui/src/implementation/dashboard/name-account.tsx
+@@ -1,4 +1,12 @@
+-import type { Account, AccountHealth, AppId, Provider } from "@executor-js/sdk";
++import {
++  accountTitle,
++  authoredLabel,
++  providerAccountTitle,
++  type Account,
++  type AccountHealth,
++  type AppId,
++  type Provider,
++} from "@executor-js/sdk";
+ import { Exit, type Cause } from "effect";
+ import { useState, type ComponentType, type ReactNode } from "react";
+ import { providerDisplayUrl, type FailureProps } from "../../contracts/dashboard.ts";
+@@ -20,17 +28,30 @@ export interface AccountToName {
+   readonly account: Account["id"];
+   /** The selecting app's check can suggest a name after the account is linked. */
+   readonly app?: AppId;
+-  readonly saved?: { readonly account: Pick<Account, "label">; readonly provider: Provider };
++  readonly saved?: {
++    readonly account: Pick<Account, "label" | "method" | "provider" | "identity">;
++    readonly provider: Provider;
++  };
+   /** OAuth completion already returns the saved name before optional provider details load. */
+-  readonly connected?: Pick<Account, "label">;
++  readonly connected?: Pick<Account, "label" | "method" | "provider" | "identity">;
+ }
+ 
+ /**
+  * A name to offer when naming an account, from the identity its checks reported. It lives here, not
+  * with the health views, because the naming prompt is mounted on every page and must stay small.
+  */
+-export const suggestedAccountName = (health: AccountHealth | undefined) =>
+-  health?.info?.displayName ?? health?.info?.username ?? health?.info?.email;
++export const suggestedAccountName = (
++  health: AccountHealth | undefined,
++  identity?: Account["identity"],
++) => accountTitle({ label: "", health, identity }, "") || undefined;
++
++/** A successful check without identifying fields is not a failure. */
++export const accountNameCheckFailed = (health: AccountHealth | undefined) =>
++  [...(health?.apps ?? []), ...(health?.driver ? [health.driver] : [])].some(
++    ({ check }) =>
++      check?.current === true &&
++      (check.status === "check_failed" || check.status === "upstream_unavailable"),
++  );
+ 
+ /** The dialog shell for naming a new account; hosts supply the form or its loading state. */
+ export function NameAccountModal({
+@@ -88,32 +109,40 @@ export function NameAccountHeader({ provider }: { readonly provider?: Provider |
+  */
+ export function NameAccountForm<E>({
+   account,
+-  providerName,
++  provider,
+   update,
+   Failure,
+   identity,
++  retry,
+   onPendingChange,
+   onDone,
+ }: {
+-  readonly account: Pick<Account, "label">;
+-  readonly providerName: string | undefined;
++  readonly account: Pick<Account, "label" | "method" | "provider" | "identity">;
++  readonly provider: Provider | undefined;
+   /**
+    * Identity may suggest a name in the background. Once someone types, their draft wins.
+    */
+   readonly identity?:
+     | { readonly resolving: true }
+-    | { readonly resolving: false; readonly name: string | undefined };
++    | { readonly resolving: false; readonly name: string | undefined; readonly failed: boolean };
++  readonly retry: () => void;
+   readonly update: (changes: AccountMetadataUpdate) => Promise<Exit.Exit<unknown, E>>;
+   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
+   readonly onPendingChange?: (pending: boolean) => void;
+   readonly onDone: () => void;
+ }) {
+   const [draft, setLabel] = useState<string>();
+-  const label =
+-    draft ??
+-    (identity?.resolving === false && identity.name !== undefined
+-      ? identity.name.slice(0, 120)
+-      : account.label);
++  const authored = authoredLabel(account.label);
++  const offered = identity?.resolving === false ? identity.name?.slice(0, 120) : undefined;
++  const [suggestion, setSuggestion] = useState<string>();
++  if (suggestion === undefined && offered !== undefined) setSuggestion(offered);
++  const label = draft ?? authored ?? suggestion ?? offered ?? "";
++  const waiting = identity?.resolving && label.trim() === "";
++  const status = identity?.resolving
++    ? "Checking account…"
++    : identity?.failed && !authored && !suggestion && !offered
++      ? "Couldn't check this account."
++      : "";
+   const [description, setDescription] = useState("");
+   const [pending, setPending] = useState(false);
+   const [error, setError] = useState<Cause.Cause<E>>();
+@@ -127,10 +156,10 @@ export function NameAccountForm<E>({
+       onSubmit={async (event) => {
+         event.preventDefault();
+         const next = label.trim();
+-        if (pending || !next) return;
++        if (pending || waiting) return;
+         const described = accountDescriptionValue(description);
+         const changes = {
+-          ...(next === account.label ? {} : { label: next }),
++          ...(next === "" || next === account.label ? {} : { label: next }),
+           ...(described === null ? {} : { description: described }),
+         };
+         if (Object.keys(changes).length === 0) return onDone();
+@@ -143,21 +172,37 @@ export function NameAccountForm<E>({
+       }}
+     >
+       <p className="text-xs leading-relaxed text-muted-foreground">
+-        {providerName ?? "Your account"} is connected. Choose a name you’ll recognize.
++        {provider?.definition.name ?? "Your account"} is connected. Choose a name you’ll recognize.
+       </p>
+       <label className="flex flex-col gap-2 text-[13px] font-medium">
+         Account name
+         <Input
+           autoFocus
+           value={label}
++          placeholder={providerAccountTitle(account, provider?.definition)}
+           onChange={(event) => setLabel(event.target.value)}
+           disabled={pending}
+           maxLength={120}
+         />
+       </label>
++      <div className={status ? "flex flex-wrap items-center justify-between gap-2" : "sr-only"}>
++        <p role="status" className="text-xs text-muted-foreground">
++          {status}
++        </p>
++        {status === "Couldn't check this account." && (
++          <Button type="button" variant="outline" size="sm" disabled={pending} onClick={retry}>
++            Try again
++          </Button>
++        )}
++      </div>
+       <AccountDescriptionField value={description} onChange={setDescription} disabled={pending} />
+       {error && <Failure cause={error} />}
+-      <Button type="submit" className="w-full" loading={pending} disabled={!label.trim()}>
++      <Button
++        type="submit"
++        className="w-full"
++        loading={pending}
++        disabledReason={waiting ? "Wait for the account check or enter a name." : undefined}
++      >
+         Save name
+       </Button>
+     </form>

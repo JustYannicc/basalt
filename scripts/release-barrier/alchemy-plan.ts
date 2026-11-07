@@ -1,3 +1,4 @@
+import { withOperation } from "./operation-failure.ts";
 import * as Apply from "alchemy/Apply";
 import * as Plan from "alchemy/Plan";
 import { havePropsChanged } from "alchemy/Diff";
@@ -8,82 +9,47 @@ import {
   type PreparedWorkerUpload,
 } from "alchemy/Cloudflare/Workers/WorkerUploadHook";
 import type { Worker } from "alchemy/Cloudflare";
+import type { ContainerApplication } from "alchemy/Cloudflare";
+import { ContainerPublicationHook } from "alchemy/Cloudflare/Containers/ContainerPublicationHook";
 import { InMemoryService } from "alchemy/State/InMemoryState";
 import { State } from "alchemy/State/State";
 import type { CompiledStack } from "alchemy/Stack";
 import { Effect, FileSystem, Path } from "effect";
 import * as Retry from "@distilled.cloud/cloudflare/Retry";
-import { BarrierRefusal, type PlanRefusal } from "./manifest.ts";
-import { admitSourceNamespace, commandPhase, supportedCommand } from "./commands.ts";
+import { BarrierRefusal } from "./manifest.ts";
+import { admitSourceNamespace, commandPhase } from "./commands.ts";
 import { cloudflareArtifactsApi } from "../ensure-artifacts.ts";
-import { changedProps } from "./prop-diff.ts";
+import {
+  stageContainer,
+  inspectContainer,
+  type StagedContainer,
+  type FrozenContainer,
+  type BaselineNormalization,
+} from "./container.ts";
+import { imagePlanReasons } from "./plan-reasons.ts";
+import { assertSupportedPlan, newVerification } from "./plan-admission.ts";
+export { assertSupportedPlan } from "./plan-admission.ts";
 
 const workerType = "Cloudflare.Worker";
-const existing = (node: Plan.Apply) =>
-  node.state?.status === "created" ||
-  node.state?.status === "updated" ||
-  (node.state?.status === "updating" && !node.state.adopting && !!node.state.old);
 function refuse(reason: string, worker?: string): never {
   throw new BarrierRefusal(reason, worker);
-}
-
-/** No live resource lifecycle runs during shadow preparation. Commands expose only their real output contract. */
-export function assertSupportedPlan(plan: Plan.Plan) {
-  const refusals: PlanRefusal[] = [];
-  if (plan.selectedFqns || plan.destroy) refusals.push({ reason: "partial-or-destroy-plan" });
-  if (
-    Object.keys(plan.deletions).length ||
-    Object.keys(plan.actionDeletions).length ||
-    Object.keys(plan.actions).length
-  )
-    refusals.push({ reason: "resource-removal-or-action" });
-  for (const [fqn, node] of Object.entries(plan.resources)) {
-    const refuseNode = (reason: string) => {
-      const recorded =
-        node.state?.status === "updating" ? node.state.old?.props : node.state?.props;
-      refusals.push({
-        reason,
-        fqn,
-        type: node.resource.Type,
-        changed: changedProps(recorded, node.resource.Props),
-      });
-    };
-    if (!existing(node) || !["update", "noop"].includes(node.action) || node.renamedFrom?.length)
-      refuseNode("new-or-unsettled-resource");
-    if (node.resource.Type === workerType) {
-      const props = node.resource.Props as Worker["Props"];
-      if (props.namespace != null || props.preview != null || props.version != null)
-        refuseNode("unsupported-worker-mode");
-    } else if (
-      node.resource.Type !== "Command.Exec" &&
-      node.resource.Type !== "Command.Build" &&
-      node.action !== "noop"
-    ) {
-      // Returning an old image/application attribute would freeze the wrong PoolWorker input.
-      refuseNode("unsupported-resource-update");
-    }
-    if (node.resource.Type === "Command.Exec" && !supportedCommand(node.resource.LogicalId))
-      refuseNode("unsupported-command");
-    if (node.resource.Type === "Command.Build" && node.resource.LogicalId !== "Site")
-      refuseNode("unsupported-build-command");
-  }
-  const first = refusals[0];
-  if (first) {
-    const delta =
-      "fqn" in first ? { fqn: first.fqn, type: first.type, changed: first.changed } : undefined;
-    throw new BarrierRefusal(first.reason, delta?.fqn, delta, refusals);
-  }
 }
 
 export const preparePlan = (
   stack: CompiledStack,
   plan: Plan.Plan,
   namespaceApi = cloudflareArtifactsApi,
+  inspect = inspectContainer,
+  recordPublication?: (
+    container: FrozenContainer,
+    normalization?: BaselineNormalization,
+  ) => Promise<void>,
 ) =>
   Effect.gen(function* () {
-    assertSupportedPlan(plan);
+    assertSupportedPlan(plan, yield* imagePlanReasons(plan));
     const files = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
     const captured = new Map<string, PreparedWorkerUpload>();
+    const containers = new Map<string, StagedContainer>();
     const inputs = new Map<string, { news: unknown; bindings: unknown }>();
     const builds = new Map<string, object>();
     const checkedCommands = new Map<string, object>();
@@ -91,12 +57,13 @@ export const preparePlan = (
     const databaseCommands = new Set<string>();
     const resources: Plan.Plan["resources"] = {};
     for (const [fqn, node] of Object.entries(plan.resources)) {
-      if (node.action !== "update" && node.action !== "noop")
+      if (!newVerification(node) && node.action !== "update" && node.action !== "noop")
         return refuse("unsupported-plan", fqn);
       if (
-        node.state.status !== "created" &&
-        node.state.status !== "updated" &&
-        node.state.status !== "updating"
+        !newVerification(node) &&
+        node.state?.status !== "created" &&
+        node.state?.status !== "updated" &&
+        node.state?.status !== "updating"
       )
         return refuse("unsettled-resource", fqn);
       const provider = node.provider;
@@ -113,6 +80,38 @@ export const preparePlan = (
                   captured.set(fqn, upload);
                   inputs.set(fqn, { news: input.news, bindings: input.bindings });
                   return upload.proposed!;
+                }),
+            }),
+          );
+      } else if (node.resource.Type === "Cloudflare.Container" && node.action === "update") {
+        const cached =
+          node.state?.status === "updating"
+            ? node.state.old.attr
+            : node.state && "attr" in node.state
+              ? node.state.attr
+              : undefined;
+        reconcile = (input) =>
+          provider.reconcile(input).pipe(
+            Retry.none,
+            Effect.provideService(ContainerPublicationHook, {
+              rolloutKind: "full_manual",
+              capture: (publication) =>
+                Effect.gen(function* () {
+                  const staged = yield* stageContainer(
+                    publication,
+                    input.news as ContainerApplication["Props"],
+                    input.olds as ContainerApplication["Props"] | undefined,
+                    cached as ContainerApplication["Attributes"],
+                    inspect,
+                  );
+                  if (recordPublication)
+                    yield* Effect.tryPromise({
+                      try: () => recordPublication(staged.frozen, staged.normalization),
+                      catch: (error) => error,
+                    });
+                  containers.set(fqn, staged);
+                  inputs.set(fqn, { news: input.news, bindings: input.bindings });
+                  return publication.proposed;
                 }),
             }),
           );
@@ -157,21 +156,36 @@ export const preparePlan = (
       } else {
         reconcile = () => Effect.sync(() => refuse("unexpected-preparation-lifecycle", fqn));
       }
-      const wrapped = { ...provider, precreate: undefined, reconcile };
-      resources[fqn] =
+      const wrapped = {
+        ...provider,
+        precreate: undefined,
+        reconcile: (input: Parameters<typeof reconcile>[0]) =>
+          Effect.suspend(() => reconcile(input)).pipe(withOperation(fqn, "prepare-resource")),
+      };
+      if (
         node.resource.Type === workerType ||
         (node.resource.Type === "Command.Exec" && node.resource.LogicalId === "AppSourceNamespace")
-          ? {
-              ...node,
-              action: "update",
-              props: node.resource.Props,
-              state: node.state,
-              provider: wrapped,
-            }
-          : { ...node, provider: wrapped };
+      ) {
+        if (!node.state) return refuse("unsettled-resource", fqn);
+        if (
+          node.state.status !== "created" &&
+          node.state.status !== "updated" &&
+          node.state.status !== "updating"
+        )
+          return refuse("unsettled-resource", fqn);
+        resources[fqn] = {
+          ...node,
+          action: "update",
+          props: node.resource.Props,
+          state: node.state,
+          provider: wrapped,
+        };
+      } else resources[fqn] = { ...node, provider: wrapped };
     }
     const states = Object.fromEntries(
-      Object.entries(plan.resources).map(([fqn, node]) => [fqn, node.state!]),
+      Object.entries(plan.resources)
+        .filter(([, node]) => node.state !== undefined)
+        .map(([fqn, node]) => [fqn, node.state!]),
     );
     const shadow = yield* InMemoryService({ [stack.name]: { [stack.stage]: states } });
     yield* Apply.apply({ ...plan, resources }).pipe(
@@ -186,8 +200,18 @@ export const preparePlan = (
       workers.some((fqn) => !captured.has(fqn))
     )
       refuse("incomplete-worker-coverage");
+    if (
+      Object.entries(plan.resources).some(
+        ([fqn, node]) =>
+          node.resource.Type === "Cloudflare.Container" &&
+          node.action === "update" &&
+          !containers.has(fqn),
+      )
+    )
+      refuse("incomplete-container-coverage");
     return {
       captured,
+      containers,
       inputs,
       builds,
       checkedCommands,
@@ -207,6 +231,7 @@ export const finishPlan = (
   prepared: PreparedPlan,
   activated: ReadonlyMap<string, Worker["Attributes"]>,
   databaseFqns: ReadonlySet<string>,
+  activatedContainers: ReadonlyMap<string, ContainerApplication["Attributes"]> = new Map(),
 ) =>
   Effect.gen(function* () {
     const state = yield* yield* State;
@@ -219,6 +244,7 @@ export const finishPlan = (
         resources[fqn] = { ...node, action: "noop", state: current };
       } else if (
         node.resource.Type === workerType ||
+        prepared.containers.has(fqn) ||
         node.resource.Type === "Command.Build" ||
         prepared.checkedCommands.has(fqn)
       ) {
@@ -239,7 +265,9 @@ export const finishPlan = (
                 const result =
                   node.resource.Type === workerType
                     ? activated.get(fqn)
-                    : (prepared.builds.get(fqn) ?? prepared.checkedCommands.get(fqn));
+                    : (activatedContainers.get(fqn) ??
+                      prepared.builds.get(fqn) ??
+                      prepared.checkedCommands.get(fqn));
                 if (!result) refuse("missing-prepared-output", fqn);
                 return result!;
               }),
