@@ -19,6 +19,7 @@ import { test } from "node:test";
 import { dependencyInstallBackend } from "./upstream-inputs.ts";
 import { fixturePhases } from "./upstream-fixture-phases.ts";
 import { fixtureInventory } from "./upstream-fixture-inventory.ts";
+import { fixtureGate } from "./upstream-fixture-gate.ts";
 
 test(
   "real Bun cache hardlinks cannot carry an orphan's writes into a published generation",
@@ -33,7 +34,7 @@ test(
     mkdirSync(bin);
     mkdirSync(template);
     const lifecycle = join(fixture, "lifecycle.mjs");
-    const gate = join(fixture, "release");
+    const gate = await fixtureGate(t);
     const owned = new Set<number>();
     t.after(() => {
       for (const pid of owned) {
@@ -54,17 +55,12 @@ test(
     writeFileSync(
       lifecycle,
       `
-import { openSync, writeSync, closeSync, existsSync, watch, realpathSync, statSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { openSync, writeSync, closeSync, realpathSync, statSync } from 'node:fs';
+import { waitForFixtureRelease } from ${JSON.stringify(new URL("./upstream-fixture-gate.ts", import.meta.url).href)};
 const path = realpathSync('node_modules/is-number/index.js');
 if (process.env.FIXTURE_MODE === 'orphan') {
   const fd = openSync(path, 'r+');
-  const gate = process.env.FIXTURE_GATE;
-  const released = new Promise(resolve => {
-    const watcher = watch(dirname(gate), () => {
-      if (existsSync(gate)) { watcher.close(); resolve(); }
-    });
-  });
+  const released = waitForFixtureRelease(process.env.FIXTURE_GATE_PORT);
   console.log(JSON.stringify({type:'held', pid:process.pid, bunPid:process.ppid, path, inode:statSync(path).ino}));
   await released;
   writeSync(fd, Buffer.from('ORPHAN-WROTE-THIS'), 0, 17, 0);
@@ -86,7 +82,7 @@ if (process.env.FIXTURE_MODE === 'orphan') {
       ...process.env,
       BUN_INSTALL_CACHE_DIR: join(fixture, "bun-cache"),
       BASALT_UPSTREAM_CACHE: join(fixture, "cache"),
-      FIXTURE_GATE: gate,
+      FIXTURE_GATE_PORT: gate.port,
     };
     phase.waiting("template-installed");
     execFileSync(realBun, ["install", "--ignore-scripts", "--backend=hardlink"], {
@@ -191,7 +187,7 @@ if (process.env.FIXTURE_MODE === 'orphan') {
     const before = readFileSync(packageFile, "utf8");
     const state = statSync(packageFile);
 
-    writeFileSync(gate, "release");
+    await gate.release();
     phase.waiting("orphan-finished");
     await first.next("orphan-finished");
     phase.reached("orphan-finished");
