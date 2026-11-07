@@ -8,11 +8,13 @@ import {
 } from "./manifest.ts";
 import {
   assertConfiguredContainer,
+  containerSnapshot,
   sameContainerState,
   type ContainerAttributes,
   type FrozenContainer,
 } from "./container.ts";
 import { equalContainerValues } from "alchemy/Cloudflare/Containers/ContainerPublicationHook";
+import { containerDrift } from "./container-diagnostics.ts";
 import type { ContainerRollout } from "./container-cloudflare.ts";
 
 export interface ContainerVersionProvider {
@@ -142,8 +144,14 @@ export async function releaseWorkers(
     }
     for (const container of manifest.containers ?? []) {
       await options.containers!.verifySource(container);
-      if (!sameContainerState(await options.containers!.read(container), container.baseline))
-        throw new BarrierRefusal("container-baseline-drift", container.id);
+      const baseline = await options.containers!.read(container);
+      if (!sameContainerState(baseline, container.baseline))
+        throw containerDrift(
+          "container-baseline-drift",
+          container.baseline,
+          { ...containerSnapshot(baseline), activeRolloutId: baseline.activeRolloutId },
+          container.id,
+        );
     }
     receipt.phase = "activation";
     for (const accepted of receipt.accepted) {
@@ -162,8 +170,14 @@ export async function releaseWorkers(
       receipt.phase = "container-activation";
       // Worker activation can take time. Recheck the application immediately before its only write.
       await options.containers!.verifySource(container);
-      if (!sameContainerState(await options.containers!.read(container), container.baseline))
-        throw new BarrierRefusal("container-baseline-drift", container.id);
+      const baseline = await options.containers!.read(container);
+      if (!sameContainerState(baseline, container.baseline))
+        throw containerDrift(
+          "container-baseline-drift",
+          container.baseline,
+          { ...containerSnapshot(baseline), activeRolloutId: baseline.activeRolloutId },
+          container.id,
+        );
       if (equalContainerValues(container.baseline.configuration, container.configuration)) {
         receipt.containers!.push({
           container: container.id,
@@ -176,7 +190,15 @@ export async function releaseWorkers(
           version: container.baseline.version,
         };
         await record();
-        await options.containers!.verify(container, await options.containers!.read(container));
+        const unchanged = await options.containers!.read(container);
+        if (!sameContainerState(unchanged, container.baseline))
+          throw containerDrift(
+            "container-baseline-drift",
+            container.baseline,
+            { ...containerSnapshot(unchanged), activeRolloutId: unchanged.activeRolloutId },
+            container.id,
+          );
+        await options.containers!.verify(container, unchanged);
         delete receipt.pendingContainer;
         await record();
         continue;
@@ -212,7 +234,12 @@ export async function releaseWorkers(
       const observed = await options.containers!.wait(container, rollout);
       assertConfiguredContainer(observed, container);
       if (observed.version !== rollout.targetVersion || observed.activeRolloutId)
-        throw new BarrierRefusal("container-version-drift", container.id);
+        throw containerDrift(
+          "container-version-drift",
+          { version: rollout.targetVersion, activeRolloutId: undefined },
+          { version: observed.version, activeRolloutId: observed.activeRolloutId },
+          container.id,
+        );
       await options.containers!.verify(container, observed);
       delete receipt.pendingContainer;
       await record();

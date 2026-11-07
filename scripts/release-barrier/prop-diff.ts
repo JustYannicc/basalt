@@ -15,7 +15,7 @@ export interface ResourceDelta {
 
 const privatePath = /env|secret|binding|credential|password|token|authorization|cookie|key/i;
 const publicField =
-  /^(?:hash|digest|image|imageRef|version|instanceType|instance_type|count|size|name|maxInstances|max_instances|vcpu|memory|memory_mib|disk|percentage|replicas|bytes)$/i;
+  /^(?:hash|digest|image|imageRef|version|instanceType|instance_type|instances|count|size|name|maxInstances|max_instances|vcpu|memory|memory_mib|disk|percentage|replicas|bytes)$/i;
 const record = (value: unknown): value is Record<string, unknown> =>
   value !== null &&
   typeof value === "object" &&

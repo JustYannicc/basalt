@@ -1,3 +1,4 @@
+import { containerDrift } from "./container-diagnostics.ts";
 import * as Workers from "@distilled.cloud/cloudflare/workers";
 import { advanceContainer, observeContainerPromotion } from "./container-promotion.ts";
 import * as Retry from "@distilled.cloud/cloudflare/Retry";
@@ -148,7 +149,12 @@ export const recoverStack = (
       commitContainer = async (container, observed) => {
         const current = await run(state.get(key));
         if (havePropsChanged(current ?? {}, saved))
-          throw new BarrierRefusal("container-recovery-native-state-drift", container.id);
+          throw containerDrift(
+            "container-recovery-native-state-drift",
+            saved,
+            current,
+            container.id,
+          );
         // Recovery creates a new application version; the next plan must see the restored image and its actual version.
         await run(
           state.set({

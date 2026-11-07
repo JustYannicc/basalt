@@ -1,6 +1,8 @@
+import { containerDrift } from "./container-diagnostics.ts";
 import { BarrierRefusal, canonical } from "./manifest.ts";
 import {
   assertConfiguredContainer,
+  containerSnapshot,
   describeContainer,
   sameContainerState,
   type ContainerAttributes,
@@ -103,7 +105,12 @@ export async function recoverContainers(
       current = await options.provider.wait(container, rollout, true);
     }
     if (current.version !== recovered.version || !isRestored(current, container))
-      throw new BarrierRefusal("container-recovery-readback-drift", container.id);
+      throw containerDrift(
+        "container-recovery-readback-drift",
+        { ...container.baseline, version: recovered.version },
+        { ...containerSnapshot(current), activeRolloutId: current.activeRolloutId },
+        container.id,
+      );
   } else if (
     (activation && !activation.unchanged) ||
     !sameContainerState(current, container.baseline)
@@ -151,7 +158,12 @@ export async function recoverContainers(
     await save();
     current = await options.provider.wait(container, rollout, true);
     if (current.version !== rollout.targetVersion || !isRestored(current, container))
-      throw new BarrierRefusal("container-recovery-readback-drift", container.id);
+      throw containerDrift(
+        "container-recovery-readback-drift",
+        { ...container.baseline, version: rollout.targetVersion },
+        { ...containerSnapshot(current), activeRolloutId: current.activeRolloutId },
+        container.id,
+      );
   }
   progress.pendingContainer = {
     container: container.id,
@@ -162,7 +174,12 @@ export async function recoverContainers(
   const health = await options.provider.verify(container);
   const verified = await options.provider.read(container);
   if (verified.version !== current.version || !isRestored(verified, container))
-    throw new BarrierRefusal("container-recovery-verification-drift", container.id);
+    throw containerDrift(
+      "container-recovery-verification-drift",
+      { ...container.baseline, version: current.version },
+      { ...containerSnapshot(verified), activeRolloutId: verified.activeRolloutId },
+      container.id,
+    );
   const result = progress.containers.find((item) => item.container === container.id);
   if (result) Object.assign(result, { verified: true, health });
   else

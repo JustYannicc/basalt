@@ -1,6 +1,5 @@
 import * as Containers from "@distilled.cloud/cloudflare/containers";
 import * as Retry from "@distilled.cloud/cloudflare/Retry";
-import { normalizeNulls } from "alchemy/Util/stable";
 import { Config, Effect, Redacted, Schema } from "effect";
 import {
   cloudflareResult,
@@ -12,110 +11,14 @@ import { waitForContainerImage } from "../deploy-safety/pool-image.ts";
 import { BarrierRefusal } from "./manifest.ts";
 import { imageDigest, type ContainerAttributes, type FrozenContainer } from "./container.ts";
 import { brand } from "../../brand.ts";
-import { applicationCodec } from "./container-schema.ts";
 import { verifyContainerHealth } from "./container-health.ts";
 import type { PoolOperationsTarget } from "../pool-operations.ts";
 import { waitForPoolStatus } from "../pool-readiness.ts";
-import { sameContainerState, type ContainerSnapshot } from "./container.ts";
+import { sameContainerState, containerSnapshot, type ContainerSnapshot } from "./container.ts";
 
-const optional = Schema.optional(Schema.Unknown);
-const configuration = Schema.Struct({
-  image: Schema.String,
-  instance_type: optional,
-  vcpu: optional,
-  memory: optional,
-  memory_mib: optional,
-  disk: optional,
-  environment_variables: optional,
-  secrets: optional,
-  labels: optional,
-  ports: optional,
-  network: optional,
-  command: optional,
-  entrypoint: optional,
-  observability: optional,
-  checks: optional,
-  dns: optional,
-  ssh_public_key_ids: optional,
-});
-const application = Schema.Struct({
-  id: Schema.String,
-  name: Schema.String,
-  account_id: Schema.String,
-  version: Schema.Number,
-  created_at: Schema.String,
-  scheduling_policy: Schema.String,
-  instances: Schema.Number,
-  max_instances: Schema.Number,
-  constraints: optional,
-  affinities: optional,
-  configuration,
-  durable_objects: optional,
-  active_rollout_id: Schema.optional(Schema.NullOr(Schema.String)),
-  health: optional,
-});
-const fieldNames: Record<string, string> = {
-  account_id: "accountId",
-  created_at: "createdAt",
-  scheduling_policy: "schedulingPolicy",
-  max_instances: "maxInstances",
-  durable_objects: "durableObjects",
-  namespace_id: "namespaceId",
-  instance_type: "instanceType",
-  memory_mib: "memoryMib",
-  environment_variables: "environmentVariables",
-  ssh_public_key_ids: "sshPublicKeyIds",
-};
-
-export function containerAttributes(
-  value: Containers.GetContainerApplicationResponse,
-): ContainerAttributes {
-  return {
-    applicationId: value.id,
-    applicationName: value.name,
-    accountId: value.accountId,
-    schedulingPolicy: value.schedulingPolicy,
-    instances: value.instances,
-    maxInstances: value.maxInstances,
-    constraints: normalizeNulls(value.constraints) as ContainerAttributes["constraints"],
-    affinities: normalizeNulls(value.affinities) as ContainerAttributes["affinities"],
-    configuration: normalizeNulls(value.configuration),
-    durableObjects: normalizeNulls(value.durableObjects ?? undefined),
-    createdAt: value.createdAt,
-    version: value.version,
-    dev: undefined,
-  };
-}
-
-/** The SDK drops unknown fields. Inspect raw settings first so a future setting cannot silently disappear from recovery. */
-export function decodeApplication(value: unknown) {
-  try {
-    const raw = Schema.decodeUnknownSync(application, { onExcessProperty: "error" })(value);
-    const { active_rollout_id, health: _health, ...settings } = raw;
-    const rename = (object: object) =>
-      Object.fromEntries(
-        Object.entries(object).map(([key, item]) => [fieldNames[key] ?? key, item]),
-      );
-    const parsed = Schema.decodeUnknownSync(applicationCodec, { onExcessProperty: "error" })({
-      ...rename(settings),
-      configuration: rename(raw.configuration),
-      durableObjects:
-        raw.durable_objects == null
-          ? undefined
-          : rename(
-              Schema.decodeUnknownSync(Schema.Struct({ namespace_id: Schema.String }), {
-                onExcessProperty: "error",
-              })(raw.durable_objects),
-            ),
-    });
-    return {
-      ...containerAttributes(parsed),
-      ...(active_rollout_id ? { activeRolloutId: active_rollout_id } : {}),
-    };
-  } catch {
-    throw new BarrierRefusal("unsupported-container-observation");
-  }
-}
+import { decodeApplication } from "./container-observation.ts";
+import { containerDrift } from "./container-diagnostics.ts";
+export { decodeApplication, containerAttributes } from "./container-observation.ts";
 
 export const observeContainer = (
   target: { accountId: string; applicationId: string },
@@ -159,7 +62,10 @@ export const observeContainer = (
           ).result,
         );
         if (result.accountId !== target.accountId || result.applicationId !== target.applicationId)
-          throw new BarrierRefusal("container-observation-target-drift");
+          throw containerDrift("container-observation-target-drift", target, {
+            accountId: result.accountId,
+            applicationId: result.applicationId,
+          });
         return result;
       },
       catch: (error) =>
@@ -214,12 +120,20 @@ export const waitForContainerVersion = (
         waitForPoolStatus("Container rollout version", 200, async () => {
           const current = await Effect.runPromise(read().pipe(Effect.provideContext(context)));
           if (current.activeRolloutId && current.activeRolloutId !== rollout.id)
-            throw new BarrierRefusal("container-rollout-drift");
+            throw containerDrift(
+              "container-rollout-drift",
+              { activeRolloutId: rollout.id },
+              { activeRolloutId: current.activeRolloutId },
+            );
           if (
             current.version !== rollout.currentVersion &&
             current.version !== rollout.targetVersion
           )
-            throw new BarrierRefusal("container-version-drift");
+            throw containerDrift(
+              "container-version-drift",
+              { version: rollout.targetVersion },
+              { version: current.version },
+            );
           if (
             !sameContainerState(
               {
@@ -231,10 +145,18 @@ export const waitForContainerVersion = (
               { ...target, version: rollout.targetVersion },
             )
           )
-            throw new BarrierRefusal("container-configuration-drift");
+            throw containerDrift(
+              "container-configuration-drift",
+              { ...target, version: rollout.targetVersion },
+              containerSnapshot(current),
+            );
           if (!sameContainerState(current, { ...target, version: rollout.targetVersion })) {
             if (current.version === rollout.targetVersion && !current.activeRolloutId)
-              throw new BarrierRefusal("container-configuration-drift");
+              throw containerDrift(
+                "container-configuration-drift",
+                { ...target, version: rollout.targetVersion },
+                containerSnapshot(current),
+              );
             return new Response(null, { status: 503 });
           }
           result = current;

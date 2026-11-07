@@ -181,6 +181,7 @@ export function assertImageOnlyPublication(
       "unsupported-container-configuration-change",
       {
         ...containerSnapshot(previous),
+        instances: previous.instances,
         configuration: { ...previous.configuration, image: proposed.configuration.image },
         rolloutRequest: {
           ...rolloutRequest,
@@ -192,7 +193,7 @@ export function assertImageOnlyPublication(
           stepPercentage: 100,
         },
       },
-      { ...containerSnapshot(proposed), rolloutRequest },
+      { ...containerSnapshot(proposed), instances: proposed.instances, rolloutRequest },
     );
   const baselineDigest = imageDigest(previous.configuration.image);
   if (
