@@ -17,6 +17,9 @@ import { bundlePoolApp } from "./pool-app-bundle.ts";
 import { writePoolWorkerRevision } from "./pool-worker-revision.ts";
 import { prepareTestPlans } from "./ci/declarations.ts";
 import { prepareE2e } from "./ci/prepare-e2e.ts";
+import { requirePreparedBun } from "./upstream-inputs.ts";
+
+requirePreparedBun();
 
 const root =
   process.argv[2] === "--root" && process.argv[3]
@@ -51,7 +54,7 @@ writeFileSync(
 );
 // The pool Worker imports the release above, so its revision is computed after it is written.
 writePoolWorkerRevision(root, upstream);
-await installUpstreamDependencies(upstream, pin.commit);
+await installUpstreamDependencies(upstream, pin.commit, process.argv.includes("--cache-hit-only"));
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "src/setup")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/pool-tests/sdk")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "clients")]);

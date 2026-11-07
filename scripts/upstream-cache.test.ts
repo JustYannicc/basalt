@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   existsSync,
+  chmodSync,
   mkdtempSync,
   mkdirSync,
   writeFileSync,
@@ -9,6 +10,7 @@ import {
   realpathSync,
   lstatSync,
   unlinkSync,
+  statSync,
 } from "node:fs";
 import { once } from "node:events";
 import { execFileSync, spawn } from "node:child_process";
@@ -146,6 +148,22 @@ test("two carried checkouts share installed package bytes and retain their own w
   );
   const changed = await installUpstreamDependencies(first, pin.commit);
   assert.notEqual(changed.key, a.key);
+  assert.notEqual(
+    statSync(join(first, "node_modules/is-number/index.js")).ino,
+    statSync(join(second, "node_modules/is-number/index.js")).ino,
+    "shared blocks retain independent generation inodes",
+  );
+  mkdirSync(join(first, "apps/docs/.blume/.cache/vite/deps"), { recursive: true });
+  writeFileSync(join(first, "apps/docs/.blume/package.json"), '{"type":"module"}');
+  writeFileSync(join(first, "apps/docs/.blume/.cache/vite/deps/package.json"), '{"type":"module"}');
+  const generated = await installUpstreamDependencies(first, pin.commit);
+  assert.equal(generated.key, changed.key, "generated docs manifests cannot create a new key");
+  const packageFile = join(first, "node_modules/is-number/index.js");
+  const peerFile = join(second, "node_modules/is-number/index.js");
+  const peerBytes = readFileSync(peerFile, "utf8");
+  chmodSync(packageFile, 0o644);
+  writeFileSync(packageFile, "changed generation");
+  assert.equal(readFileSync(peerFile, "utf8"), peerBytes, "writes cannot cross generation inodes");
 });
 
 test("concurrent cache waiters recover one dead owner without removing the next owner's lock", async (t) => {
