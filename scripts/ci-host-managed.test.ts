@@ -43,7 +43,15 @@ test("account and pool jobs retain their owned scenarios, commands and execution
       env: null,
       cwd: ".upstream",
       minutes: null,
-      scenarios: ["appPackageMetadata", "mcpAuthDiscovery", "serviceInstallIdentity"],
+      scenarios: [
+        "additiveProviderAuthAmbiguous",
+        "additiveProviderAuthIncompatible",
+        "additiveProviderAuthSelection",
+        "additiveProviderAuthShared",
+        "appPackageMetadata",
+        "mcpAuthDiscovery",
+        "serviceInstallIdentity",
+      ],
     },
     {
       job: "host-managed-accounts",
@@ -209,5 +217,16 @@ test("affected selection and aggregate require both account halves", () => {
     assert.deepEqual(gateErrors(needs, heavyJobs, [], true), []);
     needs[id] = { result: "skipped" };
     assert.ok(gateErrors(needs, heavyJobs, [], true).some((error) => error.startsWith(id + ":")));
+  }
+});
+
+test("provider continuity inputs select the owned account job", () => {
+  const plan = readDeclarations().files["provider-auth-continuity.spec.ts"];
+  assert.ok(plan);
+  for (const input of [".upstream/e2e/tests/provider-auth-continuity.spec.ts", ...plan.inputs]) {
+    assert.ok(
+      selectPaths([input]).jobs.includes("host-managed-accounts"),
+      `${input} must select the account job that executes provider continuity scenarios`,
+    );
   }
 });
