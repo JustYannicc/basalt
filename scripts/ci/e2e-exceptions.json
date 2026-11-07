@@ -514,7 +514,7 @@
       "mcp-connections.spec.ts#scopedConnectionConsent": "a476e1b5adcf65429b93a4f452438746c0528c9e3f4b03884ee8c2f6d6075fa5",
       "mcp-connections.spec.ts#scopedConnectionDashboard": "f741374a0085b1752335625bebe7b777bec86fb89d5ba3a717a18973656e5db4",
       "mcp-connections.spec.ts#scopedConnectionAppAccount": "c93e7e629a1634dccc34b00c5561650c8dfaeafd164bfd208501afada78c77ff",
-      "mcp-deferred-setup.spec.ts#mcpDeferredSetup": "a102715bd6e1319f2ba2034191a919d1338dd51b4e47b572c8a355dc38a4d4eb",
+      "mcp-deferred-setup.spec.ts#mcpDeferredSetup": "4b0bb5eb004416e647d23fd57c0afb06c459a6387180be498370829049b909bb",
       "mcp-detection-user-agent.spec.ts#mcpDetectionUserAgent": "6ff4c3a1f875101d365ac3ef4540a987d46ad3f5da65ad211ccda0ed794b26d3",
       "mcp-direct-calls.spec.ts#mcpDirectCalls": "dbf1dd98563c7c044388a13efb9b9401fbf7bf13c74831e37bec6f8993d8161e",
       "mcp-direct-calls.spec.ts#mcpNativeCallApproval": "6bf5c5e36b50ceb7e031e672b4601c912471b3cb6541feff8d9b1ad3af9da89b",
