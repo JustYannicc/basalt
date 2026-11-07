@@ -1,0 +1,24 @@
+{
+  "scenarios": {
+    "importApprovals": {
+      "fixtures": "actors",
+      "title": "Imported destructive tools wait for approval through rules in the app's source",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Cloud egress refuses loopback MCP hosts, so no Cloud scenario imports one."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises the hosted import, API key and MCP resume APIs."
+        }
+      }
+    }
+  },
+  "runs": {
+    "importApprovals": ["declared:self-host"]
+  }
+}

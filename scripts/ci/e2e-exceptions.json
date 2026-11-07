@@ -375,7 +375,6 @@
       "hosted.spec.ts#password": "bf89fef7e1ab0ede2ce2da57bb141fcf020f0a437f995c40919cb3c67be97d7d",
       "hosted.spec.ts#scale": "8e2d91a0006b0acb6924385ca1f664992e1faacfe904fc04c82c22686c9a7cec",
       "hosted.spec.ts#telemetry": "8bd47b7e537ede82702a5bacf28f36dcca4552edcacd6915ba9b8bccc9823743",
-      "import-approvals.spec.ts#importApprovals": "4985304f995243471e418b926e4917f34b8405e8718c8b9a300e00d963e6e888",
       "imported-json-schema-documents.spec.ts#importedJsonSchemaDocuments": "b938117fee0a7bf31a771ad29343e8b12f2fbc2aab5e94229aeeed687415433c",
       "installer.spec.ts#the install scripts install the checked release archive for this machine, keep the previous version and refuse an archive that does not match SHA256SUMS": "b070fc587e745c57022ebabdb8695d303ec53868adb4bd8dac854f92afbd8b9d",
       "instance-analytics.spec.ts#selfHostAnalytics": "ff9eb14774137d4647f2c42e2554f10a44d7c99c6df616e14a52bf9b8289ed95",

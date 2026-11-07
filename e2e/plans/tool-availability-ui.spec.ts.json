@@ -1,0 +1,53 @@
+{
+  "scenarios": {
+    "toolAvailabilityUi": {
+      "fixtures": "actors",
+      "title": "app tools switches hide and restore tools on desktop and phone",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted app instance availability follows organization app management authority."
+        }
+      }
+    }
+  },
+  "runs": {
+    "toolAvailabilityUi": [
+      "declared:self-host",
+      "declared:cloud"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/contracts/tool-availability-error.ts",
+    ".upstream/apps/hosted/server/src/contracts/tool-availability.ts",
+    ".upstream/apps/hosted/server/src/implementation/tool-availability-handlers.ts",
+    ".upstream/apps/hosted/server/src/implementation/tool-availability-store.ts",
+    ".upstream/apps/hosted/server/src/implementation/tool-availability.ts",
+    ".upstream/apps/hosted/web/src/contracts/errors.ts",
+    ".upstream/apps/hosted/web/src/contracts/tool-availability.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-detail.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-tools.tsx",
+    ".upstream/e2e/support/app-package.ts",
+    ".upstream/e2e/support/tool-availability-fixture.ts",
+    ".upstream/e2e/support/tool-availability-pages.ts",
+    ".upstream/e2e/support/tool-availability-recovery.ts",
+    ".upstream/e2e/support/tool-availability-retained.ts",
+    ".upstream/e2e/support/tool-availability-ui.ts",
+    ".upstream/e2e/tests/import-approvals.spec.ts",
+    ".upstream/e2e/tests/tool-availability-ui.spec.ts",
+    ".upstream/e2e/tests/tool-availability.spec.ts",
+    ".upstream/e2e/tests/workflow-dependency-tool-policy.spec.ts",
+    ".upstream/packages/ui/src/contracts/tool-availability.ts",
+    ".upstream/packages/ui/src/implementation/components/switch.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/tool-availability.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/tool-tree.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/tools.tsx"
+  ]
+}
