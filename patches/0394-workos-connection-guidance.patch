@@ -45,8 +45,10 @@ diff --git a/apps/hosted/web/src/implementation/pages/accounts-setup.tsx b/apps/
 index ca0c961..dd0a35e 100644
 --- a/apps/hosted/web/src/implementation/pages/accounts-setup.tsx
 +++ b/apps/hosted/web/src/implementation/pages/accounts-setup.tsx
-@@ -1,3 +1,4 @@
+@@ -1,5 +1,6 @@
 +import { SetupConnectionRecovery } from "./setup-connection-recovery.tsx";
+ import { accountKindLabel } from "@executor-js/ui/contracts/account-identities";
+ import { accountTitle } from "@executor-js/sdk";
  import { useEffect, useRef, useState, type ReactNode } from "react";
  import { useAtomMount, useAtomRefresh, useAtomValue } from "@effect/atom-react";
  import { useLocation } from "@tanstack/react-router";
@@ -70,7 +72,8 @@ diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/
 index 494d4bb..d390109 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
-@@ -1,4 +1,5 @@
+@@ -1,5 +1,6 @@
+ import { providerAccountTitle } from "@executor-js/sdk";
  import { methodsOf } from "./app-account-methods.ts";
 +import { ConnectionMethodChoices } from "./connection-method-choices.tsx";
  export { methodsOf } from "./app-account-methods.ts";
@@ -168,7 +171,7 @@ index 494d4bb..d390109 100644
    readonly redirectUri: string;
    readonly onPendingChange: (pending: boolean) => void;
    readonly onSaved: () => void;
-@@ -627,11 +681,17 @@ export function AppConnectionDialogContent({
+@@ -627,15 +681,21 @@ export function AppConnectionDialogContent({
    return (
      <>
        <ConnectionDialogHeader
@@ -176,7 +179,11 @@ index 494d4bb..d390109 100644
          provider={form.provider}
          title={title}
          action={account ? "Reconnect" : "Connect"}
-         notice={account ? `Apps using ${account.label} will use the new credentials.` : undefined}
+         notice={
+           account
+             ? `Apps using ${providerAccountTitle(account, requirement.definition)} will use the new credentials.`
+             : undefined
+         }
        />
 +      {notice && (
 +        <p role="alert" className="text-sm leading-relaxed text-muted-foreground">

@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { Deferred, Effect, Fiber, Layer, Option, Redacted, Schema } from "effect";
 import {
   fixture,
+  changeAt,
   load,
   implementation,
   contracts,
@@ -30,7 +31,7 @@ test("shareApp sends signed post-write audiences inside its transaction; worker 
   await fixture(({ sql, changes, requestTransactions, fail, recover }) =>
     Effect.gen(function* () {
       yield* share(sql, "everyone");
-      assert.deepEqual(changes[0].pools, [
+      assert.deepEqual(changeAt(changes, "audience", 0).pools, [
         {
           pool,
           owner: "owner",
@@ -43,7 +44,7 @@ test("shareApp sends signed post-write audiences inside its transaction; worker 
       yield* sql`insert into hosted_groups (id, organization_id, name) values ('g-fixture', ${organization}, 'Friends')`;
       yield* sql`insert into hosted_group_members values ('g-fixture', 'm-guest')`;
       yield* share(sql, "groups", ["g-fixture"]);
-      assert.deepEqual(changes[1].pools[0].users, ["guest", "owner"]);
+      assert.deepEqual(changeAt(changes, "audience", 1).pools[0].users, ["guest", "owner"]);
       const before = yield* sql`select * from hosted_app_access where id = ${pool}`;
       const groups = yield* sql`select * from hosted_app_groups`;
       fail();
@@ -52,7 +53,7 @@ test("shareApp sends signed post-write audiences inside its transaction; worker 
       assert.deepEqual(yield* sql`select * from hosted_app_groups`, groups);
       recover();
       yield* share(sql, "private");
-      assert.deepEqual(changes.at(-1).pools[0].users, ["owner"]);
+      assert.deepEqual(changeAt(changes, "audience").pools[0].users, ["owner"]);
     }),
   );
 });
@@ -65,7 +66,7 @@ test("native pool handoff follows app groups and keeps management independent of
       yield* sql`insert into hosted_groups (id, organization_id, name) values ('g-native', ${organization}, 'Pool users')`;
       yield* sql`insert into hosted_group_members values ('g-native', 'm-guest')`;
       yield* share(sql, "groups", ["g-native"]);
-      const first = changes.at(-1).pools[0];
+      const first = changeAt(changes, "audience").pools[0];
       assert.equal(first.authorization, "executor-app-v1");
       assert.deepEqual(first.users, ["guest"]);
       assert.deepEqual(first.managers, ["other", "owner"]);
@@ -75,8 +76,8 @@ test("native pool handoff follows app groups and keeps management independent of
           yield* hook.appAccessChanged({ organization, apps: [pool] });
         }),
       );
-      assert.deepEqual(changes.at(-1).pools[0].users, []);
-      assert.deepEqual(changes.at(-1).pools[0].managers, ["other", "owner"]);
+      assert.deepEqual(changeAt(changes, "audience").pools[0].users, []);
+      assert.deepEqual(changeAt(changes, "audience").pools[0].managers, ["other", "owner"]);
     }),
   );
 });
@@ -89,8 +90,8 @@ test("native pool membership removal omits use and management without changing t
       yield* sql`update hosted_app_access set audience = 'everyone' where id = ${pool}`;
       const before = yield* sql`select * from hosted_app_access where id = ${pool}`;
       yield* hook.memberRemoving({ organization, member: "m-other" });
-      assert.deepEqual(changes.at(-1).pools[0].users, ["guest", "owner"]);
-      assert.deepEqual(changes.at(-1).pools[0].managers, ["owner"]);
+      assert.deepEqual(changeAt(changes, "audience").pools[0].users, ["guest", "owner"]);
+      assert.deepEqual(changeAt(changes, "audience").pools[0].managers, ["owner"]);
       assert.deepEqual(yield* sql`select * from hosted_app_access where id = ${pool}`, before);
       assert.equal((yield* sql`select * from member where id = 'm-other'`).length, 1);
     }),
@@ -126,8 +127,8 @@ test("role demotion acknowledges the resulting native policy before the role cha
           }),
         );
       yield* demote();
-      assert.deepEqual(changes.at(-1).pools[0].users, ["guest", "other", "owner"]);
-      assert.deepEqual(changes.at(-1).pools[0].managers, ["owner"]);
+      assert.deepEqual(changeAt(changes, "audience").pools[0].users, ["guest", "other", "owner"]);
+      assert.deepEqual(changeAt(changes, "audience").pools[0].managers, ["owner"]);
       assert.deepEqual(yield* sql`select role from member where id = 'm-other'`, [
         { role: "admin" },
       ]);
@@ -189,8 +190,8 @@ for (const encoding of ["json", "form", "multipart"])
         });
         yield* Effect.all([role, projection], { concurrency: "unbounded" });
         assert.equal(changes.length, 2);
-        assert.deepEqual(changes[0].pools[0].managers, ["owner"]);
-        assert.deepEqual(changes[1].pools[0].managers, ["owner"]);
+        assert.deepEqual(changeAt(changes, "audience", 0).pools[0].managers, ["owner"]);
+        assert.deepEqual(changeAt(changes, "audience", 1).pools[0].managers, ["owner"]);
         assert.deepEqual(yield* sql`select role from member where id = 'm-other'`, [
           { role: "member" },
         ]);
@@ -291,7 +292,7 @@ test("member removal projects the audience without its membership and refuses a 
           }),
         );
       yield* removal();
-      assert.deepEqual(changes[0].pools[0].users, ["other", "owner"]);
+      assert.deepEqual(changeAt(changes, "audience", 0).pools[0].users, ["other", "owner"]);
       assert.equal((yield* sql`select * from member where id = 'm-guest'`).length, 1);
       fail();
       const result = yield* Effect.exit(
@@ -349,8 +350,8 @@ test("SDK app-removal hook revokes a pool before unlinking it and rolls back on 
       assert.equal((yield* sql`select * from executor_apps where id = ${pool}`).length, 1);
       recover();
       yield* remove;
-      assert.equal(changes.at(-1).action, "pool-deleted");
-      assert.equal(changes.at(-1).pool, pool);
+      assert.equal(changeAt(changes, "pool-deleted").action, "pool-deleted");
+      assert.equal(changeAt(changes, "pool-deleted").pool, pool);
       assert.deepEqual(requestTransactions, [true, true, true, true]);
       assert.equal((yield* sql`select * from hosted_app_account_links`).length, 0);
     }),
@@ -363,14 +364,14 @@ test("organization deletion revokes owned pools before owner-store erasure; pers
     Effect.gen(function* () {
       yield* hook.organizationRemoving(organization);
       assert.equal(changes[0].action, "pool-deleted");
-      assert.equal(changes[0].pool, pool);
+      assert.equal(changeAt(changes, "pool-deleted", 0).pool, pool);
       const callbacks = {
         userDeleting: (user: string) =>
           Effect.runPromise(hook.userDeleting(user).pipe(Effect.provideService(SqlClient, sql))),
       };
       yield* Effect.tryPromise(() => beforeUserDeletion(callbacks, "guest"));
       assert.equal(changes[1].action, "person-deleted");
-      assert.equal(changes[1].user, "guest");
+      assert.equal(changeAt(changes, "person-deleted", 1).user, "guest");
       fail();
       assert.equal(
         (yield* Effect.exit(
@@ -406,7 +407,7 @@ test("group create/update/delete push each pool inside the writing transaction, 
       const group = yield* call("create", {
         payload: { name: "Friends", description: "", memberIds: ["m-guest"] },
       });
-      assert.deepEqual(changes.at(-1).pools[0].users, ["owner"]);
+      assert.deepEqual(changeAt(changes, "audience").pools[0].users, ["owner"]);
       yield* sql`update hosted_app_access set audience = 'groups' where id = ${pool}`;
       yield* sql`insert into hosted_app_groups values (${organization}, ${pool}, ${group.id})`;
       const updated = yield* call("update", {
@@ -418,7 +419,7 @@ test("group create/update/delete push each pool inside the writing transaction, 
           memberIds: ["m-guest", "m-other"],
         },
       });
-      assert.deepEqual(changes.at(-1).pools[0].users, ["guest", "other", "owner"]);
+      assert.deepEqual(changeAt(changes, "audience").pools[0].users, ["guest", "other", "owner"]);
       fail();
       assert.equal(
         (yield* Effect.exit(
@@ -450,7 +451,7 @@ test("group create/update/delete push each pool inside the writing transaction, 
         params: { group: group.id },
         payload: { revision: updated.revision },
       });
-      assert.deepEqual(changes.at(-1).pools[0].users, ["owner"]);
+      assert.deepEqual(changeAt(changes, "audience").pools[0].users, ["owner"]);
       assert.equal((yield* sql`select * from hosted_groups where id = ${group.id}`).length, 0);
       assert.ok(requestTransactions.every(Boolean));
     }),
@@ -510,7 +511,7 @@ test("auth-record erasure notifies before its first delete, and a refusal leaves
         findOne: async () => ({ logo: null }),
         findMany: async () => [],
         delete: async ({ model }: { model: string }) => {
-          assert.equal(changes.at(-1).action, "pool-deleted");
+          assert.equal(changeAt(changes, "pool-deleted").action, "pool-deleted");
           deleted.push(model);
         },
         deleteMany: async ({ model }: { model: string }) => {
@@ -543,7 +544,7 @@ for (const audience of ["private", "everyone", "groups"]) {
           yield* sql`insert into hosted_group_members values ('g-removal', 'm-guest'), ('g-removal', 'm-owner')`;
           yield* sql`insert into hosted_app_groups values (${organization}, ${pool}, 'g-removal')`;
           yield* hook.memberRemoving({ organization, member: `m-${user}` });
-          assert.equal(changes.at(-1).pools[0].users.includes(user), false);
+          assert.equal(changeAt(changes, "audience").pools[0].users.includes(user), false);
           assert.equal((yield* sql`select id from member where id = ${`m-${user}`}`).length, 1);
         }),
       );
@@ -555,10 +556,10 @@ test("user deletion revokes every owned pool from metadata before deleting the p
   await fixture(({ sql, hook, changes, fail, recover }) =>
     Effect.gen(function* () {
       yield* sql`insert into organization values ('org-second', ${JSON.stringify({ basaltPools: { owner: { app: "app_second" }, guest: { app: "app_guest" } } })})`;
-      yield* sql`insert into executor_apps values ('app_second', 'organization:org-second', 'Second pool')`;
+      yield* sql`insert into executor_apps (id, owner, name) values ('app_second', 'organization:org-second', 'Second pool')`;
       // A historical forged entry points outside the organization recording it.
       yield* sql`insert into organization values ('org-forged', ${JSON.stringify({ basaltPools: { owner: { app: "app_victim" } } })})`;
-      yield* sql`insert into executor_apps values ('app_victim', 'organization:org-victim', 'Victim pool')`;
+      yield* sql`insert into executor_apps (id, owner, name) values ('app_victim', 'organization:org-victim', 'Victim pool')`;
       fail();
       assert.equal((yield* Effect.exit(hook.userDeleting("owner")))._tag, "Failure");
       assert.equal(
@@ -582,8 +583,8 @@ test("user deletion revokes every owned pool from metadata before deleting the p
           .sort(),
         [pool, "app_second"],
       );
-      assert.equal(sent.at(-1).action, "person-deleted");
-      assert.equal(sent.at(-1).user, "owner");
+      assert.equal(changeAt(sent, "person-deleted").action, "person-deleted");
+      assert.equal(changeAt(sent, "person-deleted").user, "owner");
       assert.equal((yield* sql`select id from "user" where id = 'owner'`).length, 1);
     }),
   );
@@ -651,7 +652,7 @@ test("durable organization removal notifies before purging apps and refuses eras
             owners: {
               remove: () =>
                 Effect.gen(function* () {
-                  assert.equal(changes.at(-1).action, "pool-deleted");
+                  assert.equal(changeAt(changes, "pool-deleted").action, "pool-deleted");
                   erased.push("apps");
                   yield* sql`delete from executor_apps`;
                 }),
