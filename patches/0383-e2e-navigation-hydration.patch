@@ -2,7 +2,7 @@ diff --git a/e2e/support/browser-navigation.ts b/e2e/support/browser-navigation.
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/browser-navigation.ts
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,63 @@
 +import type { Page } from "playwright";
 +
 +const documentIsInteractive = () => {
@@ -38,21 +38,20 @@ new file mode 100644
 +  page.on("framenavigated", (frame) => {
 +    if (frame === page.mainFrame()) responsive = false;
 +  });
-+  const interactive = async () => {
-+    if (responsive) return;
-+    const ready = await page.waitForFunction(documentIsInteractive, undefined, {
-+      timeout: 10000,
-+      polling: 50,
-+    });
-+    await ready.dispose();
-+    responsive = true;
++  const interactive = () => {
++    if (responsive) return Promise.resolve();
++    return page
++      .waitForFunction(documentIsInteractive, undefined, { timeout: 10000, polling: 50 })
++      .then((ready) => ready.dispose())
++      .then(() => {
++        responsive = true;
++      });
 +  };
-+  const completed = async <A>(navigation: Promise<A>, waitUntil: string | undefined) => {
-+    const result = await navigation;
-+    // Explicit commit navigation is the existing escape hatch for first-paint and early-input proofs.
-+    if (waitUntil !== "commit") await interactive();
-+    return result;
-+  };
++  const completed = <A>(navigation: Promise<A>, waitUntil: string | undefined) =>
++    navigation.then((result) =>
++      // Explicit commit navigation preserves first-paint and early-input proofs.
++      waitUntil === "commit" ? result : interactive().then(() => result),
++    );
 +  const goto = page.goto.bind(page);
 +  const reload = page.reload.bind(page);
 +  const back = page.goBack.bind(page);
