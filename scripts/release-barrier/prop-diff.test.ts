@@ -33,6 +33,7 @@ const newHash = "b".repeat(16);
 
 function containerPlan(
   change: "image" | "env" | "noop" | "interrupted" | "key" | "key-map" | "multiple",
+  primary = "UnsupportedContainer",
 ) {
   let action: "update" | "noop" = "update";
   const stack = Stack(
@@ -46,9 +47,7 @@ function containerPlan(
       state: Layer.effect(State, Effect.map(InMemoryService(), Effect.succeed)),
     },
     Effect.gen(function* () {
-      for (const id of change === "multiple"
-        ? ["PoolContainer", "OtherContainer"]
-        : ["PoolContainer"]) {
+      for (const id of change === "multiple" ? [primary, "OtherContainer"] : [primary]) {
         yield* FixtureContainer(id, {
           hash: { image: newHash },
           env: { ACCESS_TOKEN: "new-private-value" },
@@ -65,9 +64,7 @@ function containerPlan(
         Effect.gen(function* () {
           yield* Apply.apply(yield* Plan.make(compiled));
           const state = yield* yield* State;
-          for (const fqn of change === "multiple"
-            ? ["PoolContainer", "OtherContainer"]
-            : ["PoolContainer"]) {
+          for (const fqn of change === "multiple" ? [primary, "OtherContainer"] : [primary]) {
             const key = { stack: compiled.name, stage: compiled.stage, fqn };
             const saved = yield* state.get(key);
             assert.ok(saved?.status === "created" || saved?.status === "updated");
@@ -76,7 +73,7 @@ function containerPlan(
                 image:
                   change === "image" ||
                   change === "interrupted" ||
-                  (change === "multiple" && fqn === "PoolContainer")
+                  (change === "multiple" && fqn === primary)
                     ? oldHash
                     : newHash,
               },
@@ -115,9 +112,9 @@ function containerPlan(
 for (const change of ["image", "interrupted"] as const) {
   test(`an ${change} container refusal retains the image prop delta in failure.json`, async (context) => {
     const error = await containerPlan(change);
-    assert.equal(error?.reason, "unsupported-resource-update");
+    assert.equal(error?.reason, "unsupported-container");
     assert.deepEqual(error?.delta, {
-      fqn: "PoolContainer",
+      fqn: "UnsupportedContainer",
       type: "Cloudflare.Container",
       changed: [{ path: "hash.image", old: oldHash, new: newHash }],
     });
@@ -133,6 +130,10 @@ test("a container env refusal names the path without retaining either value", as
   const error = await containerPlan("env");
   assert.deepEqual(error?.delta?.changed, [{ path: "env.ACCESS_TOKEN", changed: true }]);
   assert.ok(!JSON.stringify(error).includes("private-value"));
+});
+
+test("the existing pool image update passes plan admission for staged validation", async () => {
+  assert.equal(await containerPlan("image", "PoolContainer"), undefined);
 });
 
 test("an unchanged container still passes the supported plan check", async () => {
@@ -264,14 +265,14 @@ test("one refusal receipt reports both blocked nodes and keeps each delta redact
   const error = await containerPlan("multiple");
   const expected = [
     {
-      reason: "unsupported-resource-update",
+      reason: "unsupported-container",
       fqn: "OtherContainer",
       type: "Cloudflare.Container",
       changed: [{ path: "env.ACCESS_TOKEN", changed: true }],
     },
     {
-      reason: "unsupported-resource-update",
-      fqn: "PoolContainer",
+      reason: "unsupported-container",
+      fqn: "UnsupportedContainer",
       type: "Cloudflare.Container",
       changed: [{ path: "hash.image", old: oldHash, new: newHash }],
     },
