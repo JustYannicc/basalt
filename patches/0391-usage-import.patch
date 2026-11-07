@@ -1,0 +1,77 @@
+diff --git a/apps/hosted/web/src/implementation/pages/pool-usage.tsx b/apps/hosted/web/src/implementation/pages/pool-usage.tsx
+--- a/apps/hosted/web/src/implementation/pages/pool-usage.tsx
++++ b/apps/hosted/web/src/implementation/pages/pool-usage.tsx
+@@ -15,6 +15,7 @@
+ import { editDraft, noEdits, savingAny, settleSave } from "./pool-usage-cap.tsx";
+ import { dayRange, formats, type Formats, type Metric } from "./pool-usage-format.ts";
+ import { PoolMemberRow, rowColumns } from "./pool-usage-row.tsx";
++import { PoolImportUsage } from "./pool-import-usage.tsx";
+ 
+ /** A page is its cursor and how many people came before it, in the backend's order. */
+ interface PageEntry {
+@@ -116,6 +117,11 @@
+         at current official USD API prices; unpriced requests lack a known official price or usable
+         token counts. A weekly cap stops a person&apos;s requests through this pool until it resets.
+       </p>
++      {page !== undefined && (
++        <div className="mt-3">
++          <PoolImportUsage app={app} canUse={canUse} />
++        </div>
++      )}
+       {!canUse &&
+         page !== undefined &&
+         !page.members.some((member) => member.member === viewer) && (
+diff --git a/apps/hosted/web/src/implementation/pages/pool-import-usage.tsx b/apps/hosted/web/src/implementation/pages/pool-import-usage.tsx
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/pool-import-usage.tsx
+@@ -0,0 +1,49 @@
++import type { App, AppId } from "@executor-js/sdk";
++import { Button } from "@executor-js/ui/components/button";
++import { useQuery } from "@executor-js/ui/dashboard/context";
++import { Option } from "effect";
++import { AsyncResult } from "effect/reactivity";
++import { liveAppAtom } from "../../contracts/apps.ts";
++import { appUiError } from "../../contracts/app-ui.ts";
++import { useOrganizationRoute } from "../components/organization.tsx";
++import { useAppUiLocation } from "./app-screen.tsx";
++
++/** Settings and the pool screen open the same authenticated import flow. */
++export function PoolImportUsage({
++  app,
++  canUse,
++}: {
++  readonly app: AppId;
++  readonly canUse: boolean;
++}) {
++  const { organization } = useOrganizationRoute();
++  const query = useQuery(liveAppAtom({ organization, app }));
++  const current = Option.getOrUndefined(query.data);
++  if (!canUse || current === undefined || current.activeVersion === null) return null;
++  return <ImportLink app={current} />;
++}
++
++function ImportLink({ app }: { readonly app: App }) {
++  const { result, refresh } = useAppUiLocation(app);
++  if (AsyncResult.isFailure(result))
++    return (
++      <div className="flex flex-wrap items-center gap-2">
++        <span role="status" className="text-sm text-muted-foreground">
++          {appUiError(result.cause)}
++        </span>
++        <Button variant="outline" size="sm" onClick={refresh}>
++          Check import link
++        </Button>
++      </div>
++    );
++  if (!AsyncResult.isSuccess(result) || result.value.status !== "ready") return null;
++  const href = new URL(result.value.url);
++  href.hash = "usage-import";
++  return (
++    <Button variant="outline" size="sm" asChild>
++      <a href={href.href} target="_blank" rel="noopener noreferrer">
++        Import usage
++      </a>
++    </Button>
++  );
++}
