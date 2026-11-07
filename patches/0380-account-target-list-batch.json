@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-account-target-list-batch",
+  "file": "0380-account-target-list-batch.patch",
+  "content_sha256": "8b409fd8463a7a45f48ebc9baccf392c94a978ce523697e149ee36ea2a166342",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}
