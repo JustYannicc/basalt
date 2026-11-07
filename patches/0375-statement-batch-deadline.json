@@ -1,7 +1,7 @@
 {
   "identity": "basalt-statement-batch-deadline",
   "file": "0375-statement-batch-deadline.patch",
-  "content_sha256": "1128ab120f90a3a48125309972eed4e851bfecfae44cf6c169b6c40753136a37",
+  "content_sha256": "c7cbd2f669085322cc682f35d4cbb41d30b45d694f09e78ccd1afbd51f15c93b",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

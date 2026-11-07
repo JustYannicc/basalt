@@ -114,16 +114,20 @@ diff --git a/apps/hosted/testing/statement-hold-fixture.ts b/apps/hosted/testing
    /** The app whose access check to hold, or the next PAT check inside a tool call. */
    readonly app: string | undefined;
    /** Hold the next answered check of this kind that binds this ID, instead. */
-@@ -111,6 +117,27 @@
+@@ -111,6 +117,31 @@
              }),
            );
          }
 +        if (hold.prefetch !== undefined) {
 +          const statement: Statement.Statement<unknown> = Reflect.apply(target, self, args);
 +          const [text, bound] = statement.compile();
-+          if (!text.includes("cross join lateral jsonb_each") || !bound.includes(hold.prefetch))
++          if (
++            !text.includes('as "appLinks"') ||
++            !text.includes("as access") ||
++            !bound.includes(hold.prefetch)
++          )
 +            return statement;
-+          // The first SQL has returned; the same lifecycle leaf still owes its authority read.
++          // SQL has answered, but the caller still waits for this complete lifecycle leaf.
 +          return Effect.tap(statement, () =>
 +            Effect.flatMap(inSpan("sdk.accounts.recheck"), (inside) => {
 +              if (!inside || armed !== hold) return Effect.void;
@@ -142,7 +146,7 @@ diff --git a/apps/hosted/testing/statement-hold-fixture.ts b/apps/hosted/testing
          if (hold.failAccounts) {
            const statement: Statement.Statement<unknown> = Reflect.apply(target, self, args);
            if (!accountRows.test(statement.compile()[0])) return statement;
-@@ -156,12 +183,35 @@
+@@ -156,12 +187,35 @@
      });
    const routes = Layer.mergeAll(
      HttpRouter.add(
@@ -360,7 +364,7 @@ diff --git a/e2e/support/statement-batch-proxy.ts b/e2e/support/statement-batch-
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/statement-batch-proxy.ts
-@@ -0,0 +1,220 @@
+@@ -0,0 +1,235 @@
 +import { Deferred, Effect, Exit, Schema } from "effect";
 +import { connect, createServer, type Socket } from "node:net";
 +
@@ -377,11 +381,13 @@ new file mode 100644
 +  readonly ended: Deferred.Deferred<void>;
 +  held: boolean;
 +  closed: boolean;
++  phase: "read" | "commit" | null;
++  commitQueued: boolean;
 +  later: number;
 +  readonly laterKinds: StatementKind[];
 +}
 +
-+/** Withhold a chosen app's COMMIT reply in the runner-owned PostgreSQL transport. */
++/** Hold an awaited authority reply, or a legacy COMMIT that precedes that read. */
 +export const statementBatchProxy = Effect.gen(function* () {
 +  let target: number | undefined;
 +  let armed: Hold | undefined;
@@ -405,11 +411,11 @@ new file mode 100644
 +    let ready = false;
 +    let index = 0;
 +    let frozen: Hold | undefined;
-+    let transaction: { matches: boolean } | undefined;
++    let transaction: { hold?: Hold } | undefined;
 +    const statements = new Map<string, StatementKind>();
 +    const portals = new Map<string, StatementKind>();
 +    let postCommit: Hold | undefined;
-+    const queries: Array<{ commit?: Hold }> = [];
++    const queries: Array<{ freeze?: { hold: Hold; phase: "read" | "commit" } }> = [];
 +    const kindOf = (sql: string): StatementKind =>
 +      sql === "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY"
 +        ? "begin"
@@ -421,12 +427,20 @@ new file mode 100644
 +              ? "tool-access"
 +              : "query";
 +    const execute = (kind: StatementKind) => {
-+      const commit = kind === "commit" && transaction?.matches ? armed : undefined;
++      const read = kind === "sdk-access" ? transaction?.hold : undefined;
++      const commit = kind === "commit" ? transaction?.hold : undefined;
++      if (commit !== undefined) commit.commitQueued = true;
 +      if (postCommit !== undefined) {
 +        postCommit.later++;
 +        postCommit.laterKinds.push(kind);
 +      }
-+      queries.push(commit === undefined ? {} : { commit });
++      queries.push(
++        read !== undefined
++          ? { freeze: { hold: read, phase: "read" } }
++          : commit !== undefined
++            ? { freeze: { hold: commit, phase: "commit" } }
++            : {},
++      );
 +      if (kind === "commit") {
 +        transaction = undefined;
 +        if (commit !== undefined) postCommit = commit;
@@ -470,7 +484,7 @@ new file mode 100644
 +          const statement = frame.toString("utf8", portalEnd + 1, statementEnd);
 +          const kind = statements.get(statement) ?? "query";
 +          portals.set(portal, kind);
-+          if (kind === "begin") transaction = { matches: false };
++          if (kind === "begin") transaction = {};
 +          let offset = statementEnd + 1;
 +          const formats = frame.readInt16BE(offset);
 +          offset += 2 + formats * 2;
@@ -485,7 +499,7 @@ new file mode 100644
 +                armed !== undefined &&
 +                frame.toString("utf8", offset, offset + size) === armed.app
 +              )
-+                transaction.matches = true;
++                transaction.hold = armed;
 +              offset += size;
 +            }
 +          }
@@ -493,7 +507,7 @@ new file mode 100644
 +          execute(portals.get(frame.toString("utf8", 5, frame.indexOf(0, 5))) ?? "query");
 +        } else if (frame[0] === 81) {
 +          const kind = kindOf(frame.toString("utf8", 5, frame.length - 1));
-+          if (kind === "begin") transaction = { matches: false };
++          if (kind === "begin") transaction = {};
 +          execute(kind);
 +        }
 +        outgoing.write(frame);
@@ -506,12 +520,13 @@ new file mode 100644
 +        if (back.length < length) break;
 +        const frame = back.subarray(0, length);
 +        back = back.subarray(length);
-+        const hold = queries[index]?.commit;
-+        if (ready && frozen === undefined && hold !== undefined && hold === armed) {
-+          frozen = hold;
++        const point = queries[index]?.freeze;
++        if (ready && frozen === undefined && point !== undefined && point.hold === armed) {
++          frozen = point.hold;
 +          armed = undefined;
-+          hold.held = true;
-+          Deferred.doneUnsafe(hold.reached, Exit.void);
++          frozen.held = true;
++          frozen.phase = point.phase;
++          Deferred.doneUnsafe(frozen.reached, Exit.void);
 +        }
 +        if (frozen !== undefined && !released) pending.push([incoming, frame]);
 +        else incoming.write(frame);
@@ -564,6 +579,8 @@ new file mode 100644
 +            ended: yield* Deferred.make<void>(),
 +            held: false,
 +            closed: false,
++            phase: null,
++            commitQueued: false,
 +            later: 0,
 +            laterKinds: [],
 +          };
@@ -575,6 +592,8 @@ new file mode 100644
 +        return {
 +          held: current?.held ?? false,
 +          closed: current?.closed ?? false,
++          phase: current?.phase ?? null,
++          commitQueued: current?.commitQueued ?? false,
 +          later: current?.later ?? 0,
 +          laterKinds: current?.laterKinds ?? [],
 +        };
@@ -585,7 +604,7 @@ diff --git a/e2e/tests/statement-batch-deadline.spec.ts b/e2e/tests/statement-ba
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/statement-batch-deadline.spec.ts
-@@ -0,0 +1,218 @@
+@@ -0,0 +1,224 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Clock, Effect, Fiber, Layer, Schedule, Schema } from "effect";
 +import { body } from "../support/api.ts";
@@ -744,6 +763,7 @@ new file mode 100644
 +            retryable: true,
 +          });
 +          expect(failed.failure).not.toMatchObject({ mayHaveWritten: true });
++          expect(elapsed).toBeGreaterThanOrEqual(10_000);
 +          expect(elapsed).toBeLessThan(12_000);
 +          expect(yield* counter.calls).toBe(before);
 +          const failureTrace = yield* delivered(failed.traceId);
@@ -758,7 +778,9 @@ new file mode 100644
 +            ? Schema.Struct({
 +                held: Schema.Literal(true),
 +                closed: Schema.Literal(true),
-+                later: Schema.Literal(2),
++                phase: Schema.Literals(["read", "commit"]),
++                commitQueued: Schema.Literal(true),
++                later: Schema.Number,
 +                laterKinds: Schema.Array(Schema.Literals(["sdk-access", "tool-access"])),
 +              })
 +            : Schema.Struct({ held: Schema.Literal(true), interrupted: Schema.Literal(true) });
@@ -766,8 +788,11 @@ new file mode 100644
 +            Schema.decodeUnknownEffect(guard)(state).pipe(
 +              Effect.tap((state) =>
 +                Effect.sync(() => {
-+                  if ("laterKinds" in state)
-+                    expect(state.laterKinds.toSorted()).toEqual(["sdk-access", "tool-access"]);
++                  if ("laterKinds" in state) {
++                    const expected = state.phase === "read" ? [] : ["sdk-access", "tool-access"];
++                    expect(state.later).toBe(expected.length);
++                    expect(state.laterKinds.toSorted()).toEqual(expected);
++                  }
 +                }),
 +              ),
 +            );
