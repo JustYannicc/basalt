@@ -1511,10 +1511,10 @@ index 0000000..6751a25
 +});
 diff --git a/e2e/support/tool-availability-ui.ts b/e2e/support/tool-availability-ui.ts
 new file mode 100644
-index 0000000..5ac1c8b
+index 0000000..3cb7493
 --- /dev/null
 +++ b/e2e/support/tool-availability-ui.ts
-@@ -0,0 +1,176 @@
+@@ -0,0 +1,193 @@
 +import { expect } from "@effect/vitest";
 +import { Effect } from "effect";
 +import { Browser } from "./browser.ts";
@@ -1564,6 +1564,23 @@ index 0000000..5ac1c8b
 +  expect(enabled).toBe("false");
 +  yield* browser.use("Enable the hidden tool", (page) =>
 +    page.getByRole("switch", { name: "Enable records.write", exact: true }).first().click(),
++  );
++  yield* browser.use("Wait for the confirmed enabled switch", (page) =>
++    page
++      .getByRole("switch", { name: "Enable records.write", exact: true })
++      .first()
++      .and(page.locator('[aria-checked="true"]:not(:disabled)'))
++      .waitFor(),
++  );
++  yield* browser.use("Wait for the restored switch to finish moving", (page) =>
++    page
++      .getByRole("switch", { name: "Enable records.write", exact: true })
++      .first()
++      .evaluate((element) =>
++        Promise.allSettled(
++          element.getAnimations({ subtree: true }).map((animation) => animation.finished),
++        ),
++      ),
 +  );
 +  yield* browser.use("Return to enabled tools", (page) =>
 +    page.getByRole("checkbox", { name: /Show hidden tools/ }).uncheck(),
