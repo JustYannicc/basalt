@@ -330,6 +330,17 @@ export const proveContainerStack = (source, recompile, scenario) =>
                 receipts.push(receipt);
               },
               manifest: async () => {},
+              admission: async (verifications) => {
+                assert.equal(verifications.length, 1);
+                const readiness = verifications[0];
+                assert.equal(readiness.fqn, "PoolBackendBudgetRuntimeReady");
+                assert.equal(
+                  readiness.lifecycle,
+                  plan.resources.PoolBackendBudgetRuntimeReady.state?.status ?? "absent",
+                );
+                assert.ok(readiness.envChanges.includes("DATABASE_BUDGET_IMAGE_HASH"));
+                events.push("verification:admitted");
+              },
               publication: async (container) => {
                 publications.push(describeContainer(container));
                 events.push("image:retained");
@@ -492,6 +503,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
               1,
             );
           }
+          assert.ok(events.includes("verification:admitted"));
           assert.equal(receipts.at(-1).phase, "complete");
           attachmentPending = false;
           const next = yield* run(Plan.make(stack));
