@@ -102,7 +102,7 @@
    },
    "dependencies": {
 -    "apps": "0.0.1-beta.100"
-+    "apps": "0.0.1-beta.104-basalt.9"
++    "apps": "0.0.1-beta.104-basalt.10"
    }
  }
 --- /dev/null

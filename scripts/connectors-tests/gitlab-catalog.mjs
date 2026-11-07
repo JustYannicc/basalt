@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { onServedFramework } from "../../src/catalog/framework.ts";
 
 const digest = (value) => createHash("sha256").update(value).digest("hex");
 
@@ -23,10 +24,22 @@ export async function loadGitLabCatalogSource({ root, catalogOrigin }) {
   const expected = JSON.parse(carriedBytes.toString("utf8"));
   const published = JSON.parse(publishedBytes.toString("utf8"));
   const provenance = JSON.parse(provenanceBytes.toString("utf8"));
-  assert.equal(digest(carriedBytes), provenance.carriedSha256, "GitLab catalog source digest changed");
+  assert.equal(
+    digest(carriedBytes),
+    provenance.carriedSha256,
+    "GitLab catalog source digest changed",
+  );
   assert.equal(digest(patchBytes), provenance.patchSha256, "GitLab source patch digest changed");
-  assert.equal(digest(publishedBytes), provenance.publishedSha256, "GitLab published snapshot digest changed");
-  assert.deepEqual(source, expected, "The catalog Worker changed the reviewed GitLab source");
+  assert.equal(
+    digest(publishedBytes),
+    provenance.publishedSha256,
+    "GitLab published snapshot digest changed",
+  );
+  assert.deepEqual(
+    source,
+    JSON.parse(onServedFramework(carriedBytes.toString("utf8"))),
+    "The catalog Worker changed the reviewed GitLab source beyond its served framework",
+  );
   assert.equal(source.package, "@executor.sh/gitlab");
   assert.equal(published.package, source.package);
   assert.deepEqual(
@@ -34,7 +47,11 @@ export async function loadGitLabCatalogSource({ root, catalogOrigin }) {
     published.files.map(({ path }) => path).sort(),
     "The GitLab carry must keep every published source file",
   );
-  for (const file of source.files)
-    assert.equal(digest(file.content), provenance.carriedFileSha256[file.path], "GitLab carried file digest changed");
+  for (const file of expected.files)
+    assert.equal(
+      digest(file.content),
+      provenance.carriedFileSha256[file.path],
+      "GitLab carried file digest changed",
+    );
   return { source, provenance, published };
 }
