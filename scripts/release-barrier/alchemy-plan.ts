@@ -13,7 +13,7 @@ import { State } from "alchemy/State/State";
 import type { CompiledStack } from "alchemy/Stack";
 import { Effect, FileSystem, Path } from "effect";
 import * as Retry from "@distilled.cloud/cloudflare/Retry";
-import { BarrierRefusal } from "./manifest.ts";
+import { BarrierRefusal, type PlanRefusal } from "./manifest.ts";
 import { admitSourceNamespace, commandPhase, supportedCommand } from "./commands.ts";
 import { cloudflareArtifactsApi } from "../ensure-artifacts.ts";
 import { changedProps } from "./prop-diff.ts";
@@ -29,37 +29,49 @@ function refuse(reason: string, worker?: string): never {
 
 /** No live resource lifecycle runs during shadow preparation. Commands expose only their real output contract. */
 export function assertSupportedPlan(plan: Plan.Plan) {
-  if (plan.selectedFqns || plan.destroy) refuse("partial-or-destroy-plan");
+  const refusals: PlanRefusal[] = [];
+  if (plan.selectedFqns || plan.destroy) refusals.push({ reason: "partial-or-destroy-plan" });
   if (
     Object.keys(plan.deletions).length ||
     Object.keys(plan.actionDeletions).length ||
     Object.keys(plan.actions).length
   )
-    refuse("resource-removal-or-action");
+    refusals.push({ reason: "resource-removal-or-action" });
   for (const [fqn, node] of Object.entries(plan.resources)) {
+    const refuseNode = (reason: string) => {
+      const recorded =
+        node.state?.status === "updating" ? node.state.old?.props : node.state?.props;
+      refusals.push({
+        reason,
+        fqn,
+        type: node.resource.Type,
+        changed: changedProps(recorded, node.resource.Props),
+      });
+    };
     if (!existing(node) || !["update", "noop"].includes(node.action) || node.renamedFrom?.length)
-      refuse("new-or-unsettled-resource", fqn);
+      refuseNode("new-or-unsettled-resource");
     if (node.resource.Type === workerType) {
       const props = node.resource.Props as Worker["Props"];
       if (props.namespace != null || props.preview != null || props.version != null)
-        refuse("unsupported-worker-mode", fqn);
+        refuseNode("unsupported-worker-mode");
     } else if (
       node.resource.Type !== "Command.Exec" &&
       node.resource.Type !== "Command.Build" &&
       node.action !== "noop"
     ) {
       // Returning an old image/application attribute would freeze the wrong PoolWorker input.
-      const recorded = node.state?.status === "updating" ? node.state.old.props : node.state?.props;
-      throw new BarrierRefusal("unsupported-resource-update", fqn, {
-        fqn,
-        type: node.resource.Type,
-        changed: changedProps(recorded, node.resource.Props),
-      });
+      refuseNode("unsupported-resource-update");
     }
     if (node.resource.Type === "Command.Exec" && !supportedCommand(node.resource.LogicalId))
-      refuse("unsupported-command", fqn);
+      refuseNode("unsupported-command");
     if (node.resource.Type === "Command.Build" && node.resource.LogicalId !== "Site")
-      refuse("unsupported-build-command", fqn);
+      refuseNode("unsupported-build-command");
+  }
+  const first = refusals[0];
+  if (first) {
+    const delta =
+      "fqn" in first ? { fqn: first.fqn, type: first.type, changed: first.changed } : undefined;
+    throw new BarrierRefusal(first.reason, delta?.fqn, delta, refusals);
   }
 }
 

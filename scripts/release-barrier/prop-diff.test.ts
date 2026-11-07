@@ -31,7 +31,9 @@ const FixtureContainer = Resource<FixtureContainer>("Cloudflare.Container");
 const oldHash = "a".repeat(16);
 const newHash = "b".repeat(16);
 
-function containerPlan(change: "image" | "env" | "noop" | "interrupted" | "key" | "key-map") {
+function containerPlan(
+  change: "image" | "env" | "noop" | "interrupted" | "key" | "key-map" | "multiple",
+) {
   let action: "update" | "noop" = "update";
   const stack = Stack(
     "fixture",
@@ -44,12 +46,16 @@ function containerPlan(change: "image" | "env" | "noop" | "interrupted" | "key" 
       state: Layer.effect(State, Effect.map(InMemoryService(), Effect.succeed)),
     },
     Effect.gen(function* () {
-      yield* FixtureContainer("PoolContainer", {
-        hash: { image: newHash },
-        env: { ACCESS_TOKEN: "new-private-value" },
-        ...(change === "key" ? { name: "ASIA1234567890ABCDEF" } : {}),
-        ...(change === "key-map" ? { apiKeys: { Abcdefghij1234567890: 2 } } : {}),
-      });
+      for (const id of change === "multiple"
+        ? ["PoolContainer", "OtherContainer"]
+        : ["PoolContainer"]) {
+        yield* FixtureContainer(id, {
+          hash: { image: newHash },
+          env: { ACCESS_TOKEN: "new-private-value" },
+          ...(change === "key" ? { name: "ASIA1234567890ABCDEF" } : {}),
+          ...(change === "key-map" ? { apiKeys: { Abcdefghij1234567890: 2 } } : {}),
+        });
+      }
     }),
   );
   return Effect.runPromise(
@@ -59,22 +65,38 @@ function containerPlan(change: "image" | "env" | "noop" | "interrupted" | "key" 
         Effect.gen(function* () {
           yield* Apply.apply(yield* Plan.make(compiled));
           const state = yield* yield* State;
-          const key = { stack: compiled.name, stage: compiled.stage, fqn: "PoolContainer" };
-          const saved = yield* state.get(key);
-          assert.ok(saved?.status === "created" || saved?.status === "updated");
-          const props = {
-            hash: { image: change === "image" || change === "interrupted" ? oldHash : newHash },
-            env: { ACCESS_TOKEN: change === "env" ? "old-private-value" : "new-private-value" },
-            ...(change === "key" ? { name: "AKIA1234567890ABCDEF" } : {}),
-            ...(change === "key-map" ? { apiKeys: { Abcdefghij1234567890: 1 } } : {}),
-          };
-          yield* state.set({
-            ...key,
-            value:
-              change === "interrupted"
-                ? { ...saved, status: "updating", old: { props, attr: saved.attr, bindings: [] } }
-                : { ...saved, props },
-          });
+          for (const fqn of change === "multiple"
+            ? ["PoolContainer", "OtherContainer"]
+            : ["PoolContainer"]) {
+            const key = { stack: compiled.name, stage: compiled.stage, fqn };
+            const saved = yield* state.get(key);
+            assert.ok(saved?.status === "created" || saved?.status === "updated");
+            const props = {
+              hash: {
+                image:
+                  change === "image" ||
+                  change === "interrupted" ||
+                  (change === "multiple" && fqn === "PoolContainer")
+                    ? oldHash
+                    : newHash,
+              },
+              env: {
+                ACCESS_TOKEN:
+                  change === "env" || (change === "multiple" && fqn === "OtherContainer")
+                    ? "old-private-value"
+                    : "new-private-value",
+              },
+              ...(change === "key" ? { name: "AKIA1234567890ABCDEF" } : {}),
+              ...(change === "key-map" ? { apiKeys: { Abcdefghij1234567890: 1 } } : {}),
+            };
+            yield* state.set({
+              ...key,
+              value:
+                change === "interrupted"
+                  ? { ...saved, status: "updating", old: { props, attr: saved.attr, bindings: [] } }
+                  : { ...saved, props },
+            });
+          }
           action = change === "noop" ? "noop" : "update";
           const plan = yield* Plan.make(compiled);
           try {
@@ -236,4 +258,36 @@ test("masking a private ancestor keeps its descendants private", () => {
     ),
     [{ path: "[changed].name", changed: true }],
   );
+});
+
+test("one refusal receipt reports both blocked nodes and keeps each delta redacted", async (context) => {
+  const error = await containerPlan("multiple");
+  const expected = [
+    {
+      reason: "unsupported-resource-update",
+      fqn: "OtherContainer",
+      type: "Cloudflare.Container",
+      changed: [{ path: "env.ACCESS_TOKEN", changed: true }],
+    },
+    {
+      reason: "unsupported-resource-update",
+      fqn: "PoolContainer",
+      type: "Cloudflare.Container",
+      changed: [{ path: "hash.image", old: oldHash, new: newHash }],
+    },
+  ];
+  const refusals = error?.refusals;
+  assert.equal(refusals?.length, 2);
+  assert.deepEqual(
+    [...(refusals ?? [])].sort((a, b) =>
+      ("fqn" in a ? a.fqn : "").localeCompare("fqn" in b ? b.fqn : ""),
+    ),
+    expected,
+  );
+  const directory = await mkdtemp(join(tmpdir(), "barrier-diff-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  await releaseEvidence(directory, "a".repeat(40)).failure(error);
+  const text = await readFile(join(directory, "failure.json"), "utf8");
+  assert.deepEqual(JSON.parse(text).refusals, refusals);
+  assert.ok(!text.includes("private-value"));
 });
