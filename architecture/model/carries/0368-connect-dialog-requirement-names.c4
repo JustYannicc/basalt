@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountPresentation {
+    metadata {
+      constraint "A Connect or import dialog opened from an app's Accounts tab names the requirement it adds an account for, and where two requirements of one scope share a service, each account control a person can change names its requirement, so those names are unique within that scope."
+    }
+  }
+}
