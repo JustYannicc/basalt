@@ -108,9 +108,21 @@ export const verifyLocalGitLabGuidance = ({ catalog, instance, directory }) =>
               .some((c) => c.path === "/api/v4/user" && c.personalToken),
             "The selected instance receives the token health check",
           );
-          yield* browser.use("Cancel local preflight without saving", (page) =>
-            page.keyboard.press("Escape"),
+          yield* browser.use(
+            "Return to MCP at the selected local instance, then cancel",
+            async (page) => {
+              const dialog = page.getByRole("dialog");
+              await dialog
+                .getByRole("button", { name: "Sign in with GitLab MCP instead", exact: true })
+                .click();
+              await dialog.getByText(`Using ${instance.origin}`, { exact: true }).waitFor();
+              await dialog
+                .getByRole("button", { name: "Sign in with GitLab MCP", exact: true })
+                .waitFor();
+              await page.keyboard.press("Escape");
+            },
           );
+          // HTTPS hosts prove link rebasing; the running loopback instance proves discovery.
           for (const origin of ["https://first.example.test", "https://second.example.test"]) {
             yield* browser.use(
               "Local setup links and return to MCP keep the chosen HTTPS instance",
@@ -147,8 +159,8 @@ export const verifyLocalGitLabGuidance = ({ catalog, instance, directory }) =>
                   .click();
                 await d.getByText(`Using ${origin}`, { exact: true }).waitFor();
                 await d
-                  .getByRole("button", { name: "Sign in with GitLab MCP", exact: true })
-                  .waitFor();
+                  .getByRole("button", { name: "Sign in with GitLab MCP instead", exact: true })
+                  .waitFor({ state: "hidden" });
                 assert.equal(
                   await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
                   true,
