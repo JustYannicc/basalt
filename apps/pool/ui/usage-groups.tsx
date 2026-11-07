@@ -252,6 +252,7 @@ export function WhoUses({
   onRetry,
   overview,
   personal,
+  historyHref,
 }: {
   people: Result<SeriesRead> | undefined;
   models: Result<SeriesRead> | undefined;
@@ -260,6 +261,7 @@ export function WhoUses({
   onRetry: () => void;
   overview?: PoolOverviewResult;
   personal?: PoolPersonalOverviewResult;
+  historyHref?: string;
 }) {
   const [by, setBy] = useState<Grouping>("person");
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
@@ -296,21 +298,34 @@ export function WhoUses({
               : `Last ${days} days. Bars are tokens by lab. Open a row for its ${by === "person" ? "models" : "people"}.`}
           </p>
         </div>
-        {!personal && (
-          <Segmented
-            label="Group by"
-            value={by}
-            onChange={(value) => {
-              setBy(value);
-              setOpen(new Set());
-            }}
-            options={[
-              { id: "person", label: "People" },
-              { id: "provider", label: "Labs" },
-              { id: "model", label: "Models" },
-            ]}
-          />
-        )}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          {!personal && (
+            <Segmented
+              label="Group by"
+              value={by}
+              onChange={(value) => {
+                setBy(value);
+                setOpen(new Set());
+              }}
+              options={[
+                { id: "person", label: "People" },
+                { id: "provider", label: "Labs" },
+                { id: "model", label: "Models" },
+              ]}
+            />
+          )}
+          {historyHref && !personal && (
+            <a
+              href={historyHref}
+              className="inline-flex min-h-8 items-center gap-1 text-sm font-medium text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground max-[740px]:min-h-11"
+            >
+              View all history
+              <svg viewBox="0 0 16 16" className="size-3.5" fill="none" aria-hidden="true">
+                <path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" strokeWidth="1.5" />
+              </svg>
+            </a>
+          )}
+        </div>
       </div>
       {sum && (
         <p className="text-sm text-muted-foreground tabular-nums">
