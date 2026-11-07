@@ -20,6 +20,7 @@ import { startZohoPeopleFixture } from "./zoho-people-fixture.mjs";
 import { startZohoMcpFixture } from "./zoho-people-mcp-fixture.mjs";
 import { proveZohoMcpPrivacy } from "./zoho-people-mcp-privacy.mjs";
 import { proveZohoMcpUi } from "./zoho-people-mcp-ui.mjs";
+import { installRetainedPeopleConsumer } from "./zoho-people-mcp-legacy.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const upstream = join(root, ".upstream");
@@ -202,11 +203,17 @@ const program = Effect.gen(function* () {
     catalog.some((entry) => entry.id === "zoho-people"),
     true,
   );
+  const legacy = yield* installRetainedPeopleConsumer({ Effect, files, request, prefix, check });
   const installed = yield* request("POST", `${prefix}/apps/install`, {
     entry: "zoho-people",
     name: "Zoho People MCP proof",
   });
   const app = installed;
+  check(
+    "MCP method addition retains the earlier REST provider",
+    app.requirements.accounts.people.provider,
+    legacy.app.requirements.accounts.people.provider,
+  );
   const path = `${prefix}/apps/${app.id}`;
   const connect = (method, endpoint) =>
     Effect.gen(function* () {
@@ -242,6 +249,7 @@ const program = Effect.gen(function* () {
       });
     });
   const restAccount = yield* connect("oauthEu");
+  yield* legacy.prove(restAccount);
   const restIndex = yield* request("GET", `${path}/tools/index`);
   check("REST tools remain usable with MCP disabled", restIndex.items.length, 184);
   const invoke = (tool, account, input = {}) => ({ tool, input: { accountId: account.id, input } });
@@ -340,6 +348,7 @@ const program = Effect.gen(function* () {
   yield* call("mcp.readPeople", account);
   check("first account retains its endpoint", fixture.calls.length, firstCalls + 1);
   check("saved MCP grant refreshes", fixture.counts.refreshes > 0, true);
+  yield* legacy.prove(restAccount);
   yield* call("timeTracker.listTimeLogs", restAccount, { query: { user: "employee-fixture" } });
   if (!red) {
     yield* controlRequest("stop", 200).pipe(Effect.provideService(Target, target));

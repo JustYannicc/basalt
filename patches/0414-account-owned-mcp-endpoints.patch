@@ -768,6 +768,23 @@ diff --git a/apps/local/web/src/implementation/pages/oauth-fields.tsx b/apps/loc
    );
  }
  
+diff --git a/e2e/support/app-package.ts b/e2e/support/app-package.ts
+--- a/e2e/support/app-package.ts
++++ b/e2e/support/app-package.ts
+@@ -163,7 +163,7 @@
+   });
+ 
+ /** Advertise a compatible bundle under a retained protocol to exercise its host adapter. */
+-const retainedObservationFramework = (protocol: 17 | 18 | 26) =>
++const retainedObservationFramework = (protocol: 17 | 18 | 26 | 35) =>
+   Effect.gen(function* () {
+     const fs = yield* FileSystem.FileSystem,
+       path = yield* Path.Path;
+@@ -188,3 +188,4 @@
+ export const protocol17Framework = retainedObservationFramework(17);
+ export const protocol18Framework = retainedObservationFramework(18);
+ export const protocol26Framework = retainedObservationFramework(26);
++export const protocol35Framework = retainedObservationFramework(35);
 diff --git a/packages/apps/package.json b/packages/apps/package.json
 --- a/packages/apps/package.json
 +++ b/packages/apps/package.json
@@ -789,7 +806,7 @@ new file mode 100644
 +
 +export const CredentialHost = Schema.String.check(
 +  Schema.isPattern(
-+    /^(\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$/,
++    /^(\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$/u,
 +  ),
 +);
 +
@@ -833,7 +850,7 @@ diff --git a/packages/apps/src/contracts/protocols/35.ts b/packages/apps/src/con
 new file mode 100644
 --- /dev/null
 +++ b/packages/apps/src/contracts/protocols/35.ts
-@@ -0,0 +1,715 @@
+@@ -0,0 +1,702 @@
 +import {
 +  AppCallCommand,
 +  AppCallReply,
@@ -843,20 +860,7 @@ new file mode 100644
 +} from "../app-calls.ts";
 +import { DeclaredModels, ModelCommand, ModelReply } from "../models.ts";
 +import { AccountObservationResult } from "../account-observation.ts";
-+/**
-+ * The host protocol this framework speaks: every message that crosses between a host and an app
-+ * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
-+ *
-+ * This module is live. The framework and the SDK read the current boundary from here, through
-+ * `../host.ts`. `bun run check` records it in `packages/apps/protocols/<frameworkProtocol>.json` and
-+ * checks that it stays compatible with every released protocol in `released.ts`: a host that speaks
-+ * this module must keep running every bundle a released protocol retained. A change that no longer
-+ * does so is a break: freeze this module's previous content as `<frameworkProtocol>.ts`, raise the
-+ * number, and give the host an adapter for the frozen one. See notes/apps-publishing.md.
-+ *
-+ * The frozen protocol modules beside this one are records of released boundaries. Nothing here
-+ * imports them, so a change here never edits a released protocol.
-+ */
++/** Frozen protocol 35, retained unchanged for bundles built before account-owned MCP endpoints. */
 +import { Effect, Schema } from "effect";
 +import { AccountFamily } from "../account-family.ts";
 +import { McpAppViewObservation, McpAppUi } from "../mcp-apps.ts";
@@ -1561,8 +1565,8 @@ diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/sr
 -    /^(\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$/,
 -  ),
 -);
-+export { CredentialHost } from "../mcp-endpoint.ts";
-+import { CredentialHost } from "../mcp-endpoint.ts";
++export { CredentialHost } from "./35.ts";
++import { CredentialHost } from "./35.ts";
  
  /**
   * Field names an auth method exposes to app code, and where its secret fields may be sent. Every
@@ -2136,7 +2140,15 @@ diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/sr
 diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
 --- a/packages/sdk/src/implementation/app-protocols.ts
 +++ b/packages/sdk/src/implementation/app-protocols.ts
-@@ -312,6 +312,7 @@
+@@ -21,6 +21,7 @@
+ import type { SourceTextFile as SourceFile } from "../contracts/source.ts";
+ import { RuntimeProtocolUnsupported } from "../contracts/runtime.ts";
+ import { appBridge, nodeAppEntry } from "./worker-bridge.ts";
++import { retainedMcpAccounts } from "./mcp-endpoint-protocol.ts";
+ 
+ /** One released host protocol, seen from this host. */
+ export interface AppProtocol {
+@@ -312,6 +313,7 @@
  const protocol33: AppProtocol = { ...protocol31, version: 33, nodeEntry: nodeAppEntry(33) };
  const protocol34: AppProtocol = { ...protocol33, version: 34, nodeEntry: nodeAppEntry(34) };
  const protocol35: AppProtocol = { ...protocol34, version: 35, nodeEntry: nodeAppEntry(35) };
@@ -2144,14 +2156,48 @@ diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src
  
  /**
   * Bundles of protocol 12 and earlier read one flat record of requirements and accounts. They
-@@ -540,6 +541,7 @@
+@@ -540,11 +542,40 @@
      protocol33,
      protocol34,
      protocol35,
+-  ].map((protocol) => [protocol.version, protocol]),
 +    protocol36,
-   ].map((protocol) => [protocol.version, protocol]),
++  ].map((protocol) => [
++    protocol.version,
++    protocol.version >= 36
++      ? protocol
++      : {
++          ...protocol,
++          invocation: (input: HostInvocation) =>
++            protocol.invocation({ ...input, accounts: retainedMcpAccounts(input.accounts) }),
++          workflow: (execution: WorkflowExecution) =>
++            protocol.workflow({
++              ...execution,
++              resolve: () =>
++                execution.resolve().pipe(
++                  Effect.map((context) => ({
++                    ...context,
++                    accounts: Redacted.make(retainedMcpAccounts(Redacted.value(context.accounts))),
++                  })),
++                ),
++            }),
++        },
++  ]),
  );
  
+ /** Protocols this host builds and runs. */
+ export const supportedProtocols: readonly number[] = [...protocols.keys()];
++
++export const mcpEndpointProtocolAdaptations = [
++  {
++    message: "accounts",
++    protocols: supportedProtocols.filter((version) => version >= 6 && version < 36),
++    adapter: "retainedMcpAccounts in protocol invocation and workflow context",
++  },
++];
+ 
+ const withoutUiProfile = (command: HostRequest): HostRequest => {
+   if (command.operation !== "call" && command.operation !== "inspect") return command;
 diff --git a/packages/sdk/src/implementation/connection-state.ts b/packages/sdk/src/implementation/connection-state.ts
 --- a/packages/sdk/src/implementation/connection-state.ts
 +++ b/packages/sdk/src/implementation/connection-state.ts
@@ -2292,6 +2338,42 @@ diff --git a/packages/sdk/src/implementation/handlers.ts b/packages/sdk/src/impl
          .handle("submit", ({ payload }) => executor.accountConnections.submit(payload))
          .handle("startInteractive", ({ payload }) =>
            executor.accountConnections.startInteractive(payload),
+diff --git a/packages/sdk/src/implementation/mcp-endpoint-protocol.ts b/packages/sdk/src/implementation/mcp-endpoint-protocol.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/mcp-endpoint-protocol.ts
+@@ -0,0 +1,31 @@
++import type { HostAccount, HostAccounts, HostAccountSlots } from "apps/contracts";
++
++const retainedAccount = (account: HostAccount): HostAccount => {
++  const { mcpEndpoint: _endpoint, ...retained } = account;
++  return {
++    ...retained,
++    provider: {
++      ...retained.provider,
++      auth: Object.fromEntries(
++        Object.entries(retained.provider.auth).filter(
++          ([, method]) => method.type !== "oauth2" || !("mcpEndpoint" in method),
++        ),
++      ),
++    },
++  };
++};
++
++/** Older bundles cannot decode an account-owned OAuth declaration added to a shared provider. */
++export const retainedMcpAccounts = (accounts: HostAccounts): HostAccounts => {
++  const slots = (value: HostAccountSlots): HostAccountSlots =>
++    Object.fromEntries(
++      Object.entries(value).map(([slot, selected]) => [
++        slot,
++        "id" in selected ? retainedAccount(selected) : selected.map(retainedAccount),
++      ]),
++    );
++  return {
++    app: slots(accounts.app),
++    ...(accounts.user === undefined ? {} : { user: slots(accounts.user) }),
++  };
++};
 diff --git a/packages/sdk/src/implementation/mcp-endpoint.ts b/packages/sdk/src/implementation/mcp-endpoint.ts
 new file mode 100644
 --- /dev/null
@@ -3028,3 +3110,28 @@ diff --git a/packages/utils/src/account-secrets.ts b/packages/utils/src/account-
 +            }
    return [...found].sort((a, b) => b.length - a.length);
  };
+diff --git a/scripts/check-app-protocols.ts b/scripts/check-app-protocols.ts
+--- a/scripts/check-app-protocols.ts
++++ b/scripts/check-app-protocols.ts
+@@ -36,6 +36,7 @@
+ import { releasedProtocols } from "../packages/apps/src/contracts/protocols/released.ts";
+ import {
+   accountSiteAdaptations,
++  mcpEndpointProtocolAdaptations,
+   interactiveProtocolAdditions,
+   mcpAppsProtocolAdditions,
+   observationProtocolAdditions,
+@@ -587,7 +588,12 @@
+   : { adapted: [], additions: [] };
+ const gates: Gates = {
+   ...recordedGates,
+-  adapted: [...recordedGates.adapted, ...accountSiteAdaptations, ...interactiveProtocolAdaptations],
++  adapted: [
++    ...recordedGates.adapted,
++    ...accountSiteAdaptations,
++    ...interactiveProtocolAdaptations,
++    ...mcpEndpointProtocolAdaptations,
++  ],
+   additions: [
+     ...recordedGates.additions,
+     ...interactiveProtocolAdditions,
