@@ -44,6 +44,7 @@
     ]
   },
   "inputs": [
+    "e2e/hitl-inventory-lifetime.patch",
     ".upstream/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx",
     ".upstream/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx",
     ".upstream/apps/hosted/web/src/contracts/workflow-inputs.ts",
