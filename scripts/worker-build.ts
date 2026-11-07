@@ -35,5 +35,8 @@ writeFileSync(
     ),
 );
 run("bun", ["packages/sdk/scripts/check-storage-versions.ts"], upstream);
-run("bun", ["scripts/basalt-worker-sizes.ts"], cloud);
+run("bun", ["scripts/basalt-worker-sizes.ts"], cloud, {
+  ...process.env,
+  BASALT_RELEASE_ATTEMPT: credentials.BASALT_RELEASE_ATTEMPT,
+});
 checkMcpRuntimeBundle();

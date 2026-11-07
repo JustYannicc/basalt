@@ -1,0 +1,25 @@
+{
+  "scenarios": {
+    "appDataErrorStatuses": {
+      "fixtures": "actors",
+      "title": "hosted app data refusals preserve their status, tag and fields for queries and mutations",
+      "targets": {
+        "self-host": { "status": "scheduled" },
+        "cloud": { "status": "scheduled", "runtime": "managed" },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses HostedAppData's authenticated organization routes; the local data endpoints have a separate contract."
+        }
+      }
+    }
+  },
+  "runs": {
+    "appDataErrorStatuses": ["declared:self-host", "declared:cloud"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/contracts/app-data.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-data.ts",
+    ".upstream/packages/sdk/src/contracts/app-data.ts",
+    ".upstream/packages/sdk/src/implementation/app-storage.ts"
+  ]
+}

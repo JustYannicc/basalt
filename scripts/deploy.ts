@@ -19,4 +19,5 @@ await deployInPhases({
   cloud,
   environment,
   sharedFoundation: appHosting.enabled && appHosting.scheme === "nested",
+  recovery: process.argv.slice(2),
 });

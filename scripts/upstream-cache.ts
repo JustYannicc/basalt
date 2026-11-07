@@ -2,6 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
+  lstatSync,
+  readFileSync,
+  realpathSync,
   mkdirSync,
   symlinkSync,
   readlinkSync,
@@ -60,7 +63,10 @@ export async function withCacheLock<A>(path: string, use: () => A | Promise<A>):
 export async function prepareUpstreamCheckout(
   upstream: string,
   pin: { repository: string; commit: string },
+  patches: readonly string[] = [],
 ) {
+  if (lstatSync(upstream, { throwIfNoEntry: false })?.isSymbolicLink())
+    throw new Error("Prepared upstream must not be a symbolic link");
   const repository = join(upstreamCache(), "repositories", `${digest(pin.repository)}.git`);
   await withCacheLock(`${repository}.lock`, () => {
     if (!existsSync(repository)) {
@@ -99,6 +105,27 @@ export async function prepareUpstreamCheckout(
       run("git", ["fetch", "--depth=1", repository, pin.commit], upstream);
       run("git", ["repack", "-a", "-d", "-l"], upstream);
     }
+    const checkout = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+      cwd: upstream,
+      encoding: "utf8",
+    });
+    if (checkout.status !== 0 || realpathSync(checkout.stdout.trim()) !== realpathSync(upstream))
+      throw new Error("Prepared upstream must be its Git worktree root");
     run("git", ["checkout", "--detach", "--force", pin.commit], upstream);
+    // Ignored dependencies and build caches survive; source from dropped carries does not.
+    run("git", ["clean", "-ffd", "--"], upstream);
   });
+  for (const patch of patches) {
+    const additions = [
+      ...readFileSync(patch, "utf8").matchAll(/--- \/dev\/null\n\+\+\+ b\/(.+)\n/g),
+    ].map((match) => match[1]!);
+    for (const added of additions) {
+      if (added.startsWith("/") || added.split("/").includes(".."))
+        throw new Error("Invalid patch path");
+    }
+    // Carries may replace a file another carry created earlier in the replay.
+    if (additions.length) run("git", ["clean", "-f", "--", ...additions], upstream);
+    run("git", ["apply", "--check", patch], upstream);
+    run("git", ["apply", patch], upstream);
+  }
 }

@@ -87,6 +87,9 @@
     ".upstream/packages/sdk/src/implementation/apps.ts",
     ".upstream/packages/sdk/src/implementation/create.ts",
     ".upstream/packages/ui/src/contracts/app-accounts.ts",
-    ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx"
+    ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx",
+    ".upstream/apps/hosted/server/src/implementation/app-link-schema.ts",
+    ".upstream/apps/hosted/self-host/src/implementation/database-schema.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/invocation-database.ts"
   ]
 }

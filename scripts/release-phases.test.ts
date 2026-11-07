@@ -132,52 +132,52 @@ test("preflight reads only the instant HTTP API and refuses stale or failed resp
   );
 });
 
-test("a preflight or filtered deploy failure never starts the application deploy", async () => {
-  for (const failsPreflight of [true, false]) {
-    const calls: string[][] = [];
-    await assert.rejects(
-      deployInPhases({
-        cloud: "fixture",
-        environment,
-        sharedFoundation: true,
-        preflight: async () => {
-          if (failsPreflight) throw new Error("headroom");
-          return { observed: 14, ordinarySlots: 22, envelope: 7 };
-        },
-        execute: (_command, args) => {
-          calls.push(args);
-          throw new Error("53300");
-        },
-      }),
-    );
-    assert.equal(calls.length, failsPreflight ? 0 : 1);
-    if (!failsPreflight) assert.deepEqual(calls[0]!.slice(-2), ["--include", "PoolDatabase"]);
-  }
-  const attempts: string[] = [];
-  const calls: string[][] = [];
+test("headroom failure starts no barrier; admitted releases invoke one barrier with a fresh Command attempt", async () => {
+  const calls: { args: string[]; settings: NodeJS.ProcessEnv }[] = [];
   const execute = (
     _command: string,
     args: string[],
     _cwd?: string,
     settings?: NodeJS.ProcessEnv,
   ) => {
-    calls.push(args);
-    attempts.push(settings!.BASALT_RELEASE_ATTEMPT!);
+    calls.push({ args, settings: settings! });
   };
+  const settings = { ...environment, BASALT_RELEASE_CANDIDATE: "a".repeat(40) };
+  await assert.rejects(
+    deployInPhases({
+      cloud: "fixture",
+      environment: settings,
+      sharedFoundation: false,
+      execute,
+      preflight: async () => {
+        throw new Error("headroom");
+      },
+    }),
+  );
+  assert.equal(calls.length, 0);
   for (let i = 0; i < 2; i++)
     await deployInPhases({
       cloud: "fixture",
-      environment,
-      sharedFoundation: true,
-      preflight: async () => ({ observed: 14, ordinarySlots: 22, envelope: 7 }),
+      environment: settings,
+      sharedFoundation: false,
       execute,
+      preflight: async () => ({ observed: 14, ordinarySlots: 22, envelope: 7 }),
     });
-  assert.deepEqual(calls[0]!.slice(-2), ["--include", "PoolDatabase"]);
-  assert.ok(calls[1]!.includes("alchemy.app-domains.ts"));
-  assert.ok(!calls[2]!.includes("--include"));
-  assert.equal(attempts[0], attempts[1]);
-  assert.equal(attempts[1], attempts[2]);
-  assert.notEqual(attempts[2], attempts[3]);
+  assert.equal(calls.length, 2);
+  assert.ok(
+    calls.every(
+      (call) => call.args.length === 1 && call.args[0]!.endsWith("release-barrier/entry.ts"),
+    ),
+  );
+  assert.notEqual(
+    calls[0]!.settings.BASALT_RELEASE_ATTEMPT,
+    calls[1]!.settings.BASALT_RELEASE_ATTEMPT,
+  );
+  await assert.rejects(
+    deployInPhases({ cloud: "fixture", environment: settings, sharedFoundation: true, execute }),
+    /separate shared-domain stack/,
+  );
+  assert.equal(calls.length, 2);
 });
 
 test(
