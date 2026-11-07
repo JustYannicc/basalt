@@ -21,6 +21,43 @@ const record = (value: unknown): value is Record<string, unknown> =>
   !Array.isArray(value) &&
   (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 
+const credentialShape = (value: string) =>
+  /(?:AKIA|ASIA)[A-Z0-9]{16}|(?:^|[\s_/:])(?:sk|pk|ghp|gho|ghu|ghs|ghr|github_pat)[_-]/i.test(
+    value,
+  ) || /^[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}$/.test(value);
+const tokenLike = (value: string) =>
+  credentialShape(value) || /^[A-Za-z0-9_+/-]{24,}={0,2}$/.test(value);
+const privateFields = new Set([
+  "env",
+  "secrets",
+  "bindings",
+  "credentials",
+  "name",
+  "type",
+  "text",
+  "value",
+  "id",
+  "accountId",
+  "clientId",
+  "clientSecret",
+  "accessToken",
+  "refreshToken",
+  "key",
+]);
+
+function pathKey(key: string, parents: string[]) {
+  const privateMap = parents.some((parent) => /secret|binding|credential/i.test(parent));
+  const environment = parents.some((parent) => /^env(?:ironment_variables)?$/i.test(parent));
+  if (
+    !/^[a-zA-Z_][a-zA-Z0-9_-]{0,79}$/.test(key) ||
+    (tokenLike(key) && !privateFields.has(key)) ||
+    (privateMap && !privateFields.has(key)) ||
+    (environment && !/^[A-Z_][A-Z0-9_]*$/.test(key) && !privateFields.has(key))
+  )
+    return "[changed]";
+  return key;
+}
+
 function publicScalar(value: unknown, keys: string[]): Scalar | undefined {
   if (value == null) return null;
   const field = keys.at(-1) ?? "";
@@ -28,23 +65,27 @@ function publicScalar(value: unknown, keys: string[]): Scalar | undefined {
   if (!publicField.test(field) && !hash) return undefined;
   if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
   if (typeof value !== "string") return undefined;
-  // Hashes and immutable image references are useful evidence; opaque tokens are not.
-  const digest = /^(?:sha256:)?[a-f0-9]{16,128}$/i.test(value);
-  const image =
-    /^(?:[a-z0-9.-]+(?::[0-9]+)?\/)?[a-z0-9_./-]+(?::[a-z0-9_.-]+|@sha256:[a-f0-9]{64})$/i.test(
-      value,
-    );
   if (
-    /bearer|private.?key|password|secret|token|(?:^|[\s_])(?:sk|pk|ghp|github_pat|AKIA)[_-]/i.test(
-      value,
-    ) ||
-    /[\s?=#\\]|^[\/~]|:\/\/|^[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}$/.test(
-      value,
-    ) ||
-    (value.includes("@") && !image) ||
-    (/^[A-Za-z0-9_+/-]{24,}={0,2}$/.test(value) && !(hash && digest) && !image)
+    /[\s?=#\\]|^[\/~]|:\/\/|bearer|private.?key|password|secret|token/i.test(value) ||
+    credentialShape(value)
   )
     return undefined;
+  // Only these formats can exempt a long opaque string from token redaction.
+  const digest = hash && /^(?:sha256:)?[a-f0-9]{16,128}$/i.test(value);
+  const image =
+    /^(?:image|imageRef)$/i.test(field) &&
+    /^(?:(?:registry\.cloudflare\.com|docker\.io|ghcr\.io|quay\.io|public\.ecr\.aws)\/)?[a-z0-9_/-]+(?::[a-z0-9_.-]+|@sha256:[a-f0-9]{64})$/i.test(
+      value,
+    );
+  const tag = value.slice(value.lastIndexOf(":") + 1);
+  if (digest || (image && (!tokenLike(tag) || /^[a-f0-9]{16,128}$/i.test(tag))))
+    return value.slice(0, 200);
+  if (hash || tokenLike(value)) return undefined;
+  if (/^version$/i.test(field))
+    return /^v?[0-9]+(?:\.[0-9]+)*(?:-[a-z0-9.-]+)?$/i.test(value)
+      ? value.slice(0, 200)
+      : undefined;
+  if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(value)) return undefined;
   return value.slice(0, 200);
 }
 
@@ -64,12 +105,7 @@ export function changedProps(olds: unknown, news: unknown): PropChange[] {
       const fields = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
       if (!fields.length && !deepEqual(old, next)) changes.push({ path, changed: true });
       for (const key of fields) {
-        // Property names can themselves be map keys containing credentials.
-        const safeKey =
-          /^[a-zA-Z_][a-zA-Z0-9_-]{0,79}$/.test(key) &&
-          !/^(?:sk_|pk_|ghp_|github_pat_|AKIA)/.test(key)
-            ? key
-            : "[changed]";
+        const safeKey = pathKey(key, keys);
         walk(before[key], after[key], [...keys, safeKey], depth + 1);
       }
       return;

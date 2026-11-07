@@ -19,14 +19,14 @@ import { withReleaseRuntime } from "./runtime.ts";
 
 interface FixtureContainer extends Resource<
   "Cloudflare.Container",
-  { hash: { image: string }; env: { ACCESS_TOKEN: string } },
+  { hash: { image: string }; env: { ACCESS_TOKEN: string }; name?: string },
   { applicationId: string }
 > {}
 const FixtureContainer = Resource<FixtureContainer>("Cloudflare.Container");
 const oldHash = "a".repeat(16);
 const newHash = "b".repeat(16);
 
-function containerPlan(change: "image" | "env" | "noop" | "interrupted") {
+function containerPlan(change: "image" | "env" | "noop" | "interrupted" | "key") {
   let action: "update" | "noop" = "update";
   const stack = Stack(
     "fixture",
@@ -42,6 +42,7 @@ function containerPlan(change: "image" | "env" | "noop" | "interrupted") {
       yield* FixtureContainer("PoolContainer", {
         hash: { image: newHash },
         env: { ACCESS_TOKEN: "new-private-value" },
+        ...(change === "key" ? { name: "ASIA1234567890ABCDEF" } : {}),
       });
     }),
   );
@@ -58,6 +59,7 @@ function containerPlan(change: "image" | "env" | "noop" | "interrupted") {
           const props = {
             hash: { image: change === "image" || change === "interrupted" ? oldHash : newHash },
             env: { ACCESS_TOKEN: change === "env" ? "old-private-value" : "new-private-value" },
+            ...(change === "key" ? { name: "AKIA1234567890ABCDEF" } : {}),
           };
           yield* state.set({
             ...key,
@@ -137,7 +139,7 @@ test("public diffs omit credentials, opaque tokens, hosts and arbitrary strings"
 });
 
 test("safe image refs are capped, numeric additions are retained and removals are explicit", () => {
-  const image = "registry.example/" + "public/".repeat(35) + "pool:latest";
+  const image = "registry.cloudflare.com/" + "public/".repeat(35) + "pool:latest";
   assert.deepEqual(changedProps({ image: "pool:old", count: 2 }, { image, size: 3 }), [
     { path: "count", old: 2, new: null },
     { path: "image", old: "pool:old", new: image.slice(0, 200) },
@@ -166,5 +168,44 @@ test("immutable registry digests remain visible while token-shaped names do not"
       { path: "image", old: prefix + "a".repeat(64), new: prefix + "b".repeat(64) },
       { path: "name", changed: true },
     ],
+  );
+});
+
+test("AWS-style keys cannot reach refusal or failure.json scalar values", async (context) => {
+  const error = await containerPlan("key");
+  assert.deepEqual(error?.delta?.changed, [{ path: "name", changed: true }]);
+  const directory = await mkdtemp(join(tmpdir(), "barrier-diff-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  await releaseEvidence(directory, "a".repeat(40)).failure(error);
+  const text = await readFile(join(directory, "failure.json"), "utf8");
+  assert.deepEqual(JSON.parse(text).delta, error?.delta);
+  assert.ok(!/AKIA|ASIA/.test(text));
+});
+
+test("dynamic credential keys and private hostnames stay out of public diffs", () => {
+  const old = {
+    credentials: { abcdefghijklmnopqrstuvwx: 1 },
+    name: "build-one.preview.example",
+    hash: { input: "build-one.preview.example" },
+    image: "private.registry.example/pool:old",
+  };
+  const next = {
+    credentials: { abcdefghijklmnopqrstuvwx: 2 },
+    name: "build-two.preview.example",
+    hash: { input: "build-two.preview.example" },
+    image: "private.registry.example/pool:new",
+  };
+  assert.deepEqual(changedProps(old, next), [
+    { path: "credentials.[changed]", changed: true },
+    { path: "hash.input", changed: true },
+    { path: "image", changed: true },
+    { path: "name", changed: true },
+  ]);
+});
+
+test("an opaque image tag cannot bypass token redaction", () => {
+  assert.deepEqual(
+    changedProps({ image: "pool:old" }, { image: "pool:abcdefghijklmnopqrstuvwx" }),
+    [{ path: "image", changed: true }],
   );
 });
