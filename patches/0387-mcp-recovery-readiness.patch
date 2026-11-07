@@ -1,0 +1,14 @@
+diff --git a/e2e/tests/mcp-deferred-setup.spec.ts b/e2e/tests/mcp-deferred-setup.spec.ts
+--- a/e2e/tests/mcp-deferred-setup.spec.ts
++++ b/e2e/tests/mcp-deferred-setup.spec.ts
+@@ -115,7 +115,9 @@
+         yield* issuer.configure({ mcpStatus: null });
+         yield* held.release;
+         yield* browser.use("Recovered server offers OAuth sign-in", (page) =>
+-          page.getByRole("button", { name: `Connect ${name}`, exact: true }).waitFor(),
++          page
++            .getByRole("button", { name: `Connect ${name}`, exact: true, disabled: false })
++            .waitFor(),
+         );
+         expect(
+           yield* browser.use("Recovery clears the error", (page) =>
