@@ -75,7 +75,7 @@ index 11c13b7..8da9fd6 100644
    "type": "module",
    "dependencies": {
 -    "apps": "0.0.1-beta.100"
-+    "apps": "0.0.1-beta.104-basalt.9",
++    "apps": "0.0.1-beta.104-basalt.10",
 +    "@modelcontextprotocol/sdk": "1.32.1"
    },
    "executor": {
