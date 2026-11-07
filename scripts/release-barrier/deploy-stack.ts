@@ -1,3 +1,4 @@
+import { operationFailure, withOperation } from "./operation-failure.ts";
 import * as Apply from "alchemy/Apply";
 import * as Plan from "alchemy/Plan";
 import type { CompiledStack } from "alchemy/Stack";
@@ -68,7 +69,7 @@ type Services = Effect.Services<ReturnType<typeof readBaseline> | ReturnType<typ
 /** The ordinary release entry uses this full-stack path, including transitive Commands. */
 export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =>
   Effect.gen(function* () {
-    const plan = yield* Plan.make(stack);
+    const plan = yield* Plan.make(stack).pipe(withOperation("(plan)", "plan-stack"));
     assertSupportedPlan(plan, new Map(), options.declarations);
     const context = yield* Effect.context<Services>();
     const run = <A, E>(effect: Effect.Effect<A, E, Services>) =>
@@ -135,7 +136,16 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
         Promise.all(
           [...prepared.captured.values()]
             .sort((a, b) => a.fqn.localeCompare(b.fqn))
-            .map(async (upload) => freezeUpload(upload, await run(io.baseline(upload.request)))),
+            .map(async (upload) => {
+              const baseline = await run(
+                io.baseline(upload.request).pipe(withOperation(upload.fqn, "read-worker-baseline")),
+              );
+              try {
+                return await freezeUpload(upload, baseline);
+              } catch (error) {
+                throw operationFailure(error, upload.fqn, "freeze-worker-upload");
+              }
+            }),
         ),
       ),
     };

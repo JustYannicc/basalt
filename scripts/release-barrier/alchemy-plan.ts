@@ -1,3 +1,4 @@
+import { withOperation } from "./operation-failure.ts";
 import * as Apply from "alchemy/Apply";
 import * as Plan from "alchemy/Plan";
 import { havePropsChanged } from "alchemy/Diff";
@@ -164,7 +165,12 @@ export const preparePlan = (
       } else {
         reconcile = () => Effect.sync(() => refuse("unexpected-preparation-lifecycle", fqn));
       }
-      const wrapped = { ...provider, precreate: undefined, reconcile };
+      const wrapped = {
+        ...provider,
+        precreate: undefined,
+        reconcile: (input: Parameters<typeof reconcile>[0]) =>
+          Effect.suspend(() => reconcile(input)).pipe(withOperation(fqn, "prepare-resource")),
+      };
       if (
         node.resource.Type === workerType ||
         (node.resource.Type === "Command.Exec" && node.resource.LogicalId === "AppSourceNamespace")
