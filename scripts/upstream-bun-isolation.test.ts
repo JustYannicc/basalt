@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
+import { dependencyInstallBackend } from "./upstream-inputs.ts";
 import { fixturePhases } from "./upstream-fixture-phases.ts";
 import { fixtureInventory } from "./upstream-fixture-inventory.ts";
 
@@ -203,7 +204,7 @@ if (process.env.FIXTURE_MODE === 'orphan') {
         {
           realBun: execFileSync(realBun, ["--version"], { encoding: "utf8" }).trim(),
           defaultBackend: "hardlink",
-          installBackend: "copyfile",
+          installBackend: dependencyInstallBackend,
           distinctAttemptAndGenerationPaths: held.path !== packageFile,
           sharedInode: state.ino === held.inode,
           linkCount: state.nlink,

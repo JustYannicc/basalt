@@ -107,7 +107,7 @@ jobs:
       - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.4
+          bun-version: 1.4.2
       - name: Validate credentials
         if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
         run: node --input-type=module -e 'import { deployEnvironment } from "./scripts/environment.ts"; deployEnvironment();'

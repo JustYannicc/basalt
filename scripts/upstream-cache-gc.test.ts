@@ -23,7 +23,12 @@ import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { withCacheLock } from "./upstream-cache.ts";
 import { installUpstreamDependencies } from "./upstream-dependencies.ts";
-import { collectUpstreamDependencies, createInstallAttempt } from "./upstream-store.ts";
+import {
+  collectUpstreamDependencies,
+  createInstallAttempt,
+  rememberDependencyConsumer,
+  withDependencyStoreLock,
+} from "./upstream-store.ts";
 
 function fixture(t: TestContext) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "basalt-key-gc-")));
@@ -88,18 +93,56 @@ function fixture(t: TestContext) {
   return { root, cache, key, usage };
 }
 
-test("prepare collection retains the three most recently used keys and evicts older pins", async (t) => {
-  const { key } = fixture(t);
-  const entries = Array.from({ length: 5 }, (_, index) => key(index + 1));
-  const oldPin = key(100, "old");
-  await collectUpstreamDependencies("current");
-  assert.deepEqual(
-    entries.map(({ entry }) => existsSync(entry)),
-    [false, false, true, true, true],
+test("collection evicts every unleased key, including recent keys, and keeps a live consumer", async (t) => {
+  const { root, key } = fixture(t);
+  const unused = key(100);
+  const leased = key(1);
+  const consumer = join(root, "consumer");
+  mkdirSync(consumer);
+  writeFileSync(
+    join(consumer, ".basalt-dependencies.json"),
+    JSON.stringify({ store: leased.store }),
   );
-  for (const { store } of entries.slice(2))
-    assert.equal(readFileSync(join(store, "node_modules", "payload"), "utf8"), "package bytes");
-  assert.equal(existsSync(oldPin.entry), false);
+  await withDependencyStoreLock(() => rememberDependencyConsumer(consumer, leased.store, false));
+  await collectUpstreamDependencies("current");
+  assert.equal(existsSync(unused.entry), false, "recent but unleased keys are evicted");
+  assert.equal(
+    readFileSync(join(leased.store, "node_modules", "payload"), "utf8"),
+    "package bytes",
+  );
+  rmSync(consumer, { recursive: true });
+  await collectUpstreamDependencies();
+  assert.equal(existsSync(leased.entry), false, "explicit GC needs no pin to evict unused keys");
+});
+
+test("an abandoned pending consumer does not retain keys it never installed", async (t) => {
+  const { root, cache, key } = fixture(t);
+  const abandoned = key(1),
+    installed = key(2);
+  const consumer = join(root, "consumer");
+  mkdirSync(consumer);
+  writeFileSync(
+    join(consumer, ".basalt-dependencies.json"),
+    JSON.stringify({ store: installed.store }),
+  );
+  mkdirSync(join(cache, "consumers"), { recursive: true });
+  writeFileSync(
+    join(cache, "consumers", "legacy.json"),
+    JSON.stringify({ root: consumer, stores: [abandoned.store, installed.store], pending: true }),
+  );
+  await collectUpstreamDependencies();
+  assert.equal(existsSync(abandoned.entry), false);
+  assert.equal(existsSync(installed.entry), true);
+});
+
+test("a live pending consumer retains its selected generation until installation finishes", async (t) => {
+  const { root, key } = fixture(t);
+  const selected = key(1);
+  const consumer = join(root, "consumer");
+  mkdirSync(consumer);
+  await withDependencyStoreLock(() => rememberDependencyConsumer(consumer, selected.store, true));
+  await collectUpstreamDependencies();
+  assert.equal(existsSync(selected.store), true);
 });
 
 test("an open file protects its generation and key beyond the recent-key bound", async (t) => {
@@ -208,22 +251,15 @@ function packageFixture(t: TestContext) {
   return { ...fixtureState, consumer: root, create };
 }
 
-test("a cache hit refreshes recency before the next eviction", async (t) => {
-  const { key, consumer } = packageFixture(t);
+test("a cache hit keeps its consumer until that consumer releases it", async (t) => {
+  const { consumer } = packageFixture(t);
   const first = await installUpstreamDependencies(consumer, "current");
-  const entry = dirname(dirname(first.store));
-  utimesSync(join(entry, "last-used"), 1, 1);
-  const others = [key(2), key(3), key(4)];
   const hit = await installUpstreamDependencies(consumer, "current");
   assert.equal(hit.store, first.store, "the published generation is reused");
-  // Release the consumer so only the cache hit's recency can retain this key.
+  assert.equal(existsSync(first.store), true);
   rmSync(consumer, { recursive: true });
   await collectUpstreamDependencies("current");
-  assert.equal(existsSync(first.store), true);
-  assert.deepEqual(
-    others.map(({ entry }) => existsSync(entry)),
-    [false, true, true],
-  );
+  assert.equal(existsSync(first.store), false);
 });
 
 test("interrupted eviction retires the key before deletion and prepare rebuilds it", async (t) => {
@@ -235,7 +271,6 @@ test("interrupted eviction retires the key before deletion and prepare rebuilds 
   const first = await installUpstreamDependencies(consumer, "current");
   const entry = dirname(dirname(first.store));
   rmSync(consumer, { recursive: true });
-  utimesSync(join(entry, "last-used"), 1, 1);
   for (let index = 2; index <= 4; index++) key(index);
   let retired: string | undefined;
   const remove = fs.rmSync;
@@ -273,14 +308,15 @@ test("live key locks and install attempts protect keys until their owners releas
   const { key } = fixture(t);
   const locked = key(1, "old"),
     pending = key(2, "old");
-  const attempt = await createInstallAttempt(pending.entry);
-  for (let index = 3; index <= 6; index++) key(index);
+  let attempt: string;
   await withCacheLock(`${locked.entry}.lock`, async () => {
+    attempt = await createInstallAttempt(pending.entry);
+    for (let index = 3; index <= 6; index++) key(index);
     await collectUpstreamDependencies("current");
     assert.equal(existsSync(locked.store), true);
-    assert.equal(existsSync(attempt), true);
+    assert.equal(existsSync(attempt!), true);
   });
-  rmSync(join(attempt, "parent.json"));
+  rmSync(join(attempt!, "parent.json"));
   await collectUpstreamDependencies("current");
   assert.equal(existsSync(locked.entry), false);
   assert.equal(existsSync(pending.entry), false);
@@ -295,7 +331,7 @@ test("legacy sibling attempts retain their parent key's live PID-only lock", asy
   writeFileSync(join(attempt, "package.json"), "{}");
   symlinkSync(JSON.stringify({ pid: process.pid, id: "legacy-fixture" }), `${legacy.entry}.lock`);
   await collectUpstreamDependencies("current");
-  assert.equal(existsSync(attempt), true, "format-2 input copying holds the parent key lock");
+  assert.equal(existsSync(attempt!), true, "format-2 input copying holds the parent key lock");
   assert.equal(existsSync(legacy.store), true);
   rmSync(`${legacy.entry}.lock`);
   await collectUpstreamDependencies("current");

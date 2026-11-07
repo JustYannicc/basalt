@@ -176,7 +176,7 @@ jobs:
           path: .local
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.4
+          bun-version: 1.4.2
       - name: Rebuild and check the backed-up candidate
         working-directory: ${{ runner.temp }}/candidate
         run: |

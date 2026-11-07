@@ -54,7 +54,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         if: inputs.mode != 'destroy'
         with:
-          bun-version: 1.4.4
+          bun-version: 1.4.2
       - name: Prepare the frozen deployment toolchain
         if: inputs.mode != 'destroy'
         timeout-minutes: 25
