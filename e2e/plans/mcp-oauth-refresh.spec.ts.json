@@ -1,0 +1,47 @@
+{
+  "scenarios": {
+    "mcpLateRefreshReuse": {
+      "fixtures": "actors",
+      "title": "A rotated MCP refresh token replayed after the access-token hour is refused alone, and more than a day after its rotation ends every copy",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Advances the wall clock of a runner-owned product process."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "This scenario tests hosted organization consent, which Local does not have."
+        }
+      }
+    },
+    "mcpStaleRefresh": {
+      "fixtures": "actors",
+      "title": "A sibling MCP client refreshing a rotated grant keeps every instance signed in",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "This scenario tests hosted organization consent, which Local does not have."
+        }
+      }
+    }
+  },
+  "runs": {
+    "mcpLateRefreshReuse": [
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ],
+    "mcpStaleRefresh": [
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ]
+  },
+  "inherited": []
+}

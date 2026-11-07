@@ -12,9 +12,10 @@ import {
   writeFileSync,
   realpathSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { digest, upstreamCache, withCacheLock } from "./upstream-cache.ts";
+import { preparedCacheCollection } from "./upstream-cache-gc.ts";
 import {
   currentProcessOwner,
   installerGroupAlive,
@@ -83,10 +84,15 @@ export function rememberDependencyConsumer(root: string, store: string, pending:
 }
 
 /** Call only while holding collection.lock, including publication and consumer transitions. */
-export function collectDependencyStore() {
-  const entries = directories(join(upstreamCache(), "prepared"))
+export function collectDependencyStore(pin?: string) {
+  const cache = realpathSync(upstreamCache());
+  const entries = directories(join(cache, "prepared"))
     .flatMap((pin) => directories(pin))
-    .filter((entry) => record(join(entry, "store-format.json"))?.version === 3);
+    .filter(
+      (entry) =>
+        !basename(entry).startsWith(".gc-") &&
+        record(join(entry, "store-format.json"))?.version === 3,
+    );
   const leases = entries
     .flatMap((entry) => directories(join(entry, "attempts")))
     .map((path) => ({
@@ -108,8 +114,7 @@ export function collectDependencyStore() {
   );
   const live = processSnapshot(groups);
   if (!live.complete) return;
-  const cache = upstreamCache(),
-    protectedStores = new Set<string>();
+  const protectedStores = new Set<string>();
   const consumers = join(cache, "consumers");
   const abandonedConsumers: string[] = [];
   if (existsSync(consumers))
@@ -142,18 +147,31 @@ export function collectDependencyStore() {
     // Unknown ownership must not authorize even a partial collection pass.
     return;
   }
+  const collection = preparedCacheCollection(
+    pin,
+    protectedStores,
+    attempts.filter(({ path }) => !abandoned.includes(path)).map(({ path }) => path),
+  );
+  if (!collection) return;
   const retired = entries
     .flatMap((entry) => directories(join(entry, "generations")))
-    .filter((generation) => !protectedStores.has(realpathSync(generation)));
+    .filter(
+      (generation) =>
+        !collection.owns(generation) &&
+        !collection.protectedPath(realpathSync(generation)) &&
+        !collection.preserved.has(realpathSync(generation)),
+    );
   for (const file of abandonedConsumers) rmSync(file);
-  for (const path of [...abandoned, ...retired]) removeDirectory(path);
+  for (const path of [...abandoned, ...retired]) if (!collection.owns(path)) removeDirectory(path);
+  collection.finish();
 }
 
-export const collectUpstreamDependencies = () => withDependencyStoreLock(collectDependencyStore);
+export const collectUpstreamDependencies = (pin?: string) =>
+  withDependencyStoreLock(() => collectDependencyStore(pin));
 
 export const createInstallAttempt = (entry: string) =>
   withDependencyStoreLock(() => {
-    collectDependencyStore();
+    collectDependencyStore(basename(dirname(entry)));
     if (directories(join(entry, "attempts")).length >= 3)
       throw new Error(
         "Reached the limit of 3 pending dependency attempts for one key. Resolve live installers or process observation failures before retrying.",

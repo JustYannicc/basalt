@@ -281,7 +281,8 @@ test("an inherited test cannot grow silently under its existing exception", () =
 
 test("the fast lane checks all current omissions and the known compact row stays selected", () => {
   const records = realInventory();
-  assert.deepEqual(coverageErrors(records, baseline()), []);
+  const exceptions = baseline();
+  assert.deepEqual(coverageErrors(records, exceptions), []);
   assert.ok(
     records.find(
       (record) => record.id === "listed-account-bindings.spec.ts#listedBindingCompactRow",
@@ -289,10 +290,21 @@ test("the fast lane checks all current omissions and the known compact row stays
   );
   const recipe = records.find((record) => record.id === "e2e/pool-recipe-checks.mjs")!;
   assert.ok(recipe.selected);
-  const errors = coverageErrors(records, []);
+  const adopted = "account-cache-scope.spec.ts#accountCacheScope";
+  assert.ok(records.find((record) => record.id === adopted)?.selected, adopted);
   assert.ok(
-    errors.some((error) => error.includes("account-cache-scope.spec.ts#accountCacheScope")),
+    exceptions.every((group) => group.entries[adopted] === undefined),
+    adopted,
   );
+  const errors = coverageErrors(records, []);
+  const omissions = exceptions.flatMap((group) => Object.keys(group.entries));
+  assert.ok(omissions.length > 0);
+  assert.equal(errors.length, omissions.length);
+  for (const id of omissions)
+    assert.ok(
+      errors.some((error) => error.startsWith(`Ungated E2E: ${id}. `)),
+      id,
+    );
   const workflow = readWorkflow();
   assert.ok(
     workflow.jobs.fast!.steps!.some(
@@ -301,7 +313,7 @@ test("the fast lane checks all current omissions and the known compact row stays
   );
   assert.ok(
     coverageErrors(records, [
-      ...baseline(),
+      ...exceptions,
       { reason: "Stale #578 baseline", entries: { [recipe.id]: recipe.fingerprint } },
     ]).some((error) =>
       error.includes("Remove stale E2E exception now selected by CI: e2e/pool-recipe-checks.mjs"),

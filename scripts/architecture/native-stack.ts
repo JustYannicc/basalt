@@ -42,7 +42,15 @@ function executable(name: string): string {
   throw new Error(`Native stack inventory requires ${name}`);
 }
 
-function evaluate(root: string, options: { manualCron?: true; releaseProof?: true } = {}): unknown {
+function evaluate(
+  root: string,
+  options: {
+    manualCron?: true;
+    releaseProof?: true;
+    connectionProof?: true;
+    connectionChange?: "origin" | "limit" | "tls";
+  } = {},
+): unknown {
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), "native-stack-")));
   try {
     const bun = executable("bun");
@@ -58,6 +66,8 @@ function evaluate(root: string, options: { manualCron?: true; releaseProof?: tru
       NATIVE_STACK_ROOT: realpathSync(root),
       NATIVE_STACK_MANUAL_CRON: String(options.manualCron ?? false),
       NATIVE_STACK_RELEASE_PROOF: String(options.releaseProof ?? false),
+      NATIVE_STACK_CONNECTION_PROOF: String(options.connectionProof ?? false),
+      NATIVE_STACK_CONNECTION_CHANGE: options.connectionChange ?? "",
     };
     const worker = fileURLToPath(new URL("./native-stack-worker.mjs", import.meta.url));
     let command: string, args: string[];
@@ -172,4 +182,30 @@ export interface ReleasePhaseProof {
 /** Uses the real root declarations, Alchemy selection and the installed Exec provider. */
 export function discoverReleasePhaseProof(root: string): ReleasePhaseProof {
   return evaluate(root, { releaseProof: true }) as ReleasePhaseProof;
+}
+
+export interface ConnectionPlanProof {
+  action: string;
+  storedOriginResolved: boolean;
+  candidateOriginResolved: boolean;
+  dependencies: string[];
+  budgetAction: string;
+  migrationAction: string;
+  databasePhaseContainsMigrations: boolean;
+  databasePhaseContainsBudget: boolean;
+  refusal: string | null;
+  resolvedOriginEqual: boolean | null;
+  resolvedConfigEqual: boolean | null;
+  connectionWrites: number;
+  commandRuns: number;
+}
+
+export function discoverConnectionPlanProof(
+  root: string,
+  connectionChange?: "origin" | "limit" | "tls",
+): ConnectionPlanProof {
+  return evaluate(root, {
+    connectionProof: true,
+    ...(connectionChange ? { connectionChange } : {}),
+  }) as ConnectionPlanProof;
 }

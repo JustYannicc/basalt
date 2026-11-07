@@ -31,6 +31,71 @@
           "status": "scheduled"
         }
       }
+    },
+    "hostedAppAccountReconnectBrowser": {
+      "fixtures": "actors",
+      "title": "a member's call needing an app account that must reconnect says someone who can edit the app must reconnect it and offers the member no reconnect, while the editor's App accounts section marks it Needs sign-in and offers Reconnect",
+      "targets": {
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted members and managers only."
+        },
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a scoped loopback issuer whose token endpoint ends the grant."
+        }
+      }
+    },
+    "hostedAppAccountsManagerBrowser": {
+      "fixtures": "actors",
+      "title": "someone who can edit the app picks its plain App account with a radio, clears and checks a many() account of their own, and unlinks from the menu, and the link API agrees after each",
+      "targets": {
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted app editors; Local links in its own scenario."
+        },
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        }
+      }
+    },
+    "hostedAppAccountsMemberBrowser": {
+      "fixtures": "actors",
+      "title": "a member sees the App accounts greyed out and read-only with the linked account's name, and the app link routes other than the list refuse them",
+      "targets": {
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has one subject."
+        },
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        }
+      }
+    },
+    "hostedAppSchedulesBrowser": {
+      "fixtures": "actors",
+      "title": "the Schedules tab marks an app schedule as the app's with no approval choice, a member's controls are disabled and refused, and a manager enables and pauses it",
+      "targets": {
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has one subject; its app schedule controls have their own scenario."
+        },
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        }
+      }
     }
   },
   "runs": {
@@ -41,14 +106,24 @@
     "hostedAppAccountsFirstEntryPhone": [
       "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab",
       "human-in-the-loop:the-human-in-the-loop-route-while-cloud-code-and-data-load"
+    ],
+    "hostedAppAccountReconnectBrowser": [
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ],
+    "hostedAppAccountsManagerBrowser": [
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ],
+    "hostedAppAccountsMemberBrowser": [
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ],
+    "hostedAppSchedulesBrowser": [
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
     ]
   },
-  "inherited": [
-    "hostedAppAccountsManagerBrowser",
-    "hostedAppAccountsMemberBrowser",
-    "hostedAppSchedulesBrowser",
-    "hostedAppAccountReconnectBrowser"
-  ],
+  "inherited": [],
   "inputs": [
     ".upstream/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.apps.$appId.tsx",
     ".upstream/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.apps.$appId.tsx",

@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { run } from "../process.ts";
 import { checkReleaseHeadroom } from "./headroom.ts";
@@ -20,15 +19,13 @@ export async function deployInPhases(options: {
   const args = recovery.length ? ["--recover", resolve(recovery[1]!), resolve(recovery[2]!)] : [];
   if (options.sharedFoundation)
     throw new Error("Release barrier does not yet support the separate shared-domain stack");
+  const candidate = options.environment.BASALT_RELEASE_CANDIDATE;
+  if (!candidate || !/^[a-f0-9]{40}$/.test(candidate))
+    throw new Error("Release barrier requires an immutable candidate");
   const headroom = await (options.preflight ?? checkReleaseHeadroom)(options.environment);
   console.log(
     `Database release admitted: primary total ${headroom.observed}, release envelope ${headroom.envelope}, ordinary slots ${headroom.ordinarySlots}.`,
   );
-  const candidate =
-    options.environment.BASALT_RELEASE_CANDIDATE ??
-    execFileSync("git", ["rev-parse", "HEAD"], { cwd: options.cloud, encoding: "utf8" }).trim();
-  if (!/^[a-f0-9]{40}$/.test(candidate))
-    throw new Error("Release barrier requires an immutable candidate");
   (options.execute ?? run)(
     "bun",
     ["../../../../scripts/release-barrier/entry.ts", ...args],

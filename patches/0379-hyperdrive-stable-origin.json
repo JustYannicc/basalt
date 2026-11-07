@@ -1,0 +1,11 @@
+{
+  "identity": "hyperdrive-stable-origin",
+  "file": "0379-hyperdrive-stable-origin.patch",
+  "content_sha256": "efced88d5edfc3115884530c328d4c60ce09c95bfa44f3a8369086ed755603ed",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false,
+  "remove_with": "upstream-hyperdrive-stable-origin",
+  "requires": "Hyperdrive configuration depends only on its database role and configuration. Per-release database Commands gate runtime URLs and Worker activation, not the Hyperdrive origin."
+}

@@ -1,0 +1,26 @@
+{
+  "scenarios": {
+    "localOAuthRenewalInterrupted": {
+      "title": "Local dashboard keeps an account signed in after the app stops mid-renewal",
+      "targets": {
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Local dashboard sign-in state."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Local dashboard sign-in state."
+        },
+        "local": {
+          "status": "scheduled"
+        }
+      }
+    }
+  },
+  "runs": {
+    "localOAuthRenewalInterrupted": [
+      "host-managed-accounts-local:shared-identities-and-incremental-consent"
+    ]
+  },
+  "inherited": []
+}

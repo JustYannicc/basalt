@@ -1,0 +1,1235 @@
+diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+index f56db9bd..494d4bbb 100644
+--- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+@@ -194,6 +194,8 @@ export function AppAccounts({
+     readonly method: string;
+     /** Set when replacing this account's credentials rather than adding an account. */
+     readonly account?: AccountSummary | undefined;
++    /** The requirement's title on the tab, which the dialog names. */
++    readonly title?: string | undefined;
+   }>();
+   const [renaming, setRenaming] = useState<AccountSummary>();
+   // Set when the host refused the open connection for good; its form gives way to the destination.
+@@ -206,6 +208,8 @@ export function AppAccounts({
+     readonly slot: string;
+     readonly requirement: AccountRequirement;
+     readonly methods: readonly string[];
++    /** The requirement's title on the tab, which the dialog names. */
++    readonly title: string | undefined;
+   }>();
+   const [connecting, setConnecting] = useState(false);
+   const connectionDisabled =
+@@ -256,13 +260,13 @@ export function AppAccounts({
+       requirementChoicesAtom({ organization, app: app.id, scope, requirement: slot }),
+     link: (slot, account) => linkAccountAtom({ ...target(scope), requirement: slot, account }),
+     unlink: (slot, account) => unlinkAccountAtom({ ...target(scope), requirement: slot, account }),
+-    connect: (slot, requirement) => {
++    connect: (slot, requirement, title) => {
+       if (connectionDisabled || !connectsHere(slot)) return;
+       const preferred = methodsOf(requirement).find(
+         ([method]) => methods?.unavailable(slot, method) === undefined,
+       );
+       if (preferred !== undefined)
+-        setConnection({ scope, slot, requirement, method: preferred[0] });
++        setConnection({ scope, slot, requirement, method: preferred[0], title });
+     },
+     // The host imports login files only into app accounts.
+     ...(scope === "app"
+@@ -271,9 +275,10 @@ export function AppAccounts({
+             slot: string,
+             requirement: AccountRequirement,
+             importMethods: readonly string[],
++            title: string | undefined,
+           ) => {
+             if (connectionDisabled || !connectsHere(slot)) return;
+-            setImporting({ slot, requirement, methods: importMethods });
++            setImporting({ slot, requirement, methods: importMethods, title });
+           },
+         }
+       : {}),
+@@ -474,6 +479,7 @@ export function AppAccounts({
+             slot={importing.slot}
+             requirement={importing.requirement}
+             methods={importing.methods}
++            title={importing.title}
+             onPendingChange={setConnecting}
+             onDone={() => setImporting(undefined)}
+           />
+@@ -518,6 +524,7 @@ export function AppAccounts({
+               slot={connection.slot}
+               requirement={connection.requirement}
+               method={connection.method}
++              title={connection.title}
+               connectionNotices={noticesFor(connection.requirement)}
+               oauthDeferrals={catalogEntry?.oauthDeferrals}
+               redirectUri={redirectUri}
+@@ -571,6 +578,7 @@ export function AppConnectionDialogContent({
+   slot,
+   requirement,
+   method,
++  title,
+   connectionNotices = [],
+   oauthDeferrals,
+   redirectUri,
+@@ -581,6 +589,8 @@ export function AppConnectionDialogContent({
+   onSaved,
+ }: {
+   readonly app: App;
++  /** The requirement's title where the app lists it; the service's name when absent. */
++  readonly title?: string | undefined;
+   /** Set when replacing this account's credentials rather than adding an account. */
+   readonly account?: AccountSummary | undefined;
+   readonly initialAccount?: AccountId | undefined;
+@@ -618,6 +628,7 @@ export function AppConnectionDialogContent({
+     <>
+       <ConnectionDialogHeader
+         provider={form.provider}
++        title={title}
+         action={account ? "Reconnect" : "Connect"}
+         notice={account ? `Apps using ${account.label} will use the new credentials.` : undefined}
+       />
+diff --git a/apps/hosted/web/src/implementation/pages/connection-dialog.tsx b/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
+index 69ae42e2..9b49b1d1 100644
+--- a/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
++++ b/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
+@@ -50,22 +50,26 @@ export function ConnectionModal({
+ /** Use the same provider identity and accessible heading for new accounts and resumed requests. */
+ export function ConnectionDialogHeader({
+   provider,
++  title,
+   action,
+   notice,
+ }: {
+   readonly provider: Provider;
++  /** What the dialog connects, such as an app requirement's title; the service's name otherwise. */
++  readonly title?: string | undefined;
+   readonly action: "Connect" | "Reconnect";
+   readonly notice?: string | undefined;
+ }) {
++  const name = title ?? provider.definition.name;
+   return (
+     <div className="flex items-center gap-3 pr-7">
+       <ProviderIcon name={provider.definition.name} url={providerDisplayUrl(provider.definition)} />
+       <div className="min-w-0">
+         <DialogTitle className="text-base">
+-          {action} {provider.definition.name}
++          {action} {name}
+         </DialogTitle>
+         <DialogDescription className={notice ? "mt-1 text-xs" : "sr-only"}>
+-          {notice ?? `${action} an account for ${provider.definition.name}.`}
++          {notice ?? `${action} an account for ${name}.`}
+         </DialogDescription>
+       </div>
+     </div>
+diff --git a/apps/hosted/web/src/implementation/pages/import-login-file.tsx b/apps/hosted/web/src/implementation/pages/import-login-file.tsx
+index 8090e5de..dab91f87 100644
+--- a/apps/hosted/web/src/implementation/pages/import-login-file.tsx
++++ b/apps/hosted/web/src/implementation/pages/import-login-file.tsx
+@@ -49,10 +49,16 @@ export function ImportLoginFile({
+   slot,
+   requirement,
+   methods,
++  title,
+   onPendingChange,
+   onDone,
+ }: {
+   readonly app: App;
++  /**
++   * The requirement's title on the app's Accounts tab, given only where another requirement in its
++   * scope shares the service; the dialog then names it.
++   */
++  readonly title?: string | undefined;
+   readonly slot: string;
+   readonly requirement: AccountRequirement;
+   /** The methods the host can import for this requirement. */
+@@ -105,7 +111,11 @@ export function ImportLoginFile({
+       }}
+     >
+       <div className="grid gap-1.5">
+-        <DialogTitle>Import {requirement.definition.name} login file</DialogTitle>
++        <DialogTitle>
++          {title === undefined
++            ? `Import ${requirement.definition.name} login file`
++            : `Import login file for ${title}`}
++        </DialogTitle>
+         <DialogDescription>
+           Use the login file your {requirement.definition.name} tool exported. It's saved as a new
+           account here, and pools can pick it like any other.
+diff --git a/apps/local/web/src/implementation/pages/app-accounts.tsx b/apps/local/web/src/implementation/pages/app-accounts.tsx
+index 73a2efbd..7432b7dc 100644
+--- a/apps/local/web/src/implementation/pages/app-accounts.tsx
++++ b/apps/local/web/src/implementation/pages/app-accounts.tsx
+@@ -77,6 +77,8 @@ export function AppAccounts({
+     readonly scope: AccountScope;
+     readonly slot: string;
+     readonly requirement: AccountRequirement;
++    /** The requirement's title on the tab, which the dialog names. */
++    readonly title: string | undefined;
+   }>();
+   const [connecting, setConnecting] = useState(false);
+   // Credentials are replaced here, where the app shows which hosts receive them.
+@@ -109,7 +111,7 @@ export function AppAccounts({
+       link: (slot, account) => linkAccountAtom({ ...target(scope), requirement: slot, account }),
+       unlink: (slot, account) =>
+         unlinkAccountAtom({ ...target(scope), requirement: slot, account }),
+-      connect: (slot, requirement) => setConnection({ scope, slot, requirement }),
++      connect: (slot, requirement, title) => setConnection({ scope, slot, requirement, title }),
+       connecting,
+       onUnlinked: (account) => void unused.check(account),
+     },
+@@ -156,7 +158,9 @@ export function AppAccounts({
+         }}
+       >
+         <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-[560px]">
+-          <DialogTitle>Connect {connection?.requirement.definition.name}</DialogTitle>
++          <DialogTitle>
++            Connect {connection?.title ?? connection?.requirement.definition.name}
++          </DialogTitle>
+           <DialogDescription className="sr-only">
+             Connect an account for {app.name}.
+           </DialogDescription>
+diff --git a/e2e/support/account-choices.ts b/e2e/support/account-choices.ts
+index 2c1623ff..ee3bbd98 100644
+--- a/e2e/support/account-choices.ts
++++ b/e2e/support/account-choices.ts
+@@ -1,32 +1,65 @@
+ /**
+  * The app Accounts tab's choices for one requirement: a list named `<Provider> accounts` with
+  * every account the caller could link, each with a radio (plain requirement) or a checkbox
+- * (many()) named `Use <label> for this app` that is checked while the account is linked.
++ * (many()) named `Use <label> for this app` that is checked while the account is linked. Where
++ * two requirements of a scope share a service, the list, the controls, the row ⋯ and the connect
++ * button name the requirement by its title instead, so their names stay unique within the scope.
+  */
+ import type { Locator, Page } from "playwright";
+ 
++const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
++
+ /** The accessible name of the radio or checkbox that links the account titled `label`. */
+ export const choiceName = (label: string) => `Use ${label} for this app`;
+ 
++/**
++ * `choiceName` where another requirement in the scope shares the requirement's service, so the
++ * control names the requirement by its title instead of the app.
++ */
++export const requirementChoiceName = (label: string, requirement: string) =>
++  `Use ${label} for ${requirement}`;
++
++/** Any link control name for the account titled `label`, for the app or for any requirement. */
++export const anyChoiceName = (label: string) => new RegExp(`^Use ${escaped(label)} for .+$`);
++
++/**
++ * The name of a requirement's connect button, with the requirement's title where another
++ * requirement in the scope shares its service.
++ */
++export const connectName = (requirement?: string) =>
++  requirement === undefined ? "Connect new account" : `Connect new account for ${requirement}`;
++
++/** Any `connectName`, for counting connect buttons whatever requirement they name. */
++export const anyConnectName = /^Connect new account( for .+)?$/;
++
+ /** A section of an app's Accounts tab. */
+ export type AccountsTabSection = "App accounts" | "Your accounts";
+ 
+ /**
+  * The name of an account row's ⋯ on an app's Accounts tab. It names the section, since the same
+- * account can be listed in both.
++ * account can be listed in both, and the requirement where its scope has another of its service.
+  */
+-export const rowMenuName = (label: string, section: AccountsTabSection) =>
+-  `Manage ${label} in ${section}`;
++export const rowMenuName = (label: string, section: AccountsTabSection, requirement?: string) =>
++  `Manage ${label} in ${section}${requirement === undefined ? "" : ` · ${requirement}`}`;
+ 
+ /** Any ⋯ name for the account titled `label`: `rowMenuName` in either section, or unqualified. */
+ export const anyRowMenuName = (label: string) =>
+-  new RegExp(`^Manage ${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}( in (App|Your) accounts)?$`);
++  new RegExp(`^Manage ${escaped(label)}( in (App|Your) accounts( · .+)?)?$`);
+ 
+-/** The account title inside a control name from `choiceName`; any other name fails the read. */
+-export const choiceLabel = (name: string) => {
+-  const label = /^Use (.*) for this app$/.exec(name)?.[1];
+-  if (label === undefined) throw new Error(`Not an account link control name: ${name}`);
+-  return label;
++/**
++ * The account title inside a control name: exactly `choiceName(label)`, or exactly
++ * `requirementChoiceName(label, requirement)` when `requirement` is given. Any other name throws.
++ */
++export const choiceLabel = (name: string, requirement?: string) => {
++  const prefix = "Use ";
++  const suffix = ` for ${requirement ?? "this app"}`;
++  if (
++    !name.startsWith(prefix) ||
++    !name.endsWith(suffix) ||
++    name.length < prefix.length + suffix.length
++  )
++    throw new Error(`Not an account link control name: ${name}`);
++  return name.slice(prefix.length, name.length - suffix.length);
+ };
+ 
+ /** One requirement's list of choices, named after its provider. */
+@@ -52,11 +85,14 @@ export const linkedChoices = (root: Page | Locator, provider: string) => {
+     .or(list.getByRole("checkbox", { checked: true }));
+ };
+ 
+-/** The labels of the linked accounts in one requirement's choices, in the order shown. */
+-export const linkedLabels = (root: Page | Locator, provider: string) =>
+-  linkedChoices(root, provider)
++/**
++ * The labels of the linked accounts in one requirement's choices, in the order shown. Pass the
++ * requirement's title where its scope has another requirement of the same service.
++ */
++export const linkedLabels = (root: Page | Locator, provider: string, requirement?: string) =>
++  linkedChoices(root, requirement ?? provider)
+     .evaluateAll((controls) => controls.map((control) => control.getAttribute("aria-label") ?? ""))
+-    .then((names) => names.map(choiceLabel));
++    .then((names) => names.map((name) => choiceLabel(name, requirement)));
+ 
+ /** Link an account the caller could use by selecting its radio or checkbox. */
+ export const chooseAccount = (root: Page | Locator, provider: string, label: string) => {
+diff --git a/e2e/tests/app-account-links.spec.ts b/e2e/tests/app-account-links.spec.ts
+index e61f27a9..f37042d5 100644
+--- a/e2e/tests/app-account-links.spec.ts
++++ b/e2e/tests/app-account-links.spec.ts
+@@ -25,7 +25,9 @@ import {
+   choiceLabel,
+   choiceName,
+   chooseAccount,
++  connectName,
+   linkedLabels,
++  requirementChoiceName,
+   rowMenuName,
+ } from "../support/account-choices.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+@@ -40,6 +42,8 @@ const source = `import {defineApp,defineProvider,secrets,query,object,string, ro
+ const service=defineProvider({name:"Inbox",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});
+ export const who=query({input:object({})},async ctx=>({context:{auth:"auth" in ctx},account:ctx.user.accounts.service.id,extra:ctx.user.accounts.extra.map(a=>a.id)}));
+ export default defineApp({user: { accounts:{service,extra:service.many()} }},{tools: router({ who })});`;
++/** Both requirements share Inbox, so each section, list and control names its requirement. */
++const inboxTitles = { service: "Inbox · Service", extra: "Inbox · Extra" } as const;
+ /** What the `who` tool and the authored page report about the accounts a call ran with. */
+ const Identity = Schema.Struct({
+   context: Schema.Struct({ auth: Schema.Boolean }),
+@@ -190,9 +194,15 @@ const runTool = (page: Page) =>
+ /**
+  * A requirement's linked account labels (its checked radios or checkboxes, in the order shown),
+  * read once they are `expected`. A timeout falls through so the assertion reports the accounts
+- * actually checked.
++ * actually checked. Pass `requirement`, the requirement's title, where another requirement shares
++ * its service.
+  */
+-const linkedRows = (region: Locator, provider: string, expected: readonly string[]) =>
++const linkedRows = (
++  region: Locator,
++  provider: string,
++  expected: readonly string[],
++  requirement?: string,
++) =>
+   region
+     .elementHandle()
+     .then((root) =>
+@@ -207,14 +217,22 @@ const linkedRows = (region: Locator, provider: string, expected: readonly string
+           );
+           return JSON.stringify(shown) === JSON.stringify(args.expected);
+         },
+-        { root, list: `${provider} accounts`, expected: expected.map(choiceName) },
++        {
++          root,
++          list: `${requirement ?? provider} accounts`,
++          expected: expected.map((label) =>
++            requirement === undefined
++              ? choiceName(label)
++              : requirementChoiceName(label, requirement),
++          ),
++        },
+         { timeout: 10_000 },
+       ),
+     )
+     .catch((error: unknown) => {
+       if (!(error instanceof Error && error.name === "TimeoutError")) throw error;
+     })
+-    .then(() => linkedLabels(region, provider));
++    .then(() => linkedLabels(region, provider, requirement));
+ 
+ /** Every account a requirement lists, with whether its control is checked, in the order shown. */
+ const choiceStates = (region: Locator, provider: string) =>
+@@ -250,17 +268,15 @@ layer(HostedLive, { excludeTestServices: true })("App account links", (it) => {
+           );
+         const region = (slot: "service" | "extra") =>
+           browser.use(`Find the ${slot === "service" ? "plain" : "many"} Inbox account`, (page) =>
+-            Promise.resolve(
+-              page
+-                .getByRole("region", { name: "Inbox", exact: true })
+-                .nth(slot === "service" ? 0 : 1),
+-            ),
++            Promise.resolve(page.getByRole("region", { name: inboxTitles[slot], exact: true })),
+           );
+         const connect = (slot: "service" | "extra", label: string) =>
+           Effect.gen(function* () {
+             const requirement = yield* region(slot);
+             yield* browser.use("Connect a new account for Inbox", () =>
+-              requirement.getByRole("button", { name: "Connect new account", exact: true }).click(),
++              requirement
++                .getByRole("button", { name: connectName(inboxTitles[slot]), exact: true })
++                .click(),
+             );
+             yield* browser.use("Enter the synthetic credential", (page) =>
+               page.getByLabel("Token", { exact: true }).fill("synthetic-inbox-key"),
+@@ -304,13 +320,17 @@ layer(HostedLive, { excludeTestServices: true })("App account links", (it) => {
+         yield* Effect.gen(function* () {
+           const extra = yield* region("extra");
+           yield* browser.use("Start connecting another account", () =>
+-            extra.getByRole("button", { name: "Connect new account", exact: true }).click(),
++            extra
++              .getByRole("button", { name: connectName(inboxTitles.extra), exact: true })
++              .click(),
+           );
+           yield* browser.use("Draft a credential", (page) =>
+             page.getByLabel("Token", { exact: true }).fill("synthetic-cancelled-key"),
+           );
+           const draft = yield* browser.use("Find the draft dialog", (page) =>
+-            Promise.resolve(page.getByRole("dialog", { name: "Connect Inbox", exact: true })),
++            Promise.resolve(
++              page.getByRole("dialog", { name: `Connect ${inboxTitles.extra}`, exact: true }),
++            ),
+           );
+           yield* browser.use("Cancel the draft", () =>
+             draft.getByRole("button", { name: "Close", exact: true }).click(),
+@@ -325,7 +345,9 @@ layer(HostedLive, { excludeTestServices: true })("App account links", (it) => {
+         const plainOne = yield* region("service");
+         // The closing dialog hides the page from role queries until it unmounts.
+         yield* browser.use("The plain requirement's actions are shown", () =>
+-          plainOne.getByRole("button", { name: "Connect new account", exact: true }).waitFor(),
++          plainOne
++            .getByRole("button", { name: connectName(inboxTitles.service), exact: true })
++            .waitFor(),
+         );
+         yield* connect("extra", "Work inbox");
+         const linked = yield* accountLinks(actors.member, path);
+@@ -344,11 +366,10 @@ layer(HostedLive, { excludeTestServices: true })("App account links", (it) => {
+           expect(
+             yield* browser.use("Inbox lists its own linked account", (page) =>
+               linkedRows(
+-                page
+-                  .getByRole("region", { name: "Inbox", exact: true })
+-                  .nth(slot === "service" ? 0 : 1),
++                page.getByRole("region", { name: inboxTitles[slot], exact: true }),
+                 "Inbox",
+                 [label],
++                inboxTitles[slot],
+               ),
+             ),
+           ).toEqual([label]);
+diff --git a/e2e/tests/app-account-picker.spec.ts b/e2e/tests/app-account-picker.spec.ts
+index f9d1c755..236fe3c0 100644
+--- a/e2e/tests/app-account-picker.spec.ts
++++ b/e2e/tests/app-account-picker.spec.ts
+@@ -19,7 +19,14 @@ import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
+ import { scenarios } from "../test-plan.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+ import { enterClientDetails } from "../support/oauth-client-entry.ts";
+-import { choiceLabel, choiceName, rowMenuName } from "../support/account-choices.ts";
++import {
++  anyConnectName,
++  choiceLabel,
++  choiceName,
++  connectName,
++  requirementChoiceName,
++  rowMenuName,
++} from "../support/account-choices.ts";
+ 
+ layer(HostedLive, { excludeTestServices: true })("App accounts", (it) => {
+   it.effect(scenarios.appAccountPicker.title, (context) =>
+@@ -104,6 +111,9 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+             : slot === "primary"
+               ? "Account fixture · Primary"
+               : "Account fixture · Mailboxes";
++        // Their controls name the requirement too; the calendar's own service keeps the app.
++        const choiceFor = (slot: "primary" | "mailboxes" | "calendar", label: string) =>
++          slot === "calendar" ? choiceName(label) : requirementChoiceName(label, sectionName(slot));
+         const region = (slot: "primary" | "mailboxes") =>
+           browser.use(`Find the ${slot} accounts`, (page) =>
+             Promise.resolve(page.getByRole("region", { name: sectionName(slot), exact: true })),
+@@ -119,7 +129,9 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+           browser.use(step, (page) => {
+             const role = slot === "mailboxes" ? "checkbox" : "radio";
+             const selector = `section[aria-label="${sectionName(slot)}"] [role="${role}"]`;
+-            const named = expected.map(([label, checked]) => [choiceName(label), checked] as const);
++            const named = expected.map(
++              ([label, checked]) => [choiceFor(slot, label), checked] as const,
++            );
+             const read = (args: {
+               readonly selector: string;
+               readonly expected: ReadonlyArray<readonly [string, boolean]>;
+@@ -145,7 +157,10 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+                     ),
+                   )
+                   .then((controls) =>
+-                    controls.map(([label, checked]) => [choiceLabel(label), checked]),
++                    controls.map(([label, checked]) => [
++                      choiceLabel(label, slot === "calendar" ? undefined : sectionName(slot)),
++                      checked,
++                    ]),
+                   ),
+               );
+           });
+@@ -287,14 +302,14 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+         const linkFailure = yield* holdLink("PUT", "mailboxes", third);
+         yield* browser.use("Check the third mailbox", () =>
+           mailboxes
+-            .getByRole("checkbox", { name: choiceName("Third account"), exact: true })
++            .getByRole("checkbox", { name: choiceFor("mailboxes", "Third account"), exact: true })
+             .click(),
+         );
+         yield* linkFailure.requested;
+         expect(
+           yield* browser.use("The checkbox is disabled while linking", () =>
+             mailboxes
+-              .getByRole("checkbox", { name: choiceName("Third account"), exact: true })
++              .getByRole("checkbox", { name: choiceFor("mailboxes", "Third account"), exact: true })
+               .isDisabled(),
+           ),
+         ).toBe(true);
+@@ -317,7 +332,7 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+                 new URL(response.url()).pathname.endsWith(`/mailboxes/${third}`),
+             ),
+             mailboxes
+-              .getByRole("checkbox", { name: choiceName("Third account"), exact: true })
++              .getByRole("checkbox", { name: choiceFor("mailboxes", "Third account"), exact: true })
+               .click(),
+           ]).then(([response]) => response.status()),
+         );
+@@ -356,7 +371,10 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+           menus.push(
+             yield* browser.use(`Open the ${label} menu`, (page) =>
+               mailboxes
+-                .getByRole("button", { name: rowMenuName(label, "Your accounts"), exact: true })
++                .getByRole("button", {
++                  name: rowMenuName(label, "Your accounts", sectionName("mailboxes")),
++                  exact: true,
++                })
+                 .click()
+                 .then(() => page.getByRole("menu").waitFor({ state: "visible" }))
+                 .then(() =>
+@@ -383,7 +401,7 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+         const unlinkFailure = yield* holdLink("DELETE", "mailboxes", second);
+         yield* browser.use("Clear the second mailbox", () =>
+           mailboxes
+-            .getByRole("checkbox", { name: choiceName("Second account"), exact: true })
++            .getByRole("checkbox", { name: choiceFor("mailboxes", "Second account"), exact: true })
+             .click(),
+         );
+         yield* unlinkFailure.requested;
+@@ -420,7 +438,10 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+                 new URL(response.url()).pathname.endsWith(`/mailboxes/${second}`),
+             ),
+             mailboxes
+-              .getByRole("checkbox", { name: choiceName("Second account"), exact: true })
++              .getByRole("checkbox", {
++                name: choiceFor("mailboxes", "Second account"),
++                exact: true,
++              })
+               .click(),
+           ]).then(([response]) => response.status()),
+         );
+@@ -467,7 +488,12 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+         // Connecting a new account from the app saves it and links it in one step.
+         yield* Effect.gen(function* () {
+           yield* browser.use("Connect a new mailbox from the list", () =>
+-            mailboxes.getByRole("button", { name: "Connect new account", exact: true }).click(),
++            mailboxes
++              .getByRole("button", {
++                name: connectName(sectionName("mailboxes")),
++                exact: true,
++              })
++              .click(),
+           );
+           const dialog = yield* browser.use("Connect a new mailbox from the list", (page) =>
+             Promise.resolve(page.getByRole("dialog", { name: "Connect Account fixture" })),
+@@ -519,7 +545,7 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+         yield* browser.checkpoint("New account connected and linked");
+         yield* browser.use("Clear the new mailbox", () =>
+           mailboxes
+-            .getByRole("checkbox", { name: choiceName("Fourth account"), exact: true })
++            .getByRole("checkbox", { name: choiceFor("mailboxes", "Fourth account"), exact: true })
+             .click(),
+         );
+         yield* browser.use("Unlinking its last use offers deletion", () =>
+@@ -574,7 +600,7 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+                 .getByText("The app uses this account when you use it.", { exact: true })
+                 .count(),
+               calendar.getByRole("button", { name: "Replace", exact: true }).count(),
+-              calendar.getByRole("button", { name: "Connect new account", exact: true }).count(),
++              calendar.getByRole("button", { name: connectName(), exact: true }).count(),
+             ]),
+           ),
+         ).toEqual([1, 0, 1]);
+@@ -638,7 +664,7 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+               page.getByRole("radio").count(),
+               page.getByRole("checkbox").count(),
+               page.getByRole("button", { name: /^Manage / }).count(),
+-              page.getByRole("button", { name: "Connect new account", exact: true }).count(),
++              page.getByRole("button", { name: anyConnectName }).count(),
+             ]),
+           ),
+         ).toEqual([0, 0, 0, 0]);
+@@ -720,7 +746,7 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
+               .click(),
+           );
+           yield* browser.use("Select accounts without creating a setup first", (page) =>
+-            page.getByRole("button", { name: "Connect new account", exact: true }).click(),
++            page.getByRole("button", { name: connectName(), exact: true }).click(),
+           );
+         });
+         yield* browser.use("Wait for setup status to resolve", (page) =>
+@@ -844,7 +870,7 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
+           page.getByRole("link", { name: "Back to app", exact: true }).click(),
+         );
+         yield* browser.use("Choose the account after cancellation", (page) =>
+-          page.getByRole("button", { name: "Connect new account", exact: true }).click(),
++          page.getByRole("button", { name: connectName(), exact: true }).click(),
+         );
+         expect(
+           yield* browser.use("Cancellation retained the app and organization", (page) =>
+diff --git a/e2e/tests/app-account-sections.spec.ts b/e2e/tests/app-account-sections.spec.ts
+index 58644cc2..a10eb179 100644
+--- a/e2e/tests/app-account-sections.spec.ts
++++ b/e2e/tests/app-account-sections.spec.ts
+@@ -1,6 +1,7 @@
+ /**
+- * An app's Accounts tab gives each account requirement one section that reads as its own, and the
+- * Connect dialog closes cleanly after saving a key its check rejected.
++ * An app's Accounts tab gives each account requirement one section that reads as its own, with a
++ * Connect dialog and account controls that name it, and the Connect dialog closes cleanly after
++ * saving a key its check rejected.
+  */
+ import { expect, layer } from "@effect/vitest";
+ import { Effect } from "effect";
+@@ -8,23 +9,37 @@ import { randomUUID } from "node:crypto";
+ import type { Page } from "playwright";
+ import { Actors } from "../support/actors.ts";
+ import { Api, body } from "../support/api.ts";
++import { connectionsPath } from "../support/app-accounts.ts";
+ import { Browser } from "../support/browser.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+-import { App } from "../support/contracts.ts";
++import { App, Resource } from "../support/contracts.ts";
+ import { accountNamePrompt, nameConnectedAccount } from "../support/name-account.ts";
+ import { scenarios } from "../test-plan.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+-import { anyRowMenuName } from "../support/account-choices.ts";
++import {
++  anyChoiceName,
++  anyConnectName,
++  anyRowMenuName,
++  connectName,
++  requirementChoiceName,
++  rowMenuName,
++} from "../support/account-choices.ts";
+ import { dialogLeftovers, rejectingSource } from "../support/app-account-sections.ts";
+ 
+-// One service declared twice, as a catalog app keeps API tokens and sign-ins apart: both
+-// requirements carry the service's name and link many accounts for the caller.
++// One service declared twice, as a catalog app keeps API tokens and sign-ins apart, and its key
++// declared once more: every requirement carries the service's name and links many accounts for
++// the caller, and a saved key is offered under both of the key's requirements.
+ const twoRequirements = `
+ import { defineApp, defineProvider, object, oauth2, router, secrets, string } from "apps";
+ const tokens = defineProvider({ name: "Deploy fixture", auth: { apiKey: secrets({ label: "Access token", fields: object({ token: string() }) }) } });
+ const signIn = defineProvider({ name: "Deploy fixture", auth: { oauth: oauth2({ authorizationUrl: "https://oauth.example.test/authorize", tokenUrl: "https://oauth.example.test/token", scopes: ["read"] }) } });
+-export default defineApp({ user: { accounts: { tokens: tokens.many(), signIn: signIn.many() } } }, async () => ({ tools: router({}) }));
++export default defineApp({ user: { accounts: { tokens: tokens.many(), signIn: signIn.many(), previews: tokens.many() } } }, async () => ({ tools: router({}) }));
+ `;
++const titles = {
++  tokens: "Deploy fixture · Tokens",
++  signIn: "Deploy fixture · Sign in",
++  previews: "Deploy fixture · Previews",
++};
+ 
+ /** Each requirement section in Your accounts: its accessible name and what its header reads. */
+ const readSections = (page: Page) =>
+@@ -41,8 +56,27 @@ const readSections = (page: Page) =>
+       })),
+     );
+ 
++/**
++ * The name of every control in Your accounts, by the requirement section it sits in: its
++ * `aria-label`, else its text, which is how these controls are named.
++ */
++const readControls = (page: Page) =>
++  page
++    .getByRole("region", { name: "Your accounts", exact: true })
++    .locator('button, a[href], input, [role="checkbox"], [role="radio"]')
++    .evaluateAll((controls) =>
++      controls.map((control) => ({
++        section: control
++          .closest("section[aria-label] section[aria-label]")
++          ?.getAttribute("aria-label"),
++        role: control.getAttribute("role") ?? control.tagName.toLowerCase(),
++        name: control.getAttribute("aria-label") ?? (control as HTMLElement).innerText.trim(),
++      })),
++    );
++
+ layer(HostedLive, { excludeTestServices: true })("App account sections", (it) => {
+-  const deploy = (name: string, content: string) =>
++  /** Deploy `content`; `accounts` are deleted after the app, which must go first. */
++  const deploy = (name: string, content: string, accounts: readonly string[] = []) =>
+     Effect.gen(function* () {
+       const actors = yield* Actors;
+       const api = yield* Api;
+@@ -54,49 +88,135 @@ layer(HostedLive, { excludeTestServices: true })("App account sections", (it) =>
+       expect(deployed.status).toBe(200);
+       const app = yield* body(App, deployed);
+       yield* Effect.addFinalizer(() =>
+-        api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(
+-          Effect.map((response) => expect(response.status).toBe(200)),
+-          Effect.orDie,
+-        ),
++        Effect.gen(function* () {
++          expect(
++            (yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`)).status,
++          ).toBe(200);
++          for (const account of accounts)
++            yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
++        }).pipe(Effect.orDie),
+       );
+       return app;
+     });
+ 
++  /** Save a key for one of the caller's requirements, which links it there. */
++  const saveKey = (app: string, accounts: string[], requirement: string, label: string) =>
++    Effect.gen(function* () {
++      const actors = yield* Actors;
++      const api = yield* Api;
++      const prefix = `/api/organizations/${actors.organization.id}`;
++      const connection = yield* api.request(
++        actors.owner,
++        "POST",
++        connectionsPath(`${prefix}/apps/${app}`, "user", requirement),
++        { destination: { kind: "personal" } },
++      );
++      expect(connection.status, JSON.stringify(connection.body)).toBe(200);
++      const saved = yield* api.request(
++        actors.owner,
++        "POST",
++        `${prefix}/connections/${(yield* body(Resource, connection)).id}/submit`,
++        { method: "apiKey", label, fields: { token: `synthetic-${randomUUID()}` } },
++      );
++      expect(saved.status, JSON.stringify(saved.body)).toBe(200);
++      accounts.push((yield* body(Resource, saved)).id);
++    });
++
+   const distinctSections = (width: number) => (context: Parameters<typeof withHostedCase>[0]) =>
+     withHostedCase(
+       context,
+       Effect.gen(function* () {
+         const actors = yield* Actors;
+         const browser = yield* Browser;
+-        const app = yield* deploy("Sections", twoRequirements);
++        const accounts: string[] = [];
++        const app = yield* deploy("Sections", twoRequirements, accounts);
++        yield* saveKey(app.id, accounts, "tokens", "Shared key");
+         yield* browser.login(actors.owner);
+         yield* browser.use(`A ${width}px screen`, (page) =>
+           page.setViewportSize({ width, height: width < 600 ? 844 : 900 }),
+         );
+-        yield* browser.use("Open the app's accounts", (page) =>
+-          page
++        yield* browser.use("Open the app's accounts", (page) => {
++          const yours = page.getByRole("region", { name: "Your accounts", exact: true });
++          return page
+             .goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`)
++            .then(() => yours.getByRole("button", { name: anyConnectName }).nth(2).waitFor())
+             .then(() =>
+-              page
+-                .getByRole("region", { name: "Your accounts", exact: true })
+-                .getByRole("button", { name: "Connect new account", exact: true })
++              yours
++                .getByRole("checkbox", { name: anyChoiceName("Shared key") })
+                 .nth(1)
+                 .waitFor({ state: "visible" }),
+-            ),
+-        );
++            );
++        });
+         const sections = yield* browser.use("Read the requirement sections", readSections);
++        const controls = yield* browser.use("Read the controls", readControls);
+         yield* browser.checkpoint(`Requirement sections at ${width}px`);
+-        expect(sections).toHaveLength(2);
+-        // Each section names what it is for, so neither reads as a copy of the other.
+-        expect(new Set(sections.map((section) => section.name)).size).toBe(2);
+-        expect(new Set(sections.map((section) => section.header)).size).toBe(2);
++        // Each section's Connect dialog names its requirement.
++        const dialogs: (string | null)[] = [];
++        for (const section of sections) {
++          dialogs.push(
++            yield* browser.use(`Open the Connect dialog of ${section.name}`, (page) => {
++              const dialog = page.getByRole("dialog");
++              return (
++                page
++                  .getByRole("region", { name: section.name ?? "", exact: true })
++                  .getByRole("button", { name: anyConnectName })
++                  .click()
++                  .then(() => dialog.waitFor({ state: "visible" }))
++                  // The form has loaded, with a control besides Close, and the dialog stopped moving.
++                  .then(() => dialog.getByRole("button").nth(1).waitFor({ state: "visible" }))
++                  .then(() =>
++                    dialog.evaluate((element) =>
++                      Promise.all(
++                        element
++                          .getAnimations({ subtree: true })
++                          .map((animation) => animation.finished),
++                      ),
++                    ),
++                  )
++                  .then(() =>
++                    dialog.evaluate(
++                      (element) =>
++                        document
++                          .getElementById(element.getAttribute("aria-labelledby") ?? "")
++                          ?.textContent?.trim() ?? null,
++                    ),
++                  )
++              );
++            }),
++          );
++          yield* browser.checkpoint(`Connect dialog of ${section.name} at ${width}px`);
++          yield* browser.use("Close the Connect dialog", (page) =>
++            page.keyboard
++              .press("Escape")
++              .then(() => page.getByRole("dialog").waitFor({ state: "hidden" })),
++          );
++        }
++        expect(sections).toHaveLength(3);
++        // Each section names what it is for, so none reads as a copy of another.
++        expect(new Set(sections.map((section) => section.name)).size).toBe(3);
++        expect(new Set(sections.map((section) => section.header)).size).toBe(3);
+         expect(new Set(sections.flatMap((section) => section.lists)).size).toBe(
+           sections.flatMap((section) => section.lists).length,
+         );
+-        expect(sections.map((section) => section.name).sort()).toEqual([
+-          "Deploy fixture · Access token",
+-          "Deploy fixture · Sign in",
+-        ]);
++        expect(sections.map((section) => section.name).sort()).toEqual(
++          Object.values(titles).sort(),
++        );
++        expect(dialogs).toEqual(sections.map((section) => `Connect ${section.name}`));
++        // The saved key is offered under both of its requirements, and each control names its own.
++        const named = (section: string, role: string) =>
++          controls.flatMap((control) =>
++            control.section === section && control.role === role ? [control.name] : [],
++          );
++        for (const title of [titles.tokens, titles.previews]) {
++          expect(named(title, "checkbox")).toEqual([requirementChoiceName("Shared key", title)]);
++          expect(named(title, "button")).toContain(
++            rowMenuName("Shared key", "Your accounts", title),
++          );
++          expect(named(title, "button")).toContain(connectName(title));
++        }
++        // Control names are unique within the scope.
++        const names = controls.map((control) => control.name);
++        expect(names.filter((name, index) => names.indexOf(name) !== index)).toEqual([]);
+       }),
+     );
+ 
+diff --git a/e2e/tests/contributed-app-accounts.spec.ts b/e2e/tests/contributed-app-accounts.spec.ts
+index 623bd8a8..f0d48753 100644
+--- a/e2e/tests/contributed-app-accounts.spec.ts
++++ b/e2e/tests/contributed-app-accounts.spec.ts
+@@ -9,9 +9,19 @@ import { contributedApp } from "../support/contributed-app.ts";
+ import { Resource } from "../support/contracts.ts";
+ import { nameConnectedAccount } from "../support/name-account.ts";
+ import { scenarios } from "../test-plan.ts";
+-import { choiceName, rowMenuName } from "../support/account-choices.ts";
++import {
++  anyConnectName,
++  anyRowMenuName,
++  connectName,
++  requirementChoiceName,
++  rowMenuName,
++} from "../support/account-choices.ts";
+ 
+ const ordinaryNote = "Only people who can edit this app can change these accounts.";
++const titles = {
++  contributed: "Contributed service · Shared",
++  ordinary: "Contributed service · Ordinary",
++};
+ 
+ /**
+  * Both app requirements use the same provider, so each section's title adds its requirement after
+@@ -22,7 +32,7 @@ const requirementSection = (page: Page, kind: "contributed" | "ordinary") =>
+   page
+     .getByRole("region", { name: "App accounts", exact: true })
+     .getByRole("region", {
+-      name: kind === "ordinary" ? "Contributed service · Ordinary" : "Contributed service · Shared",
++      name: titles[kind],
+       exact: true,
+     })
+     .filter(kind === "ordinary" ? { hasText: ordinaryNote } : { hasNotText: ordinaryNote });
+@@ -48,14 +58,14 @@ layer(HostedLive, { excludeTestServices: true })("Contributed Accounts tab", (it
+         );
+         yield* browser.use("Members can add an account to the contributed requirement", (page) =>
+           requirementSection(page, "contributed")
+-            .getByRole("button", { name: "Connect new account", exact: true })
++            .getByRole("button", { name: connectName(titles.contributed), exact: true })
+             .waitFor(),
+         );
+         // Rows stay disabled until the requirement's choices arrive.
+         yield* browser.use("My contribution becomes changeable", (page) =>
+           requirementSection(page, "contributed")
+             .getByRole("checkbox", {
+-              name: choiceName("My service account"),
++              name: requirementChoiceName("My service account", titles.contributed),
+               disabled: false,
+               exact: true,
+             })
+@@ -67,21 +77,23 @@ layer(HostedLive, { excludeTestServices: true })("Contributed Accounts tab", (it
+             const ordinary = requirementSection(page, "ordinary");
+             return Promise.all([
+               contributed
+-                .getByRole("checkbox", { name: choiceName("My service account"), exact: true })
++                .getByRole("checkbox", {
++                  name: requirementChoiceName("My service account", titles.contributed),
++                  exact: true,
++                })
+                 .isEnabled(),
+               contributed
+                 .getByRole("checkbox", {
+-                  name: choiceName("Another member's account"),
++                  name: requirementChoiceName("Another member's account", titles.contributed),
+                   exact: true,
+                 })
+                 .isDisabled(),
+               contributed
+                 .getByRole("button", {
+-                  name: rowMenuName("Another member's account", "App accounts"),
+-                  exact: true,
++                  name: anyRowMenuName("Another member's account"),
+                 })
+                 .count(),
+-              ordinary.getByRole("button", { name: "Connect new account", exact: true }).count(),
++              ordinary.getByRole("button", { name: anyConnectName }).count(),
+             ]);
+           }),
+         ).toEqual([true, true, 0, 0]);
+@@ -101,7 +113,7 @@ layer(HostedLive, { excludeTestServices: true })("Contributed Accounts tab", (it
+         ).toEqual([expect.not.stringContaining("upstream@example.test"), 0]);
+         yield* browser.use("Connect another account as a contributor", (page) =>
+           requirementSection(page, "contributed")
+-            .getByRole("button", { name: "Connect new account", exact: true })
++            .getByRole("button", { name: connectName(titles.contributed), exact: true })
+             .click(),
+         );
+         yield* browser.use("Enter credentials in the native connection dialog", (page) =>
+@@ -142,7 +154,7 @@ layer(HostedLive, { excludeTestServices: true })("Contributed Accounts tab", (it
+         yield* browser.use("The new contribution appears linked", (page) =>
+           requirementSection(page, "contributed")
+             .getByRole("checkbox", {
+-              name: choiceName("Connected from the Accounts tab"),
++              name: requirementChoiceName("Connected from the Accounts tab", titles.contributed),
+               checked: true,
+               disabled: false,
+               exact: true,
+@@ -166,7 +178,7 @@ layer(HostedLive, { excludeTestServices: true })("Contributed Accounts tab", (it
+         yield* browser.use("Open my contribution's menu", (page) =>
+           requirementSection(page, "contributed")
+             .getByRole("button", {
+-              name: rowMenuName("My service account", "App accounts"),
++              name: rowMenuName("My service account", "App accounts", titles.contributed),
+               exact: true,
+             })
+             .click(),
+@@ -180,7 +192,7 @@ layer(HostedLive, { excludeTestServices: true })("Contributed Accounts tab", (it
+         yield* browser.use("My account remains as an unlinked choice", (page) =>
+           requirementSection(page, "contributed")
+             .getByRole("checkbox", {
+-              name: choiceName("My service account"),
++              name: requirementChoiceName("My service account", titles.contributed),
+               checked: false,
+               exact: true,
+             })
+@@ -196,7 +208,7 @@ layer(HostedLive, { excludeTestServices: true })("Contributed Accounts tab", (it
+         yield* browser.use("Editors may remove another member's contribution", (page) =>
+           page
+             .getByRole("checkbox", {
+-              name: choiceName("My service account"),
++              name: requirementChoiceName("My service account", titles.contributed),
+               disabled: false,
+               exact: true,
+             })
+diff --git a/e2e/tests/provisioned-link-boundary.spec.ts b/e2e/tests/provisioned-link-boundary.spec.ts
+index ea4e9858..103f8adb 100644
+--- a/e2e/tests/provisioned-link-boundary.spec.ts
++++ b/e2e/tests/provisioned-link-boundary.spec.ts
+@@ -12,7 +12,7 @@ import { Api, body } from "../support/api.ts";
+ import { Browser } from "../support/browser.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { scenarios } from "../test-plan.ts";
+-import { choiceName } from "../support/account-choices.ts";
++import { anyChoiceName, requirementChoiceName } from "../support/account-choices.ts";
+ 
+ const App = Schema.Struct({
+   id: Schema.String,
+@@ -117,7 +117,7 @@ layer(HostedLive, { excludeTestServices: true })("Provisioned link boundary", (i
+         );
+         expect(
+           yield* browser.use("The host account is absent from the mixed-provider picker", (page) =>
+-            page.getByRole("radio", { name: choiceName("Host account"), exact: true }).count(),
++            page.getByRole("radio", { name: anyChoiceName("Host account") }).count(),
+           ),
+         ).toBe(0);
+         const status = yield* browser.use("Try the ordinary account radio", (page) =>
+@@ -132,7 +132,10 @@ layer(HostedLive, { excludeTestServices: true })("Provisioned link boundary", (i
+             // Both requirements use one service, so each section's title adds its requirement.
+             page
+               .getByRole("region", { name: "Host access · Service", exact: true })
+-              .getByRole("radio", { name: choiceName("Ordinary account"), exact: true })
++              .getByRole("radio", {
++                name: requirementChoiceName("Ordinary account", "Host access · Service"),
++                exact: true,
++              })
+               .click(),
+           ]).then(([response]) => response.status()),
+         );
+diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+index e20b0637..5417194a 100644
+--- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -136,8 +136,20 @@ const automaticAccount = (requirement: AccountRequirement, account: Account): Ac
+ const accountName = (account: AccountSummary, kind?: string) =>
+   accountTitle(account, account.providerName || "Unnamed account", kind);
+ 
+-/** A row's radio or checkbox says what selecting it does; its checked state says whether it did. */
+-const linkControlName = (name: string) => `Use ${name} for this app`;
++/**
++ * A row's radio or checkbox says what selecting it does; its checked state says whether it did.
++ * Where two requirements of a scope share a service, it names its requirement, since the same
++ * account is offered under both.
++ */
++const linkControlName = (name: string, shared: string | undefined) =>
++  `Use ${name} for ${shared ?? "this app"}`;
++
++/**
++ * The requirement's title when another requirement in its scope shares its service, which its
++ * controls add to their names; absent when the service is the only one of its name in the scope.
++ */
++const sharedServiceTitle = (requirement: AccountRequirement, title: string | undefined) =>
++  title === undefined || title === requirement.definition.name.trim() ? undefined : title;
+ 
+ /** The account's kind as its requirement declares it, which also names an unnamed account. */
+ export const kindIn = (requirement: AccountRequirement, account: AccountSummary) =>
+@@ -546,14 +558,27 @@ export interface LinkEditing<E> {
+   >;
+   readonly link: (slot: string, account: AccountId) => Atom.AtomResultFn<void, unknown, E>;
+   readonly unlink: (slot: string, account: AccountId) => Atom.AtomResultFn<void, unknown, E>;
+-  /** Connect a new account for the requirement; saving it links it. */
+-  readonly connect: (slot: string, requirement: AccountRequirement) => void;
++  /**
++   * Connect a new account for the requirement; saving it links it. `title` is the requirement's
++   * title on the tab, which the dialog names; absent for a service without a name.
++   */
++  readonly connect: (
++    slot: string,
++    requirement: AccountRequirement,
++    title: string | undefined,
++  ) => void;
+   /**
+    * Import an exported login file as a new account for the requirement, for the methods the host
+-   * lists as importable here. Hosts without an importer leave it out.
++   * lists as importable here. `title` is the requirement's title, given only where another
++   * requirement in its scope shares the service. Hosts without an importer leave it out.
+    */
+   readonly importLoginFile?:
+-    | ((slot: string, requirement: AccountRequirement, methods: readonly string[]) => void)
++    | ((
++        slot: string,
++        requirement: AccountRequirement,
++        methods: readonly string[],
++        title: string | undefined,
++      ) => void)
+     | undefined;
+   /** A connection is open or saving, so the other changes wait for it. */
+   readonly connecting?: boolean | undefined;
+@@ -767,19 +792,29 @@ function LinkScope<E>({
+           <p className="text-xs text-muted-foreground">{data.readOnly}</p>
+         )}
+         <div className="space-y-5">
+-          {open.map(([slot, requirement]) => (
+-            <RequirementView
+-              key={slot}
+-              {...props}
+-              slot={slot}
+-              requirement={requirement}
+-              title={titles.get(slot)}
+-              linked={data.links.flatMap((link) =>
+-                link.requirement === slot ? [link.account] : [],
+-              )}
+-              readOnlyNote={readOnly ? undefined : data.readOnly}
+-            />
+-          ))}
++          {open.map(([slot, requirement]) => {
++            const shared = sharedServiceTitle(requirement, titles.get(slot));
++            // The same account can be listed under each requirement of a shared service, so its
++            // row ⋯ names the requirement too, such as "in Your accounts · Mail · Sign in".
++            return (
++              <RowSection.Provider
++                key={slot}
++                value={shared === undefined ? title : `${title} · ${shared}`}
++              >
++                <RequirementView
++                  {...props}
++                  slot={slot}
++                  requirement={requirement}
++                  title={titles.get(slot)}
++                  shared={shared}
++                  linked={data.links.flatMap((link) =>
++                    link.requirement === slot ? [link.account] : [],
++                  )}
++                  readOnlyNote={readOnly ? undefined : data.readOnly}
++                />
++              </RowSection.Provider>
++            );
++          })}
+           {closed.length > 0 && (
+             <UnavailableRequirements
+               app={props.app}
+@@ -859,6 +894,7 @@ function RequirementView<E>({
+   slot,
+   requirement,
+   title,
++  shared,
+   linked,
+   readOnlyNote,
+   ...props
+@@ -867,6 +903,8 @@ function RequirementView<E>({
+   readonly requirement: AccountRequirement;
+   /** The requirement's title in its scope; absent for a service without a name. */
+   readonly title: string | undefined;
++  /** The requirement's title when another requirement in its scope shares its service. */
++  readonly shared: string | undefined;
+   /** The requirement's linked accounts, oldest first. */
+   readonly linked: readonly AccountSummary[];
+   /** Why this requirement is read-only when others in its scope are not. */
+@@ -964,6 +1002,7 @@ function RequirementView<E>({
+             slot={slot}
+             requirement={requirement}
+             title={title}
++            shared={shared}
+             linked={linked}
+           />
+         )}
+@@ -1210,6 +1249,7 @@ function EditableChoices<E>({
+   slot,
+   requirement,
+   title,
++  shared,
+   linked,
+   data,
+   edit,
+@@ -1222,6 +1262,8 @@ function EditableChoices<E>({
+   readonly slot: string;
+   readonly requirement: AccountRequirement;
+   readonly title: string | undefined;
++  /** The requirement's title when another requirement in its scope shares its service. */
++  readonly shared: string | undefined;
+   readonly linked: readonly AccountSummary[];
+ }) {
+   const brand = useProductBrand();
+@@ -1316,6 +1358,7 @@ function EditableChoices<E>({
+       credentialScope={scopeOf(choice)}
+       saved={accounts.some((item) => item.id === choice.account.id)}
+       selectionOnly={selectionOnly(connection)}
++      shared={shared}
+       Failure={Failure}
+     />
+   ));
+@@ -1384,8 +1427,9 @@ function EditableChoices<E>({
+           className="h-10 w-full justify-start rounded-none px-3.5 text-[13px] text-muted-foreground hover:text-foreground"
+           disabled={edit.connecting === true || (Option.isSome(loaded) && !allowed)}
+           onClick={() =>
+-            bound === undefined ? edit.connect(slot, requirement) : setReplacingWithNew(true)
++            bound === undefined ? edit.connect(slot, requirement, title) : setReplacingWithNew(true)
+           }
++          {...(shared === undefined ? {} : { "aria-label": `Connect new account for ${shared}` })}
+         >
+           <HugeiconsIcon icon={Add01Icon} size={14} aria-hidden />
+           Connect new account
+@@ -1400,7 +1444,10 @@ function EditableChoices<E>({
+               variant="ghost"
+               size="sm"
+               disabled={edit.connecting === true || !allowed}
+-              onClick={() => edit.importLoginFile?.(slot, requirement, connection.importMethods)}
++              onClick={() =>
++                edit.importLoginFile?.(slot, requirement, connection.importMethods, shared)
++              }
++              {...(shared === undefined ? {} : { "aria-label": `Import login file for ${shared}` })}
+             >
+               Import login file
+             </Button>
+@@ -1416,7 +1463,7 @@ function EditableChoices<E>({
+           onKeep={() => setReplacingWithNew(false)}
+           onRemove={() => {
+             setReplacingWithNew(false);
+-            edit.connect(slot, requirement);
++            edit.connect(slot, requirement, title);
+           }}
+         />
+       )}
+@@ -1439,7 +1486,10 @@ function ChoiceRow<E>({
+   credentialScope,
+   selectionOnly: selecting,
+   saved,
++  shared,
+ }: {
++  /** The requirement's title when another requirement in its scope shares its service. */
++  readonly shared: string | undefined;
+   /** The account is one of the caller's own, which stays listed after unlinking. */
+   readonly saved: boolean;
+   /** The host's provenance for this account here, when it reports one. */
+@@ -1480,7 +1530,7 @@ function ChoiceRow<E>({
+   const kind = accountMethodKindLabel(requirement.definition, account.method, requirement.provider);
+   const name = accountName(account, kind);
+   // The default credential's title is "Set up automatically", which reads badly after "Use".
+-  const control = linkControlName(automatic ? "the account set up automatically" : name);
++  const control = linkControlName(automatic ? "the account set up automatically" : name, shared);
+   const row = appAccountRow(app, account, data.accountRow);
+   const traffic = data.accountTraffic?.(account);
+   const hostProvisioned = !automatic && provisionedMethod(requirement, account);
+diff --git a/e2e/tests/app-accounts-tab.spec.ts b/e2e/tests/app-accounts-tab.spec.ts
+index 86400ba..44e3c4e 100644
+--- a/e2e/tests/app-accounts-tab.spec.ts
++++ b/e2e/tests/app-accounts-tab.spec.ts
+@@ -498,6 +498,13 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) =>
+             .getByRole("radio", { name: choiceName("Backup Datadog"), checked: true, exact: true })
+             .waitFor(),
+         );
++        // Until the requirement's choices and connection policy are read only the linked account shows;
++        // the unlinked one appears once both have answered.
++        yield* browser.use("Team Datadog is offered", (page) =>
++          datadogSection(page)
++            .getByRole("radio", { name: choiceName("Team Datadog"), checked: false, exact: true })
++            .waitFor(),
++        );
+         expect(
+           yield* browser.use("Read the App accounts controls", (page) =>
+             Promise.all([
+diff --git a/e2e/tests/local-app-accounts-tab.spec.ts b/e2e/tests/local-app-accounts-tab.spec.ts
+index 529fcc8..2d601c2 100644
+--- a/e2e/tests/local-app-accounts-tab.spec.ts
++++ b/e2e/tests/local-app-accounts-tab.spec.ts
+@@ -117,6 +117,13 @@ layer(TestLive, { excludeTestServices: true })("Local Accounts tab", (it) => {
+             .getByRole("radio", { name: choiceName("Backup Datadog"), checked: true, exact: true })
+             .waitFor(),
+         );
++        // Until the requirement's choices and connection policy are read only the linked account shows;
++        // the unlinked one appears once both have answered.
++        yield* browser.use("Team Datadog is offered", (page) =>
++          datadogSection(page)
++            .getByRole("radio", { name: choiceName("Team Datadog"), checked: false, exact: true })
++            .waitFor(),
++        );
+         expect(
+           yield* browser.use("Read the Accounts tab's controls", (page) =>
+             Promise.all([

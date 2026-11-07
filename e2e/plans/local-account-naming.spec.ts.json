@@ -1,5 +1,21 @@
 {
   "scenarios": {
+    "localOAuthNamedAfterReturn": {
+      "title": "A new local OAuth account is named in a dialog after sign-in returns to its app, and a reconnect from the app keeps its name",
+      "targets": {
+        "local": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Paired local dashboard; hosted OAuth naming has its own scenario."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Paired local dashboard; hosted OAuth naming has its own scenario."
+        }
+      }
+    },
     "localPastedCredentialsNamedAfterSaving": {
       "title": "Local pasted credentials connect only through an app, are named in a dialog on the app's accounts, and keep the name when replaced there",
       "targets": {
@@ -20,9 +36,12 @@
   "runs": {
     "localPastedCredentialsNamedAfterSaving": [
       "host-managed-accounts-local:shared-identities-and-incremental-consent"
+    ],
+    "localOAuthNamedAfterReturn": [
+      "host-managed-accounts-local:shared-identities-and-incremental-consent"
     ]
   },
-  "inherited": ["localOAuthNamedAfterReturn"],
+  "inherited": [],
   "inputs": [
     ".upstream/apps/local/web/src/implementation/pages/app-accounts.tsx",
     ".upstream/e2e/tests/local-account-naming.spec.ts",

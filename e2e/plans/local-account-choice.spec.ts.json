@@ -1,7 +1,47 @@
 {
-  "scenarios": {},
-  "runs": {},
-  "inherited": ["localAccountChoice", "localAccountChoiceUnsupported"],
+  "scenarios": {
+    "localAccountChoice": {
+      "title": "the local Accounts tab links, replaces and unlinks accounts: a plain requirement uses its one linked account, many() every linked one, and replaced accounts stay saved",
+      "targets": {
+        "local": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Local pairing journey."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Local pairing journey."
+        }
+      }
+    },
+    "localAccountChoiceUnsupported": {
+      "title": "local agents cannot choose accounts per call: SDK routes and code mode refuse them with AccountChoiceUnsupported, and an account saved elsewhere is used once linked",
+      "targets": {
+        "local": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Local's raw SDK routes and administrative MCP key."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Local's raw SDK routes and administrative MCP key."
+        }
+      }
+    }
+  },
+  "runs": {
+    "localAccountChoice": [
+      "host-managed-accounts-local:shared-identities-and-incremental-consent"
+    ],
+    "localAccountChoiceUnsupported": [
+      "host-managed-accounts-local:shared-identities-and-incremental-consent"
+    ]
+  },
+  "inherited": [],
   "inputs": [
     ".upstream/apps/docs/content/run/self-host.mdx",
     ".upstream/apps/hosted/cloud/src/infrastructure/product-brand.ts",

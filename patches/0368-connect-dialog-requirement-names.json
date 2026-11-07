@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-connect-dialog-requirement-names",
+  "file": "0368-connect-dialog-requirement-names.patch",
+  "content_sha256": "7e2f1485b45e72c1257e2339e165069c6a7d50308d5b19d00c36f87e08d60982",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

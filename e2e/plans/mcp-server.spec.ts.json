@@ -1,5 +1,21 @@
 {
   "scenarios": {
+    "mcpProtocol": {
+      "fixtures": "actors",
+      "title": "MCP OAuth grants support discovery, execution, refresh and revocation",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "This scenario tests hosted organization consent, which Local does not have."
+        }
+      }
+    },
     "mcpOAuthWithoutResource": {
       "fixtures": "actors",
       "title": "MCP OAuth without a resource parameter grants the plain /mcp URL",
@@ -19,11 +35,15 @@
   },
   "runs": {
     "mcpOAuthWithoutResource": [
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior",
-      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement"
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ],
+    "mcpProtocol": [
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
     ]
   },
-  "inherited": ["mcpProtocol", "mcpSkills"],
+  "inherited": ["mcpSkills"],
   "inputs": [
     ".upstream/apps/hosted/cloud/scripts/build-site.ts",
     ".upstream/apps/hosted/cloud/src/app-ui.ts",

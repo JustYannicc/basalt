@@ -1,0 +1,49 @@
+{
+  "scenarios": {
+    "localAppAccountContinueAnywayCloses": {
+      "title": "Local Continue anyway saves a rejected key, closes the Connect dialog and the next click opens the new row's menu",
+      "targets": {
+        "local": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Paired local dashboard; hosted has appAccountContinueAnywayCloses."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Paired local dashboard; hosted has appAccountContinueAnywayCloses."
+        }
+      }
+    }
+  },
+  "runs": {
+    "localAppAccountContinueAnywayCloses": ["declared:local"]
+  },
+  "inputs": [
+    ".upstream/apps/local/server/src/contracts/dashboard.ts",
+    ".upstream/apps/local/server/src/implementation/dashboard.ts",
+    ".upstream/apps/local/web/src/contracts/accounts.ts",
+    ".upstream/apps/local/web/src/implementation/pages/account-form.tsx",
+    ".upstream/apps/local/web/src/implementation/pages/app-accounts.tsx",
+    ".upstream/apps/local/web/src/implementation/pages/connect-account.tsx",
+    ".upstream/apps/local/web/src/implementation/pages/name-account-dialog.tsx",
+    ".upstream/e2e/support/account-choices.ts",
+    ".upstream/e2e/support/app-account-sections.ts",
+    ".upstream/e2e/support/local-links.ts",
+    ".upstream/e2e/support/name-account.ts",
+    ".upstream/e2e/tests/local-app-account-sections.spec.ts",
+    ".upstream/packages/sdk/src/contracts/account.ts",
+    ".upstream/packages/sdk/src/implementation/account-check-failure.ts",
+    ".upstream/packages/sdk/src/implementation/account-health.ts",
+    ".upstream/packages/sdk/src/implementation/account-status-output.ts",
+    ".upstream/packages/ui/src/contracts/app-accounts.ts",
+    ".upstream/packages/ui/src/implementation/components/dialog.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-form.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/method-labels.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/name-account.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/requirement-titles.ts",
+    ".upstream/packages/ui/src/implementation/styles/dashboard.css"
+  ]
+}
