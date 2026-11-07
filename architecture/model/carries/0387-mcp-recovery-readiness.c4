@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "MCP setup recovery waits for an enabled Connect action before asserting that no alert remains; a pending retry retains its previous error."
+    }
+  }
+}

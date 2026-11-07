@@ -1,0 +1,9 @@
+{
+  "identity": "mcp-recovery-readiness",
+  "file": "0387-mcp-recovery-readiness.patch",
+  "content_sha256": "048dd0bd28eb18b860e83316167877b53cf62b739554f72269783dafe7c412e5",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
