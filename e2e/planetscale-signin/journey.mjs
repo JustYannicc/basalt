@@ -22,6 +22,7 @@ const openConnect = async (page) => {
 
 export const verifyPlanetScaleConnections = ({
   width,
+  directory,
   mode,
   session,
   actors,
@@ -52,6 +53,8 @@ export const verifyPlanetScaleConnections = ({
     if (mode === "refused" || mode === "unreported") {
       yield* verifyRefusedGrant({
         browser,
+        directory,
+        width,
         request,
         path,
         prefix,

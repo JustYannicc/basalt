@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
+import {writeFile} from "node:fs/promises";
+import {join} from "node:path";
 import { Effect } from "effect";
 import { hostedScopes, sorted } from "./expectations.mjs";
 export const verifyRefusedGrant = ({
   browser,
+  directory,
+  width,
   request,
   path,
   prefix,
@@ -72,6 +76,7 @@ export const verifyRefusedGrant = ({
       },
     );
     const failure = yield* request("GET", `${prefix}/connections/${connection.id}`);
+    yield* Effect.promise(() => writeFile(join(directory, `refusal-state-${width}.json`), JSON.stringify(failure, null, 2)));
     assert.equal(failure.state.status, "pending");
     assert.equal(failure.state.failure.error.reason, "scope_missing");
     assert.deepEqual(sorted(failure.state.failure.error.requestedScopes), sorted(hostedScopes));

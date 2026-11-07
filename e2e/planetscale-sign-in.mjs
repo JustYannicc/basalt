@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { Context, Effect, Layer, Redacted } from "effect";
+import { Cause, Context, Effect, Layer, Redacted } from "effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { FetchHttpClient } from "effect/http";
 import { startEnvironment } from "../.upstream/e2e/sdk/environment.ts";
@@ -172,6 +172,7 @@ const program = Effect.gen(function* () {
     const result = yield* Effect.exit(
       verifyPlanetScaleConnections({
         width,
+        directory,
         mode,
         session,
         actors,
@@ -208,6 +209,7 @@ const program = Effect.gen(function* () {
     outcomes.push({
       width,
       status: result._tag,
+      ...(result._tag === "Failure" ? { error: Cause.pretty(result.cause) } : {}),
       linkedAccounts: (yield* links()).map(({ requirement, account }) => ({
         requirement,
         id: account.id,
