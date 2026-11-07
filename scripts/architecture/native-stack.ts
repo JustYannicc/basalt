@@ -48,7 +48,9 @@ function evaluate(
     manualCron?: true;
     releaseProof?: true;
     connectionProof?: true;
-    connectionChange?: "origin" | "limit" | "tls";
+    previewConnectionProof?: true;
+    connectionTarget?: "DatabaseConnection" | "PoolModelDatabaseConnection";
+    connectionChange?: "origin" | "limit" | "tls" | "name";
   } = {},
 ): unknown {
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), "native-stack-")));
@@ -66,7 +68,9 @@ function evaluate(
       NATIVE_STACK_ROOT: realpathSync(root),
       NATIVE_STACK_MANUAL_CRON: String(options.manualCron ?? false),
       NATIVE_STACK_RELEASE_PROOF: String(options.releaseProof ?? false),
+      NATIVE_STACK_CONNECTION_TARGET: options.connectionTarget ?? "DatabaseConnection",
       NATIVE_STACK_CONNECTION_PROOF: String(options.connectionProof ?? false),
+      NATIVE_STACK_PREVIEW_CONNECTION_PROOF: String(options.previewConnectionProof ?? false),
       NATIVE_STACK_CONNECTION_CHANGE: options.connectionChange ?? "",
     };
     const worker = fileURLToPath(new URL("./native-stack-worker.mjs", import.meta.url));
@@ -185,6 +189,10 @@ export function discoverReleasePhaseProof(root: string): ReleasePhaseProof {
 }
 
 export interface ConnectionPlanProof {
+  connectionIds: string[];
+  poolWorkerDependencies: string[];
+  poolAction: string;
+  databasePhaseContainsPool: boolean;
   action: string;
   storedOriginResolved: boolean;
   candidateOriginResolved: boolean;
@@ -200,12 +208,25 @@ export interface ConnectionPlanProof {
   commandRuns: number;
 }
 
+export function discoverPreviewConnectionProof(root: string): {
+  dependencies: string[];
+  selected: string[];
+  success: { succeeded: boolean; connectionWrites: number; commands: string[] };
+  failure: { succeeded: boolean; connectionWrites: number; commands: string[] };
+} {
+  return evaluate(root, { previewConnectionProof: true }) as ReturnType<
+    typeof discoverPreviewConnectionProof
+  >;
+}
+
 export function discoverConnectionPlanProof(
   root: string,
-  connectionChange?: "origin" | "limit" | "tls",
+  connectionChange?: "origin" | "limit" | "tls" | "name",
+  connectionTarget?: "DatabaseConnection" | "PoolModelDatabaseConnection",
 ): ConnectionPlanProof {
   return evaluate(root, {
     connectionProof: true,
+    ...(connectionTarget ? { connectionTarget } : {}),
     ...(connectionChange ? { connectionChange } : {}),
   }) as ConnectionPlanProof;
 }

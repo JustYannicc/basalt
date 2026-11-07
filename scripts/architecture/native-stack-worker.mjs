@@ -26,9 +26,11 @@ try {
   };
   const { brand } = await load("brand.ts");
   if (setupRequestDenied) throw new Error();
-  const http = declarationFetch(brand.zone);
+  const previewConnection = process.env.NATIVE_STACK_PREVIEW_CONNECTION_PROOF === "true";
+  const http = declarationFetch(previewConnection ? "preview.fixture.invalid" : brand.zone);
   globalThis.fetch = http.fetch;
-  const { deployEnvironment, requiredSecrets } = await load("scripts/environment.ts");
+  const { deployEnvironment, previewEnvironment, requiredSecrets } =
+    await load("scripts/environment.ts");
   const synthetic = Object.fromEntries(
     requiredSecrets.map((key) => [key, `fixture-${key.toLowerCase()}`]),
   );
@@ -51,7 +53,21 @@ try {
     POSTHOG_PROJECT_KEY: "fixture_posthog_project_key",
     POSTHOG_HOST: "https://us.i.posthog.com",
   });
-  const settings = deployEnvironment(synthetic);
+  const settings = previewConnection
+    ? {
+        ...previewEnvironment(1, {
+          ...synthetic,
+          TEST_STAGE_DOMAIN: "preview.fixture.invalid",
+          PREVIEW_STATE_KEY: "a".repeat(64),
+          PREVIEW_SMOKE_EMAIL: "fixture@example.invalid",
+          PREVIEW_SMOKE_PASSWORD: "fixture-password-123456",
+        }).deploy,
+        PREVIEW_SMOKE_EMAIL: "fixture@example.invalid",
+        PREVIEW_SMOKE_PASSWORD: "fixture-password-123456",
+        PREVIEW_AUTH_SEED_OUTPUT: "fixture-auth-seed.json",
+        TEST_STAGE_EXPIRES_AT: "4070908800000",
+      }
+    : deployEnvironment(synthetic);
   if (settings.BASALT_RELEASE_ATTEMPT)
     process.env.BASALT_RELEASE_ATTEMPT = settings.BASALT_RELEASE_ATTEMPT;
   settings.EXECUTOR_E2E_MANUAL_CRON = process.env.NATIVE_STACK_MANUAL_CRON ?? "false";
@@ -80,22 +96,29 @@ try {
     process.env.NATIVE_STACK_CONNECTION_PROOF === "true"
       ? await import("../release-barrier/connection-proof.mjs")
       : undefined;
-  const inspect = connectionProof
-    ? (stack) =>
-        connectionProof.proveConnectionPlan(
-          stack,
-          (inspectNext) => {
-            process.env.BASALT_RELEASE_ATTEMPT = "00000000-0000-4000-8000-000000000002";
-            return evalStack(actualRoot, inspectNext, { stage: settings.ALCHEMY_STAGE });
-          },
-          process.env.NATIVE_STACK_CONNECTION_CHANGE,
-        )
-    : process.env.NATIVE_STACK_RELEASE_PROOF === "true"
-      ? (await import("../release-phases/proof.mjs")).proveReleasePhases
-      : (stack) =>
-          Effect.sync(() =>
-            inventoryDeclarations(Object.values(stack.resources), stack.bindings, Output.isOutput),
-          );
+  const inspect = previewConnection
+    ? (await import("../release-barrier/preview-connection-proof.mjs")).provePreviewConnection
+    : connectionProof
+      ? (stack) =>
+          connectionProof.proveConnectionPlan(
+            stack,
+            (inspectNext) => {
+              process.env.BASALT_RELEASE_ATTEMPT = "00000000-0000-4000-8000-000000000002";
+              return evalStack(actualRoot, inspectNext, { stage: settings.ALCHEMY_STAGE });
+            },
+            process.env.NATIVE_STACK_CONNECTION_CHANGE,
+            process.env.NATIVE_STACK_CONNECTION_TARGET,
+          )
+      : process.env.NATIVE_STACK_RELEASE_PROOF === "true"
+        ? (await import("../release-phases/proof.mjs")).proveReleasePhases
+        : (stack) =>
+            Effect.sync(() =>
+              inventoryDeclarations(
+                Object.values(stack.resources),
+                stack.bindings,
+                Output.isOutput,
+              ),
+            );
   const program = evalStack(
     actualRoot,
     (stack) =>
