@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-app-list-linked-reads",
+  "file": "0384-app-list-linked-reads.patch",
+  "content_sha256": "a8a12f86169a3ba74fa35abd836ce24d82919a28c502e395101778c8ea307b4b",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
