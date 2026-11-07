@@ -155,14 +155,12 @@ export const verifyPlanetScaleConnections = ({
     const expectedOauthTools = omitsGrantedScope ? legacyNames : mode === "hosted" ? api : limited;
     assert.deepEqual(oauthTools, sorted([...expectedOauthTools, "permissions"]));
     const read = yield* call("databases.listDatabases", signedIn.account.id, {
-      organization: "acme",
+      path: { organization: "acme" },
     });
     assert.equal(read.status, 200, JSON.stringify(read.body));
     assert.deepEqual(read.body, { operation: "list_databases", credential: "oauth" });
     const write = yield* call("databaseBranches.demoteBranch", signedIn.account.id, {
-      organization: "acme",
-      database: "app",
-      branch: "main",
+      path: {organization: "acme", database: "app", branch: "main"},
     });
     if (mode !== "dcr") {
       assert.equal(write.status, 409, "Every PlanetScale change needs approval");
@@ -173,7 +171,7 @@ export const verifyPlanetScaleConnections = ({
       "serviceToken.serviceTokens.listServiceTokens",
       signedIn.account.id,
       {
-        organization: "acme",
+        path: { organization: "acme" },
       },
     );
     assert.ok(
@@ -255,7 +253,7 @@ export const verifyPlanetScaleConnections = ({
       "serviceToken.serviceTokens.listServiceTokens",
       token.account.id,
       {
-        organization: "acme",
+        path: { organization: "acme" },
       },
     );
     assert.equal(tokenRead.status, 200, JSON.stringify(tokenRead.body));
