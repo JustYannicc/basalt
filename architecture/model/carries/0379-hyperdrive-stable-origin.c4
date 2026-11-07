@@ -1,0 +1,7 @@
+model {
+  extend basalt.deployment {
+    metadata {
+      constraint "Hyperdrive configuration consumes the stable runtime-role origin without per-release Command outputs. Runtime URLs retain migration dependencies and the release database phase completes before any Worker activation. A real origin, TLS or connection-limit change remains an unsupported resource update and fails closed."
+    }
+  }
+}

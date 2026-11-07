@@ -434,6 +434,8 @@ test("two Basalt releases on the same upstream pin have distinct compiler cache 
   assert.equal(first.EXECUTOR_BUILD_VERSION, second.EXECUTOR_BUILD_VERSION);
   assert.notEqual(first.EXECUTOR_COMPILER_CACHE_RELEASE, second.EXECUTOR_COMPILER_CACHE_RELEASE);
   assert.equal(second.EXECUTOR_COMPILER_CACHE_RELEASE, git("rev-parse", "HEAD"));
+  assert.equal(first.BASALT_RELEASE_CANDIDATE, first.EXECUTOR_COMPILER_CACHE_RELEASE);
+  assert.equal(second.BASALT_RELEASE_CANDIDATE, git("rev-parse", "HEAD"));
 });
 
 test("release readiness key is stable across attempts and refuses malformed secrets without values", () => {
