@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { readFileSync } from "node:fs";
+import {operations, planetScaleDocument} from "./api-document.mjs";
 import { createServer } from "node:http";
 
 export const serviceToken = "synthetic-token-id:synthetic-token-secret";
@@ -43,12 +43,6 @@ export const registrationDefault = [
   "read_user",
 ];
 
-// Generated from the same current official document used by the scope table. These real routes
-// let the installed-app proof resolve every pre-change tool name without contacting PlanetScale.
-const operations = JSON.parse(
-  readFileSync(new URL("./legacy-operations.json", import.meta.url), "utf8"),
-);
-
 const json = (response, body, status = 200) => {
   response.writeHead(status, { "content-type": "application/json" });
   response.end(JSON.stringify(body));
@@ -72,49 +66,6 @@ export async function startPlanetScale({ dcr, advertised, omitGrantedScope = fal
   const codes = new Map();
   const tokens = new Map();
   let origin;
-  const document = () => ({
-    openapi: "3.0.1",
-    info: { title: "PlanetScale fixture", version: "v1" },
-    servers: [{ url: `${origin}/v1` }],
-    security: [{ oauth2: [] }],
-    components: {
-      securitySchemes: {
-        oauth2: {
-          type: "oauth2",
-          flows: {
-            authorizationCode: {
-              authorizationUrl: `${origin}/oauth/authorize`,
-              tokenUrl: `${origin}/oauth/token`,
-              scopes: {},
-            },
-          },
-        },
-      },
-    },
-    paths: operations.reduce((paths, { operationId, namespace, method, path }) => {
-      const parameters = [...path.matchAll(/\{([^}]+)\}/g)].map(([, name]) => ({
-        name,
-        in: "path",
-        required: true,
-        schema: { type: "string" },
-      }));
-      paths[path] = {
-        ...paths[path],
-        [method]: {
-          operationId,
-          tags: [namespace],
-          parameters,
-          responses: {
-            200: {
-              description: "OK",
-              content: { "application/json": { schema: { type: "object" } } },
-            },
-          },
-        },
-      };
-      return paths;
-    }, {}),
-  });
   const clients = () => (dcr ? [hostedClient, registeredClient] : [hostedClient]);
   const handle = async (request, response) => {
     const url = new URL(request.url, origin);
@@ -123,7 +74,7 @@ export async function startPlanetScale({ dcr, advertised, omitGrantedScope = fal
       calls.push({phase: "resource-discovery"});
       return json(response, {error: "not_found"}, 404);
     }
-    if (url.pathname === "/docs/openapi.yaml") return json(response, document());
+    if (url.pathname === "/docs/openapi.yaml") return json(response, planetScaleDocument(origin));
     if (url.pathname.startsWith("/.well-known/oauth-protected-resource"))
       return json(response, { error: "not_found" }, 404);
     if (url.pathname === "/.well-known/oauth-authorization-server")
@@ -191,6 +142,18 @@ export async function startPlanetScale({ dcr, advertised, omitGrantedScope = fal
       callback.searchParams.set("iss", origin);
       response.writeHead(302, { location: callback.href });
       return response.end();
+    }
+    if (url.pathname === "/oauth/revoke" && request.method === "POST") {
+      const body = Object.fromEntries(new URLSearchParams(await read(request)));
+      const basic = request.headers.authorization?.match(/^Basic (.+)$/)?.[1];
+      const [id, secret] = basic ? Buffer.from(basic, "base64").toString().split(":") : [];
+      if (!clients().some((client) => client.id === id && client.secret === secret))
+        return json(response, {error: "invalid_client"}, 401);
+      calls.push({phase: "revoke", client: id, basic: true});
+      for (const [access, grant] of tokens)
+        if (grant.client_id === id && (access === body.token || grant.refresh === body.token))
+          tokens.delete(access);
+      return json(response, {});
     }
     if (url.pathname === "/oauth/token" && request.method === "POST") {
       const body = Object.fromEntries(new URLSearchParams(await read(request)));
