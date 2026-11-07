@@ -3,8 +3,9 @@ import { test } from "node:test";
 import { deployEnvironment, requiredSecrets } from "./environment.ts";
 
 const credentials = {
-  ...Object.fromEntries(requiredSecrets.map(name => [name, "fixture"])),
+  ...Object.fromEntries(requiredSecrets.map((name) => [name, "fixture"])),
   POOL_APP_SIGNING_KEY: "ab".repeat(32),
+  POOL_DEPLOYMENT_KEY: "ef".repeat(32),
 };
 
 test("deploy permits an unconfigured Atlassian client and forwards a configured pair", () => {
@@ -24,7 +25,10 @@ test("deploy permits an unconfigured Atlassian client and forwards a configured 
 });
 
 test("a partial Atlassian client removes both halves before the host sees them", () => {
-  for (const name of ["EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID", "EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET"]) {
+  for (const name of [
+    "EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID",
+    "EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET",
+  ]) {
     const environment = deployEnvironment({ ...credentials, [name]: "fixture-private-value" });
     assert.equal(environment.EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID, undefined);
     assert.equal(environment.EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET, undefined);

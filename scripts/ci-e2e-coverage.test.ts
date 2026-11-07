@@ -281,7 +281,8 @@ test("an inherited test cannot grow silently under its existing exception", () =
 
 test("the fast lane checks all current omissions and the known compact row stays selected", () => {
   const records = realInventory();
-  assert.deepEqual(coverageErrors(records, baseline()), []);
+  const exceptions = baseline();
+  assert.deepEqual(coverageErrors(records, exceptions), []);
   assert.ok(
     records.find(
       (record) => record.id === "listed-account-bindings.spec.ts#listedBindingCompactRow",
@@ -289,8 +290,21 @@ test("the fast lane checks all current omissions and the known compact row stays
   );
   const recipe = records.find((record) => record.id === "e2e/pool-recipe-checks.mjs")!;
   assert.ok(recipe.selected);
+  const adopted = "account-cache-scope.spec.ts#accountCacheScope";
+  assert.ok(records.find((record) => record.id === adopted)?.selected, adopted);
+  assert.ok(
+    exceptions.every((group) => group.entries[adopted] === undefined),
+    adopted,
+  );
   const errors = coverageErrors(records, []);
-  assert.ok(errors.some((error) => error.includes("tool-call-batch.spec.ts#toolCallBatch")));
+  const omissions = exceptions.flatMap((group) => Object.keys(group.entries));
+  assert.ok(omissions.length > 0);
+  assert.equal(errors.length, omissions.length);
+  for (const id of omissions)
+    assert.ok(
+      errors.some((error) => error.startsWith(`Ungated E2E: ${id}. `)),
+      id,
+    );
   const workflow = readWorkflow();
   assert.ok(
     workflow.jobs.fast!.steps!.some(
@@ -299,10 +313,33 @@ test("the fast lane checks all current omissions and the known compact row stays
   );
   assert.ok(
     coverageErrors(records, [
-      ...baseline(),
+      ...exceptions,
       { reason: "Stale #578 baseline", entries: { [recipe.id]: recipe.fingerprint } },
     ]).some((error) =>
       error.includes("Remove stale E2E exception now selected by CI: e2e/pool-recipe-checks.mjs"),
     ),
   );
+});
+
+test("both MCP budget scenarios are selected and lose coverage when their real runner is removed", () => {
+  const records = realInventory();
+  const exceptions = baseline();
+  for (const { id, job } of [
+    { id: "tool-call-batch.spec.ts#toolCallBatch", job: "declared-self-host" },
+    { id: "cloud-tool-call-batch.spec.ts#cloudMcpCallBatch", job: "declared-cloud" },
+  ]) {
+    assert.ok(records.find((record) => record.id === id)?.selected, id);
+    assert.ok(
+      exceptions.every((group) => group.entries[id] === undefined),
+      id,
+    );
+    const workflow = readWorkflow();
+    workflow.jobs[job]!.steps = [];
+    assert.ok(
+      coverageErrors(realInventory(workflow), exceptions).some((error) =>
+        error.includes(`Ungated E2E: ${id}`),
+      ),
+      id,
+    );
+  }
 });

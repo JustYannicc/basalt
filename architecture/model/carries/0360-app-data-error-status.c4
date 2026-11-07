@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Hosted app-data endpoints expose the annotated SDK error members separately because one unannotated union entry assigns HTTP 500 to every member. Each failure retains its declared status, typed tag and fields without changing authentication or authorization. Query and mutation clients distinguish expected account, version and operation refusals from server failures; streaming error envelopes keep their existing shape."
+    }
+  }
+}

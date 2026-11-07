@@ -42,6 +42,7 @@ try {
     APP_DOMAIN_CONTROL_SECRET: "e".repeat(64),
     APP_DOMAIN_CONTROLLER_TOKEN: "fixture-app-domain-token",
     POOL_APP_SIGNING_KEY: "f".repeat(64),
+    POOL_DEPLOYMENT_KEY: "a".repeat(64),
     BASALT_POOL_IMAGE_RECEIPT: "fixture-publication-receipt.json",
     GITHUB_SHA: "a".repeat(40),
     BASALT_RELEASE_ATTEMPT: "00000000-0000-4000-8000-000000000001",
@@ -51,6 +52,8 @@ try {
     POSTHOG_HOST: "https://us.i.posthog.com",
   });
   const settings = deployEnvironment(synthetic);
+  if (settings.BASALT_RELEASE_ATTEMPT)
+    process.env.BASALT_RELEASE_ATTEMPT = settings.BASALT_RELEASE_ATTEMPT;
   settings.EXECUTOR_E2E_MANUAL_CRON = process.env.NATIVE_STACK_MANUAL_CRON ?? "false";
   phase = "import";
   const [

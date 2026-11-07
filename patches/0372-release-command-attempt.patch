@@ -1,0 +1,61 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/database.ts b/apps/hosted/cloud/src/infrastructure/database.ts
+index 01037dcc8..dd697dc2b 100644
+--- a/apps/hosted/cloud/src/infrastructure/database.ts
++++ b/apps/hosted/cloud/src/infrastructure/database.ts
+@@ -1,3 +1,4 @@
++import { requiredReleaseCommandAttempt } from "./release-command-attempt.ts";
+ /** Database infrastructure belongs to cloud; Docker and local keep their own drivers. */
+ import * as Output from "alchemy/Output";
+ import { fileURLToPath } from "node:url";
+@@ -208,7 +209,7 @@ export const productionDatabaseMigration = Effect.gen(function* () {
+     command: "node src/migrate.ts",
+     cwd: fileURLToPath(new URL("../../", import.meta.url)),
+     env: {
+-      BASALT_RELEASE_ATTEMPT: yield* Config.NonEmptyString("BASALT_RELEASE_ATTEMPT"),
++      BASALT_RELEASE_ATTEMPT: yield* requiredReleaseCommandAttempt,
+       DATABASE_POOL_BUDGET_READY: budget.hash.pipe(Output.map(() => "ready")),
+       DATABASE_URL: migrationRole.origin.pipe(Output.map(migrationUrl)),
+       BETTER_AUTH_URL: yield* cloudOrigin,
+diff --git a/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts b/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts
+index c6ea14580..62e92e4c8 100644
+--- a/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts
++++ b/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts
+@@ -1,12 +1,13 @@
++import { releaseCommandAttempt } from "./release-command-attempt.ts";
+ import * as Command from "alchemy/Command";
+ import { fileURLToPath } from "node:url";
+ import type { Input } from "alchemy/Input";
+-import { Config, Effect } from "effect";
++import { Effect } from "effect";
+ 
+ /** One execution per production deploy attempt; isolated previews retain their existing behavior. */
+ export const databasePoolBudget = (id: string, database: Input<string>, branch: Input<string>) =>
+   Effect.gen(function* () {
+-    const attempt = yield* Config.String("BASALT_RELEASE_ATTEMPT").pipe(Config.withDefault(""));
++    const attempt = yield* releaseCommandAttempt;
+     return yield* Command.Exec(id, {
+       command: "node scripts/database-pool-budget.ts",
+       cwd: fileURLToPath(new URL("../../", import.meta.url)),
+diff --git a/apps/hosted/cloud/src/infrastructure/release-command-attempt.ts b/apps/hosted/cloud/src/infrastructure/release-command-attempt.ts
+new file mode 100644
+index 000000000..15fccc74c
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/release-command-attempt.ts
+@@ -0,0 +1,17 @@
++import { Effect } from "effect";
++
++/** Config reads during Worker initialization become bindings; attempt identity belongs only to release Commands. */
++export const releaseCommandAttempt = Effect.sync(() => {
++  if (globalThis.__ALCHEMY_RUNTIME__) return "";
++  const attempt = process.env.BASALT_RELEASE_ATTEMPT ?? "";
++  if (attempt && !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(attempt))
++    throw new Error("Invalid release Command attempt identity");
++  return attempt;
++});
++
++export const requiredReleaseCommandAttempt = releaseCommandAttempt.pipe(
++  Effect.map((attempt) => {
++    if (!attempt) throw new Error("Release Command attempt identity is missing");
++    return attempt;
++  }),
++);

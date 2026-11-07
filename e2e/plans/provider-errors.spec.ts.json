@@ -1,0 +1,126 @@
+{
+  "scenarios": {
+    "providerErrorsGraphql": {
+      "fixtures": "actors",
+      "title": "Provider failures retain safe reasons and account recovery over GraphQL",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses controlled loopback providers through the shared runtime contract."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Shared error views and SDK are exercised through hosted APIs."
+        }
+      }
+    },
+    "providerErrorsMcp": {
+      "fixtures": "actors",
+      "title": "Provider failures retain safe reasons and account recovery over MCP",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses controlled loopback providers through the shared runtime contract."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Shared error views and SDK are exercised through hosted APIs."
+        }
+      }
+    },
+    "providerErrorsOpenapi": {
+      "fixtures": "actors",
+      "title": "Provider failures retain safe reasons and account recovery over OpenAPI",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses controlled loopback providers through the shared runtime contract."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Shared error views and SDK are exercised through hosted APIs."
+        }
+      }
+    },
+    "providerErrorsCustom": {
+      "fixtures": "actors",
+      "title": "Provider failures retain safe reasons and account recovery from custom providers",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses controlled loopback providers through the shared runtime contract."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Shared error views and SDK are exercised through hosted APIs."
+        }
+      }
+    }
+  },
+  "runs": {
+    "providerErrorsGraphql": [
+      "declared:self-host"
+    ],
+    "providerErrorsMcp": [
+      "declared:self-host"
+    ],
+    "providerErrorsOpenapi": [
+      "declared:self-host"
+    ],
+    "providerErrorsCustom": [
+      "declared:self-host"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/contracts/auth.ts",
+    ".upstream/apps/hosted/server/src/contracts/authorization.ts",
+    ".upstream/apps/hosted/server/src/contracts/executor.ts",
+    ".upstream/apps/hosted/server/src/implementation/account-identity.ts",
+    ".upstream/apps/hosted/server/src/implementation/accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-link-policy.ts",
+    ".upstream/apps/hosted/server/src/implementation/contributed-account-policy.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-lifecycle.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-policy.ts",
+    ".upstream/apps/local/web/src/implementation/pages/app-tools.tsx",
+    ".upstream/e2e/support/app-links.ts",
+    ".upstream/e2e/support/provider-error-visibility.ts",
+    ".upstream/packages/sdk/package.json",
+    ".upstream/packages/sdk/src/contracts/account-identity.ts",
+    ".upstream/packages/sdk/src/contracts/account-kind.ts",
+    ".upstream/packages/sdk/src/contracts/account-title.ts",
+    ".upstream/packages/sdk/src/contracts/account.ts",
+    ".upstream/packages/sdk/src/contracts/executor.ts",
+    ".upstream/packages/sdk/src/contracts/index.ts",
+    ".upstream/packages/sdk/src/implementation/account-acquisition-bindings.ts",
+    ".upstream/packages/sdk/src/implementation/account-driver-health.ts",
+    ".upstream/packages/sdk/src/implementation/account-driver-source.ts",
+    ".upstream/packages/sdk/src/implementation/account-health.ts",
+    ".upstream/packages/sdk/src/implementation/account-identities.ts",
+    ".upstream/packages/sdk/src/implementation/account-tools-health.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts",
+    ".upstream/packages/sdk/src/implementation/provider-error.ts",
+    ".upstream/packages/sdk/src/implementation/skills.ts",
+    ".upstream/packages/sdk/src/implementation/tools.ts",
+    ".upstream/packages/sdk/src/implementation/webhook-sources.ts",
+    ".upstream/packages/sdk/src/implementation/webhooks.ts",
+    ".upstream/packages/ui/src/contracts/account-identities.ts",
+    ".upstream/packages/ui/src/contracts/account-kind-compatibility.ts",
+    ".upstream/packages/ui/src/contracts/account-title.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/account-row-health.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/accounts-client.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx"
+  ]
+}
