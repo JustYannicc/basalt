@@ -50,6 +50,23 @@
           "reason": "Exercises hosted app links; Local uses the same SDK deployment identity selection."
         }
       }
+    },
+    "additiveProviderAuthShared": {
+      "fixtures": "actors",
+      "title": "shared provider refs retain added methods across other apps and isolate conflicting additions",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Exercises the shared redeploy and account selection code through an isolated hosted server."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises hosted app links; Local uses the same SDK deployment identity selection."
+        }
+      }
     }
   },
   "runs": {
@@ -61,11 +78,16 @@
     ],
     "additiveProviderAuthAmbiguous": [
       "host-managed-accounts:catalog-service-identity-and-import-compatibility"
+    ],
+    "additiveProviderAuthShared": [
+      "host-managed-accounts:catalog-service-identity-and-import-compatibility"
     ]
   },
   "inputs": [
     ".upstream/packages/sdk/src/implementation/apps.ts",
     ".upstream/packages/sdk/src/implementation/provider.ts",
-    ".upstream/packages/sdk/src/implementation/provider-continuity.ts"
+    ".upstream/packages/sdk/src/implementation/provider-continuity.ts",
+    ".upstream/packages/sdk/src/implementation/database.ts",
+    ".upstream/packages/sdk/src/implementation/storage-runtime.ts"
   ]
 }

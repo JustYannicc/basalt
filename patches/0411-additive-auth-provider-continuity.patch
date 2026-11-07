@@ -1,21 +1,29 @@
 diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
 --- a/packages/sdk/src/implementation/apps.ts
 +++ b/packages/sdk/src/implementation/apps.ts
-@@ -43,12 +43,12 @@
-   OwnerId,
-   StorageError,
-   JsonObject,
+@@ -36,19 +36,12 @@
+   RuntimeProtocolUnsupported,
+   type Runtime,
+ } from "../contracts/runtime.ts";
+-import {
+-  AppCodeId,
+-  AppId,
+-  VersionId,
+-  OwnerId,
+-  StorageError,
+-  JsonObject,
 -  type ProviderId,
- } from "../contracts/shared.ts";
+-} from "../contracts/shared.ts";
++import { AppCodeId, AppId, VersionId, OwnerId, StorageError } from "../contracts/shared.ts";
  import { StoredApp, StoredVersion } from "../contracts/storage.ts";
  import { query, transaction, type Query } from "./database.ts";
  import { removeToolSearch } from "./tool-search-store.ts";
  import { identifyProvider } from "./provider.ts";
-+import { chooseProviderIds } from "./provider-continuity.ts";
++import { chooseProviderIds, storeProviders } from "./provider-continuity.ts";
  import {
    CodeFiles,
    SourceError,
-@@ -238,57 +238,6 @@
+@@ -238,57 +231,6 @@
    const { deployment: version, ...app } = row;
    return projectedApp({ app, version });
  };
@@ -73,10 +81,80 @@ diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implemen
  
  /**
   * The account requirements whose provider IDs a deploy to `app` keeps: its active version's. An
+@@ -735,23 +677,17 @@
+           if (existing !== undefined) yield* droppedMigrations(tx, existing.code);
+           const createdAt = new Date(yield* Clock.currentTimeMillis);
+           const promote = existing === undefined || sequence > existing.activatedSequence;
+-          for (const { provider } of entries) {
+-            // Apps sharing a provider ID can declare different hosts; the row keeps what they share.
+-            // Its display text is the last deploy's; forms read the version's own definition.
+-            const definition = yield* Schema.decodeUnknownEffect(JsonObject)(provider.shared).pipe(
+-              Effect.mapError(() => new StorageError()),
+-            );
+-            yield* query(() =>
+-              tx.upsert("providers", {
+-                where: (b) => b("id", "=", provider.id),
+-                create: { id: provider.id, definition },
+-                update: { definition },
+-              }),
+-            );
+-          }
++          const storedEntries = yield* storeProviders(tx, crypto, entries);
++          const accounts = yield* Effect.forEach(storedEntries, ({ slot, provider }) => {
++            const required = requirements.accounts[slot];
++            return required === undefined
++              ? Effect.fail(new StorageError())
++              : Effect.succeed([slot, { ...required, provider: provider.id }] as const);
++          });
++          const storedRequirements = { ...requirements, accounts: Object.fromEntries(accounts) };
+           const encodedRequirements = yield* Schema.encodeEffect(
+             Schema.toCodecJson(AppRequirements),
+-          )(requirements).pipe(Effect.mapError(() => new StorageError()));
++          )(storedRequirements).pipe(Effect.mapError(() => new StorageError()));
+           yield* query(() =>
+             tx.create("deployments", {
+               ...version,
+@@ -775,7 +711,7 @@
+               owner: input.owner,
+               app: app.id,
+               version: version.id,
+-              requirements,
++              requirements: storedRequirements,
+             });
+           if (existing === undefined) {
+             yield* createApp(tx, {
+@@ -784,7 +720,8 @@
+               deploySequence: sequence,
+               activatedSequence: sequence,
+             });
+-            if (lifecycle) yield* lifecycle.appCreated({ ...app, requirements });
++            if (lifecycle)
++              yield* lifecycle.appCreated({ ...app, requirements: storedRequirements });
+           } else if (promote)
+             yield* query(() =>
+               tx.updateMany("apps", {
+@@ -794,7 +731,7 @@
+             );
+           if (promote) yield* webhookSourcesPending(tx, app.id);
+           const projected = promote
+-            ? { ...app, requirements }
++            ? { ...app, requirements: storedRequirements }
+             : yield* project(tx, { ...existing, ...app });
+           const deployedApp = yield* Schema.decodeUnknownEffect(DeployedApp)(projected).pipe(
+             Effect.mapError(() => new StorageError()),
 diff --git a/packages/sdk/src/implementation/provider.ts b/packages/sdk/src/implementation/provider.ts
 --- a/packages/sdk/src/implementation/provider.ts
 +++ b/packages/sdk/src/implementation/provider.ts
-@@ -127,7 +127,7 @@
+@@ -121,13 +121,13 @@
+  * Hosts and site rules stay out of identity; each account keeps its site and allowed hosts.
+  * Apps that declare other hosts still fill the slot; credentials stay within both policies.
+  * Display text is not part of it either (see `methodCredential`), so rewording a form keeps the
+- * provider and its accounts. `shared` is the definition every app with this identity agrees on,
+- * without site or hosts; its display text is the last deploy's, so forms read it from the app version's
+- * own definition.
++ * provider and its accounts. `shared` omits site and hosts. A retained ref can span additive
++ * versions, so storage accumulates their compatible methods. Each app version keeps its own
++ * definition and display text for forms and invocation.
   *
   * `identity` is the ID a provider first stored now gets. `legacy` is the ID earlier versions
   * derived, display text included; a provider stored then keeps that ID. A deploy chooses the ID:
@@ -89,13 +167,12 @@ diff --git a/packages/sdk/src/implementation/provider-continuity.ts b/packages/s
 new file mode 100644
 --- /dev/null
 +++ b/packages/sdk/src/implementation/provider-continuity.ts
-@@ -0,0 +1,108 @@
+@@ -0,0 +1,192 @@
 +/** Provider ref continuity within one app's deployment lineage. */
-+import { type Crypto, Effect } from "effect";
++import { type Crypto, Effect, Schema } from "effect";
 +import type { AppRequirements } from "../contracts/apps.ts";
-+import type { ProviderDefinition } from "../contracts/provider.ts";
-+import { ProviderId, StorageError } from "../contracts/shared.ts";
-+import { Hex } from "effect/encoding";
++import { ProviderDefinition } from "../contracts/provider.ts";
++import { JsonObject, ProviderId, StorageError } from "../contracts/shared.ts";
 +import { query, type Query } from "./database.ts";
 +import { canonical, identifyProvider, methodCredential } from "./provider.ts";
 +
@@ -175,26 +252,111 @@ new file mode 100644
 +            db.findMany("providers", { select: ["id"], where: (b) => b("id", "in", legacy) }),
 +          )).map((row) => row.id),
 +    );
-+    return yield* Effect.forEach(entries, (entry, index) =>
++    return entries.map((entry, index) => {
++      const { identity, legacy } = entry.provider;
++      const id = continued[index] ?? (stored.has(legacy) ? legacy : identity);
++      return {
++        ...entry,
++        provider: {
++          ...entry.provider,
++          id,
++          allowAdditionalStoredMethods: previous === undefined || continued[index] !== undefined,
++        },
++      };
++    });
++  });
++
++const compatibleMethods = (stored: ProviderDefinition, incoming: ProviderDefinition) =>
++  Object.entries(incoming.auth).every(([name, method]) => {
++    const old = Object.hasOwn(stored.auth, name) ? stored.auth[name] : undefined;
++    return (
++      old === undefined || canonical(methodCredential(old)) === canonical(methodCredential(method))
++    );
++  });
++
++/**
++ * Called inside app activation's transaction. Lock candidate refs in one order before merging
++ * auth maps, so an older app cannot remove another app's added methods or race their writes.
++ * Conflicting declarations get their own ref; requirements record that final choice.
++ */
++export const storeProviders = <
++  Entry extends {
++    readonly provider: {
++      readonly id: ProviderId;
++      readonly identity: ProviderId;
++      readonly shared: Omit<ProviderDefinition, "hosts" | "site">;
++      readonly allowAdditionalStoredMethods: boolean;
++    };
++  },
++>(
++  db: Query,
++  crypto: Crypto.Crypto,
++  entries: ReadonlyArray<Entry>,
++) =>
++  Effect.gen(function* () {
++    const candidates = new Map<ProviderId, ProviderDefinition>();
++    for (const { provider } of entries) {
++      candidates.set(provider.id, provider.shared);
++      candidates.set(provider.identity, provider.shared);
++    }
++    const locked = new Map<ProviderId, ProviderDefinition>();
++    for (const [id, shared] of [...candidates].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
++      const definition = yield* Schema.decodeUnknownEffect(JsonObject)(shared).pipe(
++        Effect.mapError(() => new StorageError()),
++      );
++      yield* query(() =>
++        db.upsert("providers", {
++          where: (b) => b("id", "=", id),
++          create: { id, definition },
++          update: {},
++        }),
++      );
++      yield* db.lockProvider(id);
++      const row = yield* query(() => db.findFirst("providers", { where: (b) => b("id", "=", id) }));
++      if (row === null) return yield* new StorageError();
++      locked.set(
++        id,
++        yield* Schema.decodeUnknownEffect(ProviderDefinition)(row.definition).pipe(
++          Effect.mapError(() => new StorageError()),
++        ),
++      );
++    }
++    return yield* Effect.forEach(entries, (entry) =>
 +      Effect.gen(function* () {
-+        const { identity, legacy } = entry.provider;
-+        let id = continued[index] ?? (stored.has(legacy) ? legacy : identity);
-+        // An additive deployment can retain an older content hash. Reverting its auth map
-+        // must not turn that hash back into a compatible ref for accounts using removed methods.
-+        const incompatible = kept.filter(
-+          (item) => item.provider === id && item.identity !== identity,
-+        );
-+        if (continued[index] === undefined && incompatible.length > 0) {
-+          const content = canonical({
-+            identity,
-+            previous: [...new Set(incompatible.map((item) => item.identity))].sort(),
-+          });
-+          const hash = yield* crypto
-+            .digest("SHA-256", new TextEncoder().encode(content))
-+            .pipe(Effect.mapError(() => new StorageError()));
-+          id = ProviderId.make(`prv_${Hex.encode(hash)}`);
++        const { provider } = entry;
++        const allowed = (stored: ProviderDefinition | undefined) =>
++          stored === undefined ||
++          (compatibleMethods(stored, provider.shared) &&
++            (provider.allowAdditionalStoredMethods ||
++              (Object.keys(stored.auth).length === Object.keys(provider.shared.auth).length &&
++                Object.keys(stored.auth).every((name) =>
++                  Object.hasOwn(provider.shared.auth, name),
++                ))));
++        let id = provider.id;
++        if (!allowed(locked.get(id))) id = provider.identity;
++        if (!allowed(locked.get(id))) {
++          // A prior additive deployment may already own both content hashes. An incompatible
++          // transition needs a fresh ref, rather than reviving a historical account selection.
++          id = ProviderId.make(
++            `prv_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
++          );
 +        }
-+        return { ...entry, provider: { ...entry.provider, id } };
++        const merged = {
++          ...provider.shared,
++          auth: { ...locked.get(id)?.auth, ...provider.shared.auth },
++        };
++        const definition = yield* Schema.decodeUnknownEffect(JsonObject)(merged).pipe(
++          Effect.mapError(() => new StorageError()),
++        );
++        yield* query(() =>
++          db.upsert("providers", {
++            where: (b) => b("id", "=", id),
++            create: { id, definition },
++            update: { definition },
++          }),
++        );
++        locked.set(id, merged);
++        return { ...entry, provider: { ...provider, id } };
 +      }),
 +    );
 +  });
@@ -202,7 +364,7 @@ diff --git a/e2e/tests/provider-auth-continuity.spec.ts b/e2e/tests/provider-aut
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/provider-auth-continuity.spec.ts
-@@ -0,0 +1,221 @@
+@@ -0,0 +1,322 @@
 +/** A redeploy preserves a selected credential only when new sign-ins add no ambiguity. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
@@ -271,41 +433,44 @@ new file mode 100644
 +    expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
 +    const app = yield* body(App, deployed);
 +    const path = `${prefix}/apps/${app.id}`;
-+    yield* Effect.addFinalizer(() => api.request(actors.owner, "DELETE", path).pipe(Effect.orDie));
-+    const pending = yield* api.request(
-+      actors.owner,
-+      "POST",
-+      connectionsPath(path, "user", "service"),
-+      {},
-+    );
-+    expect(pending.status, JSON.stringify(pending.body)).toBe(200);
-+    const connection = yield* body(Resource, pending);
-+    const submitted = yield* api.request(
-+      actors.owner,
-+      "POST",
-+      `${prefix}/connections/${connection.id}/submit`,
-+      {
-+        method: "rest",
-+        fields: { token: "synthetic-rest-credential" },
-+      },
-+    );
-+    expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
-+    const account = yield* body(Resource, submitted);
++    const accountIds: string[] = [];
 +    yield* Effect.addFinalizer(() =>
 +      Effect.gen(function* () {
 +        yield* api.request(actors.owner, "DELETE", path).pipe(Effect.orDie);
-+        yield* api
-+          .request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`)
-+          .pipe(Effect.orDie);
++        for (const id of accountIds) {
++          yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${id}`).pipe(Effect.orDie);
++        }
 +      }),
 +    );
++    const connect = (method: string, fields: Record<string, string>) =>
++      Effect.gen(function* () {
++        const pending = yield* api.request(
++          actors.owner,
++          "POST",
++          connectionsPath(path, "user", "service"),
++          {},
++        );
++        expect(pending.status, JSON.stringify(pending.body)).toBe(200);
++        const connection = yield* body(Resource, pending);
++        const submitted = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${connection.id}/submit`,
++          { method, fields },
++        );
++        expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
++        const account = yield* body(Resource, submitted);
++        accountIds.push(account.id);
++        return account;
++      });
++    const account = yield* connect("rest", { token: "synthetic-rest-credential" });
 +    const redeploy = (next: ReturnType<typeof source>) =>
 +      Effect.gen(function* () {
 +        const result = yield* api.request(actors.owner, "POST", `${path}/deploy`, { files: next });
 +        expect(result.status, JSON.stringify(result.body)).toBe(200);
 +        return (yield* body(Schema.Struct({ app: App }), result)).app;
 +      });
-+    return { api, actors, app, path, account, redeploy };
++    return { api, actors, app, path, account, connect, redeploy };
 +  });
 +
 +layer(HostedLive, { excludeTestServices: true })("Provider authentication continuity", (it) => {
@@ -346,6 +511,104 @@ new file mode 100644
 +          _tag: "AccountSelectionInvalid",
 +          reason: "provider_mismatch",
 +        });
++        const addedAgain = yield* f.redeploy(source({ ...rest, mcp }));
++        expect(addedAgain.requirements.accounts.service?.provider).toBe(
++          removed.requirements.accounts.service?.provider,
++        );
++        const removedAgain = yield* f.redeploy(source(rest));
++        expect(removedAgain.requirements.accounts.service?.provider).not.toBe(
++          addedAgain.requirements.accounts.service?.provider,
++        );
++        expect(
++          removedAgain.requirements.accounts.service?.provider,
++          "A second removal must not revive the original saved selection",
++        ).not.toBe(f.app.requirements.accounts.service?.provider);
++        const refusedAgain = yield* f.api.request(f.actors.owner, "POST", `${f.path}/tools/call`, {
++          tool: "selected",
++          kind: "query",
++          input: {},
++        });
++        expect(refusedAgain.status, JSON.stringify(refusedAgain.body)).toBe(422);
++        expect(refusedAgain.body).toMatchObject({
++          _tag: "AccountSelectionInvalid",
++          reason: "provider_mismatch",
++        });
++      }),
++    ),
++  );
++
++  it.effect(scenarios.additiveProviderAuthShared.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const a = yield* fixture(source(rest));
++        const b = yield* fixture(source(rest));
++        const added = yield* a.redeploy(source({ ...rest, additional: key() }));
++        expect(added.requirements.accounts.service?.provider).toBe(
++          a.app.requirements.accounts.service?.provider,
++        );
++        const unchanged = yield* b.redeploy(source(rest));
++        expect(unchanged.requirements.accounts.service?.provider).toBe(
++          added.requirements.accounts.service?.provider,
++        );
++        const extra = yield* a.connect("additional", { token: "synthetic-additional-credential" });
++        yield* b.redeploy(source(rest));
++        const call = yield* a.api.request(a.actors.owner, "POST", `${a.path}/tools/call`, {
++          tool: "selected",
++          kind: "query",
++          input: {},
++        });
++        expect(call.status, JSON.stringify(call.body)).toBe(200);
++        expect(call.body).toBe(extra.id);
++        const conflict = yield* b.redeploy(source({ ...rest, additional: key("differentToken") }));
++        expect(conflict.requirements.accounts.service?.provider).not.toBe(
++          added.requirements.accounts.service?.provider,
++        );
++        const own = yield* b.connect("additional", {
++          differentToken: "synthetic-conflicting-credential",
++        });
++        const ownCall = yield* b.api.request(b.actors.owner, "POST", `${b.path}/tools/call`, {
++          tool: "selected",
++          kind: "query",
++          input: {},
++        });
++        expect(ownCall.status, JSON.stringify(ownCall.body)).toBe(200);
++        expect(ownCall.body).toBe(own.id);
++        const after = yield* a.api.request(a.actors.owner, "POST", `${a.path}/tools/call`, {
++          tool: "selected",
++          kind: "query",
++          input: {},
++        });
++        expect(after.status, JSON.stringify(after.body)).toBe(200);
++        expect(after.body).toBe(extra.id);
++        const c = yield* fixture(source(rest));
++        const d = yield* fixture(source(rest));
++        const concurrent = yield* Effect.all(
++          [
++            c.redeploy(source({ ...rest, cMethod: key() })),
++            d.redeploy(source({ ...rest, dMethod: key() })),
++          ],
++          { concurrency: 2 },
++        );
++        for (const deployed of concurrent) {
++          expect(deployed.requirements.accounts.service?.provider).toBe(
++            added.requirements.accounts.service?.provider,
++          );
++        }
++        const cAccount = yield* c.connect("cMethod", { token: "synthetic-concurrent-c" });
++        const dAccount = yield* d.connect("dMethod", { token: "synthetic-concurrent-d" });
++        for (const [f, account] of [
++          [c, cAccount],
++          [d, dAccount],
++        ] as const) {
++          const result = yield* f.api.request(f.actors.owner, "POST", `${f.path}/tools/call`, {
++            tool: "selected",
++            kind: "query",
++            input: {},
++          });
++          expect(result.status, JSON.stringify(result.body)).toBe(200);
++          expect(result.body).toBe(account.id);
++        }
 +      }),
 +    ),
 +  );
@@ -424,3 +687,41 @@ new file mode 100644
 +    ),
 +  );
 +});
+diff --git a/packages/sdk/src/contracts/shared.ts b/packages/sdk/src/contracts/shared.ts
+--- a/packages/sdk/src/contracts/shared.ts
++++ b/packages/sdk/src/contracts/shared.ts
+@@ -29,7 +29,7 @@
+     Schema.brand<P>(prefix),
+   );
+ 
+-/** Content-derived reference to a normalized provider definition, prefix `prv_`. */
++/** Provider reference, normally content-derived and retained across additive redeploys, prefix `prv_`. */
+ export const ProviderId = Id("prv");
+ 
+ export type ProviderId = typeof ProviderId.Type;
+diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/implementation/database.ts
+--- a/packages/sdk/src/implementation/database.ts
++++ b/packages/sdk/src/implementation/database.ts
+@@ -8,6 +8,7 @@
+ /** Select the latest migrated storage schema. */
+ export const database = (storage: ExecutorRuntimeDatabase) => ({
+   ...storage.orm("4.0.28"),
++  lockProvider: storage.lockProvider,
+   lockAccountObservation: storage.lockAccountObservation,
+   readSelectionAccounts: storage.selectionAccounts,
+ });
+diff --git a/packages/sdk/src/implementation/storage-runtime.ts b/packages/sdk/src/implementation/storage-runtime.ts
+--- a/packages/sdk/src/implementation/storage-runtime.ts
++++ b/packages/sdk/src/implementation/storage-runtime.ts
+@@ -24,6 +24,11 @@
+     return {
+       orm: (_version: "4.0.24" | "4.0.25" | "4.0.27" | "4.0.28") => db,
+       // The ORM forbids primary-key updates. Lock without changing source data or provenance.
++      lockProvider: (id: string) =>
++        sql`update executor_providers set id = id where id = ${id}`.pipe(
++          Effect.asVoid,
++          Effect.mapError(() => new StorageError()),
++        ),
+       lockAccountObservation: (id: string) =>
+         sql`update executor_account_observations set id = id where id = ${id}`.pipe(
+           Effect.asVoid,
