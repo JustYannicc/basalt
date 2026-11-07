@@ -89,12 +89,10 @@ function fixture(directory: string) {
     join(directory, "scheduler.mjs"),
     `
     const pending = new Map();
-    export function deadline(milliseconds, phase) {
+    export function deadline(_milliseconds, phase) {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), milliseconds);
       pending.set(controller, phase);
       return {signal: controller.signal, dispose() {
-        clearTimeout(timer);
         pending.delete(controller);
       }};
     }
