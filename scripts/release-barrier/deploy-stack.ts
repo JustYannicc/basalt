@@ -5,7 +5,7 @@ import type { CompiledStack } from "alchemy/Stack";
 import type { Worker } from "alchemy/Cloudflare";
 import { Effect } from "effect";
 import { verificationAdmissions, type VerificationAdmission } from "./plan-admission.ts";
-import { preparePlan, finishPlan } from "./alchemy-plan.ts";
+import { finishPlan } from "./alchemy-plan.ts";
 import { readBaseline, uploadVersion } from "./cloudflare.ts";
 import { releaseWorkers, type BarrierReceipt } from "./barrier.ts";
 import { BarrierRefusal, type ReleaseManifest } from "./manifest.ts";
@@ -30,8 +30,19 @@ import {
 } from "./bucket-cloudflare.ts";
 import { assertSupportedPlan } from "./plan-admission.ts";
 import { declaredMismatch } from "./declared-refusal.ts";
-import { prepareDeclaredStorage } from "./declared-bucket-plan.ts";
 import { preserveDeclarationHistory } from "./declared-history.ts";
+import { preserveClassHistory } from "./class-history.ts";
+import { prepareDeclaredRelease } from "./prepare-declared.ts";
+import {
+  readDeclaredClass,
+  readClassContent,
+  deployClassExpansion,
+  stageClassClone,
+  readClassClone,
+  deleteClassClone,
+} from "./class-cloudflare.ts";
+import type { ClassProvider, ClassProgress } from "./declared-class-contract.ts";
+import { observeClassReadiness } from "./class-readiness.ts";
 import {
   assertBaselineWorkerInput,
   inspectContainer,
@@ -48,6 +59,7 @@ export interface DeployStackOptions {
   declarations?: DeclaredChanges;
   declared?(progress: BucketProgress): Promise<void>;
   declaredReadiness?(value: DeclaredReadiness): Promise<void>;
+  expansion?(value: ClassProgress): Promise<void>;
   record(receipt: BarrierReceipt): Promise<void>;
   manifest(value: ReleaseManifest): Promise<void>;
   publication?(container: FrozenContainer, normalization?: BaselineNormalization): Promise<void>;
@@ -55,6 +67,7 @@ export interface DeployStackOptions {
   serving?(container: ServingContainer): Promise<void>;
   io?: {
     buckets?: BucketProvider;
+    classes?: ClassProvider;
     baseline: typeof readBaseline;
     upload: typeof uploadVersion;
     namespace?: typeof cloudflareArtifactsApi;
@@ -94,39 +107,42 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
           readinessEvidence: options.declaredReadiness ? "configured" : null,
         },
       );
-    const { plan, buckets: declaredBuckets } = yield* prepareDeclaredStorage(
+    const classes =
+      options.io?.classes ??
+      ({
+        read: (target) => run(readDeclaredClass(target)),
+        content: (target, version) => run(readClassContent(target, version)),
+        deploy: (request) => run(deployClassExpansion(request)),
+        stageClone: (request) => run(stageClassClone(request)),
+        clone: (target, version) => run(readClassClone(target, version)),
+        removeClone: (target, version) => run(deleteClassClone(target, version)),
+      } satisfies ClassProvider);
+    const { plan, prepared, declaredBuckets } = yield* prepareDeclaredRelease(
+      stack,
       evaluatedPlan,
-      options.declarations,
-      scope,
+      options,
       buckets,
-      options.declaredReadiness,
+      classes,
     );
     const prerequisites = (phase: DeclaredReadiness["phase"]) =>
-      recordDeclaredReadiness(
-        plan,
-        options.declarations,
-        scope,
-        buckets,
-        phase,
-        options.declaredReadiness,
-      );
-    for (const bucket of declaredBuckets.values())
-      yield* Effect.promise(() =>
-        options.declared!({
-          bucket,
-          lifecycle: bucket.resume ? "creating" : "planned",
-          outcome: bucket.resume ? "acknowledged" : "not-started",
-        }),
-      );
-    const prepared = yield* preparePlan(
-      stack,
-      plan,
-      options.io?.namespace,
-      options.io?.container,
-      options.publication,
-      options.declarations,
-      declaredBuckets,
-    );
+      Effect.gen(function* () {
+        yield* recordDeclaredReadiness(
+          plan,
+          options.declarations,
+          scope,
+          buckets,
+          phase,
+          options.declaredReadiness,
+        );
+        yield* observeClassReadiness(
+          plan,
+          options.declarations,
+          scope,
+          classes,
+          phase,
+          options.expansion,
+        );
+      });
     const recordAdmission = options.admission;
     if (recordAdmission) yield* Effect.promise(() => recordAdmission(verificationAdmissions(plan)));
     for (const { frozen } of prepared.containers.values())
@@ -278,8 +294,11 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
       catch: (error) =>
         error instanceof BarrierRefusal ? error : new BarrierRefusal("release-operation-failed"),
     });
-    return yield* preserveDeclarationHistory(
-      finishPlan(prepared, activated, databaseFqns, activatedContainers),
-      { stack: stack.name, stage: stack.stage },
+    return yield* preserveClassHistory(
+      preserveDeclarationHistory(
+        finishPlan(prepared, activated, databaseFqns, activatedContainers),
+        { stack: stack.name, stage: stack.stage },
+      ),
+      scope,
     );
   });

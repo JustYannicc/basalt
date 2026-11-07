@@ -98,6 +98,7 @@ const result = await Effect.runPromiseExit(
               declarations,
               declared: evidence.declared,
               declaredReadiness: evidence.declaredReadiness,
+              expansion: evidence.expansion,
               record: evidence.record,
               publication: evidence.publication,
               admission: evidence.admission,

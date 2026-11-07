@@ -101,7 +101,7 @@ test("a logical bucket declaration cannot authorize an undeclared physical name"
   assert.deepEqual(effects, []);
 });
 
-test("an unsupported DO declaration refuses even when its Worker would otherwise be admitted", async () => {
+test("a class declaration refuses creating a Worker instead of expanding a settled one", async () => {
   const { plan } = await bucketPlan();
   const node = plan.resources.DriveRecords!;
   const intent = declaration();
@@ -139,7 +139,7 @@ test("an unsupported DO declaration refuses even when its Worker would otherwise
       ),
     (error) =>
       error instanceof BarrierRefusal &&
-      error.refusals?.some((item) => item.reason === "unsupported-declared-operation") === true,
+      error.refusals?.some((item) => item.reason === "declaration-does-not-match-plan") === true,
   );
 });
 

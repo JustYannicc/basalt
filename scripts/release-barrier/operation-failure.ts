@@ -6,6 +6,9 @@ export type ReleaseOperation =
   | "prepare-resource"
   | "read-worker-baseline"
   | "freeze-worker-upload"
+  | "read-class-expansion"
+  | "deploy-class-expansion"
+  | "stage-class-baseline-clone"
   | "release-stack";
 
 const knownTypes = new Set([

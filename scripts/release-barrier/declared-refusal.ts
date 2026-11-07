@@ -68,10 +68,11 @@ export const declaredMismatch = (
   fqn: string,
   expected: unknown,
   observed: unknown,
+  type = "Cloudflare.R2.Bucket",
 ) =>
   new BarrierRefusal(reason, fqn, {
     fqn,
-    type: "Cloudflare.R2.Bucket",
+    type,
     changed: changedProps(expected, observed).map((change) => {
       if ("old" in change || change.path.includes(".")) return change;
       const old = publicValue(field(expected, change.path), change.path);
