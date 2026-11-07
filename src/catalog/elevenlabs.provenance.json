@@ -2,9 +2,9 @@
   "package": "@executor.sh/elevenlabs",
   "publishedUrl": "https://catalog.executor.sh/apps/elevenlabs.json",
   "publishedSha256": "16917703f7131278812895c2a5830710464fe9b0568643b71e3b59cd2d85aea5",
-  "carriedSha256": "7f69918679fa7513b8e879de8721840fb1f3518b8acd18a35c4f42a3c89bd1d7",
-  "patchSha256": "d4303248f0eaa53aff03d75e458d31831f6e1147c94c0d24e4d94cf29339c3a0",
-  "appsVersion": "0.0.1-beta.104-basalt.10",
+  "carriedSha256": "3a6e85226d9061506a94aa61b84f1ba262c9d5cc6d51e91ab4076052fcb32fb4",
+  "patchSha256": "59db3dd46f775330a26a079512d7ba21b965e11540163d5afa4b2a5d09be3c58",
+  "appsVersion": "0.0.1-beta.104-basalt.11",
   "license": "Not declared in the published package",
   "contribution": {
     "state": "Official MCP sign-in added alongside the unchanged API-key provider; publication not claimed"
