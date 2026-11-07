@@ -1,0 +1,93 @@
+{
+  "scenarios": {
+    "additiveProviderAuthSelection": {
+      "fixtures": "actors",
+      "title": "adding MCP authentication preserves a retained REST account selection",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Exercises the shared redeploy and account selection code through an isolated hosted server."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises hosted app links; Local uses the same SDK deployment identity selection."
+        }
+      }
+    },
+    "additiveProviderAuthIncompatible": {
+      "fixtures": "actors",
+      "title": "changed or removed credentials and changed provider metadata receive a new ref",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Exercises the shared redeploy and account selection code through an isolated hosted server."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises hosted app links; Local uses the same SDK deployment identity selection."
+        }
+      }
+    },
+    "additiveProviderAuthAmbiguous": {
+      "fixtures": "actors",
+      "title": "ambiguous additive provider matches receive a new ref",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Exercises the shared redeploy and account selection code through an isolated hosted server."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises hosted app links; Local uses the same SDK deployment identity selection."
+        }
+      }
+    },
+    "additiveProviderAuthShared": {
+      "fixtures": "actors",
+      "title": "shared provider refs retain added methods across other apps and isolate conflicting additions",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Exercises the shared redeploy and account selection code through an isolated hosted server."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises hosted app links; Local uses the same SDK deployment identity selection."
+        }
+      }
+    }
+  },
+  "runs": {
+    "additiveProviderAuthSelection": [
+      "host-managed-accounts:catalog-service-identity-and-import-compatibility"
+    ],
+    "additiveProviderAuthIncompatible": [
+      "host-managed-accounts:catalog-service-identity-and-import-compatibility"
+    ],
+    "additiveProviderAuthAmbiguous": [
+      "host-managed-accounts:catalog-service-identity-and-import-compatibility"
+    ],
+    "additiveProviderAuthShared": [
+      "host-managed-accounts:catalog-service-identity-and-import-compatibility"
+    ]
+  },
+  "inputs": [
+    ".upstream/packages/sdk/src/implementation/apps.ts",
+    ".upstream/packages/sdk/src/implementation/provider.ts",
+    ".upstream/packages/sdk/src/implementation/provider-continuity.ts",
+    ".upstream/packages/sdk/src/implementation/database.ts",
+    ".upstream/packages/sdk/src/implementation/storage-runtime.ts"
+  ]
+}
