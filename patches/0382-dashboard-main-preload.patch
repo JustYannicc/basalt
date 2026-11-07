@@ -1,0 +1,250 @@
+diff --git a/apps/hosted/cloud/web/vite.config.ts b/apps/hosted/cloud/web/vite.config.ts
+--- a/apps/hosted/cloud/web/vite.config.ts
++++ b/apps/hosted/cloud/web/vite.config.ts
+@@ -3,6 +3,7 @@
+ import { mergeConfig } from "vite-plus";
+ import { browserOnlySettings } from "./browser-only-settings.ts";
+ import { cloudflareRoutes } from "./cloudflare-routes.ts";
++import { mainPreload } from "./main-preload.ts";
+ 
+ const apiUrl = process.env.HOSTED_API_URL ?? "http://127.0.0.1:4411";
+ 
+@@ -24,6 +25,7 @@
+     build: { sourcemap: "hidden" },
+     plugins: [
+       cloudflareRoutes(),
++      mainPreload(),
+       // The stack sets a release only for stages that report to Sentry. Every such build injects
+       // the same code; only a build holding the upload token sends its source maps.
+       ...(process.env.SENTRY_RELEASE
+diff --git a/apps/hosted/cloud/web/main-preload.ts b/apps/hosted/cloud/web/main-preload.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/web/main-preload.ts
+@@ -0,0 +1,53 @@
++import { Schema } from "effect";
++import type { Plugin } from "vite-plus";
++
++const Manifest = Schema.fromJsonString(
++  Schema.Record(
++    Schema.String,
++    Schema.Struct({
++      file: Schema.String,
++      isEntry: Schema.optional(Schema.Boolean),
++      dynamicImports: Schema.optional(Schema.Array(Schema.String)),
++    }),
++  ),
++);
++
++/** Fetch main before reporting initializes, while the entry still owns its execution. */
++export const mainPreload = (): Plugin => {
++  let preloads: readonly string[] | undefined;
++  return {
++    name: "executor-cloud-main-preload",
++    apply: "build",
++    enforce: "post",
++    config: () => ({ environments: { client: { build: { manifest: true } } } }),
++    writeBundle(_options, bundle) {
++      if (this.environment.name !== "client") return;
++      const asset = bundle[".vite/manifest.json"];
++      if (asset?.type !== "asset") this.error("The client build did not emit its Vite manifest");
++      const manifest = Schema.decodeUnknownSync(Manifest)(
++        typeof asset.source === "string" ? asset.source : new TextDecoder().decode(asset.source),
++      );
++      const entry = manifest["src/client.tsx"];
++      const main = manifest["src/main.tsx"];
++      if (!entry?.isEntry || !entry.dynamicImports?.includes("src/main.tsx") || main === undefined)
++        this.error("The client manifest must bind its reporting entry to the dynamic main module");
++      preloads = [`${this.environment.config.base}${main.file}`];
++    },
++    transform(code, id) {
++      if (this.environment.name !== "ssr" || !id.includes("tanstack-start-manifest:v")) return;
++      if (preloads === undefined)
++        this.error("The server manifest requires the completed client build");
++      const source = code.replace("export const tsrStartManifest =", "const dashboardManifest =");
++      if (source === code) this.error("The dashboard manifest export changed");
++      // HeadContent and hydration consume this same framework manifest. The entry stays untouched.
++      return `${source}
++export const tsrStartManifest = () => {
++  const manifest = dashboardManifest();
++  const root = manifest.routes.__root__;
++  return { ...manifest, routes: { ...manifest.routes, __root__: {
++    ...root, preloads: [...new Set([...(root.preloads ?? []), ...${JSON.stringify(preloads)}])]
++  } } };
++};`;
++    },
++  };
++};
+diff --git a/e2e/tests/dashboard-main-preload.spec.ts b/e2e/tests/dashboard-main-preload.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/dashboard-main-preload.spec.ts
+@@ -0,0 +1,87 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, FileSystem, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Evidence } from "../support/evidence.ts";
++import { observeMainPreload } from "../support/dashboard-main-preload.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Manifest = Schema.fromJsonString(
++  Schema.Record(
++    Schema.String,
++    Schema.Struct({
++      file: Schema.String,
++      isEntry: Schema.optional(Schema.Boolean),
++      dynamicImports: Schema.optional(Schema.Array(Schema.String)),
++    }),
++  ),
++);
++
++const mainPreloadAt = (width: number) =>
++  Effect.gen(function* () {
++    const fs = yield* FileSystem.FileSystem;
++    const browser = yield* Browser;
++    const actors = yield* Actors;
++    const evidence = yield* Evidence;
++    const manifest = yield* Schema.decodeUnknownEffect(Manifest)(
++      yield* fs.readFileString("apps/hosted/cloud/web/dist/client/.vite/manifest.json"),
++    );
++    const entry = manifest["src/client.tsx"];
++    const main = manifest["src/main.tsx"];
++    if (entry === undefined || main === undefined)
++      throw new Error("The built dashboard manifest must contain its entry and main");
++    expect(entry.isEntry).toBe(true);
++    expect(entry.dynamicImports).toContain("src/main.tsx");
++    yield* browser.login(actors.owner);
++    const path = `/org/${actors.organization.slug}/apps`;
++    const head = yield* browser.use("Read the real document head", (page) =>
++      page
++        .context()
++        .request.get(path)
++        .then((response) => response.text()),
++    );
++    const preloads = yield* browser.use("Read module preloads from the server's HTML", (page) =>
++      page.evaluate(
++        (html) =>
++          Array.from(
++            new DOMParser()
++              .parseFromString(html, "text/html")
++              .head.querySelectorAll('link[rel="modulepreload"]'),
++            (link) => link.getAttribute("href"),
++          ),
++        head,
++      ),
++    );
++    yield* evidence.json("main-preload-manifest.json", {
++      width,
++      entry: entry.file,
++      main: main.file,
++      preloads,
++    });
++    expect(preloads, "The head must preload the current manifest's main module").toContain(
++      `/${main.file}`,
++    );
++    expect(preloads.filter((href) => href === `/${main.file}`)).toHaveLength(1);
++    const observed = yield* observeMainPreload({
++      width,
++      path,
++      entry: `/${entry.file}`,
++      main: `/${main.file}`,
++    });
++    yield* evidence.json("main-preload-network.json", observed);
++    expect(observed.mainBeforeEntryRelease).toBe(true);
++    expect(observed.hydratedWhileEntryHeld).toBe(false);
++    expect(observed.dataRequestsWhileEntryHeld).toEqual([]);
++    expect(observed.mainRequests).toBe(1);
++    expect(observed.mainStatus).toBe(200);
++  });
++
++layer(HostedLive, { excludeTestServices: true })("Dashboard main preload", (it) => {
++  it.effect(scenarios.dashboardMainPreloadDesktop.title, (context) =>
++    withHostedCase(context, mainPreloadAt(1280)),
++  );
++  it.effect(scenarios.dashboardMainPreloadPhone.title, (context) =>
++    withHostedCase(context, mainPreloadAt(390)),
++  );
++});
+diff --git a/e2e/support/dashboard-main-preload.ts b/e2e/support/dashboard-main-preload.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/dashboard-main-preload.ts
+@@ -0,0 +1,76 @@
++import { Effect } from "effect";
++import { Browser } from "./browser.ts";
++
++/** Hold entry execution at the network boundary while the real document discovers main. */
++export const observeMainPreload = (input: {
++  readonly width: number;
++  readonly path: string;
++  readonly entry: string;
++  readonly main: string;
++}) =>
++  Effect.gen(function* () {
++    const browser = yield* Browser;
++    return yield* browser.use("Preload main before the reporting entry executes", (page) => {
++      let release = () => {};
++      const held = new Promise<void>((resolve) => {
++        release = resolve;
++      });
++      const dataRequests: string[] = [];
++      let released = false;
++      let mainBeforeEntryRelease = false;
++      let mainRequests = 0;
++      const record = (request: import("playwright").Request) => {
++        const path = new URL(request.url()).pathname;
++        if (path === input.main) {
++          mainRequests++;
++          if (!released) mainBeforeEntryRelease = true;
++        }
++        if (!released && ["fetch", "xhr"].includes(request.resourceType())) dataRequests.push(path);
++      };
++      page.on("request", record);
++      const entry = (url: URL) => url.pathname === input.entry;
++      return page
++        .setViewportSize({ width: input.width, height: 900 })
++        .then(() => page.route(entry, (route) => held.then(() => route.continue())))
++        .then(() => {
++          const mainRequested = page.waitForRequest(
++            (request) => new URL(request.url()).pathname === input.main,
++          );
++          const entryRequested = page.waitForRequest(
++            (request) => new URL(request.url()).pathname === input.entry,
++          );
++          const navigation = page.goto(input.path);
++          void navigation.catch(() => undefined);
++          return Promise.all([mainRequested, entryRequested])
++            .then(([main]) =>
++              page
++                .locator("html")
++                .evaluate((html) => html.hasAttribute("data-hydrated"))
++                .then((hydratedWhileEntryHeld) => {
++                  const dataRequestsWhileEntryHeld = [...dataRequests];
++                  released = true;
++                  release();
++                  return Promise.all([
++                    navigation,
++                    main.response(),
++                    page.locator("html[data-hydrated]").waitFor(),
++                  ]).then(([, response]) => ({
++                    mainBeforeEntryRelease,
++                    hydratedWhileEntryHeld,
++                    dataRequestsWhileEntryHeld,
++                    mainRequests,
++                    mainStatus: response?.status(),
++                  }));
++                }),
++            )
++            .finally(() => {
++              released = true;
++              release();
++              return navigation
++                .catch(() => undefined)
++                .then(() => page.unroute(entry))
++                .finally(() => page.off("request", record));
++            });
++        });
++    });
++  });

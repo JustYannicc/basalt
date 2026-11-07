@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The Cloud dashboard's document head preloads its dynamic main module from the completed client build's Vite manifest. The existing entry alone initializes reporting and executes main. The framework manifest retains its scripts, route assets and hydration data, preloads main once and starts no application data requests. Missing build metadata fails the build rather than guessing a hashed asset path."
+    }
+  }
+}
