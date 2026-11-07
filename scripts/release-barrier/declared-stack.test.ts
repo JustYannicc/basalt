@@ -97,3 +97,62 @@ test("the actual native R2 resource and provider plan commit the generated owned
   assert.match(row.attr.bucketName, /^fixture-driverecords-production-[a-z0-9]+$/);
   assert.deepEqual(proof.events, ["upload", "admitted", "create-bucket", "activate"]);
 });
+
+test("acknowledged creation resumes with the actual native provider recovery read", async () => {
+  const proof = provisioning({ nativeBucket: true, readFailsOnce: true, resume: true });
+  const row = await Effect.runPromise(proof.effect);
+  assert.equal(row?.status, "created");
+  assert.equal(proof.events.filter((event) => event === "create-bucket").length, 1);
+  assert.equal(proof.events.filter((event) => event === "activate").length, 1);
+});
+
+test("the actual native provider recovery read cannot adopt an unknown creation", async () => {
+  const proof = provisioning({ nativeBucket: true, createLostReply: true, retryUnknown: true });
+  await assert.rejects(Effect.runPromise(proof.effect), (error: unknown) => {
+    assert.ok(error instanceof Error && "delta" in error);
+    assert.match(error.message, /declared-bucket-outcome-unknown/);
+    const text = JSON.stringify(error.delta);
+    assert.ok(text.includes('"path":"outcome","old":"acknowledged","new":"pending"'));
+    return true;
+  });
+  assert.equal(proof.events.filter((event) => event === "create-bucket").length, 1);
+  assert.ok(!proof.events.includes("activate"));
+});
+
+test("read-only creation preflight reports every missing prerequisite together", async () => {
+  const proof = provisioning({ multipleMissing: true, featureBinding: true });
+  await assert.rejects(Effect.runPromise(proof.effect), (error: unknown) => {
+    assert.ok(error instanceof Error && "refusals" in error && Array.isArray(error.refusals));
+    assert.deepEqual(error.refusals.map((item) => item.fqn).sort(), [
+      "ArchiveRecords",
+      "DriveRecords",
+    ]);
+    return true;
+  });
+  assert.deepEqual(proof.events, []);
+});
+
+test("a foreign identity recovered by the native provider cannot claim the acknowledgement", async () => {
+  const proof = provisioning({
+    nativeBucket: true,
+    readFailsOnce: true,
+    resume: true,
+    recoveredForeign: true,
+  });
+  await assert.rejects(Effect.runPromise(proof.effect), /declared-prerequisite-identity-mismatch/);
+  assert.equal(proof.events.filter((event) => event === "create-bucket").length, 1);
+  assert.ok(!proof.events.includes("activate"));
+});
+
+test("a failed intent receipt stops before POST and names evidence recording without retrying it", async () => {
+  const proof = provisioning({ recordFails: true });
+  await assert.rejects(Effect.runPromise(proof.effect), (error: unknown) => {
+    assert.ok(error instanceof Error && "delta" in error);
+    const text = JSON.stringify(error);
+    assert.ok(text.includes("record-intent"));
+    assert.ok(!text.includes("private-evidence-error"));
+    return true;
+  });
+  assert.ok(!proof.events.includes("create-bucket"));
+  assert.equal(proof.progress.filter((item) => item.outcome === "pending").length, 1);
+});

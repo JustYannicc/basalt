@@ -4,11 +4,18 @@ import { CloudflareEnvironment } from "alchemy/Cloudflare";
 import { Effect, Option, Schema } from "effect";
 import type { BucketTarget, BucketObservation } from "./declared-buckets.ts";
 import type { PropChange } from "./prop-diff.ts";
+import { declaredMismatch } from "./declared-refusal.ts";
 import { BarrierRefusal, digest } from "./manifest.ts";
 
 export const bucketAccount = Effect.gen(function* () {
   const environment = yield* Effect.serviceOption(CloudflareEnvironment);
-  if (Option.isNone(environment)) throw new BarrierRefusal("missing-declared-bucket-account");
+  if (Option.isNone(environment))
+    throw declaredMismatch(
+      "missing-declared-bucket-account",
+      "release-declarations.json",
+      { accountScope: "configured" },
+      { accountScope: null },
+    );
   return (yield* environment.value).accountId;
 });
 

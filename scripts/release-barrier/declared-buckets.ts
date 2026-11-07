@@ -1,17 +1,14 @@
 import type * as Plan from "alchemy/Plan";
 import * as Apply from "alchemy/Apply";
-import { generateInstanceId } from "alchemy/InstanceId";
-import { createPhysicalName } from "alchemy/PhysicalName";
 import { State } from "alchemy/State/State";
 import type { CreatingResourceState } from "alchemy/State/ResourceState";
 import type { Bucket } from "alchemy/Cloudflare/R2";
 import { Effect, Cause } from "effect";
-import type { DeclaredChanges } from "./declared-change-schema.ts";
 import { havePropsChanged } from "alchemy/Diff";
-import { declaredBucketCreate } from "./declared-changes.ts";
 import { BarrierRefusal, canonical, digest } from "./manifest.ts";
 import { changedProps } from "./prop-diff.ts";
-import { bucketFailure, bucketRead } from "./bucket-failure.ts";
+import { declaredMismatch } from "./declared-refusal.ts";
+import { bucketFailure, bucketRead, type BucketOperation } from "./bucket-failure.ts";
 import { declarationHistory, recordBucketHistory } from "./declared-history.ts";
 
 export interface BucketTarget {
@@ -44,91 +41,6 @@ export interface BucketProgress {
   lifecycle: "planned" | "creating" | "created";
   outcome: "not-started" | "pending" | "acknowledged" | "confirmed" | "unknown";
 }
-
-export const prepareDeclaredBuckets = (
-  plan: Plan.Plan,
-  declarations: DeclaredChanges | undefined,
-  stack: string,
-  stage: string,
-  provider: BucketProvider,
-) =>
-  Effect.gen(function* () {
-    const prepared = new Map<string, PreparedBucket>();
-    const state = yield* yield* State;
-    const history = declarationHistory(yield* state.getOutput({ stack, stage }));
-    if (declarations && declarations.stack !== stack)
-      throw new BarrierRefusal("declaration-stack-mismatch");
-    for (const [fqn, node] of Object.entries(plan.resources)) {
-      if (!declaredBucketCreate(node, declarations)) continue;
-      const saved = history.buckets[fqn];
-      const row = node.state;
-      if (row && row.status !== "creating")
-        throw new BarrierRefusal("declared-prerequisite-identity-mismatch", fqn);
-      if (!row && saved) throw new BarrierRefusal("declared-resource-history-without-state", fqn);
-      if (row && (!saved || saved.status !== "acknowledged"))
-        throw new BarrierRefusal("declared-bucket-outcome-unknown", fqn);
-      if (node.downstream.length)
-        throw new BarrierRefusal("declared-prerequisite-missing", fqn, {
-          fqn,
-          type: node.resource.Type,
-          changed: [{ path: "$resource", old: null, new: "required-by-candidate" }],
-          why: ["Provision this bucket in a separate admitted release before adding its binding."],
-        });
-      const accountId = yield* Effect.promise(provider.accountId);
-      const instanceId = row?.instanceId ?? (yield* generateInstanceId());
-      const bucketName =
-        saved?.target.bucketName ??
-        (yield* createPhysicalName({
-          id: node.resource.LogicalId,
-          instanceId,
-          maxLength: 63,
-        })).toLowerCase();
-      const target: BucketTarget = {
-        accountId,
-        bucketName,
-        jurisdiction: "eu",
-        storageClass: "Standard",
-      };
-      const entry = digest(canonical(declarations!.changes.find((entry) => entry.fqn === fqn)));
-      if (
-        row &&
-        (!saved ||
-          saved.entry !== entry ||
-          saved.instanceId !== instanceId ||
-          saved.providerVersion !== (node.provider.version ?? 0) ||
-          canonical(saved.target) !== canonical(target) ||
-          row.providerVersion !== saved.providerVersion ||
-          row.providerMode !== node.mode ||
-          row.logicalId !== node.resource.LogicalId)
-      )
-        throw new BarrierRefusal("declared-prerequisite-identity-mismatch", fqn);
-      prepared.set(fqn, {
-        fqn,
-        declaration: digest(canonical(declarations)),
-        entry,
-        target,
-        resume: row !== undefined,
-        initialLifecycle: row ? "creating" : "absent",
-        native: row
-          ? structuredClone(row)
-          : {
-              status: "creating",
-              fqn,
-              logicalId: node.resource.LogicalId,
-              instanceId,
-              namespace: node.resource.Namespace,
-              downstream: node.downstream,
-              props: structuredClone(node.resource.Props),
-              bindings: structuredClone(node.bindings),
-              providerVersion: node.provider.version ?? 0,
-              resourceType: node.resource.Type,
-              removalPolicy: "retain",
-              providerMode: node.mode,
-            },
-      });
-    }
-    return prepared;
-  });
 
 export function assertBucketObservation(
   bucket: Pick<PreparedBucket, "fqn" | "target">,
@@ -201,36 +113,70 @@ export const createDeclaredBuckets = (
             saved.instanceId !== bucket.native.instanceId ||
             canonical(saved.target) !== canonical(bucket.target)))
       )
-        throw new BarrierRefusal("declared-prerequisite-identity-mismatch", fqn);
-      if (bucket.target.accountId !== (yield* Effect.promise(provider.accountId)))
-        throw new BarrierRefusal("declared-bucket-account-drift", fqn);
+        throw declaredMismatch(
+          "declared-prerequisite-identity-mismatch",
+          fqn,
+          {
+            status: bucket.resume ? "acknowledged" : null,
+            entry: bucket.resume ? bucket.entry : null,
+            instanceId: bucket.resume ? bucket.native.instanceId : null,
+            target: bucket.resume ? bucket.target : null,
+          },
+          {
+            status: saved?.status ?? null,
+            entry: saved?.entry ?? null,
+            instanceId: saved?.instanceId ?? null,
+            target: saved?.target ?? null,
+          },
+        );
+      const accountId = yield* Effect.promise(provider.accountId);
+      if (bucket.target.accountId !== accountId)
+        throw declaredMismatch(
+          "declared-bucket-account-drift",
+          fqn,
+          { accountId: bucket.target.accountId },
+          { accountId },
+        );
       if (
         !bucket.resume &&
         (yield* Effect.promise(() => bucketRead(fqn, () => provider.read(bucket.target, fqn))))
       )
-        throw new BarrierRefusal("declared-bucket-name-collision", fqn);
+        throw declaredMismatch(
+          "declared-bucket-name-collision",
+          fqn,
+          { resource: null },
+          { resource: "exists" },
+        );
       let acknowledged = bucket.resume;
+      const phase: { operation: BucketOperation } = { operation: "commit-native-state" };
       const result = yield* Effect.exit(
         Effect.gen(function* () {
           if (!bucket.resume) {
             yield* state.set({ ...scope, fqn, value: bucket.native });
             yield* recordBucketHistory(scope, bucket, candidate, "pending");
+            phase.operation = "record-intent";
             yield* Effect.promise(() =>
               record({ bucket, lifecycle: "creating", outcome: "pending" }),
             );
+            phase.operation = "create-bucket";
             yield* Effect.promise(() => provider.create(bucket.target));
             acknowledged = true;
+            phase.operation = "commit-native-state";
             yield* recordBucketHistory(scope, bucket, candidate, "acknowledged");
+            phase.operation = "record-intent";
             yield* Effect.promise(() =>
               record({ bucket, lifecycle: "creating", outcome: "acknowledged" }),
             );
+            phase.operation = "configure-bucket";
             yield* Effect.promise(() => provider.configure(bucket.target));
           }
+          phase.operation = "read-bucket";
           const attributes = assertBucketObservation(
             bucket,
             yield* Effect.promise(() => bucketRead(fqn, () => provider.read(bucket.target, fqn))),
           );
           const node = plan.resources[fqn]!;
+          phase.operation = "commit-native-state";
           yield* Apply.apply({
             ...plan,
             selectedFqns: new Set([fqn]),
@@ -250,7 +196,12 @@ export const createDeclaredBuckets = (
                   reconcile: (input) =>
                     Effect.sync(() => {
                       if (havePropsChanged(input.news, bucket.native.props))
-                        throw new BarrierRefusal("declared-bucket-input-drift", fqn);
+                        throw declaredMismatch(
+                          "declared-bucket-input-drift",
+                          fqn,
+                          bucket.native.props,
+                          input.news,
+                        );
                       return attributes;
                     }),
                 },
@@ -261,21 +212,36 @@ export const createDeclaredBuckets = (
         }),
       );
       if (result._tag === "Failure") {
-        const row = yield* state.get({ ...scope, fqn });
-        const lifecycle =
-          row?.status === "created" || row?.status === "updated" ? "created" : "creating";
-        yield* Effect.promise(() =>
-          record({ bucket, lifecycle, outcome: acknowledged ? "acknowledged" : "unknown" }),
-        );
+        if (Cause.hasInterruptsOnly(result.cause)) return yield* Effect.failCause(result.cause);
         const cause = Cause.squash(result.cause);
-        if (cause instanceof BarrierRefusal) throw cause;
-        throw bucketFailure(
+        const failure = bucketFailure(
           cause,
           fqn,
-          acknowledged ? "configure-bucket" : "create-bucket",
+          phase.operation,
           "declared-bucket-creation-unconfirmed",
         );
+        if (phase.operation !== "record-intent") {
+          const row = yield* state.get({ ...scope, fqn });
+          const lifecycle =
+            row?.status === "created" || row?.status === "updated" ? "created" : "creating";
+          const reported = yield* Effect.exit(
+            Effect.promise(() =>
+              record({ bucket, lifecycle, outcome: acknowledged ? "acknowledged" : "unknown" }),
+            ),
+          );
+          if (reported._tag === "Failure") {
+            const recording = bucketFailure(Cause.squash(reported.cause), fqn, "record-intent");
+            throw new BarrierRefusal(failure.reason, fqn, failure.delta, [
+              ...(failure.refusals ?? [{ reason: failure.reason, ...failure.delta }]),
+              { reason: recording.reason, ...recording.delta },
+            ]);
+          }
+        }
+        throw failure;
       }
-      yield* Effect.promise(() => record({ bucket, lifecycle: "created", outcome: "confirmed" }));
+      yield* Effect.tryPromise({
+        try: () => record({ bucket, lifecycle: "created", outcome: "confirmed" }),
+        catch: (error) => bucketFailure(error, fqn, "record-intent"),
+      });
     }
   });

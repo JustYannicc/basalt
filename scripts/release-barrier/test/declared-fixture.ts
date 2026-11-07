@@ -46,7 +46,7 @@ const declarations = decodeDeclaredChanges({
 });
 interface FixtureWorker extends Resource<
   "Cloudflare.Worker",
-  { revision: string; bucket?: string },
+  { revision: string; bucket?: string; extraBucket?: string },
   Worker["Attributes"]
 > {}
 const FixtureWorker = Resource<FixtureWorker>("Cloudflare.Worker");
@@ -71,6 +71,9 @@ export function provisioning(
     featureBinding?: boolean;
     providerError?: boolean;
     nativeBucket?: boolean;
+    multipleMissing?: boolean;
+    recoveredForeign?: boolean;
+    recordFails?: boolean;
   } = {},
 ) {
   const events: string[] = [];
@@ -118,7 +121,13 @@ export function provisioning(
     {
       providers: Layer.mergeAll(
         workers,
-        options.nativeBucket ? nativeBucketProvider(() => stored) : buckets,
+        options.nativeBucket
+          ? nativeBucketProvider(() =>
+              stored && options.recoveredForeign
+                ? { ...stored, bucketName: "foreign-bucket" }
+                : stored,
+            )
+          : buckets,
         commands,
       ),
       state: Layer.effect(State, Effect.map(InMemoryService(), Effect.succeed)),
@@ -128,9 +137,13 @@ export function provisioning(
       const bucket = options.nativeBucket
         ? yield* Bucket("DriveRecords", bucketProps).pipe(RemovalPolicy.retain())
         : yield* FixtureBucket("DriveRecords", bucketProps).pipe(RemovalPolicy.retain());
+      const extra = options.multipleMissing
+        ? yield* FixtureBucket("ArchiveRecords", bucketProps).pipe(RemovalPolicy.retain())
+        : undefined;
       return yield* FixtureWorker("AppData", {
         revision: "baseline-compatible",
         ...(options.featureBinding ? { bucket: bucket.bucketName } : {}),
+        ...(extra ? { extraBucket: extra.bucketName } : {}),
       });
     }),
   );
@@ -143,7 +156,7 @@ export function provisioning(
           ...baseline,
           resources: Object.fromEntries(
             Object.entries(baseline.resources)
-              .filter(([id]) => id !== "DriveRecords")
+              .filter(([, node]) => node.resource.Type !== "Cloudflare.R2.Bucket")
               .map(([id, node]) =>
                 id === "AppData"
                   ? [
@@ -182,9 +195,19 @@ export function provisioning(
         };
         const releaseOptions = {
           candidate: "a".repeat(40),
-          declarations,
+          declarations: options.multipleMissing
+            ? decodeDeclaredChanges({
+                ...declarations,
+                changes: [
+                  ...declarations.changes,
+                  { ...declarations.changes[0], fqn: "ArchiveRecords" },
+                ],
+              })
+            : declarations,
           declared: async (value) => {
             progress.push(structuredClone(value));
+            if (options.recordFails && value.outcome === "pending")
+              throw Object.assign(new Error("private-evidence-error"), { status: 500, code: 9001 });
           },
           declaredReadiness: async (value) => {
             readiness.push(structuredClone(value));

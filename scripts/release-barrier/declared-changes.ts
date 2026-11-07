@@ -60,7 +60,6 @@ export function declaredBucketCreate(node: Plan.Apply, declarations?: DeclaredCh
     node.action !== "create" ||
     (node.state !== undefined &&
       (node.state.status !== "creating" ||
-        node.state.attr !== undefined ||
         node.state.fqn !== node.resource.FQN ||
         node.state.resourceType !== node.resource.Type ||
         node.state.removalPolicy !== "retain" ||

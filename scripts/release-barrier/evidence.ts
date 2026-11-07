@@ -1,5 +1,5 @@
 import { operationFailure, ReleaseOperationFailure } from "./operation-failure.ts";
-import { chmod, mkdir, rename, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdir, rename, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { BarrierReceipt } from "./barrier.ts";
 import {
@@ -31,12 +31,17 @@ const write = async (directory: string, name: string, value: unknown) => {
 export function releaseEvidence(directory: string, candidate: string, encryptionKey?: string) {
   let fingerprint: string | undefined;
   let latest: BarrierReceipt | undefined;
+  const declared = declaredEvidence(
+    (name, value) => write(directory, name, value),
+    candidate,
+    encryptionKey ?? "",
+  );
   return {
-    ...declaredEvidence(
-      (name, value) => write(directory, name, value),
-      candidate,
-      encryptionKey ?? "",
-    ),
+    ...declared,
+    async summary(path: string | undefined, disposition: "complete" | "failed") {
+      const text = declared.summary(disposition, latest?.activated ?? []);
+      if (path && text) await appendFile(path, text);
+    },
     async desired(value: unknown) {
       const identity = Schema.Struct({
         tag: Schema.String.check(Schema.isPattern(/^v[0-9]+(?:\.[0-9]+)+(?:-[a-zA-Z0-9.-]+)?$/u)),

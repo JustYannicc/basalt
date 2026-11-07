@@ -18,7 +18,6 @@ import { freezeUpload } from "./version-request.ts";
 import { recordDeclaredReadiness, type DeclaredReadiness } from "./declared-prerequisites.ts";
 import type { DeclaredChanges } from "./declared-change-schema.ts";
 import {
-  prepareDeclaredBuckets,
   createDeclaredBuckets,
   type BucketProvider,
   type BucketProgress,
@@ -30,6 +29,8 @@ import {
   configureDeclaredBucket,
 } from "./bucket-cloudflare.ts";
 import { assertSupportedPlan } from "./plan-admission.ts";
+import { declaredMismatch } from "./declared-refusal.ts";
+import { prepareDeclaredBuckets } from "./declared-bucket-plan.ts";
 import { preserveDeclarationHistory } from "./declared-history.ts";
 import {
   assertBaselineWorkerInput,
@@ -69,8 +70,8 @@ type Services = Effect.Services<ReturnType<typeof readBaseline> | ReturnType<typ
 /** The ordinary release entry uses this full-stack path, including transitive Commands. */
 export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =>
   Effect.gen(function* () {
-    const plan = yield* Plan.make(stack).pipe(withOperation("(plan)", "plan-stack"));
-    assertSupportedPlan(plan, new Map(), options.declarations);
+    const evaluatedPlan = yield* Plan.make(stack).pipe(withOperation("(plan)", "plan-stack"));
+    assertSupportedPlan(evaluatedPlan, new Map(), options.declarations);
     const context = yield* Effect.context<Services>();
     const run = <A, E>(effect: Effect.Effect<A, E, Services>) =>
       Effect.runPromise(effect.pipe(Effect.provideContext(context)));
@@ -84,7 +85,15 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
       } satisfies BucketProvider);
     const scope = { stack: stack.name, stage: stack.stage };
     if (options.declarations && (!options.declared || !options.declaredReadiness))
-      throw new BarrierRefusal("declared-evidence-required");
+      throw declaredMismatch(
+        "declared-evidence-required",
+        "release-declarations.json",
+        { creationEvidence: "configured", readinessEvidence: "configured" },
+        {
+          creationEvidence: options.declared ? "configured" : null,
+          readinessEvidence: options.declaredReadiness ? "configured" : null,
+        },
+      );
     const prerequisites = (phase: DeclaredReadiness["phase"]) =>
       recordDeclaredReadiness(
         plan,
@@ -95,12 +104,23 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
         options.declaredReadiness,
       );
     const declaredBuckets = yield* prepareDeclaredBuckets(
-      plan,
+      evaluatedPlan,
       options.declarations,
       stack.name,
       stack.stage,
       buckets,
     );
+    const plan = {
+      ...evaluatedPlan,
+      resources: Object.fromEntries(
+        Object.entries(evaluatedPlan.resources).map(([fqn, node]) => [
+          fqn,
+          declaredBuckets.get(fqn)?.resume && node.action === "create"
+            ? { ...node, state: declaredBuckets.get(fqn)!.native }
+            : node,
+        ]),
+      ),
+    };
     yield* prerequisites("before-upload");
     for (const bucket of declaredBuckets.values())
       yield* Effect.promise(() =>

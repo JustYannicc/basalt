@@ -118,3 +118,8 @@ if (Exit.isFailure(result)) {
   await reportRefusal(failure, process.env.GITHUB_STEP_SUMMARY);
   process.exitCode = 1;
 }
+
+await evidence.summary(
+  process.env.GITHUB_STEP_SUMMARY,
+  Exit.isFailure(result) ? "failed" : "complete",
+);

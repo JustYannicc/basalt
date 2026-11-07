@@ -116,3 +116,33 @@ test("recovery evidence failure prevents a creation intent from being published"
   );
   assert.deepEqual(await readdir(root), []);
 });
+
+test("success and later failure summaries distinguish retained creation from Worker activation", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "declared-summary-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const evidence = releaseEvidence(root, candidate, key);
+  await evidence.declared({ bucket, lifecycle: "created", outcome: "confirmed" });
+  const summary = join(root, "step-summary.md");
+  await evidence.summary(summary, "failed");
+  const failed = await readFile(summary, "utf8");
+  assert.ok(failed.includes("failed"));
+  assert.ok(failed.includes("DriveRecords"));
+  assert.ok(failed.includes("confirmed"));
+  assert.ok(failed.includes("Activated Worker versions: 0"));
+  assert.ok(failed.includes("Retain data, native row and recovery descriptor"));
+  assert.ok(!failed.includes("private-account"));
+  assert.ok(!failed.includes("private-bucket"));
+  await evidence.record({
+    schemaVersion: 1,
+    candidate,
+    manifest: "a".repeat(64),
+    ceilingMs: 750,
+    phase: "complete",
+    accepted: [{ worker: "AppData", versionId: "accepted", startupTimeMs: 100 }],
+    activated: [{ worker: "AppData", versionId: "accepted" }],
+  });
+  await evidence.summary(summary, "complete");
+  const completed = await readFile(summary, "utf8");
+  assert.ok(completed.includes("complete"));
+  assert.ok(completed.includes("Activated Worker versions: 1 (AppData@accepted)"));
+});

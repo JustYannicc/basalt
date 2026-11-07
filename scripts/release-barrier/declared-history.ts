@@ -1,8 +1,14 @@
 import { State } from "alchemy/State/State";
-import { Effect, Schema } from "effect";
+import { Effect, Schema, SchemaIssue } from "effect";
 import type { PreparedBucket } from "./declared-buckets.ts";
+import { declaredMismatch } from "./declared-refusal.ts";
+import { publicPropPath } from "./prop-diff.ts";
 import { BarrierRefusal, canonical } from "./manifest.ts";
 
+const issuePaths = SchemaIssue.makeFormatterStandardSchemaV1({
+  leafHook: () => "invalid",
+  checkHook: () => "invalid",
+});
 const key = "$basaltDeclaredChanges";
 const hash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
 const history = Schema.Struct({
@@ -33,8 +39,19 @@ export function declarationHistory(output: unknown) {
     return { schemaVersion: 1 as const, buckets: {} } satisfies typeof history.Type;
   try {
     return Schema.decodeUnknownSync(history, { onExcessProperty: "error" })(output[key]);
-  } catch {
-    throw new BarrierRefusal("declared-history-invalid");
+  } catch (error) {
+    throw new BarrierRefusal("declared-history-invalid", "$basaltDeclaredChanges", {
+      fqn: "$basaltDeclaredChanges",
+      type: "Alchemy.DeclaredChanges",
+      changed: Schema.isSchemaError(error)
+        ? issuePaths(error.issue).issues.map((issue) => ({
+            path: publicPropPath(
+              (issue.path ?? []).map((part) => String(typeof part === "object" ? part.key : part)),
+            ),
+            changed: true,
+          }))
+        : [{ path: "$history", changed: true }],
+    });
   }
 }
 
@@ -48,7 +65,12 @@ export const recordBucketHistory = (
     const state = yield* yield* State;
     const output = yield* state.getOutput(scope);
     if (output !== undefined && !object(output))
-      throw new BarrierRefusal("declared-history-output-unsupported");
+      throw declaredMismatch(
+        "declared-history-output-unsupported",
+        "$basaltDeclaredChanges",
+        { outputType: "object" },
+        { outputType: typeof output },
+      );
     const previous = declarationHistory(output);
     const existing = previous.buckets[bucket.fqn];
     if (
@@ -58,7 +80,22 @@ export const recordBucketHistory = (
         existing.providerVersion !== bucket.native.providerVersion ||
         canonical(existing.target) !== canonical(bucket.target))
     )
-      throw new BarrierRefusal("declared-history-identity-drift", bucket.fqn);
+      throw declaredMismatch(
+        "declared-history-identity-drift",
+        bucket.fqn,
+        {
+          instanceId: existing.instanceId,
+          entry: existing.entry,
+          providerVersion: existing.providerVersion,
+          target: existing.target,
+        },
+        {
+          instanceId: bucket.native.instanceId,
+          entry: bucket.entry,
+          providerVersion: bucket.native.providerVersion,
+          target: bucket.target,
+        },
+      );
     yield* state.setOutput({
       ...scope,
       value: {
@@ -101,7 +138,14 @@ export const preserveDeclarationHistory = <A, E, R>(
             if (input.stack !== scope.stack || input.stage !== scope.stage)
               return state.setOutput(input);
             if (!object(input.value))
-              return Effect.die(new BarrierRefusal("declared-history-output-unsupported"));
+              return Effect.die(
+                declaredMismatch(
+                  "declared-history-output-unsupported",
+                  "$basaltDeclaredChanges",
+                  { outputType: "object" },
+                  { outputType: typeof input.value },
+                ),
+              );
             return state.setOutput({ ...input, value: { ...input.value, [key]: saved } });
           },
         }),
