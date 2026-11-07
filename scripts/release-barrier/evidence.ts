@@ -16,6 +16,7 @@ import { Schema } from "effect";
 import type { ServingContainer } from "./container-serving.ts";
 import type { VerificationAdmission } from "./plan-admission.ts";
 import { sealRecovery } from "./recovery-envelope.ts";
+import { declaredEvidence } from "./declared-evidence.ts";
 
 const write = async (directory: string, name: string, value: unknown) => {
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -30,6 +31,11 @@ export function releaseEvidence(directory: string, candidate: string, encryption
   let fingerprint: string | undefined;
   let latest: BarrierReceipt | undefined;
   return {
+    ...declaredEvidence(
+      (name, value) => write(directory, name, value),
+      candidate,
+      encryptionKey ?? "",
+    ),
     async desired(value: unknown) {
       const identity = Schema.Struct({
         tag: Schema.String.check(Schema.isPattern(/^v[0-9]+(?:\.[0-9]+)+(?:-[a-zA-Z0-9.-]+)?$/u)),

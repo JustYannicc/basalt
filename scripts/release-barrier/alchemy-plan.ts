@@ -27,6 +27,8 @@ import {
 } from "./container.ts";
 import { imagePlanReasons } from "./plan-reasons.ts";
 import { assertSupportedPlan, newVerification } from "./plan-admission.ts";
+import type { DeclaredChanges } from "./declared-change-schema.ts";
+import type { PreparedBucket } from "./declared-buckets.ts";
 export { assertSupportedPlan } from "./plan-admission.ts";
 
 const workerType = "Cloudflare.Worker";
@@ -43,9 +45,11 @@ export const preparePlan = (
     container: FrozenContainer,
     normalization?: BaselineNormalization,
   ) => Promise<void>,
+  declarations?: DeclaredChanges,
+  declaredBuckets: ReadonlyMap<string, PreparedBucket> = new Map(),
 ) =>
   Effect.gen(function* () {
-    assertSupportedPlan(plan, yield* imagePlanReasons(plan));
+    assertSupportedPlan(plan, yield* imagePlanReasons(plan), declarations);
     const files = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
     const captured = new Map<string, PreparedWorkerUpload>();
     const containers = new Map<string, StagedContainer>();
@@ -56,6 +60,11 @@ export const preparePlan = (
     const databaseCommands = new Set<string>();
     const resources: Plan.Plan["resources"] = {};
     for (const [fqn, node] of Object.entries(plan.resources)) {
+      const bucket = declaredBuckets.get(fqn);
+      if (bucket) {
+        resources[fqn] = node;
+        continue;
+      }
       if (!newVerification(node) && node.action !== "update" && node.action !== "noop")
         return refuse("unsupported-plan", fqn);
       if (
@@ -182,9 +191,13 @@ export const preparePlan = (
         .map(([fqn, node]) => [fqn, node.state!]),
     );
     const shadow = yield* InMemoryService({ [stack.name]: { [stack.stage]: states } });
-    yield* Apply.apply({ ...plan, resources }).pipe(
-      Effect.provideService(State, Effect.succeed(shadow)),
-    );
+    yield* Apply.apply({
+      ...plan,
+      output: declaredBuckets.size ? undefined : plan.output,
+      resources: Object.fromEntries(
+        Object.entries(resources).filter(([fqn]) => !declaredBuckets.has(fqn)),
+      ),
+    }).pipe(Effect.provideService(State, Effect.succeed(shadow)));
     const workers = Object.entries(plan.resources)
       .filter(([, node]) => node.resource.Type === workerType)
       .map(([fqn]) => fqn);

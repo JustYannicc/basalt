@@ -13,6 +13,7 @@ import { openRecovery } from "./recovery-envelope.ts";
 import { canonical, digest, BarrierRefusal } from "./manifest.ts";
 import { reportRefusal } from "./refusal-report.ts";
 import { readRecoveryProgress } from "./recovery-manifest.ts";
+import { loadDeclaredChanges } from "./declared-file.ts";
 
 if (
   process.env.GITHUB_ACTIONS !== "true" ||
@@ -71,40 +72,45 @@ await evidence.desired(
   ),
 );
 const result = await Effect.runPromiseExit(
-  Effect.suspend(() =>
-    Effect.promise(
+  Effect.gen(function* () {
+    const stack = yield* Effect.promise(
       async () => (await import(new URL("../../alchemy.run.ts", import.meta.url).href)).default,
-    ),
-  ).pipe(
-    Effect.flatMap((stack) =>
-      evalStack(
-        stack,
-        (compiled) =>
-          (recovery
-            ? recoverStack(
-                compiled,
-                recovery.manifest,
-                recovery.receipt,
-                (value) => evidence.recovery(value),
-                containerRecovery,
-              )
-            : deployStack(compiled, {
-                candidate: process.env.BASALT_RELEASE_CANDIDATE!,
-                record: evidence.record,
-                publication: evidence.publication,
-                admission: evidence.admission,
-                serving: evidence.serving,
-                manifest: evidence.manifest,
-              })
-          ).pipe(
-            Effect.provideContext(compiled.services),
-            Effect.provideService(State, Context.get(compiled.services, State)),
-          ),
-        { stage: "production" },
-      ),
-    ),
-    withReleaseRuntime,
-  ),
+    );
+    const declarations = recovery
+      ? undefined
+      : yield* Effect.tryPromise({
+          try: () => loadDeclaredChanges(fileURLToPath(new URL("../../", import.meta.url))),
+          catch: (error) => error,
+        });
+    return yield* evalStack(
+      stack,
+      (compiled) =>
+        (recovery
+          ? recoverStack(
+              compiled,
+              recovery.manifest,
+              recovery.receipt,
+              (value) => evidence.recovery(value),
+              containerRecovery,
+            )
+          : deployStack(compiled, {
+              candidate: process.env.BASALT_RELEASE_CANDIDATE!,
+              declarations,
+              declared: evidence.declared,
+              declaredReadiness: evidence.declaredReadiness,
+              record: evidence.record,
+              publication: evidence.publication,
+              admission: evidence.admission,
+              serving: evidence.serving,
+              manifest: evidence.manifest,
+            })
+        ).pipe(
+          Effect.provideContext(compiled.services),
+          Effect.provideService(State, Context.get(compiled.services, State)),
+        ),
+      { stage: "production" },
+    );
+  }).pipe(withReleaseRuntime),
 );
 if (Exit.isFailure(result)) {
   const error = Cause.squash(result.cause);
