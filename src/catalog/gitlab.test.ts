@@ -107,7 +107,7 @@ test("GitLab signs in to MCP first and keeps the REST provider for full API acce
   );
 });
 
-test("GitLab guidance binds exact methods and names pages on the site template", () => {
+test("GitLab guidance binds exact methods and uses setup pages relative to the selected HTTPS site", () => {
   assert.deepEqual(
     gitlabConnectionGuidance.map((guide) => [guide.requirement, guide.method]),
     [
@@ -120,7 +120,11 @@ test("GitLab guidance binds exact methods and names pages on the site template",
     assert.ok(guide.alternativeLabel);
     const help = "credentials" in guide ? guide.credentials : guide.oauthClient;
     assert.ok(help);
-    assert.equal(new URL(help.link.url).origin, "https://gitlab.com");
+    assert.match(help.link.url, /^\/-\/user_settings\//);
+    assert.equal(
+      new URL(help.link.url, "https://selected.example.test").origin,
+      "https://selected.example.test",
+    );
     assert.match(help.note ?? "", /administrator/);
   }
   const [signIn, token, oauth] = gitlabConnectionGuidance;

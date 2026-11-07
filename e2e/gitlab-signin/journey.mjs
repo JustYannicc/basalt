@@ -51,6 +51,38 @@ export const verifyGitLabConnections = ({
       await page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`);
       await page.getByRole("region", { name: "Your accounts", exact: true }).waitFor();
     });
+    yield* browser.use("Setup links follow each selected HTTPS instance", async (page) => {
+      for (const origin of ["https://first.example.test", "https://second.example.test"]) {
+        const dialog = await openAt(page, origin);
+        await dialog
+          .getByRole("button", {
+            name: "Use a personal access token for the full API",
+            exact: true,
+          })
+          .click();
+        assert.equal(
+          await dialog
+            .getByRole("link", { name: "Open GitLab personal access tokens", exact: true })
+            .getAttribute("href"),
+          `${origin}/-/user_settings/personal_access_tokens`,
+        );
+        await dialog
+          .getByRole("button", { name: "Use your own GitLab app for the full API", exact: true })
+          .click();
+        await dialog.getByText("Advanced", { exact: true }).click();
+        await dialog
+          .getByRole("checkbox", { name: "Use your own GitLab app for this account", exact: true })
+          .check();
+        assert.equal(
+          await dialog
+            .getByRole("link", { name: "Open GitLab applications", exact: true })
+            .getAttribute("href"),
+          `${origin}/-/user_settings/applications`,
+        );
+        await noOverflow(page);
+        await page.keyboard.press("Escape");
+      }
+    });
     yield* browser.use("GitLab starts with MCP sign-in on the chosen instance", async (page) => {
       const dialog = await openAt(page, automatic.origin);
       await dialog.getByRole("button", { name: "Sign in with GitLab MCP", exact: true }).waitFor();
@@ -77,14 +109,15 @@ export const verifyGitLabConnections = ({
         })
         .click();
       await dialog.getByText(`Using ${automatic.origin}`, { exact: true }).waitFor();
+      await dialog.getByLabel("Personal access token", { exact: true }).waitFor();
       const link = dialog.getByRole("link", {
         name: "Open GitLab personal access tokens",
         exact: true,
       });
       assert.equal(
-        await link.getAttribute("href"),
-        `${automatic.origin}/-/user_settings/personal_access_tokens`,
-        "The token page must open on the selected instance",
+        await link.count(),
+        0,
+        "HTTP fixture setup links stay hidden by the shared HTTPS policy",
       );
       assert.equal(await dialog.getByLabel("Personal access token", { exact: true }).count(), 1);
       await dialog.getByText("Paste the token only, without Bearer.", { exact: true }).waitFor();
@@ -144,10 +177,9 @@ export const verifyGitLabConnections = ({
           })
           .check();
         assert.equal(
-          await dialog
-            .getByRole("link", { name: "Open GitLab applications", exact: true })
-            .getAttribute("href"),
-          `${automatic.origin}/-/user_settings/applications`,
+          await dialog.getByRole("link", { name: "Open GitLab applications", exact: true }).count(),
+          0,
+          "HTTP fixture setup links stay hidden",
         );
         await dialog
           .getByText("Select both api and read_user and save the application.", { exact: true })
@@ -238,11 +270,7 @@ export const verifyGitLabConnections = ({
         name: "Open GitLab applications",
         exact: true,
       });
-      assert.equal(
-        await link.getAttribute("href"),
-        `${manual.origin}/-/user_settings/applications`,
-        "The applications page must open on the selected instance",
-      );
+      assert.equal(await link.count(), 0, "HTTP fixture setup links stay hidden");
       await dialog.getByText(/clear Confidential and select the mcp scope/).waitFor();
       await dialog.getByText("Use GitLab's Application ID.", { exact: true }).waitFor();
       await dialog.getByText(/Leave Client secret empty/).waitFor();

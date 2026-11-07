@@ -4,7 +4,7 @@ import type { Feed, FeedEntry } from "./feed.ts";
 /** GitLab's site-aware package, carried until its self-managed support is published upstream. */
 export const gitlabSource = source;
 
-// Links name GitLab.com pages; the connect form opens them on the account's selected instance.
+// Root-relative setup links follow the selected HTTPS instance in the shared renderer.
 const policy =
   "Your administrator can turn off personal access tokens, personal OAuth apps, automatic registration or the MCP server. If every option is off, ask them to allow one.";
 
@@ -23,7 +23,7 @@ export const gitlabConnectionGuidance = [
     oauthClient: {
       link: {
         label: "Open GitLab applications",
-        url: "https://gitlab.com/-/user_settings/applications",
+        url: "/-/user_settings/applications",
       },
       steps: [
         "Choose Add new application and name it.",
@@ -41,7 +41,7 @@ export const gitlabConnectionGuidance = [
     credentials: {
       link: {
         label: "Open GitLab personal access tokens",
-        url: "https://gitlab.com/-/user_settings/personal_access_tokens",
+        url: "/-/user_settings/personal_access_tokens",
       },
       steps: [
         "Choose Generate token, then Legacy token. Name it and set an expiry date.",
@@ -64,7 +64,7 @@ export const gitlabConnectionGuidance = [
     oauthClient: {
       link: {
         label: "Open GitLab applications",
-        url: "https://gitlab.com/-/user_settings/applications",
+        url: "/-/user_settings/applications",
       },
       steps: [
         "Choose Add new application and name it.",
