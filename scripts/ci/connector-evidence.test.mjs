@@ -65,6 +65,25 @@ test("forced connector failures reach every sibling job's upload without credent
           JSON.stringify([{ name: tenant, actual: credential, passed: false }]),
         );
       }
+      if (source === "catalog-compat/ci")
+        await put(
+          join(run, "report.json"),
+          JSON.stringify({
+            failed: 1,
+            regressions: ["notion"],
+            unlisted: ["notion"],
+            results: [
+              {
+                id: "notion",
+                built: false,
+                failure: `AppBuildFailed at bundle: ${credential} ${tenant}`,
+                failureTag: "AppBuildFailed",
+                failureStage: "bundle",
+                originalBuilt: true,
+              },
+            ],
+          }),
+        );
       await put(join(run, "failure.txt"), child.stderr);
       await put(join(run, "home/session.json"), JSON.stringify({ credential, tenant }));
       await put(join(run, "screenshot.png"), `${credential} ${tenant}`);
@@ -106,6 +125,21 @@ test("forced connector failures reach every sibling job's upload without credent
         ),
       );
     }
+    if (job === "catalog-compat")
+      assert.deepEqual(
+        result.runs.flatMap((run) => run.records).find((record) => record.stage === "report")
+          ?.packages,
+        [
+          {
+            id: "notion",
+            tag: "AppBuildFailed",
+            stage: "bundle",
+            kind: "unknown",
+            originalBuilt: true,
+          },
+        ],
+        "the uploaded catalog evidence names the failed package without its text",
+      );
     if (process.env.BASALT_CONNECTOR_UPLOAD_PROOF_DIR)
       await put(join(process.env.BASALT_CONNECTOR_UPLOAD_PROOF_DIR, `${job}.json`), text);
   }
@@ -255,4 +289,101 @@ test("unknown error names and markers cannot enter connector artifacts", () => {
   const failure = describeGuidanceFailure(error, tenant);
   assert.match(failure.publicLine, /phase=initialization .* error=UnknownError marker=other$/);
   assert.ok(!failure.publicLine.includes(tenant) && !failure.publicLine.includes(credential));
+});
+
+test("catalog build failures name each package's error in closed fields, never its text", async (t) => {
+  const root = await fixture(t);
+  const run = join(root, ".generated", "catalog-compat", "ci");
+  const results = [
+    { id: "built-package", built: true },
+    {
+      id: "notion",
+      built: false,
+      failure: `AppBuildFailed at bundle: Cannot find module '${credential}' for ${tenant}`,
+      failureTag: "AppBuildFailed",
+      failureStage: "bundle",
+      originalBuilt: true,
+      originalFailure: undefined,
+    },
+    { id: "unserved", servedFailure: `catalog answered 502 ${tenant}`, servedStatus: 502 },
+    {
+      id: `bad id ${tenant}`,
+      built: false,
+      failure: `${credential} Timed out`,
+      failureTag: `Not a tag ${credential}`,
+      failureStage: `Stage ${tenant}`,
+      originalBuilt: false,
+    },
+  ];
+  await put(join(run, "report.json"), JSON.stringify({ total: 4, built: 1, failed: 3, results }));
+  const summary = await collectConnectorEvidence(root, "catalog-compat");
+  const text = JSON.stringify(summary);
+  assert.ok(!text.includes(credential) && !text.includes(tenant));
+  const [record] = summary.runs[0].records;
+  assert.equal(record.outcome, "failed");
+  assert.deepEqual(record.packages, [
+    {
+      id: "notion",
+      tag: "AppBuildFailed",
+      stage: "bundle",
+      kind: "module-load",
+      originalBuilt: true,
+    },
+    { id: "unserved", status: 502 },
+    { id: "invalid", kind: "timeout", originalBuilt: false },
+  ]);
+});
+
+test("a catalog report lists at most twenty failed packages and says when it stopped", () => {
+  const results = Array.from({ length: 25 }, (_, index) => ({
+    id: `package-${index}`,
+    built: false,
+    failure: "TypeError",
+    failureTag: "AppBuildFailed",
+  }));
+  const record = connectorDiagnostic("report", { failed: 25, results });
+  assert.equal(record.packages.length, 20);
+  assert.equal(record.packagesTruncated, true);
+});
+
+test("truncated catalog evidence keeps the packages that failed the gate", () => {
+  const results = Array.from({ length: 24 }, (_, index) => ({
+    id: `known-${index}`,
+    built: false,
+    failure: "TypeError",
+    failureTag: "AppBuildFailed",
+    originalBuilt: false,
+  }));
+  results.push({
+    id: "regressed",
+    built: false,
+    failure: "x",
+    failureTag: "AppBuildFailed",
+    originalBuilt: true,
+  });
+  results.push({
+    id: "new-failure",
+    built: false,
+    failure: "x",
+    failureTag: "AppBuildFailed",
+    originalBuilt: false,
+  });
+  const record = connectorDiagnostic("report", {
+    failed: results.length,
+    regressions: ["regressed"],
+    unlisted: ["regressed", "new-failure"],
+    results,
+  });
+  assert.deepEqual(
+    record.packages.slice(0, 2).map((item) => item.id),
+    ["regressed", "new-failure"],
+  );
+  assert.equal(record.packages.length, 20);
+  assert.equal(record.packagesTruncated, true);
+});
+
+test("a failing report without catalog packages adds no package list", () => {
+  const record = connectorDiagnostic("report", { results: [{ name: "check", passed: false }] });
+  assert.equal(record.outcome, "failed");
+  assert.equal(Object.hasOwn(record, "packages"), false);
 });
