@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountPresentation {
+    metadata {
+      constraint "An account's naming prompt shows its pending check without using a generated name as input, offers retry only when the check fails, and preserves a person's typed name through every check. A successful unnamed check stays empty and permits a description-only save without changing its label. Authored names and shown suggestions survive later checks; a failed or timed-out check offers retry. Generated labels never prefill rename fields or appear as account names."
+    }
+  }
+}
