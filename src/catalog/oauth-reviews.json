@@ -5107,6 +5107,19 @@
       }
     },
     {
+      "entry": "workos",
+      "package": "@executor.sh/workos",
+      "sourceSha256": "ee9ec44867520194f316cfc481a19774b8886a7d43449bf3abe106ad77875ab2",
+      "methods": {
+        "oauth": {
+          "kind": "automatic",
+          "protocol": "cimd",
+          "metadata": "https://signin.workos.com/.well-known/oauth-authorization-server",
+          "metadataSha256": "45804d0840493f0d4694fd4fd63410ea9f264f8834ff6688b6c35230dacd195b"
+        }
+      }
+    },
+    {
       "entry": "wrike",
       "package": "@executor.sh/wrike",
       "methods": {
@@ -5274,6 +5287,28 @@
           "kind": "hosted",
           "client": "zoho-cn",
           "message": "Shared sign-in for Zoho CRM is not configured on this host. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "zoho-people",
+      "package": "@signalbox/zoho-people",
+      "sourceSha256": "31569b52bcae5a1d56d06ca6350b2438b4ac64df78ac3078c8a69219f80527d4",
+      "methods": {
+        "oauthEu": {
+          "kind": "hosted",
+          "client": "zoho-people-eu",
+          "message": "Connect your own Zoho People account using the hosted client, or enter a server-based client you own if hosted sign-in is unavailable."
+        },
+        "oauthUs": {
+          "kind": "hosted",
+          "client": "zoho-people-us",
+          "message": "Connect your own Zoho People account using the hosted client, or enter a server-based client you own if hosted sign-in is unavailable."
+        },
+        "oauthIn": {
+          "kind": "hosted",
+          "client": "zoho-people-in",
+          "message": "Connect your own Zoho People account using the hosted client, or enter a server-based client you own if hosted sign-in is unavailable."
         }
       }
     },

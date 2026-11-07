@@ -54,11 +54,13 @@ const sources = new Set([
   "zendesk-tenant-public.mjs",
   "zendesk-company-guidance.mjs",
   "zendesk-operator-choices.mjs",
+  "workos-sign-in.mjs",
   "vercel-sign-in.mjs",
   "elevenlabs-sign-in.mjs",
   "slack-health.mjs",
   "catalog-compat.mjs",
   "elevenlabs-discovery.mjs",
+  "zoho-people.mjs",
 ]);
 const count = (value) => Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000;
 

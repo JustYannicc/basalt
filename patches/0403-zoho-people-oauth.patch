@@ -1,0 +1,107 @@
+diff --git a/apps/hosted/server/src/implementation/zoho-oauth.ts b/apps/hosted/server/src/implementation/zoho-oauth.ts
+--- a/apps/hosted/server/src/implementation/zoho-oauth.ts
++++ b/apps/hosted/server/src/implementation/zoho-oauth.ts
+@@ -1,5 +1,6 @@
+-/** Regional clients for the official Zoho CRM app. One Multi-DC registration supplies them. */
++/** CRM and People use separate scopes and hosts with one Multi-DC registration. */
+ import type { FirstPartyOAuthClientDefinition } from "./first-party-oauth.ts";
++import { isZohoPeopleOAuthClient, zohoPeopleOAuthClients } from "./zoho-people-oauth.ts";
+ 
+ const scopes = [
+   "ZohoCRM.modules.ALL",
+@@ -31,24 +32,27 @@
+ ] as const;
+ 
+ /** Enable the same credentials for these data centers in Zoho's Multi-DC settings. */
+-export const zohoOAuthClients: readonly FirstPartyOAuthClientDefinition[] = regions.map(
+-  (region) => ({
+-    id: `zoho-${region.id}`,
+-    label: `Executor for Zoho CRM (${region.id.toUpperCase()})`,
+-    server: {
+-      authorizationUrl: `https://${region.accounts}/oauth/v2/auth`,
+-      tokenUrl: `https://${region.accounts}/oauth/v2/token`,
+-      revocationUrl: `https://${region.accounts}/oauth/v2/token/revoke`,
+-      scopeSeparator: ",",
+-      grantedScopeSeparator: ",",
+-      authorizationParams: { access_type: "offline", prompt: "consent" },
+-    },
+-    tokenEndpointAuthMethod: "client_secret_post",
+-    defaultScopes: scopes,
+-    placement: { hosts: [region.api], scheme: "Zoho-oauthtoken" },
+-  }),
+-);
++const crmOAuthClients: readonly FirstPartyOAuthClientDefinition[] = regions.map((region) => ({
++  id: `zoho-${region.id}`,
++  label: `Executor for Zoho CRM (${region.id.toUpperCase()})`,
++  server: {
++    authorizationUrl: `https://${region.accounts}/oauth/v2/auth`,
++    tokenUrl: `https://${region.accounts}/oauth/v2/token`,
++    revocationUrl: `https://${region.accounts}/oauth/v2/token/revoke`,
++    scopeSeparator: ",",
++    grantedScopeSeparator: ",",
++    authorizationParams: { access_type: "offline", prompt: "consent" },
++  },
++  tokenEndpointAuthMethod: "client_secret_post",
++  defaultScopes: scopes,
++  placement: { hosts: [region.api], scheme: "Zoho-oauthtoken" },
++}));
++
++export const zohoOAuthClients: readonly FirstPartyOAuthClientDefinition[] = [
++  ...crmOAuthClients,
++  ...zohoPeopleOAuthClients,
++];
+ 
+ /** All regional clients use the one reviewed Multi-DC application's credential pair. */
+ export const isZohoOAuthClient = (id: string): boolean =>
+-  regions.some((region) => id === `zoho-${region.id}`);
++  regions.some((region) => id === `zoho-${region.id}`) || isZohoPeopleOAuthClient(id);
+diff --git a/apps/hosted/server/src/implementation/zoho-people-oauth.ts b/apps/hosted/server/src/implementation/zoho-people-oauth.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/zoho-people-oauth.ts
+@@ -0,0 +1,45 @@
++import type { FirstPartyOAuthClientDefinition } from "./first-party-oauth.ts";
++
++const scopes = [
++  "ZOHOPEOPLE.attendance.ALL",
++  "ZOHOPEOPLE.employee.ALL",
++  "ZOHOPEOPLE.forms.CREATE",
++  "ZOHOPEOPLE.forms.READ",
++  "ZOHOPEOPLE.forms.UPDATE",
++  "ZOHOPEOPLE.leave.ALL",
++  "ZOHOPEOPLE.payroll.ALL",
++  "ZOHOPEOPLE.timetracker.CREATE",
++  "ZOHOPEOPLE.timetracker.DELETE",
++  "ZOHOPEOPLE.timetracker.READ",
++  "ZOHOPEOPLE.timetracker.UPDATE",
++] as const;
++
++const regions = [
++  { id: "eu", accounts: "accounts.zoho.eu" },
++  { id: "us", accounts: "accounts.zoho.com" },
++  { id: "in", accounts: "accounts.zoho.in" },
++] as const;
++
++// Zoho's token api_domain selects only these People product hosts, never CRM's API hosts.
++const hosts = ["people.zoho.eu", "people.zoho.com", "people.zoho.in"];
++
++export const zohoPeopleOAuthClients: readonly FirstPartyOAuthClientDefinition[] = regions.map(
++  (region) => ({
++    id: `zoho-people-${region.id}`,
++    label: `Executor for Zoho People (${region.id.toUpperCase()})`,
++    server: {
++      authorizationUrl: `https://${region.accounts}/oauth/v2/auth`,
++      tokenUrl: `https://${region.accounts}/oauth/v2/token`,
++      revocationUrl: `https://${region.accounts}/oauth/v2/token/revoke`,
++      scopeSeparator: ",",
++      grantedScopeSeparator: ",",
++      authorizationParams: { access_type: "offline", prompt: "consent" },
++    },
++    tokenEndpointAuthMethod: "client_secret_post",
++    defaultScopes: scopes,
++    placement: { hosts, scheme: "Zoho-oauthtoken" },
++  }),
++);
++
++export const isZohoPeopleOAuthClient = (id: string) =>
++  regions.some((region) => id === `zoho-people-${region.id}`);

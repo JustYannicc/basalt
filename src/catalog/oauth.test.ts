@@ -26,6 +26,7 @@ test("reviewed carried sources match the packages the catalog serves", async () 
     "notion",
     "slack",
     "vercel",
+    "zoho-people",
   ]) {
     const response = await handleCatalog(
       new Request(`https://${brand.host}/catalog/apps/${id}.json`),

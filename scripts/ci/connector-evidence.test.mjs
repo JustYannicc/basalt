@@ -15,9 +15,10 @@ const tenant = "private-tenant-sentinel";
 const layouts = {
   "gitlab-connectors": ["connectors-proof/run-fixture"],
   "slack-health": ["slack-health/ci"],
+  "workos-sign-in": ["workos-sign-in/ci"],
   "vercel-sign-in": ["vercel-sign-in/ci"],
   "elevenlabs-sign-in": ["elevenlabs-sign-in/ci"],
-  "catalog-compat": ["catalog-compat/ci", "elevenlabs-discovery/ci"],
+  "catalog-compat": ["catalog-compat/ci", "elevenlabs-discovery/ci", "zoho-people/ci"],
 };
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "connector-evidence-"));

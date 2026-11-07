@@ -7,9 +7,10 @@ import { connectorDiagnostic } from "./connector-diagnostics.mjs";
 const jobs = {
   "gitlab-connectors": ["connectors-proof"],
   "slack-health": ["slack-health"],
+  "workos-sign-in": ["workos-sign-in"],
   "vercel-sign-in": ["vercel-sign-in"],
   "elevenlabs-sign-in": ["elevenlabs-sign-in"],
-  "catalog-compat": ["catalog-compat", "elevenlabs-discovery"],
+  "catalog-compat": ["catalog-compat", "elevenlabs-discovery", "zoho-people"],
 };
 const files = {
   "upstream-head.json": "source-check",
