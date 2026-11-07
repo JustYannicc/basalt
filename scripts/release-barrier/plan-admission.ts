@@ -9,7 +9,8 @@ import { plannedReasons } from "./plan-reasons.ts";
 const workerType = "Cloudflare.Worker";
 export const newVerification = (node: Plan.Apply) =>
   node.action === "create" &&
-  node.state === undefined &&
+  (node.state === undefined ||
+    (node.state.status === "creating" && node.state.attr === undefined)) &&
   node.resource.Type === "Command.Exec" &&
   firstVerificationCommand(node.resource.LogicalId, node.resource.Props);
 const existing = (node: Plan.Apply) =>
@@ -51,7 +52,7 @@ export function assertSupportedPlan(
         fqn,
         type: node.resource.Type,
         changed,
-        ...(!changed.length
+        ...(!changed.length || reason === "new-or-unsettled-resource"
           ? { why: [...plannedReasons(plan, node), ...(imageReasons.get(fqn) ?? [])] }
           : {}),
       });
