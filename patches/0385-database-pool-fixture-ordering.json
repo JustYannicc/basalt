@@ -1,0 +1,9 @@
+{
+  "identity": "executor-database-pool-fixture-ordering",
+  "file": "0385-database-pool-fixture-ordering.patch",
+  "content_sha256": "28a348c8d17439dae9b277184b8d5b519b47e3866e5777047193d6ff0591c256",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

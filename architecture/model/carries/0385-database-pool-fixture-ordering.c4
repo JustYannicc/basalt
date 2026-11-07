@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "PostgreSQL fixture siblings cannot overtake their awaited statement during cold startup. Callback-once waits for INSERT completion; group-drain completes its existing connection read before starting both branches, with startup still inside the original timing window. Delayed-readiness cases hold the first ReadyForQuery for 30 ms and retain the original outcomes, overlap and deadlines. Production pool code stays unchanged."
+    }
+  }
+}
