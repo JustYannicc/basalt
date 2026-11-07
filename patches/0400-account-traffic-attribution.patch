@@ -1,0 +1,3871 @@
+diff --git a/e2e/tests/account-tool-calls.spec.ts b/e2e/tests/account-tool-calls.spec.ts
+--- a/e2e/tests/account-tool-calls.spec.ts
++++ b/e2e/tests/account-tool-calls.spec.ts
+@@ -12,20 +12,22 @@
+ import { App, Resource } from "../support/contracts.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+ import { connectionsPath } from "../support/app-accounts.ts";
+-import { accountRow } from "../support/account-rows.ts";
++import { openRowDetails, accountRow } from "../support/account-rows.ts";
+ import { rowMenuName } from "../support/account-choices.ts";
+
+ const files = [
+   {
+     path: "index.ts",
+-    content: `import { defineApp, defineProvider, secrets, object, string, router, query } from "apps";
++    content: `import { defineApp, defineProvider, secrets, object, string, router, query, accountRouter } from "apps";
+ const service = defineProvider({ name: "Tool call service", auth: {
+   key: secrets({ label: "API key", fields: object({ token: string() }) }),
+ } });
+-export default defineApp({ user: { accounts: { service } } }, { tools: router({
++export default defineApp({ user: { accounts: { service: service.many() } } }, async ({ user, signal }) => ({
++  tools: await accountRouter(user?.accounts.service ?? [], () => router({
+   ping: query({ input: object({}) }, async () => true),
+   fail: query({ input: object({}) }, async () => { throw new Error("Synthetic tool failure"); }),
+-}) });`,
++}), { signal }),
++}));`,
+   },
+   appsManifest,
+ ];
+@@ -57,7 +59,7 @@
+         const prefix = `/api/organizations/${actors.organization.id}`;
+         const suffix = randomUUID().slice(0, 8);
+         const label = `Counted key ${suffix}`;
+-        const created: { app?: string; account?: string } = {};
++        const created: { app?: string; accounts: string[] } = { accounts: [] };
+         yield* Effect.addFinalizer(() =>
+           Effect.gen(function* () {
+             if (created.app)
+@@ -65,13 +67,10 @@
+                 (yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${created.app}`))
+                   .status,
+               ).toBe(200);
+-            if (created.account)
++            for (const account of created.accounts)
+               expect(
+-                (yield* api.request(
+-                  actors.owner,
+-                  "DELETE",
+-                  `${prefix}/accounts/${created.account}`,
+-                )).status,
++                (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`))
++                  .status,
+               ).toBe(200);
+           }).pipe(Effect.orDie),
+         );
+@@ -82,33 +81,55 @@
+         expect(deployed.status).toBe(200);
+         const app = (yield* body(App, deployed)).id;
+         created.app = app;
+-        // Connecting from the app links the account to it, so calls need no choice. Personal, so
+-        // only the owner may inspect it.
+-        const connection = yield* api.request(
+-          actors.owner,
+-          "POST",
+-          connectionsPath(`${prefix}/apps/${app}`, "user", "service"),
+-          {},
+-        );
+-        expect(connection.status).toBe(200);
+-        const saved = yield* api.request(
+-          actors.owner,
+-          "POST",
+-          `${prefix}/connections/${(yield* body(Resource, connection)).id}/submit`,
+-          { method: "key", label, fields: { token: "synthetic-tool-call-token" } },
+-        );
+-        expect(saved.status).toBe(200);
+-        const account = (yield* body(Resource, saved)).id;
+-        created.account = account;
+-
+-        // Two calls succeed and one throws in the app's code: three requests, one failed.
+-        const call = (tool: "ping" | "fail" | "missing") =>
++        const labels = [label, `Other key ${suffix}`];
++        for (const accountLabel of labels) {
++          const connection = yield* api.request(
++            actors.owner,
++            "POST",
++            connectionsPath(`${prefix}/apps/${app}`, "user", "service"),
++            {},
++          );
++          expect(connection.status).toBe(200);
++          const saved = yield* api.request(
++            actors.owner,
++            "POST",
++            `${prefix}/connections/${(yield* body(Resource, connection)).id}/submit`,
++            { method: "key", label: accountLabel, fields: { token: "synthetic-tool-call-token" } },
++          );
++          expect(saved.status).toBe(200);
++          created.accounts.push((yield* body(Resource, saved)).id);
++        }
++        const [account, otherAccount] = created.accounts as [string, string];
++        const read = (actor: typeof actors.owner) =>
++          api.request(actor, "POST", `${prefix}/account-traffic`, { accounts: created.accounts });
++        const counted = Effect.gen(function* () {
++          const response = yield* read(actors.owner);
++          expect(response.status).toBe(200);
++          return (yield* body(Traffic, response)).accounts;
++        });
++        const settle = Effect.gen(function* () {
++          const calls = (yield* evidence.requests).filter(
++            (request) => request.path === `${prefix}/apps/${app}/tools/call`,
++          );
++          yield* Effect.forEach(calls.slice(-1), ({ traceId }) =>
++            accountingCompleted(telemetry, traceId),
++          );
++        });
++
++        // A successful call credits A alone; later failures stay with their serving account.
++        const call = (tool: "ping" | "fail" | "missing", accountId = account) =>
+           api.request(actors.owner, "POST", `${prefix}/apps/${app}/tools/call`, {
+             tool,
+             kind: "query",
+-            input: {},
++            input: { accountId, input: {} },
+           });
+         expect((yield* call("ping")).status).toBe(200);
++        yield* settle;
++        const first = yield* counted;
++        expect(first).toHaveLength(1);
++        expect(first[0]).toMatchObject({ account, requests: 1, failed: 0 });
++        expect(first[0]?.lastSuccessAt).not.toBeNull();
++        yield* evidence.json("first-account-call.json", first);
+         expect((yield* call("fail")).status).toBeGreaterThanOrEqual(400);
+         expect((yield* call("ping")).status).toBe(200);
+         // A refusal of the caller's own request is not the account's failure and counts nothing.
+@@ -127,16 +148,24 @@
+           },
+         );
+
+-        const read = (actor: typeof actors.owner) =>
+-          api.request(actor, "POST", `${prefix}/account-traffic`, { accounts: [account] });
+-        const owned = yield* read(actors.owner);
+-        expect(owned.status).toBe(200);
+-        const counted = (yield* body(Traffic, owned)).accounts;
+-        expect(
+-          counted.map(({ account, requests, failed }) => ({ account, requests, failed })),
+-        ).toEqual([{ account, requests: 3, failed: 1 }]);
+-        expect(counted[0]?.recent.reduce((sum, hour) => sum + hour.requests, 0)).toBe(3);
+-        expect(counted[0]?.lastSuccessAt).not.toBeNull();
++        const beforeOtherFailure = yield* counted;
++        expect(beforeOtherFailure).toHaveLength(1);
++        expect(beforeOtherFailure[0]).toMatchObject({ account, requests: 3, failed: 1 });
++        expect(beforeOtherFailure[0]?.recent.reduce((sum, hour) => sum + hour.requests, 0)).toBe(3);
++        expect(beforeOtherFailure[0]?.lastSuccessAt).not.toBeNull();
++        expect((yield* call("fail", otherAccount)).status).toBeGreaterThanOrEqual(400);
++        yield* settle;
++        const afterOtherFailure = yield* counted;
++        expect(afterOtherFailure.find((row) => row.account === account)).toEqual(
++          beforeOtherFailure[0],
++        );
++        expect(afterOtherFailure.find((row) => row.account === otherAccount)).toMatchObject({
++          account: otherAccount,
++          requests: 1,
++          failed: 1,
++          lastSuccessAt: null,
++        });
++        yield* evidence.json("after-other-account-failure.json", afterOtherFailure);
+         // A member who may not inspect the owner's personal account reads no counts for it, the
+         // same answer as an account no call used.
+         const other = yield* read(actors.member);
+@@ -162,6 +191,20 @@
+           });
+           expect(listed[0]).toBe("3");
+           expect(listed[1]).toContain("tool calls");
++          const listDetails = yield* Effect.forEach(labels, (accountLabel) =>
++            browser.use("Read the account's details", (page) => {
++              const row = accountRow(page, accountLabel);
++              return openRowDetails(page, row, accountLabel).then(() =>
++                row.locator("[data-account-traffic-details]").innerText(),
++              );
++            }),
++          );
++          expect(listDetails[0]).toContain("3 in 7 days");
++          expect(listDetails[0]).toContain("66.6% succeeded");
++          expect(listDetails[0]).toContain("last success");
++          expect(listDetails[1]).toContain("1 in 7 days");
++          expect(listDetails[1]).toContain("0% succeeded");
++          expect(listDetails[1]).toContain("no successful request");
+           yield* evidence.attach(
+             `tool-calls-accounts-${width}.png`,
+             "image/png",
+@@ -186,6 +229,40 @@
+               .then(() => cell.getAttribute("data-account-requests"));
+           });
+           expect(tabbed).toBe("3");
++          const otherTabbed = yield* browser.use("Read the other account's app row", (page) =>
++            page
++              .getByRole("region", { name: "Your accounts", exact: true })
++              .locator("li")
++              .filter({
++                has: page.getByRole("button", {
++                  name: rowMenuName(labels[1]!, "Your accounts"),
++                  exact: true,
++                }),
++              })
++              .locator("[data-account-requests]")
++              .getAttribute("data-account-requests"),
++          );
++          expect(otherTabbed).toBe("1");
++          const tabDetails = yield* Effect.forEach(labels, (accountLabel) =>
++            browser.use("Read the app account's details", (page) => {
++              const region = page.getByRole("region", { name: "Your accounts", exact: true });
++              const menuName = rowMenuName(accountLabel, "Your accounts");
++              const row = region
++                .locator("li")
++                .filter({ has: page.getByRole("button", { name: menuName, exact: true }) });
++              return row
++                .getByRole("button", { name: menuName, exact: true })
++                .click()
++                .then(() => page.getByRole("menuitem", { name: "Details", exact: true }).click())
++                .then(() => row.locator("[data-account-traffic-details]").innerText());
++            }),
++          );
++          expect(tabDetails[0]).toContain("3 in 7 days");
++          expect(tabDetails[0]).toContain("66.6% succeeded");
++          expect(tabDetails[0]).toContain("last success");
++          expect(tabDetails[1]).toContain("1 in 7 days");
++          expect(tabDetails[1]).toContain("0% succeeded");
++          expect(tabDetails[1]).toContain("no successful request");
+           yield* evidence.attach(
+             `tool-calls-app-tab-${width}.png`,
+             "image/png",
+diff --git a/packages/apps/package.json b/packages/apps/package.json
+--- a/packages/apps/package.json
++++ b/packages/apps/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "apps",
+-  "version": "0.0.1-beta.104-basalt.9",
++  "version": "0.0.1-beta.104-basalt.10",
+   "private": true,
+   "description": "TypeScript apps with typed tools, accounts, storage, and UI.",
+   "type": "module",
+diff --git a/packages/apps/protocols/35.json b/packages/apps/protocols/35.json
+new file mode 100644
+--- /dev/null
++++ b/packages/apps/protocols/35.json
+@@ -0,0 +1,2383 @@
++{
++  "protocol": 35,
++  "previous": 34,
++  "messages": {
++    "response": {
++      "_tag": "Union",
++      "types": [
++        {
++          "_tag": "Objects",
++          "propertySignatures": [
++            {
++              "name": "ok",
++              "type": {
++                "_tag": "Literal",
++                "literal": true
++              },
++              "isOptional": false
++            },
++            {
++              "name": "value",
++              "type": {
++                "_tag": "Declaration",
++                "representation": {
++                  "id": "effect/schema/Json",
++                  "payload": null
++                }
++              },
++              "isOptional": false
++            },
++            {
++              "name": "accountsUsed",
++              "type": {
++                "_tag": "Arrays",
++                "rest": [
++                  {
++                    "_tag": "String",
++                    "checks": [
++                      {
++                        "_tag": "Filter",
++                        "representation": {
++                          "id": "effect/schema/isStartingWith",
++                          "payload": {
++                            "startsWith": "acc_"
++                          }
++                        }
++                      },
++                      {
++                        "_tag": "Filter",
++                        "representation": {
++                          "id": "effect/schema/isMinLength",
++                          "payload": {
++                            "minLength": 5
++                          }
++                        }
++                      }
++                    ]
++                  }
++                ]
++              },
++              "isOptional": true
++            },
++            {
++              "name": "toolError",
++              "type": {
++                "_tag": "Literal",
++                "literal": true
++              },
++              "isOptional": true
++            },
++            {
++              "name": "appView",
++              "type": {
++                "_tag": "Objects",
++                "propertySignatures": [
++                  {
++                    "name": "source",
++                    "type": {
++                      "_tag": "String"
++                    },
++                    "isOptional": false
++                  },
++                  {
++                    "name": "selection",
++                    "type": {
++                      "_tag": "Declaration",
++                      "representation": {
++                        "id": "effect/schema/Json",
++                        "payload": null
++                      }
++                    },
++                    "isOptional": false
++                  },
++                  {
++                    "name": "input",
++                    "type": {
++                      "_tag": "Objects",
++                      "propertySignatures": [],
++                      "indexSignatures": [
++                        {
++                          "parameter": {
++                            "_tag": "String"
++                          },
++                          "type": {
++                            "_tag": "Declaration",
++                            "representation": {
++                              "id": "effect/schema/Json",
++                              "payload": null
++                            }
++                          }
++                        }
++                      ]
++                    },
++                    "isOptional": false
++                  },
++                  {
++                    "name": "resourceUri",
++                    "type": {
++                      "_tag": "String",
++                      "checks": [
++                        {
++                          "_tag": "Filter",
++                          "representation": {
++                            "id": "effect/schema/isMinLength",
++                            "payload": {
++                              "minLength": 1
++                            }
++                          }
++                        }
++                      ]
++                    },
++                    "isOptional": false
++                  }
++                ]
++              },
++              "isOptional": true
++            },
++            {
++              "name": "events",
++              "type": {
++                "_tag": "Arrays",
++                "rest": [
++                  {
++                    "_tag": "Objects",
++                    "propertySignatures": [
++                      {
++                        "name": "name",
++                        "type": {
++                          "_tag": "String",
++                          "checks": [
++                            {
++                              "_tag": "Filter",
++                              "representation": {
++                                "id": "effect/schema/isPattern",
++                                "payload": {
++                                  "source": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$",
++                                  "flags": "u"
++                                }
++                              }
++                            },
++                            {
++                              "_tag": "Filter",
++                              "representation": {
++                                "id": "effect/schema/isMaxLength",
++                                "payload": {
++                                  "maxLength": 64
++                                }
++                              }
++                            }
++                          ]
++                        },
++                        "isOptional": false
++                      },
++                      {
++                        "name": "id",
++                        "type": {
++                          "_tag": "String",
++                          "checks": [
++                            {
++                              "_tag": "Filter",
++                              "representation": {
++                                "id": "effect/schema/isMinLength",
++                                "payload": {
++                                  "minLength": 1
++                                }
++                              }
++                            },
++                            {
++                              "_tag": "Filter",
++                              "representation": {
++                                "id": "effect/schema/isMaxLength",
++                                "payload": {
++                                  "maxLength": 200
++                                }
++                              }
++                            }
++                          ]
++                        },
++                        "isOptional": false
++                      },
++                      {
++                        "name": "occurredAt",
++                        "type": {
++                          "_tag": "Number",
++                          "checks": [
++                            {
++                              "_tag": "Filter",
++                              "representation": {
++                                "id": "effect/schema/isInt",
++                                "payload": null
++                              }
++                            },
++                            {
++                              "_tag": "Filter",
++                              "representation": {
++                                "id": "effect/schema/isGreaterThanOrEqualTo",
++                                "payload": {
++                                  "minimum": 0
++                                }
++                              }
++                            }
++                          ]
++                        },
++                        "isOptional": false
++                      },
++                      {
++                        "name": "data",
++                        "type": {
++                          "_tag": "Declaration",
++                          "representation": {
++                            "id": "effect/schema/Json",
++                            "payload": null
++                          }
++                        },
++                        "isOptional": false
++                      },
++                      {
++                        "name": "filters",
++                        "type": {
++                          "_tag": "Objects",
++                          "propertySignatures": [],
++                          "indexSignatures": [
++                            {
++                              "parameter": {
++                                "_tag": "String"
++                              },
++                              "type": {
++                                "_tag": "Union",
++                                "types": [
++                                  {
++                                    "_tag": "String"
++                                  },
++                                  {
++                                    "_tag": "Number",
++                                    "checks": [
++                                      {
++                                        "_tag": "Filter",
++                                        "representation": {
++                                          "id": "effect/schema/isFinite",
++                                          "payload": null
++                                        }
++                                      }
++                                    ]
++                                  },
++                                  {
++                                    "_tag": "Boolean"
++                                  }
++                                ]
++                              }
++                            }
++                          ]
++                        },
++                        "isOptional": false
++                      },
++                      {
++                        "name": "account",
++                        "type": {
++                          "_tag": "Union",
++                          "types": [
++                            {
++                              "_tag": "String",
++                              "checks": [
++                                {
++                                  "_tag": "Filter",
++                                  "representation": {
++                                    "id": "effect/schema/isStartingWith",
++                                    "payload": {
++                                      "startsWith": "acc_"
++                                    }
++                                  }
++                                },
++                                {
++                                  "_tag": "Filter",
++                                  "representation": {
++                                    "id": "effect/schema/isMinLength",
++                                    "payload": {
++                                      "minLength": 5
++                                    }
++                                  }
++                                }
++                              ]
++                            },
++                            {
++                              "_tag": "Null"
++                            }
++                          ]
++                        },
++                        "isOptional": false
++                      }
++                    ]
++                  }
++                ],
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMaxLength",
++                      "payload": {
++                        "maxLength": 100
++                      }
++                    }
++                  }
++                ]
++              },
++              "isOptional": true
++            }
++          ]
++        },
++        {
++          "_tag": "Objects",
++          "propertySignatures": [
++            {
++              "name": "ok",
++              "type": {
++                "_tag": "Literal",
++                "literal": false
++              },
++              "isOptional": false
++            },
++            {
++              "name": "error",
++              "type": {
++                "_tag": "Union",
++                "types": [
++                  {
++                    "_tag": "Reference",
++                    "$ref": "OpenapiResponseErrorEncoded"
++                  },
++                  {
++                    "_tag": "Reference",
++                    "$ref": "ProviderErrorEncoded"
++                  },
++                  {
++                    "_tag": "Reference",
++                    "$ref": "McpErrorEncoded"
++                  },
++                  {
++                    "_tag": "Reference",
++                    "$ref": "SkillLoadFailedEncoded"
++                  },
++                  {
++                    "_tag": "Reference",
++                    "$ref": "WorkflowFailureEncoded"
++                  },
++                  {
++                    "_tag": "Reference",
++                    "$ref": "HostRequestInvalidEncoded"
++                  },
++                  {
++                    "_tag": "Reference",
++                    "$ref": "HostAccountsInvalidEncoded"
++                  },
++                  {
++                    "_tag": "Reference",
++                    "$ref": "HostDeclarationInvalidEncoded"
++                  },
++                  {
++                    "_tag": "Reference",
++                    "$ref": "HostEvaluationFailedEncoded"
++                  },
++                  {
++                    "_tag": "Reference",
++                    "$ref": "HostOperationNotFoundEncoded"
++                  },
++                  {
++                    "_tag": "Reference",
++                    "$ref": "HostOperationFailedEncoded"
++                  },
++                  {
++                    "_tag": "Reference",
++                    "$ref": "DatabaseLimitExceededEncoded"
++                  },
++                  {
++                    "_tag": "Reference",
++                    "$ref": "DatabaseFieldReservedEncoded"
++                  },
++                  {
++                    "_tag": "Reference",
++                    "$ref": "HostToolNotFoundEncoded"
++                  },
++                  {
++                    "_tag": "Reference",
++                    "$ref": "HostInputInvalidEncoded"
++                  },
++                  {
++                    "_tag": "Reference",
++                    "$ref": "HostOutputInvalidEncoded"
++                  },
++                  {
++                    "_tag": "Reference",
++                    "$ref": "HostToolBlockedEncoded"
++                  },
++                  {
++                    "_tag": "Reference",
++                    "$ref": "HostToolApprovalRequiredEncoded"
++                  },
++                  {
++                    "_tag": "Reference",
++                    "$ref": "HostToolPolicyFailedEncoded"
++                  },
++                  {
++                    "_tag": "Reference",
++                    "$ref": "ElicitationFailedEncoded"
++                  },
++                  {
++                    "_tag": "Reference",
++                    "$ref": "HostKindMismatchEncoded"
++                  }
++                ]
++              },
++              "isOptional": false
++            },
++            {
++              "name": "accountsUsed",
++              "type": {
++                "_tag": "Arrays",
++                "rest": [
++                  {
++                    "_tag": "String",
++                    "checks": [
++                      {
++                        "_tag": "Filter",
++                        "representation": {
++                          "id": "effect/schema/isStartingWith",
++                          "payload": {
++                            "startsWith": "acc_"
++                          }
++                        }
++                      },
++                      {
++                        "_tag": "Filter",
++                        "representation": {
++                          "id": "effect/schema/isMinLength",
++                          "payload": {
++                            "minLength": 5
++                          }
++                        }
++                      }
++                    ]
++                  }
++                ]
++              },
++              "isOptional": true
++            }
++          ]
++        }
++      ]
++    }
++  },
++  "unchanged": [
++    "invocation",
++    "request",
++    "requirements",
++    "catalog",
++    "catalogSummary",
++    "sharedCatalog",
++    "skills",
++    "elicitationRequest",
++    "elicitationReply",
++    "workflowStep",
++    "workflowStepReply",
++    "workflowControl",
++    "appCall",
++    "appCallReply",
++    "appToolPolicy",
++    "appToolPolicyReply",
++    "modelRequest",
++    "modelReply",
++    "cacheCommand",
++    "cacheReply",
++    "accountCheck",
++    "accountObservation",
++    "accounts",
++    "migrate"
++  ],
++  "references": {
++    "OpenapiResponseErrorEncoded": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "_tag",
++          "type": {
++            "_tag": "Literal",
++            "literal": "OpenapiResponseError"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "code",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMinLength",
++                  "payload": {
++                    "minLength": 1
++                  }
++                }
++              },
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 128
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "status",
++          "type": {
++            "_tag": "Number",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isInt",
++                  "payload": null
++                }
++              },
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isBetween",
++                  "payload": {
++                    "minimum": 400,
++                    "maximum": 599
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "message",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMinLength",
++                  "payload": {
++                    "minLength": 1
++                  }
++                }
++              },
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 4096
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "recovery",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [
++              {
++                "name": "action",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMinLength",
++                        "payload": {
++                          "minLength": 1
++                        }
++                      }
++                    },
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMaxLength",
++                        "payload": {
++                          "maxLength": 1024
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": false
++              },
++              {
++                "name": "instructions",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMinLength",
++                        "payload": {
++                          "minLength": 1
++                        }
++                      }
++                    },
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMaxLength",
++                        "payload": {
++                          "maxLength": 4096
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": false
++              }
++            ]
++          },
++          "isOptional": true
++        }
++      ],
++      "annotations": {
++        "~identifier": "OpenapiResponseError"
++      }
++    },
++    "ProviderErrorEncoded": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "_tag",
++          "type": {
++            "_tag": "Literal",
++            "literal": "ProviderError"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "reason",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "unauthorized"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "forbidden"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "rate_limited"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "unavailable"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "rejected"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "status",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Number",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isInt",
++                      "payload": null
++                    }
++                  },
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isBetween",
++                      "payload": {
++                        "minimum": 100,
++                        "maximum": 599
++                      }
++                    }
++                  }
++                ]
++              },
++              {
++                "_tag": "Null"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "accountId",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isStartingWith",
++                      "payload": {
++                        "startsWith": "acc_"
++                      }
++                    }
++                  },
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 5
++                      }
++                    }
++                  }
++                ]
++              },
++              {
++                "_tag": "Null"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "phase",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Union",
++                "types": [
++                  {
++                    "_tag": "Literal",
++                    "literal": "connect"
++                  },
++                  {
++                    "_tag": "Literal",
++                    "literal": "discover"
++                  },
++                  {
++                    "_tag": "Literal",
++                    "literal": "call"
++                  }
++                ]
++              },
++              {
++                "_tag": "Null"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "upstream",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Objects",
++                "propertySignatures": [
++                  {
++                    "name": "code",
++                    "type": {
++                      "_tag": "Union",
++                      "types": [
++                        {
++                          "_tag": "Number",
++                          "checks": [
++                            {
++                              "_tag": "Filter",
++                              "representation": {
++                                "id": "effect/schema/isInt",
++                                "payload": null
++                              }
++                            }
++                          ]
++                        },
++                        {
++                          "_tag": "String",
++                          "checks": [
++                            {
++                              "_tag": "Filter",
++                              "representation": {
++                                "id": "effect/schema/isMinLength",
++                                "payload": {
++                                  "minLength": 1
++                                }
++                              }
++                            },
++                            {
++                              "_tag": "Filter",
++                              "representation": {
++                                "id": "effect/schema/isMaxLength",
++                                "payload": {
++                                  "maxLength": 128
++                                }
++                              }
++                            }
++                          ]
++                        }
++                      ]
++                    },
++                    "isOptional": false
++                  },
++                  {
++                    "name": "message",
++                    "type": {
++                      "_tag": "String",
++                      "checks": [
++                        {
++                          "_tag": "Filter",
++                          "representation": {
++                            "id": "effect/schema/isMaxLength",
++                            "payload": {
++                              "maxLength": 1024
++                            }
++                          }
++                        }
++                      ]
++                    },
++                    "isOptional": true
++                  }
++                ]
++              },
++              {
++                "_tag": "Null"
++              }
++            ]
++          },
++          "isOptional": true
++        }
++      ],
++      "annotations": {
++        "~identifier": "ProviderError"
++      }
++    },
++    "McpErrorEncoded": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "_tag",
++          "type": {
++            "_tag": "Literal",
++            "literal": "McpError"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "phase",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "connect"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "discover"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "call"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "schema"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "transport"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "reason",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "request"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "unauthorized"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "invalid_response"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "timeout"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "invalid_input"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "status",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Union",
++                "types": [
++                  {
++                    "_tag": "Number",
++                    "checks": [
++                      {
++                        "_tag": "Filter",
++                        "representation": {
++                          "id": "effect/schema/isFinite",
++                          "payload": null
++                        }
++                      }
++                    ]
++                  },
++                  {
++                    "_tag": "Union",
++                    "types": [
++                      {
++                        "_tag": "Literal",
++                        "literal": "Infinity"
++                      },
++                      {
++                        "_tag": "Literal",
++                        "literal": "-Infinity"
++                      },
++                      {
++                        "_tag": "Literal",
++                        "literal": "NaN"
++                      }
++                    ]
++                  }
++                ]
++              },
++              {
++                "_tag": "Null"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "upstream",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Objects",
++                "propertySignatures": [
++                  {
++                    "name": "code",
++                    "type": {
++                      "_tag": "Union",
++                      "types": [
++                        {
++                          "_tag": "Number",
++                          "checks": [
++                            {
++                              "_tag": "Filter",
++                              "representation": {
++                                "id": "effect/schema/isInt",
++                                "payload": null
++                              }
++                            }
++                          ]
++                        },
++                        {
++                          "_tag": "String",
++                          "checks": [
++                            {
++                              "_tag": "Filter",
++                              "representation": {
++                                "id": "effect/schema/isMinLength",
++                                "payload": {
++                                  "minLength": 1
++                                }
++                              }
++                            },
++                            {
++                              "_tag": "Filter",
++                              "representation": {
++                                "id": "effect/schema/isMaxLength",
++                                "payload": {
++                                  "maxLength": 128
++                                }
++                              }
++                            }
++                          ]
++                        }
++                      ]
++                    },
++                    "isOptional": false
++                  },
++                  {
++                    "name": "message",
++                    "type": {
++                      "_tag": "String",
++                      "checks": [
++                        {
++                          "_tag": "Filter",
++                          "representation": {
++                            "id": "effect/schema/isMaxLength",
++                            "payload": {
++                              "maxLength": 1024
++                            }
++                          }
++                        }
++                      ]
++                    },
++                    "isOptional": true
++                  }
++                ]
++              },
++              {
++                "_tag": "Null"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "session",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": true
++              },
++              {
++                "_tag": "Null"
++              }
++            ]
++          },
++          "isOptional": true
++        }
++      ],
++      "annotations": {
++        "~identifier": "McpError"
++      }
++    },
++    "SkillLoadFailedEncoded": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "_tag",
++          "type": {
++            "_tag": "Literal",
++            "literal": "SkillLoadFailed"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "reason",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "source"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "request"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "rate_limited"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "document"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "limit"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "changed"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "encoding"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "message",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMaxLength",
++                      "payload": {
++                        "maxLength": 500
++                      }
++                    }
++                  }
++                ]
++              },
++              {
++                "_tag": "Null"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "status",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Number",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isInt",
++                      "payload": null
++                    }
++                  },
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isBetween",
++                      "payload": {
++                        "minimum": 100,
++                        "maximum": 599
++                      }
++                    }
++                  }
++                ]
++              },
++              {
++                "_tag": "Null"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "missing",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Union",
++                "types": [
++                  {
++                    "_tag": "Literal",
++                    "literal": "repository"
++                  },
++                  {
++                    "_tag": "Literal",
++                    "literal": "ref"
++                  }
++                ]
++              },
++              {
++                "_tag": "Null"
++              }
++            ]
++          },
++          "isOptional": true
++        }
++      ],
++      "annotations": {
++        "~identifier": "SkillLoadFailed"
++      }
++    },
++    "WorkflowFailureEncoded": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "_tag",
++          "type": {
++            "_tag": "Literal",
++            "literal": "WorkflowFailure"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "step",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 200
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "errorName",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 128
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "message",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 2048
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "reason",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "unavailable"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "not_found"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "input"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "output"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "operation"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "approval"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "credentials"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "terminated"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "execution"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "conflict"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "engine"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "retryable",
++          "type": {
++            "_tag": "Boolean"
++          },
++          "isOptional": false
++        }
++      ],
++      "annotations": {
++        "~identifier": "WorkflowFailure"
++      }
++    },
++    "HostRequestInvalidEncoded": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "_tag",
++          "type": {
++            "_tag": "Literal",
++            "literal": "HostRequestInvalid"
++          },
++          "isOptional": false
++        }
++      ],
++      "annotations": {
++        "~identifier": "HostRequestInvalid"
++      }
++    },
++    "HostAccountsInvalidEncoded": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "_tag",
++          "type": {
++            "_tag": "Literal",
++            "literal": "HostAccountsInvalid"
++          },
++          "isOptional": false
++        }
++      ],
++      "annotations": {
++        "~identifier": "HostAccountsInvalid"
++      }
++    },
++    "HostDeclarationInvalidEncoded": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "_tag",
++          "type": {
++            "_tag": "Literal",
++            "literal": "HostDeclarationInvalid"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "source",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "app"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "storage"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "service"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "errorName",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 128
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "code",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 128
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "message",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 2048
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "fields",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [],
++            "indexSignatures": [
++              {
++                "parameter": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isPattern",
++                        "payload": {
++                          "source": "^[A-Za-z_$][A-Za-z0-9_$]{0,63}$",
++                          "flags": ""
++                        }
++                      }
++                    }
++                  ]
++                },
++                "type": {
++                  "_tag": "Union",
++                  "types": [
++                    {
++                      "_tag": "String",
++                      "checks": [
++                        {
++                          "_tag": "Filter",
++                          "representation": {
++                            "id": "effect/schema/isMaxLength",
++                            "payload": {
++                              "maxLength": 256
++                            }
++                          }
++                        }
++                      ]
++                    },
++                    {
++                      "_tag": "Number",
++                      "checks": [
++                        {
++                          "_tag": "Filter",
++                          "representation": {
++                            "id": "effect/schema/isFinite",
++                            "payload": null
++                          }
++                        }
++                      ]
++                    },
++                    {
++                      "_tag": "Boolean"
++                    }
++                  ]
++                }
++              }
++            ],
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxProperties",
++                  "payload": {
++                    "maxProperties": 8
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        }
++      ],
++      "annotations": {
++        "~identifier": "HostDeclarationInvalid"
++      }
++    },
++    "HostEvaluationFailedEncoded": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "_tag",
++          "type": {
++            "_tag": "Literal",
++            "literal": "HostEvaluationFailed"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "source",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "app"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "storage"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "service"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "errorName",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 128
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "code",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 128
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "message",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 2048
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "fields",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [],
++            "indexSignatures": [
++              {
++                "parameter": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isPattern",
++                        "payload": {
++                          "source": "^[A-Za-z_$][A-Za-z0-9_$]{0,63}$",
++                          "flags": ""
++                        }
++                      }
++                    }
++                  ]
++                },
++                "type": {
++                  "_tag": "Union",
++                  "types": [
++                    {
++                      "_tag": "String",
++                      "checks": [
++                        {
++                          "_tag": "Filter",
++                          "representation": {
++                            "id": "effect/schema/isMaxLength",
++                            "payload": {
++                              "maxLength": 256
++                            }
++                          }
++                        }
++                      ]
++                    },
++                    {
++                      "_tag": "Number",
++                      "checks": [
++                        {
++                          "_tag": "Filter",
++                          "representation": {
++                            "id": "effect/schema/isFinite",
++                            "payload": null
++                          }
++                        }
++                      ]
++                    },
++                    {
++                      "_tag": "Boolean"
++                    }
++                  ]
++                }
++              }
++            ],
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxProperties",
++                  "payload": {
++                    "maxProperties": 8
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        }
++      ],
++      "annotations": {
++        "~identifier": "HostEvaluationFailed"
++      }
++    },
++    "HostOperationNotFoundEncoded": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "_tag",
++          "type": {
++            "_tag": "Literal",
++            "literal": "HostOperationNotFound"
++          },
++          "isOptional": false
++        }
++      ],
++      "annotations": {
++        "~identifier": "HostOperationNotFound"
++      }
++    },
++    "HostOperationFailedEncoded": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "_tag",
++          "type": {
++            "_tag": "Literal",
++            "literal": "HostOperationFailed"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "source",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "app"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "storage"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "service"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "errorName",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 128
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "code",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 128
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "message",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 2048
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "fields",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [],
++            "indexSignatures": [
++              {
++                "parameter": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isPattern",
++                        "payload": {
++                          "source": "^[A-Za-z_$][A-Za-z0-9_$]{0,63}$",
++                          "flags": ""
++                        }
++                      }
++                    }
++                  ]
++                },
++                "type": {
++                  "_tag": "Union",
++                  "types": [
++                    {
++                      "_tag": "String",
++                      "checks": [
++                        {
++                          "_tag": "Filter",
++                          "representation": {
++                            "id": "effect/schema/isMaxLength",
++                            "payload": {
++                              "maxLength": 256
++                            }
++                          }
++                        }
++                      ]
++                    },
++                    {
++                      "_tag": "Number",
++                      "checks": [
++                        {
++                          "_tag": "Filter",
++                          "representation": {
++                            "id": "effect/schema/isFinite",
++                            "payload": null
++                          }
++                        }
++                      ]
++                    },
++                    {
++                      "_tag": "Boolean"
++                    }
++                  ]
++                }
++              }
++            ],
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxProperties",
++                  "payload": {
++                    "maxProperties": 8
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        }
++      ],
++      "annotations": {
++        "~identifier": "HostOperationFailed"
++      }
++    },
++    "DatabaseLimitExceededEncoded": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "_tag",
++          "type": {
++            "_tag": "Literal",
++            "literal": "DatabaseLimitExceeded"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "limit",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "scanCalls"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "directGets"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "rowsRead"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "rowsReturned"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "pageSize"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "bytesRead"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "writes"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "valueBytes"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "maximum",
++          "type": {
++            "_tag": "Number",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isInt",
++                  "payload": null
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "requested",
++          "type": {
++            "_tag": "Number",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isInt",
++                  "payload": null
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        }
++      ],
++      "annotations": {
++        "~identifier": "DatabaseLimitExceeded"
++      }
++    },
++    "DatabaseFieldReservedEncoded": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "_tag",
++          "type": {
++            "_tag": "Literal",
++            "literal": "DatabaseFieldReserved"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "table",
++          "type": {
++            "_tag": "String"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "field",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "id"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "createdAt"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "updatedAt"
++              }
++            ]
++          },
++          "isOptional": false
++        }
++      ],
++      "annotations": {
++        "~identifier": "DatabaseFieldReserved"
++      }
++    },
++    "HostToolNotFoundEncoded": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "_tag",
++          "type": {
++            "_tag": "Literal",
++            "literal": "HostToolNotFound"
++          },
++          "isOptional": false
++        }
++      ],
++      "annotations": {
++        "~identifier": "HostToolNotFound"
++      }
++    },
++    "HostInputInvalidEncoded": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "_tag",
++          "type": {
++            "_tag": "Literal",
++            "literal": "HostInputInvalid"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "problems",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMaxLength",
++                      "payload": {
++                        "maxLength": 512
++                      }
++                    }
++                  }
++                ]
++              }
++            ],
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 10
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        }
++      ],
++      "annotations": {
++        "~identifier": "HostInputInvalid"
++      }
++    },
++    "HostOutputInvalidEncoded": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "_tag",
++          "type": {
++            "_tag": "Literal",
++            "literal": "HostOutputInvalid"
++          },
++          "isOptional": false
++        }
++      ],
++      "annotations": {
++        "~identifier": "HostOutputInvalid"
++      }
++    },
++    "HostToolBlockedEncoded": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "_tag",
++          "type": {
++            "_tag": "Literal",
++            "literal": "HostToolBlocked"
++          },
++          "isOptional": false
++        }
++      ],
++      "annotations": {
++        "~identifier": "HostToolBlocked"
++      }
++    },
++    "HostToolApprovalRequiredEncoded": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "_tag",
++          "type": {
++            "_tag": "Literal",
++            "literal": "HostToolApprovalRequired"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "input",
++          "type": {
++            "_tag": "Declaration",
++            "representation": {
++              "id": "effect/schema/Json",
++              "payload": null
++            }
++          },
++          "isOptional": false
++        },
++        {
++          "name": "elicitation",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [
++              {
++                "name": "_meta",
++                "type": {
++                  "_tag": "Union",
++                  "types": [
++                    {
++                      "_tag": "Objects",
++                      "propertySignatures": [],
++                      "indexSignatures": [
++                        {
++                          "parameter": {
++                            "_tag": "String"
++                          },
++                          "type": {
++                            "_tag": "Declaration",
++                            "representation": {
++                              "id": "effect/schema/Json",
++                              "payload": null
++                            }
++                          }
++                        }
++                      ]
++                    },
++                    {
++                      "_tag": "Null"
++                    }
++                  ]
++                },
++                "isOptional": true
++              },
++              {
++                "name": "mode",
++                "type": {
++                  "_tag": "Literal",
++                  "literal": "form"
++                },
++                "isOptional": false
++              },
++              {
++                "name": "message",
++                "type": {
++                  "_tag": "String"
++                },
++                "isOptional": false
++              },
++              {
++                "name": "requestedSchema",
++                "type": {
++                  "_tag": "Objects",
++                  "propertySignatures": [
++                    {
++                      "name": "type",
++                      "type": {
++                        "_tag": "Literal",
++                        "literal": "object"
++                      },
++                      "isOptional": false
++                    },
++                    {
++                      "name": "properties",
++                      "type": {
++                        "_tag": "Objects",
++                        "propertySignatures": [],
++                        "indexSignatures": [
++                          {
++                            "parameter": {
++                              "_tag": "String"
++                            },
++                            "type": {
++                              "_tag": "Never"
++                            }
++                          }
++                        ]
++                      },
++                      "isOptional": false
++                    }
++                  ]
++                },
++                "isOptional": false
++              }
++            ]
++          },
++          "isOptional": false
++        }
++      ],
++      "annotations": {
++        "~identifier": "HostToolApprovalRequired"
++      }
++    },
++    "HostToolPolicyFailedEncoded": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "_tag",
++          "type": {
++            "_tag": "Literal",
++            "literal": "HostToolPolicyFailed"
++          },
++          "isOptional": false
++        }
++      ],
++      "annotations": {
++        "~identifier": "HostToolPolicyFailed"
++      }
++    },
++    "ElicitationFailedEncoded": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "_tag",
++          "type": {
++            "_tag": "Literal",
++            "literal": "ElicitationFailed"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "reason",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "unavailable"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "transaction"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "invalid-request"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "invalid-response"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "transport"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "expired"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "forbidden"
++              }
++            ]
++          },
++          "isOptional": false
++        }
++      ],
++      "annotations": {
++        "~identifier": "ElicitationFailed"
++      }
++    },
++    "HostKindMismatchEncoded": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "_tag",
++          "type": {
++            "_tag": "Literal",
++            "literal": "HostKindMismatch"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "tool",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMinLength",
++                  "payload": {
++                    "minLength": 1
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "requested",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "query"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "mutation"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "actual",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "query"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "mutation"
++              }
++            ]
++          },
++          "isOptional": false
++        }
++      ],
++      "annotations": {
++        "~identifier": "HostKindMismatch"
++      }
++    }
++  },
++  "shared": {}
++}
+diff --git a/packages/apps/src/contracts/host.ts b/packages/apps/src/contracts/host.ts
+--- a/packages/apps/src/contracts/host.ts
++++ b/packages/apps/src/contracts/host.ts
+@@ -352,6 +352,11 @@
+   readonly observed: (view: import("./mcp-apps.ts").McpAppViewObservation) => void;
+ }>("apps/McpAppViewSink", { defaultValue: () => ({ observed: () => {} }) });
+
++/** The account router reports executed branches, including branches that fail. */
++export const ToolAccountObservation = Context.Reference<{
++  readonly used: (accounts: readonly string[]) => void;
++}>("apps/ToolAccountObservation", { defaultValue: () => ({ used: () => {} }) });
++
+ /** Invocation-owned outcome sink. Framework adapters report semantic failures
+  * independently of successful JSON transport; customer output is never inspected. */
+ export const ToolResultObservation = Context.Reference<{ readonly failed: () => void }>(
+diff --git a/packages/apps/src/contracts/protocol-version.ts b/packages/apps/src/contracts/protocol-version.ts
+--- a/packages/apps/src/contracts/protocol-version.ts
++++ b/packages/apps/src/contracts/protocol-version.ts
+@@ -3,4 +3,4 @@
+  * snapshot. Its schemas are `protocols/current.ts`; released protocols are frozen. See notes/apps-publishing.md.
+  * This file has no imports so the package build script can read it directly.
+  */
+-export const frameworkProtocol = 34;
++export const frameworkProtocol = 35;
+diff --git a/packages/apps/src/contracts/protocols/34.ts b/packages/apps/src/contracts/protocols/34.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/apps/src/contracts/protocols/34.ts
+@@ -0,0 +1,707 @@
++import {
++  AppCallCommand,
++  AppCallReply,
++  DeclaredAppDependencies,
++  AppToolPolicyCommand,
++  AppToolPolicyReplayReply as AppToolPolicyReply,
++} from "../app-calls.ts";
++import { DeclaredModels, ModelCommand, ModelReply } from "../models.ts";
++import { AccountObservationResult } from "../account-observation.ts";
++/**
++ * The host protocol this framework speaks: every message that crosses between a host and an app
++ * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
++ *
++ * This module is live. The framework and the SDK read the current boundary from here, through
++ * `../host.ts`. `bun run check` records it in `packages/apps/protocols/<frameworkProtocol>.json` and
++ * checks that it stays compatible with every released protocol in `released.ts`: a host that speaks
++ * this module must keep running every bundle a released protocol retained. A change that no longer
++ * does so is a break: freeze this module's previous content as `<frameworkProtocol>.ts`, raise the
++ * number, and give the host an adapter for the frozen one. See notes/apps-publishing.md.
++ *
++ * The frozen protocol modules beside this one are records of released boundaries. Nothing here
++ * imports them, so a change here never edits a released protocol.
++ */
++import { Effect, Schema } from "effect";
++import { AccountFamily } from "../account-family.ts";
++import { McpAppViewObservation, McpAppUi } from "../mcp-apps.ts";
++import { ConnectCommand } from "../connect.ts";
++import { ProviderSite } from "@executor-js/utils/account-site";
++import { CacheCommand, CacheReply } from "@executor-js/app-cache/contracts";
++import {
++  DatabaseFieldReserved,
++  DatabaseLimitExceeded,
++  DatabaseSchema,
++} from "@executor-js/app-data/contracts";
++import { OpenapiResponseError } from "../api-response-error.ts";
++import {
++  ApprovalElicitation,
++  ElicitationFailed,
++  ElicitationReply,
++  FormElicitation,
++} from "../elicitation.ts";
++import { DeclaredEvents, EmittedEvents } from "../events.ts";
++import { FailureDetail, UpstreamError } from "../failure.ts";
++import { AccountCheckResult, OAuth2Config } from "../provider.ts";
++import { ProviderError } from "../provider-error.ts";
++import { RouterIcon } from "../router.ts";
++import { AppIcons } from "../icons.ts";
++import { Placements } from "../placement.ts";
++import { OperationSchedule } from "../schedules.ts";
++import { AccountId, JsonObject, JsonValue } from "../schema.ts";
++import { AppSkillName, AppSkills } from "../skills.ts";
++import { ToolAnnotations } from "../tools.ts";
++import { WebhookCommand } from "../webhook-protocol.ts";
++import {
++  WorkflowCommand,
++  WorkflowControlCommand,
++  WorkflowFailure,
++  WorkflowReplay,
++  NativeWorkflowRpcCommand as WorkflowRpcCommand,
++  WorkflowRpcResult,
++  WorkflowRunId,
++} from "../workflows.ts";
++
++/** An MCP failure as it crosses the host boundary. Apps throw the author-facing class from `apps/mcp`. */
++export class McpError extends Schema.TaggedError<McpError>()("McpError", {
++  phase: Schema.Literals(["connect", "discover", "call", "schema", "transport"]),
++  reason: Schema.Literals([
++    "request",
++    "unauthorized",
++    "invalid_response",
++    "timeout",
++    "invalid_input",
++  ]),
++  status: Schema.optional(Schema.Number),
++  /** The JSON-RPC error the server stated. */
++  upstream: Schema.optional(UpstreamError),
++  /**
++   * The refused request carried the session ID the server issued at initialization, so a 404 reads
++   * as a session the server may have lost. Chooses the explanation only; the host never decides from
++   * it whose side a failure is on.
++   */
++  session: Schema.optional(Schema.Literal(true)),
++}) {}
++
++/** A skill loader failure as it crosses the host boundary. Apps throw the author-facing class from `apps/skills`. */
++export class SkillLoadFailed extends Schema.TaggedError<SkillLoadFailed>()("SkillLoadFailed", {
++  reason: Schema.Literals([
++    "source",
++    "request",
++    "rate_limited",
++    "document",
++    "limit",
++    "changed",
++    "encoding",
++  ]),
++  message: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
++  status: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 599 }))),
++  /** What the service's answer points to as missing: the repository, or the branch or tag. */
++  missing: Schema.optional(Schema.Literals(["repository", "ref"])),
++}) {}
++
++/**
++ * Where a provider's credentials may be sent: an exact host, `host:port`, or `*.` followed by a
++ * domain, matching exactly one more label. Lowercase, without a scheme or path.
++ */
++export const CredentialHost = Schema.String.check(
++  Schema.isPattern(
++    /^(\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$/,
++  ),
++);
++
++/**
++ * Field names an auth method exposes to app code, and where its secret fields may be sent. Every
++ * other string field is secret.
++ */
++const exposure = {
++  /** Not secret: app code reads the real value and forms show it. */
++  plain: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++  /** Secret, but app code reads the real value, for signing and similar uses. */
++  raw: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++  /**
++   * The only places the outbound network substitutes this method's secret fields: whole header
++   * values and query parameters, each an exact template. Part of the provider's identity. In an
++   * invocation, an account's provider carries the placements granted to that account, which can
++   * be narrower than the app's declaration.
++   */
++  request: Schema.optionalKey(Placements),
++};
++
++/** Serializable authentication declarations interpreted by the trusted host. */
++export const DeclaredAuthMethod = Schema.Union([
++  Schema.Struct({ type: Schema.Literal("interactive"), label: Schema.String, ...exposure }),
++  Schema.Struct({
++    type: Schema.Literal("secrets"),
++    provisioned: Schema.optionalKey(Schema.Literal(true)),
++    label: Schema.String,
++    fields: JsonObject,
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[0].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[1].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[2].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[3].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
++]);
++
++/** A credential-free provider declaration with the hosts its credentials may be sent to. */
++export const DeclaredProvider = Schema.Struct({
++  name: Schema.NonEmptyString,
++  family: Schema.optionalKey(AccountFamily),
++  auth: Schema.Record(Schema.NonEmptyString, DeclaredAuthMethod),
++  site: Schema.optionalKey(ProviderSite),
++  hosts: Schema.optionalKey(Schema.Array(CredentialHost)),
++});
++/** Credential-free provider declaration; content matching remains host policy. */
++export type DeclaredProvider = typeof DeclaredProvider.Type;
++
++/** One requirement: its provider, how many accounts it takes, and whether it has a check. */
++export const DeclaredAccountSlot = Schema.Struct({
++  definition: DeclaredProvider,
++  capabilities: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++  cardinality: Schema.Literals(["one", "many"]),
++  contributed: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
++  /**
++   * The slot's provider defines an account check. Kept beside the definition, not in it, so
++   * adding or editing a check never changes the provider's identity.
++   */
++  health: Schema.optionalKey(Schema.Literal(true)),
++  /** This slot can check app-acquired references through connect.check. */
++  interactiveHealth: Schema.optionalKey(Schema.Literal(true)),
++  hostAcquisition: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++});
++export type DeclaredAccountSlot = typeof DeclaredAccountSlot.Type;
++
++/** One scope's requirements, by name. */
++export const DeclaredAccountSlots = Schema.Record(Schema.NonEmptyString, DeclaredAccountSlot);
++export type DeclaredAccountSlots = typeof DeclaredAccountSlots.Type;
++
++/** Account slots available without binding accounts or evaluating the app factory. */
++export const DeclaredRequirements = Schema.Struct({
++  models: Schema.optionalKey(DeclaredModels),
++  dependencies: Schema.optionalKey(DeclaredAppDependencies),
++  /** Protocol support of this retained framework build, not an author-declared requirement. */
++  capabilities: Schema.optionalKey(
++    Schema.Struct({
++      skills: Schema.Literal(true),
++      /** Accepts inspect detail and tools. Earlier builds reject both as excess fields. */
++      toolIndex: Schema.optionalKey(Schema.Literal(true)),
++      /** Accepts skills sources and reports whether the catalog includes a live loader. */
++      skillSources: Schema.optionalKey(Schema.Literal(true)),
++      /** Accepts scheduled inspection. Earlier builds reject it as an excess field. */
++      scheduledTools: Schema.optionalKey(Schema.Literal(true)),
++      /**
++       * Accepts inspect definitions and answers it with a shared catalog. Earlier builds reject it
++       * as an excess field.
++       */
++      sharedDefinitions: Schema.optionalKey(Schema.Literal(true)),
++      mcpApps: Schema.optionalKey(Schema.Literal(true)),
++    }),
++  ),
++  /**
++   * The document database an app of protocol 9 or earlier declared. Apps of this protocol declare
++   * `sql` instead; the field remains so requirements read from older retained builds keep their meaning.
++   */
++  database: Schema.optionalKey(DatabaseSchema),
++  /**
++   * Requirements by scope. `app` requirements are filled by the accounts the app's managers link for everyone,
++   * for every caller and for background work; `user` requirements by each caller's linked
++   * accounts. A name is used in one scope only. Bundles of protocol 12 and earlier declare user
++   * requirements only.
++   */
++  accounts: Schema.Struct({ app: DeclaredAccountSlots, user: DeclaredAccountSlots }),
++  /** The build has SQL files in `migrations/` and owns a raw SQLite database. */
++  sql: Schema.optionalKey(Schema.Literal(true)),
++  /** The events the app declares, so a host lists them without evaluating the app. */
++  events: Schema.optionalKey(DeclaredEvents),
++  /** The icons the app declares, so a host shows them without evaluating the app. */
++  icons: Schema.optionalKey(AppIcons),
++});
++/** Parsed declared account requirements. */
++export type DeclaredRequirements = typeof DeclaredRequirements.Type;
++
++/**
++ * Host-resolved credentials for one stable saved account. Never a request DTO. When the provider
++ * declares hosts, its secret string fields are sealed handles, not values. The provider carries
++ * the hosts and placements granted to this account.
++ */
++export const ResolvedAccount = Schema.Struct({
++  id: AccountId,
++  site: Schema.optionalKey(Schema.String),
++  provider: DeclaredProvider,
++  method: Schema.NonEmptyString,
++  /**
++   * Changes when the account is reconnected or its credentials replaced, not on renewal. Hosts
++   * send it since credential generations; `apps@0.0.1-beta.0` and `beta.1` ignore it.
++   */
++  generation: Schema.optionalKey(Schema.Int),
++  fields: JsonObject,
++});
++/** Parsed host account binding. */
++export type ResolvedAccount = typeof ResolvedAccount.Type;
++
++/** One scope's resolved accounts by requirement; [] differs from a missing slot. */
++export const ResolvedAccountSlots = Schema.Record(
++  Schema.NonEmptyString,
++  Schema.Union([ResolvedAccount, Schema.Array(ResolvedAccount)]),
++);
++export type ResolvedAccountSlots = typeof ResolvedAccountSlots.Type;
++
++/**
++ * An invocation's accounts by scope, resolved by the trusted caller. `user` is absent for work
++ * without a caller, such as an app schedule or an app-account webhook: its context has no `user`.
++ */
++export const ResolvedAccounts = Schema.Struct({
++  app: ResolvedAccountSlots,
++  user: Schema.optionalKey(ResolvedAccountSlots),
++});
++/** Parsed host selections, kept redacted until native account binding. */
++export type ResolvedAccounts = typeof ResolvedAccounts.Type;
++
++/** Trusted approval for one decoded call. Never accepted in public command JSON. */
++export const TrustedToolApproval = Schema.Struct({ tool: Schema.NonEmptyString, input: JsonValue });
++export type TrustedToolApproval = typeof TrustedToolApproval.Type;
++
++/** Absolute Unix time in milliseconds; remote hosts enforce it inside the operation transaction. */
++export const InvocationDeadline = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
++
++/**
++ * Serializable live tool metadata; executable callbacks never cross this boundary. `name` is the
++ * tool's full dotted path. `router` is the path of the router that owns it, omitted at the root.
++ * `readOnly` marks a query; a tool without it is a mutation.
++ */
++export const HostedTool = Schema.Struct({
++  schedules: Schema.optionalKey(Schema.Array(OperationSchedule)),
++  name: Schema.NonEmptyString,
++  router: Schema.optionalKey(Schema.NonEmptyString),
++  tags: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++  description: Schema.String,
++  inputSchema: JsonObject,
++  readOnly: Schema.optionalKey(Schema.Boolean),
++  title: Schema.optionalKey(Schema.String),
++  outputSchema: Schema.optionalKey(JsonObject),
++  annotations: Schema.optionalKey(ToolAnnotations),
++  _meta: Schema.optionalKey(JsonObject),
++  ui: Schema.optionalKey(McpAppUi),
++});
++/** Parsed live tool description. */
++export type HostedTool = typeof HostedTool.Type;
++
++/** Catalog entry without schemas. Browsing lists these and reads one full tool on selection. */
++export const HostedToolSummary = HostedTool.mapFields(
++  ({ inputSchema: _input, outputSchema: _output, _meta, ...fields }) => fields,
++);
++export type HostedToolSummary = typeof HostedToolSummary.Type;
++
++/**
++ * The module or declared capability shape could not be hosted. The detail names what the app
++ * declared wrongly; declarations bind no accounts.
++ */
++export class HostDeclarationInvalid extends Schema.TaggedError<HostDeclarationInvalid>()(
++  "HostDeclarationInvalid",
++  FailureDetail,
++) {}
++/** Fresh app evaluation failed before calling a tool. */
++export class HostEvaluationFailed extends Schema.TaggedError<HostEvaluationFailed>()(
++  "HostEvaluationFailed",
++  FailureDetail,
++) {}
++
++/** Why one router's tools could not be read. The rest of the app's catalog is unaffected. */
++export const HostRouterError = Schema.Union([
++  ProviderError,
++  McpError,
++  SkillLoadFailed,
++  HostDeclarationInvalid,
++  HostEvaluationFailed,
++]);
++export type HostRouterError = typeof HostRouterError.Type;
++
++/**
++ * One router in a live catalog. `path` is "" for the app's root router. `skill` names the skill
++ * that carries this router's instructions. A router with `error` lists none of its tools.
++ */
++export const HostedRouter = Schema.Struct({
++  path: Schema.String,
++  title: Schema.optionalKey(Schema.String),
++  description: Schema.optionalKey(Schema.String),
++  icons: Schema.optionalKey(Schema.Array(RouterIcon)),
++  tags: Schema.optionalKey(Schema.Record(Schema.NonEmptyString, Schema.String)),
++  skill: Schema.optionalKey(AppSkillName),
++  error: Schema.optionalKey(HostRouterError),
++});
++export type HostedRouter = typeof HostedRouter.Type;
++
++/** A live evaluation's tools and the routers that group them. */
++export const HostedCatalog = Schema.Struct({
++  tools: Schema.Array(HostedTool),
++  routers: Schema.Array(HostedRouter),
++});
++export type HostedCatalog = typeof HostedCatalog.Type;
++
++/** A catalog without tool schemas. Browsing lists these and reads one full tool on selection. */
++export const HostedCatalogSummary = Schema.Struct({
++  tools: Schema.Array(HostedToolSummary),
++  routers: Schema.Array(HostedRouter),
++});
++export type HostedCatalogSummary = typeof HostedCatalogSummary.Type;
++
++/** A tool schema whose `$defs` a shared catalog sends once, beside its tools. */
++export const SharedSchemaKey = Schema.Literals(["inputSchema", "outputSchema"]);
++export type SharedSchemaKey = typeof SharedSchemaKey.Type;
++
++/**
++ * A tool of a shared catalog. The `$defs` of each schema `shared` names is the position of its
++ * entries in the catalog's `defs`; the tool's other fields are as `HostedTool`'s.
++ */
++export const HostedSharedTool = Schema.Struct({
++  ...HostedTool.fields,
++  shared: Schema.optionalKey(Schema.Array(SharedSchemaKey)),
++});
++export type HostedSharedTool = typeof HostedSharedTool.Type;
++
++/**
++ * A catalog that sends each `$defs` its tools' schemas hold once, and each definition in them
++ * once. Routers such as the OpenAPI importer give every tool the definitions its schemas reach,
++ * which for a densely connected document is most of the document again for each tool, under the
++ * same few hundred `$defs`. Putting each tool's `$defs` back gives the `HostedCatalog` the bundle
++ * evaluated. Only builds that declare the sharedDefinitions capability send it, and only when
++ * the inspection asks.
++ */
++export const HostedSharedCatalog = Schema.Struct({
++  tools: Schema.Array(HostedSharedTool),
++  routers: Schema.Array(HostedRouter),
++  definitions: Schema.Array(JsonValue),
++  /** Each distinct `$defs`, its entries naming positions in `definitions`. */
++  defs: Schema.Array(Schema.Record(Schema.String, Schema.Int)),
++});
++export type HostedSharedCatalog = typeof HostedSharedCatalog.Type;
++
++/**
++ * A skill catalog and whether any of it came from `dynamicSkills`. Without a live loader the
++ * catalog is determined by the build and its evaluation inputs; with one it reflects a publisher.
++ * `cached` says the loader read through the app cache, so the cache's freshness and invalidation
++ * govern its publisher reads.
++ */
++export const SkillSources = Schema.Struct({
++  skills: AppSkills,
++  dynamic: Schema.Boolean,
++  cached: Schema.optionalKey(Schema.Boolean),
++});
++export type SkillSources = typeof SkillSources.Type;
++/** Either response shape; `dynamic` is unknown for builds that predate skillSources. */
++export const SkillCatalogResponse = Schema.Union([SkillSources, AppSkills]);
++
++/** Whether a tool reads or writes. */
++export const ToolKind = Schema.Literals(["query", "mutation"]);
++
++/**
++ * Check one account for one declared slot. The invocation supplies only that slot, in its scope,
++ * as a single account even when the slot takes many. The app factory is not evaluated.
++ */
++export const AccountCheckCommand = Schema.Struct({
++  operation: Schema.Literal("account-check"),
++  requirement: Schema.NonEmptyString,
++});
++export type AccountCheckCommand = typeof AccountCheckCommand.Type;
++export const AccountObserveCommand = Schema.Struct({
++  operation: Schema.Literal("account-observe"),
++  requirement: Schema.NonEmptyString,
++});
++
++/** Apply the build's pending SQL migrations. No accounts are bound and the app is not evaluated. */
++export const MigrateCommand = Schema.Struct({ operation: Schema.Literal("migrate") });
++export type MigrateCommand = typeof MigrateCommand.Type;
++
++/** The migrations this command applied, oldest first, by position and file path. Empty when the database was current. */
++export const MigrateResult = Schema.Array(
++  Schema.Struct({ id: Schema.Int, name: Schema.NonEmptyString }),
++);
++export type MigrateResult = typeof MigrateResult.Type;
++
++/** Framework-owned dispatch, independent of app-authored HTTP routing. */
++export const HostRequest = Schema.Union([
++  ...ConnectCommand.members,
++  WorkflowCommand,
++  WebhookCommand,
++  Schema.Struct({ operation: Schema.Literal("requirements") }),
++  Schema.Struct({
++    operation: Schema.Literal("inspect"),
++    uiProfile: Schema.optionalKey(Schema.Literal(true)),
++    /** Omit schemas. Only builds that declare the toolIndex capability accept this. */
++    detail: Schema.optionalKey(Schema.Literal("summary")),
++    /** Describe only these tools. Only builds that declare the toolIndex capability accept this. */
++    tools: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++    /**
++     * Describe only declared operations that have schedules, without dynamic tool discovery.
++     * Only builds that declare the scheduledTools capability accept this.
++     */
++    scheduled: Schema.optionalKey(Schema.Literal(true)),
++    /**
++     * Answer with a HostedSharedCatalog, each shared `$defs` entry sent once. Only builds that
++     * declare the sharedDefinitions capability accept this.
++     */
++    definitions: Schema.optionalKey(Schema.Literal("shared")),
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("skills"),
++    /** Answer with SkillSources. Only builds that declare the skillSources capability accept this. */
++    sources: Schema.optionalKey(Schema.Literal(true)),
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("query"),
++    name: Schema.NonEmptyString,
++    input: JsonValue,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("mutate"),
++    name: Schema.NonEmptyString,
++    input: JsonValue,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("call"),
++    tool: Schema.NonEmptyString,
++    /**
++     * The caller's claim; the bundle rejects a call whose tool has the other kind. The host omits
++     * it for a tool its catalog does not list, and then opens storage for writing.
++     */
++    kind: Schema.optionalKey(ToolKind),
++    input: JsonValue,
++    audience: Schema.optionalKey(Schema.Literal("app")),
++    uiProfile: Schema.optionalKey(Schema.Literal(true)),
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("app-resource"),
++    tool: Schema.NonEmptyString,
++    input: JsonValue,
++    source: Schema.String,
++    selection: JsonValue,
++    uri: Schema.NonEmptyString,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("app-callback"),
++    tool: Schema.NonEmptyString,
++    input: JsonValue,
++    source: Schema.String,
++    selection: JsonValue,
++    name: Schema.NonEmptyString,
++    arguments: JsonValue,
++  }),
++  AccountCheckCommand,
++  AccountObserveCommand,
++  MigrateCommand,
++]);
++/** Parsed portable dispatch request. */
++export type HostRequest = typeof HostRequest.Type;
++
++/** The dispatch request did not match the protocol. */
++export class HostRequestInvalid extends Schema.TaggedError<HostRequestInvalid>()(
++  "HostRequestInvalid",
++  {},
++) {}
++/** Host-supplied accounts did not satisfy the declared slots or native method schemas. */
++export class HostAccountsInvalid extends Schema.TaggedError<HostAccountsInvalid>()(
++  "HostAccountsInvalid",
++  {},
++) {}
++/** No query or mutation matched the requested name. */
++export class HostOperationNotFound extends Schema.TaggedError<HostOperationNotFound>()(
++  "HostOperationNotFound",
++  {},
++) {}
++/** An app operation failed. Carries the app's own error name, code, fields and bounded message. */
++export class HostOperationFailed extends Schema.TaggedError<HostOperationFailed>()(
++  "HostOperationFailed",
++  FailureDetail,
++) {}
++/** The freshly evaluated catalog did not contain the requested tool. */
++export class HostToolNotFound extends Schema.TaggedError<HostToolNotFound>()(
++  "HostToolNotFound",
++  {},
++) {}
++/** The tool exists but is a query called as a mutation, or the reverse. Nothing ran. */
++export class HostKindMismatch extends Schema.TaggedError<HostKindMismatch>()("HostKindMismatch", {
++  tool: Schema.NonEmptyString,
++  requested: ToolKind,
++  actual: ToolKind,
++}) {}
++/** One failing input location and its expected shape; never the supplied value. */
++export const InputProblem = Schema.String.check(Schema.isMaxLength(512));
++/** Input decoding reports at most this many problems. */
++export const maxInputProblems = 10;
++/** Native input decoding failed; supplied values are omitted. Builds before problems were reported send none. */
++export class HostInputInvalid extends Schema.TaggedError<HostInputInvalid>()("HostInputInvalid", {
++  problems: Schema.optionalKey(
++    Schema.Array(InputProblem).check(Schema.isMaxLength(maxInputProblems)),
++  ),
++}) {}
++/** The tool's approval policy blocked this call before its tool body ran. */
++export class HostToolBlocked extends Schema.TaggedError<HostToolBlocked>()("HostToolBlocked", {}) {}
++/** Policy elicitation plus decoded input. No tool body ran; the host owns delivery and resumption. */
++export class HostToolApprovalRequired extends Schema.TaggedError<HostToolApprovalRequired>()(
++  "HostToolApprovalRequired",
++  { input: JsonValue, elicitation: ApprovalElicitation },
++) {}
++/** The tool's approval policy failed or returned an invalid decision. Author failures remain private. */
++export class HostToolPolicyFailed extends Schema.TaggedError<HostToolPolicyFailed>()(
++  "HostToolPolicyFailed",
++  {},
++) {}
++/** A tool result was not JSON; the result is never included in the error. */
++export class HostOutputInvalid extends Schema.TaggedError<HostOutputInvalid>()(
++  "HostOutputInvalid",
++  {},
++) {}
++
++/**
++ * Safe error envelope. Author failures carry only their name, code, scalar fields and bounded
++ * message with account secrets replaced; no stack or cause value is serialized.
++ */
++export const HostError = Schema.Union([
++  OpenapiResponseError,
++  ProviderError,
++  McpError,
++  SkillLoadFailed,
++  WorkflowFailure,
++  HostRequestInvalid,
++  HostAccountsInvalid,
++  HostDeclarationInvalid,
++  HostEvaluationFailed,
++  HostOperationNotFound,
++  HostOperationFailed,
++  DatabaseLimitExceeded,
++  DatabaseFieldReserved,
++  HostToolNotFound,
++  HostInputInvalid,
++  HostOutputInvalid,
++  HostToolBlocked,
++  HostToolApprovalRequired,
++  HostToolPolicyFailed,
++  ElicitationFailed,
++  HostKindMismatch,
++]);
++/** Expected host failures. */
++export type HostError = typeof HostError.Type;
++
++/** Portable response envelope; callers parse the success value for their operation. */
++export const HostResponse = Schema.Union([
++  Schema.Struct({
++    ok: Schema.Literal(true),
++    value: JsonValue,
++    toolError: Schema.optionalKey(Schema.Literal(true)),
++    appView: Schema.optionalKey(McpAppViewObservation),
++    /** The occurrences this invocation emitted, kept only because it succeeded. */
++    events: Schema.optionalKey(EmittedEvents),
++  }),
++  Schema.Struct({ ok: Schema.Literal(false), error: HostError }),
++]);
++/** Parsed response envelope. */
++export type HostResponse = typeof HostResponse.Type;
++
++/**
++ * The JSON body the host sends to a bundle's generated server entry. The entry is compiled into
++ * the retained build, so this shape is part of the protocol too.
++ */
++export const HostInvocation = Schema.Struct({
++  command: HostRequest,
++  accounts: ResolvedAccounts,
++  /** Trusted host identity; never part of the public command. */
++  caller: Schema.optionalKey(Schema.NonEmptyString),
++  approval: Schema.optionalKey(TrustedToolApproval),
++  replay: Schema.optionalKey(WorkflowReplay),
++  deadline: Schema.optionalKey(InvocationDeadline),
++  workflowRun: Schema.optionalKey(WorkflowRunId),
++});
++export type HostInvocation = typeof HostInvocation.Type;
++
++/**
++ * Who sends each message. The host must keep accepting everything a released protocol's bundles
++ * send (`bundle`), and must send a released protocol's bundles only what they accept, or gate the
++ * addition on something the bundle declared (`host`). Names a released protocol used and this one
++ * dropped, such as `tools`, keep their direction here.
++ */
++export const messageDirections = {
++  invocation: "host",
++  request: "host",
++  accounts: "host",
++  elicitationReply: "host",
++  workflowStepReply: "host",
++  cacheReply: "host",
++  response: "bundle",
++  requirements: "bundle",
++  catalog: "bundle",
++  catalogSummary: "bundle",
++  sharedCatalog: "bundle",
++  tools: "bundle",
++  toolSummaries: "bundle",
++  skills: "bundle",
++  elicitationRequest: "bundle",
++  workflowStep: "bundle",
++  workflowControl: "bundle",
++  appCall: "bundle",
++  appCallReply: "host",
++  appToolPolicy: "bundle",
++  appToolPolicyReply: "host",
++  modelRequest: "bundle",
++  modelReply: "host",
++  cacheCommand: "bundle",
++  accountCheck: "bundle",
++  accountObservation: "bundle",
++  migrate: "bundle",
++} as const satisfies Record<string, "host" | "bundle">;
++/** A message name every protocol so far has used. */
++export type MessageName = keyof typeof messageDirections;
++
++/** Every message of the current protocol. The snapshot records them by name. */
++export const current = {
++  version: 34,
++  schemas: {
++    invocation: HostInvocation,
++    request: HostRequest,
++    response: HostResponse,
++    requirements: DeclaredRequirements,
++    catalog: HostedCatalog,
++    catalogSummary: HostedCatalogSummary,
++    sharedCatalog: HostedSharedCatalog,
++    skills: SkillCatalogResponse,
++    elicitationRequest: FormElicitation,
++    elicitationReply: ElicitationReply,
++    workflowStep: WorkflowRpcCommand,
++    workflowStepReply: WorkflowRpcResult,
++    workflowControl: WorkflowControlCommand,
++    appCall: AppCallCommand,
++    appCallReply: AppCallReply,
++    appToolPolicy: AppToolPolicyCommand,
++    appToolPolicyReply: AppToolPolicyReply,
++    modelRequest: ModelCommand,
++    modelReply: ModelReply,
++    cacheCommand: CacheCommand,
++    cacheReply: CacheReply,
++    accountCheck: AccountCheckResult,
++    accountObservation: Schema.NullOr(AccountObservationResult),
++    accounts: ResolvedAccounts,
++    migrate: MigrateResult,
++  },
++} as const satisfies {
++  readonly version: number;
++  readonly schemas: Partial<Record<MessageName, Schema.Top>>;
++};
+diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/src/contracts/protocols/current.ts
+--- a/packages/apps/src/contracts/protocols/current.ts
++++ b/packages/apps/src/contracts/protocols/current.ts
+@@ -608,12 +608,18 @@
+   Schema.Struct({
+     ok: Schema.Literal(true),
+     value: JsonValue,
++    /** Account branches that ran, distinct from all accounts available to the app. */
++    accountsUsed: Schema.optionalKey(Schema.Array(AccountId)),
+     toolError: Schema.optionalKey(Schema.Literal(true)),
+     appView: Schema.optionalKey(McpAppViewObservation),
+     /** The occurrences this invocation emitted, kept only because it succeeded. */
+     events: Schema.optionalKey(EmittedEvents),
+   }),
+-  Schema.Struct({ ok: Schema.Literal(false), error: HostError }),
++  Schema.Struct({
++    ok: Schema.Literal(false),
++    error: HostError,
++    accountsUsed: Schema.optionalKey(Schema.Array(AccountId)),
++  }),
+ ]);
+ /** Parsed response envelope. */
+ export type HostResponse = typeof HostResponse.Type;
+diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/src/contracts/protocols/released.ts
+--- a/packages/apps/src/contracts/protocols/released.ts
++++ b/packages/apps/src/contracts/protocols/released.ts
+@@ -1,3 +1,4 @@
++import { current as protocol34 } from "./34.ts";
+ import { current as protocol33 } from "./33.ts";
+ import { current as protocol31 } from "./31.ts";
+ import { protocol30 } from "./30.ts";
+@@ -70,4 +71,5 @@
+   protocol30,
+   protocol31,
+   protocol33,
++  protocol34,
+ ] as const;
+diff --git a/packages/apps/src/implementation/account-router.ts b/packages/apps/src/implementation/account-router.ts
+--- a/packages/apps/src/implementation/account-router.ts
++++ b/packages/apps/src/implementation/account-router.ts
+@@ -1,7 +1,7 @@
+ import { accountProviderError } from "./provider-error.ts";
+ /** Combine account-bound protocol operations without changing their upstream inputs. */
+ import { Effect, Schema } from "effect";
+-import { HostedTool, HostedToolSummary } from "../contracts/host.ts";
++import { HostedTool, HostedToolSummary, ToolAccountObservation } from "../contracts/host.ts";
+ import type { AppOperation } from "../contracts/operations.ts";
+ import type { AppNode, AppRouter, DynamicRouter } from "../contracts/router.ts";
+ import { McpAppUi, type McpAppSource } from "../contracts/mcp-apps.ts";
+@@ -128,17 +128,19 @@
+         ? Effect.succeed("approved" as const)
+         : operation.approval({ ...context, toolInput: context.toolInput.input });
+     },
+-    run: (context, input: Selection) => {
+-      const operation = select(input);
+-      return operation.run(context, input.input).pipe(
+-        Effect.mapError((error) => accountProviderError(error, input.accountId)),
+-        Effect.flatMap((output) =>
+-          operation.output === undefined
+-            ? Effect.succeed(output)
+-            : Schema.decodeUnknownEffect(operation.output)(output),
+-        ),
+-      );
+-    },
++    run: (context, input: Selection) =>
++      Effect.gen(function* () {
++        const operation = select(input);
++        (yield* ToolAccountObservation).used([input.accountId]);
++        return yield* operation.run(context, input.input).pipe(
++          Effect.mapError((error) => accountProviderError(error, input.accountId)),
++          Effect.flatMap((output) =>
++            operation.output === undefined
++              ? Effect.succeed(output)
++              : Schema.decodeUnknownEffect(operation.output)(output),
++          ),
++        );
++      }),
+   });
+   if (variants.every(declaresOutput)) {
+     const outputSchema = once(() =>
+diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
+--- a/packages/apps/src/implementation/host.ts
++++ b/packages/apps/src/implementation/host.ts
+@@ -28,6 +28,7 @@
+   type DeclaredAccountSlots,
+   InvocationDeadline,
+   ToolResultObservation,
++  ToolAccountObservation,
+   HostAccountsInvalid,
+   HostDeclarationInvalid,
+   HostOperationNotFound,
+@@ -1334,101 +1335,118 @@
+ export const createAppHandler =
+   (app: unknown): AppHandler =>
+   (request, context) =>
+-    Effect.gen(function* () {
+-      if (request.method !== "POST") return yield* Effect.fail(new HostRequestInvalid());
+-      // oxlint-disable-next-line executor/authored-code-through-adapter -- the host's Request
+-      const input = yield* Effect.tryPromise({
+-        try: () => request.json(),
+-        catch: () => new HostRequestInvalid(),
+-      });
+-      const command = yield* Schema.decodeUnknownEffect(HostRequest)(input, {
+-        onExcessProperty: "error",
+-      }).pipe(Effect.mapError(() => new HostRequestInvalid()));
+-      yield* Effect.annotateCurrentSpan({
+-        "executor.operation": command.operation,
+-        ...(command.operation === "call" ? { "executor.tool.name": command.tool } : {}),
+-      });
+-      let toolError = false;
+-      let appView: McpAppViewObservation | undefined;
+-      const emitted: EmittedEvent[] = [];
+-      const value = yield* dispatch(app, command, context, request.signal, emitted).pipe(
+-        Effect.provideService(McpAppSourceAccounts, context.accounts),
+-        Effect.provideService(
+-          McpAppUiProfile,
+-          command.operation === "app-resource" ||
+-            command.operation === "app-callback" ||
+-            ((command.operation === "call" || command.operation === "inspect") &&
+-              command.uiProfile === true),
++    Effect.suspend(() => {
++      const used = new Set<string>();
++      const attribution = () => (used.size === 0 ? {} : { accountsUsed: [...used] });
++      return Effect.gen(function* () {
++        if (request.method !== "POST") return yield* Effect.fail(new HostRequestInvalid());
++        // oxlint-disable-next-line executor/authored-code-through-adapter -- the host's Request
++        const input = yield* Effect.tryPromise({
++          try: () => request.json(),
++          catch: () => new HostRequestInvalid(),
++        });
++        const command = yield* Schema.decodeUnknownEffect(HostRequest)(input, {
++          onExcessProperty: "error",
++        }).pipe(Effect.mapError(() => new HostRequestInvalid()));
++        yield* Effect.annotateCurrentSpan({
++          "executor.operation": command.operation,
++          ...(command.operation === "call" ? { "executor.tool.name": command.tool } : {}),
++        });
++        let toolError = false;
++        let appView: McpAppViewObservation | undefined;
++        const emitted: EmittedEvent[] = [];
++        const value = yield* dispatch(app, command, context, request.signal, emitted).pipe(
++          Effect.provideService(McpAppSourceAccounts, context.accounts),
++          Effect.provideService(
++            McpAppUiProfile,
++            command.operation === "app-resource" ||
++              command.operation === "app-callback" ||
++              ((command.operation === "call" || command.operation === "inspect") &&
++                command.uiProfile === true),
++          ),
++          Effect.provideService(McpAppViewSink, {
++            observed: (view) => {
++              appView = view;
++            },
++          }),
++          Effect.provideService(ToolResultObservation, {
++            failed: () => {
++              toolError = true;
++            },
++          }),
++          // Name what failed on the span; the bounded message stays in the reply only. The host
++          // records an app's own error names and codes as `unrecognized` (telemetry `app-records`).
++          Effect.tapError((error) =>
++            (error._tag === "HostEvaluationFailed" ||
++              error._tag === "HostOperationFailed" ||
++              error._tag === "HostDeclarationInvalid") &&
++            error.errorName !== undefined
++              ? Effect.annotateCurrentSpan({
++                  "error.type": error.errorName,
++                  ...(error.source === undefined
++                    ? {}
++                    : { "executor.failure.source": error.source }),
++                  ...(error.code === undefined ? {} : { "executor.failure.code": error.code }),
++                })
++              : Effect.void,
++          ),
++          // Tool operations time themselves, dividing their time by who owned the work in progress.
++          // Other operations do not.
++          command.operation === "call" ||
++            command.operation === "query" ||
++            command.operation === "mutate"
++            ? timedInvocation(command.operation)
++            : Effect.withSpan(`app.${command.operation}`),
++        );
++        if (toolError)
++          yield* Effect.annotateCurrentSpan({
++            "executor.outcome": "failed",
++            "error.type": "McpToolError",
++          });
++        return Response.json({
++          ok: true,
++          value,
++          ...attribution(),
++          ...(toolError ? { toolError: true } : {}),
++          ...(appView === undefined ? {} : { appView }),
++          ...(emitted.length === 0 ? {} : { events: emitted }),
++        });
++      }).pipe(
++        Effect.catch((error) =>
++          Schema.encodeEffect(HostError)(error).pipe(
++            Effect.map((encoded) =>
++              Response.json(
++                { ok: false, error: encoded, ...attribution() },
++                { status: errorStatus(error) },
++              ),
++            ),
++            Effect.orDie,
++          ),
+         ),
+-        Effect.provideService(McpAppViewSink, {
+-          observed: (view) => {
+-            appView = view;
++        Effect.catchCause((cause) =>
++          Cause.hasInterrupts(cause)
++            ? Effect.interrupt
++            : // The cause can carry any text the app threw; its caller receives that, not the log.
++              Effect.logError("The app's request failed unexpectedly").pipe(
++                Effect.andThen(
++                  Schema.encodeEffect(HostError)(
++                    declarationInvalid(
++                      "The app failed while it was loaded",
++                      Cause.squash(cause),
++                      accountSecrets(context.accounts),
++                    ),
++                  ),
++                ),
++                Effect.map((error) =>
++                  Response.json({ ok: false, error, ...attribution() }, { status: 500 }),
++                ),
++                Effect.orDie,
++              ),
++        ),
++        Effect.provideService(ToolAccountObservation, {
++          used: (accounts) => {
++            for (const account of accounts) used.add(account);
+           },
+         }),
+-        Effect.provideService(ToolResultObservation, {
+-          failed: () => {
+-            toolError = true;
+-          },
+-        }),
+-        // Name what failed on the span; the bounded message stays in the reply only. The host
+-        // records an app's own error names and codes as `unrecognized` (telemetry `app-records`).
+-        Effect.tapError((error) =>
+-          (error._tag === "HostEvaluationFailed" ||
+-            error._tag === "HostOperationFailed" ||
+-            error._tag === "HostDeclarationInvalid") &&
+-          error.errorName !== undefined
+-            ? Effect.annotateCurrentSpan({
+-                "error.type": error.errorName,
+-                ...(error.source === undefined ? {} : { "executor.failure.source": error.source }),
+-                ...(error.code === undefined ? {} : { "executor.failure.code": error.code }),
+-              })
+-            : Effect.void,
+-        ),
+-        // Tool operations time themselves, dividing their time by who owned the work in progress.
+-        // Other operations do not.
+-        command.operation === "call" ||
+-          command.operation === "query" ||
+-          command.operation === "mutate"
+-          ? timedInvocation(command.operation)
+-          : Effect.withSpan(`app.${command.operation}`),
+       );
+-      if (toolError)
+-        yield* Effect.annotateCurrentSpan({
+-          "executor.outcome": "failed",
+-          "error.type": "McpToolError",
+-        });
+-      return Response.json({
+-        ok: true,
+-        value,
+-        ...(toolError ? { toolError: true } : {}),
+-        ...(appView === undefined ? {} : { appView }),
+-        ...(emitted.length === 0 ? {} : { events: emitted }),
+-      });
+-    }).pipe(
+-      Effect.catch((error) =>
+-        Schema.encodeEffect(HostError)(error).pipe(
+-          Effect.map((encoded) =>
+-            Response.json({ ok: false, error: encoded }, { status: errorStatus(error) }),
+-          ),
+-          Effect.orDie,
+-        ),
+-      ),
+-      Effect.catchCause((cause) =>
+-        Cause.hasInterrupts(cause)
+-          ? Effect.interrupt
+-          : // The cause can carry any text the app threw; its caller receives that, not the log.
+-            Effect.logError("The app's request failed unexpectedly").pipe(
+-              Effect.andThen(
+-                Schema.encodeEffect(HostError)(
+-                  declarationInvalid(
+-                    "The app failed while it was loaded",
+-                    Cause.squash(cause),
+-                    accountSecrets(context.accounts),
+-                  ),
+-                ),
+-              ),
+-              Effect.map((error) => Response.json({ ok: false, error }, { status: 500 })),
+-              Effect.orDie,
+-            ),
+-      ),
+-    );
++    });
+diff --git a/packages/sdk/src/implementation/account-tool-traffic.ts b/packages/sdk/src/implementation/account-tool-traffic.ts
+--- a/packages/sdk/src/implementation/account-tool-traffic.ts
++++ b/packages/sdk/src/implementation/account-tool-traffic.ts
+@@ -1,3 +1,4 @@
++import { ToolAccountObservation } from "apps/contracts";
+ import { Cause, Clock, Effect, Exit, Option, Predicate } from "effect";
+ import { currentTraceContext, ownedBy, traceLinks } from "@executor-js/telemetry";
+ import type { BackgroundWork } from "../contracts/declarations.ts";
+@@ -19,68 +20,89 @@
+   ) =>
+   (accounts: readonly AccountId[], entered: () => boolean) =>
+   <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+-    Effect.onExit(effect, (exit) => {
+-      if (!entered() || accounts.length === 0) return Effect.void;
+-      const ok = Exit.isSuccess(exit)
+-        ? Predicate.hasProperty(exit.value, "status") && exit.value.status === "completed"
+-          ? !(Predicate.hasProperty(exit.value, "toolError") && exit.value.toolError === true)
+-          : undefined
+-        : Cause.findErrorOption(exit.cause).pipe(
+-              Option.exists((error) =>
+-                accountFailures.some((tag) => Predicate.isTagged(error, tag)),
+-              ),
+-            )
+-          ? false
+-          : undefined;
+-      if (ok === undefined) return Effect.void;
+-      return Effect.gen(function* () {
+-        const at = yield* Clock.currentTimeMillis;
+-        const trace = yield* currentTraceContext;
+-        const record = (accepted: boolean) =>
+-          store.record({ accounts, at, ok }).pipe(
+-            Effect.interruptible,
+-            Effect.timeout("2 seconds"),
+-            Effect.tap(() =>
+-              Effect.annotateCurrentSpan("executor.account_traffic.outcome", "persisted"),
+-            ),
+-            Effect.catchCause((cause) => {
+-              const error = Option.getOrUndefined(Cause.findErrorOption(cause));
+-              const report = Cause.hasInterruptsOnly(cause)
+-                ? accepted
+-                  ? accountTrafficNotCounted("interrupted", undefined, accounts.length)
+-                  : Effect.void
+-                : error instanceof StorageError
+-                  ? Effect.void
+-                  : accountTrafficNotCounted(
+-                      Cause.isTimeoutError(error) ? "timeout" : "unexpected",
+-                      undefined,
+-                      accounts.length,
+-                    );
+-              return Effect.uninterruptible(report);
+-            }),
+-          );
+-        const linked = <B, F, S>(work: Effect.Effect<B, F, S>) =>
+-          work.pipe(
+-            Effect.withSpan(
+-              "sdk.account_traffic.record",
+-              ownedBy("background", {
+-                root: true,
+-                links: traceLinks(trace, "account-traffic"),
+-                attributes:
+-                  trace === undefined
+-                    ? {}
+-                    : {
+-                        "executor.account_traffic.call_trace": trace.traceId,
+-                        "executor.account_traffic.call_span": trace.spanId,
+-                      },
+-              }),
+-            ),
+-          );
+-        if (background === undefined) return yield* record(false);
+-        const accepted = yield* background(linked(record(true)));
+-        if (accepted) return;
+-        yield* linked(accountTrafficNotCounted("refused", undefined, accounts.length));
+-        // A closing host refused ownership; keep the original bounded inline attempt.
+-        yield* record(false);
+-      });
++    Effect.suspend(() => {
++      let used: Set<string> | undefined;
++      return Effect.onExit(
++        effect.pipe(
++          Effect.provideService(ToolAccountObservation, {
++            used: (ids) => {
++              used ??= new Set();
++              for (const id of ids) used.add(id);
++            },
++          }),
++        ),
++        (exit) => {
++          // Older bundles can identify a serving account only when the invocation has one.
++          // Evidence from a bundle never grants attribution to an unselected account.
++          const counted =
++            used === undefined
++              ? accounts.length === 1
++                ? accounts
++                : []
++              : accounts.filter((account) => used?.has(account) === true);
++          if (!entered() || counted.length === 0) return Effect.void;
++          const ok = Exit.isSuccess(exit)
++            ? Predicate.hasProperty(exit.value, "status") && exit.value.status === "completed"
++              ? !(Predicate.hasProperty(exit.value, "toolError") && exit.value.toolError === true)
++              : undefined
++            : Cause.findErrorOption(exit.cause).pipe(
++                  Option.exists((error) =>
++                    accountFailures.some((tag) => Predicate.isTagged(error, tag)),
++                  ),
++                )
++              ? false
++              : undefined;
++          if (ok === undefined) return Effect.void;
++          return Effect.gen(function* () {
++            const at = yield* Clock.currentTimeMillis;
++            const trace = yield* currentTraceContext;
++            const record = (accepted: boolean) =>
++              store.record({ accounts: counted, at, ok }).pipe(
++                Effect.interruptible,
++                Effect.timeout("2 seconds"),
++                Effect.tap(() =>
++                  Effect.annotateCurrentSpan("executor.account_traffic.outcome", "persisted"),
++                ),
++                Effect.catchCause((cause) => {
++                  const error = Option.getOrUndefined(Cause.findErrorOption(cause));
++                  const report = Cause.hasInterruptsOnly(cause)
++                    ? accepted
++                      ? accountTrafficNotCounted("interrupted", undefined, counted.length)
++                      : Effect.void
++                    : error instanceof StorageError
++                      ? Effect.void
++                      : accountTrafficNotCounted(
++                          Cause.isTimeoutError(error) ? "timeout" : "unexpected",
++                          undefined,
++                          counted.length,
++                        );
++                  return Effect.uninterruptible(report);
++                }),
++              );
++            const linked = <B, F, S>(work: Effect.Effect<B, F, S>) =>
++              work.pipe(
++                Effect.withSpan(
++                  "sdk.account_traffic.record",
++                  ownedBy("background", {
++                    root: true,
++                    links: traceLinks(trace, "account-traffic"),
++                    attributes:
++                      trace === undefined
++                        ? {}
++                        : {
++                            "executor.account_traffic.call_trace": trace.traceId,
++                            "executor.account_traffic.call_span": trace.spanId,
++                          },
++                  }),
++                ),
++              );
++            if (background === undefined) return yield* record(false);
++            const accepted = yield* background(linked(record(true)));
++            if (accepted) return;
++            yield* linked(accountTrafficNotCounted("refused", undefined, counted.length));
++            // A closing host refused ownership; keep the original bounded inline attempt.
++            yield* record(false);
++          });
++        },
++      );
+     });
+diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
+--- a/packages/sdk/src/implementation/app-protocols.ts
++++ b/packages/sdk/src/implementation/app-protocols.ts
+@@ -311,6 +311,7 @@
+ const protocol31: AppProtocol = { ...protocol30, version: 31, nodeEntry: nodeAppEntry(31) };
+ const protocol33: AppProtocol = { ...protocol31, version: 33, nodeEntry: nodeAppEntry(33) };
+ const protocol34: AppProtocol = { ...protocol33, version: 34, nodeEntry: nodeAppEntry(34) };
++const protocol35: AppProtocol = { ...protocol34, version: 35, nodeEntry: nodeAppEntry(35) };
+
+ /**
+  * Bundles of protocol 12 and earlier read one flat record of requirements and accounts. They
+@@ -538,6 +539,7 @@
+     protocol31,
+     protocol33,
+     protocol34,
++    protocol35,
+   ].map((protocol) => [protocol.version, protocol]),
+ );
+
+diff --git a/packages/sdk/src/implementation/app-runtime.ts b/packages/sdk/src/implementation/app-runtime.ts
+--- a/packages/sdk/src/implementation/app-runtime.ts
++++ b/packages/sdk/src/implementation/app-runtime.ts
+@@ -28,6 +28,7 @@
+   SkillCatalogResponse,
+   skillsCommand,
+   ToolResultObservation,
++  ToolAccountObservation,
+   McpAppViewSink,
+   type HostContext,
+   type HostRequest,
+@@ -299,6 +300,8 @@
+           if (Result.isSuccess(collected) && collected.success.cacheChanged === true)
+             yield* (yield* AppCacheChanges).changed(input.app);
+           const reply = yield* Schema.decodeUnknownEffect(HostResponse)(body);
++          if (command.operation === "call" && reply.accountsUsed !== undefined)
++            (yield* ToolAccountObservation).used(reply.accountsUsed);
+           // The app wrote these errors. Their text reaches the caller each is for; telemetry
+           // records their names only.
+           if (!reply.ok)

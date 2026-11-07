@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Tool-call traffic credits the account branches the framework actually ran, including failed branches, after intersecting evidence with the invocation's authorized account selection. Protocol 35 adds optional account-use evidence without changing older bundles. Calls lacking evidence may credit a single selected account but never fan out across several accounts. Counts, failures and last success share this attribution on the Accounts list, app tabs and Details. Existing ambiguous aggregates expire under the unchanged seven-day totals and 31-day history windows; no speculative backfill or storage migration changes saved accounts."
+    }
+  }
+}
