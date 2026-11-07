@@ -59,6 +59,15 @@
             "mode": "manual",
             "requires": "Retire after pinned Home selects a configured stable schema owner inside each existing PostgreSQL DDL transaction, preserves owner identity and retained schema/privacy data through transaction pooling, resets the role on commit and rollback, and passes the real multi-process shared-budget and pooled liveness proofs."
           }
+        },
+        {
+          "identity": "cliproxy-home-xai-device",
+          "file": "0399-home-xai-device.patch",
+          "sha256": "020e6f802f3906204c4573a68300704be761d911c656ad035c8ee05c49b8e4ad",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after the pinned Home uses xAI device authorization, keeps device secrets server-side, honors provider expiry and cancellation, saves the existing credential shape with an atomic exact-ID completion receipt, and passes the device start, exchange, expiry, denial, pending, slow-down and cancellation regressions."
+          }
         }
       ]
     },

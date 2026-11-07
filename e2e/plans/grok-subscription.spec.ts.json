@@ -1,0 +1,51 @@
+{
+  "scenarios": {
+    "grokSubscriptionDesktop": {
+      "fixtures": "actors",
+      "title": "Grok subscription corrects a pasted code and completes device sign-in at 1280px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a runner-owned provider acquisition service and hosted dashboard."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted native provider registrations."
+        }
+      }
+    },
+    "grokSubscriptionMobile": {
+      "fixtures": "actors",
+      "title": "Grok subscription corrects a pasted code and completes device sign-in at 390px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a runner-owned provider acquisition service and hosted dashboard."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted native provider registrations."
+        }
+      }
+    }
+  },
+  "runs": {
+    "grokSubscriptionDesktop": [
+      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
+    ],
+    "grokSubscriptionMobile": [
+      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
+    ]
+  },
+  "inputs": [
+    "src/pool/account-acquisition*.ts",
+    ".upstream/packages/sdk/src/contracts/interactive-accounts.ts",
+    "containers/pool/sources.json"
+  ]
+}
