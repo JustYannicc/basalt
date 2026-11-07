@@ -10,7 +10,7 @@ import { releaseWorkers, type BarrierReceipt } from "./barrier.ts";
 import { BarrierRefusal, type ReleaseManifest } from "./manifest.ts";
 import { cloudflareArtifactsApi } from "../ensure-artifacts.ts";
 import { verifyNativeState } from "./native-state.ts";
-import type { FrozenContainer } from "./container.ts";
+import type { BaselineNormalization, FrozenContainer } from "./container.ts";
 import { verifyServingContainer, type ServingContainer } from "./container-serving.ts";
 import { advanceContainer } from "./container-promotion.ts";
 import { freezeUpload } from "./version-request.ts";
@@ -29,7 +29,7 @@ export interface DeployStackOptions {
   candidate: string;
   record(receipt: BarrierReceipt): Promise<void>;
   manifest(value: ReleaseManifest): Promise<void>;
-  publication?(container: FrozenContainer): Promise<void>;
+  publication?(container: FrozenContainer, normalization?: BaselineNormalization): Promise<void>;
   admission?(verifications: readonly VerificationAdmission[]): Promise<void>;
   serving?(container: ServingContainer): Promise<void>;
   io?: {
