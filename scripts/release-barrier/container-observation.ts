@@ -37,7 +37,7 @@ const application = Schema.Struct({
   constraints: optional,
   affinities: optional,
   configuration,
-  durable_objects: optional,
+  durable_objects: Schema.optional(Schema.NullOr(Schema.Struct({ namespace_id: Schema.String }))),
   active_rollout_id: Schema.optional(Schema.NullOr(Schema.String)),
   health: optional,
 });
@@ -91,15 +91,7 @@ export function decodeApplication(value: unknown) {
     })({
       ...rename(settings),
       configuration: rename(raw.configuration),
-      durableObjects:
-        raw.durable_objects == null
-          ? undefined
-          : rename(
-              Schema.decodeUnknownSync(Schema.Struct({ namespace_id: Schema.String }), {
-                onExcessProperty: "error",
-                errors: "all",
-              })(raw.durable_objects),
-            ),
+      durableObjects: raw.durable_objects == null ? undefined : rename(raw.durable_objects),
     });
     return {
       ...containerAttributes(parsed),

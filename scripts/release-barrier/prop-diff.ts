@@ -63,7 +63,13 @@ function pathKey(key: string, parents: string[]) {
 
 export const publicPropPath = (keys: string[]) =>
   keys
-    .map((key, index) => (/^[0-9]+$/u.test(key) ? key : pathKey(key, keys.slice(0, index))))
+    .map((key, index) =>
+      keys[0] === "bindings" &&
+      ((index === 1 && /^[0-9]+$/u.test(key)) ||
+        ["data", "durableObjects", "namespaceId"].includes(key))
+        ? key
+        : pathKey(key, keys.slice(0, index)),
+    )
     .join(".");
 
 function publicScalar(value: unknown, keys: string[]): Scalar | undefined {

@@ -138,3 +138,32 @@ test("equivalent-digest verification refuses a foreign final readback before acc
   assert.ok(!proof.events.includes("container:serving"));
   assert.ok(!proof.events.includes("container:rollout"));
 });
+
+for (const attachment of [
+  { namespace_id: { value: "private-attachment-value" } },
+  { namespace_id: "namespace", future_attachment: "private-attachment-value" },
+])
+  test("attachment schema diagnostics preserve their full application path", async () => {
+    let failure: unknown;
+    try {
+      decodeApplication({
+        id: "pool-app",
+        name: "pool",
+        account_id: "fixture",
+        version: 1,
+        created_at: "2026-01-01T00:00:00Z",
+        scheduling_policy: "default",
+        instances: 1,
+        max_instances: 1,
+        configuration: { image: containerPublication().previous.configuration.image },
+        durable_objects: attachment,
+      });
+      assert.fail("unsupported attachment must refuse");
+    } catch (error) {
+      failure = error;
+    }
+    for (const output of await publicOutput(failure)) {
+      assert.match(output, /durable_objects\.(?:namespace_id|future_attachment)/);
+      assert.ok(!output.includes("private-attachment-value"));
+    }
+  });

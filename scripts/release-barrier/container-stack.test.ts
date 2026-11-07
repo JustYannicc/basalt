@@ -56,7 +56,11 @@ for (const scenario of [
     if (scenario === "dependency-only") {
       assert.equal(result.containerBindingUnresolved, true);
       assert.ok(
-        result.planReasons.some((why) => why.includes("PoolWorker") && why.includes("unknown")),
+        result.planReasons.some(
+          (why) =>
+            why.includes("PoolWorker") &&
+            why.includes("bindings.0.data.durableObjects.namespaceId unknown"),
+        ),
       );
       assert.ok(result.planReasons.some((why) => why.includes("image build input hash unchanged")));
     }
