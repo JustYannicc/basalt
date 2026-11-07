@@ -25,8 +25,28 @@
     ]
   },
   "inputs": [
+    ".upstream/apps/hosted/server/src/implementation/account-identity.ts",
+    ".upstream/apps/hosted/server/src/implementation/account-list-links.ts",
+    ".upstream/apps/hosted/server/src/implementation/account-list-reads.ts",
+    ".upstream/apps/hosted/server/src/implementation/account-list-timing.ts",
+    ".upstream/apps/hosted/server/src/implementation/account-observation-policy.ts",
+    ".upstream/apps/hosted/server/src/implementation/account-projection.ts",
     ".upstream/apps/hosted/server/src/implementation/account-reconnect.ts",
+    ".upstream/apps/hosted/server/src/implementation/account-sign-in.ts",
     ".upstream/apps/hosted/server/src/implementation/app-account-links.ts",
-    ".upstream/apps/hosted/server/src/implementation/resource-access.ts"
+    ".upstream/apps/hosted/server/src/implementation/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/contributed-account-policy.ts",
+    ".upstream/apps/hosted/server/src/implementation/host-managed-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/provider-account-policy.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-access.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-directory.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-policy.ts",
+    ".upstream/packages/sdk/src/contracts/account-read.ts",
+    ".upstream/packages/sdk/src/contracts/executor.ts",
+    ".upstream/packages/sdk/src/core.ts",
+    ".upstream/packages/sdk/src/implementation/account-read.ts",
+    ".upstream/packages/sdk/src/implementation/account-sign-in.ts",
+    ".upstream/packages/sdk/src/implementation/accounts.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts"
   ]
 }

@@ -1,3 +1,5 @@
+import { Effect } from "effect";
+import { waitForHeldCall } from "./recipes/held-call.mjs";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startPoolFixture } from "./recipes/pool-fixture.mjs";
@@ -111,3 +113,30 @@ test("the synthetic fixture closes scheduled native membership refreshes", async
     await f.stop();
   }
 });
+
+test(
+  "held calls surface missing APIs and early returns without waiting forever",
+  { timeout: 1000 },
+  async () => {
+    for (const call of [
+      Effect.fail(new Error("ToolNotFound")),
+      Effect.succeed({ status: "completed" }),
+    ]) {
+      await assert.rejects(
+        Effect.runPromise(
+          Effect.gen(function* () {
+            const forked = yield* Effect.forkChild(call);
+            yield* waitForHeldCall(forked, new Promise(() => {}), "unlink");
+          }).pipe(Effect.scoped),
+        ),
+        /ToolNotFound|returned before reaching its hold/,
+      );
+    }
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const forked = yield* Effect.forkChild(Effect.never);
+        yield* waitForHeldCall(forked, Promise.resolve(), "unlink");
+      }).pipe(Effect.scoped),
+    );
+  },
+);

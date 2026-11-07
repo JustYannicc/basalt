@@ -128,6 +128,7 @@ jobs:
       POOL_APP_SIGNING_KEY_PREVIOUS: ${{ secrets.POOL_APP_SIGNING_KEY_PREVIOUS }}
       APP_DOMAIN_CONTROLLER_TOKEN: ${{ secrets.APP_DOMAIN_CONTROLLER_TOKEN }}
       POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
+      POOL_DEPLOYMENT_KEY: ${{ secrets.POOL_DEPLOYMENT_KEY }}
     steps:
       # No one approves this job. Nothing quiesces writes first; the backup and the fail-closed drain step below gate it.
       - uses: actions/checkout@v4
@@ -177,3 +178,25 @@ jobs:
         run: node scripts/deploy-safety/release.ts deploy --candidate "$RELEASE_HEAD" --candidate-root "$RUNNER_TEMP/candidate" --report .local/production-report.json --mode manual
         env:
           RELEASE_HEAD: ${{ needs.backup.outputs.head }}
+      - name: Retain database budget receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: database-budget
+          include-hidden-files: true
+          path: |
+            .local/database-budget/*.json
+            ${{ runner.temp }}/candidate/.local/database-budget/*.json
+          if-no-files-found: ignore
+
+      - name: Retain release barrier receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-barrier
+          include-hidden-files: true
+          path: |
+            .local/release-barrier/*.json
+            ${{ runner.temp }}/candidate/.local/release-barrier/*.json
+            ${{ runner.temp }}/rollback-source/.local/release-barrier/*.json
+          if-no-files-found: ignore

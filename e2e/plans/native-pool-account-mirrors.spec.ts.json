@@ -51,6 +51,7 @@
     ".upstream/apps/hosted/server/src/implementation/pool-account-recovery.ts",
     ".upstream/apps/hosted/server/src/implementation/pool-account.ts",
     ".upstream/apps/hosted/server/src/implementation/pool-membership.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-removal-intent.ts",
     ".upstream/apps/hosted/server/src/implementation/requirement-account-creation.ts",
     ".upstream/apps/hosted/server/src/implementation/resource-access.ts",
     ".upstream/apps/hosted/server/src/implementation/resource-lifecycle.ts",

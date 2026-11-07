@@ -1,0 +1,948 @@
+diff --git a/packages/sdk/src/contracts/app-data.ts b/packages/sdk/src/contracts/app-data.ts
+--- a/packages/sdk/src/contracts/app-data.ts
++++ b/packages/sdk/src/contracts/app-data.ts
+@@ -1,7 +1,7 @@
+ import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
+ import { ApiError } from "@executor-js/utils/api-error";
+ /** Framework data operations. Product hosts authenticate and authorize the configured app. */
+-import { Schema } from "effect";
++import { Context, Schema } from "effect";
+ import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
+ import { AppId, VersionId, Json, StorageError, CredentialsError } from "./shared.ts";
+ import {
+@@ -27,6 +27,13 @@
+ export const AppDataInput = AppDataInputFields.pipe(withLegacyKeys({ version: "deployment" }));
+ /** Parsed app query/mutation invocation. */
+ export type AppDataInput = typeof AppDataInput.Type;
++
++/** Closed dispatch steps observed by a host without exposing invocation data. */
++export type AppDataPhase = "snapshot" | "resolve" | "runtime";
++export const AppDataTimings = Context.Reference<
++  ((phase: AppDataPhase, durationMs: number) => void) | undefined
++>("executor/AppDataTimings", { defaultValue: () => undefined });
++
+ /** The selected version did not define this operation. */
+ export const AppDataNotFound = ApiError.define({
+   tag: "AppDataNotFound",
+diff --git a/packages/sdk/src/contracts/tools.ts b/packages/sdk/src/contracts/tools.ts
+--- a/packages/sdk/src/contracts/tools.ts
++++ b/packages/sdk/src/contracts/tools.ts
+@@ -55,6 +55,7 @@
+   AppAccountsQuery,
+   AppNotFound,
+   AppNotDeployed,
++  type App,
+ } from "./apps.ts";
+ import { VersionNotFound } from "./version.ts";
+ import { OAuthReconnectRequired, OAuthRenewalFailed } from "./oauth.ts";
+@@ -148,6 +149,8 @@
+ /** Host-only reads made ahead for a tool call, outside the public HTTP/Promise facade. */
+ export const PrefetchHost = Symbol("executor.PrefetchHost");
+ export interface PrefetchHost {
++  /** Which requirements can resolve without grant rows, from an app the host already read. */
++  readonly hint: (app: App) => unknown;
+   /**
+    * The reads `apps.get` and then `tools.call` make for one app, as effects of one statement each
+    * that never fail, for the host to send in one batch beside its own checks. Without `known`,
+diff --git a/packages/sdk/src/implementation/app-storage.ts b/packages/sdk/src/implementation/app-storage.ts
+--- a/packages/sdk/src/implementation/app-storage.ts
++++ b/packages/sdk/src/implementation/app-storage.ts
+@@ -1,21 +1,47 @@
+ /** Configured-app data dispatch. Platform storage never holds authored rows. */
+-import { Effect, Result, Schema, Stream } from "effect";
++import { Clock, Effect, Result, Schema, Stream } from "effect";
+ import type { WorkflowHostControls } from "apps/contracts";
+ import { Json } from "../contracts/shared.ts";
+ import { HostOperationNotFound } from "apps/contracts";
+-import { AppDataFailed, AppDataNotFound, type AppDataInput } from "../contracts/app-data.ts";
++import {
++  AppDataFailed,
++  AppDataNotFound,
++  AppDataTimings,
++  type AppDataInput,
++  type AppDataPhase,
++} from "../contracts/app-data.ts";
+ import type { Runtime } from "../contracts/runtime.ts";
+ import type { ExecutorRuntimeDatabase } from "./storage-runtime.ts";
+ import { database } from "./database.ts";
+-import { resolve, snapshot, type InvocationSnapshot } from "./tools.ts";
+-import type { makeOAuth } from "./oauth.ts";
++import { snapshot, type InvocationSnapshot, type makeTools } from "./tools.ts";
+ import { ownsDatabase } from "../contracts/apps.ts";
++
++/** A host observes only elapsed time; a broken observer must not change the operation. */
++const timed = <A, E, R>(phase: AppDataPhase, operation: Effect.Effect<A, E, R>) =>
++  Effect.gen(function* () {
++    const report = yield* AppDataTimings;
++    if (report === undefined) return yield* operation;
++    const start = yield* Clock.currentTimeNanos;
++    return yield* operation.pipe(
++      Effect.onExit(() =>
++        Effect.gen(function* () {
++          const duration = Number((yield* Clock.currentTimeNanos) - start) / 1_000_000;
++          if (!Number.isFinite(duration)) return;
++          try {
++            report(phase, Math.max(0, duration));
++          } catch {
++            // Timing cannot turn a successful read or its original failure into another result.
++          }
++        }),
++      ),
++    );
++  });
+ 
+ /** Bind data calls to the current app version and the named accounts. */
+ export const makeAppData = (
+   storage: ExecutorRuntimeDatabase,
+-  resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"],
+   runtime: Runtime,
++  invocations: Pick<ReturnType<typeof makeTools>, "readInvocation" | "resolveInvocation">,
+   workflows?: (state: InvocationSnapshot) => WorkflowHostControls,
+ ) => {
+   const db = database(storage);
+@@ -23,11 +49,16 @@
+     kind: "query" | "mutate",
+     input: AppDataInput,
+     observeRevision?: (revision: number) => void,
+-    read: ReturnType<typeof snapshot> = snapshot(db, input),
++    read?: ReturnType<typeof snapshot>,
+   ) =>
+     Effect.gen(function* () {
+-      const state = yield* read;
+-      const accounts = yield* resolve(state, resolveAccount);
++      const { ahead, state } = yield* timed(
++        "snapshot",
++        read === undefined
++          ? invocations.readInvocation(input, true)
++          : read.pipe(Effect.map((state) => ({ ahead: undefined, state }))),
++      );
++      const accounts = yield* timed("resolve", invocations.resolveInvocation(state, ahead));
+       return yield* runtime[kind]({
+         build: state.version.build,
+         database: ownsDatabase(state.version.requirements),
+@@ -38,6 +69,7 @@
+         input: input.input,
+         ...(observeRevision === undefined ? {} : { observeRevision }),
+       }).pipe(
++        (operation) => timed("runtime", operation),
+         Effect.mapError((error) =>
+           Schema.is(HostOperationNotFound)(error)
+             ? new AppDataNotFound({ app: input.app, name: input.name })
+diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
+--- a/packages/sdk/src/implementation/tools.ts
++++ b/packages/sdk/src/implementation/tools.ts
+@@ -147,6 +147,15 @@
+ interface SnapshotReads {
+   readonly app: Result.Result<Effect.Success<ReturnType<typeof readApp>>, StorageError>;
+   readonly accounts: SelectionAccountsRead;
++}
++
++/** The guarded reads consumed by one tool or data invocation. */
++export interface InvocationReads {
++  readonly reads: SnapshotReads;
++  readonly recheck: RecheckAhead | undefined;
++  readonly grants:
++    | { readonly ids: readonly AccountId[]; readonly rows: ReadonlyArray<GrantRow> }
++    | undefined;
+ }
+ 
+ /**
+@@ -1139,7 +1148,6 @@
+         (slots.recheck !== undefined && Exit.isFailure(slots.recheck.result)),
+     };
+   };
+-  type InvocationReads = NonNullable<ReturnType<ReturnType<typeof invocationReads>["take"]>>;
+   /**
+    * {@link PrefetchHost}: what `apps.get` and the reads above return, read by the host in one batch
+    * with its own checks. The hint says which of the app's requirements and accounts resolve
+@@ -1207,7 +1215,10 @@
+   // A prefetch answers one call: it is provided around the whole host call, so a later call in
+   // that scope (none today) must read live rather than reuse reads that may be seconds old.
+   const consumedPrefetches = new WeakSet<object>();
+-  const readAhead = (input: { readonly app: AppId; readonly accounts?: AppAccounts | undefined }) =>
++  const readAhead = (
++    input: { readonly app: AppId; readonly accounts?: AppAccounts | undefined },
++    prefetchedOnly: boolean,
++  ) =>
+     Effect.gen(function* () {
+       const selection = yield* InvocationSelection;
+       if (
+@@ -1229,10 +1240,28 @@
+         consumedPrefetches.add(prefetched);
+         return prefetched.value as InvocationReads;
+       }
++      if (prefetchedOnly) return undefined;
+       const reads = invocationReads(selection);
+       yield* Effect.all(reads.leaves, { concurrency: "unbounded", discard: true });
+       return reads.take();
+     });
++  const readInvocation = (input: Parameters<typeof snapshot>[1], prefetchedOnly = false) =>
++    Effect.gen(function* () {
++      const ahead = yield* readAhead(input, prefetchedOnly);
++      const state = yield* snapshot(db, input, ahead?.reads);
++      return { ahead, state };
++    });
++  const resolveInvocation = (state: InvocationSnapshot, ahead?: InvocationReads) => {
++    // Grant rows stand in only for accounts this state holds, and only for their first read.
++    const held = new Set(selectionAccountIds(state.accounts));
++    const grants =
++      ahead?.grants !== undefined && ahead.grants.ids.every((id) => held.has(id))
++        ? grantReadAhead(ahead.grants.ids, ahead.grants.rows)
++        : undefined;
++    return resolve(state, resolveAccount, ahead?.recheck).pipe(
++      Effect.provideService(GrantReadAhead, grants),
++    );
++  };
+   /** Evaluate the live catalog with the named accounts. */
+   const evaluate = <A, R>(
+     input: Parameters<Executor["tools"]["index"]>[0],
+@@ -1368,6 +1397,9 @@
+     );
+   return {
+     prefetchInvocation,
++    prefetchHint: (app: Parameters<PrefetchHost["hint"]>[0]) => grantHint(app, undefined, []),
++    readInvocation,
++    resolveInvocation,
+     /**
+      * The first of these accounts whose saved sign-in must reconnect before the app's tools can
+      * run with them; undefined when every account can supply credentials. Reads stored state only:
+@@ -1613,11 +1645,9 @@
+           Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Json))),
+           Effect.mapError(() => new RequestInvalid()),
+         );
+-        const { ahead, state } = yield* Effect.gen(function* () {
+-          const ahead = yield* readAhead(parsed);
+-          const state = yield* snapshot(db, parsed, ahead?.reads);
+-          return { ahead, state };
+-        }).pipe(Effect.withSpan("sdk.invocation.snapshot"));
++        const { ahead, state } = yield* readInvocation(parsed).pipe(
++          Effect.withSpan("sdk.invocation.snapshot"),
++        );
+         if (options?.appViewBinding !== undefined) {
+           const expected = options.appViewBinding;
+           const current = yield* invocation(state, parsed.tool, parsed.kind, args);
+@@ -1632,13 +1662,6 @@
+           )
+             return yield* new RequestInvalid();
+         }
+-        // Grant rows read in the batch, for accounts this state holds, stand in for each grant's
+-        // first read; other accounts read theirs in the resolve loop.
+-        const held = new Set(selectionAccountIds(state.accounts));
+-        const grants =
+-          ahead?.grants !== undefined && ahead.grants.ids.every((id) => held.has(id))
+-            ? grantReadAhead(ahead.grants.ids, ahead.grants.rows)
+-            : undefined;
+         // Machine-bound accounts never enter cloud app code or credential resolution.
+         yield* (
+           accountTargets?.requireCloudCall({
+@@ -1660,9 +1683,8 @@
+             }),
+           }) ?? Effect.void
+         );
+-        const context = yield* resolve(state, resolveAccount, ahead?.recheck).pipe(
++        const context = yield* resolveInvocation(state, ahead).pipe(
+           Effect.withSpan("sdk.accounts.resolve"),
+-          Effect.provideService(GrantReadAhead, grants),
+         );
+         const identity = { app: state.app.id, version: state.version.id, tool: parsed.tool };
+         yield* Effect.annotateCurrentSpan({
+diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+--- a/packages/sdk/src/implementation/create.ts
++++ b/packages/sdk/src/implementation/create.ts
+@@ -599,7 +599,7 @@
+         write: options.database.reactivity.write,
+       },
+       [PersonalDataReportingHost]: personalDataReporting,
+-      [PrefetchHost]: { invocation: tools.prefetchInvocation },
++      [PrefetchHost]: { invocation: tools.prefetchInvocation, hint: tools.prefetchHint },
+       [AppViewsHost]: makeAppViews(options.database.appViews, credentials, crypto),
+       [AccountTrafficHost]: { read: options.database.accountTraffic.read },
+       [AccountReadHost]: makeAccountRead(
+@@ -802,7 +802,7 @@
+         unlink: webhookSources.unlink,
+       },
+       webhookSetup: webhooks.webhookSetup,
+-      appData: makeAppData(options.database, oauth.resolveSelected, runtime, workflows.controls),
++      appData: makeAppData(options.database, runtime, tools, workflows.controls),
+       tools: { ...tools, search: search.page },
+     };
+   });
+diff --git a/apps/hosted/server/src/implementation/app-data.ts b/apps/hosted/server/src/implementation/app-data.ts
+--- a/apps/hosted/server/src/implementation/app-data.ts
++++ b/apps/hosted/server/src/implementation/app-data.ts
+@@ -1,12 +1,21 @@
+ import { CurrentAuthorization } from "../contracts/authorization.ts";
+ import { permitsAction, permitsApp } from "@executor-js/authorization";
+ /** Product-owned authorization around the same SDK data operations used by local. */
+-import { type AppDataInput } from "@executor-js/sdk/core";
++import {
++  PrefetchHost,
++  InvocationPrefetch,
++  InvocationSelection,
++  type App,
++  type AppAccounts,
++  type AppDataInput,
++  type Executor,
++} from "@executor-js/sdk/core";
+ import { Effect, Stream } from "effect";
+ import { HttpApiBuilder } from "effect/http-api";
+ import { HttpServerRequest } from "effect/http";
+ import { HostedApi } from "../contracts/api.ts";
+-import { HostedExecutor } from "../contracts/executor.ts";
++import { HostedExecutor, StatementBatch } from "../contracts/executor.ts";
++import { appUiPhase } from "./app-ui-phase-timing.ts";
+ import {
+   OrganizationForbidden,
+   CurrentOrganization,
+@@ -37,6 +46,30 @@
+     const membership = yield* auth.membership(principal, organization);
+     return { organization, owner: organizationOwner(organization), role: membership.role };
+   });
++/** The caller's checks finish before these reads; the SDK still validates their selection. */
++export const withAppDataReads = <A, E, R>(
++  executor: Executor,
++  app: App,
++  accounts: AppAccounts,
++  operation: Effect.Effect<A, E, R>,
++) =>
++  Effect.gen(function* () {
++    const batch = yield* StatementBatch;
++    if (batch === undefined) return yield* operation;
++    const sdk = executor[PrefetchHost];
++    const reads = sdk.invocation({
++      app: app.id,
++      owner: app.owner,
++      known: { accounts, hint: sdk.hint(app) },
++    });
++    yield* appUiPhase("query-snapshot", batch(reads.leaves, { outside: 0 }));
++    const read = yield* reads.take;
++    if (read.failed || read.invocation === undefined) return yield* operation;
++    return yield* operation.pipe(
++      Effect.provideService(InvocationSelection, { app: app.id, owner: app.owner, accounts }),
++      Effect.provideService(InvocationPrefetch, read.invocation),
++    );
++  });
+ /** Check the app and resolve the caller's accounts before invoking author code. */
+ export const executeAppData = (kind: "query" | "mutate", input: AppDataInput) =>
+   Effect.gen(function* () {
+@@ -45,8 +78,13 @@
+       return yield* new OrganizationForbidden();
+     const owner = yield* currentOwner;
+     const executor = yield* Effect.flatten(HostedExecutor);
+-    const { accounts } = yield* selectedApp(executor, owner, input.app);
+-    return yield* executor.appData[kind]({ ...input, accounts });
++    const { app, accounts } = yield* selectedApp(executor, owner, input.app);
++    return yield* withAppDataReads(
++      executor,
++      app,
++      accounts,
++      executor.appData[kind]({ ...input, accounts }),
++    );
+   });
+ /** Shared routes; the host supplies request-owned SDK and authentication services. */
+ export const hostedAppDataHandlers = HttpApiBuilder.group(HostedApi, "appData", (handlers) =>
+diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
+--- a/apps/hosted/server/src/implementation/app-ui.ts
++++ b/apps/hosted/server/src/implementation/app-ui.ts
+@@ -6,7 +6,7 @@
+   poolAppUsageOverviewPath,
+   poolAppUsagePath,
+ } from "./pool-app-ui.ts";
+-import { queryPhase } from "./app-ui-query-timing.ts";
++import { queryDispatch, queryPhase } from "./app-ui-query-timing.ts";
+ import { appUiPhase, appUiPhaseHeaders } from "./app-ui-phase-timing.ts";
+ import { visibleObservationHealth } from "./account-observation-policy.ts";
+ import { visibleAccountStatuses } from "./account-identity.ts";
+@@ -75,6 +75,7 @@
+   type OrganizationAccess,
+ } from "../contracts/organization.ts";
+ import { callerAccounts, stillLinked } from "./app-accounts.ts";
++import { withAppDataReads } from "./app-data.ts";
+ import type { appAddresses } from "./app-addresses.ts";
+ 
+ /** Authorization belongs to one HTTP request, never a shared or timed cache. */
+@@ -493,7 +494,12 @@
+       const { input } = yield* dataInput(payload, current, kind);
+       const dispatch = Effect.gen(function* () {
+         const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
+-        return yield* executor.appData[kind](input).pipe(
++        return yield* withAppDataReads(
++          executor,
++          current.app,
++          input.accounts,
++          executor.appData[kind](input),
++        ).pipe(
+           Effect.provideService(CurrentOrganization, current.access),
+           Effect.provideService(CurrentAuthorization, fullAuthority),
+           Effect.provideService(CurrentUserId, current.access.userId),
+@@ -501,7 +507,7 @@
+           Effect.mapError(dataFailure),
+         );
+       });
+-      return yield* kind === "query" ? queryPhase("dispatch", dispatch) : dispatch;
++      return yield* kind === "query" ? queryPhase("dispatch", queryDispatch(dispatch)) : dispatch;
+     });
+   const calls = HttpApiBuilder.group(AppUiApi, "ui", (handlers) =>
+     handlers
+diff --git a/apps/hosted/server/src/implementation/app-ui-phase-timing.ts b/apps/hosted/server/src/implementation/app-ui-phase-timing.ts
+--- a/apps/hosted/server/src/implementation/app-ui-phase-timing.ts
++++ b/apps/hosted/server/src/implementation/app-ui-phase-timing.ts
+@@ -12,6 +12,10 @@
+   | "query-session-access"
+   | "query-caller-accounts"
+   | "query-dispatch"
++  | "query-snapshot"
++  | "query-resolve"
++  | "query-runtime"
++  | "query-appdata-io"
+   | "overview-authorize"
+   | "overview-policy"
+   | "overview-transaction"
+@@ -28,21 +32,30 @@
+ });
+ const maximumDuration = 60_000;
+ 
++/** Records durations measured on the reporting boundary's own clock. */
++export const recordAppUiPhase = Effect.map(
++  Timings,
++  (timings) => (phase: Phase, duration: number) => {
++    if (timings === undefined || !Number.isFinite(duration)) return;
++    timings.set(
++      phase,
++      Math.min(maximumDuration, (timings.get(phase) ?? 0) + Math.max(0, duration)),
++    );
++  },
++);
++
+ /** The closed names and aggregated durations cannot grow with accounts or repeated reads. */
+ export const appUiPhase = <A, E, R>(phase: Phase, operation: Effect.Effect<A, E, R>) =>
+   Effect.gen(function* () {
+     const timings = yield* Timings;
+     if (timings === undefined) return yield* operation;
++    const record = yield* recordAppUiPhase;
+     const start = yield* Clock.currentTimeNanos;
+     return yield* operation.pipe(
+       Effect.onExit(() =>
+         Effect.gen(function* () {
+           const elapsed = Number((yield* Clock.currentTimeNanos) - start) / 1_000_000;
+-          if (!Number.isFinite(elapsed)) return;
+-          timings.set(
+-            phase,
+-            Math.min(maximumDuration, (timings.get(phase) ?? 0) + Math.max(0, elapsed)),
+-          );
++          record(phase, elapsed);
+         }),
+       ),
+     );
+diff --git a/apps/hosted/server/src/implementation/app-ui-query-timing.ts b/apps/hosted/server/src/implementation/app-ui-query-timing.ts
+--- a/apps/hosted/server/src/implementation/app-ui-query-timing.ts
++++ b/apps/hosted/server/src/implementation/app-ui-query-timing.ts
+@@ -1,5 +1,6 @@
+ import { Clock, Effect, Option } from "effect";
+-import { appUiPhase } from "./app-ui-phase-timing.ts";
++import { AppDataTimings, RuntimeCallTimings } from "@executor-js/sdk/core";
++import { appUiPhase, recordAppUiPhase } from "./app-ui-phase-timing.ts";
+ 
+ type QueryPhase = "session_access" | "caller_accounts" | "dispatch";
+ const headerPhase = {
+@@ -7,6 +8,39 @@
+   caller_accounts: "query-caller-accounts",
+   dispatch: "query-dispatch",
+ } as const;
++
++const dataPhase = {
++  snapshot: "query-snapshot",
++  resolve: "query-resolve",
++  runtime: "query-runtime",
++} as const;
++
++/** The runtime includes runner I/O, so these nested phases must not be added together. */
++export const queryDispatch = <A, E, R>(operation: Effect.Effect<A, E, R>) =>
++  Effect.gen(function* () {
++    const record = yield* recordAppUiPhase;
++    const previousData = yield* AppDataTimings;
++    const previousRuntime = yield* RuntimeCallTimings;
++    return yield* operation.pipe(
++      Effect.provideService(AppDataTimings, (phase, duration) => {
++        try {
++          previousData?.(phase, duration);
++        } catch {
++          // Another observer cannot replace the operation or suppress this request's timing.
++        }
++        record(dataPhase[phase], duration);
++      }),
++      Effect.provideService(RuntimeCallTimings, (timing) => {
++        try {
++          previousRuntime?.(timing);
++        } catch {
++          // Runtime observers run on exit, so their failures must not replace the result.
++        }
++        if (timing.invoked !== undefined)
++          record("query-appdata-io", Number(timing.invoked[1] - timing.invoked[0]) / 1_000_000);
++      }),
++    );
++  });
+ 
+ /** Annotate the request span captured before the operation opens any child spans. */
+ export const queryPhase = <A, E, R>(phase: QueryPhase, operation: Effect.Effect<A, E, R>) =>
+diff --git a/apps/hosted/cloud/src/infrastructure/product-services.ts b/apps/hosted/cloud/src/infrastructure/product-services.ts
+--- a/apps/hosted/cloud/src/infrastructure/product-services.ts
++++ b/apps/hosted/cloud/src/infrastructure/product-services.ts
+@@ -4,6 +4,7 @@
+ /** The executor and the services every cloud Worker shares, including app pages. */
+ import {
+   HostedExecutor,
++  StatementBatch,
+   withDeploySetupWake,
+   withExecutorAnalytics,
+ } from "@executor-js/hosted-server";
+@@ -26,6 +27,8 @@
+ import type * as Cloudflare from "alchemy/Cloudflare";
+ import { Config, Context, Effect, Layer, Option } from "effect";
+ import { SqlClient } from "effect/sql";
++import { PgPool } from "@effect/sql-pg";
++import * as PgConnection from "@effect/sql-pg/PgConnection";
+ import { cloudBuildAsset, loadCloudBuildRecord } from "../implementation/build-storage.ts";
+ import { cachedBuildAssets } from "../implementation/asset-cache.ts";
+ import { cloudBlobs } from "./blobs.ts";
+@@ -75,6 +78,14 @@
+   const services = Layer.mergeAll(
+     wire,
+     Layer.succeed(HostedRoutesConfiguration, routes.configuration),
++    Layer.succeed(StatementBatch, (leaves, { outside }) =>
++      PgPool.held(
++        PgConnection.pipelined(leaves, {
++          outside,
++          begin: "ISOLATION LEVEL REPEATABLE READ READ ONLY",
++        }),
++      ),
++    ),
+     Layer.succeed(AccountAcquisitionConfiguration, acquisition),
+     Layer.succeed(AccessLifecycle, accessLifecycle),
+     Layer.succeed(
+diff --git a/apps/hosted/cloud/src/infrastructure/invocation-database.ts b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
+--- a/apps/hosted/cloud/src/infrastructure/invocation-database.ts
++++ b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
+@@ -44,7 +44,11 @@
+         // Forked before the pool, so it closes after the pool has shut down with the event.
+         const reservations = yield* Scope.fork(yield* Effect.scope, "sequential");
+         const sql = yield* Layer.build(
+-          cloudDatabasePool({ url, maxConnections: invocationConnectionLimit }),
++          cloudDatabasePool({
++            url,
++            maxConnections: invocationConnectionLimit,
++            statementGroups: true,
++          }),
+         );
+         return Context.add(sql, ConnectionReservations, {
+           scope: reservations,
+diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
+--- a/apps/hosted/self-host/src/implementation/executor-services.ts
++++ b/apps/hosted/self-host/src/implementation/executor-services.ts
+@@ -25,6 +25,7 @@
+ } from "@executor-js/sdk/core";
+ import {
+   HostedExecutor,
++  StatementBatch,
+   ScheduledAuthority,
+   makeScheduledAuthority,
+   OrganizationIcons,
+@@ -62,6 +63,7 @@
+ import { HostManagedAccountRecords } from "@executor-js/hosted-server/host-managed-accounts";
+ import { poolAccessRecords } from "@executor-js/hosted-server/pool-access-provenance";
+ import { SqlClient } from "effect/sql";
++import { PgliteClient } from "@effect/sql-pglite";
+ import { productBrandConfig } from "@executor-js/utils/product-brand";
+ 
+ /** Native resources supplied at the self-host composition boundary. */
+@@ -241,6 +243,10 @@
+             ? { key: modelSigningKey.value, origin: modelOrigin }
+             : undefined,
+         ),
++        // Prequeued PGlite writes may share the lock, so this snapshot is not read-only.
++        Layer.succeed(StatementBatch, (leaves, { outside }) =>
++          PgliteClient.pipelined(leaves, { outside, begin: "ISOLATION LEVEL REPEATABLE READ" }),
++        ),
+         Layer.succeed(SelfHostWorkflowRequests, workflowRequests),
+         Layer.succeed(SelfHostAuth, auth),
+         Layer.succeed(ScheduledAuthority, scheduleAuthority),
+diff --git a/e2e/tests/app-ui-phase-headers.spec.ts b/e2e/tests/app-ui-phase-headers.spec.ts
+--- a/e2e/tests/app-ui-phase-headers.spec.ts
++++ b/e2e/tests/app-ui-phase-headers.spec.ts
+@@ -22,7 +22,15 @@
+   "document-asset",
+   "document-usage",
+ ].sort();
+-const queryPhases = ["query-session-access", "query-caller-accounts", "query-dispatch"].sort();
++const queryPhases = [
++  "query-session-access",
++  "query-caller-accounts",
++  "query-dispatch",
++  "query-snapshot",
++  "query-resolve",
++  "query-runtime",
++  "query-appdata-io",
++].sort();
+ const Deployment = Schema.Struct({ ...App.fields, activeVersion: Schema.String });
+ 
+ layer(HostedLive, { excludeTestServices: true })("App UI phase headers", (it) => {
+diff --git a/e2e/support/data-query-batch.ts b/e2e/support/data-query-batch.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/data-query-batch.ts
+@@ -0,0 +1,173 @@
++/** Delivered SQL for one public data request, without application implementation imports. */
++import { expect } from "@effect/vitest";
++import { Effect, Layer, Schedule } from "effect";
++import { randomUUID } from "node:crypto";
++import { Actors, provisionSelfHostActors } from "./actors.ts";
++import { Api, SessionClients, type Session } from "./api.ts";
++import { SpanQuery } from "./contracts.ts";
++import { Evidence, Telemetry } from "./evidence.ts";
++import { startControlledSelfHost } from "./managed-server.ts";
++import { Target } from "./platform.ts";
++import { throttlingCollector } from "./throttling-collector.ts";
++
++type QueryTrace = (traceId: string) => Effect.Effect<typeof SpanQuery.Type>;
++
++/** Self-host exports real SQL to its own collector; managed Cloud already exports to Telemetry. */
++export const withDataQueryTelemetry = <A, E, R>(
++  run: (query: QueryTrace) => Effect.Effect<A, E, R>,
++) =>
++  Effect.gen(function* () {
++    const target = yield* Target;
++    if (target.metadata.target !== "self-host") {
++      const telemetry = yield* Telemetry;
++      return yield* run((traceId) => telemetry.query(traceId).pipe(Effect.orDie));
++    }
++    const collector = yield* throttlingCollector;
++    const isolated = yield* startControlledSelfHost(target, {
++      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `${collector.endpoint}/v1/traces`,
++    });
++    const runtime = Layer.fresh(SessionClients.layer).pipe(
++      Layer.provideMerge(Layer.succeed(Target, isolated)),
++    );
++    const services = yield* Layer.build(Layer.fresh(Api.layer.pipe(Layer.provideMerge(runtime))));
++    const actors = yield* provisionSelfHostActors.pipe(Effect.provideContext(services));
++    return yield* run((traceId) => collector.query(traceId).pipe(Effect.orDie)).pipe(
++      Effect.provideService(Actors, actors),
++      Effect.provideContext(services),
++    );
++  });
++
++/** Capture the exact request's trace even when sibling requests finish in another order. */
++export const tracedDataQuery = (
++  actor: Session,
++  path: string,
++  payload: { readonly name: string; readonly input: unknown; readonly version?: string },
++) =>
++  Effect.gen(function* () {
++    const api = yield* Api,
++      evidence = yield* Evidence;
++    const traceId = randomUUID().replaceAll("-", "");
++    const response = yield* api.request(actor, "POST", `${path}/data/query`, payload, {
++      traceparent: `00-${traceId}-${randomUUID().replaceAll("-", "").slice(0, 16)}-01`,
++    });
++    const request = (yield* evidence.requests).find((entry) => entry.traceId === traceId);
++    if (request === undefined) return yield* Effect.die("Data request evidence is missing");
++    return { response, request };
++  });
++
++/** Assert the batch only after the completed request and SDK span have actually been delivered. */
++export const assertDataQueryBatch = (
++  query: QueryTrace,
++  made: Effect.Success<ReturnType<typeof tracedDataQuery>>,
++  label: string,
++) =>
++  Effect.gen(function* () {
++    const evidence = yield* Evidence;
++    const delivered = yield* query(made.request.traceId).pipe(
++      Effect.tap((trace) =>
++        evidence.json(
++          `data-query-delivery-${label}.json`,
++          trace.data.map(({ span }) => ({
++            id: span.spanId,
++            parent: span.parentSpanId,
++            name: span.operationName,
++            path: span.tags["url.path"],
++          })),
++        ),
++      ),
++      Effect.flatMap((trace) => {
++        const complete = trace.data.some(
++          ({ span }) =>
++            span.operationName === "http.server POST" &&
++            (span.tags["url.path"] === made.request.path ||
++              span.tags["url.path"] === "/api/organizations/:organization/apps/:app/data/query"),
++        );
++        return complete && trace.data.some(({ span }) => span.operationName === "sdk.data.query")
++          ? Effect.succeed(trace)
++          : Effect.fail(
++              new Error("The completed data request trace has not reached the collector"),
++            );
++      }),
++      Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 50 }),
++    );
++    const byId = new Map(delivered.data.map(({ span }) => [span.spanId, span]));
++    const ancestors = (parent: string | null) => {
++      const found: Array<{ readonly id: string; readonly name: string }> = [];
++      const visited = new Set<string>();
++      while (parent !== null && !visited.has(parent)) {
++        visited.add(parent);
++        const span = byId.get(parent);
++        if (span === undefined) throw new Error("Delivered SQL has an unknown parent");
++        found.push({ id: span.spanId, name: span.operationName });
++        parent = span.parentSpanId;
++      }
++      return found;
++    };
++    const sql = delivered.data.flatMap(({ span }) => {
++      if (span.operationName !== "sql.execute" && span.operationName !== "sql.pipeline") return [];
++      const under = ancestors(span.parentSpanId);
++      if (under.some(({ name }) => name.startsWith("runtime."))) return [];
++      return [
++        {
++          id: span.spanId,
++          operation: span.operationName,
++          tags: span.tags,
++          text: String(span.tags["db.query.text"] ?? "").replace(/\s+/g, " "),
++          under,
++          start: span.startTime,
++          durationMs: span.durationMs,
++        },
++      ];
++    });
++    const pipelines = sql.filter((span) => span.operation === "sql.pipeline");
++    yield* evidence.json(`data-query-${label}.json`, { request: made.request, sql, delivered });
++    // The unoptimized route emits zero pipelines. This is the required RED assertion.
++    expect(
++      pipelines,
++      "One batch for the SDK snapshot, selected accounts and authority",
++    ).toHaveLength(1);
++    const pipeline = pipelines[0];
++    if (pipeline === undefined) return yield* Effect.die("The data query batch is missing");
++    expect(Number(pipeline.tags["db.pipeline.leaves"])).toBe(3);
++    const target = yield* Target;
++    // PgConnection counts BEGIN and COMMIT; PGlite counts the captured reads only.
++    expect(Number(pipeline.tags["db.pipeline.statements"])).toBe(
++      target.metadata.target === "cloud" ? 5 : 3,
++    );
++    if (target.metadata.target === "cloud") {
++      expect(Number(pipeline.tags["db.pipeline.writes"])).toBe(1);
++      expect(Number(pipeline.tags["db.pipeline.apart"])).toBe(0);
++    }
++    // SQL spans open while leaves queue, before the pipeline span opens. They are siblings.
++    const reads = sql.filter((span) => span.operation === "sql.execute");
++    expect(
++      reads.filter(
++        ({ text }) =>
++          text.includes("executor_apps") &&
++          text.includes("executor_deployments") &&
++          text.includes('"deployment:build"'),
++      ),
++      "The batched snapshot reads the app and its active version once",
++    ).toHaveLength(1);
++    expect(
++      reads.filter(({ under }) => under.some(({ name }) => name === "FumaDB.SqlQuery.findMany")),
++      "The selection's account rows are read once",
++    ).toHaveLength(1);
++    expect(
++      reads.filter(
++        ({ text, under }) =>
++          text.includes('as "appLinks"') &&
++          text.includes("as access") &&
++          under.some(({ name }) => name === "sdk.accounts.recheck"),
++      ),
++      "The lifecycle recheck completes before data dispatch",
++    ).toHaveLength(1);
++    expect(
++      sql.filter(
++        (span) =>
++          span.operation === "sql.execute" &&
++          span.under.some(({ name }) => name === "sdk.data.query"),
++      ),
++      "The SDK consumes the prefetched reads instead of reading again",
++    ).toHaveLength(0);
++  });
+diff --git a/e2e/tests/data-query-batch.spec.ts b/e2e/tests/data-query-batch.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/data-query-batch.spec.ts
+@@ -0,0 +1,177 @@
++/** Public data queries batch independent reads and retain live, scope-specific account selection. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { linkAccount, linkedAccountIds, unlinkAccount } from "../support/app-accounts.ts";
++import { body } from "../support/api.ts";
++import { appLinksFixture } from "../support/app-links.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import {
++  assertDataQueryBatch,
++  tracedDataQuery,
++  withDataQueryTelemetry,
++} from "../support/data-query-batch.ts";
++import { scenarios } from "../test-plan.ts";
++
++const source = `import { defineApp, defineProvider, secrets, object, string, query, router, type QueryContext } from "apps";
++const service = defineProvider({ name: "Data query batch fixture", auth: {
++  key: secrets({ label: "Key", fields: object({ token: string() }) })
++} });
++const requirements = { app: { accounts: { team: service } }, user: { accounts: { personal: service } } };
++const read = query({ input: object({ request: string() }) }, async (ctx: QueryContext<typeof requirements>, input) => ({
++  request: input.request,
++  team: { id: ctx.app.accounts.team.id, token: ctx.app.accounts.team.fields.token },
++  personal: { id: ctx.user.accounts.personal.id, token: ctx.user.accounts.personal.fields.token },
++}));
++export default defineApp(requirements, async () => ({ tools: router({ read }) }));`;
++
++layer(HostedLive, { excludeTestServices: true })("Data query batch", (it) => {
++  it.effect(scenarios.dataQueryBatch.title, (context) =>
++    withHostedCase(
++      context,
++      withDataQueryTelemetry((query) =>
++        Effect.gen(function* () {
++          const { api, actors, prefix, path, connect } = yield* appLinksFixture([
++            { path: "index.ts", content: source },
++          ]);
++          // The member cannot read the owner's personal account directly; the app link authorizes its use.
++          const team = yield* connect(actors.owner, "app", "team", "synthetic-team");
++          const personal = yield* connect(actors.member, "user", "personal", "synthetic-personal");
++          expect(yield* linkedAccountIds(actors.owner, path, "app")).toEqual([team]);
++          expect(yield* linkedAccountIds(actors.member, path)).toEqual([personal]);
++          expect(
++            (yield* api.request(actors.member, "GET", `${prefix}/accounts/${team}`)).status,
++          ).not.toBe(200);
++          const made = yield* tracedDataQuery(actors.member, path, {
++            name: "read",
++            input: { request: "first" },
++          });
++          expect(made.response.status, JSON.stringify(made.response.body)).toBe(200);
++          expect(made.response.body).toEqual({
++            request: "first",
++            team: { id: team, token: "synthetic-team" },
++            personal: { id: personal, token: "synthetic-personal" },
++          });
++          yield* assertDataQueryBatch(query, made, "first");
++        }),
++      ),
++    ),
++  );
++  it.effect(scenarios.dataQueryBatchSelections.title, (context) =>
++    withHostedCase(
++      context,
++      withDataQueryTelemetry((query) =>
++        Effect.gen(function* () {
++          const { actors, path, connect } = yield* appLinksFixture([
++            { path: "index.ts", content: source },
++          ]);
++          const team = yield* connect(actors.owner, "app", "team", "synthetic-team");
++          const first = yield* connect(actors.member, "user", "personal", "synthetic-first");
++          const own = yield* connect(actors.owner, "user", "personal", "synthetic-owner");
++          const read = (actor: typeof actors.member, request: string) =>
++            tracedDataQuery(actor, path, { name: "read", input: { request } });
++          const expected = (request: string, id: string, token: string) => ({
++            request,
++            team: { id: team, token: "synthetic-team" },
++            personal: { id, token },
++          });
++          const before = yield* read(actors.member, "before");
++          expect(before.response.status).toBe(200);
++          expect(before.response.body).toEqual(expected("before", first, "synthetic-first"));
++          const replacement = yield* connect(
++            actors.member,
++            "user",
++            "personal",
++            "synthetic-replacement",
++          );
++          expect(yield* linkedAccountIds(actors.member, path)).toEqual([replacement]);
++          const after = yield* read(actors.member, "replaced");
++          expect(after.response.status).toBe(200);
++          expect(after.response.body).toEqual(
++            expected("replaced", replacement, "synthetic-replacement"),
++          );
++          yield* unlinkAccount(actors.member, path, "personal", replacement);
++          expect(yield* linkedAccountIds(actors.member, path)).toEqual([]);
++          const unlinked = yield* read(actors.member, "unlinked");
++          // Hosted AppDataErrors currently maps its SDK error union to500.
++          expect(unlinked.response.status, JSON.stringify(unlinked.response.body)).toBe(500);
++          expect(unlinked.response.body).toMatchObject({
++            _tag: "AccountRequired",
++            slot: "personal",
++            scope: "user",
++          });
++          yield* linkAccount(actors.member, path, "personal", first);
++          expect(yield* linkedAccountIds(actors.member, path)).toEqual([first]);
++          const [member, owner] = yield* Effect.all(
++            [read(actors.member, "member-concurrent"), read(actors.owner, "owner-concurrent")],
++            { concurrency: 2 },
++          );
++          expect(member.response.status).toBe(200);
++          expect(member.response.body).toEqual(
++            expected("member-concurrent", first, "synthetic-first"),
++          );
++          expect(owner.response.status).toBe(200);
++          expect(owner.response.body).toEqual(expected("owner-concurrent", own, "synthetic-owner"));
++          // The result checks run before collector waits, so one missing trace cannot hide a wrong selection.
++          yield* Effect.all(
++            [
++              assertDataQueryBatch(query, after, "replacement"),
++              assertDataQueryBatch(query, member, "member-concurrent"),
++              assertDataQueryBatch(query, owner, "owner-concurrent"),
++            ],
++            { concurrency: 3, discard: true },
++          );
++        }),
++      ),
++    ),
++  );
++
++  it.effect(scenarios.dataQueryBatchRefusals.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const { api, actors, path, connect } = yield* appLinksFixture([
++          { path: "index.ts", content: source },
++        ]);
++        const team = yield* connect(actors.owner, "app", "team", "synthetic-team");
++        const personal = yield* connect(actors.member, "user", "personal", "synthetic-personal");
++        const current = yield* tracedDataQuery(actors.member, path, {
++          name: "read",
++          input: { request: "allowed" },
++        });
++        expect(current.response.status).toBe(200);
++        expect(current.response.body).toEqual({
++          request: "allowed",
++          team: { id: team, token: "synthetic-team" },
++          personal: { id: personal, token: "synthetic-personal" },
++        });
++        // A missing version is refused by data/query. Retained historical versions remain legal pins.
++        const stale = yield* tracedDataQuery(actors.member, path, {
++          version: "dpl_stale",
++          name: "read",
++          input: { request: "missing-version" },
++        });
++        // Preserve the current hosted union's wire status while requiring its typed refusal.
++        expect(stale.response.status, JSON.stringify(stale.response.body)).toBe(500);
++        expect(stale.response.body).toMatchObject({
++          _tag: "VersionNotFound",
++          version: "dpl_stale",
++        });
++        const access = yield* body(
++          Schema.Struct({ revision: Schema.String }),
++          yield* api.request(actors.owner, "GET", `${path}/access`),
++        );
++        const revoked = yield* api.request(actors.owner, "PATCH", `${path}/access`, {
++          revision: access.revision,
++          audience: { kind: "private" },
++        });
++        expect(revoked.status, JSON.stringify(revoked.body)).toBe(200);
++        const refused = yield* tracedDataQuery(actors.member, path, {
++          name: "read",
++          input: { request: "revoked" },
++        });
++        expect(refused.response.status).toBe(403);
++        expect(refused.response.body).toMatchObject({ _tag: "OrganizationForbidden" });
++      }),
++    ),
++  );
++});

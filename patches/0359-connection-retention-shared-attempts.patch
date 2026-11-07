@@ -1,0 +1,151 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/account-connection-retention-v1.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/account-connection-retention-v1.ts
+index 471aefa..abcc8f8 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/account-connection-retention-v1.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/account-connection-retention-v1.ts
+@@ -41,13 +41,25 @@ const read = (input: Json) =>
+       [request.organization, request.expiredBefore],
+     );
+     if (connections.length > batch) return yield* refuse(tooMany);
++    const ids = connections.map((connection) => String(connection.id));
++    const ordered = connections.sort((a, b) => String(a.id).localeCompare(String(b.id)));
++    const lastConnection = new Map(
++      ordered.flatMap((connection) =>
++        typeof connection.oauth_attempt === "string"
++          ? [[connection.oauth_attempt, String(connection.id)] as const]
++          : [],
++      ),
++    );
+     const removed: (typeof Removal.Type)[] = [];
+-    for (const connection of connections.sort((a, b) => String(a.id).localeCompare(String(b.id)))) {
++    for (const connection of ordered) {
+       const id = String(connection.id);
+       let attempt: Entry | null = null;
+-      if (typeof connection.oauth_attempt === "string") {
++      if (
++        typeof connection.oauth_attempt === "string" &&
++        lastConnection.get(connection.oauth_attempt) === id
++      ) {
+         const sharing = yield* sql`select 1 from executor_account_connections
+-          where oauth_attempt = ${connection.oauth_attempt} and id <> ${id} limit 1`;
++          where oauth_attempt = ${connection.oauth_attempt} and not ${sql.in("id", ids)} limit 1`;
+         if (sharing.length !== 0) return yield* refuse("A sign-in attempt is shared");
+         attempt = one(
+           (yield* readRows("executor_oauth_attempts", "id = $1", [connection.oauth_attempt])).map(
+@@ -67,7 +79,7 @@ const read = (input: Json) =>
+       });
+     }
+     return {
+-      // Attempts and access rows go before the connection that names them.
++      // Each attempt is listed only on its last selected connection, before access and connection.
+       changes: removed.flatMap((item) =>
+         [item.attempt, item.access, item.connection].flatMap((row) =>
+           row === null
+diff --git a/e2e/support/production-ops-connection-rows.ts b/e2e/support/production-ops-connection-rows.ts
+index c8e6649..e50a77e 100644
+--- a/e2e/support/production-ops-connection-rows.ts
++++ b/e2e/support/production-ops-connection-rows.ts
+@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
+ import { productionMigrationProof } from "./production-ops-migration-proof.ts";
+ 
+ /**
+- * Connections in both proof organizations, each with its sign-in attempt and access row. Hours are
++ * Connections in both proof organizations, with sign-in attempts and access rows. Hours are
+  * since expiry; only the own organization's abandoned ones are older than the reviewed cutoff.
+  */
+ export const productionOpsConnectionRows = Effect.gen(function* () {
+@@ -11,19 +11,27 @@ export const productionOpsConnectionRows = Effect.gen(function* () {
+   const id = {
+     pending: randomUUID(),
+     cancelled: randomUUID(),
++    shared: randomUUID(),
+     completed: randomUUID(),
+     fresh: randomUUID(),
+     foreign: randomUUID(),
+   };
++  const sharedAttempt = `attempt-${id.pending}`;
+   const rows = [
+     { id: id.pending, side: p.own, status: "pending", hours: 72 },
+     { id: id.cancelled, side: p.own, status: "cancelled", hours: 48 },
++    { id: id.shared, side: p.own, status: "pending", hours: 72 },
+     { id: id.completed, side: p.own, status: "completed", hours: 72 },
+     { id: id.fresh, side: p.own, status: "pending", hours: 2 },
+     { id: id.foreign, side: p.foreign, status: "pending", hours: 72 },
+-  ];
++  ].map((row) => ({
++    ...row,
++    attempt: [id.pending, id.cancelled, id.shared].includes(row.id)
++      ? sharedAttempt
++      : `attempt-${row.id}`,
++  }));
+   const ids = rows.map((row) => row.id),
+-    attempts = ids.map((id) => `attempt-${id}`);
++    attempts = [...new Set(rows.map((row) => row.attempt))];
+   yield* Effect.addFinalizer(() =>
+     Effect.gen(function* () {
+       yield* p.database.run({
+@@ -40,8 +48,8 @@ export const productionOpsConnectionRows = Effect.gen(function* () {
+     const owner = `organization:${row.side.organization}`;
+     yield* p.database.run({
+       sql: `insert into executor_oauth_attempts (id, encrypted, expires_at, status)
+-        values ($1, decode('00','hex'), now() - make_interval(hours => $2::int), 'pending')`,
+-      params: [`attempt-${row.id}`, row.hours],
++        values ($1, decode('00','hex'), now() - make_interval(hours => $2::int), 'pending') on conflict (id) do nothing`,
++      params: [row.attempt, row.hours],
+     });
+     yield* p.database.run({
+       sql: `insert into executor_account_connections (id, owner, provider, reconnect_account, state, revision, oauth_attempt, created_at, expires_at, target)
+@@ -56,7 +64,7 @@ export const productionOpsConnectionRows = Effect.gen(function* () {
+             ? { status: "completed", account: { id: row.side.account } }
+             : { status: row.status },
+         ),
+-        `attempt-${row.id}`,
++        row.attempt,
+         row.hours,
+         row.side.app,
+         row.side.account,
+@@ -83,6 +91,7 @@ export const productionOpsConnectionRows = Effect.gen(function* () {
+   return {
+     p,
+     id,
++    sharedAttempt,
+     connections: present("executor_account_connections", "id"),
+     attempts: present("executor_oauth_attempts", "id"),
+     access: present("hosted_connection_access", "connection_id"),
+diff --git a/e2e/tests/production-ops-migrations.spec.ts b/e2e/tests/production-ops-migrations.spec.ts
+index dcfca6b..adf2403 100644
+--- a/e2e/tests/production-ops-migrations.spec.ts
++++ b/e2e/tests/production-ops-migrations.spec.ts
+@@ -213,7 +213,8 @@ layer(HostedLive, { excludeTestServices: true })("Production migration scope", (
+     withHostedCase(
+       context,
+       Effect.gen(function* () {
+-        const { p, id, connections, attempts, access } = yield* productionOpsConnectionRows;
++        const { p, id, sharedAttempt, connections, attempts, access } =
++          yield* productionOpsConnectionRows;
+         // The retention request is its own shape, so this proof sends it without the scope-proof
+         // operation helpers.
+         const operation = {
+@@ -249,12 +250,12 @@ layer(HostedLive, { excludeTestServices: true })("Production migration scope", (
+             }),
+           }),
+         )(p.decrypt(dry.artifact));
+-        const removed: ReadonlyArray<string> = [id.pending, id.cancelled].sort();
++        const removed: ReadonlyArray<string> = [id.pending, id.cancelled, id.shared].sort();
+         expect(
+           plan.plan.changes.map((change) => [change.table, Object.values(change.key)[0]]),
+         ).toEqual(
+           removed.flatMap((connection) => [
+-            ["executor_oauth_attempts", `attempt-${connection}`],
++            ...(connection === removed.at(-1) ? [["executor_oauth_attempts", sharedAttempt]] : []),
+             ["hosted_connection_access", connection],
+             ["executor_account_connections", connection],
+           ]),
+@@ -279,7 +280,7 @@ layer(HostedLive, { excludeTestServices: true })("Production migration scope", (
+         expect(yield* connections).toEqual(kept);
+         expect(yield* access).toEqual(kept);
+         expect(yield* attempts).toEqual(
+-          before.attempts.filter((attempt) => !removed.some((r) => attempt === `attempt-${r}`)),
++          before.attempts.filter((attempt) => attempt !== sharedAttempt),
+         );
+         const replay = yield* p.request(apply(dry));
+         expect(replay.status).toBe(200);

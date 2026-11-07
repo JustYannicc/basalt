@@ -1,0 +1,47 @@
+{
+  "scenarios": {
+    "cloudAccountToolAccounting": {
+      "fixtures": "actors",
+      "title": "Cloud returns successful and failed tool calls while accounting waits and persists both outcomes after the response",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Uses isolated managed Cloud PostgreSQL; self-host has its own held-write and shutdown scenario."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no hosted organization accounts."
+        }
+      }
+    }
+  },
+  "runs": {
+    "cloudAccountToolAccounting": ["declared:cloud"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/implementation/app-link-policy.ts",
+    ".upstream/apps/hosted/server/package.json",
+    ".upstream/apps/hosted/self-host/src/implementation/database-schema.ts",
+    ".upstream/apps/hosted/self-host/src/implementation/executor-services.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/invocation-database.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/executor.ts",
+    ".upstream/packages/sdk/src/implementation/storage-current.ts",
+    ".upstream/packages/sdk/src/implementation/selection.ts",
+    ".upstream/packages/sdk/src/implementation/tools.ts",
+    ".upstream/packages/sdk/src/implementation/account-targets.ts",
+    ".upstream/packages/sdk/src/implementation/account-traffic-store.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-link-schema.ts",
+    ".upstream/apps/hosted/server/src/implementation/background-work.ts",
+    ".upstream/packages/sdk/src/implementation/account-target-read.ts",
+    ".upstream/packages/sdk/src/implementation/account-tool-traffic.ts",
+    ".upstream/e2e/support/account-tool-accounting.ts",
+    ".upstream/packages/sdk/src/implementation/selection-account-store.ts",
+    ".upstream/packages/sdk/src/implementation/storage-runtime.ts",
+    ".upstream/packages/sdk/src/implementation/database.ts"
+  ]
+}

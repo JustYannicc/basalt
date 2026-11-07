@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Hosted App UI dispatch uses the SDK ordered read path after session, version and caller-account checks. It does not wrap the SDK call in a host prefetch batch. SDK authority checks, data endpoint batching and MCP batching retain their existing boundaries."
+    }
+  }
+}

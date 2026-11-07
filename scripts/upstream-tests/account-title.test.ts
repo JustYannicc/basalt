@@ -128,3 +128,25 @@ test("an account's own menu is named by its given name, else its row title, neve
     "First saved sign-in",
   );
 });
+
+test("requirement titles preserve the row provider name and fallback while sharing the SDK rule", async () => {
+  const { requirementAccountTitle } = (await import(
+    new URL("account-identities.ts", contracts).href
+  )) as typeof import("../../.upstream/packages/ui/src/contracts/account-identities.ts");
+  const account = {
+    label: "Default 2",
+    provider: "prv_example",
+    method: "key",
+    providerName: "Row provider",
+  } as unknown as Parameters<typeof requirementAccountTitle>[0];
+  const requirement = {
+    provider: account.provider,
+    definition: { name: "Declared provider", auth: { key: { type: "secrets", label: "Key" } } },
+  } as unknown as Parameters<typeof requirementAccountTitle>[1][number];
+  assert.equal(requirementAccountTitle(account, [requirement]), "Row provider account 2");
+  assert.equal(requirementAccountTitle(account, []), "Row provider account 2");
+  assert.equal(
+    requirementAccountTitle({ ...account, providerName: undefined }, [], "Fallback"),
+    "Fallback 2",
+  );
+});

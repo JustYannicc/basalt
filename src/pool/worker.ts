@@ -1,3 +1,7 @@
+import { deploymentReadinessPath, handleDeploymentReadiness } from "./deployment-readiness.ts";
+import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
+import { installNativePolicy } from "./native-policy-install.ts";
+import { handleRemovalIntent, removalIntentPath } from "./removal-intent.ts";
 import { pricedSummary } from "./model-history/priced-summary.ts";
 import { publishAccountObservations } from "./account-observation-publish.ts";
 import { appUsage } from "./model-history/app-usage.ts";
@@ -17,7 +21,7 @@ import { Computers } from "./computers.ts";
 import { accessPath } from "./access-contract.ts";
 import { requirePoolUse } from "./authorization.ts";
 import { requireActivePoolOrganization } from "./organization-access.ts";
-import { failureResponse } from "./json.ts";
+import { failureResponse, unavailable } from "./json.ts";
 import { isPublicModelPath, PoolLifecycle, poolLifecycle, poolPort } from "./lifecycle.ts";
 import { nativeControlPath, nativeModelHeader, nativeSessionPath } from "./native-contract.ts";
 import { nativeSession } from "./native-response.worker.ts";
@@ -48,11 +52,10 @@ import {
 import { handleUsageImport, modelImportPath } from "./model-history/import-http.ts";
 import type { SentryEnv } from "../telemetry/sentry-target.ts";
 import { NativeMemberships } from "./membership.ts";
-import { membershipPath, policyPrefix } from "./membership-contract.ts";
+import { membershipPath } from "./membership-contract.ts";
 import { readNativeMembership } from "./membership-read.ts";
 import { HomeMembership } from "./home-membership.ts";
 import { accountAcquisitionPath } from "./account-acquisition-contract.ts";
-import { signEnvelope } from "./token.ts";
 import { NativeStreams } from "./native-streams.ts";
 import { createPoolLifecycle } from "./runtime.worker.ts";
 import { forwardPoolRequest } from "./forward.worker.ts";
@@ -76,6 +79,7 @@ export interface PoolEnvironment extends TelemetryEnv, SentryEnv {
   POOL_APP_SIGNING_KEY: string;
   POOL_APP_SIGNING_KEY_PREVIOUS?: string;
   POOL_IMAGE_HASH: string;
+  POOL_DEPLOYMENT_KEY?: string;
   POOL_MODEL_HISTORY_ENABLED?: string;
   TOOLS_SERVICE: Fetcher;
 }
@@ -234,32 +238,16 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       invalidateView: (pool) => this.control.invalidateViews(pool),
       reconcile: (pool, accounts) => membership.reconcile(pool, accounts),
       install: async (policy) => {
-        const projection = await signEnvelope(env.POOL_APP_SIGNING_KEY, policyPrefix, policy);
         const container = ctx.container;
-        if (!container) throw new Error("Pool container unavailable");
-        const response = await container.getTcpPort(8318).fetch("http://pool/native-policy", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${env.POOL_MANAGEMENT_KEY}`,
-            "content-type": "application/json",
+        if (!container) return unavailable();
+        await installNativePolicy(
+          container,
+          {
+            signingKey: env.POOL_APP_SIGNING_KEY,
+            managementKey: env.POOL_MANAGEMENT_KEY,
           },
-          body: JSON.stringify({ projection }),
-          signal: AbortSignal.timeout(2_000),
-        });
-        if (!response.ok) {
-          await response.body?.cancel();
-          throw new Error("Pool account protection is unavailable");
-        }
-        const acknowledgement: unknown = await response.json();
-        if (
-          typeof acknowledgement !== "object" ||
-          acknowledgement === null ||
-          !("installed" in acknowledgement) ||
-          acknowledgement.installed !== true ||
-          !("revision" in acknowledgement) ||
-          acknowledgement.revision !== policy.revision
-        )
-          throw new Error("Pool account protection acknowledgement is invalid");
+          policy,
+        );
       },
       abort: (pool) => {
         this.modelStreams.abortPool(pool);
@@ -330,6 +318,16 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     await reportPoolStorage(this.ctx.storage);
   }
 
+  async deploymentReady() {
+    return {
+      candidate: productionOpsRelease,
+      workerInput: poolWorkerRevision,
+      imageHash: this.env.POOL_IMAGE_HASH,
+      instanceId: this.ctx.id.toString(),
+      ...(await (await this.lifecycle).deploymentReady()),
+    };
+  }
+
   async migrateCodexWebSockets(approved?: Pick<CodexWebSocketPlan, "digest" | "pending">) {
     await this.managementReady();
     const container = this.ctx.container;
@@ -371,6 +369,19 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         this.env.POOL_APP_SIGNING_KEY,
         `https://${brand.host}`,
       );
+    if (pathname === removalIntentPath)
+      return handleRemovalIntent(request, {
+        signingKey: this.env.POOL_APP_SIGNING_KEY,
+        previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
+        refresh: (pool) => this.memberships.refresh(pool),
+        selected: async (pool) => {
+          const policy = await this.memberships.authority(pool);
+          if (!policy) return unavailable();
+          return policy.accounts;
+        },
+        record: (pool, references, actor, operation, issuedAt) =>
+          this.control.recordRemovalIntent(pool, references, actor, operation, issuedAt),
+      });
     if (pathname === accountAcquisitionPath) return this.control.acquire(request);
     if (pathname === membershipPath) {
       try {
@@ -483,6 +494,7 @@ export async function handlePoolWorkerRequest(
   // Answered here, without waking the container.
   if (pathname === poolReleasePath) return poolRelease(request, env);
   if (
+    pathname === removalIntentPath ||
     pathname === importRemovalPath ||
     pathname === appModelPath ||
     pathname === accountMirrorPath ||
@@ -525,6 +537,17 @@ function modelAuthResponse(status: 401 | 503, error: string): Response {
 export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
   async fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
+    if (path === deploymentReadinessPath)
+      return handleDeploymentReadiness(
+        request,
+        {
+          candidate: productionOpsRelease,
+          workerInput: poolWorkerRevision,
+          imageHash: this.env.POOL_IMAGE_HASH,
+        },
+        this.env.POOL_DEPLOYMENT_KEY ?? "",
+        () => singleton(this.env).deploymentReady(),
+      );
     if (path === runtimeRecoveryPath) return singleton(this.env).fetch(request);
     if ([historySchemaCatalogPath, historySchemaApplyPath, historyBackfillPath].includes(path))
       return handleModelHistoryOperation(request, this.env.POOL_AUTH_DATABASE?.connectionString);

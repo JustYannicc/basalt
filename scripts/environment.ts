@@ -27,6 +27,7 @@ export const requiredSecrets = [
   "MCP_SESSION_KEY_PREVIOUS",
   ...(appHosting.enabled && appHosting.scheme === "nested" ? ["APP_DOMAIN_CONTROL_SECRET"] : []),
   "POOL_MANAGEMENT_KEY",
+  "POOL_DEPLOYMENT_KEY",
   "POOL_APP_SIGNING_KEY",
 ] as const;
 
@@ -220,6 +221,8 @@ export function deployEnvironment(
   }
   if (!isSigningKey(source.POOL_APP_SIGNING_KEY!))
     throw new Error("POOL_APP_SIGNING_KEY must be 32 bytes of lowercase hex");
+  if (!isSigningKey(source.POOL_DEPLOYMENT_KEY!))
+    throw new Error("POOL_DEPLOYMENT_KEY must be 32 bytes of lowercase hex");
   // Validated as deployed: the Worker reads the secret as it is, without trimming.
   const previousSigningKey = source.POOL_APP_SIGNING_KEY_PREVIOUS;
   if (previousSigningKey?.trim() && !isSigningKey(previousSigningKey))
@@ -348,6 +351,7 @@ export function previewEnvironment(pullRequest: number, source = process.env): P
   }
 
   Object.assign(deploy, generated, {
+    POOL_DEPLOYMENT_KEY: previewKey(source.PREVIEW_STATE_KEY!, number, "POOL_DEPLOYMENT_KEY"),
     ALCHEMY_STAGE: stage,
     CI: "true",
     DO_NOT_TRACK: "1",

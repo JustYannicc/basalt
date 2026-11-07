@@ -37,7 +37,8 @@ export class OutputTail {
   }
 }
 
-const stripAnsi = (text: string) => text.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, "");
+const stripAnsi = (text: string) =>
+  text.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[A-Za-z]`, "g"), "");
 
 export function redactFailureOutput(output: string, environment: NodeJS.ProcessEnv): string {
   let text = stripAnsi(output);
@@ -50,19 +51,20 @@ export function redactFailureOutput(output: string, environment: NodeJS.ProcessE
   text = text
     .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/]*@/gi, "$1[redacted]@")
     .replace(/\b(Bearer|Basic)\s+\S+/gi, "$1 [redacted]")
-    .replace(/(\w*(?:pass(?:word)?|pwd|secret|token|api[_-]?key)["']?\s*[:=]\s*)("[^"\n]*"|'[^'\n]*'|[^\s"'&,;}]+)/gi, "$1[redacted]")
-    .replace(/[A-Za-z0-9+/_=-]{32,}/g, (run) => (/\d/.test(run) && /[A-Za-z]/.test(run) ? "[redacted]" : run));
+    .replace(
+      /(\w*(?:pass(?:word)?|pwd|secret|token|api[_-]?key)["']?\s*[:=]\s*)("[^"\n]*"|'[^'\n]*'|[^\s"'&,;}]+)/gi,
+      "$1[redacted]",
+    )
+    .replace(/[A-Za-z0-9+/_=-]{32,}/g, (run) =>
+      /\d/.test(run) && /[A-Za-z]/.test(run) ? "[redacted]" : run,
+    );
   return text.trimEnd().split("\n").slice(-tailLines).join("\n");
 }
 
-/**
- * Whether a failed deploy's output shows Cloudflare refusing a Worker upload because its startup
- * ran out of CPU time: the provider SDK's `ScriptStartupError` together with that limit's message.
- * Startup CPU time varies from upload to upload, so this is the one failure worth a retry. Another
- * startup error, such as an exception thrown at startup, fails the same way again and doesn't count.
- * It sees only the bounded output tail; a rejection printed before it isn't retried.
- */
+/** Recognize the provider's startup CPU refusal without forwarding its payload. */
 export function isScriptStartupCpuLimit(output: string): boolean {
   const text = stripAnsi(output);
-  return /\bScriptStartupError\b/.test(text) && /\bScript startup exceeded CPU time limit\b/i.test(text);
+  return (
+    /\bScriptStartupError\b/.test(text) && /\bScript startup exceeded CPU time limit\b/i.test(text)
+  );
 }
