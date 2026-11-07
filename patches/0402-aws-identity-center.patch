@@ -540,10 +540,10 @@ index 0000000..28e69a7
 +  });
 diff --git a/e2e/support/aws-identity-fixture.ts b/e2e/support/aws-identity-fixture.ts
 new file mode 100644
-index 0000000..7e7ea7b
+index 0000000..cbd40ee
 --- /dev/null
 +++ b/e2e/support/aws-identity-fixture.ts
-@@ -0,0 +1,547 @@
+@@ -0,0 +1,555 @@
 +/** Synthetic AWS Identity Center, STS-shaped credential, and SigV4 MCP endpoints. */
 +import { createServer } from "node:http";
 +import { createHash, createHmac, timingSafeEqual } from "node:crypto";
@@ -676,6 +676,7 @@ index 0000000..7e7ea7b
 +    let denied = false;
 +    let expired = false;
 +    let unavailable = false;
++    let wrongRegion = false;
 +    let pendingPollCount = 0;
 +    let refreshCount = 0;
 +    let listAccountsCount = 0;
@@ -723,6 +724,10 @@ index 0000000..7e7ea7b
 +        Effect.gen(function* () {
 +          const request = yield* HttpServerRequest.HttpServerRequest;
 +          count("StartDeviceAuthorization");
++          if (wrongRegion) {
++            wrongRegion = false;
++            return yield* error("InvalidRequestRegionException");
++          }
 +          if (!hasJsonContentType(request)) return yield* error("InvalidRequest");
 +          const value = bodyJson(yield* request.text);
 +          if (
@@ -1060,6 +1065,9 @@ index 0000000..7e7ea7b
 +        expired = true;
 +        approved = false;
 +      },
++      wrongRegion: () => {
++        wrongRegion = true;
++      },
 +      outage: (value = true) => {
 +        unavailable = value;
 +      },
@@ -1093,10 +1101,10 @@ index 0000000..7e7ea7b
 +  });
 diff --git a/e2e/support/aws-identity-journey.ts b/e2e/support/aws-identity-journey.ts
 new file mode 100644
-index 0000000..525e17e
+index 0000000..ef83e76
 --- /dev/null
 +++ b/e2e/support/aws-identity-journey.ts
-@@ -0,0 +1,535 @@
+@@ -0,0 +1,569 @@
 +/** Deploy the retained AWS catalog source and exercise only public hosted APIs. */
 +import { expect } from "@effect/vitest";
 +import { Effect, FileSystem, Path, Schema } from "effect";
@@ -1211,6 +1219,40 @@ index 0000000..525e17e
 +      ),
 +    ).toBe(true);
 +    yield* browser.checkpoint(`AWS Identity Center real form ${width}`);
++    for (const recoveryWidth of [1280, 390]) {
++      yield* browser.use("Resize the wrong-region recovery form", (page) =>
++        page.setViewportSize({ width: recoveryWidth, height: 900 }),
++      );
++      yield* browser.use("Enter the wrong directory region", (page) =>
++        page.getByLabel("Identity Center region", { exact: true }).fill("us-west-2"),
++      );
++      fixture.wrongRegion();
++      yield* browser.use("Submit the wrong directory region", (page) =>
++        page.getByRole("button", { name: "Sign in to AWS", exact: true }).click(),
++      );
++      yield* browser.use("AWS region failure returns the editable form", (page) =>
++        page
++          .getByText("Use the region where your AWS access portal is configured.", { exact: true })
++          .waitFor(),
++      );
++      expect(
++        yield* browser.use("The portal survives the region failure", (page) =>
++          page.getByLabel("AWS start URL", { exact: true }).inputValue(),
++        ),
++      ).toBe("https://company.awsapps.com/start");
++      expect(
++        yield* browser.use("The submitted region survives the failure", (page) =>
++          page.getByLabel("Identity Center region", { exact: true }).inputValue(),
++        ),
++      ).toBe("us-west-2");
++      yield* browser.checkpoint(`AWS wrong-region recovery ${recoveryWidth}`);
++    }
++    yield* browser.use("Correct the directory region", (page) =>
++      page.getByLabel("Identity Center region", { exact: true }).fill("us-east-1"),
++    );
++    yield* browser.use("Restore the acquisition viewport", (page) =>
++      page.setViewportSize({ width, height: 900 }),
++    );
 +    yield* browser.use("Start company sign-in", (page) =>
 +      page.getByRole("button", { name: "Sign in to AWS", exact: true }).click(),
 +    );
