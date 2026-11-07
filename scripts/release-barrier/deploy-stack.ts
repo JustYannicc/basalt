@@ -11,6 +11,12 @@ import { releaseWorkers, type BarrierReceipt } from "./barrier.ts";
 import { BarrierRefusal, type ReleaseManifest } from "./manifest.ts";
 import { cloudflareArtifactsApi } from "../ensure-artifacts.ts";
 import { freezeUpload } from "./version-request.ts";
+import { inspectContainer, type ContainerAttributes } from "./container.ts";
+import {
+  observeContainer,
+  decodeContainerRollout,
+  waitForContainerVersion,
+} from "./container-cloudflare.ts";
 
 export interface DeployStackOptions {
   candidate: string;
@@ -20,6 +26,8 @@ export interface DeployStackOptions {
     baseline: typeof readBaseline;
     upload: typeof uploadVersion;
     namespace?: typeof cloudflareArtifactsApi;
+    container?: typeof inspectContainer;
+    observeContainer?: typeof observeContainer;
   };
 }
 
@@ -29,7 +37,7 @@ type Services = Effect.Services<ReturnType<typeof readBaseline> | ReturnType<typ
 export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =>
   Effect.gen(function* () {
     const plan = yield* Plan.make(stack);
-    const prepared = yield* preparePlan(stack, plan, options.io?.namespace);
+    const prepared = yield* preparePlan(stack, plan, options.io?.namespace, options.io?.container);
     const context = yield* Effect.context<Services>();
     const run = <A, E>(effect: Effect.Effect<A, E, Services>) =>
       Effect.runPromise(effect.pipe(Effect.provideContext(context)));
@@ -38,6 +46,14 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
       candidate: options.candidate,
       stack: stack.name,
       stage: stack.stage,
+      ...(prepared.containers.size
+        ? ({
+            schemaVersion: 2,
+            containers: [...prepared.containers.entries()]
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([, value]) => value.frozen),
+          } as const)
+        : {}),
       workers: yield* Effect.promise(() =>
         Promise.all(
           [...prepared.captured.values()]
@@ -48,6 +64,9 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
     };
     yield* Effect.promise(() => options.manifest(manifest));
     const activated = new Map<string, Worker["Attributes"]>();
+    const activatedContainers = new Map<string, ContainerAttributes>(
+      [...prepared.containers].map(([id, staged]) => [id, staged.publication.proposed]),
+    );
     const databaseFqns = new Set<string>();
     const database = Effect.gen(function* () {
       for (const admit of prepared.admissions)
@@ -94,9 +113,44 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
               activated.set(worker.id, await run(upload.activate(versionId)));
             },
           },
+          containers: {
+            async verifySource(container) {
+              const staged = prepared.containers.get(container.id);
+              if (!staged) throw new BarrierRefusal("missing-prepared-container", container.id);
+              await Effect.runPromise(staged.publication.verifySource);
+            },
+            async read(container) {
+              const staged = prepared.containers.get(container.id);
+              if (!staged) throw new BarrierRefusal("missing-prepared-container", container.id);
+              return run((options.io?.observeContainer ?? observeContainer)(container.baseline));
+            },
+            async rollout(container) {
+              const staged = prepared.containers.get(container.id);
+              if (!staged) throw new BarrierRefusal("missing-prepared-container", container.id);
+              return decodeContainerRollout(await Effect.runPromise(staged.publication.rollout()));
+            },
+            async wait(container, rollout) {
+              const staged = prepared.containers.get(container.id);
+              if (!staged) throw new BarrierRefusal("missing-prepared-container", container.id);
+              const observed = await run(
+                waitForContainerVersion(
+                  { ...container.baseline, configuration: container.configuration },
+                  rollout,
+                  () => (options.io?.observeContainer ?? observeContainer)(container.baseline),
+                ),
+              );
+              activatedContainers.set(container.id, {
+                ...staged.publication.proposed,
+                ...observed,
+                hash: staged.publication.proposed.hash,
+                dev: staged.publication.proposed.dev,
+              });
+              return observed;
+            },
+          },
         }),
       catch: (error) =>
         error instanceof BarrierRefusal ? error : new BarrierRefusal("release-operation-failed"),
     });
-    return yield* finishPlan(prepared, activated, databaseFqns);
+    return yield* finishPlan(prepared, activated, databaseFqns, activatedContainers);
   });

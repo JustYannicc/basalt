@@ -6,7 +6,7 @@ import * as Response from "effect/http/HttpClientResponse";
 export const digest = (c) => `sha256:${c.repeat(64)}`;
 export const image = (d) => `registry.cloudflare.com/fixture/fixture-pool@${d}`;
 
-export function containerDriftApi() {
+export function containerDriftApi({ rolloutOnly = false } = {}) {
   const state = {
     publishedDigest: digest("2"),
     app: {
@@ -50,7 +50,26 @@ export function containerDriftApi() {
     } else if (url.pathname.endsWith("/rollouts")) {
       state.writes++;
       state.rollouts++;
-      value = { id: "fixture-rollout" };
+      if (rolloutOnly) {
+        assert.equal(request.method, "POST");
+        assert.equal(request.body._tag, "Uint8Array");
+        const body = JSON.parse(Buffer.from(request.body.body).toString());
+        const currentVersion = state.app.version;
+        const previous = state.app.configuration;
+        state.app = {
+          ...state.app,
+          configuration: body.target_configuration,
+          version: currentVersion + 1,
+        };
+        value = {
+          id: `fixture-rollout-${state.rollouts}`,
+          current_version: currentVersion,
+          target_version: state.app.version,
+          current_configuration: previous,
+          target_configuration: state.app.configuration,
+          status: "completed",
+        };
+      } else value = { id: "fixture-rollout" };
     } else if (request.method === "DELETE") {
       state.writes++;
       state.applicationExists = false;
@@ -95,7 +114,10 @@ export function containerDriftApi() {
         delete body.configuration.instance_type;
         Object.assign(body.configuration, resources);
       }
-      state.app = { ...state.app, ...body, version: state.app.version + 1 };
+      if (rolloutOnly && request.method === "PATCH") {
+        const { configuration, ...settings } = body;
+        state.app = { ...state.app, ...settings };
+      } else state.app = { ...state.app, ...body, version: state.app.version + 1 };
       value = state.app;
     }
     return Effect.succeed(

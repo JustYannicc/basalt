@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { State } from "alchemy/State/State";
 import { evalStack } from "alchemy/Stack";
 import { Cause, Context, Effect, Exit } from "effect";
@@ -9,6 +9,9 @@ import { readRecoveryManifest } from "./recovery.ts";
 import { deployStack } from "./deploy-stack.ts";
 import { withReleaseRuntime } from "./runtime.ts";
 import { releaseEvidence } from "./evidence.ts";
+import { openRecovery } from "./recovery-envelope.ts";
+import { canonical, digest, BarrierRefusal } from "./manifest.ts";
+import { readRecoveryProgress } from "./recovery-manifest.ts";
 
 if (
   process.env.GITHUB_ACTIONS !== "true" ||
@@ -20,20 +23,47 @@ if (process.env.ALCHEMY_STAGE !== "production")
 const args = process.argv.slice(2);
 if (args.length && (args.length !== 3 || args[0] !== "--recover"))
   throw new Error("Use --recover <manifest.json> <receipt.json>");
+const recoveryDirectory = args.length ? dirname(resolve(args[1]!)) : undefined;
 const recovery = args.length
   ? {
       manifest: JSON.parse(await readFile(resolve(args[1]!), "utf8")),
       receipt: JSON.parse(await readFile(resolve(args[2]!), "utf8")),
     }
   : undefined;
+const containerRecovery =
+  recovery && "containers" in readRecoveryManifest(recovery.manifest)
+    ? {
+        frozen: openRecovery(
+          JSON.parse(
+            await readFile(resolve(recoveryDirectory!, "container-recovery.sealed.json"), "utf8"),
+          ),
+          process.env.EXECUTOR_ENCRYPTION_KEY ?? "",
+          readRecoveryManifest(recovery.manifest).candidate,
+          digest(canonical(readRecoveryManifest(recovery.manifest))),
+        ),
+        databaseCompatible: process.env.BASALT_RECOVERY_DATABASE_COMPATIBLE === "true",
+        previous: await readFile(resolve(recoveryDirectory!, "recovery.json"), "utf8").then(
+          (value) => readRecoveryProgress(JSON.parse(value)),
+          (error: NodeJS.ErrnoException) => {
+            if (error.code === "ENOENT") return undefined;
+            throw new BarrierRefusal("container-recovery-progress-unreadable");
+          },
+        ),
+      }
+    : undefined;
 if (
   recovery &&
   readRecoveryManifest(recovery.manifest).candidate !== process.env.BASALT_RELEASE_CANDIDATE
 )
   throw new Error("Recovery candidate does not match its frozen manifest");
 process.chdir(fileURLToPath(new URL("../../.upstream/apps/hosted/cloud/", import.meta.url)));
-const directory = fileURLToPath(new URL("../../.local/release-barrier/", import.meta.url));
-const evidence = releaseEvidence(directory, process.env.BASALT_RELEASE_CANDIDATE!);
+const directory =
+  recoveryDirectory ?? fileURLToPath(new URL("../../.local/release-barrier/", import.meta.url));
+const evidence = releaseEvidence(
+  directory,
+  process.env.BASALT_RELEASE_CANDIDATE!,
+  process.env.EXECUTOR_ENCRYPTION_KEY,
+);
 const result = await Effect.runPromiseExit(
   Effect.suspend(() =>
     Effect.promise(
@@ -45,8 +75,12 @@ const result = await Effect.runPromiseExit(
         stack,
         (compiled) =>
           (recovery
-            ? recoverStack(compiled, recovery.manifest, recovery.receipt, (value) =>
-                evidence.recovery(value),
+            ? recoverStack(
+                compiled,
+                recovery.manifest,
+                recovery.receipt,
+                (value) => evidence.recovery(value),
+                containerRecovery,
               )
             : deployStack(compiled, {
                 candidate: process.env.BASALT_RELEASE_CANDIDATE!,

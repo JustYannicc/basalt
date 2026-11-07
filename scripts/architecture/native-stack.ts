@@ -51,6 +51,7 @@ function evaluate(
     previewConnectionProof?: true;
     connectionTarget?: "DatabaseConnection" | "PoolModelDatabaseConnection";
     connectionChange?: "origin" | "limit" | "tls" | "name";
+    containerProof?: string;
   } = {},
 ): unknown {
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), "native-stack-")));
@@ -72,6 +73,7 @@ function evaluate(
       NATIVE_STACK_CONNECTION_PROOF: String(options.connectionProof ?? false),
       NATIVE_STACK_PREVIEW_CONNECTION_PROOF: String(options.previewConnectionProof ?? false),
       NATIVE_STACK_CONNECTION_CHANGE: options.connectionChange ?? "",
+      NATIVE_STACK_CONTAINER_PROOF: options.containerProof ?? "",
     };
     const worker = fileURLToPath(new URL("./native-stack-worker.mjs", import.meta.url));
     let command: string, args: string[];
@@ -229,4 +231,20 @@ export function discoverConnectionPlanProof(
     ...(connectionTarget ? { connectionTarget } : {}),
     ...(connectionChange ? { connectionChange } : {}),
   }) as ConnectionPlanProof;
+}
+
+export function discoverContainerBarrierProof(root: string, scenario: string) {
+  return evaluate(root, { containerProof: scenario }) as {
+    scenario: string;
+    succeeded: boolean;
+    without631Action: string;
+    containerAction: string;
+    workerInputMatches: boolean;
+    applicationWrites: number;
+    rollouts: number;
+    dockerCalls: number;
+    events: string[];
+    unchangedAction?: string;
+    liveStateWrites: number;
+  };
 }

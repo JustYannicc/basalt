@@ -96,29 +96,42 @@ try {
     process.env.NATIVE_STACK_CONNECTION_PROOF === "true"
       ? await import("../release-barrier/connection-proof.mjs")
       : undefined;
-  const inspect = previewConnection
-    ? (await import("../release-barrier/preview-connection-proof.mjs")).provePreviewConnection
-    : connectionProof
-      ? (stack) =>
-          connectionProof.proveConnectionPlan(
-            stack,
-            (inspectNext) => {
-              process.env.BASALT_RELEASE_ATTEMPT = "00000000-0000-4000-8000-000000000002";
-              return evalStack(actualRoot, inspectNext, { stage: settings.ALCHEMY_STAGE });
-            },
-            process.env.NATIVE_STACK_CONNECTION_CHANGE,
-            process.env.NATIVE_STACK_CONNECTION_TARGET,
-          )
-      : process.env.NATIVE_STACK_RELEASE_PROOF === "true"
-        ? (await import("../release-phases/proof.mjs")).proveReleasePhases
-        : (stack) =>
-            Effect.sync(() =>
-              inventoryDeclarations(
-                Object.values(stack.resources),
-                stack.bindings,
-                Output.isOutput,
-              ),
-            );
+  const containerProof = process.env.NATIVE_STACK_CONTAINER_PROOF
+    ? await import("../release-barrier/container-stack-proof.mjs")
+    : undefined;
+  const inspect = containerProof
+    ? (stack) =>
+        containerProof.proveContainerStack(
+          stack,
+          (inspectNext) => {
+            process.env.BASALT_RELEASE_ATTEMPT = "00000000-0000-4000-8000-000000000002";
+            return evalStack(actualRoot, inspectNext, { stage: settings.ALCHEMY_STAGE });
+          },
+          process.env.NATIVE_STACK_CONTAINER_PROOF,
+        )
+    : previewConnection
+      ? (await import("../release-barrier/preview-connection-proof.mjs")).provePreviewConnection
+      : connectionProof
+        ? (stack) =>
+            connectionProof.proveConnectionPlan(
+              stack,
+              (inspectNext) => {
+                process.env.BASALT_RELEASE_ATTEMPT = "00000000-0000-4000-8000-000000000002";
+                return evalStack(actualRoot, inspectNext, { stage: settings.ALCHEMY_STAGE });
+              },
+              process.env.NATIVE_STACK_CONNECTION_CHANGE,
+              process.env.NATIVE_STACK_CONNECTION_TARGET,
+            )
+        : process.env.NATIVE_STACK_RELEASE_PROOF === "true"
+          ? (await import("../release-phases/proof.mjs")).proveReleasePhases
+          : (stack) =>
+              Effect.sync(() =>
+                inventoryDeclarations(
+                  Object.values(stack.resources),
+                  stack.bindings,
+                  Output.isOutput,
+                ),
+              );
   const program = evalStack(
     actualRoot,
     (stack) =>

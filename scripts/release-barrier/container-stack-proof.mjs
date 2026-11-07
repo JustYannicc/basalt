@@ -1,0 +1,374 @@
+import assert from "node:assert/strict";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import * as Apply from "alchemy/Apply";
+import * as Plan from "alchemy/Plan";
+import * as Command from "alchemy/Command";
+import * as Provider from "alchemy/Provider";
+import { Resource } from "alchemy/Resource";
+import { State } from "alchemy/State/State";
+import { InMemoryService } from "alchemy/State/InMemoryState";
+import { ContainerPlatform } from "../../node_modules/alchemy/src/Cloudflare/Containers/ContainerPlatform.ts";
+import { LiveContainerProvider } from "../../node_modules/alchemy/src/Cloudflare/Containers/ContainerProvider.ts";
+import { WorkerUploadHook } from "alchemy/Cloudflare/Workers/WorkerUploadHook";
+import { Effect, Exit, Layer, Option, Redacted } from "effect";
+import * as HttpClient from "effect/http/HttpClient";
+import { Credentials } from "@distilled.cloud/cloudflare/Credentials";
+import { CloudflareEnvironment } from "alchemy/Cloudflare";
+import { Docker } from "alchemy/Docker/Docker";
+import { attributes, preparedUpload } from "./fixture.ts";
+import { deployStack } from "./deploy-stack.ts";
+import { cloudflareArtifactsApi } from "../ensure-artifacts.ts";
+import { containerDriftApi, digest } from "../upstream-tests/fixtures/container-drift-api.mjs";
+
+const root = fileURLToPath(new URL("../../", import.meta.url));
+const production = "a637b6ded731907c631794086598b3068220886e";
+const without631 = "a7b1b47e1b83d2c9fff1b6e51e6844f202c6a634";
+const imageCandidate = "2f2fad5e1050ffa2a51b5761315fcf8fab4a43dd";
+const pinFiles = ["releases.json", "sources.json", "typesafe/go.mod", "typesafe/go.sum"];
+
+/** Real root declarations and native Plan/Apply run end to end. Only control-plane effects, builds and stored state are synthetic. */
+export const proveContainerStack = (source, recompile, scenario) =>
+  Effect.gen(function* () {
+    const context = mkdtempSync(join(tmpdir(), "container-root-"));
+    for (const file of execFileSync("git", ["ls-files", "containers/pool"], {
+      cwd: root,
+      encoding: "utf8",
+    })
+      .trim()
+      .split("\n")) {
+      const target = join(context, file.slice("containers/pool/".length));
+      mkdirSync(dirname(target), { recursive: true });
+      copyFileSync(join(root, file), target);
+    }
+    const pins = (revision) => {
+      for (const name of pinFiles)
+        writeFileSync(
+          join(context, name),
+          execFileSync(
+            "git",
+            [
+              "show",
+              `${revision === "candidate" ? imageCandidate : revision}:containers/pool/${name}`,
+            ],
+            { cwd: root },
+          ),
+        );
+    };
+    pins(production);
+    const contextualize = (value) => ({
+      ...value,
+      resources: {
+        ...value.resources,
+        PoolContainer: {
+          ...value.resources.PoolContainer,
+          Props: { ...value.resources.PoolContainer.Props, context },
+        },
+      },
+    });
+    let stack = contextualize(source);
+    const api = containerDriftApi({ rolloutOnly: true });
+    api.app.account_id = "0".repeat(32);
+    api.applicationExists = false;
+    const events = [];
+    const receipts = [];
+    let writes = 0,
+      dockerCalls = 0;
+    const docker = {
+      image: {
+        build: () => {
+          dockerCalls++;
+          return Effect.die("Docker forbidden in registry-cache proof");
+        },
+      },
+    };
+    const actual = yield* ContainerPlatform.Provider.pipe(
+      Effect.provide(LiveContainerProvider()),
+      Effect.provideService(HttpClient.HttpClient, api.http),
+      Effect.provideService(Docker, docker),
+    );
+    let staged;
+    let capturedPoolInput;
+    const namespaces = Object.fromEntries(
+      Object.values(stack.resources)
+        .filter((resource) => resource.Type === "Cloudflare.Worker")
+        .flatMap((resource) => Object.keys(resource.Props.exports ?? {}))
+        .concat(["PoolContainer"])
+        .map((name) => [name, `namespace-${name}`]),
+    );
+    const workerAttributes = (id) => ({
+      ...attributes(id),
+      accountId: "0".repeat(32),
+      durableObjectNamespaces: namespaces,
+    });
+    const origin = {
+      host: "fixture.invalid",
+      port: 6432,
+      database: "postgres",
+      user: "fixture",
+      password: Redacted.make("fixture"),
+    };
+    const otherAttributes = (input) => ({
+      ...input.news,
+      id: input.id,
+      name: "fixture",
+      accountId: "0".repeat(32),
+      username: "fixture",
+      host: "fixture.invalid",
+      hostname: "fixture.invalid",
+      port: 6432,
+      origin,
+      pooledOrigin: origin,
+      connectionUrl: Redacted.make("postgresql://fixture:fixture@fixture.invalid/postgres"),
+      text: "fixture",
+      value: Redacted.make("fixture"),
+      mtlsCertificateId: "fixture",
+      hash: { input: "fixture" },
+    });
+    const providers = [...new Set(Object.values(stack.resources).map((resource) => resource.Type))]
+      .filter(
+        (type) => !["Cloudflare.Container", "Cloudflare.Worker", "Command.Exec"].includes(type),
+      )
+      .map((type) =>
+        Provider.succeed(Resource(type), {
+          reconcile: (input) => Effect.succeed(otherAttributes(input)),
+          delete: () => Effect.die("Unexpected deletion"),
+        }),
+      );
+    providers.push(Provider.succeed(Resource("Cloudflare.Container"), actual));
+    providers.push(
+      Provider.succeed(Resource("Cloudflare.Worker"), {
+        stables: ["workerId", "workerName"],
+        precreate: ({ id }) => Effect.succeed(workerAttributes(id)),
+        diff: ({ output }) =>
+          Effect.sync(() => {
+            assert.deepEqual(output.durableObjectNamespaces, namespaces);
+            return {
+              action: "update",
+              stables: ["workerId", "workerName", "durableObjectNamespaces"],
+            };
+          }),
+        reconcile: (input) =>
+          Effect.gen(function* () {
+            const result = workerAttributes(input.id);
+            const hook = yield* Effect.serviceOption(WorkerUploadHook);
+            if (Option.isNone(hook)) return result;
+            const upload = preparedUpload(input.id);
+            if (input.id === "PoolWorker") {
+              capturedPoolInput = input.news.env.POOL_IMAGE_HASH;
+              upload.request.metadata.bindings.push({
+                name: "POOL_IMAGE_HASH",
+                type: "plain_text",
+                text: capturedPoolInput,
+              });
+            }
+            return yield* hook.value.capture({
+              ...upload,
+              proposed: result,
+              activate: () =>
+                Effect.sync(() => {
+                  events.push(`activate:${input.id}`);
+                  return result;
+                }),
+            });
+          }),
+        delete: () => Effect.die("Unexpected deletion"),
+      }),
+    );
+    providers.push(
+      Command.ExecProvider().pipe(
+        Layer.provide(
+          Layer.succeed(Command.CommandExecutor, {
+            spawn: () => Effect.die("No child processes in the release graph"),
+            run: (input) =>
+              Effect.sync(() => {
+                events.push(`command:${input.command}`);
+                return { exitCode: 0, stdout: "", stderr: "" };
+              }),
+          }),
+        ),
+      ),
+    );
+    const memory = yield* InMemoryService();
+    const state = {
+      ...memory,
+      set: (input) =>
+        Effect.sync(() => {
+          writes++;
+        }).pipe(Effect.andThen(memory.set(input))),
+      setOutput: (input) =>
+        Effect.sync(() => {
+          writes++;
+        }).pipe(Effect.andThen(memory.setOutput(input))),
+    };
+    const run = (effect) =>
+      effect.pipe(
+        Effect.provideService(State, Effect.succeed(state)),
+        Effect.provideService(HttpClient.HttpClient, api.http),
+        Effect.provideService(CloudflareEnvironment, Effect.succeed({ accountId: "0".repeat(32) })),
+        Effect.provideService(
+          Credentials,
+          Effect.succeed({
+            type: "apiToken",
+            apiToken: Redacted.make("synthetic-never-sent"),
+            apiBaseUrl: "https://fixture.invalid",
+          }),
+        ),
+        Effect.provideService(Docker, docker),
+        Effect.provide(Layer.mergeAll(...providers)),
+        Effect.provideContext(stack.services),
+      );
+    // Production declarations contain explicit reads of the already-deployed role records.
+    const databaseSeed = {
+      ...stack,
+      resources: Object.fromEntries(
+        Object.entries(stack.resources).filter(([, resource]) =>
+          resource.Type.startsWith("Planetscale."),
+        ),
+      ),
+      bindings: {},
+      actions: {},
+      output: {},
+    };
+    yield* run(Apply.apply(yield* run(Plan.make(databaseSeed))));
+    yield* run(Apply.apply(yield* run(Plan.make(stack))));
+    return yield* recompile((next) =>
+      Effect.gen(function* () {
+        stack = contextualize(next);
+        pins(without631);
+        const intermediate = yield* run(Plan.make(stack));
+        assert.equal(intermediate.resources.PoolContainer.action, "update");
+        pins("candidate");
+        const plan = yield* run(Plan.make(stack));
+        assert.equal(plan.resources.PoolContainer.action, "update");
+        api.writes = 0;
+        api.rollouts = 0;
+        writes = 0;
+        events.length = 0;
+        if (scenario !== "same-digest") api.publishedDigest = digest("3");
+        const exit = yield* Effect.exit(
+          run(
+            deployStack(stack, {
+              candidate: "a".repeat(40),
+              record: async (receipt) => {
+                receipts.push(receipt);
+              },
+              manifest: async () => {},
+              io: {
+                container: (publication) =>
+                  Effect.sync(() => {
+                    assert.equal(api.writes, 0);
+                    assert.equal(api.rollouts, 0);
+                    events.push("image:admitted");
+                    staged = publication;
+                    return {
+                      digest: publication.proposed.hash.digest,
+                      configDigest: digest("4"),
+                      platform: "linux/amd64",
+                      capabilityLabel: "1",
+                    };
+                  }),
+                observeContainer: () =>
+                  staged
+                    .read()
+                    .pipe(
+                      Effect.map((value) =>
+                        scenario === "container-drift" ? { ...value, version: 99 } : value,
+                      ),
+                    ),
+                namespace: (account, token) =>
+                  cloudflareArtifactsApi(account, token, async (_input, init) => {
+                    assert.equal(init.method, "GET");
+                    return Response.json({
+                      success: true,
+                      result: [{ namespace: "basalt-production-apps", jurisdiction: "eu" }],
+                    });
+                  }),
+                baseline: () => Effect.succeed([{ versionId: "previous", percentage: 100 }]),
+                upload: (worker) =>
+                  Effect.sync(() => {
+                    assert.equal(api.writes, 0);
+                    assert.equal(api.rollouts, 0);
+                    events.push(`admit:${worker.id}`);
+                    if (worker.id === "Router" && scenario === "late-worker-rejection")
+                      throw new Error("Rejected late upload");
+                    if (worker.id === "Router" && scenario === "source-drift")
+                      writeFileSync(
+                        join(context, "Dockerfile"),
+                        readFileSync(join(context, "Dockerfile"), "utf8") +
+                          "\nLABEL changed_after_freeze=true\n",
+                      );
+                    return {
+                      versionId: `accepted-${worker.id}`,
+                      ...(worker.id === "Router" && scenario === "missing-startup"
+                        ? {}
+                        : {
+                            startupTimeMs:
+                              scenario === "over-ceiling" && worker.id === "Router" ? 751 : 100,
+                          }),
+                    };
+                  }),
+              },
+            }),
+          ),
+        );
+        const succeeded = Exit.isSuccess(exit);
+        const expectedSuccess = scenario === "success" || scenario === "same-digest";
+        const workerInputMatches = staged?.proposed.hash.image === capturedPoolInput;
+        assert.equal(
+          workerInputMatches,
+          true,
+          "Actual root POOL_IMAGE_HASH must consume the staged native attributes",
+        );
+        if (!succeeded && expectedSuccess) return yield* Effect.failCause(exit.cause);
+        assert.equal(succeeded, expectedSuccess);
+        let unchangedAction;
+        if (succeeded) {
+          assert.equal(api.writes, scenario === "same-digest" ? 0 : 1);
+          assert.equal(api.rollouts, scenario === "same-digest" ? 0 : 1);
+          assert.equal(api.app.configuration.image, staged.proposed.configuration.image);
+          const allWorkers = Object.values(stack.resources).filter(
+            (resource) => resource.Type === "Cloudflare.Worker",
+          );
+          const firstActivation = events.findIndex((event) => event.startsWith("activate:"));
+          assert.ok(
+            allWorkers.every(
+              (worker) =>
+                events.indexOf(`admit:${worker.FQN}`) > -1 &&
+                events.indexOf(`admit:${worker.FQN}`) < firstActivation,
+            ),
+          );
+          assert.ok(events.indexOf("image:admitted") < firstActivation);
+          assert.equal(receipts.at(-1).phase, "complete");
+          const next = yield* run(Plan.make(stack));
+          unchangedAction = next.resources.PoolContainer.action;
+          assert.equal(unchangedAction, "noop");
+        } else {
+          assert.equal(api.writes, 0);
+          assert.equal(api.rollouts, 0);
+          assert.ok(!events.some((event) => event.startsWith("activate:")));
+          if (["late-worker-rejection", "missing-startup", "over-ceiling"].includes(scenario)) {
+            assert.ok(!events.some((event) => event.startsWith("command:")));
+            assert.equal(writes, 0);
+          }
+        }
+        assert.equal(dockerCalls, 0);
+        return {
+          scenario,
+          succeeded,
+          without631Action: intermediate.resources.PoolContainer.action,
+          containerAction: plan.resources.PoolContainer.action,
+          workerInputMatches,
+          applicationWrites: api.writes,
+          rollouts: api.rollouts,
+          dockerCalls,
+          events,
+          ...(unchangedAction ? { unchangedAction } : {}),
+          liveStateWrites: writes,
+        };
+      }),
+    );
+  });

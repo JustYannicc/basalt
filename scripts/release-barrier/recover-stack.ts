@@ -11,6 +11,13 @@ import {
   type RecoveryReceipt,
   type RecoveryWorker,
 } from "./recovery.ts";
+import { recoverContainers, type ContainerRecoveryOptions } from "./container-recovery.ts";
+import {
+  observeContainer,
+  rolloutRestoredContainer,
+  verifyRestoredContainer,
+  waitForContainerVersion,
+} from "./container-cloudflare.ts";
 
 const recoverDeployment = (
   target: { accountId: string; scriptName: string },
@@ -39,6 +46,7 @@ export const recoverStack = (
   manifest: unknown,
   receipt: unknown,
   record: (value: RecoveryReceipt) => Promise<void>,
+  containerRecovery?: Omit<ContainerRecoveryOptions, "provider">,
 ) =>
   Effect.gen(function* () {
     const parsed = readRecoveryManifest(manifest);
@@ -55,13 +63,21 @@ export const recoverStack = (
     const state = yield* yield* State;
     const context =
       yield* Effect.context<
-        Effect.Services<ReturnType<typeof readBaseline> | ReturnType<typeof recoverDeployment>>
+        Effect.Services<
+          | ReturnType<typeof readBaseline>
+          | ReturnType<typeof recoverDeployment>
+          | ReturnType<typeof rolloutRestoredContainer>
+        >
       >();
     const run = <A, E>(
       effect: Effect.Effect<
         A,
         E,
-        Effect.Services<ReturnType<typeof readBaseline> | ReturnType<typeof recoverDeployment>>
+        Effect.Services<
+          | ReturnType<typeof readBaseline>
+          | ReturnType<typeof recoverDeployment>
+          | ReturnType<typeof rolloutRestoredContainer>
+        >
       >,
     ) =>
       Effect.runPromiseExit(effect.pipe(Effect.provideContext(context))).then((exit) => {
@@ -91,6 +107,31 @@ export const recoverStack = (
       if (!value) throw new BarrierRefusal("unknown-recovery-worker", worker.id);
       return value;
     };
+    if ("containers" in parsed) {
+      if (
+        !containerRecovery ||
+        parsed.containers.length !== 1 ||
+        parsed.containers[0]?.id !== "PoolContainer" ||
+        stack.resources.PoolContainer?.Type !== "Cloudflare.Container"
+      )
+        throw new BarrierRefusal("container-recovery-required");
+      const saved = yield* state.get({
+        stack: stack.name,
+        stage: stack.stage,
+        fqn: "PoolContainer",
+      });
+      if (
+        !saved ||
+        !("attr" in saved) ||
+        !saved.attr ||
+        typeof saved.attr.accountId !== "string" ||
+        typeof saved.attr.applicationId !== "string" ||
+        digest(
+          canonical({ accountId: saved.attr.accountId, applicationId: saved.attr.applicationId }),
+        ) !== parsed.containers[0].target
+      )
+        throw new BarrierRefusal("container-recovery-target-drift");
+    }
     return yield* Effect.tryPromise({
       try: () =>
         recoverWorkers(
@@ -108,6 +149,36 @@ export const recoverStack = (
               run(recoverDeployment(target(worker), worker)).then(() => undefined),
           },
           record,
+          containerRecovery
+            ? (manifest, admitted, progress, save) =>
+                recoverContainers(
+                  manifest,
+                  admitted,
+                  {
+                    ...containerRecovery,
+                    provider: {
+                      read: (container) => run(observeContainer(container.baseline)),
+                      rollout: (container) => run(rolloutRestoredContainer(container)),
+                      wait: (container, rollout, restored) =>
+                        run(
+                          waitForContainerVersion(
+                            restored
+                              ? container.baseline
+                              : {
+                                  ...container.baseline,
+                                  configuration: container.configuration,
+                                },
+                            rollout,
+                          ),
+                        ),
+                      verify: (container) => run(verifyRestoredContainer(container)),
+                    },
+                  },
+                  progress,
+                  save,
+                )
+            : undefined,
+          containerRecovery?.previous,
         ),
       catch: (error) =>
         error instanceof BarrierRefusal ? error : new BarrierRefusal("recovery-unconfirmed"),

@@ -1,0 +1,11 @@
+{
+  "identity": "alchemy-container-publication-hook",
+  "file": "0386-alchemy-container-publication-hook.patch",
+  "content_sha256": "253486699bff162c6f9ba52e758a5305a1345c3658a8a5fda0dfed24802a7c38",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "alchemy-dependency-upgrade",
+  "requires": "The pinned Alchemy ContainerProvider exposes optional immutable publication and exact existing-application rollout capabilities without replay or implicit adoption; remove after staged and ordinary provider regressions pass."
+}

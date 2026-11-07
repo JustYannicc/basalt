@@ -8,6 +8,8 @@ import {
   type PreparedWorkerUpload,
 } from "alchemy/Cloudflare/Workers/WorkerUploadHook";
 import type { Worker } from "alchemy/Cloudflare";
+import type { ContainerApplication } from "alchemy/Cloudflare";
+import { ContainerPublicationHook } from "alchemy/Cloudflare/Containers/ContainerPublicationHook";
 import { InMemoryService } from "alchemy/State/InMemoryState";
 import { State } from "alchemy/State/State";
 import type { CompiledStack } from "alchemy/Stack";
@@ -16,6 +18,7 @@ import * as Retry from "@distilled.cloud/cloudflare/Retry";
 import { BarrierRefusal } from "./manifest.ts";
 import { admitSourceNamespace, commandPhase, supportedCommand } from "./commands.ts";
 import { cloudflareArtifactsApi } from "../ensure-artifacts.ts";
+import { stageContainer, inspectContainer, type StagedContainer } from "./container.ts";
 
 const workerType = "Cloudflare.Worker";
 const existing = (node: Plan.Apply) =>
@@ -42,6 +45,8 @@ export function assertSupportedPlan(plan: Plan.Plan) {
       const props = node.resource.Props as Worker["Props"];
       if (props.namespace != null || props.preview != null || props.version != null)
         refuse("unsupported-worker-mode", fqn);
+    } else if (node.resource.Type === "Cloudflare.Container" && node.action === "update") {
+      if (node.resource.LogicalId !== "PoolContainer") refuse("unsupported-container", fqn);
     } else if (
       node.resource.Type !== "Command.Exec" &&
       node.resource.Type !== "Command.Build" &&
@@ -61,11 +66,13 @@ export const preparePlan = (
   stack: CompiledStack,
   plan: Plan.Plan,
   namespaceApi = cloudflareArtifactsApi,
+  inspect = inspectContainer,
 ) =>
   Effect.gen(function* () {
     assertSupportedPlan(plan);
     const files = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
     const captured = new Map<string, PreparedWorkerUpload>();
+    const containers = new Map<string, StagedContainer>();
     const inputs = new Map<string, { news: unknown; bindings: unknown }>();
     const builds = new Map<string, object>();
     const checkedCommands = new Map<string, object>();
@@ -95,6 +102,27 @@ export const preparePlan = (
                   captured.set(fqn, upload);
                   inputs.set(fqn, { news: input.news, bindings: input.bindings });
                   return upload.proposed!;
+                }),
+            }),
+          );
+      } else if (node.resource.Type === "Cloudflare.Container" && node.action === "update") {
+        const cached = node.state.status === "updating" ? node.state.old.attr : node.state.attr;
+        reconcile = (input) =>
+          provider.reconcile(input).pipe(
+            Retry.none,
+            Effect.provideService(ContainerPublicationHook, {
+              capture: (publication) =>
+                Effect.gen(function* () {
+                  const staged = yield* stageContainer(
+                    publication,
+                    input.news as ContainerApplication["Props"],
+                    input.olds as ContainerApplication["Props"] | undefined,
+                    cached as ContainerApplication["Attributes"],
+                    inspect,
+                  );
+                  containers.set(fqn, staged);
+                  inputs.set(fqn, { news: input.news, bindings: input.bindings });
+                  return publication.proposed;
                 }),
             }),
           );
@@ -168,8 +196,18 @@ export const preparePlan = (
       workers.some((fqn) => !captured.has(fqn))
     )
       refuse("incomplete-worker-coverage");
+    if (
+      Object.entries(plan.resources).some(
+        ([fqn, node]) =>
+          node.resource.Type === "Cloudflare.Container" &&
+          node.action === "update" &&
+          !containers.has(fqn),
+      )
+    )
+      refuse("incomplete-container-coverage");
     return {
       captured,
+      containers,
       inputs,
       builds,
       checkedCommands,
@@ -189,6 +227,7 @@ export const finishPlan = (
   prepared: PreparedPlan,
   activated: ReadonlyMap<string, Worker["Attributes"]>,
   databaseFqns: ReadonlySet<string>,
+  activatedContainers: ReadonlyMap<string, ContainerApplication["Attributes"]> = new Map(),
 ) =>
   Effect.gen(function* () {
     const state = yield* yield* State;
@@ -201,6 +240,7 @@ export const finishPlan = (
         resources[fqn] = { ...node, action: "noop", state: current };
       } else if (
         node.resource.Type === workerType ||
+        prepared.containers.has(fqn) ||
         node.resource.Type === "Command.Build" ||
         prepared.checkedCommands.has(fqn)
       ) {
@@ -221,7 +261,9 @@ export const finishPlan = (
                 const result =
                   node.resource.Type === workerType
                     ? activated.get(fqn)
-                    : (prepared.builds.get(fqn) ?? prepared.checkedCommands.get(fqn));
+                    : (activatedContainers.get(fqn) ??
+                      prepared.builds.get(fqn) ??
+                      prepared.checkedCommands.get(fqn));
                 if (!result) refuse("missing-prepared-output", fqn);
                 return result!;
               }),
