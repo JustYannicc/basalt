@@ -412,15 +412,14 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         return failureResponse(error);
       }
     }
+    let poolClaims: Awaited<ReturnType<typeof requirePoolUse>>;
     if (isControlPath(pathname)) {
       try {
-        const claims = await requirePoolUse(request, {
+        poolClaims = await requirePoolUse(request, {
           signingKey: this.env.POOL_APP_SIGNING_KEY,
           previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
           permissions: (pool, user) => this.computers.permissions(pool, user),
         });
-        if (claims && !isPoolAcquisitionPath(request.method, pathname))
-          await this.memberships.ensure(claims.pool, claims.organization);
       } catch (error) {
         return failureResponse(error);
       }
@@ -461,7 +460,16 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         connectionString: this.env.POOL_AUTH_DATABASE?.connectionString,
         permissions: (pool, caller) => this.computers.permissions(pool, caller),
       });
-    if (isControlPath(pathname)) return this.control.handle(request);
+    if (isControlPath(pathname)) {
+      try {
+        // History, capacity and setup reads above do not depend on Home membership or readiness.
+        if (poolClaims && !isPoolAcquisitionPath(request.method, pathname))
+          await this.memberships.ensure(poolClaims.pool, poolClaims.organization);
+      } catch (error) {
+        return failureResponse(error);
+      }
+      return this.control.handle(request);
+    }
     const port = poolPort(pathname);
     if (!port && pathname !== "/__warm") return new Response(null, { status: 404 });
     return this.forward(request);

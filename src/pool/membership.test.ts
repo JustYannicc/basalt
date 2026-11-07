@@ -1,52 +1,111 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { NativeMemberships } from "./membership.ts";
-import { membershipPrefix, membershipTtlMs, type NativeMembershipPolicy, type NativeMembershipSnapshot } from "./membership-contract.ts";
+import {
+  membershipPrefix,
+  membershipTtlMs,
+  type NativeMembershipPolicy,
+  type NativeMembershipSnapshot,
+} from "./membership-contract.ts";
 import { signEnvelope } from "./token.ts";
 
 const key = "3a".repeat(32);
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => { resolve = done; });
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
   return { promise, resolve };
 }
 function fixture() {
   let now = 1_000_000;
   const values = new Map<string, unknown>();
-  const native = new Map<string, string[]>([["a", ["auth-a"]], ["b", ["auth-b"]]]);
+  const native = new Map<string, string[]>([
+    ["a", ["auth-a"]],
+    ["b", ["auth-b"]],
+  ]);
   const home = new Map<string, string[]>();
   const installed = new Map<string, NativeMembershipPolicy>();
-  const aborted: string[] = [], alarms: number[] = [];
-  const snapshots = async (pool: string, organization: string): Promise<NativeMembershipSnapshot> => ({
-    pool, organization, native: true, accounts: (native.get(pool) ?? []).map((id) => ({
-      account: `account-${id}`, requirement: "openai", provider: "OpenAI", method: "chatgpt", generation: 1,
-      driver: "basalt-home", driverRevision: "1", bindingRevision: "1", homeReference: id,
+  const aborted: string[] = [],
+    alarms: number[] = [];
+  const snapshots = async (
+    pool: string,
+    organization: string,
+  ): Promise<NativeMembershipSnapshot> => ({
+    pool,
+    organization,
+    native: true,
+    accounts: (native.get(pool) ?? []).map((id) => ({
+      account: `account-${id}`,
+      requirement: "openai",
+      provider: "OpenAI",
+      method: "chatgpt",
+      generation: 1,
+      driver: "basalt-home",
+      driverRevision: "1",
+      bindingRevision: "1",
+      homeReference: id,
     })),
   });
   const deps = {
     storage: {
       get: async <T>(name: string) => structuredClone(values.get(name)) as T | undefined,
-      put: async (name: string, value: unknown) => { values.set(name, structuredClone(value)); },
+      put: async (name: string, value: unknown) => {
+        values.set(name, structuredClone(value));
+      },
     },
-    signingKey: key, now: () => now, read: snapshots,
+    signingKey: key,
+    now: () => now,
+    read: snapshots,
     actual: async (pool: string) => home.get(pool) ?? [],
-    reconcile: async (pool: string, accounts: readonly string[]) => { home.set(pool, [...accounts]); },
-    install: async (policy: NativeMembershipPolicy) => { installed.set(policy.pool, policy); },
-    abort: (pool: string) => { aborted.push(pool); },
-    schedule: async (at: number) => { alarms.push(at); },
+    reconcile: async (pool: string, accounts: readonly string[]) => {
+      home.set(pool, [...accounts]);
+    },
+    install: async (policy: NativeMembershipPolicy) => {
+      installed.set(policy.pool, policy);
+    },
+    abort: (pool: string) => {
+      aborted.push(pool);
+    },
+    schedule: async (at: number) => {
+      alarms.push(at);
+    },
   };
-  const request = async (pool = "a", secret = key) => new Request("https://pool/pool/v1/membership", {
-    method: "POST", body: JSON.stringify({ envelope: await signEnvelope(secret, membershipPrefix, {
-      pool, organization: "org", at: now, expiresAt: now + 30_000,
-    }) }),
-  });
-  return { deps, native, home, installed, aborted, alarms, request, advance: (ms: number) => { now += ms; } };
+  const request = async (pool = "a", secret = key) =>
+    new Request("https://pool/pool/v1/membership", {
+      method: "POST",
+      body: JSON.stringify({
+        envelope: await signEnvelope(secret, membershipPrefix, {
+          pool,
+          organization: "org",
+          at: now,
+          expiresAt: now + 30_000,
+        }),
+      }),
+    });
+  return {
+    deps,
+    native,
+    home,
+    installed,
+    aborted,
+    alarms,
+    request,
+    advance: (ms: number) => {
+      now += ms;
+    },
+  };
 }
 
 test("signed reservation persists refusal and aborts only that pool before acknowledging the writer", async () => {
   const f = fixture();
   const invalidated: string[] = [];
-  const memberships = new NativeMemberships({ ...f.deps, invalidateView: async (pool) => { invalidated.push(pool); } });
+  const memberships = new NativeMemberships({
+    ...f.deps,
+    invalidateView: async (pool) => {
+      invalidated.push(pool);
+    },
+  });
   await assert.rejects(memberships.reserve(await f.request("a", "4b".repeat(32))));
   assert.deepEqual(invalidated, []);
   assert.equal(await memberships.configured(), false);
@@ -59,10 +118,25 @@ test("signed reservation persists refusal and aborts only that pool before ackno
   assert.equal(f.alarms.length, 1);
 });
 
+test("a retained Home read stays readable when an invalidation has no native host registration", async () => {
+  const f = fixture();
+  const memberships = new NativeMemberships({
+    ...f.deps,
+    read: async (pool, organization) => ({ pool, organization, native: false, accounts: [] }),
+  });
+  f.home.set("a", ["retained-home-account"]);
+  await memberships.reserve(await f.request());
+  await memberships.ensure("a", "org");
+  assert.deepEqual(f.home.get("a"), ["retained-home-account"]);
+  await assert.rejects(memberships.authority("a"), /refreshing/);
+});
+
 test("failed local acknowledgement keeps authority dirty and rollback converges to current links", async () => {
   const f = fixture();
   const install = f.deps.install;
-  f.deps.install = async () => { throw new Error("plugin unavailable"); };
+  f.deps.install = async () => {
+    throw new Error("plugin unavailable");
+  };
   const memberships = new NativeMemberships(f.deps);
   await assert.rejects(memberships.reserve(await f.request()), /plugin unavailable/);
   await assert.rejects(memberships.authority("a"), /refreshing/);
@@ -85,12 +159,17 @@ test("level repair removes a late stale attach on every pass and after controlle
 });
 
 test("a reserve during an old read prevents that read from re-enabling use", async () => {
-  const f = fixture(), memberships = new NativeMemberships(f.deps);
+  const f = fixture(),
+    memberships = new NativeMemberships(f.deps);
   await memberships.reserve(await f.request());
   await memberships.tick();
-  const entered = deferred<void>(), finish = deferred<NativeMembershipSnapshot>();
+  const entered = deferred<void>(),
+    finish = deferred<NativeMembershipSnapshot>();
   const read = f.deps.read;
-  f.deps.read = async () => { entered.resolve(); return finish.promise; };
+  f.deps.read = async () => {
+    entered.resolve();
+    return finish.promise;
+  };
   const old = memberships.refresh("a");
   await entered.promise;
   await memberships.reserve(await f.request());
@@ -107,14 +186,20 @@ test("a reserve during an old read prevents that read from re-enabling use", asy
 });
 
 test("a missing current Home binding fails closed while the other pool remains usable", async () => {
-  const f = fixture(), memberships = new NativeMemberships(f.deps);
+  const f = fixture(),
+    memberships = new NativeMemberships(f.deps);
   await memberships.reserve(await f.request("a"));
   await memberships.reserve(await f.request("b"));
   await memberships.tick();
   const read = f.deps.read;
   f.deps.read = async (pool, organization) => {
     const result = await read(pool, organization);
-    return pool === "a" ? { ...result, accounts: result.accounts.map((account) => ({ ...account, homeReference: null })) } : result;
+    return pool === "a"
+      ? {
+          ...result,
+          accounts: result.accounts.map((account) => ({ ...account, homeReference: null })),
+        }
+      : result;
   };
   await memberships.tick();
   await assert.rejects(memberships.authority("a"), /refreshing/);
@@ -122,11 +207,14 @@ test("a missing current Home binding fails closed while the other pool remains u
 });
 
 test("authority expires when the native read fails and recovers on the next successful level read", async () => {
-  const f = fixture(), memberships = new NativeMemberships(f.deps);
+  const f = fixture(),
+    memberships = new NativeMemberships(f.deps);
   await memberships.reserve(await f.request());
   await memberships.tick();
   const read = f.deps.read;
-  f.deps.read = async () => { throw new Error("tools down"); };
+  f.deps.read = async () => {
+    throw new Error("tools down");
+  };
   f.advance(membershipTtlMs);
   await memberships.tick();
   await assert.rejects(memberships.authority("a"), /refreshing/);
@@ -136,21 +224,36 @@ test("authority expires when the native read fails and recovers on the next succ
 });
 
 test("authority requires the exact clean policy acknowledgement and never extends a failed renewal", async () => {
-  const f = fixture(), memberships = new NativeMemberships(f.deps);
+  const f = fixture(),
+    memberships = new NativeMemberships(f.deps);
   await memberships.reserve(await f.request());
   const install = f.deps.install;
-  f.deps.install = async () => { throw new Error("local install failed"); };
+  f.deps.install = async () => {
+    throw new Error("local install failed");
+  };
   await memberships.tick();
   await assert.rejects(memberships.authority("a"), /refreshing/);
   f.deps.install = install;
   await memberships.tick();
   const accepted = await memberships.authority("a");
   assert.ok(accepted);
-  assert.deepEqual(Object.keys(accepted).sort(), ["accounts", "dirty", "expiresAt", "organization", "pool", "revision"]);
+  assert.deepEqual(Object.keys(accepted).sort(), [
+    "accounts",
+    "dirty",
+    "expiresAt",
+    "organization",
+    "pool",
+    "revision",
+  ]);
   f.advance(5_000);
-  f.deps.install = async () => { throw new Error("renewal failed"); };
+  f.deps.install = async () => {
+    throw new Error("renewal failed");
+  };
   await memberships.tick();
-  assert.ok(await memberships.authority("a"), "the previous acknowledged policy is still inside its lease");
+  assert.ok(
+    await memberships.authority("a"),
+    "the previous acknowledged policy is still inside its lease",
+  );
   f.advance(membershipTtlMs - 5_000);
   await assert.rejects(memberships.authority("a"), /refreshing/);
 });
@@ -160,9 +263,13 @@ test("one native account expands its exact multi-project Home reference into poo
   const read = f.deps.read;
   f.deps.read = async (pool, organization) => {
     const snapshot = await read(pool, organization);
-    return { ...snapshot, accounts: snapshot.accounts.map((account) => ({
-      ...account, homeReference: 'sbhrefs1:["parent","project-a","project-b"]',
-    })) };
+    return {
+      ...snapshot,
+      accounts: snapshot.accounts.map((account) => ({
+        ...account,
+        homeReference: 'sbhrefs1:["parent","project-a","project-b"]',
+      })),
+    };
   };
   const memberships = new NativeMemberships(f.deps);
   await memberships.reserve(await f.request());
