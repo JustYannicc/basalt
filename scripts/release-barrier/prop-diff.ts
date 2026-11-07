@@ -68,7 +68,7 @@ function publicScalar(value: unknown, keys: string[]): Scalar | undefined {
   if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
   if (typeof value !== "string") return undefined;
   if (
-    /[\s?=#\\]|^[\/~]|:\/\/|bearer|private.?key|password|secret|token/i.test(value) ||
+    /[\s?=#\\]|^[/~]|:\/\/|bearer|private.?key|password|secret|token/i.test(value) ||
     credentialShape(value)
   )
     return undefined;
