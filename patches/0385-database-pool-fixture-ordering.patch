@@ -26,7 +26,7 @@ diff --git a/apps/hosted/testing/database-pool-fixture.ts b/apps/hosted/testing/
    Effect.acquireRelease(
      Effect.callback<{ readonly server: Net.Server; readonly cancels: { count: number } }>(
        (resume) => {
-@@ -95,7 +97,45 @@ const proxy = (target: URL, dropCancels: boolean) =>
+@@ -95,7 +97,48 @@ const proxy = (target: URL, dropCancels: boolean) =>
              upstream.on("error", () => client.destroy());
              client.on("error", () => upstream.destroy());
              upstream.write(first);
@@ -54,26 +54,29 @@ diff --git a/apps/hosted/testing/database-pool-fixture.ts b/apps/hosted/testing/
 +                  if (buffer[offset] === 90) {
 +                    // Delay only the first ReadyForQuery, preserving PostgreSQL frame order.
 +                    ready = true;
-+                    delaying = true;
-+                    client.write(buffer.subarray(0, offset));
-+                    pending.push(buffer.subarray(offset));
-+                    buffer = Buffer.alloc(0);
-+                    timer = setTimeout(() => {
-+                      for (const bytes of pending.splice(0)) client.write(bytes);
-+                      delaying = false;
-+                    }, readyDelay);
-+                    return;
++                    break;
 +                  }
 +                  offset += length;
 +                }
-+                client.write(buffer.subarray(0, offset));
-+                buffer = buffer.subarray(offset);
++                if (!ready) {
++                  buffer = buffer.subarray(offset);
++                  client.write(chunk);
++                  return;
++                }
++                buffer = Buffer.alloc(0);
++                delaying = true;
++                // Keep the startup chunk intact so TCP delayed ACKs do not add another delay.
++                pending.push(chunk);
++                timer = setTimeout(() => {
++                  for (const bytes of pending.splice(0)) client.write(bytes);
++                  delaying = false;
++                }, readyDelay);
 +              });
 +            }
            });
          });
          server.on("close", () => {
-@@ -155,6 +195,7 @@ const command = Command.make("database-pool-fixture", {
+@@ -155,6 +198,7 @@ const command = Command.make("database-pool-fixture", {
            readonly multiplex?: boolean;
            readonly maxConnections: number;
            readonly cancels?: "dropped" | "delivered";
@@ -81,7 +84,7 @@ diff --git a/apps/hosted/testing/database-pool-fixture.ts b/apps/hosted/testing/
          }): Effect.Effect<
            { readonly pool: PgPool.PgPool; readonly cancels: { count: number } },
            never,
-@@ -164,7 +205,11 @@ const command = Command.make("database-pool-fixture", {
+@@ -164,7 +208,11 @@ const command = Command.make("database-pool-fixture", {
              let url = target;
              let cancels = { count: 0 };
              if (options.cancels !== undefined) {
@@ -94,7 +97,7 @@ diff --git a/apps/hosted/testing/database-pool-fixture.ts b/apps/hosted/testing/
                const address = proxied.server.address();
                if (address === null || typeof address === "string")
                  return yield* Effect.die("The proxy has no port");
-@@ -228,12 +273,19 @@ const command = Command.make("database-pool-fixture", {
+@@ -228,12 +276,19 @@ const command = Command.make("database-pool-fixture", {
 
          const result: Record<string, unknown> = yield* Effect.gen(function* () {
            switch (args.case) {
@@ -116,7 +119,7 @@ diff --git a/apps/hosted/testing/database-pool-fixture.ts b/apps/hosted/testing/
                // One group: a callback inserts, then reads after its sibling on the same connection
                // has given up on a lock wait. The read is refused unsent; the insert was sent.
                const [twoStatements, sibling] = yield* PgPool.grouped(
-@@ -241,15 +293,14 @@ const command = Command.make("database-pool-fixture", {
+@@ -241,15 +296,14 @@ const command = Command.make("database-pool-fixture", {
                    [
                      shared
                        .use((connection) =>
