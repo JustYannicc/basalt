@@ -193,7 +193,7 @@ diff --git a/e2e/tests/cloud-database-placement.spec.ts b/e2e/tests/cloud-databa
 
            const nested = yield* step("A hold inside a hold uses its connection", "held-nested");
            expect(nested.split, "Rounds whose inner hold took another connection").toBe(0);
-@@ -1352,13 +1362,22 @@ return listed;`;
+@@ -1352,13 +1362,25 @@ return listed;`;
            expect(delivered.next, "A delivered cancel drains at once").toBeLessThan(1_000);
            expect(delivered.sameConnection, "A drained connection is kept").toBe(true);
 
@@ -212,13 +212,16 @@ diff --git a/e2e/tests/cloud-database-placement.spec.ts b/e2e/tests/cloud-databa
 +            ],
 +          ] as const) {
 +            const sibling = yield* step(title, name);
++            const awaitedReturned = yield* Schema.decodeUnknownEffect(Schema.Number)(
++              sibling.awaitedReturned,
++            );
 +            expect(sibling.gaveUp, "The sibling gave up on its lock wait").toBe(true);
 +            expect(sibling.awaited).toBe("ok");
 +            expect(sibling.awaitedReturned, "The finished statement returned").toBeLessThan(1_000);
 +            expect(
 +              sibling.abandonedReturned,
 +              "The sibling gave up while the awaited statement was running",
-+            ).toBeLessThan(sibling.awaitedReturned);
++            ).toBeLessThan(awaitedReturned);
 +          }
 
            // A tool call's `BEGIN … COMMIT` batch (`PgConnection.pipelined`) runs inside a hold:
