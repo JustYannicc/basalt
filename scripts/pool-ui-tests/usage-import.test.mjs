@@ -74,6 +74,25 @@ test(
       await query(admin, `DROP SCHEMA ${schema} CASCADE`);
     });
     fixture = await importAppFixture(url.href);
+    const agentPage = {
+      format: "cpamp-v1-jsonl",
+      source: "Fixture database",
+      data: JSON.stringify({
+        event_hash: "1".repeat(64),
+        timestamp: "2026-05-05T11:32:18Z",
+        failed: false,
+        model: "fixture-model",
+      }),
+      mode: "apply",
+    };
+    const refused = await fixture.agentImport(agentPage);
+    assert.equal(refused.ok, false, "an agent apply must require human approval");
+    assert.match(JSON.stringify(refused.error), /ApprovalRequired|approval.required|approval/i);
+    const forged = await fixture.agentImport({ ...agentPage, hostOperation: "mutate" });
+    assert.equal(forged.ok, false, "decoded tool input cannot choose the host operation");
+    const preview = await fixture.agentImport({ ...agentPage, mode: "dry-run" });
+    assert.equal(preview.ok, true, "agent preview does not need human approval");
+
     const initialView = await fetch(`${fixture.origin}/_executor/api/query`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -108,6 +127,7 @@ test(
           if (artifacts)
             await page.screenshot({ path: join(artifacts, `choose-${width}.png`), fullPage: true });
           const file = metadataFile(width * 10_000);
+          await page.getByLabel("Source name", { exact: true }).fill("Fixture database");
           await page.getByLabel("Choose a usage export", { exact: true }).setInputFiles(file);
           await page.getByRole("button", { name: "Import usage", exact: true }).waitFor();
           assert.equal(await count(), retained, "preview must not write history");
@@ -154,6 +174,7 @@ test(
             });
 
           await page.getByRole("button", { name: "Import another export", exact: true }).click();
+          await page.getByLabel("Source name", { exact: true }).fill("Fixture database");
           await page.getByLabel("Choose a usage export", { exact: true }).setInputFiles(file);
           await page.getByRole("button", { name: "Import usage", exact: true }).click();
           await page.getByRole("heading", { name: "Usage imported", exact: true }).waitFor();
@@ -175,6 +196,7 @@ test(
       try {
         const page = await context.newPage();
         await page.goto(`${fixture.origin}/#usage-import`);
+        await page.getByLabel("Source name", { exact: true }).fill("Fixture database");
         await page
           .getByLabel("Choose a usage export", { exact: true })
           .setInputFiles(metadataFile(99_000_000, 1));
@@ -206,6 +228,7 @@ test(
             name: "importUsage",
             input: {
               format: "cpamp-v1-jsonl",
+              source: "Fixture database",
               mode: "dry-run",
               data: metadataFile(1, 1).buffer.toString(),
             },

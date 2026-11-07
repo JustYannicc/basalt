@@ -95,7 +95,7 @@ test(
             [callerHeader]: caller,
             "content-type": "application/json",
           },
-          body: JSON.stringify(body),
+          body: JSON.stringify({ source: "fixture-database", ...body }),
         });
 
       assert.equal(
@@ -245,6 +245,31 @@ test(
       );
       assert.equal(fullApply.status, 200, await fullApply.clone().text());
       assert.equal(((await fullApply.json()) as { inserted: number }).inserted, 200);
+      const otherSource = { ...payload, source: "another-database" };
+      const otherDry = await handleSelfUsageImport(request(otherSource), access);
+      assert.equal(otherDry.status, 200);
+      const otherReport = (await otherDry.json()) as { approval: string; wouldInsert: number };
+      assert.equal(
+        otherReport.wouldInsert,
+        1,
+        "overlapping record IDs in another database stay distinct",
+      );
+      const wrongSource = await handleSelfUsageImport(
+        request({
+          ...otherSource,
+          source: "third-database",
+          mode: "apply",
+          approval: otherReport.approval,
+        }),
+        access,
+      );
+      assert.equal(wrongSource.status, 409, "approval binds the named source database");
+      const otherApply = await handleSelfUsageImport(
+        request({ ...otherSource, mode: "apply", approval: otherReport.approval }),
+        access,
+      );
+      assert.equal(otherApply.status, 200);
+      assert.equal(((await otherApply.json()) as { inserted: number }).inserted, 1);
     } finally {
       await db.end();
       await querySaved(adminUrl!, `DROP SCHEMA ${schema} CASCADE`);
@@ -323,7 +348,13 @@ test(
             [callerHeader]: owner,
             "content-type": "application/json",
           },
-          body: JSON.stringify({ format: "cpa-v6", data, offset, mode: "dry-run" }),
+          body: JSON.stringify({
+            source: "fixture-database",
+            format: "cpa-v6",
+            data,
+            offset,
+            mode: "dry-run",
+          }),
         });
       const first = await handleSelfUsageImport(request(0), access);
       assert.equal(first.status, 200, await first.clone().text());

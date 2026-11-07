@@ -101,6 +101,7 @@ export async function importAppFixture(connectionString) {
           input,
           token,
           manager ? "fixture-manager" : "fixture-member",
+          true,
         );
         assert.equal(result.ok, true, JSON.stringify(result));
         json(result.value);
@@ -191,6 +192,7 @@ export async function importAppFixture(connectionString) {
     calls,
     unexpected,
     close,
+    agentImport: (input) => runtime.invoke("call", "importUsage", input, token, "fixture-manager"),
     member: () => {
       manager = false;
     },
@@ -250,10 +252,10 @@ const handler=createAppHandler(app);
 const request=(value)=>new Request('https://app.example.test',{method:'POST',body:JSON.stringify(value)});
 const requirements=await (await handler(request({operation:'requirements'}),hostContext({app:{}}))).json();
 if(!requirements.ok)throw new Error(JSON.stringify(requirements));
-export const invoke=async(operation,name,input,token,caller)=>{
+export const invoke=async(operation,name,input,token,caller,human=false)=>{
  const empty=Object.fromEntries(Object.entries(requirements.value.accounts.app).filter(([,slot])=>slot.cardinality==='many').map(([name])=>[name,[]]));
  const accounts={app:{...empty,pool:{id:'acc_fixture_pool_token',provider:requirements.value.accounts.app.pool.definition,method:'token',fields:{token}}},user:{}};
- return (await handler(request({operation,name,input}),hostContext(accounts,undefined,caller))).json();
+ return (await handler(request({operation,...(operation==='call'?{tool:name}:{name}),input}),hostContext(accounts,undefined,caller))).json();
 };`,
   );
   const built = spawnSync(

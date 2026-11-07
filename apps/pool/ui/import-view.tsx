@@ -29,6 +29,8 @@ export function ImportView({
   const [error, setError] = useState<string>();
   const [opening, setOpening] = useState(false);
   const fileId = useId();
+  const sourceId = useId();
+  const [source, setSource] = useState("");
   const heading = useRef<HTMLHeadingElement>(null);
   const busy = phase === "previewing" || phase === "importing";
   const selecting = phase === "choose" || (phase === "error" && !session.canResume());
@@ -38,9 +40,9 @@ export function ImportView({
     setError(undefined);
     setOpening(true);
     try {
-      const source = await openImportSource(file);
+      const selected = await openImportSource(file, source.trim());
       setOpening(false);
-      await session.preview(source);
+      await session.preview(selected);
       heading.current?.focus();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Couldn't read this usage export.");
@@ -83,6 +85,23 @@ export function ImportView({
         {message && <Problem>{message}</Problem>}
         {selecting ? (
           <>
+            <div className="grid gap-2">
+              <label htmlFor={sourceId} className="text-sm font-medium">
+                Source name
+              </label>
+              <input
+                id={sourceId}
+                value={source}
+                maxLength={120}
+                placeholder="My Manager Plus"
+                className="min-h-11 rounded-md border border-input bg-background px-3 text-sm"
+                onChange={(event) => setSource(event.target.value)}
+              />
+              <p className="text-sm text-muted-foreground">
+                Reuse this name for backups of the same database. Use a different name for each
+                other database.
+              </p>
+            </div>
             <div className="grid gap-3 rounded-lg border border-dashed border-input p-6 sm:p-8">
               <label htmlFor={fileId} className="text-base font-medium">
                 Choose a usage export
@@ -94,7 +113,7 @@ export function ImportView({
                 id={fileId}
                 type="file"
                 accept=".sqlite,.sqlite3,.db,.jsonl,.json,application/json,application/vnd.sqlite3"
-                disabled={opening}
+                disabled={opening || !source.trim()}
                 className="block min-h-11 w-full max-w-full text-sm file:mr-3 file:min-h-11 file:rounded-md file:border file:border-input file:bg-background file:px-3 file:text-foreground"
                 onChange={(event) => {
                   void choose(event.target.files?.[0]);

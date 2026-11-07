@@ -78,7 +78,15 @@ new file mode 100644
 diff --git a/packages/sdk/src/implementation/worker-browser-build.ts b/packages/sdk/src/implementation/worker-browser-build.ts
 --- a/packages/sdk/src/implementation/worker-browser-build.ts
 +++ b/packages/sdk/src/implementation/worker-browser-build.ts
-@@ -15,7 +15,7 @@
+@@ -7,6 +7,7 @@
+ import { Effect, Option, Path, Schema } from "effect";
+ import type { Plugin } from "esbuild";
+ import { compileUiTailwind } from "./ui-tailwind.ts";
++import { browserExport } from "./worker-browser-exports.ts";
+
+ const Package = Schema.Struct({
+   dependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+@@ -15,7 +16,7 @@
  const namespace = "executor-browser";
  const assetUrl = "executor-asset-url";
  const scriptImports = new Set(["import-statement", "dynamic-import", "require-call"]);
@@ -87,7 +95,15 @@ diff --git a/packages/sdk/src/implementation/worker-browser-build.ts b/packages/
  /** Metafile inputs carry their plugin namespace, as in `virtual:node_modules/react/index.js`. */
  const packageInput = (input: string) =>
    input.slice(input.indexOf(":") + 1).startsWith("node_modules/");
-@@ -79,7 +79,7 @@
+@@ -64,6 +65,7 @@
+           // authored source text or tree-shaken values to every app viewer.
+           sourcesContent: false,
+         });
++        build.onResolve({ filter: /^[^./]/ }, (args) => browserExport(filesystem, args.path));
+         // A file-loader URL is relative to the asset root, which is not the page's URL. Script
+         // imports receive it resolved against their own module instead; CSS urls already are.
+         // Package specifiers are classified by the file they resolve to. `require` receives the
+@@ -79,7 +81,7 @@
                }
              : { path: args.path, namespace: wrapped.value.namespace };
          });
@@ -96,7 +112,7 @@ diff --git a/packages/sdk/src/implementation/worker-browser-build.ts b/packages/
            if (
              args.pluginData === assetUrl ||
              args.namespace === namespace ||
-@@ -158,7 +158,9 @@
+@@ -158,7 +160,9 @@
            if (isServerUiImport(args.path))
              return { errors: [{ text: "Server app modules cannot be imported by the UI." }] };
            if (browserAsset.test(args.path)) {
@@ -107,6 +123,62 @@ diff --git a/packages/sdk/src/implementation/worker-browser-build.ts b/packages/
              return contents === null
                ? { errors: [{ text: "Browser asset missing." }] }
                : { contents, loader: "file" };
+diff --git a/packages/sdk/src/implementation/worker-browser-exports.ts b/packages/sdk/src/implementation/worker-browser-exports.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/worker-browser-exports.ts
+@@ -0,0 +1,51 @@
++import type { InMemoryFileSystem } from "@cloudflare/worker-bundler";
++
++const object = (value: unknown): value is Record<string, unknown> =>
++  value !== null && typeof value === "object" && !Array.isArray(value);
++
++function target(value: unknown): string | null | undefined {
++  if (value === null) return null;
++  if (typeof value === "string") return value;
++  if (Array.isArray(value)) {
++    for (const entry of value) {
++      const found = target(entry);
++      if (found !== undefined) return found;
++    }
++  } else if (object(value)) {
++    for (const [condition, entry] of Object.entries(value)) {
++      if (!["browser", "import", "default"].includes(condition)) continue;
++      const found = target(entry);
++      if (found !== undefined) return found;
++    }
++  }
++}
++
++/** The pinned bundler also enables node; honor an explicit browser export without that condition. */
++export function browserExport(files: InMemoryFileSystem, specifier: string) {
++  const parts = specifier.split("/");
++  const count = specifier.startsWith("@") ? 2 : 1;
++  const name = parts.slice(0, count).join("/");
++  const root = `node_modules/${name}/`;
++  const manifest = files.read(`${root}package.json`);
++  if (manifest === null) return undefined;
++  let parsed: unknown;
++  try {
++    parsed = JSON.parse(manifest);
++  } catch {
++    return undefined;
++  }
++  if (!object(parsed) || !object(parsed.exports)) return undefined;
++  const subpath = parts.length === count ? "." : `./${parts.slice(count).join("/")}`;
++  const entry = parsed.exports[subpath] ?? (subpath === "." ? parsed.exports : undefined);
++  if (!object(entry) || !Object.hasOwn(entry, "browser")) return undefined;
++  const selected = target(entry);
++  if (
++    selected === undefined ||
++    selected === null ||
++    !selected.startsWith("./") ||
++    selected.split("/").includes("..") ||
++    files.read(`${root}${selected.slice(2)}`) === null
++  )
++    return { errors: [{ text: `The browser export for "${specifier}" is unavailable.` }] };
++  return { path: `${root}${selected.slice(2)}`, namespace: "virtual" };
++}
 diff --git a/packages/sdk/src/implementation/worker-build.ts b/packages/sdk/src/implementation/worker-build.ts
 --- a/packages/sdk/src/implementation/worker-build.ts
 +++ b/packages/sdk/src/implementation/worker-build.ts
@@ -146,6 +218,35 @@ new file mode 100644
 +  list: (prefix) => filesystem.list(prefix),
 +  flush: () => filesystem.flush(),
 +});
+diff --git a/packages/apps/src/contracts/approval.ts b/packages/apps/src/contracts/approval.ts
+--- a/packages/apps/src/contracts/approval.ts
++++ b/packages/apps/src/contracts/approval.ts
+@@ -8,6 +8,8 @@
+
+ /** Context for one tool's policy. toolInput is the same decoded value passed to run. */
+ export interface ApprovalContext<Input = unknown> {
++  /** Host protocol operation; never supplied through the tool's decoded input. */
++  readonly hostOperation?: "call" | "query" | "mutate";
+   readonly toolName: string;
+   readonly toolInput: Input;
+   readonly signal: AbortSignal;
+diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
+--- a/packages/apps/src/implementation/host.ts
++++ b/packages/apps/src/implementation/host.ts
+@@ -1045,7 +1045,12 @@
+             ? ("approved" as const)
+             : yield* safe(
+                 () =>
+-                  approval({ toolName, toolInput: input, signal: invocationSignal }).pipe(
++                  approval({
++                    toolName,
++                    toolInput: input,
++                    signal: invocationSignal,
++                    hostOperation: request.operation,
++                  }).pipe(
+                     Effect.withSpan("app.tool.approval", {
+                       attributes: { "executor.tool.name": toolName },
+                     }),
 diff --git a/package.json b/package.json
 --- a/package.json
 +++ b/package.json

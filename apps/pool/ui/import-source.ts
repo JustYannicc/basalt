@@ -7,6 +7,7 @@ const encoder = new TextEncoder();
 
 export interface ImportSource {
   readonly label: string;
+  readonly database?: string;
   readonly format: UsageImportFormat;
   /** A new iterator rereads the selected local file; no source rows are retained between pages. */
   pages(): AsyncGenerator<ImportPage, void, UsageImportResult>;
@@ -208,13 +209,13 @@ async function legacyMetadata(value: unknown) {
   };
 }
 
-export async function openImportSource(file: File): Promise<ImportSource> {
+export async function openImportSource(file: File, database = file.name): Promise<ImportSource> {
   if (file.size === 0)
     throw new Error("This file is empty. Choose a usage export with retained records.");
   const header = new TextDecoder().decode(await file.slice(0, 16).arrayBuffer());
   if (header.startsWith("SQLite format 3")) {
     if (file.size < 100) throw new Error("This SQLite backup is incomplete.");
-    return sqliteSource(file);
+    return { ...sqliteSource(file), database };
   }
   const first = await lines(file).next();
   if (first.done) throw new Error("This file has no usage records.");
@@ -231,7 +232,7 @@ export async function openImportSource(file: File): Promise<ImportSource> {
         ? "home-v8-jsonl"
         : "cpa-v6";
   if (format !== "cpa-v6")
-    return { label: file.name, format, pages: () => jsonlPages(file, format) };
+    return { label: file.name, database, format, pages: () => jsonlPages(file, format) };
   if (file.size > maximumBytes)
     throw new Error(
       "Legacy CPA snapshots must be at most 8 MiB. Use prepared metadata JSONL for larger history.",
@@ -239,6 +240,7 @@ export async function openImportSource(file: File): Promise<ImportSource> {
   const data = JSON.stringify(await legacyMetadata(parseJson(await file.text())));
   return {
     label: file.name,
+    database,
     format,
     async *pages() {
       let offset = 0;

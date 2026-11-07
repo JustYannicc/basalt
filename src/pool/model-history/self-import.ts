@@ -22,9 +22,9 @@ export interface PreparedSelfImport {
   indistinguishableDetails: number;
 }
 
-async function sourceId(pool: string, format: UsageImportFormat): Promise<string> {
-  // RFC 9562 UUIDv8: stable within a pool and format, with no filename or client identity.
-  const name = textEncoder.encode(`${importNamespace}\u0000${pool}\u0000${format}`);
+async function sourceId(pool: string, format: UsageImportFormat, source: string): Promise<string> {
+  // RFC 9562 UUIDv8: stable within a pool, format and named source database.
+  const name = textEncoder.encode(`${importNamespace}\u0000${pool}\u0000${format}\u0000${source}`);
   const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", name)).slice(0, 16);
   bytes[6] = (bytes[6]! & 0x0f) | 0x80;
   bytes[8] = (bytes[8]! & 0x3f) | 0x80;
@@ -66,6 +66,13 @@ export async function prepareSelfImport(
   )
     return invalidHistory();
 
+  if (
+    typeof input.source !== "string" ||
+    !input.source.trim() ||
+    input.source !== input.source.trim() ||
+    input.source.length > 120
+  )
+    return invalidHistory();
   const offset = pageOffset(input);
   if (input.format !== "cpa-v6") {
     const rows = input.data.split(/\r?\n/).filter((line) => line.trim()).length;
@@ -77,7 +84,7 @@ export async function prepareSelfImport(
     {
       format: input.format,
       data,
-      source: await sourceId(identity.pool, input.format),
+      source: await sourceId(identity.pool, input.format, input.source),
       // JSONL requests already contain one 200-row client page. CPA snapshots are paged server-side.
       offset: input.format === "cpa-v6" ? offset : 0,
     },
@@ -119,13 +126,18 @@ export function validateSelfImportPage(value: unknown): UsageImportPage {
   const input = historyObject(value);
   const format = input.format,
     data = input.data,
+    source = input.source,
     mode = input.mode,
     offset = input.offset,
     approval = input.approval;
-  const allowed = new Set(["format", "data", "offset", "mode", "approval"]);
+  const allowed = new Set(["format", "data", "source", "offset", "mode", "approval"]);
   if (Object.keys(input).some((key) => !allowed.has(key))) throw new HistoryInputError();
   if (
     !isImportFormat(format) ||
+    typeof source !== "string" ||
+    !source.trim() ||
+    source !== source.trim() ||
+    source.length > 120 ||
     typeof data !== "string" ||
     (mode !== "dry-run" && mode !== "apply") ||
     (offset !== undefined && typeof offset !== "number") ||
@@ -136,6 +148,7 @@ export function validateSelfImportPage(value: unknown): UsageImportPage {
   return {
     format,
     data,
+    source,
     mode,
     ...(offset === undefined ? {} : { offset }),
     ...(approval === undefined ? {} : { approval }),

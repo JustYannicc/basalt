@@ -21,6 +21,7 @@ const event = {
 test("self imports derive stable pool-scoped identity and erase owner and price attribution", async () => {
   const input = {
     format: "cpamp-v1-jsonl" as const,
+    source: "fixture-database",
     data: JSON.stringify(event),
     mode: "dry-run" as const,
   };
@@ -30,6 +31,9 @@ test("self imports derive stable pool-scoped identity and erase owner and price 
   const row = first.records[0]!;
   assert.equal(row.id, repeat.records[0]!.id);
   assert.notEqual(row.id, otherPool.records[0]!.id);
+  const otherDatabase = await prepareSelfImport({ ...input, source: "another-database" }, owner);
+  assert.notEqual(row.id, otherDatabase.records[0]!.id);
+  assert.notEqual(row.source, otherDatabase.records[0]!.source);
   assert.equal(row.person, null);
   assert.equal(row.cost, null);
   assert.equal(row.currency, null);
@@ -45,6 +49,7 @@ test("Home billing metadata is discarded before parsing and every accepted row s
   const prepared = await prepareSelfImport(
     {
       format: "home-v8-jsonl",
+      source: "fixture-database",
       data: JSON.stringify({
         usage_id: 73,
         timestamp: "2020-01-01T00:00:00Z",
@@ -85,6 +90,7 @@ test("legacy CPA offset retains a bounded page and the full aggregate-only count
     prepareSelfImport(
       {
         format: "cpa-v6",
+        source: "fixture-database",
         data,
         offset,
         mode: "dry-run",
@@ -104,14 +110,15 @@ test("legacy CPA offset retains a bounded page and the full aggregate-only count
   assert.doesNotMatch(JSON.stringify(first), /fixture-private-key/);
 });
 
-test("self import body rejects caller identity, source, and pricing overrides", () => {
+test("self import body rejects caller identity and pricing overrides", () => {
   const valid = {
     format: "cpamp-v1-jsonl",
+    source: "fixture-database",
     data: JSON.stringify(event),
     mode: "dry-run",
   };
   assert.equal(validateSelfImportPage(valid).format, "cpamp-v1-jsonl");
-  for (const override of ["pool", "person", "source", "prices", "models"])
+  for (const override of ["pool", "person", "prices", "models"])
     assert.throws(() => validateSelfImportPage({ ...valid, [override]: "caller-value" }));
 });
 
@@ -124,6 +131,7 @@ test("JSONL offsets are absolute progress and never discard part of the supplied
   );
   const input = {
     format: "cpamp-v1-jsonl" as const,
+    source: "fixture-database",
     mode: "dry-run" as const,
     offset: 400,
     data: rows.join("\n"),
@@ -139,4 +147,11 @@ test("JSONL offsets are absolute progress and never discard part of the supplied
   await assert.rejects(prepareSelfImport({ ...input, data: [...rows, rows[0]].join("\n") }, owner));
   for (const offset of [-1, 0.5, Infinity, Number.MAX_SAFE_INTEGER])
     await assert.rejects(prepareSelfImport({ ...input, offset }, owner));
+});
+
+test("source database names must be explicit, bounded and canonical", () => {
+  for (const source of [undefined, "", " ", " name", "name ", "x".repeat(121)])
+    assert.throws(() =>
+      validateSelfImportPage({ format: "cpamp-v1-jsonl", data: "", mode: "dry-run", source }),
+    );
 });

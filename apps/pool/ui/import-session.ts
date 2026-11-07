@@ -70,6 +70,7 @@ export class ImportSession {
   private async request(page: ImportPage, mode: UsageImportPage["mode"], approval?: string) {
     const response = await this.send({
       ...page,
+      source: this.source?.database ?? this.source?.label ?? "",
       mode,
       ...(approval === undefined ? {} : { approval }),
     });

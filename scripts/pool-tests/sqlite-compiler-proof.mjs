@@ -78,7 +78,9 @@ try {
     ),
   });
   const dependency = {};
-  for (const name of ["package.json", "dist/index.mjs", "dist/sqlite3.wasm"])
+  for (const name of readdirSync(sqlite, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => join(entry.parentPath, entry.name).slice(sqlite.length + 1)))
     dependency[`node_modules/@sqlite.org/sqlite-wasm/${name}`] = name.endsWith(".wasm")
       ? [...readFileSync(join(sqlite, name))]
       : readFileSync(join(sqlite, name), "utf8");
