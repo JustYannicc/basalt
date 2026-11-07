@@ -90,6 +90,7 @@ diff --git a/packages/apps/package.json b/packages/apps/package.json
    "description": "TypeScript apps with typed tools, accounts, storage, and UI.",
    "type": "module",
 diff --git a/packages/apps/protocols/39.json b/packages/apps/protocols/39.json
+new file mode 100644
 --- /dev/null
 +++ b/packages/apps/protocols/39.json
 @@ -0,0 +1,2360 @@
@@ -2478,6 +2479,7 @@ diff --git a/packages/apps/src/contracts/protocol-version.ts b/packages/apps/src
 +export const oauthScopesProtocol = 39;
 +export const frameworkProtocol = oauthScopesProtocol;
 diff --git a/packages/apps/src/contracts/protocols/35.ts b/packages/apps/src/contracts/protocols/35.ts
+new file mode 100644
 --- /dev/null
 +++ b/packages/apps/src/contracts/protocols/35.ts
 @@ -0,0 +1,713 @@
@@ -3283,6 +3285,7 @@ diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oa
    allowedScopes: Schema.optionalKey(Schema.Array(ScopeToken)),
    placement: ManagedPlacement,
 diff --git a/packages/sdk/src/implementation/app-protocol-oauth-scopes.ts b/packages/sdk/src/implementation/app-protocol-oauth-scopes.ts
+new file mode 100644
 --- /dev/null
 +++ b/packages/sdk/src/implementation/app-protocol-oauth-scopes.ts
 @@ -0,0 +1,36 @@
@@ -3385,7 +3388,7 @@ diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/impleme
  import { AccountFamilyConfiguration } from "../contracts/account-family-recipes.ts";
  import { requireAccountConsumerMethod } from "./account-consumer-plan.ts";
  import type { BackgroundWork } from "../contracts/declarations.ts";
-@@ -691,7 +692,10 @@
+@@ -691,11 +692,18 @@
          continue;
        const allowed = allowedScopes(client);
        if (discovered.scopesAdvertised === true && discovered.scopes.length > 0) {
@@ -3397,7 +3400,16 @@ diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/impleme
          if (scopes.length === 0) continue;
          return { client, scopes };
        }
-@@ -2566,6 +2570,34 @@
+-      const scopes = discovered.scopes.length === 0 ? client.defaultScopes : discovered.scopes;
++      // An operator requiring confirmation pins the grant, including reconnects of older app methods.
++      const scopes =
++        client.requireScopeConfirmation === true || discovered.scopes.length === 0
++          ? client.defaultScopes
++          : discovered.scopes;
+       if (!scopes.every((scope) => allowed.includes(scope))) continue;
+       return { client, scopes };
+     }
+@@ -2566,6 +2574,34 @@
            reason: "scope_exceeded",
            cause: { stage: "exchange", field: "scope" },
          });
@@ -3432,7 +3444,7 @@ diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/impleme
        }
        const fields = yield* project(attempt.response, tokens).pipe(
          Effect.mapError(
-@@ -2955,6 +2987,9 @@
+@@ -2955,6 +2991,9 @@
          /** These values as the credential this grant holds: managed or not, and its generation. */
          const held = (fields: JsonObject): AccountCredential => ({
            fields: Redacted.make(fields),
@@ -3442,7 +3454,7 @@ diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/impleme
            firstParty: isFirstPartyGrant(grant) ? grant.firstParty : undefined,
            generation:
              grantId === account.id
-@@ -3216,8 +3251,8 @@
+@@ -3216,8 +3255,8 @@
              return undefined;
            }
            yield* Effect.annotateCurrentSpan("oauth.renewal.outcome", "renewed");

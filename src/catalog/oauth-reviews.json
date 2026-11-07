@@ -3652,7 +3652,7 @@
           "message": "Shared sign-in for PlanetScale is not configured on this host. You can connect with your own OAuth app or a service token."
         }
       },
-      "sourceSha256": "5b52f3f7c882458af933920b76dc5c712f1c6d3052a0558eae060fd1320f9348"
+      "sourceSha256": "0e31dec5459f6b8b6beab13ca6c19776efb17f3202b9fc185011f8e8cbf4ac01"
     },
     {
       "entry": "planning-center-online",

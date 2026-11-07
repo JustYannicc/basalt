@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { Effect } from "effect";
 import { Browser } from "../../.upstream/e2e/support/browser.ts";
-import { tokenOnly, sorted } from "./expectations.mjs";
+import { tokenOnly, sorted, legacyOperations } from "./expectations.mjs";
 import { hostedClient, serviceToken } from "./service.mjs";
+
+import { verifyRetainedReconnect } from "./retained-reconnect.mjs";
 
 const unknownPermissions = "Unknown: PlanetScale did not report this account's permissions.";
 const readTool = "databases.listDatabases";
@@ -224,14 +226,31 @@ export const verifyPlanetScaleRetainedAccounts = ({
       assert.equal(legacyOAuth.permissions.includes("organization:write_comments"), false);
     }
     if (unknown) assert.equal(legacyOAuth.unavailableTools, null);
-    else assert.deepEqual(sorted(legacyOAuth.unavailableTools), sorted(tokenOnly));
+    else {
+      const granted = new Set(legacyOAuth.permissions);
+      const unavailableOAuth = legacyOperations
+        .filter(
+          (operation) =>
+            operation.oauthScopes.length > 0 &&
+            !operation.oauthScopes.some((scope) => granted.has(scope)),
+        )
+        .map((operation) => operation.name);
+      assert.deepEqual(
+        sorted(legacyOAuth.unavailableTools),
+        sorted([...unavailableOAuth, ...tokenOnly]),
+      );
+      assert.ok(
+        legacyOAuth.unavailableTools.includes("databaseBranches.demoteBranch"),
+        "A known legacy grant must not imply an ungranted write is available",
+      );
+    }
     assert.ok(
       service.calls.some((call) => call.phase === "token" && call.grant === "refresh_token"),
       "The retained grant actually renewed",
     );
     assert.ok(
       afterTools.items.some((tool) => tool.name === readTool),
-      "Unknown legacy OAuth scopes do not remove the existing read tool",
+      "Legacy scope metadata does not remove the existing read tool",
     );
 
     for (const accountId of [token.id, oauth.id]) {
@@ -257,7 +276,20 @@ export const verifyPlanetScaleRetainedAccounts = ({
     );
     assert.deepEqual(service.failures, []);
 
+    const reconnectScopes = unknown
+      ? undefined
+      : yield* verifyRetainedReconnect({
+          body,
+          raw,
+          prefix,
+          appPath,
+          oauth,
+          retainedIds: savedAccountIds.slice().sort(),
+          width,
+        });
+    if (!unknown) yield* readWith(oauth.id, "oauth");
     return {
+      reconnectScopes,
       tokenId: token.id,
       tokenMethod: token.method,
       oauthId: oauth.id,

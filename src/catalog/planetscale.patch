@@ -60,7 +60,7 @@
  const planetscale = defineProvider({
    name: "PlanetScale",
    hosts: ["api.planetscale.com", "app.planetscale.com", "auth.planetscale.com"],
-@@ -79,24 +84,166 @@
+@@ -79,24 +84,169 @@
    },
  });
  
@@ -94,7 +94,7 @@
 +type Account = LegacyAccount | SignInAccount;
 +
 +/** Expand the aliases PlanetScale advertises so either spelling is checked against an operation. */
-+const grantOf = (account: SignInAccount) => {
++const grantOf = (account: Account) => {
 +  const value = account.oauthScopes;
 +  if (value === undefined) return undefined;
 +  const scopes = new Set(value);
@@ -105,13 +105,16 @@
 +  return scopes;
 +};
 +
-+/** Unknown legacy and DCR grants keep the old listing; PlanetScale still authorizes each call. */
-+const offers = (account: Account, grantAware: boolean, name: string) => {
-+  if (!grantAware || account.method !== "signIn") return true;
++/** Known grant metadata reports capabilities independently of legacy discovery compatibility. */
++const scopeAllows = (account: Account, name: string) => {
 +  const grant = grantOf(account);
 +  if (grant === undefined) return true;
 +  return operationScopes[name]?.some((scope) => grant.has(scope)) ?? false;
 +};
++
++/** Unknown legacy and DCR grants keep the old listing; PlanetScale still authorizes each call. */
++const offers = (account: Account, grantAware: boolean, name: string) =>
++  !grantAware || account.method !== "signIn" || scopeAllows(account, name);
 +
  export default defineApp(
 -  { user: { accounts: { planetscale: planetscale.many() } }, icons },
@@ -218,7 +221,7 @@
 +                    : "Unknown: PlanetScale did not report this account's permissions.",
 +                  unavailableTools: known
 +                    ? [
-+                        ...Object.keys(operationScopes).filter((name) => !offers(account, true, name)),
++                        ...Object.keys(operationScopes).filter((name) => !scopeAllows(account, name)),
 +                        ...[...serviceTokenOnly].map((name) => `serviceToken.${name}`),
 +                      ]
 +                    : null,

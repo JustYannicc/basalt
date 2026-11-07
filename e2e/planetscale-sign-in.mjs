@@ -281,11 +281,13 @@ const program = Effect.gen(function* () {
   if (hasHostedClient) {
     assert.equal(phase("register").length, 0, "A configured hosted client never registers");
     assert.ok(phase("authorize").length > 0);
-    for (const authorize of phase("authorize")) {
+    for (const [index, authorize] of phase("authorize").entries()) {
       assert.equal(authorize.client, hostedClient.id);
       assert.deepEqual(
         sorted(authorize.scope.split(" ")),
-        sorted(retained ? oldScopes : hostedScopes),
+        sorted(
+          retained && (mode === "retained-unknown" || index % 2 === 0) ? oldScopes : hostedScopes,
+        ),
         "Exactly the configured scopes",
       );
     }
