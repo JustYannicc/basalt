@@ -1,0 +1,426 @@
+diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
+--- a/packages/sdk/src/implementation/apps.ts
++++ b/packages/sdk/src/implementation/apps.ts
+@@ -43,12 +43,12 @@
+   OwnerId,
+   StorageError,
+   JsonObject,
+-  type ProviderId,
+ } from "../contracts/shared.ts";
+ import { StoredApp, StoredVersion } from "../contracts/storage.ts";
+ import { query, transaction, type Query } from "./database.ts";
+ import { removeToolSearch } from "./tool-search-store.ts";
+ import { identifyProvider } from "./provider.ts";
++import { chooseProviderIds } from "./provider-continuity.ts";
+ import {
+   CodeFiles,
+   SourceError,
+@@ -238,57 +238,6 @@
+   const { deployment: version, ...app } = row;
+   return projectedApp({ app, version });
+ };
+-
+-/**
+- * The ID each declared provider gets. Provider IDs once also hashed display text, so a provider
+- * stored then can have an ID other than its identity. A deploy keeps the ID its app's active
+- * version gives a provider of the same identity, preferring the same requirement; else it uses the
+- * row stored for this exact definition under that earlier ID; else the identity. IDs then stay
+- * equal wherever accounts are matched to requirements, so no comparison needs to know.
+- */
+-export const chooseProviderIds = <
+-  Entry extends {
+-    readonly slot: string;
+-    readonly provider: { readonly identity: ProviderId; readonly legacy: ProviderId };
+-  },
+->(
+-  db: Query,
+-  crypto: Crypto.Crypto,
+-  entries: ReadonlyArray<Entry>,
+-  previous: AppRequirements["accounts"] | undefined,
+-) =>
+-  Effect.gen(function* () {
+-    // A previous ID that is one of these identities is its own identity; only others need hashing.
+-    const identities = new Set(entries.map(({ provider }) => provider.identity));
+-    const kept = yield* Effect.forEach(Object.entries(previous ?? {}), ([slot, required]) =>
+-      identities.has(required.provider)
+-        ? Effect.succeed({ slot, identity: required.provider, provider: required.provider })
+-        : identifyProvider(required.definition, crypto).pipe(
+-            Effect.map(({ identity }) => ({ slot, identity, provider: required.provider })),
+-          ),
+-    );
+-    const continued = entries.map((entry) => {
+-      const same = kept.filter((item) => item.identity === entry.provider.identity);
+-      return (same.find((item) => item.slot === entry.slot) ?? same[0])?.provider;
+-    });
+-    const legacy = entries.flatMap(({ provider }, index) =>
+-      continued[index] !== undefined || provider.legacy === provider.identity
+-        ? []
+-        : [provider.legacy],
+-    );
+-    const stored = new Set(
+-      legacy.length === 0
+-        ? []
+-        : (yield* query(() =>
+-            db.findMany("providers", { select: ["id"], where: (b) => b("id", "in", legacy) }),
+-          )).map((row) => row.id),
+-    );
+-    return entries.map((entry, index) => {
+-      const { identity, legacy } = entry.provider;
+-      const id = continued[index] ?? (stored.has(legacy) ? legacy : identity);
+-      return { ...entry, provider: { ...entry.provider, id } };
+-    });
+-  });
+ 
+ /**
+  * The account requirements whose provider IDs a deploy to `app` keeps: its active version's. An
+diff --git a/packages/sdk/src/implementation/provider.ts b/packages/sdk/src/implementation/provider.ts
+--- a/packages/sdk/src/implementation/provider.ts
++++ b/packages/sdk/src/implementation/provider.ts
+@@ -127,7 +127,7 @@
+  *
+  * `identity` is the ID a provider first stored now gets. `legacy` is the ID earlier versions
+  * derived, display text included; a provider stored then keeps that ID. A deploy chooses the ID:
+- * see `chooseProviderIds` in apps.ts.
++ * see `chooseProviderIds` in provider-continuity.ts.
+  */
+ export const identifyProvider = (definition: ProviderDefinition, crypto: Crypto.Crypto) =>
+   Effect.gen(function* () {
+diff --git a/packages/sdk/src/implementation/provider-continuity.ts b/packages/sdk/src/implementation/provider-continuity.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/provider-continuity.ts
+@@ -0,0 +1,108 @@
++/** Provider ref continuity within one app's deployment lineage. */
++import { type Crypto, Effect } from "effect";
++import type { AppRequirements } from "../contracts/apps.ts";
++import type { ProviderDefinition } from "../contracts/provider.ts";
++import { ProviderId, StorageError } from "../contracts/shared.ts";
++import { Hex } from "effect/encoding";
++import { query, type Query } from "./database.ts";
++import { canonical, identifyProvider, methodCredential } from "./provider.ts";
++
++/**
++ * Preserve a provider ref only for a strict addition of sign-in methods. Existing methods keep
++ * their credential contract, and service metadata must still describe the same provider.
++ */
++const addsAuthMethods = (previous: ProviderDefinition, next: ProviderDefinition) => {
++  const before = Object.entries(previous.auth);
++  if (Object.keys(next.auth).length <= before.length) return false;
++  const metadata = ({ name, site, family }: ProviderDefinition) => ({
++    name,
++    site: site ?? null,
++    family: family ?? null,
++  });
++  return (
++    canonical(metadata(previous)) === canonical(metadata(next)) &&
++    before.every(([name, method]) => {
++      const current = Object.hasOwn(next.auth, name) ? next.auth[name] : undefined;
++      return (
++        current !== undefined &&
++        canonical(methodCredential(method)) === canonical(methodCredential(current))
++      );
++    })
++  );
++};
++
++/**
++ * The ID each declared provider gets. Provider IDs once also hashed display text, so a provider
++ * stored then can have an ID other than its identity. A deploy keeps the ID its app's active
++ * version gives a provider of the same identity, preferring the same requirement; else it uses the
++ * row stored for this exact definition under that earlier ID; else the identity. A changed
++ * identity may keep exactly one prior ref when it only adds auth methods. Ambiguous additions
++ * get a new ref, including when one candidate is in the same slot.
++ */
++export const chooseProviderIds = <
++  Entry extends {
++    readonly slot: string;
++    readonly provider: {
++      readonly identity: ProviderId;
++      readonly legacy: ProviderId;
++      readonly definition: ProviderDefinition;
++    };
++  },
++>(
++  db: Query,
++  crypto: Crypto.Crypto,
++  entries: ReadonlyArray<Entry>,
++  previous: AppRequirements["accounts"] | undefined,
++) =>
++  Effect.gen(function* () {
++    const kept = yield* Effect.forEach(Object.entries(previous ?? {}), ([slot, required]) =>
++      identifyProvider(required.definition, crypto).pipe(
++        Effect.map(({ identity }) => ({ slot, identity, ...required })),
++      ),
++    );
++    const continued = entries.map((entry) => {
++      const same = kept.filter((item) => item.identity === entry.provider.identity);
++      const exact = (same.find((item) => item.slot === entry.slot) ?? same[0])?.provider;
++      if (exact !== undefined) return exact;
++      const additive = new Set(
++        kept
++          .filter((item) => addsAuthMethods(item.definition, entry.provider.definition))
++          .map((item) => item.provider),
++      );
++      return additive.size === 1 ? additive.values().next().value : undefined;
++    });
++    const legacy = entries.flatMap(({ provider }, index) =>
++      continued[index] !== undefined || provider.legacy === provider.identity
++        ? []
++        : [provider.legacy],
++    );
++    const stored = new Set(
++      legacy.length === 0
++        ? []
++        : (yield* query(() =>
++            db.findMany("providers", { select: ["id"], where: (b) => b("id", "in", legacy) }),
++          )).map((row) => row.id),
++    );
++    return yield* Effect.forEach(entries, (entry, index) =>
++      Effect.gen(function* () {
++        const { identity, legacy } = entry.provider;
++        let id = continued[index] ?? (stored.has(legacy) ? legacy : identity);
++        // An additive deployment can retain an older content hash. Reverting its auth map
++        // must not turn that hash back into a compatible ref for accounts using removed methods.
++        const incompatible = kept.filter(
++          (item) => item.provider === id && item.identity !== identity,
++        );
++        if (continued[index] === undefined && incompatible.length > 0) {
++          const content = canonical({
++            identity,
++            previous: [...new Set(incompatible.map((item) => item.identity))].sort(),
++          });
++          const hash = yield* crypto
++            .digest("SHA-256", new TextEncoder().encode(content))
++            .pipe(Effect.mapError(() => new StorageError()));
++          id = ProviderId.make(`prv_${Hex.encode(hash)}`);
++        }
++        return { ...entry, provider: { ...entry.provider, id } };
++      }),
++    );
++  });
+diff --git a/e2e/tests/provider-auth-continuity.spec.ts b/e2e/tests/provider-auth-continuity.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/provider-auth-continuity.spec.ts
+@@ -0,0 +1,221 @@
++/** A redeploy preserves a selected credential only when new sign-ins add no ambiguity. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { accountLinks, connectionsPath } from "../support/app-accounts.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { scenarios } from "../test-plan.ts";
++
++const App = Schema.Struct({
++  id: Schema.String,
++  requirements: Schema.Struct({
++    accounts: Schema.Record(Schema.String, Schema.Struct({ provider: Schema.String })),
++  }),
++});
++const key = (field = "token", label = "REST token") =>
++  `secrets({ label: ${JSON.stringify(label)}, fields: object({ ${field}: string() }) })`;
++const rest = { rest: key() };
++const mcp = 'oauth2({ discover: "https://mcp.example.test/mcp" })';
++const metadata = {
++  name: "Provider continuity fixture",
++  family: { id: "fixture", name: "Fixture" },
++};
++const source = (
++  methods: Readonly<Record<string, string>>,
++  details: object = metadata,
++  extra?: Readonly<Record<string, string>>,
++) => [
++  {
++    path: "index.ts",
++    content: `
++import { defineApp, defineProvider, oauth2, object, query, router, secrets, string } from "apps";
++const service = defineProvider({ ...${JSON.stringify(details)}, auth: {
++  ${Object.entries(methods)
++    .map(([name, value]) => `${name}: ${value}`)
++    .join(",")}
++} });
++${
++  extra === undefined
++    ? ""
++    : `const other = defineProvider({ ...${JSON.stringify(details)}, auth: {
++  ${Object.entries(extra)
++    .map(([name, value]) => `${name}: ${value}`)
++    .join(",")}
++} });`
++}
++export default defineApp({ user: { accounts: { service ${extra === undefined ? "" : ", other"} } } }, async ({ user }) => ({
++  tools: router({ selected: query({ input: object({}), output: string() }, async () => user.accounts.service.id) })
++}));`,
++  },
++  appsManifest,
++];
++
++const fixture = (files: ReturnType<typeof source>) =>
++  Effect.gen(function* () {
++    const api = yield* Api,
++      actors = yield* Actors;
++    const prefix = `/api/organizations/${actors.organization.id}`;
++    const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++      name: `Provider continuity ${randomUUID().slice(0, 8)}`,
++      files,
++    });
++    expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++    const app = yield* body(App, deployed);
++    const path = `${prefix}/apps/${app.id}`;
++    yield* Effect.addFinalizer(() => api.request(actors.owner, "DELETE", path).pipe(Effect.orDie));
++    const pending = yield* api.request(
++      actors.owner,
++      "POST",
++      connectionsPath(path, "user", "service"),
++      {},
++    );
++    expect(pending.status, JSON.stringify(pending.body)).toBe(200);
++    const connection = yield* body(Resource, pending);
++    const submitted = yield* api.request(
++      actors.owner,
++      "POST",
++      `${prefix}/connections/${connection.id}/submit`,
++      {
++        method: "rest",
++        fields: { token: "synthetic-rest-credential" },
++      },
++    );
++    expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
++    const account = yield* body(Resource, submitted);
++    yield* Effect.addFinalizer(() =>
++      Effect.gen(function* () {
++        yield* api.request(actors.owner, "DELETE", path).pipe(Effect.orDie);
++        yield* api
++          .request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`)
++          .pipe(Effect.orDie);
++      }),
++    );
++    const redeploy = (next: ReturnType<typeof source>) =>
++      Effect.gen(function* () {
++        const result = yield* api.request(actors.owner, "POST", `${path}/deploy`, { files: next });
++        expect(result.status, JSON.stringify(result.body)).toBe(200);
++        return (yield* body(Schema.Struct({ app: App }), result)).app;
++      });
++    return { api, actors, app, path, account, redeploy };
++  });
++
++layer(HostedLive, { excludeTestServices: true })("Provider authentication continuity", (it) => {
++  it.effect(scenarios.additiveProviderAuthSelection.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* fixture(source(rest));
++        const next = yield* f.redeploy(source({ rest: key("token", "API token"), mcp }));
++        expect(
++          next.requirements.accounts.service?.provider,
++          "An additive sign-in must keep the REST provider ref",
++        ).toBe(f.app.requirements.accounts.service?.provider);
++        expect(yield* accountLinks(f.actors.owner, f.path)).toEqual([["service", f.account.id]]);
++        const call = yield* f.api.request(f.actors.owner, "POST", `${f.path}/tools/call`, {
++          tool: "selected",
++          kind: "query",
++          input: {},
++        });
++        expect(call.status, JSON.stringify(call.body)).toBe(200);
++        expect(call.body).toBe(f.account.id);
++        const repeated = yield* f.redeploy(source({ rest: key("token", "API token"), mcp }));
++        expect(repeated.requirements.accounts.service?.provider).toBe(
++          next.requirements.accounts.service?.provider,
++        );
++        const removed = yield* f.redeploy(source(rest));
++        expect(
++          removed.requirements.accounts.service?.provider,
++          "Removing an added method must not reuse its original hash",
++        ).not.toBe(next.requirements.accounts.service?.provider);
++        const refused = yield* f.api.request(f.actors.owner, "POST", `${f.path}/tools/call`, {
++          tool: "selected",
++          kind: "query",
++          input: {},
++        });
++        expect(refused.status, JSON.stringify(refused.body)).toBe(422);
++        expect(refused.body).toMatchObject({
++          _tag: "AccountSelectionInvalid",
++          reason: "provider_mismatch",
++        });
++      }),
++    ),
++  );
++
++  it.effect(scenarios.additiveProviderAuthIncompatible.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const cases = [
++          {
++            name: "credential changed",
++            methods: { rest: key("accessToken"), mcp },
++            details: metadata,
++          },
++          { name: "method removed", methods: { mcp }, details: metadata },
++          {
++            name: "name changed",
++            methods: { ...rest, mcp },
++            details: { ...metadata, name: "Different service" },
++          },
++          {
++            name: "site changed",
++            methods: { ...rest, mcp },
++            details: { ...metadata, site: { label: "Site", origin: "https://api.example.test" } },
++          },
++          {
++            name: "family changed",
++            methods: { ...rest, mcp },
++            details: { ...metadata, family: { id: "other", name: "Other" } },
++          },
++        ];
++        for (const item of cases) {
++          const f = yield* fixture(source(rest));
++          const next = yield* f.redeploy(source(item.methods, item.details));
++          expect(next.requirements.accounts.service?.provider, item.name).not.toBe(
++            f.app.requirements.accounts.service?.provider,
++          );
++          const call = yield* f.api.request(f.actors.owner, "POST", `${f.path}/tools/call`, {
++            tool: "selected",
++            kind: "query",
++            input: {},
++          });
++          expect(call.status, JSON.stringify(call.body)).toBe(422);
++          expect(call.body).toMatchObject({
++            _tag: "AccountSelectionInvalid",
++            reason: "provider_mismatch",
++          });
++        }
++      }),
++    ),
++  );
++
++  it.effect(scenarios.additiveProviderAuthAmbiguous.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* fixture(source(rest, metadata, { alternate: key() }));
++        const next = yield* f.redeploy(source({ ...rest, alternate: key(), mcp }));
++        expect(next.requirements.accounts.service?.provider).not.toBe(
++          f.app.requirements.accounts.service?.provider,
++        );
++        expect(next.requirements.accounts.service?.provider).not.toBe(
++          f.app.requirements.accounts.other?.provider,
++        );
++        const call = yield* f.api.request(f.actors.owner, "POST", `${f.path}/tools/call`, {
++          tool: "selected",
++          kind: "query",
++          input: {},
++        });
++        expect(call.status, JSON.stringify(call.body)).toBe(422);
++        expect(call.body).toMatchObject({
++          _tag: "AccountSelectionInvalid",
++          reason: "provider_mismatch",
++        });
++      }),
++    ),
++  );
++});
