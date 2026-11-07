@@ -1,0 +1,291 @@
+{
+  "scenarios": {
+    "nameAccountIdentityDesktop": {
+      "fixtures": "actors",
+      "title": "subscription account naming explains pending checks and retries at desktop width",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted subscription registrations. Local pending, failure and retry are scheduled in local-name-account-check.spec.ts."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a process-owned product and a loopback subscription backend."
+        }
+      }
+    },
+    "nameAccountIdentityPhone": {
+      "fixtures": "actors",
+      "title": "subscription account naming explains pending checks and retries at phone width",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted subscription registrations. Local pending, failure and retry are scheduled in local-name-account-check.spec.ts."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a process-owned product and a loopback subscription backend."
+        }
+      }
+    },
+    "nameAccountWorkspace": {
+      "fixtures": "actors",
+      "title": "no-email account naming suggests its workspace and keeps generated labels out of rename",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted subscription registrations. Local pending, failure and retry are scheduled in local-name-account-check.spec.ts."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a process-owned product and a loopback subscription backend."
+        }
+      }
+    },
+    "nameAccountUnnamed": {
+      "fixtures": "actors",
+      "title": "no-email successful unnamed accounts stay empty and remain renameable",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted subscription registrations. Local pending, failure and retry are scheduled in local-name-account-check.spec.ts."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a process-owned product and a loopback subscription backend."
+        }
+      }
+    },
+    "nameAccountDescriptionPrompt1280": {
+      "fixtures": "actors",
+      "title": "generated account description-only prompt save at 1280px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted subscription registrations. Local pending, failure and retry are scheduled in local-name-account-check.spec.ts."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a process-owned product and a loopback subscription backend."
+        }
+      }
+    },
+    "nameAccountDescriptionPrompt390": {
+      "fixtures": "actors",
+      "title": "generated account description-only prompt save at 390px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted subscription registrations. Local pending, failure and retry are scheduled in local-name-account-check.spec.ts."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a process-owned product and a loopback subscription backend."
+        }
+      }
+    },
+    "nameAccountDescriptionEdit1280": {
+      "fixtures": "actors",
+      "title": "generated account description-only edit save at 1280px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted subscription registrations. Local pending, failure and retry are scheduled in local-name-account-check.spec.ts."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a process-owned product and a loopback subscription backend."
+        }
+      }
+    },
+    "nameAccountDescriptionEdit390": {
+      "fixtures": "actors",
+      "title": "generated account description-only edit save at 390px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted subscription registrations. Local pending, failure and retry are scheduled in local-name-account-check.spec.ts."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a process-owned product and a loopback subscription backend."
+        }
+      }
+    },
+    "nameAccountReconnect1280": {
+      "fixtures": "actors",
+      "title": "generated account reconnect notice uses its fallback at 1280px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted subscription registrations. Local pending, failure and retry are scheduled in local-name-account-check.spec.ts."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a process-owned product and a loopback subscription backend."
+        }
+      }
+    },
+    "nameAccountReconnect390": {
+      "fixtures": "actors",
+      "title": "generated account reconnect notice uses its fallback at 390px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted subscription registrations. Local pending, failure and retry are scheduled in local-name-account-check.spec.ts."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a process-owned product and a loopback subscription backend."
+        }
+      }
+    },
+    "nameAccountAuthored1280": {
+      "fixtures": "actors",
+      "title": "authored account naming preserves its prefill through checks at 1280px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted subscription registrations. Local pending, failure and retry are scheduled in local-name-account-check.spec.ts."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a process-owned product and a loopback subscription backend."
+        }
+      }
+    },
+    "nameAccountAuthored390": {
+      "fixtures": "actors",
+      "title": "authored account naming preserves its prefill through checks at 390px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted subscription registrations. Local pending, failure and retry are scheduled in local-name-account-check.spec.ts."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a process-owned product and a loopback subscription backend."
+        }
+      }
+    },
+    "nameAccountWorkspacePhone": {
+      "fixtures": "actors",
+      "title": "no-email account naming suggests its workspace and keeps generated labels out of rename at 390px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted subscription registrations. Local pending, failure and retry are scheduled in local-name-account-check.spec.ts."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a process-owned product and a loopback subscription backend."
+        }
+      }
+    },
+    "nameAccountUnnamedPhone": {
+      "fixtures": "actors",
+      "title": "no-email successful unnamed accounts stay empty and remain renameable at 390px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted subscription registrations. Local pending, failure and retry are scheduled in local-name-account-check.spec.ts."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a process-owned product and a loopback subscription backend."
+        }
+      }
+    }
+  },
+  "runs": {
+    "nameAccountIdentityDesktop": [
+      "declared:self-host"
+    ],
+    "nameAccountIdentityPhone": [
+      "declared:self-host"
+    ],
+    "nameAccountWorkspace": [
+      "declared:self-host"
+    ],
+    "nameAccountUnnamed": [
+      "declared:self-host"
+    ],
+    "nameAccountDescriptionPrompt1280": [
+      "declared:self-host"
+    ],
+    "nameAccountDescriptionPrompt390": [
+      "declared:self-host"
+    ],
+    "nameAccountDescriptionEdit1280": [
+      "declared:self-host"
+    ],
+    "nameAccountDescriptionEdit390": [
+      "declared:self-host"
+    ],
+    "nameAccountReconnect1280": [
+      "declared:self-host"
+    ],
+    "nameAccountReconnect390": [
+      "declared:self-host"
+    ],
+    "nameAccountAuthored1280": [
+      "declared:self-host"
+    ],
+    "nameAccountAuthored390": [
+      "declared:self-host"
+    ],
+    "nameAccountWorkspacePhone": [
+      "declared:self-host"
+    ],
+    "nameAccountUnnamedPhone": [
+      "declared:self-host"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/web/src/implementation/pages/name-account-dialog.tsx",
+    ".upstream/apps/local/web/src/implementation/pages/name-account-dialog.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/name-account.tsx"
+  ]
+}

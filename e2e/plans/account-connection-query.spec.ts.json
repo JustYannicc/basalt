@@ -89,6 +89,7 @@
     ".upstream/packages/ui/src/implementation/dashboard/connection-app-picker.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/copy-app.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/grant-picker.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/name-account.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/publish-app.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/scoped-connections.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/shell.tsx",

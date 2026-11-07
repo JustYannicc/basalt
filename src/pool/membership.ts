@@ -152,6 +152,53 @@ export class NativeMemberships {
   async configured(): Promise<boolean> {
     return this.run(async (state) => Object.keys(state).length > 0);
   }
+  async ensure(pool: string, organization: string): Promise<void> {
+    let current = await this.run(async (state) => state[pool]);
+    if (!current) {
+      // The private reader may reserve this same object while completing the host's SQL handoff.
+      // Never hold our queue across that callback.
+      const snapshot = await this.deps.read(pool, organization);
+      if (!snapshot.native) return;
+      const created = await this.run(async (state) => {
+        if (state[pool]) return undefined;
+        const next: State = {
+          pool,
+          organization,
+          revision: 1,
+          expiresAt: this.now() + membershipTtlMs,
+          accounts: [],
+          dirty: true,
+          native: true,
+          checkedAt: 0,
+          installedRevision: 0,
+          installedUntil: 0,
+        };
+        state[pool] = next;
+        await this.save(state);
+        this.deps.abort(pool);
+        return next;
+      });
+      if (created) {
+        await this.schedule();
+        await this.deps.install(publicPolicy(created));
+      }
+      current = await this.run(async (state) => state[pool]);
+    }
+    if (!current || current.organization !== organization)
+      throw new Error("Native pool organization changed");
+    if (
+      current.dirty ||
+      !current.native ||
+      current.expiresAt <= this.now() ||
+      current.installedRevision !== current.revision ||
+      current.installedUntil <= this.now()
+    )
+      await this.refresh(pool);
+    // A signed invalidation alone does not convert retained Home bindings to native authority.
+    // The host's registration decides that handoff; native model use remains vetoed by authority().
+    if (!(await this.run(async (state) => state[pool]?.native))) return;
+    await this.authority(pool);
+  }
   async tick(): Promise<void> {
     const pools = await this.run(async (state) => Object.keys(state));
     if (!pools.length) return;

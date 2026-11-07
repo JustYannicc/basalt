@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-account-traffic-attribution",
+  "file": "0400-account-traffic-attribution.patch",
+  "content_sha256": "54ae21a18dba1fcf141cdf39a54a869a283a26c329e52493b17635f4fb290d2f",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
