@@ -1,22 +1,6 @@
 {
   "fixture": "statement-batch",
   "scenarios": {
-    "statementBatchDeadline": {
-      "fixtures": "actors",
-      "title": "stalled statement batches fail before dispatch and release their resources on deadline or cancellation",
-      "targets": {
-        "self-host": {
-          "status": "scheduled"
-        },
-        "cloud": {
-          "status": "scheduled"
-        },
-        "local": {
-          "status": "not-applicable",
-          "reason": "This scenario exercises the hosted StatementBatch consumers and their product database lifetimes."
-        }
-      }
-    },
     "statementBatchMcpDeadline": {
       "fixtures": "actors",
       "title": "stalled MCP statement batches fail before dispatch and release their resources on deadline or cancellation",
@@ -35,7 +19,6 @@
     }
   },
   "runs": {
-    "statementBatchDeadline": ["declared:self-host", "declared:cloud"],
     "statementBatchMcpDeadline": ["declared:self-host", "declared:cloud"]
   },
   "inputs": [

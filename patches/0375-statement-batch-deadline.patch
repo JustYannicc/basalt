@@ -379,7 +379,7 @@ diff --git a/e2e/support/statement-batch-proxy.ts b/e2e/support/statement-batch-
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/statement-batch-proxy.ts
-@@ -0,0 +1,209 @@
+@@ -0,0 +1,220 @@
 +import { Deferred, Effect, Exit, Schema } from "effect";
 +import { connect, createServer, type Socket } from "node:net";
 +
@@ -388,6 +388,8 @@ new file mode 100644
 +  Schema.Struct({ action: Schema.Literals(["held", "closed", "state", "release"]) }),
 +]);
 +
++type StatementKind = "begin" | "commit" | "sdk-access" | "tool-access" | "query";
++
 +interface Hold {
 +  readonly app: string;
 +  readonly reached: Deferred.Deferred<void>;
@@ -395,6 +397,7 @@ new file mode 100644
 +  held: boolean;
 +  closed: boolean;
 +  later: number;
++  readonly laterKinds: StatementKind[];
 +}
 +
 +/** Withhold a chosen app's COMMIT reply in the runner-owned PostgreSQL transport. */
@@ -422,7 +425,6 @@ new file mode 100644
 +    let index = 0;
 +    let frozen: Hold | undefined;
 +    let transaction: { matches: boolean } | undefined;
-+    type StatementKind = "begin" | "commit" | "query";
 +    const statements = new Map<string, StatementKind>();
 +    const portals = new Map<string, StatementKind>();
 +    let postCommit: Hold | undefined;
@@ -432,10 +434,17 @@ new file mode 100644
 +        ? "begin"
 +        : sql === "COMMIT"
 +          ? "commit"
-+          : "query";
++          : sql.includes('as "appLinks"') && sql.includes("as access")
++            ? "sdk-access"
++            : sql.includes('as "appLinks"') && sql.includes('as "userLinks"')
++              ? "tool-access"
++              : "query";
 +    const execute = (kind: StatementKind) => {
 +      const commit = kind === "commit" && transaction?.matches ? armed : undefined;
-+      if (postCommit !== undefined) postCommit.later++;
++      if (postCommit !== undefined) {
++        postCommit.later++;
++        postCommit.laterKinds.push(kind);
++      }
 +      queries.push(commit === undefined ? {} : { commit });
 +      if (kind === "commit") {
 +        transaction = undefined;
@@ -575,6 +584,7 @@ new file mode 100644
 +            held: false,
 +            closed: false,
 +            later: 0,
++            laterKinds: [],
 +          };
 +        } else if (command.action === "release") release();
 +        else if (command.action === "held" && current !== undefined)
@@ -585,6 +595,7 @@ new file mode 100644
 +          held: current?.held ?? false,
 +          closed: current?.closed ?? false,
 +          later: current?.later ?? 0,
++          laterKinds: current?.laterKinds ?? [],
 +        };
 +      }).pipe(Effect.timeout("20 seconds")),
 +  };
@@ -593,7 +604,7 @@ diff --git a/e2e/tests/statement-batch-deadline.spec.ts b/e2e/tests/statement-ba
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/statement-batch-deadline.spec.ts
-@@ -0,0 +1,232 @@
+@@ -0,0 +1,216 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Clock, Effect, Fiber, Layer, Schedule, Schema } from "effect";
 +import { body } from "../support/api.ts";
@@ -601,7 +612,6 @@ new file mode 100644
 +import { appLinksFixture } from "../support/app-links.ts";
 +import { appInvocationCounter } from "../support/app-invocation-counter.ts";
 +import { HostedLive, withHostedCase } from "../support/case.ts";
-+import { tracedDataQuery } from "../support/data-query-batch.ts";
 +import { withStatementBatchFixture } from "../support/statement-batch-fixture.ts";
 +import { Evidence } from "../support/evidence.ts";
 +import { Target } from "../support/platform.ts";
@@ -609,220 +619,205 @@ new file mode 100644
 +import { scenarios } from "../test-plan.ts";
 +
 +layer(HostedLive, { excludeTestServices: true })("Statement batch deadline", (it) => {
-+  for (const [kind, scenario] of [
-+    ["data", scenarios.statementBatchDeadline],
-+    ["mcp", scenarios.statementBatchMcpDeadline],
-+  ] as const)
-+    it.effect(scenario.title, (context) =>
-+      withHostedCase(
-+        context,
-+        withStatementBatchFixture((query) =>
-+          Effect.gen(function* () {
-+            const target = yield* Target;
-+            const evidence = yield* Evidence;
-+            const counter = yield* appInvocationCounter;
-+            const source = `import { defineApp, defineProvider, secrets, query, object, string, router } from "apps";
++  it.effect(scenarios.statementBatchMcpDeadline.title, (context) =>
++    withHostedCase(
++      context,
++      withStatementBatchFixture((query) =>
++        Effect.gen(function* () {
++          const target = yield* Target;
++          const evidence = yield* Evidence;
++          const counter = yield* appInvocationCounter;
++          const source = `import { defineApp, defineProvider, secrets, query, object, string, router } from "apps";
 +const service = defineProvider({ name: "Batch deadline fixture", auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) } });
 +export default defineApp({ app: { accounts: { team: service } } }, { tools: router({
 +  read: query({ input: object({}) }, async () => { await fetch(${JSON.stringify(counter.origin)}); return "author-ran"; })
 +}) });`;
-+            const f = yield* appLinksFixture([{ path: "index.ts", content: source }]);
-+            yield* f.connect(f.actors.owner, "app", "team", "synthetic-team");
-+            const dataRead = () =>
-+              tracedDataQuery(f.actors.member, f.path, { name: "read", input: {} }).pipe(
-+                Effect.map(({ response, request }) => ({
-+                  traceId: request.traceId,
-+                  success: response.status === 200,
-+                  value: response.body,
-+                  failure: response.body,
-+                  status: response.status,
-+                })),
-+              );
-+            const mcpRead =
-+              kind !== "mcp"
-+                ? undefined
-+                : yield* Effect.gen(function* () {
-+                    const mcp = yield* McpClient.pipe(Effect.provide(Layer.fresh(McpClient.layer)));
-+                    const key = yield* body(
-+                      Schema.Struct({
-+                        id: Schema.String,
-+                        key: Schema.RedactedFromValue(Schema.String),
-+                      }),
-+                      yield* f.api.request(f.actors.member, "POST", "/api/auth/api-key/create", {
-+                        name: "Batch deadline fixture",
-+                      }),
-+                    );
-+                    yield* Effect.addFinalizer(() =>
-+                      f.api
-+                        .request(f.actors.member, "POST", "/api/auth/api-key/delete", {
-+                          keyId: key.id,
-+                        })
-+                        .pipe(Effect.orDie),
-+                    );
-+                    const client = yield* mcp.connect(key.key, "batch-deadline", {
-+                      organization: f.actors.organization.id,
-+                    });
-+                    const Result = Schema.Struct({
-+                      status: Schema.Literal("completed"),
-+                      execution: Schema.Struct({
-+                        ok: Schema.Boolean,
-+                        value: Schema.optional(Schema.Unknown),
-+                        error: Schema.optional(
-+                          Schema.Struct({ response: Schema.optional(Schema.Unknown) }),
-+                        ),
-+                      }),
-+                    });
-+                    return () =>
-+                      client
-+                        .use("Read through MCP", (client, signal) =>
-+                          client.callTool(
-+                            {
-+                              name: "execute",
-+                              arguments: {
-+                                code: `return await tools[${JSON.stringify(f.app.slug)}].read({})`,
-+                              },
-+                            },
-+                            undefined,
-+                            { signal },
-+                          ),
-+                        )
-+                        .pipe(
-+                          Effect.flatMap((result) =>
-+                            Schema.decodeUnknownEffect(Result)(result.structuredContent),
-+                          ),
-+                          Effect.flatMap(({ execution }) =>
-+                            Effect.gen(function* () {
-+                              const request = (yield* evidence.requests)
-+                                .filter(
-+                                  (request) => request.path === "/mcp" && request.method === "POST",
-+                                )
-+                                .at(-1);
-+                              if (request === undefined)
-+                                return yield* Effect.die("MCP request evidence missing");
-+                              return {
-+                                traceId: request.traceId,
-+                                success: execution.ok,
-+                                value: execution.value,
-+                                failure: execution.error?.response,
-+                                status: undefined,
-+                              };
-+                            }),
-+                          ),
-+                        );
-+                  });
-+            const read = mcpRead ?? dataRead;
-+            const delivered = (trace: string) =>
-+              query(trace).pipe(
-+                Effect.flatMap((trace) =>
-+                  trace.data.some(
-+                    ({ span }) =>
-+                      span.operationName.startsWith("http.server") &&
-+                      span.tags["http.request.method"] === "POST",
-+                  )
-+                    ? Effect.succeed(trace)
-+                    : Effect.fail(new Error("The completed request trace is not delivered")),
-+                ),
-+                Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 50 }),
-+              );
-+            const dispatch = kind === "data" ? "sdk.data.query" : "sdk.tools.call";
-+            const warm = yield* read();
-+            expect(warm.success).toBe(true);
-+            expect(
-+              (yield* delivered(warm.traceId)).data.some(
-+                ({ span }) => span.operationName === dispatch,
-+              ),
-+            ).toBe(true);
-+            expect(yield* counter.calls).toBe(1);
-+            const cloud = target.metadata.target === "cloud";
-+            const control = (action: "arm" | "held" | "closed" | "state" | "release") =>
-+              Effect.gen(function* () {
-+                if (cloud) {
-+                  if (target.fixtures === undefined)
-+                    return yield* Effect.die("Cloud fixture control missing");
-+                  return yield* fixtureRequest(target.fixtures, "/runtime/statement-batch", {
-+                    action,
-+                    ...(action === "arm" ? { app: f.app.id } : {}),
-+                  });
-+                }
-+                const response = yield* f.api.request(
-+                  f.actors.owner,
-+                  action === "arm" ? "POST" : action === "release" ? "DELETE" : "GET",
-+                  `/api/devtools/statement-hold${action === "held" ? "/reached" : action === "closed" ? "/interrupted" : ""}`,
-+                  action === "arm" ? { prefetch: f.app.id } : undefined,
-+                );
-+                expect(response.status).toBe(200);
-+                return response.body;
-+              });
-+            yield* Effect.addFinalizer(() => control("release").pipe(Effect.orDie));
-+            const before = yield* counter.calls;
-+            yield* control("arm");
-+            const start = yield* Clock.currentTimeMillis;
-+            const waiting = yield* Effect.forkChild(read());
-+            yield* control("held");
-+            const failed = yield* Fiber.join(waiting).pipe(
-+              Effect.timeout("12 seconds"),
-+              Effect.catchTag("TimeoutError", () =>
-+                Effect.die("Stalled batch did not return StorageError before the deadline"),
-+              ),
++          const f = yield* appLinksFixture([{ path: "index.ts", content: source }]);
++          yield* f.connect(f.actors.owner, "app", "team", "synthetic-team");
++          const read = yield* Effect.gen(function* () {
++            const mcp = yield* McpClient.pipe(Effect.provide(Layer.fresh(McpClient.layer)));
++            const key = yield* body(
++              Schema.Struct({
++                id: Schema.String,
++                key: Schema.RedactedFromValue(Schema.String),
++              }),
++              yield* f.api.request(f.actors.member, "POST", "/api/auth/api-key/create", {
++                name: "Batch deadline fixture",
++              }),
 +            );
-+            const elapsed = (yield* Clock.currentTimeMillis) - start;
-+            expect(failed.success, JSON.stringify(failed)).toBe(false);
-+            if (kind === "data") expect(failed.status).toBe(500);
-+            expect(failed.failure).toMatchObject(
-+              kind === "data"
-+                ? { _tag: "StorageError" }
-+                : { code: "StorageError", status: 500, retryable: true },
-+            );
-+            expect(failed.failure).not.toMatchObject({ mayHaveWritten: true });
-+            expect(elapsed).toBeLessThan(12_000);
-+            expect(yield* counter.calls).toBe(before);
-+            const failureTrace = yield* delivered(failed.traceId);
-+            expect(failureTrace.data.some(({ span }) => span.operationName === dispatch)).toBe(
-+              false,
-+            );
-+            yield* evidence.json("statement-batch-dispatch.json", {
-+              dispatch,
-+              spans: failureTrace.data.map(({ span }) => span.operationName),
-+            });
-+            const state = yield* control("closed");
-+            yield* evidence.json("statement-batch-deadline-state.json", state);
-+            const guard = cloud
-+              ? Schema.Struct({
-+                  held: Schema.Literal(true),
-+                  closed: Schema.Literal(true),
-+                  later: Schema.Literal(1),
++            yield* Effect.addFinalizer(() =>
++              f.api
++                .request(f.actors.member, "POST", "/api/auth/api-key/delete", {
++                  keyId: key.id,
 +                })
-+              : Schema.Struct({ held: Schema.Literal(true), interrupted: Schema.Literal(true) });
-+            yield* Schema.decodeUnknownEffect(guard)(state);
-+            expect((yield* read()).value).toBe("author-ran");
-+            expect(yield* counter.calls).toBe(before + 1);
-+            yield* evidence.json("statement-batch-deadline.json", {
-+              elapsed,
-+              failure: failed.failure,
-+              state,
-+              authorCallsBefore: before,
-+              authorCallsAfter: yield* counter.calls,
++                .pipe(Effect.orDie),
++            );
++            const client = yield* mcp.connect(key.key, "batch-deadline", {
++              organization: f.actors.organization.id,
 +            });
++            const Result = Schema.Struct({
++              status: Schema.Literal("completed"),
++              execution: Schema.Struct({
++                ok: Schema.Boolean,
++                value: Schema.optional(Schema.Unknown),
++                error: Schema.optional(
++                  Schema.Struct({ response: Schema.optional(Schema.Unknown) }),
++                ),
++              }),
++            });
++            return () =>
++              client
++                .use("Read through MCP", (client, signal) =>
++                  client.callTool(
++                    {
++                      name: "execute",
++                      arguments: {
++                        code: `return await tools[${JSON.stringify(f.app.slug)}].read({})`,
++                      },
++                    },
++                    undefined,
++                    { signal },
++                  ),
++                )
++                .pipe(
++                  Effect.flatMap((result) =>
++                    Schema.decodeUnknownEffect(Result)(result.structuredContent),
++                  ),
++                  Effect.flatMap(({ execution }) =>
++                    Effect.gen(function* () {
++                      const request = (yield* evidence.requests)
++                        .filter((request) => request.path === "/mcp" && request.method === "POST")
++                        .at(-1);
++                      if (request === undefined)
++                        return yield* Effect.die("MCP request evidence missing");
++                      return {
++                        traceId: request.traceId,
++                        success: execution.ok,
++                        value: execution.value,
++                        failure: execution.error?.response,
++                        status: undefined,
++                      };
++                    }),
++                  ),
++                );
++          });
++          const delivered = (trace: string) =>
++            query(trace).pipe(
++              Effect.flatMap((trace) =>
++                trace.data.some(
++                  ({ span }) =>
++                    span.operationName.startsWith("http.server") &&
++                    span.tags["http.request.method"] === "POST",
++                )
++                  ? Effect.succeed(trace)
++                  : Effect.fail(new Error("The completed request trace is not delivered")),
++              ),
++              Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 50 }),
++            );
++          const dispatch = "sdk.tools.call";
++          const warm = yield* read();
++          expect(warm.success).toBe(true);
++          expect(
++            (yield* delivered(warm.traceId)).data.some(
++              ({ span }) => span.operationName === dispatch,
++            ),
++          ).toBe(true);
++          expect(yield* counter.calls).toBe(1);
++          const cloud = target.metadata.target === "cloud";
++          const control = (action: "arm" | "held" | "closed" | "state" | "release") =>
++            Effect.gen(function* () {
++              if (cloud) {
++                if (target.fixtures === undefined)
++                  return yield* Effect.die("Cloud fixture control missing");
++                return yield* fixtureRequest(target.fixtures, "/runtime/statement-batch", {
++                  action,
++                  ...(action === "arm" ? { app: f.app.id } : {}),
++                });
++              }
++              const response = yield* f.api.request(
++                f.actors.owner,
++                action === "arm" ? "POST" : action === "release" ? "DELETE" : "GET",
++                `/api/devtools/statement-hold${action === "held" ? "/reached" : action === "closed" ? "/interrupted" : ""}`,
++                action === "arm" ? { prefetch: f.app.id } : undefined,
++              );
++              expect(response.status).toBe(200);
++              return response.body;
++            });
++          yield* Effect.addFinalizer(() => control("release").pipe(Effect.orDie));
++          const before = yield* counter.calls;
++          yield* control("arm");
++          const start = yield* Clock.currentTimeMillis;
++          const waiting = yield* Effect.forkChild(read());
++          yield* control("held");
++          const failed = yield* Fiber.join(waiting).pipe(
++            Effect.timeout("12 seconds"),
++            Effect.catchTag("TimeoutError", () =>
++              Effect.die("Stalled batch did not return StorageError before the deadline"),
++            ),
++          );
++          const elapsed = (yield* Clock.currentTimeMillis) - start;
++          expect(failed.success, JSON.stringify(failed)).toBe(false);
++          expect(failed.failure).toMatchObject({
++            code: "StorageError",
++            status: 500,
++            retryable: true,
++          });
++          expect(failed.failure).not.toMatchObject({ mayHaveWritten: true });
++          expect(elapsed).toBeLessThan(12_000);
++          expect(yield* counter.calls).toBe(before);
++          const failureTrace = yield* delivered(failed.traceId);
++          expect(failureTrace.data.some(({ span }) => span.operationName === dispatch)).toBe(false);
++          yield* evidence.json("statement-batch-dispatch.json", {
++            dispatch,
++            spans: failureTrace.data.map(({ span }) => span.operationName),
++          });
++          const state = yield* control("closed");
++          yield* evidence.json("statement-batch-deadline-state.json", state);
++          const guard = cloud
++            ? Schema.Struct({
++                held: Schema.Literal(true),
++                closed: Schema.Literal(true),
++                later: Schema.Literal(2),
++                laterKinds: Schema.Array(Schema.Literals(["sdk-access", "tool-access"])),
++              })
++            : Schema.Struct({ held: Schema.Literal(true), interrupted: Schema.Literal(true) });
++          const verifyState = (state: unknown) =>
++            Schema.decodeUnknownEffect(guard)(state).pipe(
++              Effect.tap((state) => {
++                if ("laterKinds" in state)
++                  expect(state.laterKinds.toSorted()).toEqual(["sdk-access", "tool-access"]);
++              }),
++            );
++          yield* verifyState(state);
++          expect((yield* read()).value).toBe("author-ran");
++          expect(yield* counter.calls).toBe(before + 1);
++          yield* evidence.json("statement-batch-deadline.json", {
++            elapsed,
++            failure: failed.failure,
++            state,
++            authorCallsBefore: before,
++            authorCallsAfter: yield* counter.calls,
++          });
 +
-+            yield* control("arm");
-+            const cancelled = yield* Effect.forkChild(read());
-+            yield* control("held");
-+            const cancellationStarted = yield* Clock.currentTimeMillis;
-+            yield* Fiber.interrupt(cancelled);
-+            const cancelledState = yield* control("closed").pipe(Effect.timeout("7 seconds"));
-+            yield* evidence.json("statement-batch-cancelled-state.json", cancelledState);
-+            const cancellationElapsed = (yield* Clock.currentTimeMillis) - cancellationStarted;
-+            yield* Schema.decodeUnknownEffect(guard)(cancelledState);
-+            expect(yield* counter.calls).toBe(before + 1);
-+            expect((yield* read()).value).toBe("author-ran");
-+            expect(yield* counter.calls).toBe(before + 2);
-+            yield* evidence.json("statement-batch-cancellation.json", {
-+              state: cancelledState,
-+              cancellationElapsed,
-+              authorCalls: yield* counter.calls,
-+            });
-+          }),
-+        ),
++          yield* control("arm");
++          const cancelled = yield* Effect.forkChild(read());
++          yield* control("held");
++          const cancellationStarted = yield* Clock.currentTimeMillis;
++          yield* Fiber.interrupt(cancelled);
++          const cancelledState = yield* control("closed").pipe(Effect.timeout("7 seconds"));
++          yield* evidence.json("statement-batch-cancelled-state.json", cancelledState);
++          const cancellationElapsed = (yield* Clock.currentTimeMillis) - cancellationStarted;
++          yield* verifyState(cancelledState);
++          expect(yield* counter.calls).toBe(before + 1);
++          expect((yield* read()).value).toBe("author-ran");
++          expect(yield* counter.calls).toBe(before + 2);
++          yield* evidence.json("statement-batch-cancellation.json", {
++            state: cancelledState,
++            cancellationElapsed,
++            authorCalls: yield* counter.calls,
++          });
++        }),
 +      ),
-+    );
++    ),
++  );
 +});
