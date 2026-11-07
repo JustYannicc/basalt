@@ -573,7 +573,6 @@
       "npm-launcher.spec.ts#the npm launcher starts the platform executable through every entry point, passes on its exit code and signals, and explains a missing platform package": "a52c94ceed21c3ac1e8e9ca01779ce2607a8a21791fdcd917cfa890c4503e840",
       "oauth-authorization-params.spec.ts#oauthAuthorizationParams": "60d750a3ef3ff6ddd2c8f156eded7b26971169f9e157ff8a97fb0b33dc57fcca",
       "oauth-background-renewal.spec.ts#oauthBackgroundRenewalAfterBatch": "bef6109c561f3f6bc9c9b478216c8197112971905ace499df573896ed70c31fb",
-      "oauth-client-credentials.spec.ts#oauthClientForm": "982bf8ebbeb10e92cbbadd1c25aa54e4712acf896dbaf07d91f061a74668cb81",
       "oauth-client-metadata.spec.ts#oauthClientMetadataDocument": "98183822ee88f149094c26cfce981d464af0765e3db1a945ad932899185182aa",
       "oauth-client-metadata.spec.ts#oauthClientMetadataDocumentOrigin": "9e2705d7d3de4f0f12c8c7ec2c07b24b6c8a5f0c537a2c196bd4928cd15d28a8",
       "oauth-client-metadata.spec.ts#oauthClientMetadataEnabled": "60c88e7f0660aa5cbec73214018cbb72128b8e0931b418cef3326cea14089aa5",
