@@ -1,5 +1,7 @@
 import { json, type Schema } from "apps";
-import { createAppClient, queryReference } from "apps/client";
+import type { importUsage } from "../import-actions.ts";
+import type { UsageImportPage, UsageImportResult } from "../import-contract.ts";
+import { createAppClient, mutationReference, queryReference } from "apps/client";
 import type {
   capacity,
   ComputerContext,
@@ -31,6 +33,14 @@ export const pool = {
         queryReference<typeof publicHistory>("publicHistory"),
         input,
         result<import("../history-contract.ts").PublicHistoryPage>(),
+      ),
+    ),
+  importUsage: (input: UsageImportPage) =>
+    read(
+      client.mutate(
+        mutationReference<typeof importUsage>("importUsage"),
+        input,
+        result<UsageImportResult>(),
       ),
     ),
   capacity: (days: 7 | 30, to?: number) =>

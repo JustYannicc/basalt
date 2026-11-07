@@ -1867,13 +1867,22 @@ jobs:
           POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
           POOL_TEST_POOLED_URL: postgresql://fixture_root:fixture-only@localhost:6432/postgres
           POOL_TEST_HOME_BUDGET_CLIENT: ${{ runner.temp }}/home-budget-client
+      - name: Compile and serve the SQLite upload worker assets
+        run: node scripts/pool-tests/sqlite-compiler-proof.mjs "${{ runner.temp }}/sqlite-upload-compiled"
       - name: Check the pool runtime and database contracts
         run: node --test --test-concurrency=1 scripts/pool-tests/*.test.ts
         env:
           POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
+          SQLITE_COMPILED_OUTPUT: ${{ runner.temp }}/sqlite-upload-compiled
           POOL_TEST_IMAGE: basalt-1409-pool:test
           POOL_TEST_LEGACY_IMAGE: basalt-1409-pool:privacy-legacy
           POOL_TEST_USAGE_PRIVACY_IMAGE: basalt-1409-pool:usage-privacy-baseline
+      - name: Set up the import flow's browser
+        uses: ./.github/actions/setup-browser
+      - name: Verify usage imports through the pool app and database
+        run: node --test scripts/pool-ui-tests/usage-import.test.mjs
+        env:
+          POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
       - name: Release pool build disk
         if: always()
         run: |
