@@ -198,7 +198,6 @@ test("PlanetScale preserves the legacy provider and scopes the new provider inde
   );
   assert.match(after, /const planetscaleSignIn = defineProvider\(/);
   assert.match(after, /signIn: oauth2\(\{\n\s+discover: "https:\/\/api\.planetscale\.com",/);
-  assert.match(after, /scope: plain\(string\(\)\)\.optional\(\)/);
   assert.match(after, /planetscale: planetscale\.many\(\)/);
   assert.match(after, /planetscaleSignIn: planetscaleSignIn\.many\(\)/);
   for (const path of ["openapi.ts", "icon.ts"])

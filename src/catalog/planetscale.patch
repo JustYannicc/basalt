@@ -35,11 +35,10 @@
 +- The health check lists organizations; it does not identify the person.
 --- a/index.ts
 +++ b/index.ts
-@@ -6,17 +6,23 @@
+@@ -6,17 +6,22 @@
    defineProvider,
    oauth2,
    object,
-+  plain,
 +  query,
 +  renameTools,
    router,
@@ -61,7 +60,7 @@
  const planetscale = defineProvider({
    name: "PlanetScale",
    hosts: ["api.planetscale.com", "app.planetscale.com", "auth.planetscale.com"],
-@@ -79,24 +85,167 @@
+@@ -79,24 +84,166 @@
    },
  });
  
@@ -73,7 +72,6 @@
 +  auth: {
 +    signIn: oauth2({
 +      discover: "https://api.planetscale.com",
-+      response: object({ access_token: string(), scope: plain(string()).optional() }),
 +    }),
 +  },
 +  async health({ account, fetch, signal }) {
@@ -97,9 +95,9 @@
 +
 +/** Expand the aliases PlanetScale advertises so either spelling is checked against an operation. */
 +const grantOf = (account: SignInAccount) => {
-+  const value = account.fields.scope;
++  const value = account.oauthScopes;
 +  if (value === undefined) return undefined;
-+  const scopes = new Set(value.split(/[\s,]+/).filter((scope) => scope !== ""));
++  const scopes = new Set(value);
 +  for (const [short, long] of Object.entries(scopeAliases)) {
 +    if (scopes.has(short)) scopes.add(long);
 +    if (scopes.has(long)) scopes.add(short);
@@ -201,11 +199,11 @@
 +            {
 +              input: object({}),
 +              description:
-+                "Which OAuth scopes PlanetScale reported for each account. Missing scope data is unknown; PlanetScale decides access to each resource.",
++                "OAuth scopes recorded by the host for each account, including equivalent names. Missing scope data is unknown; PlanetScale decides access to each resource.",
 +            },
 +            async () =>
 +              connected.map((account) => {
-+                const reported = account.method === "signIn" ? account.fields.scope : undefined;
++                const reported = account.oauthScopes;
 +                const known = reported !== undefined;
 +                return {
 +                  accountId: account.id,
@@ -216,7 +214,7 @@
 +                        ? "legacy OAuth"
 +                        : "PlanetScale sign-in",
 +                  permissions: known
-+                    ? reported.split(/[\s,]+/).filter(Boolean).sort()
++                    ? [...reported].sort()
 +                    : "Unknown: PlanetScale did not report this account's permissions.",
 +                  unavailableTools: known
 +                    ? [
@@ -253,7 +251,7 @@
    },
    "dependencies": {
 -    "apps": "0.0.1-beta.100"
-+    "apps": "0.0.1-beta.104-basalt.10"
++    "apps": "0.0.1-beta.104-basalt.14"
    }
  }
 --- /dev/null

@@ -79,7 +79,7 @@ const program = Effect.gen(function* () {
     ),
   );
   assert.deepEqual(sorted(planetScaleOAuthClient.defaultScopes), sorted(hostedScopes));
-  assert.deepEqual(sorted(planetScaleOAuthClient.allowedScopes), sorted(hostedScopes));
+  assert.deepEqual(sorted(planetScaleOAuthClient.allowedScopes), sorted([...hostedScopes, "organization:read_comments", "organization:write_comments", "organization:read_members"]));
   assert.equal(planetScaleOAuthClient.requireScopeConfirmation, true);
   // The reviewed client, moved to the loopback service as the Slack proof moves its client.
   const fixtureClient = {

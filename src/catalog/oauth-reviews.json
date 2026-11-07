@@ -281,7 +281,7 @@
     {
       "entry": "atlassian",
       "package": "atlassian",
-      "sourceSha256": "c5deea1766554ae34b180d52df9b17797f7a46fddc67faa271edf90193a980c9",
+      "sourceSha256": "630ec53c5195db281c3ea56e75aed26a610f06d0e6a670889d3c62db22b2add2",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -367,7 +367,7 @@
     {
       "entry": "aws",
       "package": "aws",
-      "sourceSha256": "b27e3e1a7362613d3fa020b33c315897c58125747cba5bb7e11079224e26c60d",
+      "sourceSha256": "23c9bcb0e0630fbae21334a1598bd696b52d83e7d62ce5060d70cc684b940bd6",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -1490,7 +1490,7 @@
     {
       "entry": "elevenlabs",
       "package": "@executor.sh/elevenlabs",
-      "sourceSha256": "57b561d6caa30a24f2f422f53c5bf731cedcbcffc089f52fe6bceb0b46b352ba",
+      "sourceSha256": "855f67c556ffe883fb4d5708a767b98205125785cfa67c0dc0e5a34fd216ab65",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -1903,7 +1903,7 @@
     {
       "entry": "gitlab",
       "package": "@executor.sh/gitlab",
-      "sourceSha256": "7a794344e483594ae743ac12b3d8a18e7598f82ac6c10e6ba51875ba2717387e",
+      "sourceSha256": "c65c43648ef3ba270ba8e2d0e65a436cb0f956b40b43a7aa40f4d3d45e277164",
       "methods": {
         "mcp": {
           "kind": "deferred",
@@ -3049,7 +3049,7 @@
     {
       "entry": "miro",
       "package": "@executor.sh/miro",
-      "sourceSha256": "d393cdec7c5d2bd2a1d8746aa364daffa870abc03cbbcd759e85ab9b7fd4d7f0",
+      "sourceSha256": "5753e1ebdf0508464c1dcd0548b87bafba82c91c34d76a1e6609c325d09f65c9",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -3251,7 +3251,7 @@
     {
       "entry": "notion",
       "package": "@executor.sh/notion",
-      "sourceSha256": "c64b9e092773bb30e5901d9d6ddd1611c5e2ec15b03dd15076666c22b40d1d32",
+      "sourceSha256": "07254bd078a8ca6f49db294465495d5cb99604a8a539639fb72e66690cf701c9",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -3652,7 +3652,7 @@
           "message": "Shared sign-in for PlanetScale is not configured on this host. You can connect with your own OAuth app or a service token."
         }
       },
-      "sourceSha256": "47a6d27f72d6aa7248dde8faf863a3bea2b2cc60aa432c5af487fb0e118ad762"
+      "sourceSha256": "5b52f3f7c882458af933920b76dc5c712f1c6d3052a0558eae060fd1320f9348"
     },
     {
       "entry": "planning-center-online",
@@ -4289,7 +4289,7 @@
     {
       "entry": "slack",
       "package": "@executor.sh/slack",
-      "sourceSha256": "224c8729a362214f53383020183916fa24cf5ad0a33f775239d3bda1574dfccd",
+      "sourceSha256": "139ab558c74e3a854ab77caa420c76175ef4064c0123f6d4289e44835b556123",
       "methods": {
         "user": {
           "kind": "hosted",
@@ -4847,7 +4847,7 @@
     {
       "entry": "vercel",
       "package": "@executor.sh/vercel",
-      "sourceSha256": "387afa28b40ba7a3935aebe5adbe59230ee3e087dfbf8a46cf737d9cfd5f87b4",
+      "sourceSha256": "9208d8eadf8d9980387f40b935b4be29cb95b3a8e9794d3dd60ef97437d3de29",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -5108,7 +5108,7 @@
     {
       "entry": "workos",
       "package": "@executor.sh/workos",
-      "sourceSha256": "d72d62a967b92011c2d18aff151890af9cc4cad694e6ccedc213073015d40793",
+      "sourceSha256": "b4923781454c96493cf299be39f1686777251d72375bcddcd0705bd3274ea4b5",
       "methods": {
         "oauth": {
           "kind": "automatic",
