@@ -47,9 +47,9 @@ export const verifyRefusedGrant = ({
             .waitFor();
         } else {
           await page.getByText("Not granted", { exact: true }).waitFor();
-          await page.getByText(refusedScope, { exact: true }).waitFor();
+          await page.getByText("Not granted", {exact: true}).locator("..").getByText(refusedScope, { exact: true }).waitFor();
         }
-        await page.getByRole("link", { name: "Return to Accounts", exact: true }).waitFor();
+        await page.getByRole("link", { name: "Back to app", exact: true }).waitFor();
         await page.getByText("Access details", { exact: true }).click();
         const detail = page
           .locator("details")
