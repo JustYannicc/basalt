@@ -1197,3 +1197,39 @@ index e20b0637..5417194a 100644
    const row = appAccountRow(app, account, data.accountRow);
    const traffic = data.accountTraffic?.(account);
    const hostProvisioned = !automatic && provisionedMethod(requirement, account);
+diff --git a/e2e/tests/app-accounts-tab.spec.ts b/e2e/tests/app-accounts-tab.spec.ts
+index 86400ba..44e3c4e 100644
+--- a/e2e/tests/app-accounts-tab.spec.ts
++++ b/e2e/tests/app-accounts-tab.spec.ts
+@@ -498,6 +498,13 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) =>
+             .getByRole("radio", { name: choiceName("Backup Datadog"), checked: true, exact: true })
+             .waitFor(),
+         );
++        // Until the requirement's choices and connection policy are read only the linked account shows;
++        // the unlinked one appears once both have answered.
++        yield* browser.use("Team Datadog is offered", (page) =>
++          datadogSection(page)
++            .getByRole("radio", { name: choiceName("Team Datadog"), checked: false, exact: true })
++            .waitFor(),
++        );
+         expect(
+           yield* browser.use("Read the App accounts controls", (page) =>
+             Promise.all([
+diff --git a/e2e/tests/local-app-accounts-tab.spec.ts b/e2e/tests/local-app-accounts-tab.spec.ts
+index 529fcc8..2d601c2 100644
+--- a/e2e/tests/local-app-accounts-tab.spec.ts
++++ b/e2e/tests/local-app-accounts-tab.spec.ts
+@@ -117,6 +117,13 @@ layer(TestLive, { excludeTestServices: true })("Local Accounts tab", (it) => {
+             .getByRole("radio", { name: choiceName("Backup Datadog"), checked: true, exact: true })
+             .waitFor(),
+         );
++        // Until the requirement's choices and connection policy are read only the linked account shows;
++        // the unlinked one appears once both have answered.
++        yield* browser.use("Team Datadog is offered", (page) =>
++          datadogSection(page)
++            .getByRole("radio", { name: choiceName("Team Datadog"), checked: false, exact: true })
++            .waitFor(),
++        );
+         expect(
+           yield* browser.use("Read the Accounts tab's controls", (page) =>
+             Promise.all([
