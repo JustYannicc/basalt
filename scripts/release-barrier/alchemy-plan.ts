@@ -16,6 +16,7 @@ import * as Retry from "@distilled.cloud/cloudflare/Retry";
 import { BarrierRefusal } from "./manifest.ts";
 import { admitSourceNamespace, commandPhase, supportedCommand } from "./commands.ts";
 import { cloudflareArtifactsApi } from "../ensure-artifacts.ts";
+import { changedProps } from "./prop-diff.ts";
 
 const workerType = "Cloudflare.Worker";
 const existing = (node: Plan.Apply) =>
@@ -48,7 +49,12 @@ export function assertSupportedPlan(plan: Plan.Plan) {
       node.action !== "noop"
     ) {
       // Returning an old image/application attribute would freeze the wrong PoolWorker input.
-      refuse("unsupported-resource-update", fqn);
+      const recorded = node.state?.status === "updating" ? node.state.old.props : node.state?.props;
+      throw new BarrierRefusal("unsupported-resource-update", fqn, {
+        fqn,
+        type: node.resource.Type,
+        changed: changedProps(recorded, node.resource.Props),
+      });
     }
     if (node.resource.Type === "Command.Exec" && !supportedCommand(node.resource.LogicalId))
       refuse("unsupported-command", fqn);
