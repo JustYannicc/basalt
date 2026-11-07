@@ -1,0 +1,9 @@
+{
+  "identity": "zoho-people-oauth",
+  "file": "0403-zoho-people-oauth.patch",
+  "content_sha256": "79c5d0bcf8fc4bcc6e06bbdb24129b0a086aa22250c7f3def86baad5abe7206c",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

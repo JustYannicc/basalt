@@ -59,6 +59,7 @@ const sources = new Set([
   "slack-health.mjs",
   "catalog-compat.mjs",
   "elevenlabs-discovery.mjs",
+  "zoho-people.mjs",
 ]);
 const count = (value) => Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000;
 
