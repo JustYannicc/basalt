@@ -410,11 +410,12 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     }
     if (isControlPath(pathname)) {
       try {
-        await requirePoolUse(request, {
+        const claims = await requirePoolUse(request, {
           signingKey: this.env.POOL_APP_SIGNING_KEY,
           previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
           permissions: (pool, user) => this.computers.permissions(pool, user),
         });
+        if (claims) await this.memberships.ensure(claims.pool, claims.organization);
       } catch (error) {
         return failureResponse(error);
       }
