@@ -15,6 +15,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
+import { fixturePhases } from "./upstream-fixture-phases.ts";
+import { fixtureInventory } from "./upstream-fixture-inventory.ts";
 
 function output(child: ReturnType<typeof spawn>) {
   const messages: Record<string, unknown>[] = [];
@@ -38,7 +40,9 @@ test(
   "an installer surviving its parent cannot overwrite a newly published generation",
   { timeout: 15_000 },
   async (t) => {
+    const phase = fixturePhases(t, "upstream-install-recovery");
     const directory = mkdtempSync(join(tmpdir(), "basalt-orphan-install-"));
+    const inventory = fixtureInventory(t, directory);
     const processes: number[] = [];
     t.after(() => {
       for (const pid of processes) {
@@ -96,6 +100,7 @@ console.log(JSON.stringify({type:"install-finished",name}));
     const root = (name: string) => {
       const path = join(directory, name);
       mkdirSync(path);
+      inventory.checkout(path);
       writeFileSync(
         join(path, "package.json"),
         JSON.stringify({ name: "fixture", dependencies: { "fixture-package": "1.0.0" } }),
@@ -128,24 +133,38 @@ console.log(JSON.stringify({type:"install-finished",name}));
         },
       );
       processes.push(child.pid!);
+      inventory.track(child.pid!);
       return { child, next: output(child) };
     };
     const first = prepare("orphan");
     const orphanClosed = once(first.child.stdout!, "end");
+    phase.waiting("install-started");
     const orphan = await first.next("install-started");
+    phase.reached("install-started");
     processes.push(Number(orphan.pid));
+    inventory.track(Number(orphan.pid));
     const stopped = once(first.child, "exit");
     first.child.kill("SIGKILL");
+    phase.waiting("parent-exit");
     await stopped;
+    phase.reached("parent-exit");
+    phase.waiting("installer-lease");
     const lease = JSON.parse(
       readFileSync(join(String(orphan.directory), "installer.json"), "utf8"),
     );
+    phase.reached("installer-lease");
     const installerPid = Number(lease.pid ?? lease.group);
     processes.push(installerPid);
+    inventory.track(installerPid);
     process.kill(installerPid, "SIGKILL");
     const second = prepare("replacement");
+    phase.waiting("replacement-install-started");
     const replacement = await second.next("install-started");
+    inventory.track(Number(replacement.pid));
+    phase.reached("replacement-install-started");
+    phase.waiting("prepared");
     const published = await second.next("prepared");
+    phase.reached("prepared");
     assert.equal(
       existsSync(String(orphan.directory)),
       true,
@@ -153,10 +172,17 @@ console.log(JSON.stringify({type:"install-finished",name}));
     );
     const secondExit =
       second.child.exitCode === null ? once(second.child, "exit") : Promise.resolve();
+    phase.waiting("replacement-exit");
     await secondExit;
+    phase.reached("replacement-exit");
     writeFileSync(join(directory, "release-orphan"), "release");
+    phase.waiting("install-finished");
     await first.next("install-finished");
+    phase.reached("install-finished");
+    phase.waiting("orphan-eof");
     await orphanClosed;
+    phase.reached("orphan-eof");
+    phase.waiting("collected");
     execFileSync(
       process.execPath,
       [
@@ -169,6 +195,8 @@ console.log(JSON.stringify({type:"install-finished",name}));
       ],
       { env: { ...process.env, BASALT_UPSTREAM_CACHE: join(directory, "cache") } },
     );
+    phase.reached("collected");
+    phase.waiting("replacement-bytes-verified");
     assert.equal(
       existsSync(String(orphan.directory)),
       false,
@@ -180,5 +208,7 @@ console.log(JSON.stringify({type:"install-finished",name}));
     );
     assert.equal(readFileSync(packageFile, "utf8"), "replacement");
     assert.notEqual(orphan.directory, replacement.directory);
+    phase.reached("replacement-bytes-verified");
+    phase.complete();
   },
 );
