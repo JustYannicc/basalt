@@ -86,23 +86,21 @@
   "runs": {
     "accountAppTabs": [
       "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+      "host-managed-accounts-adopted:audited-account-compatibility"
     ],
     "accountChoice": [
       "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+      "host-managed-accounts-adopted:audited-account-compatibility"
     ],
     "accountLinking": [
       "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+      "host-managed-accounts-adopted:audited-account-compatibility"
     ],
     "accountSetDeclarations": [
       "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+      "host-managed-accounts-adopted:audited-account-compatibility"
     ],
-    "accountVersion": [
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
-    ]
+    "accountVersion": ["host-managed-accounts-adopted:audited-account-compatibility"]
   },
   "inherited": [],
   "inputs": [

@@ -1,0 +1,49 @@
+{
+  "scenarios": {
+    "dashboardMainPreloadDesktop": {
+      "fixtures": "actors",
+      "title": "Cloud dashboard preloads main from the built manifest before entry execution at 1280px",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Only Cloud has a separate dynamic main module."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local loads its entry statically."
+        }
+      }
+    },
+    "dashboardMainPreloadPhone": {
+      "fixtures": "actors",
+      "title": "Cloud dashboard preloads main from the built manifest before entry execution at 390px",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Only Cloud has a separate dynamic main module."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local loads its entry statically."
+        }
+      }
+    }
+  },
+  "runs": {
+    "dashboardMainPreloadDesktop": ["declared:cloud"],
+    "dashboardMainPreloadPhone": ["declared:cloud"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/web/vite.config.ts",
+    ".upstream/apps/hosted/cloud/web/main-preload.ts",
+    ".upstream/apps/hosted/cloud/web/src/client.tsx"
+  ]
+}

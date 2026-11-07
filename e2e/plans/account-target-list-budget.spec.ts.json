@@ -1,0 +1,31 @@
+{
+  "scenarios": {
+    "accountTargetListBudget": {
+      "title": "Resource directory batches execution targets for 35 saved accounts",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Statement counting is confined to the local test host."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted resource directory owns this request contract."
+        }
+      }
+    }
+  },
+  "runs": {
+    "accountTargetListBudget": ["account-acquisition:account-usage-rows-and-cells"]
+  },
+  "inputs": [
+    ".upstream/packages/sdk/src/implementation/account-targets.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts",
+    ".upstream/apps/hosted/testing/storage-fault-fixture.ts",
+    ".upstream/e2e/support/account-target-sdk-source.ts",
+    ".upstream/e2e/tests/account-targets.spec.ts",
+    ".upstream/e2e/tests/account-target-list-budget.spec.ts"
+  ]
+}

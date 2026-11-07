@@ -13,6 +13,7 @@ if (!group?.matrix || !entry) throw new Error("Unknown declared CI run");
 const pattern = patternForGroup(id, file, root);
 const environment = { ...process.env };
 if (entry.fixture === "pool-setup") environment.BASALT_E2E_POOL_SETUP = "1";
+if (entry.fixture === "statement-batch") environment.BASALT_E2E_BATCH_STALL = "1";
 if (entry.fixture === "google-routes") {
   const { googleMapsAddition } = await import("../../src/catalog/google-maps/index.ts");
   const directory = join(root, ".generated/ci");

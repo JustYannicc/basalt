@@ -310,5 +310,10 @@
     "job": "host-managed-accounts-pool",
     "target": "self-host",
     "mode": "managed"
+  },
+  "host-managed-accounts-adopted:audited-account-compatibility": {
+    "job": "host-managed-accounts-adopted",
+    "target": "self-host",
+    "mode": "managed"
   }
 }

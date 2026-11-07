@@ -1,0 +1,16 @@
+diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
+--- a/patches/alchemy@2.0.0-beta.80.patch
++++ b/patches/alchemy@2.0.0-beta.80.patch
+@@ -5616,12 +5616,6 @@
+      });
+      // Compare the desired assets against the deployed asset-content hash.
+      //
+-@@ -4702,3 +4730,4 @@ const validateWorkerTags = (scriptName, tags, alchemyTagCount) => Effect.gen(fun
+-         }
+-     }
+- });
+-+//# sourceMappingURL=WorkerProvider.js.map
+-\ No newline at end of file
+ diff --git a/src/Cloudflare/Workers/WorkerUploadHook.ts b/src/Cloudflare/Workers/WorkerUploadHook.ts
+ new file mode 100644
+ index 000000000..94528427b

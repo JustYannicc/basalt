@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Hosted data prefetch and MCP call batches have a ten-second foreground deadline that fails with StorageError before either consumer retries its reads or dispatches author code. Request cancellation interrupts the same batch. PostgreSQL lease settling retains its bounded cancellation drain. Private prefetch fixture controls compose with accounting holds. Public MCP proofs hold a complete lifecycle leaf after SQL on self-host and withhold its awaited authority reply on Cloud, then require typed failure or cancellation, no author invocation and a fresh successful call without releasing the hold."
+    }
+  }
+}

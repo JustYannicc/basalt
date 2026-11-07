@@ -1,0 +1,33 @@
+{
+  "scenarios": {
+    "poolEmptyHome": {
+      "fixtures": "actors",
+      "title": "Empty Home pools ignore failed credentials while populated reads stay concurrent and policy is enforced",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "This fixture forwards organization authority to managed Cloud and uses its runner-owned database configuration."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no hosted organization authority."
+        }
+      }
+    }
+  },
+  "runs": {
+    "poolEmptyHome": [
+      "declared:cloud"
+    ]
+  },
+  "inputs": [
+    "src/pool/**",
+    "apps/pool/contract.ts",
+    "apps/pool/ui/freshness.tsx"
+  ],
+  "fixture": "pool-setup"
+}
