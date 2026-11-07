@@ -1,12 +1,50 @@
 {
-  "scenarios": {},
-  "runs": {},
+  "scenarios": {
+    "localMcpGrantRefusals": {
+      "title": "Local MCP names the tool, runs-as target or app a narrowed connection excludes",
+      "targets": {
+        "local": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Hosted grant restrictions are covered by liveGrantRestrictions."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Hosted grant restrictions are covered by liveGrantRestrictions."
+        }
+      }
+    },
+    "localScopedConnections": {
+      "title": "Local scoped connections limit an OAuth client to their tools and revoke it",
+      "targets": {
+        "local": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Hosted connections are covered by the hosted scoped connection scenarios."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Hosted connections are covered by the hosted scoped connection scenarios."
+        }
+      }
+    }
+  },
+  "runs": {
+    "localMcpGrantRefusals": [
+      "host-managed-accounts-local:shared-identities-and-incremental-consent"
+    ],
+    "localScopedConnections": [
+      "host-managed-accounts-local:shared-identities-and-incremental-consent"
+    ]
+  },
   "inherited": [
-    "localScopedConnections",
     "localScopedSearch",
     "localScopedLazyReach",
     "localMcpOAuthWithoutResource",
-    "localMcpGrantRefusals",
     "localMcpResumeAcrossSessions"
   ],
   "inputs": [

@@ -1,7 +1,49 @@
 {
-  "scenarios": {},
-  "runs": {},
-  "inherited": ["appAccountPicker", "appAccountOAuth"],
+  "scenarios": {
+    "appAccountOAuth": {
+      "fixtures": "actors",
+      "title": "App account sign-in starts OAuth without asking for a name and returns cancellation to the same app",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "attached"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted browser sign-in and callback recovery."
+        }
+      }
+    },
+    "appAccountPicker": {
+      "fixtures": "actors",
+      "title": "App accounts open from old setup links, link, replace and unlink in place, keep failed changes and offer to delete unused accounts",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted app account controls and organization permissions."
+        }
+      }
+    }
+  },
+  "runs": {
+    "appAccountOAuth": [
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ],
+    "appAccountPicker": [
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ]
+  },
+  "inherited": [],
   "inputs": [
     ".upstream/apps/docs/content/run/self-host.mdx",
     ".upstream/apps/hosted/cloud/src/infrastructure/product-brand.ts",

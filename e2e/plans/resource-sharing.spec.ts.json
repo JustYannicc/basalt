@@ -1,7 +1,28 @@
 {
-  "scenarios": {},
-  "runs": {},
-  "inherited": ["resourceSharing"],
+  "scenarios": {
+    "resourceSharing": {
+      "fixtures": "actors",
+      "title": "Group sharing forms retain drafts and recover stale edits on desktop and mobile",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no organization sharing policy."
+        }
+      }
+    }
+  },
+  "runs": {
+    "resourceSharing": [
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ]
+  },
   "inputs": [
     ".upstream/apps/hosted/server/src/implementation/app-accounts.ts",
     ".upstream/apps/hosted/web/src/implementation/pages/account-actions.tsx",

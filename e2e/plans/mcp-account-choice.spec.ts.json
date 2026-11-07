@@ -1,0 +1,29 @@
+{
+  "scenarios": {
+    "mcpAccountChoice": {
+      "fixtures": "actors",
+      "title": "MCP calls use the one linked account, which connecting another replaces, and refuse $accounts with AccountChoiceUnsupported before running",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local runs the same journey in its own scenario."
+        }
+      }
+    }
+  },
+  "runs": {
+    "mcpAccountChoice": [
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ]
+  },
+  "inherited": [
+    "localMcpAccountChoice"
+  ]
+}
