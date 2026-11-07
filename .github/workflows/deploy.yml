@@ -114,6 +114,8 @@ jobs:
         env:
           POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
           POOL_DEPLOYMENT_KEY: ${{ secrets.POOL_DEPLOYMENT_KEY }}
+          POOL_ACCEPTANCE_KEY: ${{ secrets.POOL_ACCEPTANCE_KEY }}
+          POOL_ACCEPTANCE_MODEL: ${{ vars.POOL_ACCEPTANCE_MODEL }}
       - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
         run: npm run prepare:upstream
       - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
@@ -144,6 +146,8 @@ jobs:
         env:
           POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
           POOL_DEPLOYMENT_KEY: ${{ secrets.POOL_DEPLOYMENT_KEY }}
+          POOL_ACCEPTANCE_KEY: ${{ secrets.POOL_ACCEPTANCE_KEY }}
+          POOL_ACCEPTANCE_MODEL: ${{ vars.POOL_ACCEPTANCE_MODEL }}
       - name: Refuse to hand off while the latest production deployment is unresolved
         if: steps.report.outputs.manual_required == 'true' && steps.report.outputs.deployable != 'true'
         run: |
