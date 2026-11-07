@@ -1,9 +1,26 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { discoverConnectionPlanProof } from "../architecture/native-stack.ts";
+import {
+  discoverConnectionPlanProof,
+  discoverPreviewConnectionProof,
+} from "../architecture/native-stack.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
+
+test("a fresh preview initializes the pool database before creating Hyperdrive", () => {
+  const proof = discoverPreviewConnectionProof(root);
+  assert.ok(proof.dependencies.includes("PoolDatabase"));
+  assert.ok(proof.dependencies.includes("PoolDatabaseBudget"));
+  assert.ok(proof.selected.includes("PoolDatabaseBranch"));
+  assert.ok(proof.selected.includes("PoolDatabaseRole"));
+  assert.equal(proof.success.succeeded, true);
+  assert.equal(proof.success.connectionWrites, 1);
+  assert.deepEqual(proof.success.commands, ["PoolDatabaseBudget", "PoolDatabase"]);
+  assert.equal(proof.failure.succeeded, false);
+  assert.equal(proof.failure.connectionWrites, 0);
+  assert.deepEqual(proof.failure.commands, ["PoolDatabaseBudget"]);
+});
 
 test("the actual production connection stays unchanged across release Command attempts", () => {
   const proof = discoverConnectionPlanProof(root);

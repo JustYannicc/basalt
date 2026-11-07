@@ -48,6 +48,7 @@ function evaluate(
     manualCron?: true;
     releaseProof?: true;
     connectionProof?: true;
+    previewConnectionProof?: true;
     connectionTarget?: "DatabaseConnection" | "PoolModelDatabaseConnection";
     connectionChange?: "origin" | "limit" | "tls" | "name";
   } = {},
@@ -69,6 +70,7 @@ function evaluate(
       NATIVE_STACK_RELEASE_PROOF: String(options.releaseProof ?? false),
       NATIVE_STACK_CONNECTION_TARGET: options.connectionTarget ?? "DatabaseConnection",
       NATIVE_STACK_CONNECTION_PROOF: String(options.connectionProof ?? false),
+      NATIVE_STACK_PREVIEW_CONNECTION_PROOF: String(options.previewConnectionProof ?? false),
       NATIVE_STACK_CONNECTION_CHANGE: options.connectionChange ?? "",
     };
     const worker = fileURLToPath(new URL("./native-stack-worker.mjs", import.meta.url));
@@ -204,6 +206,17 @@ export interface ConnectionPlanProof {
   resolvedConfigEqual: boolean | null;
   connectionWrites: number;
   commandRuns: number;
+}
+
+export function discoverPreviewConnectionProof(root: string): {
+  dependencies: string[];
+  selected: string[];
+  success: { succeeded: boolean; connectionWrites: number; commands: string[] };
+  failure: { succeeded: boolean; connectionWrites: number; commands: string[] };
+} {
+  return evaluate(root, { previewConnectionProof: true }) as ReturnType<
+    typeof discoverPreviewConnectionProof
+  >;
 }
 
 export function discoverConnectionPlanProof(
