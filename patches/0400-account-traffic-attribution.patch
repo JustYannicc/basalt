@@ -2656,7 +2656,7 @@ diff --git a/packages/apps/src/contracts/protocols/34.ts b/packages/apps/src/con
 new file mode 100644
 --- /dev/null
 +++ b/packages/apps/src/contracts/protocols/34.ts
-@@ -0,0 +1,707 @@
+@@ -0,0 +1,708 @@
 +import {
 +  AppCallCommand,
 +  AppCallReply,
@@ -2700,7 +2700,8 @@ new file mode 100644
 +} from "../elicitation.ts";
 +import { DeclaredEvents, EmittedEvents } from "../events.ts";
 +import { FailureDetail, UpstreamError } from "../failure.ts";
-+import { AccountCheckResult, OAuth2Config } from "../provider.ts";
++import { AccountCheckResult } from "../provider.ts";
++import { OAuth2Config } from "./oauth-34.ts";
 +import { ProviderError } from "../provider-error.ts";
 +import { RouterIcon } from "../router.ts";
 +import { AppIcons } from "../icons.ts";
@@ -3387,6 +3388,169 @@ diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/sr
  ]);
  /** Parsed response envelope. */
  export type HostResponse = typeof HostResponse.Type;
+diff --git a/packages/apps/src/contracts/protocols/oauth-34.ts b/packages/apps/src/contracts/protocols/oauth-34.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/apps/src/contracts/protocols/oauth-34.ts
+@@ -0,0 +1,158 @@
++/** OAuth declaration shape frozen for host protocol 34; later fields belong to a later protocol. */
++import { Schema } from "effect";
++
++const HttpUrl = Schema.String.check(
++  Schema.makeFilter((value) => {
++    try {
++      const url = new URL(value);
++      return url.protocol === "https:" || url.protocol === "http:";
++    } catch {
++      return false;
++    }
++  }),
++);
++
++const OAuthClientAuth = Schema.Literals([
++  "none",
++  "client_secret_post",
++  "client_secret_basic",
++  "client_secret_basic_raw",
++]);
++
++export type OAuth2Config = typeof OAuth2Config.Type;
++const OAuthSecretClientAuth = Schema.Literals([
++  "client_secret_post",
++  "client_secret_basic",
++  "client_secret_basic_raw",
++]);
++
++const reservedAuthorizationParams = [
++  "response_type",
++  "client_id",
++  "redirect_uri",
++  "state",
++  "scope",
++  "code_challenge",
++  "code_challenge_method",
++  "nonce",
++  "resource",
++  "request",
++  "request_uri",
++] as const;
++const reserved: ReadonlySet<string> = new Set(reservedAuthorizationParams);
++
++const OAuthAuthorizationParams = Schema.Record(Schema.String, Schema.String).check(
++  Schema.makeFilter((params) => Object.keys(params).every((key) => !reserved.has(key)), {
++    message: "Authorization parameters cannot replace protocol parameters such as state or scope.",
++  }),
++);
++
++const declaredAuthorizationQuery = Schema.makeFilter(
++  (config: {
++    readonly authorizationUrl: string;
++    readonly authorizationParams?: Readonly<Record<string, string>>;
++  }) => {
++    const keys = [...new URL(config.authorizationUrl).searchParams.keys()];
++    const owned = keys.filter((key) => reserved.has(key));
++    if (owned.length > 0)
++      return {
++        path: ["authorizationUrl"],
++        issue: `authorizationUrl cannot set protocol parameters: ${owned.join(", ")}.`,
++      };
++    const repeated = keys.filter((key) => Object.hasOwn(config.authorizationParams ?? {}, key));
++    if (repeated.length > 0)
++      return {
++        path: ["authorizationParams"],
++        issue: `Declare each parameter once; authorizationUrl already sets: ${repeated.join(", ")}.`,
++      };
++    return undefined;
++  },
++);
++
++const OAuthTokenRequestFormat = Schema.Literals(["form", "json"]);
++const OAuthTokenResponse = Schema.Struct({
++  path: Schema.String.check(Schema.isPattern(/^[^.]+(\.[^.]+)*$/)),
++  requiredOnExchange: Schema.optionalKey(Schema.Boolean),
++});
++
++const tokenRequestOptions = {
++  scopeSeparator: Schema.optionalKey(Schema.String.check(Schema.isMinLength(1))),
++  tokenRequestFormat: Schema.optionalKey(OAuthTokenRequestFormat),
++};
++const oauthOptions = {
++  /** A provider-required browser callback; the cloud completes the pasted URL. */
++  loopbackRedirectUri: Schema.optionalKey(
++    Schema.String.check(
++      Schema.makeFilter((value) => {
++        try {
++          const url = new URL(value);
++          return (
++            url.protocol === "http:" &&
++            ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) &&
++            url.port !== "" &&
++            url.username === "" &&
++            url.password === "" &&
++            url.search === "" &&
++            url.hash === ""
++          );
++        } catch {
++          return false;
++        }
++      }),
++    ),
++  ),
++  ...tokenRequestOptions,
++  tokenResponse: Schema.optionalKey(OAuthTokenResponse),
++  grant: Schema.optionalKey(Schema.Literal("authorization_code")),
++  authorizationParams: Schema.optionalKey(OAuthAuthorizationParams),
++  tokenEndpointAuthMethod: Schema.optionalKey(OAuthClientAuth),
++  confidentialTokenEndpointAuthMethod: Schema.optionalKey(OAuthSecretClientAuth),
++  resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
++  identity: Schema.optionalKey(Schema.Struct({ issuer: HttpUrl, name: Schema.NonEmptyString })),
++};
++
++export const OAuth2Config = Schema.Union([
++  Schema.Struct({
++    ...oauthOptions,
++    discover: HttpUrl,
++    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
++    authorizationUrl: Schema.optionalKey(Schema.Never),
++    tokenUrl: Schema.optionalKey(Schema.Never),
++    revocationUrl: Schema.optionalKey(Schema.Never),
++    scopes: Schema.optionalKey(Schema.Array(Schema.String)),
++  }),
++  Schema.Struct({
++    ...oauthOptions,
++    authorizationUrl: HttpUrl,
++    tokenUrl: HttpUrl,
++    revocationUrl: Schema.optionalKey(HttpUrl),
++    scopes: Schema.Array(Schema.String),
++    issuer: Schema.optionalKey(HttpUrl),
++    discover: Schema.optionalKey(Schema.Never),
++    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
++  }).check(declaredAuthorizationQuery),
++  Schema.Struct({
++    grant: Schema.Literal("client_credentials"),
++    discover: HttpUrl,
++    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
++    authorizationUrl: Schema.optionalKey(Schema.Never),
++    tokenUrl: Schema.optionalKey(Schema.Never),
++    revocationUrl: Schema.optionalKey(Schema.Never),
++    scopes: Schema.optionalKey(Schema.Array(Schema.String)),
++    ...tokenRequestOptions,
++    tokenEndpointAuthMethod: OAuthSecretClientAuth,
++    resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
++  }),
++  Schema.Struct({
++    grant: Schema.Literal("client_credentials"),
++    tokenUrl: HttpUrl,
++    revocationUrl: Schema.optionalKey(HttpUrl),
++    scopes: Schema.Array(Schema.String),
++    ...tokenRequestOptions,
++    tokenEndpointAuthMethod: OAuthSecretClientAuth,
++    resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
++    authorizationUrl: Schema.optionalKey(Schema.Never),
++    discover: Schema.optionalKey(Schema.Never),
++    authorizationServerMetadataUrl: Schema.optionalKey(Schema.Never),
++  }),
++]);
 diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/src/contracts/protocols/released.ts
 --- a/packages/apps/src/contracts/protocols/released.ts
 +++ b/packages/apps/src/contracts/protocols/released.ts
