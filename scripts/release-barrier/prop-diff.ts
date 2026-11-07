@@ -10,11 +10,12 @@ export interface ResourceDelta {
   fqn: string;
   type: string;
   changed: PropChange[];
+  why?: string[];
 }
 
 const privatePath = /env|secret|binding|credential|password|token|authorization|cookie|key/i;
 const publicField =
-  /^(?:hash|digest|image|imageRef|version|instanceType|instance_type|count|size|name|maxInstances|max_instances|vcpu|memory|memory_mib|disk|percentage|replicas|bytes)$/i;
+  /^(?:hash|digest|image|imageRef|version|instanceType|instance_type|instances|count|size|name|maxInstances|max_instances|vcpu|memory|memory_mib|disk|percentage|replicas|bytes)$/i;
 const record = (value: unknown): value is Record<string, unknown> =>
   value !== null &&
   typeof value === "object" &&
@@ -59,6 +60,17 @@ function pathKey(key: string, parents: string[]) {
     return "[changed]";
   return key;
 }
+
+export const publicPropPath = (keys: string[]) =>
+  keys
+    .map((key, index) =>
+      keys[0] === "bindings" &&
+      ((index === 1 && /^[0-9]+$/u.test(key)) ||
+        ["data", "durableObjects", "namespaceId"].includes(key))
+        ? key
+        : pathKey(key, keys.slice(0, index)),
+    )
+    .join(".");
 
 function publicScalar(value: unknown, keys: string[]): Scalar | undefined {
   if (value == null) return null;

@@ -1,50 +1,36 @@
+import type { ContainerHealth } from "./container-health.ts";
 import { Schema } from "effect";
 import { BarrierRefusal, canonical, digest } from "./manifest.ts";
+import {
+  readRecoveryManifest,
+  recoveryReceipt,
+  type readRecoveryProgress,
+  type RecoveryWorker,
+  type RecoveryManifest,
+  type RecoveryAdmission,
+} from "./recovery-manifest.ts";
+export { readRecoveryManifest, type RecoveryWorker } from "./recovery-manifest.ts";
 
-const baseline = Schema.Array(
-  Schema.Struct({ versionId: Schema.String, percentage: Schema.Number }),
-);
-const worker = Schema.Struct({
-  id: Schema.String,
-  target: Schema.String,
-  metadata: Schema.String,
-  sourceMetadata: Schema.optional(Schema.String),
-  files: Schema.Array(
-    Schema.Struct({
-      name: Schema.String,
-      type: Schema.String,
-      bytes: Schema.Number,
-      sha256: Schema.String,
-    }),
-  ),
-  baseline,
-});
-const description = Schema.Struct({
-  candidate: Schema.String,
-  stack: Schema.String,
-  stage: Schema.String,
-  workers: Schema.Array(worker),
-});
-const receipt = Schema.Struct({
-  schemaVersion: Schema.Literal(1),
-  candidate: Schema.String,
-  manifest: Schema.String,
-  accepted: Schema.Array(
-    Schema.Struct({
-      worker: Schema.String,
-      versionId: Schema.String,
-      startupTimeMs: Schema.Number,
-    }),
-  ),
-});
-export const readRecoveryManifest = Schema.decodeUnknownSync(description);
-export type RecoveryWorker = typeof worker.Type;
 export interface RecoveryReceipt {
   candidate: string;
   manifest: string;
   restored: string[];
   pending?: string;
   failure?: string;
+  containers?: {
+    container: string;
+    version: number;
+    rolloutId?: string;
+    verified?: boolean;
+    promoted?: boolean;
+    health?: ContainerHealth;
+  }[];
+  pendingContainer?: {
+    container: string;
+    phase: "rollout" | "advance" | "verification";
+    version?: number;
+    rolloutId?: string;
+  };
 }
 export interface RecoveryProvider {
   read(worker: RecoveryWorker): Promise<{ target: string; versions: RecoveryWorker["baseline"] }>;
@@ -57,9 +43,17 @@ export async function recoverWorkers(
   receiptValue: unknown,
   provider: RecoveryProvider,
   record: (receipt: RecoveryReceipt) => Promise<void>,
+  beforeRestore?: (
+    manifest: RecoveryManifest,
+    admitted: RecoveryAdmission,
+    progress: RecoveryReceipt,
+    save: () => Promise<void>,
+    deployments: ReadonlyMap<string, "baseline" | "candidate">,
+  ) => Promise<void>,
+  previous?: ReturnType<typeof readRecoveryProgress>,
 ) {
   const manifest = readRecoveryManifest(manifestValue);
-  const admitted = Schema.decodeUnknownSync(receipt)(receiptValue);
+  const admitted = Schema.decodeUnknownSync(recoveryReceipt)(receiptValue);
   const fingerprint = digest(canonical(manifest));
   if (
     fingerprint !== admitted.manifest ||
@@ -68,15 +62,24 @@ export async function recoverWorkers(
     new Set(manifest.workers.map((item) => item.id)).size !== manifest.workers.length
   )
     throw new BarrierRefusal("recovery-receipt-mismatch");
+  if ("containers" in manifest && (!beforeRestore || admitted.schemaVersion !== 2))
+    throw new BarrierRefusal("container-recovery-required");
+  if (previous && (previous.candidate !== manifest.candidate || previous.manifest !== fingerprint))
+    throw new BarrierRefusal("recovery-progress-mismatch");
   const progress: RecoveryReceipt = {
     candidate: manifest.candidate,
     manifest: fingerprint,
     restored: [],
+    ...(previous?.containers
+      ? { containers: previous.containers.map((item) => ({ ...item })) }
+      : {}),
+    ...(previous?.pendingContainer ? { pendingContainer: { ...previous.pendingContainer } } : {}),
   };
   const save = () => record(structuredClone(progress));
   try {
     await save();
     const pending: RecoveryWorker[] = [];
+    const deployments = new Map<string, "baseline" | "candidate">();
     for (const worker of manifest.workers) {
       if (
         !worker.baseline.length ||
@@ -87,7 +90,10 @@ export async function recoverWorkers(
       const current = await provider.read(worker);
       if (current.target !== worker.target)
         throw new BarrierRefusal("recovery-target-drift", worker.id);
-      if (canonical(current.versions) === canonical(worker.baseline)) continue;
+      if (canonical(current.versions) === canonical(worker.baseline)) {
+        deployments.set(worker.id, "baseline");
+        continue;
+      }
       const accepted = admitted.accepted.find((item) => item.worker === worker.id);
       if (
         !accepted ||
@@ -95,8 +101,10 @@ export async function recoverWorkers(
           canonical([{ versionId: accepted.versionId, percentage: 100 }])
       )
         throw new BarrierRefusal("recovery-deployment-drift", worker.id);
+      deployments.set(worker.id, "candidate");
       pending.push(worker);
     }
+    await beforeRestore?.(manifest, admitted, progress, save, deployments);
     for (const worker of pending.reverse()) {
       progress.pending = worker.id;
       await save();
