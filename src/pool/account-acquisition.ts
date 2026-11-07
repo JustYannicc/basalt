@@ -1,9 +1,10 @@
 import { removeHomeAccount, type AcknowledgedRemoval } from "./account-acquisition-removal.ts";
 import { acquisitionReceipt, acquisitionStep } from "./account-acquisition-failure.ts";
+import { signInFailure, submitAccountCallback } from "./account-acquisition-callback.ts";
 import { callbackOrigin } from "./account-acquisition-urls.ts";
 import providers from "./providers.json" with { type: "json" };
 import type { HomeClient } from "./control.ts";
-import { object, post, rows, text, unavailable } from "./json.ts";
+import { object, rows, text, unavailable } from "./json.ts";
 import { acquisitionAssertion } from "./account-acquisition-assertion.ts";
 import { homeReference, homeReferences } from "./home-references.ts";
 
@@ -142,6 +143,9 @@ export class HomeAccountAcquisitions {
           return started;
         });
         attempt.state = String(started.state);
+        const expiresIn = started.expires_in;
+        if (typeof expiresIn === "number" && Number.isFinite(expiresIn) && expiresIn > 0)
+          attempt.expires = Math.min(attempt.expires, this.now() + expiresIn * 1_000);
         const callback =
           started.flow === "device"
             ? false
@@ -155,7 +159,13 @@ export class HomeAccountAcquisitions {
           url: String(started.url),
           expiresAt: attempt.expires,
           ...(code ? { code } : {}),
-          ...(callback ? { paste: { label: "Callback URL" } } : {}),
+          ...(callback
+            ? {
+                paste: {
+                  label: provider === "xai" ? "Paste the code xAI shows you" : "Callback URL",
+                },
+              }
+            : {}),
         };
         await acquisitionStep("state", () => this.storage.put(storageKey, attempts));
         return this.reply(attempt.started);
@@ -205,14 +215,13 @@ export class HomeAccountAcquisitions {
       }
       if (value.action === "submit") {
         if (!attempt.started?.paste || typeof value.value !== "string") return unavailable();
-        const callback = new URL(value.value);
-        if (callback.searchParams.get("state") !== attempt.state) return unavailable();
-        await acquisitionStep("oauth_callback", () =>
-          this.home.data("/oauth/callback", {
-            ...post({ provider: attempt.provider, redirect_url: value.value }),
-            signal: request.signal,
-          }),
-        );
+        const failed = await submitAccountCallback(this.home, {
+          provider: attempt.provider,
+          state,
+          value: value.value,
+          signal: request.signal,
+        });
+        if (failed) attempt.result = failed;
       } else if (value.action !== "status") return unavailable();
       await this.progress(attempt, attempts, request.signal);
       return this.reply(attempt.result ?? { state: "waiting" });
@@ -279,7 +288,7 @@ export class HomeAccountAcquisitions {
       );
       if (status.status === "wait") return;
       if (status.status === "error") {
-        attempt.result = { state: "failed", message: "The provider sign-in failed or expired." };
+        attempt.result = { state: "failed", message: signInFailure(attempt.provider, status) };
       } else if (status.status === "ok") {
         const ids = [
           ...new Set([
