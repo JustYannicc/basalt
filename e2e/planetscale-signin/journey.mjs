@@ -49,6 +49,21 @@ export const verifyPlanetScaleConnections = ({
       await page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`);
       await page.getByRole("region", { name: "Your accounts", exact: true }).waitFor();
     });
+    if (mode === "refused" || mode === "unreported") {
+      yield* verifyRefusedGrant({
+        browser,
+        request,
+        path,
+        prefix,
+        omitsGrantedScope,
+        refusedScope,
+        noOverflow,
+        added,
+        before: setupBefore,
+        links,
+      });
+      return;
+    }
     yield* browser.use("One connect starts with PlanetScale sign-in", async (page) => {
       const dialog = await openConnect(page);
       await dialog.getByRole("button", { name: "Sign in with PlanetScale", exact: true }).waitFor();
@@ -90,9 +105,8 @@ export const verifyPlanetScaleConnections = ({
     yield* browser.use("Own OAuth app guidance names the Client ID", async (page) => {
       const dialog = page.getByRole("dialog", { name: dialogName });
       await dialog.getByText("Advanced", { exact: true }).click();
-      await dialog
-        .getByRole("checkbox", { name: "Use your own PlanetScale app for this account" })
-        .check();
+      await dialog.getByRole("combobox", {name: "OAuth client", exact: true}).click();
+      await page.getByRole("option", {name: "Your own PlanetScale app (OAuth)", exact: true}).click();
       const link = dialog.getByRole("link", {
         name: "Open PlanetScale's OAuth app guide",
         exact: true,
@@ -111,21 +125,6 @@ export const verifyPlanetScaleConnections = ({
 
     const before = yield* links();
     assert.deepEqual(before.map((row) => row.account.id).sort(), setupBefore.map((row) => row.account.id).sort(), "Cancelling own-app setup saves no account");
-    if (mode === "refused" || mode === "unreported") {
-      yield* verifyRefusedGrant({
-        browser,
-        request,
-        path,
-        prefix,
-        omitsGrantedScope,
-        refusedScope,
-        noOverflow,
-        added,
-        before,
-        links,
-      });
-      return;
-    }
     yield* browser.use("Sign in once and approve at PlanetScale", async (page) => {
       const dialog = await openConnect(page);
       await dialog.getByRole("button", { name: "Sign in with PlanetScale", exact: true }).click();

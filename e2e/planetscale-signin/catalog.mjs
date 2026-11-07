@@ -36,7 +36,7 @@ export async function startPlanetScaleCatalog(service) {
     for (const from of origins)
       moved = moved.replaceAll(from, from.endsWith("/docs") ? `${service}/docs` : service);
     return moved.replace(
-      /hosts: \["api\.planetscale\.com", "app\.planetscale\.com", "auth\.planetscale\.com"\]/,
+      /hosts: \["api\.planetscale\.com", "app\.planetscale\.com", "auth\.planetscale\.com"\]/g,
       `hosts: [${JSON.stringify(host)}]`,
     );
   };
