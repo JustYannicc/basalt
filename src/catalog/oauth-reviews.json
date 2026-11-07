@@ -5107,6 +5107,19 @@
       }
     },
     {
+      "entry": "workos",
+      "package": "@executor.sh/workos",
+      "sourceSha256": "d72d62a967b92011c2d18aff151890af9cc4cad694e6ccedc213073015d40793",
+      "methods": {
+        "oauth": {
+          "kind": "automatic",
+          "protocol": "cimd",
+          "metadata": "https://signin.workos.com/.well-known/oauth-authorization-server",
+          "metadataSha256": "45804d0840493f0d4694fd4fd63410ea9f264f8834ff6688b6c35230dacd195b"
+        }
+      }
+    },
+    {
       "entry": "wrike",
       "package": "@executor.sh/wrike",
       "methods": {

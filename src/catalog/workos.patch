@@ -1,0 +1,103 @@
+--- a/README.md
++++ b/README.md
+@@ -1,11 +1,5 @@
+ # WorkOS
+ 
+-Organizations, User Management users and sessions, SSO connections, Directory Sync, FGA/RBAC authorization, audit logs, Admin Portal, webhooks and more on WorkOS.
++Sign in through WorkOS’s official management MCP server at https://mcp.workos.com/mcp. Access follows the signed-in role and team settings. WorkOS excludes secret creation, impersonation and some account operations from these tools.
+ 
+-**Interface:** OpenAPI, from WorkOS's official spec repository, https://github.com/workos/openapi-spec (`spec/open-api-spec.yaml`). Only the production origin `https://api.workos.com` is used.
+-
+-**Auth:** API key (`apiKey`). Use a WorkOS API key (`sk_...`) from the WorkOS dashboard (https://dashboard.workos.com); it is sent as `Authorization: Bearer`. Use a production key: the staging server (`https://api.workos-test.com`) is excluded, so staging keys are never sent to the production origin. WorkOS has no user-created OAuth apps for its management API, so OAuth is not offered.
+-
+-**Icon:** WorkOS's official app icon (256px PNG from workos.com); Simple Icons has no WorkOS entry and no SVG is published.
+-
+-**Gaps:** The official hosted Management MCP server (`https://mcp.workos.com/mcp`) uses dashboard OAuth and was not used; the REST API has more operations. Endpoints authenticated by SSO access tokens or client IDs rather than the API key are called with the API key and may be rejected. About 33 of the spec's operations carry an `x-feature-flag` (beta endpoints, e.g. `agent-blueprints-public-api`); they are included and may return errors for accounts without the flag. Every mutation requires approval.
++The separate API-key connection retains the existing WorkOS REST API and all saved accounts. Get an environment key from https://dashboard.workos.com/api-keys. Every mutation requires approval on both transports.
+--- a/index.ts
++++ b/index.ts
+@@ -13,6 +13,7 @@
+ import { liveOpenapiRouter } from "apps/openapi";
+ import { icons } from "./icon.js";
+ import { options } from "./openapi.js";
++import { workosSignIn, signedInRouter } from "./mcp.js";
+ 
+ const workos = defineProvider({
+   name: "WorkOS",
+@@ -33,21 +34,29 @@
+ });
+ 
+ export default defineApp(
+-  { user: { accounts: { workos: workos.many() } }, icons },
++  { user: { accounts: { signIn: workosSignIn.many(), workos: workos.many() } }, icons },
+   async ({ user, cache, fetch, signal }) => ({
+     tools: router(
+       await accountRouter(
+-        user?.accounts.workos ?? [],
+-        (account) =>
+-          withApprovals(liveOpenapiRouter({ ...options, cache, fetch, signal, account }), (tool) =>
+-            tool.kind === "mutation" ? always() : undefined,
+-          ),
++        [
++          ...(user?.accounts.workos ?? []).map((account) => ({
++            id: account.id,
++            discover: () => withApprovals(
++              liveOpenapiRouter({ ...options, cache, fetch, signal, account }),
++              (tool) => tool.kind === "mutation" ? always() : undefined,
++            ),
++          })),
++          ...(user?.accounts.signIn ?? []).map((account) => ({
++            id: account.id,
++            discover: () => signedInRouter(account, { cache, signal }),
++          })),
++        ],
++        (account) => account.discover(),
+         { signal },
+       ),
+       {
+         title: "WorkOS",
+-        description:
+-          "Manage WorkOS organizations, users, SSO connections, directory sync, authorization, audit logs and more.",
++        description: "Manage WorkOS organizations, users, SSO connections, directory sync, authorization, audit logs and more.",
+         icons,
+       },
+     ),
+--- a/package.json
++++ b/package.json
+@@ -4,7 +4,8 @@
+   "private": true,
+   "type": "module",
+   "dependencies": {
+-    "apps": "0.0.1-beta.104-basalt.9"
++    "apps": "0.0.1-beta.104-basalt.10",
++    "@modelcontextprotocol/sdk": "1.32.1"
+   },
+   "executor": {
+     "title": "WorkOS"
+--- /dev/null
++++ b/mcp.ts
+@@ -0,0 +1,24 @@
++import { defineProvider, oauth2, withApprovals, type AccountOf, type AppCache } from "apps";
++import { mcpHealth, mcpRouter } from "apps/mcp";
++import { always } from "apps/operations/approval";
++
++const url = "https://mcp.workos.com/mcp";
++const headers = (account: { fields: { access_token: string } }) => ({
++  Authorization: `Bearer ${account.fields.access_token}`,
++});
++
++// A separate provider preserves existing API-key accounts and their links.
++export const workosSignIn = defineProvider({
++  name: "WorkOS",
++  hosts: ["mcp.workos.com"],
++  auth: { oauth: oauth2({ discover: url }) },
++  health: (check) => mcpHealth(check, { url, headers: headers(check.account) }),
++});
++
++export const signedInRouter = async (
++  account: AccountOf<typeof workosSignIn>,
++  context: { cache: AppCache; signal: AbortSignal },
++) => withApprovals(
++  await mcpRouter({ url, account, headers: headers(account), ...context }),
++  (tool) => tool.kind === "mutation" ? always() : undefined,
++);

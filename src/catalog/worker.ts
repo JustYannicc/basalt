@@ -18,6 +18,7 @@ import { aws } from "./aws/index.ts";
 import { zendeskAddition } from "./zendesk/source.ts";
 import { zendeskMarketplaceMetadata, type ZendeskMarketplaceMetadata } from "./zendesk/metadata.ts";
 import { googleMapsAddition } from "./google-maps/index.ts";
+import { workosSource, withWorkOSSignIn } from "./workos.ts";
 
 // AWS source stays in the catalog until maintainers identify a maintained destination.
 const sourceAdditions: readonly Addition[] = [aws, gitlabMcp, ...providerApps];
@@ -92,6 +93,11 @@ export async function handleCatalog(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(notionSource)),
       { headers },
     );
+  if (relative === "apps/workos.json")
+    return new Response(
+      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(workosSource)),
+      { headers },
+    );
   const added = additions.find(
     (item) => relative === `apps/${encodeURIComponent(item.entry.id)}.json`,
   );
@@ -121,10 +127,12 @@ export async function handleCatalog(
     if (!response.ok || response.status !== 200) return unavailable();
     let body: string;
     if (relative === "index.json") {
-      const upstream = withElevenLabsSignIn(
-        withVercelSignIn(
-          withMiroCapabilities(
-            withSlackUserAuth(withGitLabInstances((await response.json()) as Feed)),
+      const upstream = withWorkOSSignIn(
+        withElevenLabsSignIn(
+          withVercelSignIn(
+            withMiroCapabilities(
+              withSlackUserAuth(withGitLabInstances((await response.json()) as Feed)),
+            ),
           ),
         ),
       );
