@@ -97,7 +97,7 @@ try {
       ? await import("../release-barrier/connection-proof.mjs")
       : undefined;
   const containerProof = process.env.NATIVE_STACK_CONTAINER_PROOF
-    ? await import("../release-barrier/container-stack-proof.mjs")
+    ? await import("../release-barrier/test/container-stack-proof.mjs")
     : undefined;
   const inspect = containerProof
     ? (stack) =>

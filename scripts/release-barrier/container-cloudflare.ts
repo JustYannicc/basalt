@@ -260,7 +260,11 @@ export const rolloutRestoredContainer = (container: FrozenContainer) =>
     description: "Recorded container recovery",
   }).pipe(Retry.none, Effect.map(decodeContainerRollout));
 
-export const verifyRestoredContainer = (container: FrozenContainer, worker: PoolOperationsTarget) =>
+export const verifyRestoredContainer = (
+  container: FrozenContainer,
+  worker: PoolOperationsTarget,
+  workerImageHash: string,
+) =>
   Effect.gen(function* () {
     const token = yield* Config.Redacted("CLOUDFLARE_API_TOKEN");
     return yield* Effect.tryPromise({
@@ -275,7 +279,7 @@ export const verifyRestoredContainer = (container: FrozenContainer, worker: Pool
           `https://${brand.host}`,
           fetch,
           {},
-          (signal) => verifyContainerHealth(worker, container.inputHash, signal),
+          (signal) => verifyContainerHealth(worker, workerImageHash, signal),
         );
         if (!health) throw new BarrierRefusal("container-recovery-runtime-unhealthy");
         return health;

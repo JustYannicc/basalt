@@ -150,7 +150,7 @@ export const recoverStack = (
           },
           record,
           containerRecovery
-            ? (manifest, admitted, progress, save) =>
+            ? (manifest, admitted, progress, save, deployments) =>
                 recoverContainers(
                   manifest,
                   admitted,
@@ -173,13 +173,21 @@ export const recoverStack = (
                         ),
                       verify: (container) => {
                         const poolWorker = targets.get("PoolWorker");
-                        if (!poolWorker) throw new BarrierRefusal("missing-pool-recovery-target");
+                        const deployment = deployments.get("PoolWorker");
+                        if (!poolWorker || !deployment)
+                          throw new BarrierRefusal("missing-pool-recovery-target");
                         return run(
-                          verifyRestoredContainer(container, {
-                            worker: poolWorker.scriptName,
-                            accountId: poolWorker.accountId,
-                            connect: containerRecovery.connect,
-                          }),
+                          verifyRestoredContainer(
+                            container,
+                            {
+                              worker: poolWorker.scriptName,
+                              accountId: poolWorker.accountId,
+                              connect: containerRecovery.connect,
+                            },
+                            deployment === "baseline"
+                              ? container.baselineInputHash
+                              : container.inputHash,
+                          ),
                         );
                       },
                     },

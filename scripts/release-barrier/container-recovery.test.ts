@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { releaseWorkers } from "./barrier.ts";
-import { containerRelease } from "./container-fixture.ts";
+import { containerRelease } from "./test/container-fixture.ts";
 import { recoverWorkers, type RecoveryReceipt, type RecoveryProvider } from "./recovery.ts";
 import { recoverContainers, type ContainerRecoveryOptions } from "./container-recovery.ts";
 

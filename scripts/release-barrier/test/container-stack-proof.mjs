@@ -11,21 +11,21 @@ import * as Provider from "alchemy/Provider";
 import { Resource } from "alchemy/Resource";
 import { State } from "alchemy/State/State";
 import { InMemoryService } from "alchemy/State/InMemoryState";
-import { ContainerPlatform } from "../../node_modules/alchemy/src/Cloudflare/Containers/ContainerPlatform.ts";
-import { LiveContainerProvider } from "../../node_modules/alchemy/src/Cloudflare/Containers/ContainerProvider.ts";
+import { ContainerPlatform } from "../../../node_modules/alchemy/src/Cloudflare/Containers/ContainerPlatform.ts";
+import { LiveContainerProvider } from "../../../node_modules/alchemy/src/Cloudflare/Containers/ContainerProvider.ts";
 import { WorkerUploadHook } from "alchemy/Cloudflare/Workers/WorkerUploadHook";
 import { Effect, Exit, Layer, Option, Redacted } from "effect";
 import * as HttpClient from "effect/http/HttpClient";
 import { Credentials } from "@distilled.cloud/cloudflare/Credentials";
 import { CloudflareEnvironment } from "alchemy/Cloudflare";
 import { Docker } from "alchemy/Docker/Docker";
-import { attributes, preparedUpload } from "./fixture.ts";
-import { describeContainer } from "./container.ts";
-import { deployStack } from "./deploy-stack.ts";
-import { cloudflareArtifactsApi } from "../ensure-artifacts.ts";
-import { containerDriftApi, digest } from "../upstream-tests/fixtures/container-drift-api.mjs";
+import { attributes, preparedUpload } from "../fixture.ts";
+import { describeContainer } from "../container.ts";
+import { deployStack } from "../deploy-stack.ts";
+import { cloudflareArtifactsApi } from "../../ensure-artifacts.ts";
+import { containerDriftApi, digest } from "../../upstream-tests/fixtures/container-drift-api.mjs";
 
-const root = fileURLToPath(new URL("../../", import.meta.url));
+const root = fileURLToPath(new URL("../../../", import.meta.url));
 const production = "a637b6ded731907c631794086598b3068220886e";
 const without631 = "a7b1b47e1b83d2c9fff1b6e51e6844f202c6a634";
 const imageCandidate = "2f2fad5e1050ffa2a51b5761315fcf8fab4a43dd";
@@ -95,6 +95,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
     );
     let staged;
     let capturedPoolInput;
+    let baselinePoolInput;
     const namespaces = Object.fromEntries(
       Object.values(stack.resources)
         .filter((resource) => resource.Type === "Cloudflare.Worker")
@@ -158,10 +159,21 @@ export const proveContainerStack = (source, recompile, scenario) =>
           Effect.gen(function* () {
             const result = workerAttributes(input.id);
             const hook = yield* Effect.serviceOption(WorkerUploadHook);
-            if (Option.isNone(hook)) return result;
+            if (Option.isNone(hook)) {
+              if (input.id === "PoolWorker") baselinePoolInput = input.news.env.POOL_IMAGE_HASH;
+              return result;
+            }
             const upload = preparedUpload(input.id);
             if (input.id === "PoolWorker") {
               capturedPoolInput = input.news.env.POOL_IMAGE_HASH;
+              upload.previousSettings.bindings.push({
+                name: "POOL_IMAGE_HASH",
+                type: "plain_text",
+                text:
+                  scenario === "baseline-worker-input-drift"
+                    ? "foreign-input-hash"
+                    : baselinePoolInput,
+              });
               upload.request.metadata.bindings.push({
                 name: "POOL_IMAGE_HASH",
                 type: "plain_text",
@@ -346,10 +358,9 @@ export const proveContainerStack = (source, recompile, scenario) =>
           "publication survives later preparation or admission failure",
         );
         assert.equal(publications[0].inputHash, staged.proposed.hash.image);
-        assert.ok(
-          events.indexOf("image:retained") <
-            events.findIndex((event) => event.startsWith("admit:")),
-        );
+        const firstAdmission = events.findIndex((event) => event.startsWith("admit:"));
+        assert.ok(events.indexOf("image:retained") >= 0);
+        if (firstAdmission >= 0) assert.ok(events.indexOf("image:retained") < firstAdmission);
         if (scenario === "native-state-drift") {
           assert.ok(events.includes("native:drift"));
           assert.equal(receipts.at(-1).failure.reason, "alchemy-state-drift");

@@ -11,7 +11,11 @@ import { cloudflareArtifactsApi } from "../ensure-artifacts.ts";
 import { verifyNativeState } from "./native-state.ts";
 import type { FrozenContainer } from "./container.ts";
 import { freezeUpload } from "./version-request.ts";
-import { inspectContainer, type ContainerAttributes } from "./container.ts";
+import {
+  assertBaselineWorkerInput,
+  inspectContainer,
+  type ContainerAttributes,
+} from "./container.ts";
 import {
   observeContainer,
   decodeContainerRollout,
@@ -45,6 +49,8 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
       options.io?.container,
       options.publication,
     );
+    for (const { frozen } of prepared.containers.values())
+      assertBaselineWorkerInput(frozen, prepared.captured.get("PoolWorker")?.previousSettings);
     const context = yield* Effect.context<Services>();
     const run = <A, E>(effect: Effect.Effect<A, E, Services>) =>
       Effect.runPromise(effect.pipe(Effect.provideContext(context)));

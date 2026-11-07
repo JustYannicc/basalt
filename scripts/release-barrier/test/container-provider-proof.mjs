@@ -19,13 +19,13 @@ import {
   containerDriftApi,
   digest,
   image,
-} from "../upstream-tests/fixtures/container-drift-api.mjs";
+} from "../../upstream-tests/fixtures/container-drift-api.mjs";
 
 const tree = process.argv[2];
 const load = (name) =>
   import(
     new URL(
-      `../../node_modules/alchemy/${tree}/${name}.${tree === "src" ? "ts" : "js"}`,
+      `../../../node_modules/alchemy/${tree}/${name}.${tree === "src" ? "ts" : "js"}`,
       import.meta.url,
     )
   );

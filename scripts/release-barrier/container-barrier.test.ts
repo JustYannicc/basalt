@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { releaseWorkers } from "./barrier.ts";
-import { containerRelease } from "./container-fixture.ts";
+import { containerRelease } from "./test/container-fixture.ts";
 
 test("all image and Worker admissions precede database work and every activation", async () => {
   const proof = containerRelease();

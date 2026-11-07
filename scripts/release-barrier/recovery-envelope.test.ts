@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { releaseEvidence } from "./evidence.ts";
 import { openRecovery, sealRecovery } from "./recovery-envelope.ts";
-import { containerRelease } from "./container-fixture.ts";
+import { containerRelease } from "./test/container-fixture.ts";
 import { manifestDigest } from "./manifest.ts";
 
 test("retained recovery ciphertext binds the candidate, complete manifest and deployment key", () => {

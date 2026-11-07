@@ -1,9 +1,9 @@
 import type { PreparedContainerPublication } from "alchemy/Cloudflare/Containers/ContainerPublicationHook";
 import { Effect } from "effect";
-import type { BarrierReceipt, ContainerVersionProvider, VersionProvider } from "./barrier.ts";
-import { containerSnapshot, type ContainerAttributes, type FrozenContainer } from "./container.ts";
-import { describeWorker, type ReleaseManifest } from "./manifest.ts";
-import { describeContainer } from "./container.ts";
+import type { BarrierReceipt, ContainerVersionProvider, VersionProvider } from "../barrier.ts";
+import { containerSnapshot, type ContainerAttributes, type FrozenContainer } from "../container.ts";
+import { describeWorker, type ReleaseManifest } from "../manifest.ts";
+import { describeContainer } from "../container.ts";
 import type { ContainerApplication } from "alchemy/Cloudflare";
 
 export const image = (value: string) =>
@@ -72,6 +72,7 @@ export function containerPublication() {
     baseline: containerSnapshot(previous),
     configuration: structuredClone(proposed.configuration),
     rolloutRequest,
+    baselineInputHash: previous.hash!.image!,
     inputHash: proposed.hash.image,
     imageDigest: metadata.digest,
     imageConfigDigest: metadata.configDigest,

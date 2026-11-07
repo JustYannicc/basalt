@@ -47,6 +47,7 @@ export async function recoverWorkers(
     admitted: RecoveryAdmission,
     progress: RecoveryReceipt,
     save: () => Promise<void>,
+    deployments: ReadonlyMap<string, "baseline" | "candidate">,
   ) => Promise<void>,
   previous?: ReturnType<typeof readRecoveryProgress>,
 ) {
@@ -77,6 +78,7 @@ export async function recoverWorkers(
   try {
     await save();
     const pending: RecoveryWorker[] = [];
+    const deployments = new Map<string, "baseline" | "candidate">();
     for (const worker of manifest.workers) {
       if (
         !worker.baseline.length ||
@@ -87,7 +89,10 @@ export async function recoverWorkers(
       const current = await provider.read(worker);
       if (current.target !== worker.target)
         throw new BarrierRefusal("recovery-target-drift", worker.id);
-      if (canonical(current.versions) === canonical(worker.baseline)) continue;
+      if (canonical(current.versions) === canonical(worker.baseline)) {
+        deployments.set(worker.id, "baseline");
+        continue;
+      }
       const accepted = admitted.accepted.find((item) => item.worker === worker.id);
       if (
         !accepted ||
@@ -95,9 +100,10 @@ export async function recoverWorkers(
           canonical([{ versionId: accepted.versionId, percentage: 100 }])
       )
         throw new BarrierRefusal("recovery-deployment-drift", worker.id);
+      deployments.set(worker.id, "candidate");
       pending.push(worker);
     }
-    await beforeRestore?.(manifest, admitted, progress, save);
+    await beforeRestore?.(manifest, admitted, progress, save, deployments);
     for (const worker of pending.reverse()) {
       progress.pending = worker.id;
       await save();

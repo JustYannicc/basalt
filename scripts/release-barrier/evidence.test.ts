@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { containerPublication } from "./container-fixture.ts";
+import { containerPublication } from "./test/container-fixture.ts";
 import { describeContainer } from "./container.ts";
 import { releaseEvidence } from "./evidence.ts";
 import { BarrierRefusal, manifestDigest, type ReleaseManifest } from "./manifest.ts";

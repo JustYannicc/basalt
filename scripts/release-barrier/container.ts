@@ -1,3 +1,4 @@
+import type { PreparedWorkerUpload } from "alchemy/Cloudflare/Workers/WorkerUploadHook";
 import type * as Containers from "@distilled.cloud/cloudflare/containers";
 import type { ContainerApplication } from "alchemy/Cloudflare";
 import {
@@ -33,6 +34,7 @@ export interface FrozenContainer {
   readonly baseline: ContainerSnapshot;
   readonly configuration: Readonly<Containers.ContainerConfiguration>;
   readonly rolloutRequest: Readonly<Containers.CreateContainerApplicationRolloutRequest>;
+  readonly baselineInputHash: string;
   readonly inputHash: string;
   readonly imageDigest: string;
   readonly imageConfigDigest: string;
@@ -70,6 +72,7 @@ export const describeContainer = (value: FrozenContainer) => ({
   baselineDigest: imageDigest(value.baseline.configuration.image),
   configuration: digest(canonical(value.configuration)),
   rollout: digest(canonical(value.rolloutRequest)),
+  baselineInputHash: value.baselineInputHash,
   inputHash: value.inputHash,
   imageDigest: value.imageDigest,
   imageConfigDigest: value.imageConfigDigest,
@@ -152,7 +155,12 @@ export function assertImageOnlyPublication(
     rolloutRequest.stepPercentage !== 100
   )
     refuse("unsupported-container-configuration-change");
-  imageDigest(previous.configuration.image);
+  const baselineDigest = imageDigest(previous.configuration.image);
+  if (
+    !/^[a-f0-9]{16}$/.test(previous.hash?.image ?? "") ||
+    previous.hash?.digest !== baselineDigest
+  )
+    refuse("container-baseline-input-unconfirmed");
   const published = imageDigest(proposed.configuration.image);
   const prefix = `registry.cloudflare.com/${previous.accountId}/`;
   if (
@@ -187,6 +195,7 @@ export const stageContainer = (
       baseline: containerSnapshot(publication.previous),
       configuration: structuredClone(publication.proposed.configuration),
       rolloutRequest: structuredClone(publication.rolloutRequest),
+      baselineInputHash: publication.previous.hash!.image!,
       inputHash: publication.proposed.hash!.image!,
       imageDigest: metadata.digest,
       imageConfigDigest: metadata.configDigest,
@@ -220,4 +229,18 @@ export function assertConfiguredContainer(current: ContainerAttributes, frozen: 
     !equalApplicationSettings(current, frozen.baseline)
   )
     throw new BarrierRefusal("container-configuration-unconfirmed", frozen.id);
+}
+
+/** Pair the saved container input with the actual baseline Worker binding, not its desired new props. */
+export function assertBaselineWorkerInput(
+  container: FrozenContainer,
+  settings: PreparedWorkerUpload["previousSettings"],
+) {
+  const hashes = settings?.bindings?.filter((binding) => binding.name === "POOL_IMAGE_HASH") ?? [];
+  if (
+    hashes.length !== 1 ||
+    hashes[0]?.type !== "plain_text" ||
+    hashes[0].text !== container.baselineInputHash
+  )
+    throw new BarrierRefusal("container-baseline-worker-input-unconfirmed", "PoolWorker");
 }

@@ -14,7 +14,7 @@ import * as HttpResponse from "effect/http/HttpClientResponse";
 import { Credentials } from "@distilled.cloud/cloudflare/Credentials";
 import { recoverStack } from "./recover-stack.ts";
 import { withReleaseRuntime } from "./runtime.ts";
-import { containerRelease } from "./container-fixture.ts";
+import { containerRelease } from "./test/container-fixture.ts";
 import { releaseWorkers } from "./barrier.ts";
 import { attributes } from "./fixture.ts";
 import { readFileSync } from "node:fs";
@@ -35,16 +35,39 @@ for (const scenario of [
   "invalid-instances",
   "unhealthy-runtime",
   "missing-runtime-health",
+  "initial-baseline-worker",
+  "interrupt-after-pool-worker",
 ] as const)
   test(`public recoverStack uses the SDK and saved container configuration: ${scenario}`, async (context) => {
     const proof = containerRelease();
-    const receipt = await releaseWorkers(proof.manifest, proof.options);
+    let receipt;
+    if (scenario === "initial-baseline-worker") {
+      const activate = proof.options.provider.activate;
+      proof.options.provider.activate = async (worker, version) => {
+        await activate(worker, version);
+        if (worker.id === "Api") throw new Error("initial activation response lost");
+      };
+      await assert.rejects(releaseWorkers(proof.manifest, proof.options));
+      receipt = proof.receipts.at(-1)!;
+    } else receipt = await releaseWorkers(proof.manifest, proof.options);
     const calls: string[] = [];
     const recoveries: RecoveryReceipt[] = [];
+    const active = new Map(
+      proof.manifest.workers.map((worker) => [
+        worker.id,
+        proof.active.get(worker.id)![0]!.versionId,
+      ]),
+    );
+    const healthHashes: string[] = [];
+    let interruptApi = scenario === "interrupt-after-pool-worker";
     const runtime = new RuntimeRecovery(
       {
         instanceId: "a".repeat(64),
-        imageHash: proof.frozen.inputHash,
+        get imageHash() {
+          return active.get("PoolWorker") === "old-PoolWorker"
+            ? proof.frozen.baselineInputHash
+            : proof.frozen.inputHash;
+        },
         running: () => true,
         status: () =>
           readRuntimeHealth(
@@ -63,20 +86,19 @@ for (const scenario of [
       },
       { get: async () => undefined, put: async () => {} },
     );
-    const active = new Map(proof.manifest.workers.map((worker) => [worker.id, `new-${worker.id}`]));
     if (scenario === "foreign-worker") active.set("Router", "foreign");
     let app = {
       id: "pool-app",
       name: "pool",
       account_id: "fixture",
-      version: 2,
+      version: proof.current().version,
       active_rollout_id: null,
       health: { summary: "healthy", instances: { active: 1, assigned: 1 }, errors: [] },
       created_at: "2026-01-01T00:00:00Z",
       scheduling_policy: "default",
       instances: 1,
       max_instances: 1,
-      configuration: { image: proof.proposed.configuration.image, instance_type: "basic" },
+      configuration: { image: proof.current().configuration.image, instance_type: "basic" },
       constraints: { jurisdiction: "eu", regions: ["EEUR", "WEUR"] },
       durable_objects: { namespace_id: "namespace" },
     };
@@ -104,6 +126,11 @@ for (const scenario of [
           const body = JSON.parse(Buffer.from(request.body.body).toString());
           assert.deepEqual(body.versions, [{ version_id: `old-${worker}`, percentage: 100 }]);
           assert.equal(body.force, undefined);
+          if (worker === "Api" && interruptApi) {
+            interruptApi = false;
+            calls.push("interrupt:Api");
+            throw new Error("synthetic recovery interruption");
+          }
           calls.push(`restore:${worker}`);
           active.set(worker, `old-${worker}`);
           result = {
@@ -185,87 +212,115 @@ for (const scenario of [
       (compiled) =>
         Effect.gen(function* () {
           yield* Apply.apply(yield* Plan.make(compiled));
-          return yield* recoverStack(
-            compiled,
-            proof.description,
-            receipt,
-            async (value) => {
-              recoveries.push(value);
-            },
-            {
-              frozen: proof.manifest,
-              databaseCompatible: scenario !== "database-unknown",
-              connect: async (path) => {
-                const config = JSON.parse(readFileSync(path, "utf8"));
-                assert.deepEqual(config.services, [
-                  {
-                    binding: "POOL_OPERATIONS",
-                    service: "PoolWorker",
-                    entrypoint: "PoolOperations",
-                    remote: true,
-                  },
-                ]);
-                return {
-                  env: {
-                    POOL_OPERATIONS: {
-                      fetch: async (request) => {
-                        calls.push("health:inspect");
-                        assert.equal(request.method, "GET");
-                        assert.equal(app.configuration.image, proof.previous.configuration.image);
-                        if (scenario === "missing-runtime-health") return Response.json({});
-                        return handleRuntimeRecovery(
-                          request,
-                          {
-                            inspectRuntimeRecovery: (id) => runtime.inspect(id),
-                            recoverRuntime: async () => {
-                              throw new Error("No runtime mutation");
+          const attempt = (previous?: RecoveryReceipt) =>
+            recoverStack(
+              compiled,
+              proof.description,
+              receipt,
+              async (value) => {
+                recoveries.push(value);
+              },
+              {
+                frozen: proof.manifest,
+                previous,
+                databaseCompatible: scenario !== "database-unknown",
+                connect: async (path) => {
+                  const config = JSON.parse(readFileSync(path, "utf8"));
+                  assert.deepEqual(config.services, [
+                    {
+                      binding: "POOL_OPERATIONS",
+                      service: "PoolWorker",
+                      entrypoint: "PoolOperations",
+                      remote: true,
+                    },
+                  ]);
+                  return {
+                    env: {
+                      POOL_OPERATIONS: {
+                        fetch: async (request) => {
+                          calls.push("health:inspect");
+                          assert.equal(request.method, "GET");
+                          assert.equal(app.configuration.image, proof.previous.configuration.image);
+                          if (scenario === "missing-runtime-health") return Response.json({});
+                          return handleRuntimeRecovery(
+                            request,
+                            {
+                              inspectRuntimeRecovery: async (id) => {
+                                const value = await runtime.inspect(id);
+                                healthHashes.push(value.imageHash);
+                                return value;
+                              },
+                              recoverRuntime: async () => {
+                                throw new Error("No runtime mutation");
+                              },
                             },
-                          },
-                          "synthetic-never-sent",
-                        );
+                            "synthetic-never-sent",
+                          );
+                        },
                       },
                     },
-                  },
-                  dispose: async () => {
-                    calls.push("health:closed");
-                  },
-                };
+                    dispose: async () => {
+                      calls.push("health:closed");
+                    },
+                  };
+                },
               },
-            },
-          ).pipe(
-            Effect.provideService(HttpClient.HttpClient, sdk),
-            Effect.provideService(
-              Credentials,
-              Effect.succeed({
-                type: "apiToken",
-                apiToken: Redacted.make("synthetic-never-sent"),
-                apiBaseUrl: "https://fixture.invalid",
-              }),
-            ),
-            Effect.provide(
-              ConfigProvider.layer(
-                ConfigProvider.fromEnv({ env: { CLOUDFLARE_API_TOKEN: "synthetic-never-sent" } }),
+            ).pipe(
+              Effect.provideService(HttpClient.HttpClient, sdk),
+              Effect.provideService(
+                Credentials,
+                Effect.succeed({
+                  type: "apiToken",
+                  apiToken: Redacted.make("synthetic-never-sent"),
+                  apiBaseUrl: "https://fixture.invalid",
+                }),
               ),
-            ),
-          );
+              Effect.provide(
+                ConfigProvider.layer(
+                  ConfigProvider.fromEnv({ env: { CLOUDFLARE_API_TOKEN: "synthetic-never-sent" } }),
+                ),
+              ),
+            );
+          if (scenario === "interrupt-after-pool-worker") {
+            const interrupted = yield* Effect.exit(attempt());
+            assert.equal(interrupted._tag, "Failure");
+            assert.equal(active.get("PoolWorker"), "old-PoolWorker");
+            assert.equal(active.get("Api"), "new-Api");
+            return yield* attempt(recoveries.at(-1));
+          }
+          return yield* attempt();
         }).pipe(
           Effect.provideContext(compiled.services),
           Effect.provideService(State, Context.get(compiled.services, State)),
         ),
       { stage: "production" },
     ).pipe(withReleaseRuntime);
-    if (scenario === "success") {
+    if (["success", "initial-baseline-worker", "interrupt-after-pool-worker"].includes(scenario)) {
       await Effect.runPromise(program);
       const rollout = calls.indexOf("container:rollout"),
         verified = calls.indexOf("instances:verified");
-      assert.ok(rollout > calls.indexOf("read:Router"));
-      assert.ok(verified > rollout);
+      if (scenario === "initial-baseline-worker") assert.equal(rollout, -1);
+      else {
+        assert.ok(rollout > calls.indexOf("read:Router"));
+        assert.ok(verified > rollout);
+        assert.equal(calls.filter((call) => call === "container:rollout").length, 1);
+      }
       assert.deepEqual(
         calls.filter((call) => call.startsWith("restore:")),
-        ["restore:Router", "restore:PoolWorker", "restore:Api"],
+        scenario === "initial-baseline-worker"
+          ? ["restore:Api"]
+          : ["restore:Router", "restore:PoolWorker", "restore:Api"],
       );
       assert.ok(calls.indexOf("health:inspect") > verified);
-      assert.ok(calls.indexOf("restore:Router") > calls.indexOf("health:closed"));
+      assert.ok(calls.indexOf("restore:Api") > calls.lastIndexOf("health:closed"));
+      assert.deepEqual(
+        healthHashes,
+        scenario === "initial-baseline-worker"
+          ? [proof.frozen.baselineInputHash]
+          : scenario === "interrupt-after-pool-worker"
+            ? [proof.frozen.inputHash, proof.frozen.baselineInputHash]
+            : [proof.frozen.inputHash],
+      );
       assert.equal(recoveries.at(-1)?.containers?.[0]?.health?.bootId, "old-boot");
       assert.equal(app.configuration.image, proof.previous.configuration.image);
     } else {

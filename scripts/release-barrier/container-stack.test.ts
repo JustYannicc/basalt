@@ -13,6 +13,7 @@ for (const scenario of [
   "container-drift",
   "source-drift",
   "native-state-drift",
+  "baseline-worker-input-drift",
 ])
   test(`actual root deployStack container staging: ${scenario}`, () => {
     const result = discoverContainerBarrierProof(root, scenario);
