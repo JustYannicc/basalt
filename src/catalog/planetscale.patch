@@ -1,0 +1,984 @@
+--- a/README.md
++++ b/README.md
+@@ -1,16 +1,25 @@
+ # PlanetScale
+ 
+-Organizations, databases, branches, deploy requests, backups, passwords, workflows, traffic budgets and Insights across PlanetScale's MySQL (Vitess) and Postgres products.
++Organizations, branches, databases, deploy requests, backups, passwords, workflows, members, SSO, billing, traffic budgets and Insights across PlanetScale's MySQL (Vitess) and Postgres products.
+ 
+-**Interface:** PlanetScale's official OpenAPI document, https://planetscale.com/docs/openapi.yaml (API base `https://api.planetscale.com/v1`). 304 tools, 150 of them mutations (each requires approval), none skipped. PlanetScale also hosts MCP servers (`https://mcp.pscale.dev/mcp/planetscale`, OAuth); they are not mounted because the REST API is a superset.
++**Interface:** PlanetScale's official OpenAPI document, https://planetscale.com/docs/openapi.yaml (API base `https://api.planetscale.com/v1`). The current audit names 291 operations. Every mutation requires approval. PlanetScale also hosts MCP servers (`https://mcp.pscale.dev/mcp/planetscale`, OAuth); they are not mounted because the REST API is a superset.
++
++**Tools**
++
++- Existing root names stay unchanged. The current OpenAPI names resolve under the same namespace and leaf, such as `databases.listDatabases`.
++- A sign-in account lists only operations covered by its reported grant after the connection succeeds. If the hosted client grants fewer than the requested scopes, or does not report them, the host must refuse the connection before saving an account and show requested, granted and missing permissions. DCR requests no scopes; if its response omits the grant, capabilities remain unknown and the old tool listing behavior stays in place. PlanetScale decides whether each request is authorized.
++- `serviceToken` contains new aliases for the 34 operations PlanetScale documents as service-token-only. Existing service-token accounts also keep the original root names.
+ 
+ **Auth**
+ 
+-- Service token (`token`): create one under Organization settings > Service tokens in the PlanetScale dashboard, grant it the database/organization permissions you need, then paste `SERVICE_TOKEN_ID:SERVICE_TOKEN` as a single value. It is sent verbatim as the `Authorization` header, as PlanetScale requires.
+-- OAuth (`oauth2`): PlanetScale OAuth applications are created in the organization's settings (OAuth applications). Register the redirect URI Executor shows on the connect page. Endpoints come from `https://api.planetscale.com/.well-known/oauth-authorization-server`. Requested scopes cover reads and writes for databases, branches, deploy requests, backups, passwords and workflows; they exclude deleting the organization, SSO, invoices and payment methods.
++- Existing `planetscale` OAuth and service-token accounts retain their original provider and methods.
++- New hosted sign-in uses the separate `planetscaleSignIn` requirement. It declares no method scopes so the hosted client requests its reviewed 33 defaults; when that hosted client is not configured, dynamic registration is the limited fallback. A hosted connection is not saved unless the service reports every requested scope.
++- For your own OAuth app, create one under organization Settings > OAuth applications, register the redirect URI shown on the connect page and select the permissions your app should grant.
++- Service tokens go under Organization settings > Service tokens. Grant the database and organization permissions the tools need, then paste `SERVICE_TOKEN_ID:SERVICE_TOKEN` as one value. PlanetScale requires it verbatim in `Authorization`.
+ 
+ **Known gaps**
+ 
+-- The document declares only `oauth2` globally, so the global security is removed and a fallback accepting OAuth or a service token is declared.
+-- The health check only verifies credentials by listing organizations; it does not identify the user.
+-- Service tokens only work for the permissions they were granted.
++- The document declares OAuth globally, so the global security is removed and a fallback accepting OAuth or a service token is declared.
++- `scopes.ts` is generated from one OpenAPI revision. Regenerate it when operation names or namespaces change; an unlisted operation is not offered to the scope-aware account.
++- PlanetScale limits OAuth tokens to organizations and resources the person authorized. Service-token permissions are not returned to the app; PlanetScale remains authoritative for each request.
++- The health check lists organizations; it does not identify the person.
+--- a/index.ts
++++ b/index.ts
+@@ -6,17 +6,23 @@
+   defineProvider,
+   oauth2,
+   object,
++  plain,
++  query,
++  renameTools,
+   router,
+   secrets,
+   string,
+   withApprovals,
++  type AccountOf,
+ } from "apps";
+ import { always } from "apps/operations/approval";
+ import { liveOpenapiRouter } from "apps/openapi";
+ import { icons } from "./icon.js";
+ import { options } from "./openapi.js";
+-
+-
++import { operationNamespaces, operationScopes, scopeAliases, serviceTokenOnly } from "./scopes.js";
++
++// Keep this provider declaration unchanged so saved accounts keep their provider identity,
++// response projection, requested scopes and saved OAuth grants.
+ const planetscale = defineProvider({
+   name: "PlanetScale",
+   hosts: ["api.planetscale.com", "app.planetscale.com", "auth.planetscale.com"],
+@@ -79,24 +85,167 @@
+   },
+ });
+ 
++// New sign-ins use a separate provider so changing the requested scopes and projecting the
++// returned grant cannot invalidate accounts saved under `planetscale`.
++const planetscaleSignIn = defineProvider({
++  name: "PlanetScale",
++  hosts: ["api.planetscale.com", "app.planetscale.com", "auth.planetscale.com"],
++  auth: {
++    signIn: oauth2({
++      discover: "https://api.planetscale.com",
++      response: object({ access_token: string(), scope: plain(string()).optional() }),
++    }),
++  },
++  async health({ account, fetch, signal }) {
++    const response = await fetch("https://api.planetscale.com/v1/organizations?per_page=1", {
++      signal,
++      headers: { Authorization: `Bearer ${account.fields.access_token}`, Accept: "application/json" },
++    });
++    const list = await decodeJson(
++      response,
++      object({ data: array(object({ id: string(), name: string() })) }),
++    );
++    const organization = list.data[0];
++    if (!organization) throw new Error("PlanetScale credential has access to no organizations");
++    return { accountInfo: { externalId: organization.id, username: organization.name } };
++  },
++});
++
++type LegacyAccount = AccountOf<typeof planetscale>;
++type SignInAccount = AccountOf<typeof planetscaleSignIn>;
++type Account = LegacyAccount | SignInAccount;
++
++/** Expand the aliases PlanetScale advertises so either spelling is checked against an operation. */
++const grantOf = (account: SignInAccount) => {
++  const value = account.fields.scope;
++  if (value === undefined) return undefined;
++  const scopes = new Set(value.split(/[\s,]+/).filter((scope) => scope !== ""));
++  for (const [short, long] of Object.entries(scopeAliases)) {
++    if (scopes.has(short)) scopes.add(long);
++    if (scopes.has(long)) scopes.add(short);
++  }
++  return scopes;
++};
++
++/** Unknown legacy and DCR grants keep the old listing; PlanetScale still authorizes each call. */
++const offers = (account: Account, grantAware: boolean, name: string) => {
++  if (!grantAware || account.method !== "signIn") return true;
++  const grant = grantOf(account);
++  if (grant === undefined) return true;
++  return operationScopes[name]?.some((scope) => grant.has(scope)) ?? false;
++};
++
+ export default defineApp(
+-  { user: { accounts: { planetscale: planetscale.many() } }, icons },
+-  async ({ user, cache, fetch, signal }) => ({
+-    tools: router(
+-      await accountRouter(
+-        user?.accounts.planetscale ?? [],
+-        (account) =>
+-          withApprovals(liveOpenapiRouter({ ...options, cache, fetch, signal, account }), (tool) =>
+-            tool.kind === "mutation" ? always() : undefined,
++  {
++    user: {
++      accounts: {
++        planetscaleSignIn: planetscaleSignIn.many(),
++        planetscale: planetscale.many(),
++      },
++    },
++    icons,
++  },
++  async ({ user, cache, fetch, signal }) => {
++    const tools = (account: Account, grantAware: boolean, serviceTokenAliases = false) => {
++      const openapi = {
++        ...options,
++        oauth: account.method === "signIn" ? ["signIn"] : options.oauth,
++        cache,
++        fetch,
++        signal,
++        account,
++      };
++      return withApprovals(
++        renameTools(liveOpenapiRouter(openapi), (name) => {
++          if (serviceTokenAliases) return serviceTokenOnly.has(name) ? name : undefined;
++          return offers(account, grantAware, name) ? name : undefined;
++        }),
++        (tool) => (tool.kind === "mutation" ? always() : undefined),
++      );
++    };
++    const legacy = user?.accounts.planetscale ?? [];
++    const signIns = user?.accounts.planetscaleSignIn ?? [];
++    const selections = [
++      ...legacy.map((account) => ({
++        id: account.id,
++        discover: () => tools(account, false),
++      })),
++      ...signIns.map((account) => ({
++        id: account.id,
++        discover: () => tools(account, true),
++      })),
++    ];
++    const root = await accountRouter(selections, (selection) => selection.discover(), { signal });
++    const connected = [...legacy, ...signIns];
++    const namespaceHasTools = (namespace: string) =>
++      connected.some((account) =>
++        [...Object.keys(operationScopes), ...serviceTokenOnly].some(
++          (name) => name.startsWith(`${namespace}.`) && offers(account, account.method === "signIn", name),
++        ),
++      );
++    const namespacedRoot = Object.fromEntries(
++      operationNamespaces
++        .filter(namespaceHasTools)
++        .map((namespace) => [
++          namespace,
++          renameTools(root, (name) =>
++            name.startsWith(`${namespace}.`) ? name.slice(namespace.length + 1) : undefined,
+           ),
+-        { signal },
++        ]),
++    );
++    const serviceToken = await accountRouter(
++      legacy.filter((account) => account.method === "token"),
++      (account) => tools(account, false, true),
++      { signal },
++    );
++
++    return {
++      tools: router(
++        {
++          ...namespacedRoot,
++          serviceToken: router(serviceToken, {
++            title: "PlanetScale service-token tools",
++            description:
++              "Operations PlanetScale documents as service-token-only. PlanetScale checks which permissions the token has.",
++          }),
++          permissions: query(
++            {
++              input: object({}),
++              description:
++                "Which OAuth scopes PlanetScale reported for each account. Missing scope data is unknown; PlanetScale decides access to each resource.",
++            },
++            async () =>
++              connected.map((account) => {
++                const reported = account.method === "signIn" ? account.fields.scope : undefined;
++                const known = reported !== undefined;
++                return {
++                  accountId: account.id,
++                  method:
++                    account.method === "token"
++                      ? "service token"
++                      : account.method === "oauth2"
++                        ? "legacy OAuth"
++                        : "PlanetScale sign-in",
++                  permissions: known
++                    ? reported.split(/[\s,]+/).filter(Boolean).sort()
++                    : "Unknown: PlanetScale did not report this account's permissions.",
++                  unavailableTools: known
++                    ? [
++                        ...Object.keys(operationScopes).filter((name) => !offers(account, true, name)),
++                        ...[...serviceTokenOnly].map((name) => `serviceToken.${name}`),
++                      ]
++                    : null,
++                };
++              }),
++          ),
++        },
++        {
++          title: "PlanetScale",
++          description:
++            "PlanetScale organizations, databases, branches, deploy requests, backups, passwords, workflows and Insights.",
++          icons,
++        },
+       ),
+-      {
+-        title: "PlanetScale",
+-        description:
+-          "PlanetScale organizations, databases, branches, deploy requests, backups, passwords, workflows and Insights.",
+-        icons,
+-      },
+-    ),
+-  }),
++    };
++  },
+ );
+--- a/package.json
++++ b/package.json
+@@ -7,6 +7,6 @@
+     "title": "PlanetScale"
+   },
+   "dependencies": {
+-    "apps": "0.0.1-beta.100"
++    "apps": "0.0.1-beta.104-basalt.10"
+   }
+ }
+--- /dev/null
++++ b/scopes.ts
+@@ -0,0 +1,723 @@
++// Generated from PlanetScale's official OpenAPI document (sha256 4ea340db26fc1e1a64bd41370a0751480daeed0a4576d84879f7bc62593f9d49).
++// Each operation's "OAuth Scopes" table lists the alternative scopes PlanetScale accepts for it.
++// Regenerate when the document changes; an operation missing here is never offered to OAuth.
++
++/** The scopes Signalbox's hosted PlanetScale app requests. */
++export const hostedScopes = [
++  "read_user",
++  "read_organization",
++  "write_organization",
++  "read_databases",
++  "write_databases",
++  "organization:create_databases",
++  "organization:delete_databases",
++  "organization:read_databases",
++  "organization:write_databases",
++  "organization:read_branches",
++  "organization:write_branches",
++  "organization:delete_branches",
++  "organization:read_deploy_requests",
++  "organization:write_deploy_requests",
++  "organization:approve_deploy_requests",
++  "organization:deploy_deploy_requests",
++  "organization:read_backups",
++  "organization:write_backups",
++  "organization:delete_backups",
++  "organization:restore_backups",
++  "organization:manage_passwords",
++  "organization:manage_read_only_passwords",
++  "organization:read_workflows",
++  "organization:write_workflows",
++  "organization:read_audit_logs",
++  "user:read_organizations",
++  "organization:promote_branches",
++  "database:demote_branches",
++  "organization:write_members",
++  "organization:manage_sso",
++  "organization:read_payment_method",
++  "organization:write_payment_method",
++  "organization:read_invoices",
++] as const;
++
++/** Unprefixed scopes PlanetScale advertises as aliases of resource-prefixed ones. */
++export const scopeAliases: Readonly<Record<string, string>> = {
++  "read_user": "user:read_user",
++  "write_user": "user:write_user",
++  "read_organizations": "user:read_organizations",
++  "read_organization": "organization:read_organization",
++  "write_organization": "organization:write_organization",
++  "read_databases": "organization:read_databases",
++  "write_databases": "organization:write_databases"
++};
++
++/** Operations PlanetScale documents with no OAuth scope: only a service token can call them. */
++export const serviceTokenOnly: ReadonlySet<string> = new Set([
++  "branchConfigChanges.cancelBranchConfigChangeRequest",
++  "branchConfigChanges.createBranchConfigChangeRequest",
++  "branchConfigChanges.submitBranchConfigChangeRequests",
++  "databaseBranchKeyspaces.createKeyspace",
++  "databaseBranchKeyspaces.deleteKeyspace",
++  "databaseBranchKeyspaces.getKeyspace",
++  "databaseBranchKeyspaces.getKeyspaceRolloutStatus",
++  "databaseBranchKeyspaces.listKeyspaces",
++  "databaseBranchKeyspaces.updateKeyspace",
++  "databaseBranches.disableSafeMigrations",
++  "databaseBranches.enableSafeMigrations",
++  "databaseBranches.updateBranchClusterConfig",
++  "databaseBranches.updateSafeMigrations",
++  "deployRequests.getDeployQueue",
++  "keyspaceConfigChanges.cancelKeyspaceConfigChangeRequest",
++  "keyspaceConfigChanges.createKeyspaceConfigChangeRequest",
++  "keyspaceResizes.cancelKeyspaceResizeRequest",
++  "keyspaceResizes.getKeyspaceResizeRequest",
++  "keyspaceResizes.listKeyspaceResizeRequests",
++  "keyspaceResizes.updateKeyspaceResizeRequest",
++  "keyspaceVSchemas.getKeyspaceVschema",
++  "keyspaceVSchemas.updateKeyspaceVschema",
++  "oAuthApplications.deleteOauthToken",
++  "oAuthApplications.getOauthApplication",
++  "oAuthApplications.getOauthToken",
++  "oAuthApplications.listOauthApplications",
++  "oAuthApplications.listOauthTokens",
++  "oAuthTokens.createOauthToken",
++  "postgresVersions.listPostgresVersions",
++  "regions.listPublicRegions",
++  "serviceTokens.createServiceToken",
++  "serviceTokens.deleteServiceToken",
++  "serviceTokens.getServiceToken",
++  "serviceTokens.listServiceTokens",
++]);
++
++/** Every tool name from the current official OpenAPI source, including service-token-only tools. */
++export const operationNames: readonly string[] = [
++  "apiAnomalies.getBranchAnomaly",
++  "apiAnomalies.listBranchAnomalies",
++  "apiBranchBouncerResizes.listBranchBouncerResizeRequests",
++  "apiBranchMaintenances.runBranchMaintenance",
++  "apiBranchResizes.getBranchResizeRequest",
++  "apiBranchResizes.listBranchResizeRequests",
++  "apiBranchResizes.updateBranchResizeRequest",
++  "apiChangeRequests.cancelChangeRequest",
++  "apiChangeRequests.getChangeRequest",
++  "apiChangeRequests.listChangeRequests",
++  "apiDataTopology.getDataTopology",
++  "apiDataTopology.updateDataTopology",
++  "apiNekiAdminChangeRequests.cancelAdminChangeRequest",
++  "apiNekiAdminChangeRequests.getAdminChangeRequest",
++  "apiNekiAdminChangeRequests.listAdminChangeRequests",
++  "apiNekiAdminParameters.listAdminParameters",
++  "apiNekiAdmins.getAdmin",
++  "apiNekiAdmins.listAdminSizeSkus",
++  "apiNekiAdmins.updateAdmin",
++  "apiNekiChangeRequests.cancelNekiChangeRequest",
++  "apiNekiChangeRequests.getNekiChangeRequest",
++  "apiNekiChangeRequests.listNekiChangeRequests",
++  "apiNekiDefaultShardConfigurationProfiles.getDefaultShardConfigurationProfile",
++  "apiNekiDefaultShardConfigurationProfiles.setDefaultShardConfigurationProfile",
++  "apiNekiRouterChangeRequests.cancelRouterChangeRequest",
++  "apiNekiRouterChangeRequests.getRouterChangeRequest",
++  "apiNekiRouterChangeRequests.listRouterChangeRequests",
++  "apiNekiRouterParameters.listRouterParameters",
++  "apiNekiRouters.createRouter",
++  "apiNekiRouters.deleteRouter",
++  "apiNekiRouters.getRouter",
++  "apiNekiRouters.listRouterSizeSkus",
++  "apiNekiRouters.listRouters",
++  "apiNekiRouters.updateRouter",
++  "apiNekiShardConfigurationProfileChangeRequests.cancelShardConfigurationProfileChangeRequest",
++  "apiNekiShardConfigurationProfileChangeRequests.getShardConfigurationProfileChangeRequest",
++  "apiNekiShardConfigurationProfileChangeRequests.listShardConfigurationProfileChangeRequests",
++  "apiNekiShardConfigurationProfileExtensions.listShardConfigurationProfileExtensions",
++  "apiNekiShardConfigurationProfileParameters.listShardConfigurationProfileParameters",
++  "apiNekiShardConfigurationProfileShards.assignShardConfigurationProfileShards",
++  "apiNekiShardConfigurationProfileShards.bulkCreateShardConfigurationProfileShards",
++  "apiNekiShardConfigurationProfileShards.createShardConfigurationProfileShard",
++  "apiNekiShardConfigurationProfileShards.deleteShardConfigurationProfileShard",
++  "apiNekiShardConfigurationProfileShards.deleteShardConfigurationProfileShards",
++  "apiNekiShardConfigurationProfileShards.getShardConfigurationProfileShard",
++  "apiNekiShardConfigurationProfileShards.listShardConfigurationProfileShards",
++  "apiNekiShardConfigurationProfileShards.updateShardConfigurationProfileShard",
++  "apiNekiShardConfigurationProfiles.createShardConfigurationProfile",
++  "apiNekiShardConfigurationProfiles.deleteShardConfigurationProfile",
++  "apiNekiShardConfigurationProfiles.duplicateShardConfigurationProfile",
++  "apiNekiShardConfigurationProfiles.getShardConfigurationProfile",
++  "apiNekiShardConfigurationProfiles.listShardConfigurationProfiles",
++  "apiNekiShardConfigurationProfiles.runShardConfigurationProfileMaintenance",
++  "apiNekiShardConfigurationProfiles.runShardConfigurationProfilesMaintenance",
++  "apiNekiShardConfigurationProfiles.updateShardConfigurationProfile",
++  "apiNekiShards.createShard",
++  "apiNekiShards.deleteShard",
++  "apiNekiShards.getShard",
++  "apiNekiShards.listShards",
++  "apiNekiShards.updateShard",
++  "apiQueryInsights.getBranchQuery",
++  "apiQueryInsights.getQueryStatistics",
++  "apiQueryInsights.getQuerySummary",
++  "apiQueryInsights.listBranchQueries",
++  "apiQueryInsightsErrors.getBranchQueryError",
++  "apiQueryInsightsErrors.listBranchQueryErrors",
++  "apiQueryInsightsTags.getBranchQueryTag",
++  "apiQueryInsightsTags.listBranchQueryTagSummaries",
++  "apiQueryInsightsTags.listBranchQueryTags",
++  "apiQueryInsightsTrafficBudgets.listTrafficBudgetsForQuery",
++  "apiReadOnlyReplicaChanges.listDedicatedReadReplicaChangeRequests",
++  "backupPolicies.createBackupPolicy",
++  "backupPolicies.deleteBackupPolicy",
++  "backupPolicies.getBackupPolicy",
++  "backupPolicies.listBackupPolicies",
++  "backupPolicies.updateBackupPolicy",
++  "backups.createBackup",
++  "backups.deleteBackup",
++  "backups.getBackup",
++  "backups.listBackups",
++  "backups.updateBackup",
++  "billingPaymentMethod.deleteOrganizationBillingPaymentMethod",
++  "billingPaymentMethod.getOrganizationBillingPaymentMethod",
++  "billingPaymentMethodSetup.getPaymentMethodSetup",
++  "billingPaymentMethodSetup.updatePaymentMethod",
++  "bouncerResizes.cancelBouncerResizeRequest",
++  "bouncerResizes.listBouncerResizeRequests",
++  "bouncerResizes.updateBouncerResizeRequest",
++  "bouncers.createBouncer",
++  "bouncers.deleteBouncer",
++  "bouncers.getBouncer",
++  "bouncers.listBouncers",
++  "branchChanges.cancelBranchChangeRequest",
++  "branchChanges.getBranchChangeRequest",
++  "branchChanges.listBranchChangeRequests",
++  "branchChanges.updateBranchChangeRequest",
++  "branchConfigChanges.cancelBranchConfigChangeRequest",
++  "branchConfigChanges.createBranchConfigChangeRequest",
++  "branchConfigChanges.getBranchConfigChangeRequest",
++  "branchConfigChanges.listBranchConfigChangeRequests",
++  "branchConfigChanges.submitBranchConfigChangeRequests",
++  "branchLogSignatures.createBranchLogSignature",
++  "branchVitessParameters.listBranchVitessParameters",
++  "clusterExtensions.listExtensions",
++  "clusterParameters.listParameters",
++  "databaseBranchKeyspaces.createKeyspace",
++  "databaseBranchKeyspaces.deleteKeyspace",
++  "databaseBranchKeyspaces.getKeyspace",
++  "databaseBranchKeyspaces.getKeyspaceRolloutStatus",
++  "databaseBranchKeyspaces.listKeyspaces",
++  "databaseBranchKeyspaces.updateKeyspace",
++  "databaseBranchPasswords.createPassword",
++  "databaseBranchPasswords.deletePassword",
++  "databaseBranchPasswords.getPassword",
++  "databaseBranchPasswords.listPasswords",
++  "databaseBranchPasswords.renewPassword",
++  "databaseBranchPasswords.updatePassword",
++  "databaseBranches.createBranch",
++  "databaseBranches.deleteBranch",
++  "databaseBranches.demoteBranch",
++  "databaseBranches.disableSafeMigrations",
++  "databaseBranches.enableSafeMigrations",
++  "databaseBranches.getBranch",
++  "databaseBranches.getBranchSchema",
++  "databaseBranches.lintBranchSchema",
++  "databaseBranches.listBranches",
++  "databaseBranches.promoteBranch",
++  "databaseBranches.updateBranch",
++  "databaseBranches.updateBranchClusterConfig",
++  "databaseBranches.updateSafeMigrations",
++  "databasePostgresIpRestrictions.createDatabasePostgresCidr",
++  "databasePostgresIpRestrictions.deleteDatabasePostgresCidr",
++  "databasePostgresIpRestrictions.getDatabasePostgresCidr",
++  "databasePostgresIpRestrictions.listDatabasePostgresCidrs",
++  "databasePostgresIpRestrictions.updateDatabasePostgresCidr",
++  "databases.createDatabase",
++  "databases.deleteDatabase",
++  "databases.getDatabase",
++  "databases.getDatabaseThrottler",
++  "databases.listDatabaseRegions",
++  "databases.listDatabases",
++  "databases.listReadOnlyRegions",
++  "databases.updateDatabaseSettings",
++  "databases.updateDatabaseThrottler",
++  "dedicatedReadReplicas.createDedicatedReadReplica",
++  "dedicatedReadReplicas.deleteDedicatedReadReplica",
++  "dedicatedReadReplicas.getDedicatedReadReplica",
++  "dedicatedReadReplicas.listDedicatedReadReplicas",
++  "dedicatedReadReplicas.updateDedicatedReadReplica",
++  "deployRequests.cancelDeployRequest",
++  "deployRequests.checkDeployRequestStorage",
++  "deployRequests.closeDeployRequest",
++  "deployRequests.completeErroredDeploy",
++  "deployRequests.completeGatedDeployRequest",
++  "deployRequests.completeRevert",
++  "deployRequests.createDeployRequest",
++  "deployRequests.forceCutoverDeployRequest",
++  "deployRequests.getDeployQueue",
++  "deployRequests.getDeployRequest",
++  "deployRequests.getDeployRequestThrottler",
++  "deployRequests.getDeployment",
++  "deployRequests.listDeployOperations",
++  "deployRequests.listDeployRequestReviews",
++  "deployRequests.listDeployRequests",
++  "deployRequests.queueDeployRequest",
++  "deployRequests.reviewDeployRequest",
++  "deployRequests.skipRevertPeriod",
++  "deployRequests.updateAggressiveCutover",
++  "deployRequests.updateAutoApply",
++  "deployRequests.updateAutoDeleteBranch",
++  "deployRequests.updateDeployRequestThrottler",
++  "invoices.getInvoice",
++  "invoices.getInvoiceLineItems",
++  "invoices.listInvoices",
++  "keyspaceConfigChanges.cancelKeyspaceConfigChangeRequest",
++  "keyspaceConfigChanges.createKeyspaceConfigChangeRequest",
++  "keyspaceConfigChanges.getKeyspaceConfigChangeRequest",
++  "keyspaceConfigChanges.listKeyspaceConfigChangeRequests",
++  "keyspaceResizes.cancelKeyspaceResizeRequest",
++  "keyspaceResizes.getKeyspaceResizeRequest",
++  "keyspaceResizes.listKeyspaceResizeRequests",
++  "keyspaceResizes.updateKeyspaceResizeRequest",
++  "keyspaceVSchemas.getKeyspaceVschema",
++  "keyspaceVSchemas.updateKeyspaceVschema",
++  "maintenanceEvents.getMaintenanceEvent",
++  "maintenanceEvents.listMaintenanceEvents",
++  "maintenanceEvents.rescheduleMaintenanceEvent",
++  "maintenanceSchedules.getBranchMaintenanceWindow",
++  "maintenanceSchedules.getMaintenanceSchedule",
++  "maintenanceSchedules.listMaintenanceSchedules",
++  "maintenanceSchedules.updateBranchMaintenanceWindow",
++  "maintenanceSchedules.updateMaintenanceSchedule",
++  "maintenanceWindows.listMaintenanceWindows",
++  "metrics.getBranchKeyspaceTableMetrics",
++  "metrics.getBranchMetrics",
++  "metrics.getBranchQueryMetrics",
++  "metrics.getBranchTableMetrics",
++  "metrics.getBranchTagMetrics",
++  "metrics.getInstantBranchMetrics",
++  "metrics.getInstantTabletMetrics",
++  "metrics.getTabletMetrics",
++  "moveTables.cancelMoveTablesWorkflow",
++  "moveTables.completeMoveTablesWorkflow",
++  "moveTables.createMoveTablesWorkflow",
++  "moveTables.getMoveTablesWorkflow",
++  "moveTables.getMoveTablesWorkflowStatus",
++  "moveTables.listMoveTablesWorkflows",
++  "moveTables.reverseTrafficMoveTablesWorkflow",
++  "moveTables.startMoveTablesWorkflow",
++  "moveTables.stopMoveTablesWorkflow",
++  "moveTables.switchTrafficMoveTablesWorkflow",
++  "oAuthApplications.deleteOauthToken",
++  "oAuthApplications.getOauthApplication",
++  "oAuthApplications.getOauthToken",
++  "oAuthApplications.listOauthApplications",
++  "oAuthApplications.listOauthTokens",
++  "oAuthTokens.createOauthToken",
++  "organizationInvitations.cancelOrganizationInvitation",
++  "organizationInvitations.createOrganizationInvitation",
++  "organizationInvitations.listOrganizationInvitations",
++  "organizationMembers.getOrganizationMembership",
++  "organizationMembers.listOrganizationMembers",
++  "organizationMembers.removeOrganizationMember",
++  "organizationMembers.updateOrganizationMembership",
++  "organizationSso.configureOrganizationSso",
++  "organizationSso.disableOrganizationSso",
++  "organizationSso.disableOrganizationSsoDirectory",
++  "organizationSso.enableOrganizationSso",
++  "organizationSso.enableOrganizationSsoDirectory",
++  "organizationSso.getOrganizationSso",
++  "organizationSsoDomains.createOrganizationSsoDomain",
++  "organizationSsoDomains.deleteOrganizationSsoDomain",
++  "organizationSsoDomains.getOrganizationSsoDomain",
++  "organizationSsoDomains.listOrganizationSsoDomains",
++  "organizationTeams.createOrganizationTeam",
++  "organizationTeams.deleteOrganizationTeam",
++  "organizationTeams.getOrganizationTeam",
++  "organizationTeams.listOrganizationTeams",
++  "organizationTeams.updateOrganizationTeam",
++  "organizations.getOrganization",
++  "organizations.listAuditLogs",
++  "organizations.listClusterSizeSkus",
++  "organizations.listOrganizations",
++  "organizations.listRegionsForOrganization",
++  "organizations.updateOrganization",
++  "postgresVersions.listPostgresVersions",
++  "queryInsightsReports.createQueryPatternsReport",
++  "queryInsightsReports.deleteQueryPatternsReport",
++  "queryInsightsReports.getQueryPatternsReport",
++  "queryInsightsReports.getQueryPatternsReportStatus",
++  "queryInsightsReports.listGeneratedQueryPatternsReports",
++  "regions.listPublicRegions",
++  "roles.createRole",
++  "roles.deleteRole",
++  "roles.getDefaultRole",
++  "roles.getRole",
++  "roles.listRoles",
++  "roles.reassignRoleObjects",
++  "roles.renewRole",
++  "roles.resetDefaultRole",
++  "roles.resetRole",
++  "roles.updateRole",
++  "schemaRecommendations.dismissSchemaRecommendation",
++  "schemaRecommendations.getSchemaRecommendation",
++  "schemaRecommendations.listSchemaRecommendations",
++  "serviceTokens.createServiceToken",
++  "serviceTokens.deleteServiceToken",
++  "serviceTokens.getServiceToken",
++  "serviceTokens.listServiceTokens",
++  "switchovers.createSwitchover",
++  "switchovers.getSwitchover",
++  "switchovers.listSwitchovers",
++  "teamMembers.addOrganizationTeamMember",
++  "teamMembers.getOrganizationTeamMember",
++  "teamMembers.listOrganizationTeamMembers",
++  "teamMembers.removeOrganizationTeamMember",
++  "trafficBudgets.createTrafficBudget",
++  "trafficBudgets.deleteTrafficBudget",
++  "trafficBudgets.getTrafficBudget",
++  "trafficBudgets.listTrafficBudgets",
++  "trafficBudgets.updateTrafficBudget",
++  "trafficRules.createTrafficRule",
++  "trafficRules.deleteTrafficRule",
++  "users.getCurrentUser",
++  "vtctldOperations.getVtctldOperation",
++  "webhooks.createWebhook",
++  "webhooks.deleteWebhook",
++  "webhooks.getWebhook",
++  "webhooks.listWebhooks",
++  "webhooks.testWebhook",
++  "webhooks.updateWebhook",
++];
++
++/** First path segments used to rebuild the existing dotted names under static router paths. */
++export const operationNamespaces: readonly string[] = [
++  "apiAnomalies",
++  "apiBranchBouncerResizes",
++  "apiBranchMaintenances",
++  "apiBranchResizes",
++  "apiChangeRequests",
++  "apiDataTopology",
++  "apiNekiAdminChangeRequests",
++  "apiNekiAdminParameters",
++  "apiNekiAdmins",
++  "apiNekiChangeRequests",
++  "apiNekiDefaultShardConfigurationProfiles",
++  "apiNekiRouterChangeRequests",
++  "apiNekiRouterParameters",
++  "apiNekiRouters",
++  "apiNekiShardConfigurationProfileChangeRequests",
++  "apiNekiShardConfigurationProfileExtensions",
++  "apiNekiShardConfigurationProfileParameters",
++  "apiNekiShardConfigurationProfileShards",
++  "apiNekiShardConfigurationProfiles",
++  "apiNekiShards",
++  "apiQueryInsights",
++  "apiQueryInsightsErrors",
++  "apiQueryInsightsTags",
++  "apiQueryInsightsTrafficBudgets",
++  "apiReadOnlyReplicaChanges",
++  "backupPolicies",
++  "backups",
++  "billingPaymentMethod",
++  "billingPaymentMethodSetup",
++  "bouncerResizes",
++  "bouncers",
++  "branchChanges",
++  "branchConfigChanges",
++  "branchLogSignatures",
++  "branchVitessParameters",
++  "clusterExtensions",
++  "clusterParameters",
++  "databaseBranchKeyspaces",
++  "databaseBranchPasswords",
++  "databaseBranches",
++  "databasePostgresIpRestrictions",
++  "databases",
++  "dedicatedReadReplicas",
++  "deployRequests",
++  "invoices",
++  "keyspaceConfigChanges",
++  "keyspaceResizes",
++  "keyspaceVSchemas",
++  "maintenanceEvents",
++  "maintenanceSchedules",
++  "maintenanceWindows",
++  "metrics",
++  "moveTables",
++  "oAuthApplications",
++  "oAuthTokens",
++  "organizationInvitations",
++  "organizationMembers",
++  "organizationSso",
++  "organizationSsoDomains",
++  "organizationTeams",
++  "organizations",
++  "postgresVersions",
++  "queryInsightsReports",
++  "regions",
++  "roles",
++  "schemaRecommendations",
++  "serviceTokens",
++  "switchovers",
++  "teamMembers",
++  "trafficBudgets",
++  "trafficRules",
++  "users",
++  "vtctldOperations",
++  "webhooks",
++];
++
++/** Per tool, the OAuth scopes of which any one lets a token call it. */
++export const operationScopes: Readonly<Record<string, readonly string[]>> = {
++  "apiAnomalies.getBranchAnomaly": ["database:read_database","organization:read_databases"],
++  "apiAnomalies.listBranchAnomalies": ["database:read_database","organization:read_databases"],
++  "apiBranchBouncerResizes.listBranchBouncerResizeRequests": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiBranchMaintenances.runBranchMaintenance": ["database:write_database","organization:write_databases"],
++  "apiBranchResizes.getBranchResizeRequest": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiBranchResizes.listBranchResizeRequests": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiBranchResizes.updateBranchResizeRequest": ["database:write_database","organization:write_databases"],
++  "apiChangeRequests.cancelChangeRequest": ["database:write_database","organization:write_databases"],
++  "apiChangeRequests.getChangeRequest": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiChangeRequests.listChangeRequests": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiDataTopology.getDataTopology": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiDataTopology.updateDataTopology": ["branch:write_branch","database:write_databases","organization:write_databases"],
++  "apiNekiAdminChangeRequests.cancelAdminChangeRequest": ["database:write_database","organization:write_databases"],
++  "apiNekiAdminChangeRequests.getAdminChangeRequest": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiNekiAdminChangeRequests.listAdminChangeRequests": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiNekiAdminParameters.listAdminParameters": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiNekiAdmins.getAdmin": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiNekiAdmins.listAdminSizeSkus": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiNekiAdmins.updateAdmin": ["database:write_database","organization:write_databases"],
++  "apiNekiChangeRequests.cancelNekiChangeRequest": ["database:write_database","organization:write_databases"],
++  "apiNekiChangeRequests.getNekiChangeRequest": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiNekiChangeRequests.listNekiChangeRequests": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiNekiDefaultShardConfigurationProfiles.getDefaultShardConfigurationProfile": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiNekiDefaultShardConfigurationProfiles.setDefaultShardConfigurationProfile": ["database:write_database","organization:write_databases"],
++  "apiNekiRouterChangeRequests.cancelRouterChangeRequest": ["database:write_database","organization:write_databases"],
++  "apiNekiRouterChangeRequests.getRouterChangeRequest": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiNekiRouterChangeRequests.listRouterChangeRequests": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiNekiRouterParameters.listRouterParameters": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiNekiRouters.createRouter": ["database:write_database","organization:write_databases"],
++  "apiNekiRouters.deleteRouter": ["database:write_database","organization:write_databases"],
++  "apiNekiRouters.getRouter": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiNekiRouters.listRouterSizeSkus": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiNekiRouters.listRouters": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiNekiRouters.updateRouter": ["database:write_database","organization:write_databases"],
++  "apiNekiShardConfigurationProfileChangeRequests.cancelShardConfigurationProfileChangeRequest": ["database:write_database","organization:write_databases"],
++  "apiNekiShardConfigurationProfileChangeRequests.getShardConfigurationProfileChangeRequest": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiNekiShardConfigurationProfileChangeRequests.listShardConfigurationProfileChangeRequests": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiNekiShardConfigurationProfileExtensions.listShardConfigurationProfileExtensions": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiNekiShardConfigurationProfileParameters.listShardConfigurationProfileParameters": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiNekiShardConfigurationProfileShards.assignShardConfigurationProfileShards": ["database:write_database","organization:write_databases"],
++  "apiNekiShardConfigurationProfileShards.bulkCreateShardConfigurationProfileShards": ["database:write_database","organization:write_databases"],
++  "apiNekiShardConfigurationProfileShards.createShardConfigurationProfileShard": ["database:write_database","organization:write_databases"],
++  "apiNekiShardConfigurationProfileShards.deleteShardConfigurationProfileShard": ["database:write_database","organization:write_databases"],
++  "apiNekiShardConfigurationProfileShards.deleteShardConfigurationProfileShards": ["database:write_database","organization:write_databases"],
++  "apiNekiShardConfigurationProfileShards.getShardConfigurationProfileShard": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiNekiShardConfigurationProfileShards.listShardConfigurationProfileShards": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiNekiShardConfigurationProfileShards.updateShardConfigurationProfileShard": ["database:write_database","organization:write_databases"],
++  "apiNekiShardConfigurationProfiles.createShardConfigurationProfile": ["database:write_database","organization:write_databases"],
++  "apiNekiShardConfigurationProfiles.deleteShardConfigurationProfile": ["database:write_database","organization:write_databases"],
++  "apiNekiShardConfigurationProfiles.duplicateShardConfigurationProfile": ["database:write_database","organization:write_databases"],
++  "apiNekiShardConfigurationProfiles.getShardConfigurationProfile": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiNekiShardConfigurationProfiles.listShardConfigurationProfiles": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiNekiShardConfigurationProfiles.runShardConfigurationProfileMaintenance": ["database:write_database","organization:write_databases"],
++  "apiNekiShardConfigurationProfiles.runShardConfigurationProfilesMaintenance": ["database:write_database","organization:write_databases"],
++  "apiNekiShardConfigurationProfiles.updateShardConfigurationProfile": ["database:write_database","organization:write_databases"],
++  "apiNekiShards.createShard": ["database:write_database","organization:write_databases"],
++  "apiNekiShards.deleteShard": ["database:write_database","organization:write_databases"],
++  "apiNekiShards.getShard": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiNekiShards.listShards": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiNekiShards.updateShard": ["database:write_database","organization:write_databases"],
++  "apiQueryInsights.getBranchQuery": ["database:read_database","organization:read_databases"],
++  "apiQueryInsights.getQueryStatistics": ["database:read_database","organization:read_databases"],
++  "apiQueryInsights.getQuerySummary": ["database:read_database","organization:read_databases"],
++  "apiQueryInsights.listBranchQueries": ["database:read_database","organization:read_databases"],
++  "apiQueryInsightsErrors.getBranchQueryError": ["database:read_database","organization:read_databases"],
++  "apiQueryInsightsErrors.listBranchQueryErrors": ["database:read_database","organization:read_databases"],
++  "apiQueryInsightsTags.getBranchQueryTag": ["database:read_database","organization:read_databases"],
++  "apiQueryInsightsTags.listBranchQueryTagSummaries": ["database:read_database","organization:read_databases"],
++  "apiQueryInsightsTags.listBranchQueryTags": ["database:read_database","organization:read_databases"],
++  "apiQueryInsightsTrafficBudgets.listTrafficBudgetsForQuery": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "apiReadOnlyReplicaChanges.listDedicatedReadReplicaChangeRequests": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "backupPolicies.createBackupPolicy": ["database:write_backups","organization:write_backups"],
++  "backupPolicies.deleteBackupPolicy": ["database:write_backups","organization:write_backups"],
++  "backupPolicies.getBackupPolicy": ["database:read_backups","organization:read_backups"],
++  "backupPolicies.listBackupPolicies": ["database:read_backups","organization:read_backups"],
++  "backupPolicies.updateBackupPolicy": ["database:write_backups","organization:write_backups"],
++  "backups.createBackup": ["branch:write_backups","database:write_backups","organization:write_backups"],
++  "backups.deleteBackup": ["branch:delete_backups","database:delete_backups","database:delete_production_branch_backups","organization:delete_backups","organization:delete_production_branch_backups"],
++  "backups.getBackup": ["branch:read_backups","database:read_backups","organization:read_backups"],
++  "backups.listBackups": ["branch:read_backups","database:read_backups","organization:read_backups"],
++  "backups.updateBackup": ["branch:write_backups","database:write_backups","organization:write_backups"],
++  "billingPaymentMethod.deleteOrganizationBillingPaymentMethod": ["organization:write_payment_method"],
++  "billingPaymentMethod.getOrganizationBillingPaymentMethod": ["organization:read_payment_method"],
++  "billingPaymentMethodSetup.getPaymentMethodSetup": ["organization:write_payment_method"],
++  "billingPaymentMethodSetup.updatePaymentMethod": ["organization:write_payment_method"],
++  "bouncerResizes.cancelBouncerResizeRequest": ["database:write_database","organization:write_databases"],
++  "bouncerResizes.listBouncerResizeRequests": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "bouncerResizes.updateBouncerResizeRequest": ["database:write_database","organization:write_databases"],
++  "bouncers.createBouncer": ["database:write_database","organization:write_databases"],
++  "bouncers.deleteBouncer": ["database:write_database","organization:write_databases"],
++  "bouncers.getBouncer": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "bouncers.listBouncers": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "branchChanges.cancelBranchChangeRequest": ["database:write_database","organization:write_databases"],
++  "branchChanges.getBranchChangeRequest": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "branchChanges.listBranchChangeRequests": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "branchChanges.updateBranchChangeRequest": ["database:write_database","organization:write_databases"],
++  "branchConfigChanges.getBranchConfigChangeRequest": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "branchConfigChanges.listBranchConfigChangeRequests": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "branchLogSignatures.createBranchLogSignature": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "branchVitessParameters.listBranchVitessParameters": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "clusterExtensions.listExtensions": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "clusterParameters.listParameters": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "databaseBranchPasswords.createPassword": ["branch:manage_passwords","branch:manage_read_only_passwords","database:manage_passwords","database:manage_production_branch_passwords","database:manage_production_read_only_passwords","database:manage_read_only_passwords","organization:manage_passwords","organization:manage_production_branch_passwords","organization:manage_production_read_only_passwords","organization:manage_read_only_passwords"],
++  "databaseBranchPasswords.deletePassword": ["branch:manage_passwords","branch:manage_read_only_passwords","database:manage_passwords","database:manage_production_branch_passwords","database:manage_production_read_only_passwords","database:manage_read_only_passwords","organization:manage_passwords","organization:manage_production_branch_passwords","organization:manage_production_read_only_passwords","organization:manage_read_only_passwords"],
++  "databaseBranchPasswords.getPassword": ["branch:manage_passwords","branch:manage_read_only_passwords","database:manage_passwords","database:manage_production_branch_passwords","database:manage_production_read_only_passwords","database:manage_read_only_passwords","organization:manage_passwords","organization:manage_production_branch_passwords","organization:manage_production_read_only_passwords","organization:manage_read_only_passwords"],
++  "databaseBranchPasswords.listPasswords": ["branch:manage_passwords","branch:manage_read_only_passwords","database:manage_passwords","database:manage_production_branch_passwords","database:manage_production_read_only_passwords","database:manage_read_only_passwords","organization:manage_passwords","organization:manage_production_branch_passwords","organization:manage_production_read_only_passwords","organization:manage_read_only_passwords"],
++  "databaseBranchPasswords.renewPassword": ["branch:manage_passwords","branch:manage_read_only_passwords","database:manage_passwords","database:manage_production_branch_passwords","database:manage_production_read_only_passwords","database:manage_read_only_passwords","organization:manage_passwords","organization:manage_production_branch_passwords","organization:manage_production_read_only_passwords","organization:manage_read_only_passwords"],
++  "databaseBranchPasswords.updatePassword": ["branch:manage_passwords","branch:manage_read_only_passwords","database:manage_passwords","database:manage_production_branch_passwords","database:manage_production_read_only_passwords","database:manage_read_only_passwords","organization:manage_passwords","organization:manage_production_branch_passwords","organization:manage_production_read_only_passwords","organization:manage_read_only_passwords"],
++  "databaseBranches.createBranch": ["branch:restore_backups","database:restore_backups","database:restore_production_branch_backups","database:write_branches","organization:restore_backups","organization:restore_production_branch_backups","organization:write_branches"],
++  "databaseBranches.deleteBranch": ["branch:delete_branch","database:delete_branches","database:delete_production_branches","organization:delete_branches","organization:delete_production_branches"],
++  "databaseBranches.demoteBranch": ["database:demote_branches","organization:demote_branches"],
++  "databaseBranches.getBranch": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "databaseBranches.getBranchSchema": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "databaseBranches.lintBranchSchema": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "databaseBranches.listBranches": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "databaseBranches.promoteBranch": ["database:promote_branches","organization:promote_branches"],
++  "databaseBranches.updateBranch": ["branch:write_branch","database:write_branches","database:write_database","organization:write_branches","organization:write_databases"],
++  "databasePostgresIpRestrictions.createDatabasePostgresCidr": ["database:write_database","organization:write_databases"],
++  "databasePostgresIpRestrictions.deleteDatabasePostgresCidr": ["database:write_database","organization:write_databases"],
++  "databasePostgresIpRestrictions.getDatabasePostgresCidr": ["database:read_database","organization:read_databases"],
++  "databasePostgresIpRestrictions.listDatabasePostgresCidrs": ["database:read_database","organization:read_databases"],
++  "databasePostgresIpRestrictions.updateDatabasePostgresCidr": ["database:write_database","organization:write_databases"],
++  "databases.createDatabase": ["organization:create_databases"],
++  "databases.deleteDatabase": ["database:delete_database","organization:delete_databases"],
++  "databases.getDatabase": ["database:read_database","organization:read_databases"],
++  "databases.getDatabaseThrottler": ["database:read_database","organization:read_databases"],
++  "databases.listDatabaseRegions": ["database:read_database","organization:read_databases"],
++  "databases.listDatabases": ["organization:read_databases"],
++  "databases.listReadOnlyRegions": ["database:read_branches","organization:read_branches"],
++  "databases.updateDatabaseSettings": ["database:write_database","organization:write_databases"],
++  "databases.updateDatabaseThrottler": ["database:deploy_deploy_requests","organization:deploy_deploy_requests"],
++  "dedicatedReadReplicas.createDedicatedReadReplica": ["database:write_database","organization:write_databases"],
++  "dedicatedReadReplicas.deleteDedicatedReadReplica": ["database:write_database","organization:write_databases"],
++  "dedicatedReadReplicas.getDedicatedReadReplica": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "dedicatedReadReplicas.listDedicatedReadReplicas": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "dedicatedReadReplicas.updateDedicatedReadReplica": ["database:write_database","organization:write_databases"],
++  "deployRequests.cancelDeployRequest": ["database:deploy_deploy_requests","organization:deploy_deploy_requests"],
++  "deployRequests.checkDeployRequestStorage": ["database:read_deploy_requests","organization:read_deploy_requests"],
++  "deployRequests.closeDeployRequest": ["database:write_deploy_requests","organization:write_deploy_requests"],
++  "deployRequests.completeErroredDeploy": ["database:deploy_deploy_requests","organization:deploy_deploy_requests"],
++  "deployRequests.completeGatedDeployRequest": ["database:deploy_deploy_requests","organization:deploy_deploy_requests"],
++  "deployRequests.completeRevert": ["database:deploy_deploy_requests","organization:deploy_deploy_requests"],
++  "deployRequests.createDeployRequest": ["database:write_deploy_requests","organization:write_deploy_requests"],
++  "deployRequests.forceCutoverDeployRequest": ["database:deploy_deploy_requests","organization:deploy_deploy_requests"],
++  "deployRequests.getDeployRequest": ["database:read_deploy_requests","organization:read_deploy_requests"],
++  "deployRequests.getDeployRequestThrottler": ["database:read_deploy_requests","organization:read_deploy_requests"],
++  "deployRequests.getDeployment": ["database:read_deploy_requests","organization:read_deploy_requests"],
++  "deployRequests.listDeployOperations": ["database:read_deploy_requests","organization:read_deploy_requests"],
++  "deployRequests.listDeployRequestReviews": ["database:read_deploy_requests","organization:read_deploy_requests"],
++  "deployRequests.listDeployRequests": ["database:read_deploy_requests","organization:read_deploy_requests"],
++  "deployRequests.queueDeployRequest": ["database:deploy_deploy_requests","organization:deploy_deploy_requests"],
++  "deployRequests.reviewDeployRequest": ["database:approve_deploy_requests","organization:approve_deploy_requests"],
++  "deployRequests.skipRevertPeriod": ["database:deploy_deploy_requests","organization:deploy_deploy_requests"],
++  "deployRequests.updateAggressiveCutover": ["database:deploy_deploy_requests","organization:deploy_deploy_requests"],
++  "deployRequests.updateAutoApply": ["database:deploy_deploy_requests","organization:deploy_deploy_requests"],
++  "deployRequests.updateAutoDeleteBranch": ["database:deploy_deploy_requests","organization:deploy_deploy_requests"],
++  "deployRequests.updateDeployRequestThrottler": ["database:deploy_deploy_requests","organization:deploy_deploy_requests"],
++  "invoices.getInvoice": ["organization:read_invoices"],
++  "invoices.getInvoiceLineItems": ["organization:read_invoices"],
++  "invoices.listInvoices": ["organization:read_invoices"],
++  "keyspaceConfigChanges.getKeyspaceConfigChangeRequest": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "keyspaceConfigChanges.listKeyspaceConfigChangeRequests": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "maintenanceEvents.getMaintenanceEvent": ["database:read_database","organization:read_databases"],
++  "maintenanceEvents.listMaintenanceEvents": ["database:read_database","organization:read_databases"],
++  "maintenanceEvents.rescheduleMaintenanceEvent": ["database:write_database","organization:write_databases"],
++  "maintenanceSchedules.getBranchMaintenanceWindow": ["database:read_database","organization:read_databases"],
++  "maintenanceSchedules.getMaintenanceSchedule": ["database:read_database","organization:read_databases"],
++  "maintenanceSchedules.listMaintenanceSchedules": ["database:read_database","organization:read_databases"],
++  "maintenanceSchedules.updateBranchMaintenanceWindow": ["database:write_database","organization:write_databases"],
++  "maintenanceSchedules.updateMaintenanceSchedule": ["database:write_database","organization:write_databases"],
++  "maintenanceWindows.listMaintenanceWindows": ["database:read_database","organization:read_databases"],
++  "metrics.getBranchKeyspaceTableMetrics": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "metrics.getBranchMetrics": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "metrics.getBranchQueryMetrics": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "metrics.getBranchTableMetrics": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "metrics.getBranchTagMetrics": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "metrics.getInstantBranchMetrics": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "metrics.getInstantTabletMetrics": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "metrics.getTabletMetrics": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "moveTables.cancelMoveTablesWorkflow": ["database:write_workflows","organization:write_workflows"],
++  "moveTables.completeMoveTablesWorkflow": ["database:write_workflows","organization:write_workflows"],
++  "moveTables.createMoveTablesWorkflow": ["database:write_workflows","organization:write_workflows"],
++  "moveTables.getMoveTablesWorkflow": ["database:read_workflows","organization:read_workflows"],
++  "moveTables.getMoveTablesWorkflowStatus": ["database:read_workflows","organization:read_workflows"],
++  "moveTables.listMoveTablesWorkflows": ["database:read_workflows","organization:read_workflows"],
++  "moveTables.reverseTrafficMoveTablesWorkflow": ["database:write_workflows","organization:write_workflows"],
++  "moveTables.startMoveTablesWorkflow": ["database:write_workflows","organization:write_workflows"],
++  "moveTables.stopMoveTablesWorkflow": ["database:write_workflows","organization:write_workflows"],
++  "moveTables.switchTrafficMoveTablesWorkflow": ["database:write_workflows","organization:write_workflows"],
++  "organizationInvitations.cancelOrganizationInvitation": ["organization:write_members"],
++  "organizationInvitations.createOrganizationInvitation": ["organization:write_members"],
++  "organizationInvitations.listOrganizationInvitations": ["organization:write_members"],
++  "organizationMembers.getOrganizationMembership": ["organization:read_organization"],
++  "organizationMembers.listOrganizationMembers": ["organization:read_organization"],
++  "organizationMembers.removeOrganizationMember": ["organization:write_organization"],
++  "organizationMembers.updateOrganizationMembership": ["organization:write_organization"],
++  "organizationSso.configureOrganizationSso": ["organization:manage_sso"],
++  "organizationSso.disableOrganizationSso": ["organization:manage_sso"],
++  "organizationSso.disableOrganizationSsoDirectory": ["organization:manage_sso"],
++  "organizationSso.enableOrganizationSso": ["organization:manage_sso"],
++  "organizationSso.enableOrganizationSsoDirectory": ["organization:manage_sso"],
++  "organizationSso.getOrganizationSso": ["organization:manage_sso"],
++  "organizationSsoDomains.createOrganizationSsoDomain": ["organization:manage_sso"],
++  "organizationSsoDomains.deleteOrganizationSsoDomain": ["organization:manage_sso"],
++  "organizationSsoDomains.getOrganizationSsoDomain": ["organization:manage_sso"],
++  "organizationSsoDomains.listOrganizationSsoDomains": ["organization:manage_sso"],
++  "organizationTeams.createOrganizationTeam": ["organization:write_organization"],
++  "organizationTeams.deleteOrganizationTeam": ["organization:write_organization"],
++  "organizationTeams.getOrganizationTeam": ["organization:read_organization"],
++  "organizationTeams.listOrganizationTeams": ["organization:read_organization"],
++  "organizationTeams.updateOrganizationTeam": ["organization:write_organization"],
++  "organizations.getOrganization": ["organization:read_organization","user:read_organizations"],
++  "organizations.listAuditLogs": ["organization:read_audit_logs"],
++  "organizations.listClusterSizeSkus": ["organization:read_organization","user:read_organizations"],
++  "organizations.listOrganizations": ["user:read_organizations"],
++  "organizations.listRegionsForOrganization": ["organization:read_organization","user:read_organizations"],
++  "organizations.updateOrganization": ["organization:write_organization"],
++  "queryInsightsReports.createQueryPatternsReport": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "queryInsightsReports.deleteQueryPatternsReport": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "queryInsightsReports.getQueryPatternsReport": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "queryInsightsReports.getQueryPatternsReportStatus": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "queryInsightsReports.listGeneratedQueryPatternsReports": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "roles.createRole": ["branch:manage_passwords","branch:manage_read_only_passwords","database:manage_passwords","database:manage_production_branch_passwords","database:manage_production_read_only_passwords","database:manage_read_only_passwords","organization:manage_passwords","organization:manage_production_branch_passwords","organization:manage_production_read_only_passwords","organization:manage_read_only_passwords"],
++  "roles.deleteRole": ["branch:manage_passwords","branch:manage_read_only_passwords","database:manage_passwords","database:manage_production_branch_passwords","database:manage_production_read_only_passwords","database:manage_read_only_passwords","organization:manage_passwords","organization:manage_production_branch_passwords","organization:manage_production_read_only_passwords","organization:manage_read_only_passwords"],
++  "roles.getDefaultRole": ["branch:manage_passwords","branch:manage_read_only_passwords","database:manage_passwords","database:manage_production_branch_passwords","database:manage_production_read_only_passwords","database:manage_read_only_passwords","organization:manage_passwords","organization:manage_production_branch_passwords","organization:manage_production_read_only_passwords","organization:manage_read_only_passwords"],
++  "roles.getRole": ["branch:manage_passwords","branch:manage_read_only_passwords","database:manage_passwords","database:manage_production_branch_passwords","database:manage_production_read_only_passwords","database:manage_read_only_passwords","organization:manage_passwords","organization:manage_production_branch_passwords","organization:manage_production_read_only_passwords","organization:manage_read_only_passwords"],
++  "roles.listRoles": ["branch:manage_passwords","branch:manage_read_only_passwords","database:manage_passwords","database:manage_production_branch_passwords","database:manage_production_read_only_passwords","database:manage_read_only_passwords","organization:manage_passwords","organization:manage_production_branch_passwords","organization:manage_production_read_only_passwords","organization:manage_read_only_passwords"],
++  "roles.reassignRoleObjects": ["branch:manage_passwords","branch:manage_read_only_passwords","database:manage_passwords","database:manage_production_branch_passwords","database:manage_production_read_only_passwords","database:manage_read_only_passwords","organization:manage_passwords","organization:manage_production_branch_passwords","organization:manage_production_read_only_passwords","organization:manage_read_only_passwords"],
++  "roles.renewRole": ["branch:manage_passwords","branch:manage_read_only_passwords","database:manage_passwords","database:manage_production_branch_passwords","database:manage_production_read_only_passwords","database:manage_read_only_passwords","organization:manage_passwords","organization:manage_production_branch_passwords","organization:manage_production_read_only_passwords","organization:manage_read_only_passwords"],
++  "roles.resetDefaultRole": ["branch:manage_passwords","branch:manage_read_only_passwords","database:manage_passwords","database:manage_production_branch_passwords","database:manage_production_read_only_passwords","database:manage_read_only_passwords","organization:manage_passwords","organization:manage_production_branch_passwords","organization:manage_production_read_only_passwords","organization:manage_read_only_passwords"],
++  "roles.resetRole": ["branch:manage_passwords","branch:manage_read_only_passwords","database:manage_passwords","database:manage_production_branch_passwords","database:manage_production_read_only_passwords","database:manage_read_only_passwords","organization:manage_passwords","organization:manage_production_branch_passwords","organization:manage_production_read_only_passwords","organization:manage_read_only_passwords"],
++  "roles.updateRole": ["branch:manage_passwords","branch:manage_read_only_passwords","database:manage_passwords","database:manage_production_branch_passwords","database:manage_production_read_only_passwords","database:manage_read_only_passwords","organization:manage_passwords","organization:manage_production_branch_passwords","organization:manage_production_read_only_passwords","organization:manage_read_only_passwords"],
++  "schemaRecommendations.dismissSchemaRecommendation": ["database:write_database","organization:write_databases"],
++  "schemaRecommendations.getSchemaRecommendation": ["database:read_database","organization:read_databases"],
++  "schemaRecommendations.listSchemaRecommendations": ["database:read_database","organization:read_databases"],
++  "switchovers.createSwitchover": ["database:write_database","organization:write_databases"],
++  "switchovers.getSwitchover": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "switchovers.listSwitchovers": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "teamMembers.addOrganizationTeamMember": ["organization:write_organization"],
++  "teamMembers.getOrganizationTeamMember": ["organization:read_organization"],
++  "teamMembers.listOrganizationTeamMembers": ["organization:read_organization"],
++  "teamMembers.removeOrganizationTeamMember": ["organization:write_organization"],
++  "trafficBudgets.createTrafficBudget": ["database:write_database","organization:write_databases"],
++  "trafficBudgets.deleteTrafficBudget": ["database:write_database","organization:write_databases"],
++  "trafficBudgets.getTrafficBudget": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "trafficBudgets.listTrafficBudgets": ["branch:read_branch","database:read_branches","organization:read_branches"],
++  "trafficBudgets.updateTrafficBudget": ["database:write_database","organization:write_databases"],
++  "trafficRules.createTrafficRule": ["database:write_database","organization:write_databases"],
++  "trafficRules.deleteTrafficRule": ["database:write_database","organization:write_databases"],
++  "users.getCurrentUser": ["user:read_user"],
++  "vtctldOperations.getVtctldOperation": ["branch:manage_topology","database:manage_branch_topologies","database:manage_production_branch_topologies","database:read_workflows","organization:manage_branch_topologies","organization:manage_production_branch_topologies","organization:read_workflows"],
++  "webhooks.createWebhook": ["database:write_database","organization:write_databases"],
++  "webhooks.deleteWebhook": ["database:write_database","organization:write_databases"],
++  "webhooks.getWebhook": ["database:read_database","organization:read_databases"],
++  "webhooks.listWebhooks": ["database:read_database","organization:read_databases"],
++  "webhooks.testWebhook": ["database:write_database","organization:write_databases"],
++  "webhooks.updateWebhook": ["database:write_database","organization:write_databases"],
++};

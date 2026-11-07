@@ -1,0 +1,141 @@
+diff --git a/apps/hosted/server/src/implementation/planetscale-oauth.ts b/apps/hosted/server/src/implementation/planetscale-oauth.ts
+--- a/apps/hosted/server/src/implementation/planetscale-oauth.ts
++++ b/apps/hosted/server/src/implementation/planetscale-oauth.ts
+@@ -1,5 +1,10 @@
+ import type { FirstPartyOAuthClientDefinition } from "./first-party-oauth.ts";
+ 
++/**
++ * The hosted app's configured permissions. Each one lets a token call at least one operation in
++ * PlanetScale's API document, and `user:read_organizations` covers the account check. The app's
++ * PlanetScale OAuth application must have exactly these selected.
++ */
+ const scopes = [
+   "read_user",
+   "read_organization",
+@@ -17,20 +22,44 @@
+   "organization:write_deploy_requests",
+   "organization:approve_deploy_requests",
+   "organization:deploy_deploy_requests",
+-  "organization:read_comments",
+-  "organization:write_comments",
+   "organization:read_backups",
+   "organization:write_backups",
+   "organization:delete_backups",
+   "organization:restore_backups",
+   "organization:manage_passwords",
+   "organization:manage_read_only_passwords",
+-  "organization:read_members",
+   "organization:read_workflows",
+   "organization:write_workflows",
+   "organization:read_audit_logs",
++  "user:read_organizations",
++  "organization:promote_branches",
++  "database:demote_branches",
++  "organization:write_members",
++  "organization:manage_sso",
++  "organization:read_payment_method",
++  "organization:write_payment_method",
++  "organization:read_invoices",
+ ];
+ 
++// PlanetScale advertises each unprefixed scope as an alias of its resource-prefixed form and may
++// report either one in a grant.
++const scopeImplications = {
++  read_user: ["user:read_user"],
++  "user:read_user": ["read_user"],
++  write_user: ["user:write_user"],
++  "user:write_user": ["write_user"],
++  read_organizations: ["user:read_organizations"],
++  "user:read_organizations": ["read_organizations"],
++  read_organization: ["organization:read_organization"],
++  "organization:read_organization": ["read_organization"],
++  write_organization: ["organization:write_organization"],
++  "organization:write_organization": ["write_organization"],
++  read_databases: ["organization:read_databases"],
++  "organization:read_databases": ["read_databases"],
++  write_databases: ["organization:write_databases"],
++  "organization:write_databases": ["write_databases"],
++};
++
+ /** Shared hosted client for the catalog app; credentials remain optional host settings. */
+ export const planetScaleOAuthClient: FirstPartyOAuthClientDefinition = {
+   id: "planetscale",
+@@ -39,7 +68,9 @@
+     issuer: "https://api.planetscale.com",
+     authorizationUrl: "https://app.planetscale.com/oauth/authorize",
+     tokenUrl: "https://auth.planetscale.com/oauth/token",
++    scopeImplications,
+   },
+   tokenEndpointAuthMethod: "client_secret_basic",
++  requireScopeConfirmation: true,
+   defaultScopes: scopes,
+   allowedScopes: scopes,
+diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
+--- a/packages/sdk/src/contracts/oauth.ts
++++ b/packages/sdk/src/contracts/oauth.ts
+@@ -473,6 +473,8 @@
+   tokenEndpointAuthMethod: OAuthClientAuth,
+   /** Requested for a provider method that asks for no scopes. */
+   defaultScopes: Schema.Array(ScopeToken),
++  /** Request the configured defaults without narrowing to advertised scopes, then require confirmation. */
++  requireScopeConfirmation: Schema.optionalKey(Schema.Boolean),
+   /** Every scope a sign-in may ask for and a grant may hold. Defaults to `defaultScopes`. */
+   allowedScopes: Schema.optionalKey(Schema.Array(ScopeToken)),
+   placement: ManagedPlacement,
+diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
+--- a/packages/sdk/src/implementation/oauth.ts
++++ b/packages/sdk/src/implementation/oauth.ts
+@@ -2,6 +2,7 @@
+ import { projectOAuthFields as project } from "./oauth-fields.ts";
+ import type { AppAccountUse, ResourceLifecycle } from "../contracts/executor.ts";
+ import { missingOAuthScopes, oauthIdentityConsent } from "../contracts/oauth-families.ts";
++import { oauthScopeEvidence } from "./oauth-scope-evidence.ts";
+ import { AccountFamilyConfiguration } from "../contracts/account-family-recipes.ts";
+ import { requireAccountConsumerMethod } from "./account-consumer-plan.ts";
+ import type { BackgroundWork } from "../contracts/declarations.ts";
+@@ -691,7 +692,9 @@
+         continue;
+       const allowed = allowedScopes(client);
+       if (discovered.scopesAdvertised === true && discovered.scopes.length > 0) {
+-        const scopes = discovered.scopes.filter((scope) => allowed.includes(scope));
++        const scopes = client.requireScopeConfirmation === true
++          ? client.defaultScopes
++          : discovered.scopes.filter((scope) => allowed.includes(scope));
+         if (scopes.length === 0) continue;
+         return { client, scopes };
+       }
+@@ -2566,6 +2569,34 @@
+           reason: "scope_exceeded",
+           cause: { stage: "exchange", field: "scope" },
+         });
++      }
++      if (isFirstPartyAttempt(attempt)) {
++        const client = firstPartyClients.get(attempt.firstParty);
++        if (client?.requireScopeConfirmation === true) {
++          const requested = attempt.requestedScopes ?? [];
++          const reported = normalizeOAuthScopes(tokens.scope, client.server.grantedScopeSeparator);
++          const granted = grantedScopes(client, tokens.scope);
++          const recipes = options?.accountFamilies ?? (yield* AccountFamilyConfiguration).recipes;
++          const missing = missingOAuthScopes(attempt.identity?.issuer, requested, granted, recipes);
++          if (requested.length > 0 && (granted === undefined || missing.length > 0)) {
++            yield* revokeRefused(attempt.firstParty, attempt.site, {
++              refreshToken: tokens.refresh_token,
++              accessToken: tokens.access_token,
++            });
++            return yield* new OAuthCompletionFailed({
++              reason: "scope_missing",
++              cause: { stage: "exchange", field: "scope" },
++              ...oauthScopeEvidence(
++                attempt.identity?.issuer,
++                requested,
++                reported,
++                missing,
++                oauthScopeClosure(allowedScopes(client), client.server.scopeImplications),
++                recipes,
++              ),
++            });
++          }
++        }
+       }
+       const fields = yield* project(attempt.response, tokens).pipe(
+         Effect.mapError(

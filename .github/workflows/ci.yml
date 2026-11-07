@@ -234,6 +234,47 @@ jobs:
           path: ${{ runner.temp }}/connector-evidence.json
           if-no-files-found: error
 
+  planetscale-sign-in:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'planetscale-sign-in')
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - run: bun run --cwd .upstream e2e:prepare
+      - run: bunx playwright install --with-deps chromium
+        working-directory: .upstream
+      - name: Verify hosted PlanetScale sign-in asks for the full reviewed permissions
+        run: bun e2e/planetscale-sign-in.mjs .generated/planetscale-sign-in/ci hosted
+      - name: Verify the registered fallback lists only granted tools
+        if: success() || failure()
+        run: bun e2e/planetscale-sign-in.mjs .generated/planetscale-sign-in/ci dcr
+      - name: Verify missing scope data preserves legacy tools and reports unknown
+        if: success() || failure()
+        run: bun e2e/planetscale-sign-in.mjs .generated/planetscale-sign-in/ci unknown
+      - name: Verify a refused hosted permission is recoverable and saves no account
+        if: success() || failure()
+        run: bun e2e/planetscale-sign-in.mjs .generated/planetscale-sign-in/ci refused
+      - name: Verify an unreported hosted grant is refused before account save
+        if: success() || failure()
+        run: bun e2e/planetscale-sign-in.mjs .generated/planetscale-sign-in/ci unreported
+      - name: Collect sanitized connector diagnostics
+        if: always()
+        run: node scripts/ci/collect-connector-evidence.mjs planetscale-sign-in "$RUNNER_TEMP/connector-evidence.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: planetscale-sign-in-evidence
+          path: ${{ runner.temp }}/connector-evidence.json
+          if-no-files-found: error
+
   vercel-sign-in:
     needs: select
     if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'vercel-sign-in')
@@ -2040,6 +2081,7 @@ jobs:
         account-usage,
         workos-sign-in,
         gitlab-sign-in,
+        planetscale-sign-in,
         vercel-sign-in,
         elevenlabs-sign-in,
         boat-bundle,

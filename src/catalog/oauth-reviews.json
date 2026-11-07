@@ -3644,9 +3644,15 @@
       "methods": {
         "oauth2": {
           "kind": "deferred",
-          "message": "Signalbox has not verified one-click sign-in for PlanetScale yet. You can connect with your own OAuth app."
+          "message": "Existing PlanetScale OAuth accounts remain connected. Use the separate sign-in method for new OAuth accounts."
+        },
+        "signIn": {
+          "kind": "hosted",
+          "client": "planetscale",
+          "message": "Shared sign-in for PlanetScale is not configured on this host. You can connect with your own OAuth app or a service token."
         }
-      }
+      },
+      "sourceSha256": "bd3cacd797a26ccb3843d0fdbbc2d26ab85f2019e9207e0589190ff6fd1797e8"
     },
     {
       "entry": "planning-center-online",

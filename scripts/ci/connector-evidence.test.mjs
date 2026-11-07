@@ -17,6 +17,13 @@ const layouts = {
   "slack-health": ["slack-health/ci"],
   "workos-sign-in": ["workos-sign-in/ci"],
   "gitlab-sign-in": ["gitlab-sign-in/ci"],
+  "planetscale-sign-in": [
+    "planetscale-sign-in/ci/hosted",
+    "planetscale-sign-in/ci/dcr",
+    "planetscale-sign-in/ci/unknown",
+    "planetscale-sign-in/ci/refused",
+    "planetscale-sign-in/ci/unreported",
+  ],
   "vercel-sign-in": ["vercel-sign-in/ci"],
   "elevenlabs-sign-in": ["elevenlabs-sign-in/ci"],
   "catalog-compat": ["catalog-compat/ci", "elevenlabs-discovery/ci"],
