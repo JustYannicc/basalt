@@ -81,6 +81,11 @@ export async function startZohoPeopleFixture(scopes) {
         assert.deepEqual(JSON.parse(url.searchParams.get("leave_type_ids")), ["leave-fixture"]);
         return json(response, { status: "success", data: { leaves: [] } });
       }
+      if (url.pathname === "/people/api/v2/leavetracker/leaves/records/cancel/leave-fixture") {
+        assert.equal(request.method, "PATCH");
+        assert.equal(url.searchParams.get("reason"), "Rescheduling fixture leave");
+        return json(response, { response: { status: 0, result: { cancelled: true } } });
+      }
       if (url.pathname === "/people/api/forms/json/fixture/insertRecord") {
         assert.equal(request.headers["content-type"], "application/x-www-form-urlencoded");
         forms.push(JSON.parse(body.get("inputData")));

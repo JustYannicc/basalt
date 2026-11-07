@@ -5280,7 +5280,7 @@
     {
       "entry": "zoho-people",
       "package": "@signalbox/zoho-people",
-      "sourceSha256": "838a61e06be044f76f8e3b294c370c62fa4606728ff648380cfbf1c521cb9644",
+      "sourceSha256": "31569b52bcae5a1d56d06ca6350b2438b4ac64df78ac3078c8a69219f80527d4",
       "methods": {
         "oauthEu": {
           "kind": "hosted",

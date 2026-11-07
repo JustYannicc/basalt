@@ -268,6 +268,12 @@ const program = Effect.gen(function* () {
     query: { from_date: "2026-11-01", to_date: "2026-11-07", leave_type_ids: ["leave-fixture"] },
   });
   yield* approve(
+    call("leaveTracker.cancelLeaveRequestV2", {
+      path: { record_id: "leave-fixture" },
+      query: { reason: "Rescheduling fixture leave" },
+    }),
+  );
+  yield* approve(
     call("formsData.insertFormRecord", {
       path: { formLinkName: "fixture" },
       body: { inputData: { label: "value" } },
