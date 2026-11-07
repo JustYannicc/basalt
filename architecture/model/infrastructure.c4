@@ -141,7 +141,7 @@ model {
   hrService = adapter "HR service" {
     #external
     technology "Zoho People API and regional OAuth"
-    metadata { hosts "people.zoho.eu|people.zoho.com|people.zoho.in|api-console.zoho.eu|api-console.zoho.com|api-console.zoho.in" }
+    metadata { hosts "people.zoho.eu|people.zoho.com|people.zoho.in|help.zoho.com|mcp.zoho.eu|mcp.zoho.com|mcp.zoho.in|api-console.zoho.eu|api-console.zoho.com|api-console.zoho.in" }
   }
   basalt.toolsGateway -[sync]-> hrService "authorize and call the person's regional HR account"
   basalt.build -[sync]-> hrService "verify the documented contracts using isolated fixtures"

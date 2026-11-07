@@ -19,7 +19,12 @@ const layouts = {
   "clerk-sign-in": ["clerk-sign-in/ci"],
   "vercel-sign-in": ["vercel-sign-in/ci"],
   "elevenlabs-sign-in": ["elevenlabs-sign-in/ci"],
-  "catalog-compat": ["catalog-compat/ci", "elevenlabs-discovery/ci", "zoho-people/ci"],
+  "catalog-compat": [
+    "catalog-compat/ci",
+    "elevenlabs-discovery/ci",
+    "zoho-people/ci",
+    "zoho-people-mcp/ci",
+  ],
 };
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "connector-evidence-"));
