@@ -60,6 +60,7 @@
     ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx",
     ".upstream/apps/hosted/web/src/implementation/pages/app-detail.tsx",
     ".upstream/apps/hosted/web/src/implementation/pages/connect-account.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/connection-dialog.tsx",
     ".upstream/packages/apps/protocols/25.json",
     ".upstream/packages/apps/src/contracts/protocol-version.ts",
     ".upstream/packages/apps/src/contracts/protocols/24.ts",
@@ -78,6 +79,8 @@
     ".upstream/packages/ui/src/implementation/dashboard/account-form.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/common.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/method-labels.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/requirement-titles.ts",
     ".upstream/packages/ui/src/implementation/lib/provider-brand.ts",
     ".upstream/packages/ui/src/implementation/styles/dashboard.css"
   ]

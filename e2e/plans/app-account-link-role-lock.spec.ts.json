@@ -1,0 +1,28 @@
+{
+  "scenarios": {
+    "hostedAppLinkRoleLock": {
+      "fixtures": "actors",
+      "title": "an app link that waits for the admin's membership while a demotion commits is refused with the committed role",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Self-host's single PGlite connection runs one transaction at a time, so a demotion cannot commit while a link waits on the membership."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no organization roles."
+        }
+      }
+    }
+  },
+  "runs": {
+    "hostedAppLinkRoleLock": [
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement"
+    ]
+  },
+  "inherited": []
+}

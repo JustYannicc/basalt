@@ -1,13 +1,110 @@
 {
-  "scenarios": {},
-  "runs": {},
-  "inherited": [
-    "accountLinking",
-    "accountSetDeclarations",
-    "accountChoice",
-    "accountAppTabs",
-    "accountVersion"
-  ],
+  "scenarios": {
+    "accountAppTabs": {
+      "fixtures": "actors",
+      "appOrigin": true,
+      "title": "authored app pages open bookmarks directly and run with the caller's linked accounts, whatever accounts the page names, until unlinking narrows them",
+      "targets": {
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted browser authority journey."
+        },
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        }
+      }
+    },
+    "accountChoice": {
+      "fixtures": "actors",
+      "title": "replacing a plain requirement's account in the Accounts tab, by linking a saved account or connecting a new one, keeps the old one saved, runs later calls as the new one and leaves other members' links alone",
+      "targets": {
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted browser authority journey."
+        },
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        }
+      }
+    },
+    "accountLinking": {
+      "fixtures": "actors",
+      "title": "connecting accounts from an app's Accounts tab links each only to the requirement it was connected for and discards cancelled drafts, so a plain requirement and a many() requirement sharing its provider run with their own links",
+      "targets": {
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has its own link scenarios; this is the hosted member journey."
+        },
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        }
+      }
+    },
+    "accountSetDeclarations": {
+      "fixtures": "actors",
+      "title": "many() uses every linked account: connecting or linking another adds it and unlinking one narrows tool calls and skills",
+      "targets": {
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted links change through the Accounts tab; local covers its own links."
+        },
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        }
+      }
+    },
+    "accountVersion": {
+      "fixtures": "actors",
+      "title": "open tool tabs follow a version and keep running with the linked accounts",
+      "targets": {
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted browser authority journey."
+        },
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "attached"
+        }
+      }
+    }
+  },
+  "runs": {
+    "accountAppTabs": [
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ],
+    "accountChoice": [
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ],
+    "accountLinking": [
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ],
+    "accountSetDeclarations": [
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ],
+    "accountVersion": [
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ]
+  },
+  "inherited": [],
   "inputs": [
     ".upstream/apps/hosted/server/src/contracts/accounts.ts",
     ".upstream/apps/hosted/server/src/contracts/app-accounts.ts",

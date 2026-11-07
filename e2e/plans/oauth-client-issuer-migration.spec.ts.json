@@ -1,7 +1,33 @@
 {
-  "scenarios": {},
-  "runs": {},
-  "inherited": ["oauthClientIssuerMigration"],
+  "scenarios": {
+    "oauthClientIssuerMigration": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "serverEnvironment": {
+        "EXECUTOR_DATA_STEPS": "report"
+      },
+      "title": "Upgrading OAuth clients stored per provider records each one's authorization server, merges an organization's clients holding the same details for one server into one with the union of their audiences, and leaves a client whose server is unknown offered to no sign-in",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Legacy rows need a runner-owned database; Cloud cases share one Worker and database."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted audiences; the SDK step is shared with self-host."
+        }
+      }
+    }
+  },
+  "runs": {
+    "oauthClientIssuerMigration": [
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ]
+  },
+  "inherited": [],
   "inputs": [
     ".upstream/apps/hosted/cloud/alchemy.run.ts",
     ".upstream/apps/hosted/cloud/scripts/build-site.ts",

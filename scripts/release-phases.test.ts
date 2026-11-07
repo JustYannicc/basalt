@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { discoverReleasePhaseProof } from "./architecture/native-stack.ts";
 import { deployInPhases } from "./release-phases/deploy.ts";
+import { deployEnvironment, requiredSecrets } from "./environment.ts";
 import {
   checkReleaseHeadroom,
   primaryHeadroom,
@@ -178,6 +183,66 @@ test("headroom failure starts no barrier; admitted releases invoke one barrier w
     /separate shared-domain stack/,
   );
   assert.equal(calls.length, 2);
+});
+
+test("the barrier receives the Basalt checkout SHA when its working directory is a nested upstream repository", async (context) => {
+  const checkout = mkdtempSync(join(tmpdir(), "barrier-release-identity-"));
+  context.after(() => rmSync(checkout, { recursive: true, force: true }));
+  const cloud = join(checkout, ".upstream", "apps", "hosted", "cloud");
+  mkdirSync(cloud, { recursive: true });
+  const commit = (directory: string, message: string) => {
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-C", directory, ...args], { encoding: "utf8" }).trim();
+    git("init", "--quiet");
+    git(
+      "-c",
+      "user.name=Release fixture",
+      "-c",
+      "user.email=release@example.invalid",
+      "commit",
+      "--allow-empty",
+      "--quiet",
+      "-m",
+      message,
+    );
+    return git("rev-parse", "HEAD");
+  };
+  const release = commit(checkout, "Basalt release");
+  const upstream = commit(cloud, "Pinned upstream");
+  assert.notEqual(release, upstream);
+  const settings = deployEnvironment(
+    {
+      ...Object.fromEntries(requiredSecrets.map((name) => [name, "fixture"])),
+      POOL_APP_SIGNING_KEY: "ab".repeat(32),
+      POOL_DEPLOYMENT_KEY: "ef".repeat(32),
+      BASALT_RELEASE_CANDIDATE: upstream,
+    },
+    checkout,
+  );
+  let candidate: string | undefined;
+  await deployInPhases({
+    cloud,
+    environment: settings,
+    sharedFoundation: false,
+    preflight: async () => ({ observed: 14, ordinarySlots: 22, envelope: 7 }),
+    execute: (_command, _args, _cwd, environment) => {
+      candidate = environment?.BASALT_RELEASE_CANDIDATE;
+    },
+  });
+  assert.equal(candidate, release);
+  for (const invalid of [undefined, "not-a-commit"]) {
+    await assert.rejects(
+      deployInPhases({
+        cloud,
+        environment: { ...settings, BASALT_RELEASE_CANDIDATE: invalid },
+        sharedFoundation: false,
+        preflight: async () => {
+          throw new Error("must validate identity before preflight");
+        },
+      }),
+      /immutable candidate/,
+    );
+  }
 });
 
 test(

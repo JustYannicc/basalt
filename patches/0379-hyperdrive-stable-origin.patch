@@ -1,0 +1,29 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/database.ts b/apps/hosted/cloud/src/infrastructure/database.ts
+--- a/apps/hosted/cloud/src/infrastructure/database.ts
++++ b/apps/hosted/cloud/src/infrastructure/database.ts
+@@ -59,7 +59,7 @@
+  * The runtime role's two routes into Postgres. `url` is PgBouncer (port 6432 on PlanetScale),
+  * bound as the `DatabaseUrl` secret. `hyperdrive` holds the props of the Hyperdrive configuration
+  * in front of it, evaluated only when the stack declares that configuration; it is absent where
+- * Hyperdrive does not front the database (Neon previews). Both wait for the migration job.
++ * Hyperdrive does not front the database (Neon previews). Runtime URLs wait for migrations.
+  */
+ const runtimeDatabase = (
+   url: Output.Output<Redacted.Redacted<string>, never>,
+@@ -242,13 +242,14 @@
+     database,
+     inheritedRoles: ["pg_read_all_data", "pg_write_all_data"],
+   });
+-  // Every database consumer waits for the migration, including an existing Worker update.
++  // Direct runtime URLs wait for migrations. The release database phase gates Worker activation;
++  // Hyperdrive configuration must not depend on per-attempt Command outputs.
+   const migrated = Output.all(role.pooledOrigin, migrations.hash, budget.hash).pipe(
+     Output.map(([origin]) => origin),
+   );
+   return runtimeDatabase(
+     migrated.pipe(Output.map(postgresUrl)),
+-    Option.some(hyperdriveProps(migrated, connectionLimit)),
++    Option.some(hyperdriveProps(role.pooledOrigin, connectionLimit)),
+   );
+ });
+ 

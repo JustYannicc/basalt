@@ -1,0 +1,35 @@
+{
+  "scenarios": {
+    "appWorkerCredentialRotation": {
+      "fixtures": "actors",
+      "title": "app Workers stay loaded across credential rotation without sharing one account's state with another",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local key replacement is covered by the local app Worker reuse scenario."
+        }
+      }
+    }
+  },
+  "runs": {
+    "appWorkerCredentialRotation": [
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ]
+  },
+  "inherited": [
+    "appWorkerWorkflowRuns",
+    "appWorkerSharedContexts",
+    "appWorkerColdStartFailure",
+    "appBuildLoads",
+    "appWorkerAttribution",
+    "appWorkerOAuthRefresh"
+  ]
+}

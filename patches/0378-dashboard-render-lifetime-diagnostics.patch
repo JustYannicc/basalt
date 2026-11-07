@@ -1,0 +1,719 @@
+--- a/patches/alchemy@2.0.0-beta.80.patch
++++ b/patches/alchemy@2.0.0-beta.80.patch
+@@ -2903,10 +2903,9 @@
+                              binding.namespaceId ??
+                                  encodeURIComponent(`${binding.scriptName}-${binding.className}`);
+ diff --git a/lib/Cloudflare/Workers/WorkerBridge.js b/lib/Cloudflare/Workers/WorkerBridge.js
+-index 1d27a07a4da06307c0b8113999cf33585c0bd1d1..553a8c513fbcfa05a2e8f2e770c3e2af166a4ec2 100644
+ --- a/lib/Cloudflare/Workers/WorkerBridge.js
+ +++ b/lib/Cloudflare/Workers/WorkerBridge.js
+-@@ -17,7 +17,7 @@ import { Self } from "../../Self.js";
++@@ -17,10 +17,18 @@
+  import { StackContext } from "../../StackContext.js";
+  import { buildEventTelemetry } from "../../TelemetryRuntime.js";
+  import { CloudflareEnvironment } from "../CloudflareEnvironmentService.js";
+@@ -2915,12 +2914,43 @@
+  import { isScopeEjected } from "./HttpServer.js";
+  import { ErrorTag, encodeRpcError, toRpcStream, } from "./Rpc.js";
+  import { ExportedHandlerMethods, WorkerEnvironment, WorkerExecutionContext, deferredExecutionContext, fromExecutionContext, } from "./WorkerRuntime.js";
+-@@ -32,10 +32,10 @@ export const makeWorkerBridge = (Base, { stack, entrypoint, }) => {
+++const dashboardRenderPhases = {
+++  runtimeWait: { begin: { name: "basalt.dashboard.runtime_wait.begin" }, end: { name: "basalt.dashboard.runtime_wait.end" } },
+++  initialize: { begin: { name: "basalt.dashboard.wait_until.initialize.begin" }, end: { name: "basalt.dashboard.wait_until.initialize.end" } },
+++  export: { begin: { name: "basalt.dashboard.wait_until.export.begin" }, end: { name: "basalt.dashboard.wait_until.export.end" } },
+++  cleanupWait: { begin: { name: "basalt.dashboard.wait_until.cleanup.begin" }, end: { name: "basalt.dashboard.wait_until.cleanup.end" } },
+++  cleanup: { begin: { name: "basalt.dashboard.alchemy_cleanup.begin" }, end: { name: "basalt.dashboard.alchemy_cleanup.end" } },
+++};
+++
++ /**
++  * Makes the WorkerEntrypoint class and bridges to Effect fetch and RPC calls.
++  */
++@@ -30,12 +38,29 @@
++         stack,
++         exportName: "default",
+      });
+-     const processEvent = (makeEffect, ctx, env, onExit) => {
++-    const processEvent = (makeEffect, ctx, env, onExit) => {
+++    const processEvent = (makeEffect, ctx, env, onExit, diagnosticRender = false) => {
+++        const diagnostics = diagnosticRender && env?.BASALT_DASHBOARD_RENDER_DIAGNOSTICS === "1";
+++        const observe = (run, phase) => {
+++            const pair = dashboardRenderPhases[phase];
+++            if (diagnostics) console.log(pair.begin);
+++            let promise;
+++            try {
+++                promise = run();
+++            } catch (cause) {
+++                if (diagnostics) console.log(pair.end);
+++                throw cause;
+++            }
+++            if (diagnostics) {
+++                void promise.then(() => { console.log(pair.end); }, () => { console.log(pair.end); });
+++            }
+++            return promise;
+++        };
+++    const pin = (promise, phase = "export") => ctx.waitUntil(observe(() => promise, phase));
+          const scope = Scope.makeUnsafe();
+ -        return build((promise) => ctx.waitUntil(promise))
+-+        return platformSpan("alchemy.response", () => platformSpan("alchemy.runtime.wait", () => build((promise) => ctx.waitUntil(promise)))
+++        return platformSpan("alchemy.response", () => platformSpan("alchemy.runtime.wait", () => observe(() => build(pin), "runtimeWait"))
+              .then((built) => {
+              const [eff, services] = makeEffect(built);
+ -            return eff.pipe(
+@@ -2928,7 +2958,7 @@
+              // Per-event services take precedence over the captured services
+              // and the built isolate context: the isolate context carries the
+              // *deferred* WorkerExecutionContext (yieldable in the top-level
+-@@ -51,12 +51,12 @@ export const makeWorkerBridge = (Base, { stack, entrypoint, }) => {
++@@ -51,21 +76,22 @@
+              // so buffered telemetry flushes when the scope closes into
+              // `ctx.waitUntil` below — never on workerd's ephemeral
+              // isolate scope.
+@@ -2942,17 +2972,29 @@
+ +            .then((exit) => onExit(exit, scope)))
+              .finally(() => isScopeEjected(scope)
+              ? undefined
+-             : ctx.waitUntil(
+-@@ -65,7 +65,7 @@ export const makeWorkerBridge = (Base, { stack, entrypoint, }) => {
++-            : ctx.waitUntil(
+++            : ctx.waitUntil(observe(() =>
++             // The HttpMiddleware tracer ends the request's root span in a
++             // dispatcher task scheduled after the handler effect resolves.
+              // Yield one macrotask before closing the scope so that span
+              // reaches the telemetry exporter's buffer before the scope's
+              // flush finalizer runs.
+ -            new Promise((resolve) => setTimeout(resolve, 0)).then(() => Effect.runPromise(Scope.close(scope, Exit.void)))));
+-+            new Promise((resolve) => setTimeout(resolve, 0)).then(() => platformSpan("alchemy.cleanup", () => Effect.runPromise(Scope.close(scope, Exit.void))))));
+++            new Promise((resolve) => setTimeout(resolve, 0)).then(() => platformSpan("alchemy.cleanup", () => observe(() => Effect.runPromise(Scope.close(scope, Exit.void)), "cleanup"))), "cleanupWait")));
+++
+      };
+      class WorkerBridge extends Base {
+          ctx;
+-@@ -195,12 +195,12 @@ const getSharedBuild = (entrypoint, stack) => {
++@@ -109,7 +135,7 @@
++                                     : result,
++                             Context.empty(),
++                         ];
++-                    }, this.ctx, this.env, handleRpcExit);
+++                    }, this.ctx, this.env, handleRpcExit, prop === "render");
++                 },
++             });
++         }
++@@ -195,16 +221,16 @@
+       * `Config` read in user init) resets the memo and heals on the next event.
+       */
+      shared = (pin) => {
+@@ -2967,6 +3009,32 @@
+              built = undefined;
+              throw error;
+          }));
++-        pin(promise.catch(() => { }));
+++        pin(promise.catch(() => { }), "initialize");
++         return promise;
++     };
++     sharedBuilds.set(entrypoint, shared);
++@@ -236,7 +262,7 @@
++             built = undefined;
++             throw error;
++         }));
++-        pin(promise.catch(() => { }));
+++        pin(promise.catch(() => { }), "export");
++         return promise;
++     };
++     return { build };
++diff --git a/lib/Cloudflare/Workers/WorkerBridge.d.ts b/lib/Cloudflare/Workers/WorkerBridge.d.ts
++--- a/lib/Cloudflare/Workers/WorkerBridge.d.ts
+++++ b/lib/Cloudflare/Workers/WorkerBridge.d.ts
++@@ -42,7 +42,7 @@
++     };
++     exportName: string;
++ }) => {
++-    build: (pin: (promise: Promise<unknown>) => unknown) => Promise<WorkerBuild<Export>>;
+++    build: (pin: (promise: Promise<unknown>, phase?: "initialize" | "export") => unknown) => Promise<WorkerBuild<Export>>;
++ };
++ export declare const makeRpcProxy: (self: any, userShape: Effect.Effect<any>, processEvent: (eff: Effect.Effect<[Effect.Effect<any>, Context.Context<never>]>) => Promise<any>) => any;
++ export declare const handleRpcExit: (exit: Exit.Exit<any, any>, scope?: Scope.Closeable) => Promise<any>;
+ diff --git a/lib/Cloudflare/Workers/cloudflare_workers.d.ts b/lib/Cloudflare/Workers/cloudflare_workers.d.ts
+ index 9852684..6935af7 100644
+ --- a/lib/Cloudflare/Workers/cloudflare_workers.d.ts
+@@ -3523,10 +3591,19 @@
+                    binding.namespaceId ??
+                    encodeURIComponent(
+ diff --git a/src/Cloudflare/Workers/WorkerBridge.ts b/src/Cloudflare/Workers/WorkerBridge.ts
+-index 362b4bd36d26880af3c96ab42e8831030552a97c..3a6b4b6e1e9f7f343224cd5637a54410392fb2fe 100644
+ --- a/src/Cloudflare/Workers/WorkerBridge.ts
+ +++ b/src/Cloudflare/Workers/WorkerBridge.ts
+-@@ -22,7 +22,7 @@ import { Self } from "../../Self.ts";
++@@ -13,16 +13,13 @@
++ import * as Stream from "effect/Stream";
++ import * as FetchHttpClient from "effect/http/FetchHttpClient";
++ import * as EffectHttp from "effect/http/HttpEffect";
++-import {
++-  makeEntrypointLayer,
++-  reifyBoundConfigProvider,
++-} from "../../Runtime.ts";
+++import { makeEntrypointLayer, reifyBoundConfigProvider } from "../../Runtime.ts";
++ import { RuntimeContext } from "../../RuntimeContext.ts";
++ import { Self } from "../../Self.ts";
+  import { StackContext } from "../../StackContext.ts";
+  import { buildEventTelemetry } from "../../TelemetryRuntime.ts";
+  import { CloudflareEnvironment } from "../CloudflareEnvironmentService.ts";
+@@ -3535,64 +3612,366 @@
+  import { isScopeEjected } from "./HttpServer.ts";
+  import {
+    ErrorTag,
+-@@ -90,11 +90,12 @@ export const makeWorkerBridge = (
+-     ) => T | Promise<T>,
++@@ -55,6 +52,32 @@
++   readonly shape: () => Record<string, any>;
++   readonly telemetry: () => Layer.Layer<never, any, any> | undefined;
++ }
+++
+++const dashboardRenderPhases = {
+++  runtimeWait: {
+++    begin: { name: "basalt.dashboard.runtime_wait.begin" },
+++    end: { name: "basalt.dashboard.runtime_wait.end" },
+++  },
+++  initialize: {
+++    begin: { name: "basalt.dashboard.wait_until.initialize.begin" },
+++    end: { name: "basalt.dashboard.wait_until.initialize.end" },
+++  },
+++  export: {
+++    begin: { name: "basalt.dashboard.wait_until.export.begin" },
+++    end: { name: "basalt.dashboard.wait_until.export.end" },
+++  },
+++  cleanupWait: {
+++    begin: { name: "basalt.dashboard.wait_until.cleanup.begin" },
+++    end: { name: "basalt.dashboard.wait_until.cleanup.end" },
+++  },
+++  cleanup: {
+++    begin: { name: "basalt.dashboard.alchemy_cleanup.begin" },
+++    end: { name: "basalt.dashboard.alchemy_cleanup.end" },
+++  },
+++} as const;
+++
+++type BuildPhase = "initialize" | "export";
+++type BuildPin = (promise: Promise<unknown>, phase?: BuildPhase) => unknown;
++ 
++ /**
++  * Makes the WorkerEntrypoint class and bridges to Effect fetch and RPC calls.
++@@ -84,69 +107,101 @@
++     ) => readonly [Effect.Effect<any, any, any>, Context.Context<never>],
++     ctx: cf.ExecutionContext,
++     env: Record<string, unknown> | undefined,
++-    onExit: (
++-      exit: Exit.Exit<any, any>,
++-      scope: Scope.Closeable,
++-    ) => T | Promise<T>,
+++    onExit: (exit: Exit.Exit<any, any>, scope: Scope.Closeable) => T | Promise<T>,
+++    diagnosticRender = false,
+    ): Promise<T> => {
+++    const diagnostics = diagnosticRender && env?.BASALT_DASHBOARD_RENDER_DIAGNOSTICS === "1";
+++    const observe = <A>(
+++      run: () => Promise<A>,
+++      phase: keyof typeof dashboardRenderPhases,
+++    ): Promise<A> => {
+++      const pair = dashboardRenderPhases[phase];
+++      if (diagnostics) console.log(pair.begin);
+++      let promise: Promise<A>;
+++      try {
+++        promise = run();
+++      } catch (cause) {
+++        if (diagnostics) console.log(pair.end);
+++        throw cause;
+++      }
+++      if (diagnostics) {
+++        void promise.then(
+++          () => {
+++            console.log(pair.end);
+++          },
+++          () => {
+++            console.log(pair.end);
+++          },
+++        );
+++      }
+++      return promise;
+++    };
+++    const pin: BuildPin = (promise, phase = "export") =>
+++      ctx.waitUntil(observe(() => promise, phase));
+      const scope = Scope.makeUnsafe();
+ -    return build((promise) => ctx.waitUntil(promise as Promise<any>))
++-      .then(
++-        (built) => {
++-          const [eff, services] = makeEffect(built);
++-          return eff.pipe(
++-            // Per-event services take precedence over the captured services
++-            // and the built isolate context: the isolate context carries the
++-            // *deferred* WorkerExecutionContext (yieldable in the top-level
++-            // closure), which must be shadowed by the real per-event one
++-            // here, and the fresh request `Scope` so `Effect.addFinalizer`
++-            // in a handler attaches to the request scope (closed into
++-            // `ctx.waitUntil` below).
++-            Effect.provide(
++-              Layer.mergeAll(
++-                Layer.succeed(
++-                  WorkerExecutionContext,
++-                  fromExecutionContext(ctx, env),
+ +    return platformSpan("alchemy.response", () =>
+-+      platformSpan("alchemy.runtime.wait", () => build((promise) => ctx.waitUntil(promise as Promise<any>)))
+-       .then(
+-         (built) => {
+-           const [eff, services] = makeEffect(built);
+--          return eff.pipe(
+-+          return platformSpan("alchemy.handler", () => eff.pipe(
+-             // Per-event services take precedence over the captured services
+-             // and the built isolate context: the isolate context carries the
+-             // *deferred* WorkerExecutionContext (yieldable in the top-level
+-@@ -126,13 +127,13 @@ export const makeWorkerBridge = (
+-               ),
+++      platformSpan("alchemy.runtime.wait", () => observe(() => build(pin), "runtimeWait"))
+++        .then(
+++          (built) => {
+++            const [eff, services] = makeEffect(built);
+++            return platformSpan("alchemy.handler", () =>
+++              eff.pipe(
+++                // Per-event services take precedence over the captured services
+++                // and the built isolate context: the isolate context carries the
+++                // *deferred* WorkerExecutionContext (yieldable in the top-level
+++                // closure), which must be shadowed by the real per-event one
+++                // here, and the fresh request `Scope` so `Effect.addFinalizer`
+++                // in a handler attaches to the request scope (closed into
+++                // `ctx.waitUntil` below).
+++                Effect.provide(
+++                  Layer.mergeAll(
+++                    Layer.succeed(WorkerExecutionContext, fromExecutionContext(ctx, env)),
+++                    Layer.succeed(Scope.Scope, scope),
+++                    Layer.succeed(RuntimeContext, built.runtimeContext),
+++                    // The configured telemetry exporters. Constructed as part
+++                    // of this per-event layer, but `buildEventTelemetry`
+++                    // attaches their batching fibers and flush finalizers to
+++                    // the request `scope` (not this build's transient scope),
+++                    // so buffered telemetry flushes when the scope closes into
+++                    // `ctx.waitUntil` below — never on workerd's ephemeral
+++                    // isolate scope.
+++                    Layer.effectContext(
+++                      buildEventTelemetry(built.context, scope, built.telemetry()),
+++                    ),
+++                  ).pipe(
+++                    Layer.provideMerge(Layer.succeedContext(services)),
+++                    Layer.provideMerge(Layer.succeedContext(built.context)),
+++                  ),
++                 ),
++-                Layer.succeed(Scope.Scope, scope),
++-                Layer.succeed(RuntimeContext, built.runtimeContext),
++-                // The configured telemetry exporters. Constructed as part
++-                // of this per-event layer, but `buildEventTelemetry`
++-                // attaches their batching fibers and flush finalizers to
++-                // the request `scope` (not this build's transient scope),
++-                // so buffered telemetry flushes when the scope closes into
++-                // `ctx.waitUntil` below — never on workerd's ephemeral
++-                // isolate scope.
++-                Layer.effectContext(
++-                  buildEventTelemetry(built.context, scope, built.telemetry()),
+++                Effect.runPromiseExit,
+++              ),
+++            );
+++          },
+++          // A failed isolate build reaches callers as a defect exit so the RPC
+++          // path can envelope-encode it like any other handler defect.
+++          (error) => Exit.die(error),
+++        )
+++        .then((exit) => onExit(exit, scope)),
+++    ).finally(() =>
+++      isScopeEjected(scope)
+++        ? undefined
+++        : ctx.waitUntil(
+++            observe(
+++              () =>
+++                // The HttpMiddleware tracer ends the request's root span in a
+++                // dispatcher task scheduled after the handler effect resolves.
+++                // Yield one macrotask before closing the scope so that span
+++                // reaches the telemetry exporter's buffer before the scope's
+++                // flush finalizer runs.
+++                new Promise((resolve) => setTimeout(resolve, 0)).then(() =>
+++                  platformSpan("alchemy.cleanup", () =>
+++                    observe(() => Effect.runPromise(Scope.close(scope, Exit.void)), "cleanup"),
+++                  ),
++                 ),
++-              ).pipe(
++-                Layer.provideMerge(Layer.succeedContext(services)),
++-                Layer.provideMerge(Layer.succeedContext(built.context)),
++-              ),
+++              "cleanupWait",
+              ),
+-             Effect.runPromiseExit,
++-            Effect.runPromiseExit,
+ -          );
+-+          ));
++-        },
++-        // A failed isolate build reaches callers as a defect exit so the RPC
++-        // path can envelope-encode it like any other handler defect.
++-        (error) => Exit.die(error),
++-      )
++-      .then((exit) => onExit(exit, scope))
++-      .finally(() =>
++-        isScopeEjected(scope)
++-          ? undefined
++-          : ctx.waitUntil(
++-              // The HttpMiddleware tracer ends the request's root span in a
++-              // dispatcher task scheduled after the handler effect resolves.
++-              // Yield one macrotask before closing the scope so that span
++-              // reaches the telemetry exporter's buffer before the scope's
++-              // flush finalizer runs.
++-              new Promise((resolve) => setTimeout(resolve, 0)).then(() =>
++-                Effect.runPromise(Scope.close(scope, Exit.void)),
++-              ),
++-            ),
++-      );
+++          ),
+++    );
++   };
++   class WorkerBridge extends Base {
++     constructor(
++@@ -210,6 +265,7 @@
++               this.ctx,
++               this.env,
++               handleRpcExit,
+++              prop === "render",
++             );
+          },
+-         // A failed isolate build reaches callers as a defect exit so the RPC
+-         // path can envelope-encode it like any other handler defect.
+-         (error) => Exit.die(error),
+-       )
+--      .then((exit) => onExit(exit, scope))
+-+      .then((exit) => onExit(exit, scope)))
+-       .finally(() =>
+-         isScopeEjected(scope)
+-           ? undefined
+-@@ -143,7 +144,7 @@ export const makeWorkerBridge = (
+-               // reaches the telemetry exporter's buffer before the scope's
+-               // flush finalizer runs.
+-               new Promise((resolve) => setTimeout(resolve, 0)).then(() =>
+--                Effect.runPromise(Scope.close(scope, Exit.void)),
+-+                platformSpan("alchemy.cleanup", () => Effect.runPromise(Scope.close(scope, Exit.void))),
+-               ),
++       });
++@@ -222,9 +278,7 @@
++   for (const method of ExportedHandlerMethods) {
++     Object.defineProperty(WorkerBridge.prototype, method, {
++       value: function () {
++-        throw new Error(
++-          `Bridge method '${method}' was called before instance setup`,
++-        );
+++        throw new Error(`Bridge method '${method}' was called before instance setup`);
++       },
++       writable: true,
++       configurable: true,
++@@ -241,15 +295,9 @@
++  * shares a single build (one run of the user's init closure) across the
++  * default worker and every Durable Object / Workflow class in the isolate.
++  */
++-const sharedBuilds = new WeakMap<
++-  object,
++-  (pin: (promise: Promise<unknown>) => unknown) => Promise<Context.Context<any>>
++->();
++-
++-const getSharedBuild = (
++-  entrypoint: any,
++-  stack: { name: string; stage: string },
++-) => {
+++const sharedBuilds = new WeakMap<object, (pin: BuildPin) => Promise<Context.Context<any>>>();
+++
+++const getSharedBuild = (entrypoint: any, stack: { name: string; stage: string }) => {
++   let shared = sharedBuilds.get(entrypoint);
++   if (shared !== undefined) {
++     return shared;
++@@ -316,9 +364,7 @@
++           // top-level closure (and Layers); its RuntimeContext-colored
++           // methods defer to the real per-event context provided by
++           // `processEvent`.
++-          Layer.provideMerge(
++-            Layer.succeed(WorkerExecutionContext, deferredExecutionContext),
++-          ),
+++          Layer.provideMerge(Layer.succeed(WorkerExecutionContext, deferredExecutionContext)),
++           Layer.provideMerge(
++             Layer.succeed(
++               CloudflareEnvironment,
++@@ -329,12 +375,7 @@
++               }),
+              ),
+-       );
+-@@ -359,7 +360,7 @@ const getSharedBuild = (
++           ),
++-          Layer.provideMerge(
++-            Layer.succeed(
++-              MinimumLogLevel,
++-              (env as any).DEBUG ? "Debug" : "Info",
++-            ),
++-          ),
+++          Layer.provideMerge(Layer.succeed(MinimumLogLevel, (env as any).DEBUG ? "Debug" : "Info")),
++         ),
++       ),
++     ),
++@@ -359,19 +400,24 @@
+     * `Config` read in user init) resets the memo and heals on the next event.
+     */
+    shared = (pin) => {
+ -    const promise = (built ??= Effect.runPromise(
+-+    const promise = (built ??= platformSpan("alchemy.runtime.initialize", () => Effect.runPromise(
+-       Layer.buildWithMemoMap(globalContext, memoMap, instanceScope).pipe(
+-         // Strip the build's memo map from the exposed context so a Layer the
+-         // user `Effect.provide`s *inside a handler* builds per event instead
+-@@ -367,7 +368,7 @@ const getSharedBuild = (
+-         // across concurrent events.
+-         Effect.map(Context.omit(Layer.CurrentMemoMap)),
++-      Layer.buildWithMemoMap(globalContext, memoMap, instanceScope).pipe(
++-        // Strip the build's memo map from the exposed context so a Layer the
++-        // user `Effect.provide`s *inside a handler* builds per event instead
++-        // of sharing one instance (pinned to the first request's IoContext)
++-        // across concurrent events.
++-        Effect.map(Context.omit(Layer.CurrentMemoMap)),
+++    const promise = (built ??= platformSpan("alchemy.runtime.initialize", () =>
+++      Effect.runPromise(
+++        Layer.buildWithMemoMap(globalContext, memoMap, instanceScope).pipe(
+++          // Strip the build's memo map from the exposed context so a Layer the
+++          // user `Effect.provide`s *inside a handler* builds per event instead
+++          // of sharing one instance (pinned to the first request's IoContext)
+++          // across concurrent events.
+++          Effect.map(Context.omit(Layer.CurrentMemoMap)),
+++        ),
+        ),
+--    ).catch((error) => {
+-+     )).catch((error) => {
++     ).catch((error) => {
+        built = undefined;
+        throw error;
+      }));
++-    pin(promise.catch(() => {}));
+++    pin(
+++      promise.catch(() => {}),
+++      "initialize",
+++    );
++     return promise;
++   };
++   sharedBuilds.set(entrypoint, shared);
++@@ -413,9 +459,7 @@
++    * listener assembly and the captured services context resolve once per
++    * export. Same success-only memoization contract as the shared build.
++    */
++-  const build = (
++-    pin: (promise: Promise<unknown>) => unknown,
++-  ): Promise<WorkerBuild<Export>> => {
+++  const build = (pin: BuildPin): Promise<WorkerBuild<Export>> => {
++     const promise = (built ??= sharedBuild(pin)
++       .then((context) =>
++         Effect.runPromise(
++@@ -435,7 +479,10 @@
++         built = undefined;
++         throw error;
++       }));
++-    pin(promise.catch(() => {}));
+++    pin(
+++      promise.catch(() => {}),
+++      "export",
+++    );
++     return promise;
++   };
++ 
++@@ -445,9 +492,7 @@
++ export const makeRpcProxy = (
++   self: any,
++   userShape: Effect.Effect<any>,
++-  processEvent: (
++-    eff: Effect.Effect<[Effect.Effect<any>, Context.Context<never>]>,
++-  ) => Promise<any>,
+++  processEvent: (eff: Effect.Effect<[Effect.Effect<any>, Context.Context<never>]>) => Promise<any>,
++ ) =>
++   new Proxy(self, {
++     get: (target, prop) => {
++@@ -485,10 +530,7 @@
++     },
++   });
++ 
++-export const handleRpcExit = async (
++-  exit: Exit.Exit<any, any>,
++-  scope?: Scope.Closeable,
++-) => {
+++export const handleRpcExit = async (exit: Exit.Exit<any, any>, scope?: Scope.Closeable) => {
++   if (exit._tag === "Success") {
++     if (Stream.isStream(exit.value)) {
++       let stream = exit.value as Stream.Stream<any, any, any>;
++@@ -499,13 +541,9 @@
++         // the stream settles instead — mirroring `scopeTransferToStream` on
++         // the fetch path.
++         EffectHttp.scopeDisableClose(scope);
++-        stream = stream.pipe(
++-          Stream.onExit((streamExit) => Scope.close(scope, streamExit)),
++-        );
+++        stream = stream.pipe(Stream.onExit((streamExit) => Scope.close(scope, streamExit)));
++       }
++-      return await Effect.runPromise(
++-        toRpcStream(stream) as Effect.Effect<RpcStreamEnvelope>,
++-      );
+++      return await Effect.runPromise(toRpcStream(stream) as Effect.Effect<RpcStreamEnvelope>);
++     }
++     return exit.value;
++   }
++@@ -517,7 +555,5 @@
++     } satisfies RpcErrorEnvelope;
++   }
++   const dieReason = exit.cause.reasons.find(Cause.isDieReason);
++-  throw (
++-    dieReason?.defect ?? new Error("RPC method failed with an unexpected cause")
++-  );
+++  throw dieReason?.defect ?? new Error("RPC method failed with an unexpected cause");
++ };
+ diff --git a/src/Cloudflare/Workers/cloudflare_workers.ts b/src/Cloudflare/Workers/cloudflare_workers.ts
+ index 635467a..216c564 100644
+ --- a/src/Cloudflare/Workers/cloudflare_workers.ts
+--- a/apps/hosted/cloud/src/dashboard.ts
++++ b/apps/hosted/cloud/src/dashboard.ts
+@@ -5,6 +5,7 @@
+  */
+ import type { DocumentRead, DocumentRenderContext } from "./contracts/dashboard.ts";
+ import { Effect } from "effect";
++import { WorkerEnvironment } from "alchemy/Cloudflare";
+ import { Dashboard } from "./infrastructure/dashboard-worker.ts";
+ import { cloudSiteAfterMigrations } from "./infrastructure/site-release.ts";
+ import { cloudObservability } from "./infrastructure/telemetry.ts";
+@@ -24,47 +25,78 @@
+  * Start returns once the headers are ready and keeps streaming, so reads continue after the
+  * call returns. The duplicated read lives until the body ends or the browser cancels it.
+  */
+-const render = async (request: Request, context: DocumentRenderContext, read: HeldRead) => {
+-  const held = read.dup?.() ?? read;
+-  const release = () => held[Symbol.dispose]?.();
+-  const origin = new URL(request.url).origin;
+-  const apiFetch: typeof globalThis.fetch = (input, init) => {
+-    const target =
+-      input instanceof Request
+-        ? new Request(input, init)
+-        : new Request(new URL(String(input), origin), init);
+-    return held(target.url, { method: target.method, headers: [...target.headers] });
+-  };
+-  const response = await server()
+-    .then((renderer) => renderer.fetch(request, { context: { ...context, apiFetch } }))
+-    .catch((cause: unknown) => {
++const render = async (
++  request: Request,
++  context: DocumentRenderContext,
++  read: HeldRead,
++  diagnostics: boolean,
++) => {
++  if (diagnostics) console.log({ name: "basalt.dashboard.main_render.begin" });
++  try {
++    const held = read.dup?.() ?? read;
++    const release = () => held[Symbol.dispose]?.();
++    const origin = new URL(request.url).origin;
++    const apiFetch: typeof globalThis.fetch = (input, init) => {
++      const target =
++        input instanceof Request
++          ? new Request(input, init)
++          : new Request(new URL(String(input), origin), init);
++      return held(target.url, { method: target.method, headers: [...target.headers] });
++    };
++    const response = await server()
++      .then((renderer) => renderer.fetch(request, { context: { ...context, apiFetch } }))
++      .catch((cause: unknown) => {
++        release();
++        throw cause;
++      });
++    if (diagnostics) console.log({ name: "basalt.dashboard.response_body.begin" });
++    if (response.body === null) {
++      if (diagnostics) console.log({ name: "basalt.dashboard.response_body.end" });
+       release();
+-      throw cause;
++      return response;
++    }
++    let bodyEnded = false;
++    let cancelling = false;
++    const endBody = () => {
++      if (bodyEnded) return;
++      bodyEnded = true;
++      if (diagnostics) console.log({ name: "basalt.dashboard.response_body.end" });
++    };
++    const reader = response.body.getReader();
++    const body = new ReadableStream<Uint8Array>({
++      pull: (controller) =>
++        reader.read().then(
++          (chunk) => {
++            if (!chunk.done) return controller.enqueue(chunk.value);
++            if (!cancelling) endBody();
++            release();
++            controller.close();
++          },
++          (cause: unknown) => {
++            if (!cancelling) endBody();
++            release();
++            controller.error(cause);
++          },
++        ),
++      cancel: (reason) => {
++        release();
++        if (diagnostics) console.log({ name: "basalt.dashboard.body_cancel.begin" });
++        cancelling = true;
++        const cancelled = reader.cancel(reason);
++        if (diagnostics) {
++          const end = () => {
++            console.log({ name: "basalt.dashboard.body_cancel.end" });
++            endBody();
++          };
++          void cancelled.then(end, end);
++        }
++        return cancelled;
++      },
+     });
+-  if (response.body === null) {
+-    release();
+-    return response;
++    return new Response(body, response);
++  } finally {
++    if (diagnostics) console.log({ name: "basalt.dashboard.main_render.end" });
+   }
+-  const reader = response.body.getReader();
+-  const body = new ReadableStream<Uint8Array>({
+-    pull: (controller) =>
+-      reader.read().then(
+-        (chunk) => {
+-          if (!chunk.done) return controller.enqueue(chunk.value);
+-          release();
+-          controller.close();
+-        },
+-        (cause: unknown) => {
+-          release();
+-          controller.error(cause);
+-        },
+-      ),
+-    cancel: (reason) => {
+-      release();
+-      return reader.cancel(reason);
+-    },
+-  });
+-  return new Response(body, response);
+ };
+ 
+ export default Dashboard.make(
+@@ -78,14 +110,17 @@
+       ...(yield* cloudObservability),
+       workersDev: false,
+       build: workerBuild("dashboard"),
+-      env: { EXECUTOR_SITE_BUILD: site.hash },
++      env: { EXECUTOR_SITE_BUILD: site.hash, BASALT_DASHBOARD_RENDER_DIAGNOSTICS: "1" },
+       // No placement: a service binding runs this Worker beside its caller, the placed API Worker.
+       compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
+     };
+   }),
+-  Effect.succeed(
+-    Dashboard.of({
+-      render: (request, context, read) => Effect.promise(() => render(request, context, read)),
+-    }),
+-  ),
++  Effect.gen(function* () {
++    const env = yield* WorkerEnvironment;
++    const diagnostics = env.BASALT_DASHBOARD_RENDER_DIAGNOSTICS === "1";
++    return Dashboard.of({
++      render: (request, context, read) =>
++        Effect.promise(() => render(request, context, read, diagnostics)),
++    });
++  }),
+ );
