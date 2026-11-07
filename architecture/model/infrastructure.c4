@@ -123,6 +123,14 @@ model {
   basalt.toolsGateway -[sync]-> zohoSignIn "exchange and refresh each product's regional consent"
   basalt.build -[sync]-> zohoSignIn "verify regional sign-in using isolated fixtures"
 
+  accountManagement = adapter "Account management service" {
+    #external
+    technology "WorkOS management MCP, OAuth and API"
+    metadata { hosts "api.workos.com|mcp.workos.com|dashboard.workos.com|signin.workos.com" }
+  }
+  basalt.catalog -[sync]-> accountManagement "publish connection guidance and management tool definitions"
+  basalt.build -[sync]-> accountManagement "verify management contracts with isolated local fixtures"
+
   crmService = adapter "CRM service" {
     #external
     technology "Zoho CRM API and regional OAuth"

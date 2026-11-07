@@ -54,6 +54,7 @@ const sources = new Set([
   "zendesk-tenant-public.mjs",
   "zendesk-company-guidance.mjs",
   "zendesk-operator-choices.mjs",
+  "workos-sign-in.mjs",
   "vercel-sign-in.mjs",
   "elevenlabs-sign-in.mjs",
   "slack-health.mjs",
