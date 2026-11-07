@@ -95,6 +95,10 @@ test("account and pool jobs retain their owned scenarios, commands and execution
       minutes: null,
       scenarios: [
         "accountObservationInterval",
+        "accountSource403",
+        "accountSource503",
+        "accountSourceAllFail",
+        "accountSourceSingle",
         "appModelLifecycle",
         "appModelRequests",
         "catalogInstances",
@@ -229,4 +233,25 @@ test("provider continuity inputs select the owned account job", () => {
       `${input} must select the account job that executes provider continuity scenarios`,
     );
   }
+});
+
+test("account source isolation inputs select and schedule every owned scenario", () => {
+  const plan = readDeclarations().files["account-source-isolation.spec.ts"];
+  assert.ok(plan);
+  assert.deepEqual(Object.keys(plan.scenarios).sort(), [
+    "accountSource403",
+    "accountSource503",
+    "accountSourceAllFail",
+    "accountSourceSingle",
+  ]);
+  for (const scenario of Object.values(plan.scenarios)) {
+    const target = scenario.targets["self-host"];
+    assert.ok(target !== null && typeof target === "object" && "status" in target);
+    assert.equal(target.status, "scheduled");
+  }
+  for (const input of [".upstream/e2e/tests/account-source-isolation.spec.ts", ...plan.inputs])
+    assert.ok(
+      selectPaths([input]).jobs.includes("host-managed-accounts-pool"),
+      `${input} must select the pool account job that executes source isolation scenarios`,
+    );
 });
