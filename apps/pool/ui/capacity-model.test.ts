@@ -8,6 +8,9 @@ import type {
 } from "../capacity-contract.ts";
 import {
   capacityLabs,
+  candidateName,
+  exclusionName,
+  tooltipPlanRows,
   dailyRows,
   duration,
   gaps,
@@ -240,7 +243,13 @@ test("unknown plans are flagged on their chip", () => {
     point(0, 1, { plans: [{ plan: null, minimum: flagged, last: flagged }] }),
   );
   assert.deepEqual(chips, [
-    { plan: "No plan reported", accounts: 2, flagged: true, note: "plan unknown · 1x" },
+    {
+      key: "No plan reported",
+      plan: "No plan reported",
+      accounts: 2,
+      flagged: true,
+      note: "plan unknown · 1x",
+    },
   ]);
 });
 
@@ -338,4 +347,104 @@ test("an incomplete read picks a window from measured balances and never blames 
     pressing(outNow, start, { withheld: true }).text,
     "5-hour is more pressing: out now; weekly forecast withheld",
   );
+});
+
+test("plan aliases share one chip without changing capacity measurements", () => {
+  const unverified = aggregate(1, 2, 2);
+  const verified = aggregate(1, 2);
+  const total = {
+    ...aggregate(2, 4),
+    accountCount: 4,
+    unknownWeightCount: 2,
+    weights: [...unverified.weights, ...verified.weights],
+  };
+  const snapshot = point(0, 2, {
+    provider: "openai",
+    minimum: total,
+    last: total,
+    plans: [
+      { plan: "promax", minimum: unverified, last: unverified },
+      { plan: "Pro (Max)", minimum: verified, last: verified },
+    ],
+  });
+  const original = structuredClone(snapshot);
+  assert.deepEqual(planChips(snapshot), [
+    { key: "Pro (Max)", plan: "Pro (Max)", accounts: 4, flagged: true, note: "plan unknown · 1x" },
+  ]);
+  assert.deepEqual(snapshot, original);
+});
+
+test("sizing names plan candidates while preserving unit labels", () => {
+  assert.equal(
+    candidateName({ label: "promax", source: "reported", capacity: 1 }, "openai"),
+    "Pro (Max)",
+  );
+  assert.equal(candidateName({ label: "plus", source: "table", capacity: 1 }, "openai"), "Plus");
+  assert.equal(
+    candidateName({ label: "reference account", source: "unit", capacity: 1 }, "openai"),
+    "reference account",
+  );
+});
+
+test("forecast exclusions preserve explanations and format actual plan IDs", () => {
+  for (const label of ["Unverified plan", "Unknown plan"])
+    assert.equal(exclusionName(label, "openai"), label);
+  assert.equal(exclusionName("pro", "openai"), "Pro (More)");
+});
+
+test("OpenAI chips pass their snapshot provider when naming raw Pro tiers", () => {
+  const last = aggregate(1, 2);
+  const chips = planChips(
+    point(0, 1, {
+      provider: "openai",
+      plans: ["pro", "promax", "prolite"].map((plan) => ({ plan, minimum: last, last })),
+    }),
+  );
+  assert.deepEqual(
+    chips.map((chip) => chip.plan),
+    ["Pro (More)", "Pro (Max)", "Pro"],
+  );
+});
+
+test("tooltip aliases merge usable and raw readings without changing capacity history", () => {
+  const a = aggregate(1, 2, 2),
+    b = aggregate(2, 3);
+  const snapshot = point(0, 3, {
+    provider: "openai",
+    windowSeconds: 18_000,
+    plans: [
+      { plan: "promax", minimum: a, last: a },
+      { plan: "Pro (Max)", minimum: b, last: b },
+    ],
+    raw: {
+      minimum: aggregate(9, 12),
+      last: aggregate(9, 12),
+      plans: [
+        { plan: "promax", minimum: aggregate(4, 6), last: a },
+        { plan: "Pro (Max)", minimum: aggregate(5, 6), last: b },
+      ],
+    },
+  });
+  const before = structuredClone(snapshot);
+  assert.deepEqual(tooltipPlanRows(snapshot), [
+    {
+      plan: "Pro (Max)",
+      accounts: 4,
+      remaining: 3,
+      full: 5,
+      flagged: true,
+      sources: ["unknown-plan", "reference-plan"],
+      raw: { remaining: 9, full: 12 },
+    },
+  ]);
+  assert.deepEqual(snapshot, before);
+  const ungated = tooltipPlanRows({ ...snapshot, usable: null });
+  assert.equal(ungated.length, 1);
+  assert.equal(ungated[0]!.remaining, 9);
+  assert.equal(ungated[0]!.full, 12);
+  const partial = tooltipPlanRows({
+    ...snapshot,
+    raw: { ...snapshot.raw!, plans: snapshot.raw!.plans.slice(0, 1) },
+  });
+  assert.equal(partial[0]!.raw, null, "partial provider quota is not presented as the whole group");
 });
