@@ -27,8 +27,8 @@ export function releaseEvidence(directory: string, candidate: string, encryption
   return {
     async desired(value: unknown) {
       const identity = Schema.Struct({
-        tag: Schema.String.check(Schema.isPattern(/^v[0-9]+(?:\.[0-9]+)+(?:-[a-zA-Z0-9.-]+)?$/)),
-        commit: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/)),
+        tag: Schema.String.check(Schema.isPattern(/^v[0-9]+(?:\.[0-9]+)+(?:-[a-zA-Z0-9.-]+)?$/u)),
+        commit: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/u)),
       });
       const desired = Schema.decodeUnknownSync(
         Schema.Struct({ artifacts: Schema.Struct({ node: identity, home: identity }) }),
