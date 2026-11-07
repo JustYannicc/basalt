@@ -70,12 +70,18 @@
     }
   },
   "runs": {
-    "accountSource403": ["host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"],
-    "accountSource503": ["host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"],
+    "accountSource403": [
+      "host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"
+    ],
+    "accountSource503": [
+      "host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"
+    ],
     "accountSourceAllFail": [
       "host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"
     ],
-    "accountSourceSingle": ["host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"]
+    "accountSourceSingle": [
+      "host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"
+    ]
   },
   "inputs": [
     ".upstream/packages/apps/src/contracts/router.ts",
@@ -85,6 +91,8 @@
     ".upstream/packages/apps/src/implementation/host.ts",
     ".upstream/packages/apps/src/implementation/account-router-operations.ts",
     ".upstream/packages/apps/src/implementation/account-router-dynamic.ts",
-    ".upstream/packages/apps/src/implementation/account-router-mcp-apps.ts"
+    ".upstream/packages/apps/src/implementation/account-router-mcp-apps.ts",
+    ".upstream/packages/mcp/src/implementation/app-assets.ts",
+    ".upstream/packages/mcp/src/implementation/app-asset-paths.ts"
   ]
 }
