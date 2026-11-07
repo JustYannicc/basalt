@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.contributedLinks {
+    metadata {
+      constraint "App and user account links read only their linked accounts and checks while preserving row order, owner checks and visibility."
+    }
+  }
+}

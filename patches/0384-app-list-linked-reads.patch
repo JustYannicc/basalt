@@ -1,0 +1,347 @@
+diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/hosted/server/src/implementation/app-account-links.ts
+index 8a7cf80..ccf55b6 100644
+--- a/apps/hosted/server/src/implementation/app-account-links.ts
++++ b/apps/hosted/server/src/implementation/app-account-links.ts
+@@ -20,6 +20,7 @@ import { isContributed, requireRequirementAccess } from "./contributed-account-p
+  * are the caller's own: linking another person's account is never possible.
+  */
+ import {
++  AccountReadHost,
+   AccountNotFound,
+   StorageError,
+   StorageHost,
+@@ -106,11 +107,11 @@ const linkViews = (
+       reads?.owner === owner
+         ? (reads.apps.get(app) ?? (yield* executor.apps.get({ owner, app })))
+         : yield* executor.apps.get({ owner, app });
++    const linkedIds = [...new Set(records.map((record) => record.account))];
+     const accounts = new Map(
+-      (savedAccounts ?? (yield* executor.accounts.list({ owner }))).map((account) => [
+-        account.id as string,
+-        account,
+-      ]),
++      (savedAccounts ?? (yield* executor[AccountReadHost].listIds({ owner, ids: linkedIds }))).map(
++        (account) => [account.id as string, account],
++      ),
+     );
+     const present = records.flatMap((record) => {
+       const account = accounts.get(record.account);
+@@ -125,12 +126,12 @@ const linkViews = (
+     const presentIds = new Set(present.map(({ account }) => account.id));
+     const retained =
+       reads?.owner === owner
+-        ? reads.snapshot.health.map((health) => ({
+-            ...health,
+-            apps: health.apps.filter(
+-              (entry) => entry.app === app && presentIds.has(health.account),
+-            ),
+-          }))
++        ? reads.snapshot.health
++            .filter((health) => presentIds.has(health.account))
++            .map((health) => ({
++              ...health,
++              apps: health.apps.filter((entry) => entry.app === app),
++            }))
+         : yield* executor.accounts.listHealth({
+             owner,
+             links: present.map(({ account }) => ({ app, account: account.id })),
+diff --git a/e2e/support/account-target-sdk-source.ts b/e2e/support/account-target-sdk-source.ts
+index 9f93343..de84dac 100644
+--- a/e2e/support/account-target-sdk-source.ts
++++ b/e2e/support/account-target-sdk-source.ts
+@@ -4,7 +4,7 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+ import * as NodeServices from "@effect/platform-node/NodeServices";
+ import * as Runtime from "@effect/platform-node/NodeRuntime";
+ import { nativeRepositories } from "@executor-js/app-source/node";
+-import { createExecutor, makeExecutorStorage, OwnerId, AccountId, AccountTargetsHost,
++import { createExecutor, makeExecutorStorage, OwnerId, AccountId, AccountTargetsHost, AccountReadHost,
+   AccountDeviceOffline, AccountExecutionUnavailable, ToolInputs, type Executor } from "@executor-js/sdk/core";
+ import { filesystemBlobStore, workerdApps } from "@executor-js/sdk/node";
+ import { memoryRegistry } from "@executor-js/sdk/testing";
+@@ -59,6 +59,7 @@ Runtime.runMain(Effect.scoped(Effect.gen(function* () {
+     route("clear",Schema.Struct({account:AccountId,revision:Schema.Number}),value=>executor[AccountTargetsHost].clear({...value,owner}).pipe(Effect.as(null))),
+     route("read",Schema.Struct({account:AccountId}),value=>executor.accounts.get({...value,owner})),
+     route("list",Schema.Null,()=>executor.accounts.list({owner})),
++    route("list-ids",Schema.Struct({ids:Schema.Array(AccountId)}),value=>executor[AccountReadHost].listIds({...value,owner})),
+     route("empty",Schema.Null,()=>executor.accounts.list({owner:OwnerId.make("empty-target-owner")})),
+     route("call",ToolInputs.call,value=>executor.tools.call(value)),
+     route("call-unhosted",ToolInputs.call,value=>withoutMachineHost.tools.call(value)),
+diff --git a/e2e/tests/account-list-total-budget.spec.ts b/e2e/tests/account-list-total-budget.spec.ts
+index 1d1718f..399cae9 100644
+--- a/e2e/tests/account-list-total-budget.spec.ts
++++ b/e2e/tests/account-list-total-budget.spec.ts
+@@ -27,7 +27,9 @@ const Rows = Schema.Array(
+   }),
+ );
+ const Counts = Schema.Struct({
+-  operations: Schema.Array(Schema.Struct({ name: Schema.String, statements: Schema.Number })),
++  operations: Schema.Array(
++    Schema.Struct({ name: Schema.String, statements: Schema.Number, targets: Schema.Number }),
++  ),
+ });
+ 
+ layer(TestLive, { excludeTestServices: true })("Accounts total query budget", (it) => {
+@@ -156,6 +158,7 @@ layer(TestLive, { excludeTestServices: true })("Accounts total query budget", (i
+           return {
+             durationMs,
+             statements: counts.operations.reduce((sum, row) => sum + row.statements, 0),
++            targetQueries: counts.operations.reduce((sum, row) => sum + row.targets, 0),
+             operations: counts.operations,
+             accountCount: accounts.length,
+             traceId,
+@@ -168,6 +171,11 @@ layer(TestLive, { excludeTestServices: true })("Accounts total query budget", (i
+         const large = yield* Effect.forEach([0, 1, 2], () => measure);
+         const evidence = yield* Evidence;
+         yield* evidence.json("account-list-total-budget.json", { small, large });
++        for (const sample of [...small, ...large])
++          expect(
++            sample.targetQueries,
++            "the batch Accounts directory reads execution targets once",
++          ).toBe(1);
+         const first = accounts[0]!;
+         const renamed = "Renamed after the list was read";
+         expect(
+diff --git a/e2e/tests/account-targets.spec.ts b/e2e/tests/account-targets.spec.ts
+index ccc5f45..deea722 100644
+--- a/e2e/tests/account-targets.spec.ts
++++ b/e2e/tests/account-targets.spec.ts
+@@ -16,6 +16,14 @@ layer(TestLive, { excludeTestServices: true })("Account execution targets", (it)
+         const ids = yield* Schema.decodeUnknownEffect(
+           Schema.Struct({ app: Schema.String, local: Schema.String, cloud: Schema.String }),
+         )(setup.body);
++        const collectionMatches = Effect.gen(function* () {
++          const single = yield* sdk.request("read", { account: ids.local });
++          const selected = yield* sdk.request("list-ids", { ids: [ids.local] });
++          expect(single.status).toBe(200);
++          expect(selected.status).toBe(200);
++          expect(selected.body).toEqual([single.body]);
++        });
++        expect((yield* sdk.request("list-ids", { ids: [] })).body).toEqual([]);
+         const listed = Effect.gen(function* () {
+           const response = yield* sdk.request("list", null);
+           expect(response.status).toBe(200);
+@@ -56,6 +64,7 @@ layer(TestLive, { excludeTestServices: true })("Account execution targets", (it)
+         expect((yield* sdk.request("read", { account: ids.local })).body).toMatchObject({
+           execution: { kind: "device", device: "fixture-device", status: "online" },
+         });
++        yield* collectionMatches;
+         const online = yield* listed;
+         expect(online.find((account) => account.id === ids.local)?.execution).toMatchObject({
+           kind: "device",
+@@ -85,6 +94,7 @@ layer(TestLive, { excludeTestServices: true })("Account execution targets", (it)
+           (yield* listed).find((account) => account.id === ids.local)?.execution,
+         ).toMatchObject({ status: "offline" });
+         expect((yield* call(ids.cloud)).body).toMatchObject({ value: { ran: "cloud" } });
++        yield* collectionMatches;
+         yield* sdk.request("status", "unavailable");
+         expect((yield* call(ids.local)).status).toBe(409);
+         yield* sdk.request("status", "online");
+@@ -94,6 +104,7 @@ layer(TestLive, { excludeTestServices: true })("Account execution targets", (it)
+         expect(
+           (yield* listed).find((account) => account.id === ids.local)?.execution,
+         ).toMatchObject({ status: "unavailable" });
++        yield* collectionMatches;
+         yield* sdk.request("allowed", true);
+         yield* sdk.restart;
+         yield* sdk.request("setup", null);
+@@ -108,6 +119,7 @@ layer(TestLive, { excludeTestServices: true })("Account execution targets", (it)
+         expect(
+           (yield* listed).find((account) => account.id === ids.local)?.execution,
+         ).toMatchObject({ status: "disabled" });
++        yield* collectionMatches;
+         expect((yield* sdk.request("clear", { account: ids.local, revision: 1 })).status).toBe(409);
+         expect((yield* sdk.request("clear", { account: ids.local, revision: 2 })).status).toBe(200);
+         expect((yield* call(ids.local)).body).toMatchObject({ value: { ran: "cloud" } });
+diff --git a/packages/sdk/src/contracts/account-read.ts b/packages/sdk/src/contracts/account-read.ts
+index 77b9c28..f18dadd 100644
+--- a/packages/sdk/src/contracts/account-read.ts
++++ b/packages/sdk/src/contracts/account-read.ts
+@@ -20,6 +20,11 @@ export const AccountReadHost = Symbol("executor.AccountReadHost");
+ 
+ /** Host-only collection reads; no credentials or acquisition references leave the SDK. */
+ export interface AccountReadHost {
++  /** Owner-scoped metadata for linked accounts, including their execution target. */
++  readonly listIds: (input: {
++    readonly owner: OwnerId;
++    readonly ids: readonly AccountId[];
++  }) => Effect.Effect<readonly Account[], StorageError>;
+   readonly read: (input: {
+     readonly owner: OwnerId;
+     readonly links: readonly { readonly account: AccountId; readonly app: AppId }[];
+diff --git a/packages/sdk/src/implementation/account-read.ts b/packages/sdk/src/implementation/account-read.ts
+index 0a09cbf..10c6ce9 100644
+--- a/packages/sdk/src/implementation/account-read.ts
++++ b/packages/sdk/src/implementation/account-read.ts
+@@ -14,9 +14,12 @@ import { interactiveBindings } from "./interactive-state.ts";
+ export const makeAccountRead = (
+   db: Query,
+   credentials: Credentials,
+-  accounts: Pick<Executor["accounts"], "list" | "listHealth">,
++  accounts: Pick<Executor["accounts"], "list" | "listHealth"> & {
++    readonly listIds: AccountReadHost["listIds"];
++  },
+   machines: MachineAccounts | undefined,
+ ): AccountReadHost => ({
++  listIds: ({ owner, ids }) => accounts.listIds({ owner, ids }),
+   read: (input) =>
+     Effect.gen(function* () {
+       const listed = yield* accounts.list({ owner: input.owner });
+diff --git a/packages/sdk/src/implementation/account-targets.ts b/packages/sdk/src/implementation/account-targets.ts
+index 2a5616c..cabfe09 100644
+--- a/packages/sdk/src/implementation/account-targets.ts
++++ b/packages/sdk/src/implementation/account-targets.ts
+@@ -149,9 +149,12 @@ export const makeAccountTargets = (db: Query, host: MachineAccounts | undefined)
+         );
+       }),
+   };
+-  const projectExecution = (
++  const executionFor = (
+     binding: AccountTargetBinding | undefined,
+-  ): Effect.Effect<AccountExecution | undefined, StorageError> =>
++  ): Effect.Effect<
++    { readonly allowed: boolean; readonly execution: AccountExecution } | undefined,
++    StorageError
++  > =>
+     Effect.gen(function* () {
+       if (binding === undefined || binding.mode === "cloud") return undefined;
+       const allowed =
+@@ -162,14 +165,20 @@ export const makeAccountTargets = (db: Query, host: MachineAccounts | undefined)
+           ? "unavailable"
+           : yield* host.availability(binding);
+       return {
+-        kind: "device",
+-        device: binding.target.device,
+-        deviceName: binding.target.deviceName,
+-        status,
++        allowed,
++        execution: {
++          kind: "device",
++          device: binding.target.device,
++          deviceName: binding.target.deviceName,
++          status,
++        },
+       };
+     });
+   const execution = (input: { readonly id: AccountId; readonly owner: OwnerId }) =>
+-    read(input.id, input.owner).pipe(Effect.flatMap(projectExecution));
++    read(input.id, input.owner).pipe(
++      Effect.flatMap(executionFor),
++      Effect.map((result) => result?.execution),
++    );
+   const executions = (input: {
+     readonly owner: OwnerId;
+     readonly accounts: readonly AccountId[];
+@@ -180,8 +189,8 @@ export const makeAccountTargets = (db: Query, host: MachineAccounts | undefined)
+       );
+       return new Map(
+         yield* Effect.forEach(input.accounts, (account) =>
+-          projectExecution(bindings.get(account)).pipe(
+-            Effect.map((execution) => [account, execution] as const),
++          executionFor(bindings.get(account)).pipe(
++            Effect.map((result) => [account, result?.execution] as const),
+           ),
+         ),
+       );
+@@ -220,13 +229,18 @@ export const makeAccountTargets = (db: Query, host: MachineAccounts | undefined)
+       if (local.length === 0) return undefined;
+       yield* input.authorize;
+       for (const binding of local) {
+-        yield* authorize(binding, false);
+-        if (!binding.enabled)
++        const result = yield* executionFor(binding);
++        if (result === undefined || !result.allowed)
++          return yield* new AccountExecutionUnavailable({
++            account: binding.account,
++            reason: "host_unavailable",
++          });
++        if (result.execution.status === "disabled")
+           return yield* new AccountExecutionUnavailable({
+             account: binding.account,
+             reason: "disabled",
+           });
+-        const status = host === undefined ? "unavailable" : yield* host.availability(binding);
++        const status = result.execution.status;
+         if (status === "offline")
+           return yield* new AccountDeviceOffline({ account: binding.account, ...binding.target });
+         if (status !== "online")
+diff --git a/packages/sdk/src/implementation/accounts.ts b/packages/sdk/src/implementation/accounts.ts
+index 05ffe34..22df41a 100644
+--- a/packages/sdk/src/implementation/accounts.ts
++++ b/packages/sdk/src/implementation/accounts.ts
+@@ -324,8 +324,11 @@ export const makeAccounts = (
+       // Saved choices keep the ID as an unresolved reference. An app must never silently switch accounts or run a partial collection.
+       return { account: input.account };
+     }).pipe(Effect.withSpan("sdk.accounts.remove")),
+-  list: (input: Parameters<Executor["accounts"]["list"]>[0]) =>
++  list: (
++    input: Parameters<Executor["accounts"]["list"]>[0] & { readonly ids?: readonly AccountId[] },
++  ) =>
+     Effect.gen(function* () {
++      if (input.ids?.length === 0) return [];
+       const rows = yield* query(() =>
+         db.findMany("accounts", {
+           select: [
+@@ -343,6 +346,7 @@ export const makeAccounts = (
+             b.and(
+               b("owner", "=", input.owner),
+               input.provider === undefined ? true : b("provider", "=", input.provider),
++              input.ids === undefined ? true : b("id", "in", input.ids),
+             ),
+           orderBy: ["id", "asc"],
+         }),
+diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+index 011ff9a..ef168d9 100644
+--- a/packages/sdk/src/implementation/create.ts
++++ b/packages/sdk/src/implementation/create.ts
+@@ -544,6 +544,18 @@ export const createExecutor = (
+             ),
+           ),
+         );
++    const listAccounts = (input: Parameters<typeof accountOperations.list>[0]) =>
++      Effect.gen(function* () {
++        const accounts = yield* accountOperations.list(input);
++        const executions = yield* accountTargets.executions({
++          owner: input.owner,
++          accounts: accounts.map((account) => account.id),
++        });
++        return accounts.map((account) => {
++          const execution = executions.get(account.id);
++          return { ...account, ...(execution === undefined ? {} : { execution }) };
++        });
++      });
+     return {
+       [WebhookSourceHost]: { tick: webhookSources.tick },
+       workflowInputs: workflows.inputs,
+@@ -620,7 +632,11 @@ export const createExecutor = (
+       [AccountReadHost]: makeAccountRead(
+         db,
+         credentials,
+-        { list: accountOperations.list, listHealth: accountHealth.listHealth },
++        {
++          list: accountOperations.list,
++          listIds: listAccounts,
++          listHealth: accountHealth.listHealth,
++        },
+         options.machineAccounts,
+       ),
+       [AppSourceHost]: { dispatch: tools.mcpAppSource },
+@@ -643,18 +659,7 @@ export const createExecutor = (
+             const execution = yield* accountTargets.execution(account);
+             return { ...account, ...(execution === undefined ? {} : { execution }) };
+           }),
+-        list: (input) =>
+-          Effect.gen(function* () {
+-            const accounts = yield* accountOperations.list(input);
+-            const executions = yield* accountTargets.executions({
+-              owner: input.owner,
+-              accounts: accounts.map((account) => account.id),
+-            });
+-            return accounts.map((account) => {
+-              const execution = executions.get(account.id);
+-              return { ...account, ...(execution === undefined ? {} : { execution }) };
+-            });
+-          }),
++        list: ({ owner, provider }) => listAccounts({ owner, provider }),
+         remove: (input) =>
+           Effect.gen(function* () {
+             const saved = yield* storedAccount(db, input.account, input.owner).pipe(
