@@ -1,7 +1,7 @@
 {
   "identity": "basalt-account-owned-mcp-endpoints",
   "file": "0414-account-owned-mcp-endpoints.patch",
-  "content_sha256": "a0815f86bb42be764ca406666d49d35bee68eb7ac4c0fdb60d99b9386c4a4b1f",
+  "content_sha256": "60c0b590c92ac16707ce8007862a48b47aa5febbfccb53f995feb3b2e2de07ef",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
