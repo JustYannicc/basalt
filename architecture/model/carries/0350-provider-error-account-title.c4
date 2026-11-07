@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountPresentation {
+    metadata {
+      constraint "Provider failures retain their cause and name accounts by the caller-visible row title across dashboards, MCP and CLI; app account warnings use the same title."
+    }
+  }
+}

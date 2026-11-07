@@ -1,0 +1,25 @@
+diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
+--- a/apps/hosted/server/src/implementation/app-ui.ts
++++ b/apps/hosted/server/src/implementation/app-ui.ts
+@@ -75,7 +75,6 @@
+   type OrganizationAccess,
+ } from "../contracts/organization.ts";
+ import { callerAccounts, stillLinked } from "./app-accounts.ts";
+-import { withAppDataReads } from "./app-data.ts";
+ import type { appAddresses } from "./app-addresses.ts";
+ 
+ /** Authorization belongs to one HTTP request, never a shared or timed cache. */
+@@ -494,12 +493,7 @@
+       const { input } = yield* dataInput(payload, current, kind);
+       const dispatch = Effect.gen(function* () {
+         const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
+-        return yield* withAppDataReads(
+-          executor,
+-          current.app,
+-          input.accounts,
+-          executor.appData[kind](input),
+-        ).pipe(
++        return yield* executor.appData[kind](input).pipe(
+           Effect.provideService(CurrentOrganization, current.access),
+           Effect.provideService(CurrentAuthorization, fullAuthority),
+           Effect.provideService(CurrentUserId, current.access.userId),

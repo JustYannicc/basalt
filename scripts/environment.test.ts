@@ -28,6 +28,7 @@ test("missing credentials fail with a name and never a value", () => {
 test("deploy maps login secrets and pins EU production without hosted emulators", () => {
   const source = Object.fromEntries(requiredSecrets.map((name) => [name, "fixture"]));
   source.POOL_APP_SIGNING_KEY = "ab".repeat(32);
+  source.POOL_DEPLOYMENT_KEY = "ef".repeat(32);
   source.POOL_MODEL_HISTORY_ENABLED = "false";
   source.GOOGLE_MAPS_ROUTES_API_KEY = "production-routes-fixture";
   const env = deployEnvironment(source);
@@ -57,6 +58,7 @@ test("deploy maps login secrets and pins EU production without hosted emulators"
 test("production rejects emulator and foreign hosting overrides", () => {
   const credentials = Object.fromEntries(requiredSecrets.map((name) => [name, "fixture"]));
   credentials.POOL_APP_SIGNING_KEY = "ab".repeat(32);
+  credentials.POOL_DEPLOYMENT_KEY = "ef".repeat(32);
   for (const name of [
     "EXECUTOR_EMULATORS",
     "TEST_STAGE_DATABASE_PROVIDER",
@@ -82,6 +84,7 @@ test("deploys hand the brand's name and logo to the tools service", () => {
   const env = deployEnvironment({
     ...Object.fromEntries(requiredSecrets.map((name) => [name, "fixture"])),
     POOL_APP_SIGNING_KEY: "0".repeat(64),
+    POOL_DEPLOYMENT_KEY: "0".repeat(64),
   });
   assert.equal(env.EXECUTOR_PRODUCT_NAME, brand.name);
   assert.equal(env.EXECUTOR_PRODUCT_LOGO_URL, brand.logo);
@@ -115,6 +118,7 @@ test("a previous pool signing key is optional, hex, and never the current key", 
   const credentials = {
     ...Object.fromEntries(requiredSecrets.map((name) => [name, "fixture"])),
     POOL_APP_SIGNING_KEY: "ab".repeat(32),
+    POOL_DEPLOYMENT_KEY: "ef".repeat(32),
   };
   assert.doesNotThrow(() => deployEnvironment(credentials));
   assert.doesNotThrow(() =>
@@ -154,6 +158,7 @@ test("preview environment is per-PR, isolated, and keeps smoke credentials deplo
     BETTER_AUTH_SECRET: "production-auth-secret-must-not-pass-through",
     POOL_MANAGEMENT_KEY: "production-pool-key-must-not-pass-through",
     POOL_APP_SIGNING_KEY: "ab".repeat(32),
+    POOL_DEPLOYMENT_KEY: "ef".repeat(32),
     POOL_APP_SIGNING_KEY_PREVIOUS: "cd".repeat(32),
     POOL_MODEL_HISTORY_ENABLED: "true",
     OAUTH_PROXY_SECRET: "production-proxy-secret-must-not-pass-through",
@@ -284,6 +289,7 @@ test("optional telemetry destinations never block the first deployment", () => {
   const credentials = {
     ...Object.fromEntries(requiredSecrets.map((name) => [name, "fixture"])),
     POOL_APP_SIGNING_KEY: "ab".repeat(32),
+    POOL_DEPLOYMENT_KEY: "ef".repeat(32),
   };
   const disabled = deployEnvironment(credentials);
   assert.equal(disabled.SENTRY_DSN, undefined);
@@ -316,6 +322,7 @@ test("connector credentials are separate from sign-in and the feed belongs to th
   const source: NodeJS.ProcessEnv = {
     ...Object.fromEntries(requiredSecrets.map((name) => [name, `fixture-${name}`])),
     POOL_APP_SIGNING_KEY: "ab".repeat(32),
+    POOL_DEPLOYMENT_KEY: "ef".repeat(32),
   };
   for (const client of optionalConnectorClients) {
     source[client.id] = `fixture-${client.id}`;
@@ -349,6 +356,7 @@ test("Zendesk optional hosted credentials do not select an account tenant", () =
   const base: NodeJS.ProcessEnv = {
     ...Object.fromEntries(requiredSecrets.map((name) => [name, "fixture"])),
     POOL_APP_SIGNING_KEY: "ab".repeat(32),
+    POOL_DEPLOYMENT_KEY: "ef".repeat(32),
     EXECUTOR_OAUTH_ZENDESK_CLIENT_ID: "synthetic-client",
     EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET: "synthetic-secret",
   };
@@ -376,6 +384,7 @@ test("absent optional connector clients do not block sign-in, pools or setup", (
   const source: NodeJS.ProcessEnv = {
     ...Object.fromEntries(requiredSecrets.map((name) => [name, "fixture"])),
     POOL_APP_SIGNING_KEY: "ab".repeat(32),
+    POOL_DEPLOYMENT_KEY: "ef".repeat(32),
   };
   const env = deployEnvironment(source);
   assert.equal(env.GOOGLE_CLIENT_ID, source.GOOGLE_CLIENT_ID);
@@ -411,6 +420,7 @@ test("two Basalt releases on the same upstream pin have distinct compiler cache 
   const credentials = {
     ...Object.fromEntries(requiredSecrets.map((name) => [name, "fixture"])),
     POOL_APP_SIGNING_KEY: "ab".repeat(32),
+    POOL_DEPLOYMENT_KEY: "ef".repeat(32),
   };
   const first = deployEnvironment(credentials, checkout);
   git(
@@ -424,4 +434,21 @@ test("two Basalt releases on the same upstream pin have distinct compiler cache 
   assert.equal(first.EXECUTOR_BUILD_VERSION, second.EXECUTOR_BUILD_VERSION);
   assert.notEqual(first.EXECUTOR_COMPILER_CACHE_RELEASE, second.EXECUTOR_COMPILER_CACHE_RELEASE);
   assert.equal(second.EXECUTOR_COMPILER_CACHE_RELEASE, git("rev-parse", "HEAD"));
+});
+
+test("release readiness key is stable across attempts and refuses malformed secrets without values", () => {
+  const source = {
+    ...Object.fromEntries(requiredSecrets.map((name) => [name, "fixture"])),
+    POOL_APP_SIGNING_KEY: "ab".repeat(32),
+    POOL_DEPLOYMENT_KEY: "ef".repeat(32),
+  };
+  assert.equal(deployEnvironment(source).POOL_DEPLOYMENT_KEY, source.POOL_DEPLOYMENT_KEY);
+  assert.equal(
+    deployEnvironment(source).POOL_DEPLOYMENT_KEY,
+    deployEnvironment(source).POOL_DEPLOYMENT_KEY,
+  );
+  for (const key of ["private-value", "ef".repeat(32) + "\n"])
+    assert.throws(() => deployEnvironment({ ...source, POOL_DEPLOYMENT_KEY: key }), {
+      message: "POOL_DEPLOYMENT_KEY must be 32 bytes of lowercase hex",
+    });
 });

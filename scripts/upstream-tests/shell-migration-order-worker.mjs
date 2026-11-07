@@ -16,6 +16,7 @@ const { cloudSiteAfterMigrations } = await import(
   pathToFileURL(resolve(".upstream/apps/hosted/cloud/src/infrastructure/site-release.ts")).href
 );
 const dev = process.argv[2] === "dev";
+process.env.BASALT_RELEASE_ATTEMPT = "00000000-0000-4000-8000-000000000001";
 const context = Layer.succeed(AlchemyContext, {
   dotAlchemy: process.env.ORDER_FIXTURE_DIRECTORY,
   dev,
@@ -49,7 +50,6 @@ const names = await Effect.runPromise(
             PLANETSCALE_DATABASE_NAME: "fixture",
             PLANETSCALE_CLUSTER_SIZE: "PS_10",
             PLANETSCALE_REGION: "eu-west-1",
-            BASALT_RELEASE_ATTEMPT: "00000000-0000-4000-8000-000000000001",
           },
         }),
       ),

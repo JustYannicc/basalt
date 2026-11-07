@@ -204,7 +204,7 @@ model {
   deploymentProvider = adapter "Deployment provider" {
     #external
     technology "Cloudflare API"
-    metadata { hosts "api.cloudflare.com"; sdks "alchemy/Cloudflare" }
+    metadata { hosts "api.cloudflare.com"; sdks "alchemy/Cloudflare|@distilled.cloud/cloudflare" }
   }
   databaseProvider = adapter "Database provider" {
     #external
@@ -227,7 +227,7 @@ model {
   basalt.deployment -[sync]-> containerRegistry "verify published image metadata"
   basalt.build -[sync]-> packageSource "install build packages"
   basalt.deployment -[sync]-> packageSource "install deployment packages"
-  basalt.deployment -[sync]-> deploymentProvider "provision source namespace"
+  basalt.deployment -[sync]-> deploymentProvider "freeze Worker uploads, validate provider startup, activate immutable versions and provision source namespace"
   basalt.deployment -[sync]-> databaseProvider "provision database resources"
   extend basalt.modelGateway {
     metadata { resources "resource-247ccf606aac919aecc1dcbf4bb603eb2446aa1a261023985b019c0c489a982b" }

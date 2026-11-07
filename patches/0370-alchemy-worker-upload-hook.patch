@@ -1,0 +1,765 @@
+diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
+index 51ae883fd..e44a19b9d 100644
+--- a/patches/alchemy@2.0.0-beta.80.patch
++++ b/patches/alchemy@2.0.0-beta.80.patch
+@@ -4930,3 +4930,760 @@ index 690f7a48..eafe3c34 100644
+                  const configuration = desiredConfiguration(news, env, deploymentImageRef);
+                  const configurationHash = yield* applicationConfigurationHash(scalingDefaults(news), news.affinities, configuration);
+                  yield* Effect.logInfo(`Cloudflare Container reconcile: recreating ${name} to attach durable object binding`);
++diff --git a/package.json b/package.json
++index d17896cbf..fa2f6dc41 100644
++--- a/package.json
+++++ b/package.json
++@@ -312,7 +312,12 @@
++       "default": "./lib/Util/index.js"
++     },
++     "./bin/alchemy.js": "./bin/alchemy.js",
++-    "./bin/exec.js": "./bin/exec.js"
+++    "./bin/exec.js": "./bin/exec.js",
+++    "./Cloudflare/Workers/WorkerUploadHook": {
+++      "types": "./lib/Cloudflare/Workers/WorkerUploadHook.d.ts",
+++      "bun": "./src/Cloudflare/Workers/WorkerUploadHook.ts",
+++      "default": "./lib/Cloudflare/Workers/WorkerUploadHook.js"
+++    }
++   },
++   "publishConfig": {
++     "access": "public"
++@@ -508,4 +513,4 @@
++     "test": "alchemy-test --exclude test/Railway",
++     "nuke": "cd ../../ && bun nuke"
++   }
++-}
++\ No newline at end of file
+++}
++diff --git a/src/Cloudflare/Workers/WorkerProvider.ts b/src/Cloudflare/Workers/WorkerProvider.ts
++index 798e8499d..1edba0a69 100644
++--- a/src/Cloudflare/Workers/WorkerProvider.ts
+++++ b/src/Cloudflare/Workers/WorkerProvider.ts
++@@ -45,6 +45,7 @@ import {
++ import { getCompatibility } from "./Compatibility.ts";
++ import { isDurableObjectExport } from "./DurableObject.ts";
++ import { LocalWorkerProvider } from "./LocalWorkerProvider.ts";
+++import { WorkerUploadHook } from "./WorkerUploadHook.ts";
++ import { makeSourceContext, resolveSource } from "./Source.ts";
++ import { assertCloudflareTelemetryCompatibility } from "./Telemetry.ts";
++ import {
++@@ -3679,7 +3680,11 @@ export const LiveWorkerProvider = () =>
++         // entirely and tell Cloudflare to keep the assets it already
++         // has bound to this script. The disk read is the expensive
++         // part; the script PUT happens either way.
++-        const prebuiltAssets = normalizePrebuiltAssets(news.assets, output);
+++        const uploadHook = yield* Effect.serviceOption(WorkerUploadHook);
+++        const reusableAssets = normalizePrebuiltAssets(news.assets, output);
+++        const prebuiltAssets = Option.isSome(uploadHook) && reusableAssets
+++          ? { ...reusableAssets, skip: false }
+++          : reusableAssets;
++         const {
++           assets,
++           bundle,
++@@ -3779,7 +3784,7 @@ export const LiveWorkerProvider = () =>
++           // disk). In that case still keep the existing manifest and
++           // skip the upload session — Cloudflare's content-addressed
++           // session would no-op on every byte anyway.
++-          if (assets.hash === prebuiltAssets?.hash) {
+++          if (Option.isNone(uploadHook) && assets.hash === prebuiltAssets?.hash) {
++             yield* Effect.logInfo(
++               `Cloudflare Worker update: assets unchanged for ${name}, keeping existing`,
++             );
++@@ -4207,6 +4212,27 @@ export const LiveWorkerProvider = () =>
++           streamingTailConsumers,
++           usageModel: undefined,
++         };
+++        if (Option.isSome(uploadHook)) {
+++          const activate = (versionId: string) => Effect.gen(function* () {
+++            const deploymentId = yield* deployVersionTraffic({
+++              accountId, scriptName: name, versionId, traffic: 100, message: news.version?.message,
+++            });
+++            return yield* finishWorkerUpload(
+++              { id: name, logpush: existingSettings?.logpush, tag: output?.workerId },
+++              versionId, deploymentId,
+++            );
+++          });
+++          const activationContext = yield* Effect.context<Effect.Services<ReturnType<typeof activate>>>();
+++          return yield* uploadHook.value.capture({
+++            id, fqn,
+++            request: { accountId, scriptName: name, metadata, files: bundle.files },
+++            previous: output,
+++            proposed: output ? { ...output, hash } : undefined,
+++            previousSettings: oldSettings,
+++            props: news, previousProps: olds,
+++            activate: (versionId) => activate(versionId).pipe(Effect.provideContext(activationContext)),
+++          });
+++        }
++         const rolloutTraffic = getSelfRolloutTraffic(news);
++         let versionId: string | undefined;
++         let deploymentId: string | undefined;
++@@ -4357,6 +4383,14 @@ export const LiveWorkerProvider = () =>
++             }),
++           );
++         }
+++        return yield* finishWorkerUpload(worker, versionId, deploymentId);
+++
+++        function finishWorkerUpload(
+++          worker: { id?: string | null; logpush?: boolean | null; tag?: string | null },
+++          versionId?: string,
+++          deploymentId?: string,
+++        ) {
+++          return Effect.gen(function* () {
++         const { settings, durableObjectNamespaces } =
++           yield* getWorkerSettingsWithDurableObjects(
++             name,
++@@ -4672,6 +4706,8 @@ export const LiveWorkerProvider = () =>
++           affinityZoneIds,
++           hash,
++         } satisfies Worker["Attributes"];
+++          });
+++        }
++       });
++ 
++       // Compare the desired assets against the deployed asset-content hash.
++diff --git a/lib/Cloudflare/Workers/WorkerProvider.js b/lib/Cloudflare/Workers/WorkerProvider.js
++index 21a340b39..51b655938 100644
++--- a/lib/Cloudflare/Workers/WorkerProvider.js
+++++ b/lib/Cloudflare/Workers/WorkerProvider.js
++@@ -35,6 +35,7 @@ import { getAssetsPathPrefix, mergeAssetsConfigFiles, readAssets, readAssetsConf
++ import { getCompatibility } from "./Compatibility.js";
++ import { isDurableObjectExport } from "./DurableObject.js";
++ import { LocalWorkerProvider } from "./LocalWorkerProvider.js";
+++import { WorkerUploadHook } from "./WorkerUploadHook.js";
++ import { makeSourceContext, resolveSource } from "./Source.js";
++ import { assertCloudflareTelemetryCompatibility } from "./Telemetry.js";
++ import { isSelfUrl, Worker, } from "./Worker.js";
++@@ -2628,7 +2629,11 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
++         // entirely and tell Cloudflare to keep the assets it already
++         // has bound to this script. The disk read is the expensive
++         // part; the script PUT happens either way.
++-        const prebuiltAssets = normalizePrebuiltAssets(news.assets, output);
+++        const uploadHook = yield* Effect.serviceOption(WorkerUploadHook);
+++        const reusableAssets = normalizePrebuiltAssets(news.assets, output);
+++        const prebuiltAssets = Option.isSome(uploadHook) && reusableAssets
+++            ? { ...reusableAssets, skip: false }
+++            : reusableAssets;
++         const { assets, bundle, hash: preparedHash, } = yield* prepareAssetsAndBundle(id, fqn, name, news, {
++             skipAssetsRead: prebuiltAssets?.skip,
++             selfUrl,
++@@ -2709,7 +2714,7 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
++             // disk). In that case still keep the existing manifest and
++             // skip the upload session — Cloudflare's content-addressed
++             // session would no-op on every byte anyway.
++-            if (assets.hash === prebuiltAssets?.hash) {
+++            if (Option.isNone(uploadHook) && assets.hash === prebuiltAssets?.hash) {
++                 yield* Effect.logInfo(`Cloudflare Worker update: assets unchanged for ${name}, keeping existing`);
++                 keepAssets = true;
++                 // Fold the build-emitted `_headers`/`_redirects` into the PUT
++@@ -3033,6 +3038,24 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
++             streamingTailConsumers,
++             usageModel: undefined,
++         };
+++        if (Option.isSome(uploadHook)) {
+++            const activate = (versionId) => Effect.gen(function* () {
+++                const deploymentId = yield* deployVersionTraffic({
+++                    accountId, scriptName: name, versionId, traffic: 100, message: news.version?.message,
+++                });
+++                return yield* finishWorkerUpload({ id: name, logpush: existingSettings?.logpush, tag: output?.workerId }, versionId, deploymentId);
+++            });
+++            const activationContext = yield* Effect.context();
+++            return yield* uploadHook.value.capture({
+++                id, fqn,
+++                request: { accountId, scriptName: name, metadata, files: bundle.files },
+++                previous: output,
+++                proposed: output ? { ...output, hash } : undefined,
+++                previousSettings: oldSettings,
+++                props: news, previousProps: olds,
+++                activate: (versionId) => activate(versionId).pipe(Effect.provideContext(activationContext)),
+++            });
+++        }
++         const rolloutTraffic = getSelfRolloutTraffic(news);
++         let versionId;
++         let deploymentId;
++@@ -3155,261 +3178,266 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
++                 return Effect.fail(err);
++             }));
++         }
++-        const { settings, durableObjectNamespaces } = yield* getWorkerSettingsWithDurableObjects(name, expectedDurableObjectClassNames, dispatchNamespace);
++-        // Workers for Platforms user workers are invoked via dynamic dispatch,
++-        // never routed directly — they have no workers.dev subdomain, custom
++-        // domains, zone routes, or cron triggers. Skip all of that
++-        // reconciliation.
++-        if (dispatchNamespace) {
++-            return {
++-                workerId: worker.tag ??
++-                    cachedWorkerId(output?.workerId, name) ??
++-                    (yield* Effect.fail(new WorkerIdNotFound({
++-                        scriptName: name,
++-                        message: `Cloudflare Worker: the dispatch-namespace upload for '${name}' did not return the script's immutable ID`,
++-                    }))),
++-                workerName: name,
++-                namespace: dispatchNamespace,
++-                logpush: worker.logpush ?? undefined,
++-                url: undefined,
++-                tags: settings.tags ?? metadata.tags,
++-                durableObjectNamespaces,
++-                accountId,
++-                urls: [],
++-                domain: undefined,
++-                routes: [],
++-                crons: [],
++-                tailConsumers: settings.tailConsumers?.map((c) => ({ service: c.service })) ??
++-                    tailConsumers,
++-                // The settings read endpoint doesn't expose
++-                // `streaming_tail_consumers`; record what this deploy uploaded.
++-                streamingTailConsumers,
++-                hash,
++-            };
++-        }
++-        // Reconcile the workers.dev settings against observed cloud state.
++-        // We can't diff `news.workersDev` against `olds.workersDev` here
++-        // because both default to `undefined` (meaning "enable") — that
++-        // comparison would skip the API call on every deploy where the user
++-        // never set the prop, leaving the subdomain in whatever state
++-        // Cloudflare currently has it (disabled by default, or whatever
++-        // a previous failed/external action left it as).
++-        const workersDev = resolveWorkersDev(news.workersDev);
++-        const observedSubdomain = yield* workers
++-            .getScriptSubdomain({
++-            accountId,
++-            scriptName: name,
++-        })
++-            .pipe(Effect.orElseSucceed(() => ({
++-            enabled: false,
++-            previewsEnabled: false,
++-        })));
++-        if (workersDev.enabled !== observedSubdomain.enabled ||
++-            workersDev.previewsEnabled !== observedSubdomain.previewsEnabled) {
++-            yield* session.note(`${workersDev.enabled || workersDev.previewsEnabled ? "Enabling" : "Disabling"} workers.dev subdomain...`, { kind: "status" });
++-            // Cloudflare's script registry is eventually consistent — for the
++-            // first few hundred ms after `putScript` returns, POST /subdomain
++-            // can still get back `WorkerNotFound` (a generic "unknown error"
++-            // body), or a bare 500 surfaced as `InternalServerError` /
++-            // `UnknownCloudflareError` (code 10013). Bigger uploads race harder.
++-            // Retry the subdomain toggle on those transient tags with a short
++-            // exponential backoff; same pattern we use elsewhere in this
++-            // provider for DO-namespace propagation and for `putScript` itself.
++-            yield* setWorkerSubdomain(name, workersDev).pipe(Effect.retry({
++-                while: (error) => error._tag === "WorkerNotFound" ||
++-                    error._tag === "InternalServerError" ||
++-                    error._tag === "UnknownCloudflareError",
++-                schedule: Schedule.max([
++-                    Schedule.exponential(200),
++-                    Schedule.recurs(15),
++-                ]),
++-            }));
++-        }
++-        // Custom domains are managed only when `domain` is declared on props
++-        // (#942): an omitted `domain` leaves live attachments alone — and
++-        // spares a plain workers.dev Worker the listDomains call on every
++-        // deploy (#926) — while `domain: null` explicitly detaches
++-        // everything. When managed, the canonical name + aliases + redirect
++-        // hostnames are all attached (DNS + edge certificate); redirect
++-        // hostnames additionally get a redirect rule, which runs before the
++-        // Worker so those requests never invoke it. Unmanaged domains
++-        // persisted in state carry forward so read keeps observing them.
++-        const manageCustomDomains = news.domain !== undefined;
++-        const domainConfig = yield* resolveWorkerDomain(news.domain);
++-        const previousDomain = stateWorkerDomain(output);
++-        let effectiveDomain = manageCustomDomains
++-            ? domainConfig
++-            : previousDomain;
++-        if (!manageCustomDomains && previousDomain !== undefined) {
++-            // Unmanaged, but state remembers domains: observe which of them
++-            // are actually still attached and carry only those forward —
++-            // stale state entries (e.g. legacy records whose attach never
++-            // happened, or hostnames detached out-of-band) must not
++-            // resurface in `urls`. Plain workers.dev Workers (no persisted
++-            // domains) never pay this listDomains call (#926).
++-            const live = new Set(yield* workers.listDomains({ accountId, service: name }).pipe(Effect.map((r) => (r.result ?? []).flatMap((d) => d.hostname ? [d.hostname] : [])), Effect.catch(() => Effect.succeed([]))));
++-            const serving = [
++-                ...(live.has(previousDomain.name) ? [previousDomain.name] : []),
++-                ...previousDomain.aliases.filter((h) => live.has(h)),
++-            ];
++-            effectiveDomain =
++-                serving.length > 0
++-                    ? {
++-                        name: serving[0],
++-                        aliases: serving.slice(1),
++-                        redirects: previousDomain.redirects.filter((h) => live.has(h)),
++-                    }
++-                    : undefined;
++-        }
++-        if (manageCustomDomains) {
++-            const desiredHostnames = domainConfig
++-                ? [
++-                    domainConfig.name,
++-                    ...domainConfig.aliases,
++-                    ...domainConfig.redirects,
++-                ]
++-                : [];
++-            yield* session.note(`Reconciling custom domains (${desiredHostnames.length}) ...`, { kind: "status" });
++-            // Capture hostname → zone for *currently attached* domains before
++-            // reconcile detaches removed ones — a removed redirect hostname's
++-            // zone is otherwise unresolvable and its rule couldn't be cleaned.
++-            const liveBeforeReconcile = yield* workers
++-                .listDomains({ accountId, service: name })
++-                .pipe(Effect.map((r) => (r.result ?? []).flatMap((d) => d.hostname && d.zoneId
++-                ? [[d.hostname, d.zoneId]]
++-                : [])), Effect.catch(() => Effect.succeed([])));
++-            const reconciled = yield* reconcileDomains(name, desiredHostnames, domainConfig?.zone, domainConfig?.previews);
++-            const zoneIdByHostname = new Map([
++-                ...liveBeforeReconcile,
++-                ...reconciled.map((d) => [d.hostname, d.zoneId]),
++-            ]);
++-            yield* reconcileRedirectRules({
++-                scriptName: name,
++-                domain: domainConfig,
++-                zoneIdByHostname,
++-                previousRedirects: previousDomain?.redirects ?? [],
++-            });
++-            effectiveDomain = domainConfig;
++-        }
++-        const urls = yield* computeWorkerUrls({
++-            scriptName: name,
++-            workersDev,
++-            domain: effectiveDomain,
++-            uploadedVersionId: versionId,
++-            uploadedVersionAlias: news.version?.alias,
++-        });
++-        const desiredRoutes = yield* normalizeRoutes(news.routes);
++-        const previousRoutes = output?.routes ?? [];
++-        if (desiredRoutes.length > 0 || previousRoutes.length > 0) {
++-            yield* session.note(`Reconciling worker routes (${desiredRoutes.length}) ...`, { kind: "status" });
++-        }
++-        const routes = yield* reconcileRoutes(name, desiredRoutes, previousRoutes);
++-        // Version-affinity transform rules (`version.affinity`): pin each
++-        // user to one version during gradual rollouts by filling the
++-        // version-key header from a stable request property, on every zone
++-        // this Worker serves on. Runs after the domain/route reconciles so
++-        // freshly attached surfaces resolve their zones, and also when only
++-        // *previous* state holds rules, so removing affinity converges.
++-        const affinity = news.version?.parent == null ? news.version?.affinity : undefined;
++-        const previousAffinityZoneIds = output?.affinityZoneIds ?? [];
++-        let affinityZoneIds;
++-        if (affinity !== undefined || previousAffinityZoneIds.length > 0) {
++-            const resolvedAffinity = affinity !== undefined
++-                ? yield* resolveVersionAffinity(affinity)
++-                : undefined;
++-            let hostsByZone;
++-            if (resolvedAffinity !== undefined) {
++-                hostsByZone = new Map();
++-                const addHost = (zoneId, host) => {
++-                    const hosts = hostsByZone.get(zoneId) ?? [];
++-                    hosts.push(host);
++-                    hostsByZone.set(zoneId, hosts);
++-                };
++-                // Serving hostnames from *observed* domain attachments (covers
++-                // managed, unmanaged, and adopted domains alike); redirect
++-                // hostnames 301 before the Worker and never need a key.
++-                const redirectHosts = new Set(effectiveDomain?.redirects ?? []);
++-                const attached = yield* workers
++-                    .listDomains({ accountId, service: name })
++-                    .pipe(Effect.map((r) => r.result ?? []));
++-                for (const d of attached) {
++-                    if (!d.hostname || !d.zoneId || redirectHosts.has(d.hostname)) {
++-                        continue;
++-                    }
++-                    addHost(d.zoneId, { host: d.hostname, wildcard: false });
++-                }
++-                for (const route of routes) {
++-                    const host = route.pattern.split("/")[0];
++-                    if (!host || host.includes('"'))
++-                        continue;
++-                    addHost(route.zoneId, { host, wildcard: host.includes("*") });
+++        return yield* finishWorkerUpload(worker, versionId, deploymentId);
+++        function finishWorkerUpload(worker, versionId, deploymentId) {
+++            return Effect.gen(function* () {
+++                const { settings, durableObjectNamespaces } = yield* getWorkerSettingsWithDurableObjects(name, expectedDurableObjectClassNames, dispatchNamespace);
+++                // Workers for Platforms user workers are invoked via dynamic dispatch,
+++                // never routed directly — they have no workers.dev subdomain, custom
+++                // domains, zone routes, or cron triggers. Skip all of that
+++                // reconciliation.
+++                if (dispatchNamespace) {
+++                    return {
+++                        workerId: worker.tag ??
+++                            cachedWorkerId(output?.workerId, name) ??
+++                            (yield* Effect.fail(new WorkerIdNotFound({
+++                                scriptName: name,
+++                                message: `Cloudflare Worker: the dispatch-namespace upload for '${name}' did not return the script's immutable ID`,
+++                            }))),
+++                        workerName: name,
+++                        namespace: dispatchNamespace,
+++                        logpush: worker.logpush ?? undefined,
+++                        url: undefined,
+++                        tags: settings.tags ?? metadata.tags,
+++                        durableObjectNamespaces,
+++                        accountId,
+++                        urls: [],
+++                        domain: undefined,
+++                        routes: [],
+++                        crons: [],
+++                        tailConsumers: settings.tailConsumers?.map((c) => ({ service: c.service })) ??
+++                            tailConsumers,
+++                        // The settings read endpoint doesn't expose
+++                        // `streaming_tail_consumers`; record what this deploy uploaded.
+++                        streamingTailConsumers,
+++                        hash,
+++                    };
++                 }
++-                if (hostsByZone.size === 0) {
++-                    return yield* Effect.fail(new WorkerVersionConfigError({
++-                        message: `version.affinity pins users via a zone Transform Rule setting the ${AFFINITY_HEADER} header, which only sees zone traffic — give '${name}' a custom domain (\`domain\`) or zone \`routes\`. ` +
++-                            `On the bare workers.dev URL, clients must send the header themselves.`,
+++                // Reconcile the workers.dev settings against observed cloud state.
+++                // We can't diff `news.workersDev` against `olds.workersDev` here
+++                // because both default to `undefined` (meaning "enable") — that
+++                // comparison would skip the API call on every deploy where the user
+++                // never set the prop, leaving the subdomain in whatever state
+++                // Cloudflare currently has it (disabled by default, or whatever
+++                // a previous failed/external action left it as).
+++                const workersDev = resolveWorkersDev(news.workersDev);
+++                const observedSubdomain = yield* workers
+++                    .getScriptSubdomain({
+++                    accountId,
+++                    scriptName: name,
+++                })
+++                    .pipe(Effect.orElseSucceed(() => ({
+++                    enabled: false,
+++                    previewsEnabled: false,
+++                })));
+++                if (workersDev.enabled !== observedSubdomain.enabled ||
+++                    workersDev.previewsEnabled !== observedSubdomain.previewsEnabled) {
+++                    yield* session.note(`${workersDev.enabled || workersDev.previewsEnabled ? "Enabling" : "Disabling"} workers.dev subdomain...`, { kind: "status" });
+++                    // Cloudflare's script registry is eventually consistent — for the
+++                    // first few hundred ms after `putScript` returns, POST /subdomain
+++                    // can still get back `WorkerNotFound` (a generic "unknown error"
+++                    // body), or a bare 500 surfaced as `InternalServerError` /
+++                    // `UnknownCloudflareError` (code 10013). Bigger uploads race harder.
+++                    // Retry the subdomain toggle on those transient tags with a short
+++                    // exponential backoff; same pattern we use elsewhere in this
+++                    // provider for DO-namespace propagation and for `putScript` itself.
+++                    yield* setWorkerSubdomain(name, workersDev).pipe(Effect.retry({
+++                        while: (error) => error._tag === "WorkerNotFound" ||
+++                            error._tag === "InternalServerError" ||
+++                            error._tag === "UnknownCloudflareError",
+++                        schedule: Schedule.max([
+++                            Schedule.exponential(200),
+++                            Schedule.recurs(15),
+++                        ]),
++                     }));
++                 }
++-                yield* session.note("Reconciling version-affinity rules ...", {
++-                    kind: "status",
+++                // Custom domains are managed only when `domain` is declared on props
+++                // (#942): an omitted `domain` leaves live attachments alone — and
+++                // spares a plain workers.dev Worker the listDomains call on every
+++                // deploy (#926) — while `domain: null` explicitly detaches
+++                // everything. When managed, the canonical name + aliases + redirect
+++                // hostnames are all attached (DNS + edge certificate); redirect
+++                // hostnames additionally get a redirect rule, which runs before the
+++                // Worker so those requests never invoke it. Unmanaged domains
+++                // persisted in state carry forward so read keeps observing them.
+++                const manageCustomDomains = news.domain !== undefined;
+++                const domainConfig = yield* resolveWorkerDomain(news.domain);
+++                const previousDomain = stateWorkerDomain(output);
+++                let effectiveDomain = manageCustomDomains
+++                    ? domainConfig
+++                    : previousDomain;
+++                if (!manageCustomDomains && previousDomain !== undefined) {
+++                    // Unmanaged, but state remembers domains: observe which of them
+++                    // are actually still attached and carry only those forward —
+++                    // stale state entries (e.g. legacy records whose attach never
+++                    // happened, or hostnames detached out-of-band) must not
+++                    // resurface in `urls`. Plain workers.dev Workers (no persisted
+++                    // domains) never pay this listDomains call (#926).
+++                    const live = new Set(yield* workers.listDomains({ accountId, service: name }).pipe(Effect.map((r) => (r.result ?? []).flatMap((d) => d.hostname ? [d.hostname] : [])), Effect.catch(() => Effect.succeed([]))));
+++                    const serving = [
+++                        ...(live.has(previousDomain.name) ? [previousDomain.name] : []),
+++                        ...previousDomain.aliases.filter((h) => live.has(h)),
+++                    ];
+++                    effectiveDomain =
+++                        serving.length > 0
+++                            ? {
+++                                name: serving[0],
+++                                aliases: serving.slice(1),
+++                                redirects: previousDomain.redirects.filter((h) => live.has(h)),
+++                            }
+++                            : undefined;
+++                }
+++                if (manageCustomDomains) {
+++                    const desiredHostnames = domainConfig
+++                        ? [
+++                            domainConfig.name,
+++                            ...domainConfig.aliases,
+++                            ...domainConfig.redirects,
+++                        ]
+++                        : [];
+++                    yield* session.note(`Reconciling custom domains (${desiredHostnames.length}) ...`, { kind: "status" });
+++                    // Capture hostname → zone for *currently attached* domains before
+++                    // reconcile detaches removed ones — a removed redirect hostname's
+++                    // zone is otherwise unresolvable and its rule couldn't be cleaned.
+++                    const liveBeforeReconcile = yield* workers
+++                        .listDomains({ accountId, service: name })
+++                        .pipe(Effect.map((r) => (r.result ?? []).flatMap((d) => d.hostname && d.zoneId
+++                        ? [[d.hostname, d.zoneId]]
+++                        : [])), Effect.catch(() => Effect.succeed([])));
+++                    const reconciled = yield* reconcileDomains(name, desiredHostnames, domainConfig?.zone, domainConfig?.previews);
+++                    const zoneIdByHostname = new Map([
+++                        ...liveBeforeReconcile,
+++                        ...reconciled.map((d) => [d.hostname, d.zoneId]),
+++                    ]);
+++                    yield* reconcileRedirectRules({
+++                        scriptName: name,
+++                        domain: domainConfig,
+++                        zoneIdByHostname,
+++                        previousRedirects: previousDomain?.redirects ?? [],
+++                    });
+++                    effectiveDomain = domainConfig;
+++                }
+++                const urls = yield* computeWorkerUrls({
+++                    scriptName: name,
+++                    workersDev,
+++                    domain: effectiveDomain,
+++                    uploadedVersionId: versionId,
+++                    uploadedVersionAlias: news.version?.alias,
++                 });
++-            }
++-            const placed = yield* reconcileAffinityRules({
++-                scriptName: name,
++-                desired: resolvedAffinity !== undefined && hostsByZone !== undefined
++-                    ? { affinity: resolvedAffinity, hostsByZone }
++-                    : undefined,
++-                previousZoneIds: previousAffinityZoneIds,
+++                const desiredRoutes = yield* normalizeRoutes(news.routes);
+++                const previousRoutes = output?.routes ?? [];
+++                if (desiredRoutes.length > 0 || previousRoutes.length > 0) {
+++                    yield* session.note(`Reconciling worker routes (${desiredRoutes.length}) ...`, { kind: "status" });
+++                }
+++                const routes = yield* reconcileRoutes(name, desiredRoutes, previousRoutes);
+++                // Version-affinity transform rules (`version.affinity`): pin each
+++                // user to one version during gradual rollouts by filling the
+++                // version-key header from a stable request property, on every zone
+++                // this Worker serves on. Runs after the domain/route reconciles so
+++                // freshly attached surfaces resolve their zones, and also when only
+++                // *previous* state holds rules, so removing affinity converges.
+++                const affinity = news.version?.parent == null ? news.version?.affinity : undefined;
+++                const previousAffinityZoneIds = output?.affinityZoneIds ?? [];
+++                let affinityZoneIds;
+++                if (affinity !== undefined || previousAffinityZoneIds.length > 0) {
+++                    const resolvedAffinity = affinity !== undefined
+++                        ? yield* resolveVersionAffinity(affinity)
+++                        : undefined;
+++                    let hostsByZone;
+++                    if (resolvedAffinity !== undefined) {
+++                        hostsByZone = new Map();
+++                        const addHost = (zoneId, host) => {
+++                            const hosts = hostsByZone.get(zoneId) ?? [];
+++                            hosts.push(host);
+++                            hostsByZone.set(zoneId, hosts);
+++                        };
+++                        // Serving hostnames from *observed* domain attachments (covers
+++                        // managed, unmanaged, and adopted domains alike); redirect
+++                        // hostnames 301 before the Worker and never need a key.
+++                        const redirectHosts = new Set(effectiveDomain?.redirects ?? []);
+++                        const attached = yield* workers
+++                            .listDomains({ accountId, service: name })
+++                            .pipe(Effect.map((r) => r.result ?? []));
+++                        for (const d of attached) {
+++                            if (!d.hostname || !d.zoneId || redirectHosts.has(d.hostname)) {
+++                                continue;
+++                            }
+++                            addHost(d.zoneId, { host: d.hostname, wildcard: false });
+++                        }
+++                        for (const route of routes) {
+++                            const host = route.pattern.split("/")[0];
+++                            if (!host || host.includes('"'))
+++                                continue;
+++                            addHost(route.zoneId, { host, wildcard: host.includes("*") });
+++                        }
+++                        if (hostsByZone.size === 0) {
+++                            return yield* Effect.fail(new WorkerVersionConfigError({
+++                                message: `version.affinity pins users via a zone Transform Rule setting the ${AFFINITY_HEADER} header, which only sees zone traffic — give '${name}' a custom domain (\`domain\`) or zone \`routes\`. ` +
+++                                    `On the bare workers.dev URL, clients must send the header themselves.`,
+++                            }));
+++                        }
+++                        yield* session.note("Reconciling version-affinity rules ...", {
+++                            kind: "status",
+++                        });
+++                    }
+++                    const placed = yield* reconcileAffinityRules({
+++                        scriptName: name,
+++                        desired: resolvedAffinity !== undefined && hostsByZone !== undefined
+++                            ? { affinity: resolvedAffinity, hostsByZone }
+++                            : undefined,
+++                        previousZoneIds: previousAffinityZoneIds,
+++                    });
+++                    affinityZoneIds = placed.length > 0 ? placed : undefined;
+++                }
+++                const desiredCrons = normalizeCrons([
+++                    ...getCronBindings(bindings),
+++                    ...(news.crons ?? []),
+++                ]);
+++                const previousCrons = output?.crons ?? [];
+++                // Same gating as read: skip getScriptSchedule when neither props nor
+++                // prior state indicate cron management (#926).
+++                const crons = desiredCrons.length > 0 || previousCrons.length > 0
+++                    ? yield* reconcileCrons(name, desiredCrons, previousCrons, session)
+++                    : [];
+++                return {
+++                    // The immutable script ID. The gradual-rollout branch deploys via
+++                    // the versions API (no script PUT response), and rows persisted by
+++                    // older releases carried the script *name* here — both fall back
+++                    // to a lazy listing lookup.
+++                    workerId: worker.tag ??
+++                        cachedWorkerId(output?.workerId, name) ??
+++                        (yield* findWorkerId(accountId, name)),
+++                    workerName: name,
+++                    namespace: undefined,
+++                    logpush: worker.logpush ?? undefined,
+++                    url: urls[0],
+++                    urls,
+++                    domain: effectiveDomain,
+++                    tags: settings.tags ?? metadata.tags,
+++                    durableObjectNamespaces,
+++                    accountId,
+++                    routes,
+++                    crons,
+++                    // Observed post-upload settings are authoritative: the gradual
+++                    // rollout branch above deploys via the versions API, which leaves
+++                    // script-level settings (tail consumers included) at their live
+++                    // values until the next full deploy.
+++                    tailConsumers: settings.tailConsumers?.map((c) => ({ service: c.service })) ??
+++                        tailConsumers,
+++                    // GET script-settings has no `streaming_tail_consumers` field (the
+++                    // API only carries it on upload metadata), so the uploaded value is
+++                    // authoritative here. In the gradual-rollout branch the versions
+++                    // API leaves script-level settings live-as-is, matching how the
+++                    // metadata surface treats every other script-level field.
+++                    streamingTailConsumers,
+++                    versionOf: undefined,
+++                    versionId,
+++                    deploymentId,
+++                    affinityZoneIds,
+++                    hash,
+++                };
++             });
++-            affinityZoneIds = placed.length > 0 ? placed : undefined;
++         }
++-        const desiredCrons = normalizeCrons([
++-            ...getCronBindings(bindings),
++-            ...(news.crons ?? []),
++-        ]);
++-        const previousCrons = output?.crons ?? [];
++-        // Same gating as read: skip getScriptSchedule when neither props nor
++-        // prior state indicate cron management (#926).
++-        const crons = desiredCrons.length > 0 || previousCrons.length > 0
++-            ? yield* reconcileCrons(name, desiredCrons, previousCrons, session)
++-            : [];
++-        return {
++-            // The immutable script ID. The gradual-rollout branch deploys via
++-            // the versions API (no script PUT response), and rows persisted by
++-            // older releases carried the script *name* here — both fall back
++-            // to a lazy listing lookup.
++-            workerId: worker.tag ??
++-                cachedWorkerId(output?.workerId, name) ??
++-                (yield* findWorkerId(accountId, name)),
++-            workerName: name,
++-            namespace: undefined,
++-            logpush: worker.logpush ?? undefined,
++-            url: urls[0],
++-            urls,
++-            domain: effectiveDomain,
++-            tags: settings.tags ?? metadata.tags,
++-            durableObjectNamespaces,
++-            accountId,
++-            routes,
++-            crons,
++-            // Observed post-upload settings are authoritative: the gradual
++-            // rollout branch above deploys via the versions API, which leaves
++-            // script-level settings (tail consumers included) at their live
++-            // values until the next full deploy.
++-            tailConsumers: settings.tailConsumers?.map((c) => ({ service: c.service })) ??
++-                tailConsumers,
++-            // GET script-settings has no `streaming_tail_consumers` field (the
++-            // API only carries it on upload metadata), so the uploaded value is
++-            // authoritative here. In the gradual-rollout branch the versions
++-            // API leaves script-level settings live-as-is, matching how the
++-            // metadata surface treats every other script-level field.
++-            streamingTailConsumers,
++-            versionOf: undefined,
++-            versionId,
++-            deploymentId,
++-            affinityZoneIds,
++-            hash,
++-        };
++     });
++     // Compare the desired assets against the deployed asset-content hash.
++     //
++@@ -4702,3 +4730,4 @@ const validateWorkerTags = (scriptName, tags, alchemyTagCount) => Effect.gen(fun
++         }
++     }
++ });
+++//# sourceMappingURL=WorkerProvider.js.map
++\ No newline at end of file
++diff --git a/src/Cloudflare/Workers/WorkerUploadHook.ts b/src/Cloudflare/Workers/WorkerUploadHook.ts
++new file mode 100644
++index 000000000..94528427b
++--- /dev/null
+++++ b/src/Cloudflare/Workers/WorkerUploadHook.ts
++@@ -0,0 +1,23 @@
+++import type * as workers from "@distilled.cloud/cloudflare/workers";
+++import * as Context from "effect/Context";
+++import type * as Effect from "effect/Effect";
+++import type { Worker } from "./Worker.ts";
+++
+++/** The provider's complete upload, before script activation or route/schedule reconciliation. */
+++export interface PreparedWorkerUpload {
+++  readonly id: string;
+++  readonly fqn: string;
+++  readonly request: workers.PutScriptRequest;
+++  readonly previous: Worker["Attributes"] | undefined;
+++  readonly proposed: Worker["Attributes"] | undefined;
+++  readonly previousSettings: workers.GetScriptScriptAndVersionSettingResponse | undefined;
+++  readonly props: Worker["Props"];
+++  readonly previousProps: Worker["Props"] | undefined;
+++  /** Deploy an already uploaded immutable version, then finish ordinary provider reconciliation. */
+++  readonly activate: (versionId: string) => Effect.Effect<Worker["Attributes"], unknown>;
+++}
+++
+++/** Opt-in orchestration boundary. Absence preserves the ordinary script upload path. */
+++export class WorkerUploadHook extends Context.Service<WorkerUploadHook, {
+++  readonly capture: (upload: PreparedWorkerUpload) => Effect.Effect<Worker["Attributes"], unknown>;
+++}>()("alchemy/Cloudflare/Workers/WorkerUploadHook") {}
++diff --git a/lib/Cloudflare/Workers/WorkerUploadHook.js b/lib/Cloudflare/Workers/WorkerUploadHook.js
++new file mode 100644
++index 000000000..8aa80d50c
++--- /dev/null
+++++ b/lib/Cloudflare/Workers/WorkerUploadHook.js
++@@ -0,0 +1,4 @@
+++import * as Context from "effect/Context";
+++/** Opt-in orchestration boundary. Absence preserves the ordinary script upload path. */
+++export class WorkerUploadHook extends Context.Service()("alchemy/Cloudflare/Workers/WorkerUploadHook") {
+++}
++diff --git a/lib/Cloudflare/Workers/WorkerUploadHook.d.ts b/lib/Cloudflare/Workers/WorkerUploadHook.d.ts
++new file mode 100644
++index 000000000..741f7ce5f
++--- /dev/null
+++++ b/lib/Cloudflare/Workers/WorkerUploadHook.d.ts
++@@ -0,0 +1,20 @@
+++import type * as workers from "@distilled.cloud/cloudflare/workers";
+++import * as Context from "effect/Context";
+++import type * as Effect from "effect/Effect";
+++import type { Worker } from "./Worker.js";
+++export interface PreparedWorkerUpload {
+++  readonly id: string;
+++  readonly fqn: string;
+++  readonly request: workers.PutScriptRequest;
+++  readonly previous: Worker["Attributes"] | undefined;
+++  readonly proposed: Worker["Attributes"] | undefined;
+++  readonly previousSettings: workers.GetScriptScriptAndVersionSettingResponse | undefined;
+++    readonly props: Worker["Props"];
+++    readonly previousProps: Worker["Props"] | undefined;
+++  readonly activate: (versionId: string) => Effect.Effect<Worker["Attributes"], unknown>;
+++}
+++declare const WorkerUploadHook_base: Context.ServiceClass<WorkerUploadHook, "alchemy/Cloudflare/Workers/WorkerUploadHook", {
+++  readonly capture: (upload: PreparedWorkerUpload) => Effect.Effect<Worker["Attributes"], unknown>;
+++}>;
+++export declare class WorkerUploadHook extends WorkerUploadHook_base {}
+++export {};

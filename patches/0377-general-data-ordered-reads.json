@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-general-data-ordered-reads",
+  "file": "0377-general-data-ordered-reads.patch",
+  "content_sha256": "ac36621522cb35c4f385fda14f93bab70faa95415f703657e50be3722a1e689d",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}
