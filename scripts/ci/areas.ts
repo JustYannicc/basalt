@@ -127,6 +127,10 @@ export const areas = [
     jobs: accounts,
   },
   {
+    paths: ["e2e/zoho-people*.mjs"],
+    jobs: ["catalog-compat"],
+  },
+  {
     paths: ["src/catalog/slack.json", "e2e/slack*/**", "e2e/slack*.mjs", ".upstream/**/slack*/**"],
     jobs: ["slack-health"],
   },

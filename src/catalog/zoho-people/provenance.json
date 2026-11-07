@@ -1,0 +1,1334 @@
+{
+  "version": 1,
+  "source": "https://www.zoho.com/people/api/overview.html",
+  "navigation": {
+    "url": "https://www.zohowebstatic.com/sites/zweb/json/api/people-api-menu.json",
+    "sha256": "66052791c5c02b3c02670ef9eb8fe5eb6cd13b00190858cc8e53dc670ec9fd97"
+  },
+  "index": {
+    "url": "https://www.zoho.com/people/api/llms.txt",
+    "sha256": "bf75fd3197fd659e3740f935c589a768134449b92a1af92c45a4ddf0b0844bf5"
+  },
+  "coverage": "core",
+  "operations": [
+    {
+      "tool": "leaveTracker.addCompensatoryRequestV2",
+      "method": "POST",
+      "path": "/api/v2/leavetracker/compensatory/records",
+      "documentation": "https://www.zoho.com/people/api/add-compensatory-requests.html",
+      "documentationSha256": "49c6ec05003b36c0d64af4fc480f197cde353d496f27850d354bd8921b4258d8"
+    },
+    {
+      "tool": "leaveTracker.addLeaveBalance",
+      "method": "POST",
+      "path": "/api/leave/addBalance",
+      "documentation": "https://www.zoho.com/people/api/add-leave-balance.html",
+      "documentationSha256": "bf9a6fc50df4cca52c7e835e3feef55cffd08a2bd86b6151c59de74d6f681821"
+    },
+    {
+      "tool": "leaveTracker.addLeaveLegacy",
+      "method": "POST",
+      "path": "/api/forms/json/leave/insertRecord",
+      "documentation": "https://www.zoho.com/people/api/add-leave.html",
+      "documentationSha256": "5b202ec17b4d970d0d3a75431f9e30482013d4555354c010ab00e2119ed8cafb"
+    },
+    {
+      "tool": "employees.addEmployee",
+      "method": "POST",
+      "path": "/api/forms/json/employee/insertRecord",
+      "documentation": "https://www.zoho.com/people/api/adding-employees.html",
+      "documentationSha256": "69f60f2b11fa935b454c61ffe12ed8ffb34574a7935997d8aada43a342b0a937"
+    },
+    {
+      "tool": "leaveTracker.getAllHolidaysLegacy",
+      "method": "GET",
+      "path": "/api/leave/v2/holidays/get",
+      "documentation": "https://www.zoho.com/people/api/all-holiday.html",
+      "documentationSha256": "decf971af08dc332d52793b167d1aa725c1a0975c4e105536aeec8c0b55c05db"
+    },
+    {
+      "tool": "attendance.bulkImport",
+      "method": "POST",
+      "path": "/api/attendance/bulkImport",
+      "documentation": "https://www.zoho.com/people/api/attendance-bulkimport.html",
+      "documentationSha256": "f7f03d9e17bd6b45e6d240d8b4044371be587ba92ca759c6ba3cd7cdceb04c29"
+    },
+    {
+      "tool": "attendance.recordAttendancePunch",
+      "method": "POST",
+      "path": "/api/attendance",
+      "documentation": "https://www.zoho.com/people/api/attendance-checkin-checkout.html",
+      "documentationSha256": "b762afa0a1a086ff170b1f4e2ba40d4e425f293b3e75176a4364420dd3ab524c"
+    },
+    {
+      "tool": "attendance.getAttendanceEntries",
+      "method": "POST",
+      "path": "/api/attendance/getAttendanceEntries",
+      "documentation": "https://www.zoho.com/people/api/attendance-entries.html",
+      "documentationSha256": "12b366b9e6ec3d20c4fbeecff43de90676e539f70f0c6f72936f50e0164e6578"
+    },
+    {
+      "tool": "attendance.fetchLatestEntries",
+      "method": "GET",
+      "path": "/api/attendance/fetchLatestAttEntries",
+      "documentation": "https://www.zoho.com/people/api/attendance-fetchlastentries.html",
+      "documentationSha256": "eaa4e7ccd37960f0b3cd4976d6e5e6878efe6a98c2d917f243a19b911ca9b88e"
+    },
+    {
+      "tool": "shifts.getShiftConfiguration",
+      "method": "GET",
+      "path": "/api/attendance/getShiftConfiguration",
+      "documentation": "https://www.zoho.com/people/api/attendance-shift-details.html",
+      "documentationSha256": "29deac6003366dd847782bf7c11a1d305c03ce42e78083c09869fcc2ceb43d91"
+    },
+    {
+      "tool": "shifts.updateUserShift",
+      "method": "POST",
+      "path": "/api/attendance/updateUserShift",
+      "documentation": "https://www.zoho.com/people/api/attendance-shift-mapping.html",
+      "documentationSha256": "0f73baf009bb26f559c42ba9abbe09738a2c6e4ed21ae13bef473f0de77c4a1a"
+    },
+    {
+      "references": [
+        {
+          "url": "https://www.zoho.com/people/api/bulk-records.html",
+          "sha256": "eb3cce2b67bde599702776ba3557bc71af130cc28816d4fbb7c630f7ff4ffb6f"
+        },
+        {
+          "url": "https://www.zoho.com/people/api/forms-api/search-record.html",
+          "sha256": "48474431b69402d2ef192bec9e88c602130671d158a84bf83c93274e00b1175d"
+        }
+      ],
+      "tool": "formsData.getFormRecords",
+      "method": "GET",
+      "path": "/api/forms/{formLinkName}/getRecords",
+      "documentation": "https://www.zoho.com/people/api/bulk-records.html",
+      "documentationSha256": "eb3cce2b67bde599702776ba3557bc71af130cc28816d4fbb7c630f7ff4ffb6f"
+    },
+    {
+      "tool": "leaveTracker.cancelCompensatoryRequestV2",
+      "method": "PATCH",
+      "path": "/api/v2/leavetracker/compensatory/records/cancel/{recordId}",
+      "documentation": "https://www.zoho.com/people/api/cancel-compensatory-requests.html",
+      "documentationSha256": "9e8b9a277a55ace7d638a9123ee08c6725ef56f7548b0361d1a846847af65555"
+    },
+    {
+      "tool": "leaveTracker.cancelLeaveRequestV2",
+      "method": "PATCH",
+      "path": "/api/v2/leavetracker/leaves/records/cancel/{record_id}",
+      "documentation": "https://www.zoho.com/people/api/cancel-leave.html",
+      "documentationSha256": "6ae36600773d10a31f9ee5a11c074a02bf488c692e5651ba216041624761d811"
+    },
+    {
+      "tool": "leaveTracker.customizeBalance",
+      "method": "POST",
+      "path": "/api/v2/leavetracker/settings/customize-balance/{erecno}",
+      "documentation": "https://www.zoho.com/people/api/customize-leave-balance.html",
+      "documentationSha256": "473078b85fdb0ce1ef9d3b2e78eca102771b916697cf74fb754c3a9dce7c786b"
+    },
+    {
+      "tool": "formsMetadata.listFormViews",
+      "method": "GET",
+      "path": "/api/views",
+      "documentation": "https://www.zoho.com/people/api/default-custom-views.html",
+      "documentationSha256": "7d7dd959628a5c86f6302dc87964a356610ecc1d800f1033e5b2e2ef1cca5bf4"
+    },
+    {
+      "tool": "leaveTracker.deleteCompensatoryRequestV2",
+      "method": "DELETE",
+      "path": "/api/v2/leavetracker/compensatory/records/{recordId}",
+      "documentation": "https://www.zoho.com/people/api/delete-specific-compensatory-requests.html",
+      "documentationSha256": "01fce53e80a5ae65b51407e201bf905424892fe6c09fd4b69627cf2db4d0b6b9"
+    },
+    {
+      "tool": "leaveTracker.editCompensatoryRequestV2",
+      "method": "PUT",
+      "path": "/api/v2/leavetracker/compensatory/records/{recordsId}",
+      "documentation": "https://www.zoho.com/people/api/edit-compensatory-requests.html",
+      "documentationSha256": "087a66d109763a8e939543ef2dfb0d43c2621734068d27e40cd846388b41694d"
+    },
+    {
+      "tool": "formsData.getViewRecords",
+      "method": "GET",
+      "path": "/api/forms/{viewName}/records",
+      "documentation": "https://www.zoho.com/people/api/fetch-record.html",
+      "documentationSha256": "8c8c121fbed078a07ef8b18c11c72e75fa9bae9089b8fe2d8b0068b4a41a9f9a"
+    },
+    {
+      "tool": "formsMetadata.getFormViews",
+      "method": "GET",
+      "path": "/api/forms/{formLinkName}/views",
+      "documentation": "https://www.zoho.com/people/api/fetch-view.html",
+      "documentationSha256": "76a15145b38c376c73018ca0e760db57a1862c783a92a707948b5a16e62b9d64"
+    },
+    {
+      "tool": "formsMetadata.listForms",
+      "method": "GET",
+      "path": "/api/forms",
+      "documentation": "https://www.zoho.com/people/api/forms-api/fetch-forms.html",
+      "documentationSha256": "a820aa679aaf0dc91950e3af0d74a065b78d017fc4df48a9fc109a0367195d81"
+    },
+    {
+      "tool": "formsData.getRecordById",
+      "method": "GET",
+      "path": "/api/forms/{formLinkName}/getRecordByID",
+      "documentation": "https://www.zoho.com/people/api/forms-api/fetch-single-section.html",
+      "documentationSha256": "c35845ff9f549c18fd6a1f2991cb749358df11e9b011692e382af6280ebfea0f"
+    },
+    {
+      "tool": "formsData.getRecordDataById",
+      "method": "GET",
+      "path": "/api/forms/{formLinkName}/getDataByID",
+      "documentation": "https://www.zoho.com/people/api/forms-api/fetch-single.html",
+      "documentationSha256": "e9164a5262d5ec6ab42c78a18527131162402158fed2cad3a7ec67d89de50901"
+    },
+    {
+      "tool": "formsMetadata.getFormFields",
+      "method": "GET",
+      "path": "/api/forms/{formLinkName}/components",
+      "documentation": "https://www.zoho.com/people/api/forms-api/get-field-forms.html",
+      "documentationSha256": "68998fe228916ce8200ca24a5722b162c241cd2be7b81069e3d20de1279e074a"
+    },
+    {
+      "tool": "formsData.getRelatedRecords",
+      "method": "GET",
+      "path": "/api/forms/{formLinkName}/getRelatedRecords",
+      "documentation": "https://www.zoho.com/people/api/forms-api/get-single.html",
+      "documentationSha256": "380d270746600ef0a33a482f051804f1945bf5b8731d33622bd8efa6b16173d4"
+    },
+    {
+      "tool": "leaveTracker.getCompensatoryRequestsV2",
+      "method": "GET",
+      "path": "/api/v2/leavetracker/compensatory/records",
+      "documentation": "https://www.zoho.com/people/api/get-compensatory-requests.html",
+      "documentationSha256": "718d05ea9818e0542920d2361141b18c07e9e24d2dedf13a6253c93a0024f6df"
+    },
+    {
+      "tool": "formsData.getRecordCount",
+      "method": "GET",
+      "path": "/api/forms/{formLinkName}/getRecordCount",
+      "documentation": "https://www.zoho.com/people/api/get-record-count.html",
+      "documentationSha256": "3cf0d7d0ccb487d28557aef4c8d11e7d233d1f7828fd33d57fffe1049fccbb15"
+    },
+    {
+      "references": [
+        {
+          "url": "https://www.zoho.com/people/api/get-records-v2.html",
+          "sha256": "be5f9f9f277083885a32607056a7f8f602dd24de7230b133bac241f249dae261"
+        },
+        {
+          "url": "https://www.zoho.com/people/api/get_record.html",
+          "sha256": "4bef8c824fb599c6f3d9c1150d31f02bc3645643bca394fcd6b34ec2cc1877ac"
+        }
+      ],
+      "tool": "leaveTracker.getLeaveRecordsV2",
+      "method": "GET",
+      "path": "/api/v2/leavetracker/leaves/records",
+      "documentation": "https://www.zoho.com/people/api/get-records-v2.html",
+      "documentationSha256": "be5f9f9f277083885a32607056a7f8f602dd24de7230b133bac241f249dae261"
+    },
+    {
+      "tool": "leaveTracker.getSpecificCompensatoryRequestV2",
+      "method": "GET",
+      "path": "/api/v2/leavetracker/compensatory/records/{recordId}",
+      "documentation": "https://www.zoho.com/people/api/get-specific-compensatory-requests.html",
+      "documentationSha256": "c7567add5fa4353f58159953fea36032348325a8f4d108fcea9293dd4ec31349"
+    },
+    {
+      "tool": "leaveTracker.getLeaveRecordByIdV2",
+      "method": "GET",
+      "path": "/api/v2/leavetracker/leaves/records/{record_id}",
+      "documentation": "https://www.zoho.com/people/api/get_record._byID.html",
+      "documentationSha256": "49cb974899facf5b18f5172c042fa0a2c1b99a75bf575abb0816374c42bfcaea"
+    },
+    {
+      "tool": "leaveTracker.getHolidaysLegacy",
+      "method": "GET",
+      "path": "/api/leave/getHolidays",
+      "documentation": "https://www.zoho.com/people/api/holiday.html",
+      "documentationSha256": "26e78e921b9038c749475b0fc9c890909553bbf472c6f1b41da4856f03db1286"
+    },
+    {
+      "tool": "formsData.insertFormRecord",
+      "method": "POST",
+      "path": "/api/forms/json/{formLinkName}/insertRecord",
+      "documentation": "https://www.zoho.com/people/api/insert-records.html",
+      "documentationSha256": "f40ce9b5ea7d2bc00183c0941dbbe9f395002c2478e16e6cb7ffc62c55b14626"
+    },
+    {
+      "tool": "leaveTracker.getLeaveTypesLegacy",
+      "method": "GET",
+      "path": "/api/leave/getLeaveTypeDetails",
+      "documentation": "https://www.zoho.com/people/api/leave-types.html",
+      "documentationSha256": "65e7bf32367e3548de8e7370869db52ca4bc33f7306cd021d48616d326c54172"
+    },
+    {
+      "tool": "leaveTracker.getBradfordReport",
+      "method": "GET",
+      "path": "/api/v2/leavetracker/reports/bradford",
+      "documentation": "https://www.zoho.com/people/api/leave/bradford_leave.html",
+      "documentationSha256": "c39c3277be8a30e6304c683eb7853973da6ae573d49444931313266520fede5f"
+    },
+    {
+      "tool": "leaveTracker.getEncashmentReport",
+      "method": "GET",
+      "path": "/api/v2/leavetracker/reports/encashment",
+      "documentation": "https://www.zoho.com/people/api/leave/encashment_report.html",
+      "documentationSha256": "2c8e6ab7764e85833644c6025563732b7583e5b2a88362db2271e6209f1eae7d"
+    },
+    {
+      "tool": "leaveTracker.getLopReport",
+      "method": "GET",
+      "path": "/api/v2/leavetracker/reports/lop",
+      "documentation": "https://www.zoho.com/people/api/leave/lop_report.html",
+      "documentationSha256": "6ddde5e9d670e7a353c036faed25f6d4626fb571db2a5565b1e8041ac5feee93"
+    },
+    {
+      "tool": "leaveTracker.getBookedAndBalanceReport",
+      "method": "GET",
+      "path": "/api/v2/leavetracker/reports/bookedAndBalance",
+      "documentation": "https://www.zoho.com/people/api/leave/reports/bookedandbalance.html",
+      "documentationSha256": "f29122db0cdd01108bca9186bc730ef5a7b5d53e7839a81e9c7b0c4b5e2e65ec"
+    },
+    {
+      "tool": "leaveTracker.getUserReport",
+      "method": "GET",
+      "path": "/api/v2/leavetracker/reports/user",
+      "documentation": "https://www.zoho.com/people/api/leave/user_report.html",
+      "documentationSha256": "9075ad0bed41251aba05bb07f47cb063926ccc9d4d35cf8d475a160ee50ca578"
+    },
+    {
+      "tool": "leaveTracker.addLeaveType",
+      "method": "POST",
+      "path": "/api/v2/leavetracker/settings/leavetypes",
+      "documentation": "https://www.zoho.com/people/api/leaveconfig/addleavetype.html",
+      "documentationSha256": "bb538d87a947ce0110e2d4b3defffe3999e2b1406bcac81e4c7241072cc88528"
+    },
+    {
+      "tool": "leaveTracker.deleteLeaveType",
+      "method": "DELETE",
+      "path": "/api/v2/leavetracker/settings/leavetypes/{leavetype_id}",
+      "documentation": "https://www.zoho.com/people/api/leaveconfig/deleteleavetype.html",
+      "documentationSha256": "f1989d5a0be5cb09efaa22f7617028e27697df35a5344175eb183cfc06ad908d"
+    },
+    {
+      "tool": "leaveTracker.editLeaveType",
+      "method": "PUT",
+      "path": "/api/v2/leavetracker/settings/leavetypes/{leavetype_id}",
+      "documentation": "https://www.zoho.com/people/api/leaveconfig/editleavetype.html",
+      "documentationSha256": "f9aa4d79adb1530dbcf554cd27bfb440d14deeebdbce143d3c3172d0605be5ec"
+    },
+    {
+      "tool": "leaveTracker.listLeaveTypes",
+      "method": "GET",
+      "path": "/api/v2/leavetracker/settings/leavetypes",
+      "documentation": "https://www.zoho.com/people/api/leaveconfig/fetchleavetype.html",
+      "documentationSha256": "63bc4a9a91de72ffee368a28cc30ab26d067e0f882d4023eb45af22a356c64b6"
+    },
+    {
+      "tool": "leaveTracker.getLeaveType",
+      "method": "GET",
+      "path": "/api/v2/leavetracker/settings/leavetypes/{leavetype_id}",
+      "documentation": "https://www.zoho.com/people/api/leaveconfig/leavetypedetails.html",
+      "documentationSha256": "e5d36e1244681499d0f124a2460874ff9c78090cb828846b5361ff76e84a8710"
+    },
+    {
+      "tool": "employees.getCounts",
+      "method": "GET",
+      "path": "/api/employee/counts",
+      "documentation": "https://www.zoho.com/people/api/record-count.html",
+      "documentationSha256": "8e733b9023d411fa2294d0680141256459ab3f927053ff55b66a685875f97920"
+    },
+    {
+      "tool": "leaveTracker.getLeaveDataById",
+      "method": "POST",
+      "path": "/api/forms/leave/getDataByID",
+      "documentation": "https://www.zoho.com/people/api/singe-leave.html",
+      "documentationSha256": "b177d4cfe7f83b809817b8bfb3215156cb180f2e28828dc212f6719e5c614864"
+    },
+    {
+      "tool": "timeTracker.getSettings",
+      "method": "GET",
+      "path": "/api/timetracker/gettimetrackersettings",
+      "documentation": "https://www.zoho.com/people/api/timesheet-gensettings.html",
+      "documentationSha256": "50f9b64f831333f15b78db7c971d409fd8f275ef7dc7bdacc087c8dba26de573"
+    },
+    {
+      "tool": "timeTracker.addClient",
+      "method": "POST",
+      "path": "/api/timetracker/addclient",
+      "documentation": "https://www.zoho.com/people/api/timesheet/add-client.html",
+      "documentationSha256": "2e01555aaee492baf971d5493b40896d2f3bc840c978fb4b47d98cea442f9d46"
+    },
+    {
+      "tool": "timeTracker.addJobSchedule",
+      "method": "POST",
+      "path": "/api/timetracker/addJobSchedule",
+      "documentation": "https://www.zoho.com/people/api/timesheet/add-job-schedule.html",
+      "documentationSha256": "a40c654cb7265609aa7d64328fbcfef65cd11c8a270e0d482eac6736fa6d0012"
+    },
+    {
+      "tool": "timeTracker.addTimeLog",
+      "method": "POST",
+      "path": "/api/timetracker/addtimelog",
+      "documentation": "https://www.zoho.com/people/api/timesheet/add-timelogs.html",
+      "documentationSha256": "80d2d09ecfbc84d66ef6883ddb5974c03c347e1406077f5105a90692d6ed0d81"
+    },
+    {
+      "tool": "timeTracker.createJob",
+      "method": "POST",
+      "path": "/api/forms/json/P_TimesheetJob/insertRecord",
+      "documentation": "https://www.zoho.com/people/api/timesheet/adding-jobs.html",
+      "documentationSha256": "9a1a72d9808292b1bbb2431312fe5c61330fcc0ae5c50d60addec714819737ff"
+    },
+    {
+      "tool": "timeTracker.createProject",
+      "method": "POST",
+      "path": "/api/forms/json/P_TimesheetJobsList/insertRecord",
+      "documentation": "https://www.zoho.com/people/api/timesheet/adding-projects.html",
+      "documentationSha256": "b2006f18e76b7d9ab7710e95dd96aa1d6deb65e6ec82025fe421024be7fe76d6"
+    },
+    {
+      "tool": "timeTracker.approveTimesheet",
+      "method": "POST",
+      "path": "/api/timetracker/approvetimesheet",
+      "documentation": "https://www.zoho.com/people/api/timesheet/approve-timesheets.html",
+      "documentationSha256": "abaf5421d7afcf467dc500d9458b40936eff863cb1f3140bcfbc6f11d0e9bcc0"
+    },
+    {
+      "tool": "timeTracker.addOrUpdateTimeLogs",
+      "method": "POST",
+      "path": "/api/timetracker/addupdatetimelogs",
+      "documentation": "https://www.zoho.com/people/api/timesheet/bulk-timelogs.html",
+      "documentationSha256": "e620f6e6f01644cd49686fd627de5375a9db5b5f982a1285a5157e5e007150f5"
+    },
+    {
+      "tool": "timeTracker.createTimesheet",
+      "method": "POST",
+      "path": "/api/timetracker/createtimesheet",
+      "documentation": "https://www.zoho.com/people/api/timesheet/create-timesheets.html",
+      "documentationSha256": "3150b21414131d0f2ac85991e6d01ac850afa3d4e6fbf5bba33f20d6677a1b26"
+    },
+    {
+      "tool": "timeTracker.getCurrentlyRunningTimer",
+      "method": "GET",
+      "path": "/api/timetracker/getcurrentlyrunningtimer",
+      "documentation": "https://www.zoho.com/people/api/timesheet/current-timer.html",
+      "documentationSha256": "efa8c6b4cadc482577a4b6cef9f424652df632c148722b99ee6d2104676caed7"
+    },
+    {
+      "tool": "timeTracker.deleteClientLegacy",
+      "method": "POST",
+      "path": "/api/timetracker/deleteclient",
+      "documentation": "https://www.zoho.com/people/api/timesheet/delete-client.html",
+      "documentationSha256": "b5bd9a4171d32d0d0a5056ec4a48171781442a478a8dc9375775113d475bd6a4"
+    },
+    {
+      "tool": "timeTracker.deleteJobSchedule",
+      "method": "POST",
+      "path": "/api/timetracker/deleteJobSchedule",
+      "documentation": "https://www.zoho.com/people/api/timesheet/delete-job-schedule.html",
+      "documentationSha256": "2fb17044acae3916e47566d719d75dd9220d0b3ff880142cca2164a107d8137d"
+    },
+    {
+      "tool": "timeTracker.deleteJobLegacy",
+      "method": "POST",
+      "path": "/api/timetracker/deletejob",
+      "documentation": "https://www.zoho.com/people/api/timesheet/delete-jobs.html",
+      "documentationSha256": "f39293baf17e4da94190b8243a0b724bd4485e1bd26b4afbd42ecac292c304f8"
+    },
+    {
+      "tool": "timeTracker.deleteTimeLogs",
+      "method": "POST",
+      "path": "/api/timetracker/deletetimelog",
+      "documentation": "https://www.zoho.com/people/api/timesheet/delete-timelogs.html",
+      "documentationSha256": "8775deee1ad8f631f6103e46107cb80040855187ecfde52758542d00f0024946"
+    },
+    {
+      "tool": "timeTracker.deleteTimesheets",
+      "method": "POST",
+      "path": "/api/timetracker/deletetimesheet",
+      "documentation": "https://www.zoho.com/people/api/timesheet/delete-timesheets.html",
+      "documentationSha256": "68dcc011de467e66f21b006f0f5bef52acc810865cb9e4aadb51121bf71f0dda"
+    },
+    {
+      "tool": "timeTracker.deleteProjectLegacy",
+      "method": "POST",
+      "path": "/api/timetracker/deleteproject",
+      "documentation": "https://www.zoho.com/people/api/timesheet/deleting-projects.html",
+      "documentationSha256": "8317b4d3c19a50f74f70bd7344a9c196beca01a6c6ffacbdbca6c70796a7a2df"
+    },
+    {
+      "tool": "timeTracker.editJobSchedule",
+      "method": "POST",
+      "path": "/api/timetracker/editJobSchedule",
+      "documentation": "https://www.zoho.com/people/api/timesheet/edit-job-schedule.html",
+      "documentationSha256": "b66403ad41ea94476faec20478cf9bc14117a2408115c51c0bbad0538507b930"
+    },
+    {
+      "tool": "timeTracker.getClientDetailsLegacy",
+      "method": "GET",
+      "path": "/api/timetracker/getclientdetails",
+      "documentation": "https://www.zoho.com/people/api/timesheet/get-client-details.html",
+      "documentationSha256": "0f5b292976140bcf83490c2210f22c169fcc6372d837be4db8c35ec911113521"
+    },
+    {
+      "tool": "timeTracker.getClientsLegacy",
+      "method": "GET",
+      "path": "/api/timetracker/getclients",
+      "documentation": "https://www.zoho.com/people/api/timesheet/get-clients.html",
+      "documentationSha256": "84423f86b5dca863b4a5bcc0c477468f4cf9b159f74f490e58f8b339f095a8bc"
+    },
+    {
+      "tool": "timeTracker.getJobSchedule",
+      "method": "GET",
+      "path": "/api/timetracker/getJobSchedule",
+      "documentation": "https://www.zoho.com/people/api/timesheet/get-job-schedule.html",
+      "documentationSha256": "7e6924adf8fa3ae42f95197507d1cbc787508bbc25fb866a8608f762d9d70ce5"
+    },
+    {
+      "tool": "timeTracker.getJobsLegacy",
+      "method": "GET",
+      "path": "/api/timetracker/getjobs",
+      "documentation": "https://www.zoho.com/people/api/timesheet/get-jobs.html",
+      "documentationSha256": "f156258cea27ae98a4595bfee6e6d7a3ed0367c9d54f8412c2921d9ceb7f1325"
+    },
+    {
+      "tool": "timeTracker.getProjectsLegacy",
+      "method": "GET",
+      "path": "/api/timetracker/getprojects",
+      "documentation": "https://www.zoho.com/people/api/timesheet/get-projects.html",
+      "documentationSha256": "576cffc7adfd9bb088e8170c515d0e2ef06a8cc96e60122b9976e7ae47d871bd"
+    },
+    {
+      "tool": "timeTracker.listTimeLogs",
+      "method": "GET",
+      "path": "/api/timetracker/gettimelogs",
+      "documentation": "https://www.zoho.com/people/api/timesheet/get-timelogs.html",
+      "documentationSha256": "bd669013400ef3db5e5dba0974f9e7df2a68be7693739f1da3263c5cb11a7be5"
+    },
+    {
+      "tool": "timeTracker.getTimesheetDetails",
+      "method": "GET",
+      "path": "/api/timetracker/gettimesheetdetails",
+      "documentation": "https://www.zoho.com/people/api/timesheet/get-timesheets-details.html",
+      "documentationSha256": "55fb21f05062a91d74629273dd0de411deaba75f791db087467549895de16998"
+    },
+    {
+      "tool": "timeTracker.listTimesheets",
+      "method": "GET",
+      "path": "/api/timetracker/gettimesheet",
+      "documentation": "https://www.zoho.com/people/api/timesheet/get-timesheets.html",
+      "documentationSha256": "9186a0dec89285e9006ea30a9bc1c137e30b2ea3ee2e8a2b151c869dc6d7e605"
+    },
+    {
+      "tool": "timeTracker.getRecordIdsByReferenceIds",
+      "method": "GET",
+      "path": "/api/timetracker/getRecordIdsByReferenceIds",
+      "documentation": "https://www.zoho.com/people/api/timesheet/get_record_ids_by_reference_ids.html",
+      "documentationSha256": "7b219b259c54a2735aa51bd0e029d912c3af4efc04375207a55d7cc3d0473d7d"
+    },
+    {
+      "tool": "timeTracker.getJobDetailsLegacy",
+      "method": "GET",
+      "path": "/api/timetracker/getjobdetails",
+      "documentation": "https://www.zoho.com/people/api/timesheet/job-details.html",
+      "documentationSha256": "364f2c990a4bc35ac51809bc22068c1c9140b29dfe187b5f01f5bdcbeb74b3a7"
+    },
+    {
+      "tool": "timeTracker.modifyJobStatusLegacy",
+      "method": "POST",
+      "path": "/api/timetracker/modifyjobstatus",
+      "documentation": "https://www.zoho.com/people/api/timesheet/jobs-status.html",
+      "documentationSha256": "e1cf82c47cc20ca5b2c509d1826ebbb0049e226c7343c27bbbf01b5d5cf5e0ed"
+    },
+    {
+      "tool": "timeTracker.modifyClient",
+      "method": "POST",
+      "path": "/api/timetracker/modifyclient",
+      "documentation": "https://www.zoho.com/people/api/timesheet/modify-client.html",
+      "documentationSha256": "8e766eecb0a21ebc06629097fba752780fb3bb53528ed609b1be78a86a08dfc5"
+    },
+    {
+      "tool": "timeTracker.editTimeLog",
+      "method": "POST",
+      "path": "/api/timetracker/edittimelog",
+      "documentation": "https://www.zoho.com/people/api/timesheet/modify-timelogs.html",
+      "documentationSha256": "3f1cd791ea2d231353860d6e6edcb834075d9243a346804e7cbe0c3496946a71"
+    },
+    {
+      "tool": "timeTracker.modifyTimesheet",
+      "method": "POST",
+      "path": "/api/timetracker/modifytimesheet",
+      "documentation": "https://www.zoho.com/people/api/timesheet/modify-timesheets.html",
+      "documentationSha256": "e751c1b34a7bfce1f214c5c3bf06f277be659b5453df8d2030f35d998c699044"
+    },
+    {
+      "tool": "timeTracker.updateJob",
+      "method": "POST",
+      "path": "/api/forms/json/P_TimesheetJob/updateRecord",
+      "documentation": "https://www.zoho.com/people/api/timesheet/modifying-jobs.html",
+      "documentationSha256": "c6791a5ce18b787cc3d740019c63169da272976a26cfb8448cbecd1d564a82b2"
+    },
+    {
+      "tool": "timeTracker.updateProject",
+      "method": "POST",
+      "path": "/api/forms/json/P_TimesheetJobsList/updateRecord",
+      "documentation": "https://www.zoho.com/people/api/timesheet/modifying-projects.html",
+      "documentationSha256": "ea594dea88652bf6c596d936bcc0c3e7a773ec90bad7c5238ff63574a036a1c3"
+    },
+    {
+      "tool": "timeTracker.pauseOrResumeTimer",
+      "method": "POST",
+      "path": "/api/timetracker/timer",
+      "documentation": "https://www.zoho.com/people/api/timesheet/pause-resume-timer.html",
+      "documentationSha256": "a88e0c8fb9fcbf91c8abaf708ae23392c02b18742d37d98cdfaaa5ef3f0217e4"
+    },
+    {
+      "tool": "timeTracker.getPayPeriodDetails",
+      "method": "GET",
+      "path": "/api/timetracker/getPayPeriodDetails",
+      "documentation": "https://www.zoho.com/people/api/timesheet/pay-period-details.html",
+      "documentationSha256": "49152cb98f6411409a01e409c13ae30142955ffaef111f877a42a973baeec9fc"
+    },
+    {
+      "tool": "timeTracker.getPayPeriodSettings",
+      "method": "GET",
+      "path": "/api/payperiod/settings",
+      "documentation": "https://www.zoho.com/people/api/timesheet/pay-period-setting.html",
+      "documentationSha256": "61ccd2bba38f0bb3e11b3737d3fa4fcd9b6d99b023acd59f5b48d555118b8275"
+    },
+    {
+      "tool": "timeTracker.getPayrollReport",
+      "method": "GET",
+      "path": "/api/timetracker/getpayrollreport",
+      "documentation": "https://www.zoho.com/people/api/timesheet/payroll-report.html",
+      "documentationSha256": "bab8c596e705d24406a7837e2ac4ededabbb30951872e8263be0298666acc60f"
+    },
+    {
+      "tool": "timeTracker.getProjectDetailsLegacy",
+      "method": "GET",
+      "path": "/api/timetracker/getprojectdetails",
+      "documentation": "https://www.zoho.com/people/api/timesheet/project-details.html",
+      "documentationSha256": "e8b5d40e1bea24e54db3e4cc682d318979a0fbe549df27cd0985cbb6df7025aa"
+    },
+    {
+      "tool": "timeTracker.changeProjectStatusLegacy",
+      "method": "POST",
+      "path": "/api/timetracker/changeprojectstatus",
+      "documentation": "https://www.zoho.com/people/api/timesheet/projects-status.html",
+      "documentationSha256": "bd69504161b2e49fe3241c040e61ebf4e4dbf73d89932d16fe2b34fa97b167b7"
+    },
+    {
+      "tool": "timeTracker.publishJobSchedule",
+      "method": "POST",
+      "path": "/api/timetracker/publishJobSchedule",
+      "documentation": "https://www.zoho.com/people/api/timesheet/publish-job-schedule.html",
+      "documentationSha256": "f6b46527df51712f584c22cdb90344d33cbdb97ce21da4ef1d1d0f70d43afca7"
+    },
+    {
+      "tool": "timeTracker.startTimer",
+      "method": "POST",
+      "path": "/api/timetracker/timer",
+      "documentation": "https://www.zoho.com/people/api/timesheet/start-timer.html",
+      "documentationSha256": "227109562eeb00e158eb1a45f1a262a622124b5b338b4d78d92c961878e09ceb"
+    },
+    {
+      "tool": "timeTracker.getTimeLogDetails",
+      "method": "GET",
+      "path": "/api/timetracker/gettimelogdetails",
+      "documentation": "https://www.zoho.com/people/api/timesheet/timelog-details.html",
+      "documentationSha256": "78eb4519cf444ec9e8f518af0053597a1fb212f3425271d28eac316e1358764f"
+    },
+    {
+      "tool": "timeTracker.addTimerComment",
+      "method": "POST",
+      "path": "/api/timetracker/addcomment",
+      "documentation": "https://www.zoho.com/people/api/timesheet/timer-add-comment.html",
+      "documentationSha256": "ccc51bee20fa659e026f97c3044a05f7a45ef23755443ac84287a73a4bdd1188"
+    },
+    {
+      "tool": "timeTracker.deleteTimerComment",
+      "method": "POST",
+      "path": "/api/timetracker/deletecomment",
+      "documentation": "https://www.zoho.com/people/api/timesheet/timer-delete-comment.html",
+      "documentationSha256": "846dede9762c3b7c117da590501c7ebbdad3bb6f47b30fd8e96deb3d2fa43bed"
+    },
+    {
+      "tool": "timeTracker.getTimerComments",
+      "method": "GET",
+      "path": "/api/timetracker/getcomments",
+      "documentation": "https://www.zoho.com/people/api/timesheet/timer-get-comment.html",
+      "documentationSha256": "7a535db8f3dab9fb79dfb43d3544df045299b9112ac288b4c03b264e26107192"
+    },
+    {
+      "tool": "formsData.updateFormRecord",
+      "method": "POST",
+      "path": "/api/forms/json/{formLinkName}/updateRecord",
+      "documentation": "https://www.zoho.com/people/api/update-records.html",
+      "documentationSha256": "d7858a80e8f2cbb7cdfb8374de8084285601f2d21e5e0a2fa169ffbf82999ebd"
+    },
+    {
+      "tool": "attendance.getUserReport",
+      "method": "POST",
+      "path": "/api/attendance/getUserReport",
+      "documentation": "https://www.zoho.com/people/api/userreport.html",
+      "documentationSha256": "9ada9c797a6a47ce590b5ec2ce2f469ac20d5effdafc464f7ff69c353323fb6b"
+    },
+    {
+      "tool": "attendance.addEntries",
+      "method": "POST",
+      "path": "/api/v3/attendance/entries",
+      "documentation": "https://www.zoho.com/people/api/v3/attendance/entries-bulk-add.html",
+      "documentationSha256": "17231fe0bfcef12d3499c9ca95f96b89a86efd0ee152f3ef98ea006003b447ca"
+    },
+    {
+      "tool": "attendance.deleteEntry",
+      "method": "DELETE",
+      "path": "/api/v3/attendance/entries/{entry_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/attendance/entries-delete-all.html",
+      "documentationSha256": "59d177758a8dc44ca5b03ae49fa927576f973eb62269e308c7d74ffab214d824"
+    },
+    {
+      "tool": "attendance.deleteEntriesForDay",
+      "method": "DELETE",
+      "path": "/api/v3/attendance/entries",
+      "documentation": "https://www.zoho.com/people/api/v3/attendance/entries-deleteall.html",
+      "documentationSha256": "4ad87437361e2754b2584a322212f90d84d0ff9fb779eb67f011eea20fcfc456"
+    },
+    {
+      "tool": "attendance.editEntry",
+      "method": "PUT",
+      "path": "/api/v3/attendance/entries/{entry_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/attendance/entries-edit.html",
+      "documentationSha256": "99264e24124669426067a06dcc1436ea1dee70a72f6301954ef59e74bf031e37"
+    },
+    {
+      "tool": "attendance.punchIn",
+      "method": "POST",
+      "path": "/api/v3/attendance/entries/in",
+      "documentation": "https://www.zoho.com/people/api/v3/attendance/entries-punch-in-or-out.html",
+      "documentationSha256": "366d6f341d6bdc0771e00695e8e37ec726a96e7fa03e9e858b8fd0a832b08aba"
+    },
+    {
+      "tool": "attendance.punchOut",
+      "method": "POST",
+      "path": "/api/v3/attendance/entries/out",
+      "documentation": "https://www.zoho.com/people/api/v3/attendance/entries-punch-in-or-out.html",
+      "documentationSha256": "366d6f341d6bdc0771e00695e8e37ec726a96e7fa03e9e858b8fd0a832b08aba"
+    },
+    {
+      "tool": "attendance.getEntries",
+      "method": "GET",
+      "path": "/api/v3/attendance/entries",
+      "documentation": "https://www.zoho.com/people/api/v3/attendance/entries.html",
+      "documentationSha256": "a1957adcb52cf724fb2fb29d73c2918ab66f5e67fb121dcd43e44dd4fd46fc2a"
+    },
+    {
+      "tool": "attendance.getSpecificEntry",
+      "method": "GET",
+      "path": "/api/v3/attendance/entries/{entry_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/attendance/entries/get-specific.html",
+      "documentationSha256": "6039109cb399e083258781b81c6334aecae8be0494df7cb27e987186227d3eac"
+    },
+    {
+      "tool": "leaveTracker.addLeaveRequest",
+      "method": "POST",
+      "path": "/api/v3/leave-tracker/leaves",
+      "documentation": "https://www.zoho.com/people/api/v3/leave-tracker/add-leave.html",
+      "documentationSha256": "b0a34fedf1498a5d1ea26a00426e4a079845d85eac3e1e9095c08cba806f38b4"
+    },
+    {
+      "tool": "leaveTracker.addLeaveGrantRequest",
+      "method": "POST",
+      "path": "/api/v3/leave-tracker/grant",
+      "documentation": "https://www.zoho.com/people/api/v3/leave-tracker/add.html",
+      "documentationSha256": "48063f235c23800ca530bcf3de1ac9e183e2b51e5839c6bae7e215f5320ffa53"
+    },
+    {
+      "tool": "leaveTracker.cancelLeaveGrantRequest",
+      "method": "PATCH",
+      "path": "/api/v3/leave-tracker/grant/{record_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/leave-tracker/cancel-grant.html",
+      "documentationSha256": "65103c99ef5f439e67fd455f549d29022e4cf7d6ada0515a4c435727f3b1a5cf"
+    },
+    {
+      "tool": "leaveTracker.cancelLeaveRequest",
+      "method": "PATCH",
+      "path": "/api/v3/leave-tracker/leaves/{record_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/leave-tracker/cancel-leave.html",
+      "documentationSha256": "a96f5232b7924d77b55e3eade59a8c93803c403cd62fe20672508a673ff7059a"
+    },
+    {
+      "tool": "leaveTracker.cancelCompensatoryRequest",
+      "method": "PATCH",
+      "path": "/api/v3/leave-tracker/compensatory/{record_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/leave-tracker/compensatory/cancel-compoff.html",
+      "documentationSha256": "eb2dae9a1d3044e4790c428d3ca323bfcfa8a3ef67a65fade4234abc22574ae9"
+    },
+    {
+      "tool": "leaveTracker.deleteCompensatoryRequest",
+      "method": "DELETE",
+      "path": "/api/v3/leave-tracker/compensatory/{record_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/leave-tracker/compensatory/delete-compoff.html",
+      "documentationSha256": "80144460497e504a4dd133593d3ca589f7aa4cc5f4dd648f3a4aedf3fcf5a586"
+    },
+    {
+      "tool": "leaveTracker.editCompensatoryRequest",
+      "method": "PUT",
+      "path": "/api/v3/leave-tracker/compensatory/{record_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/leave-tracker/compensatory/edit-compoff.html",
+      "documentationSha256": "6c24643b685d08a48d5a76940041c5f552bc69b728761e0eb0b95a95996079af"
+    },
+    {
+      "tool": "leaveTracker.deleteLeaveRequest",
+      "method": "DELETE",
+      "path": "/api/v3/leave-tracker/leaves/{record_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/leave-tracker/delete-leave.html",
+      "documentationSha256": "3377f3e6eed0f39596f95d1b6abcad8f226872bea6c71060e30d887983bbc8b4"
+    },
+    {
+      "tool": "leaveTracker.editLeaveRequest",
+      "method": "PUT",
+      "path": "/api/v3/leave-tracker/leaves/{leave_record_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/leave-tracker/edit-leave.html",
+      "documentationSha256": "412869a8b81f6c38b15d43d81c29f766e8823f491905f188eec605a935a1d3d3"
+    },
+    {
+      "tool": "leaveTracker.getLeaveRequests",
+      "method": "GET",
+      "path": "/api/v3/leave-tracker/leaves",
+      "documentation": "https://www.zoho.com/people/api/v3/leave-tracker/get-leave.html",
+      "documentationSha256": "7602262053c9ccd3643e6706148643e2d04c83473cf1a2f7c3687d1d5a2e87ae"
+    },
+    {
+      "tool": "leaveTracker.getLeaveGrantRequests",
+      "method": "GET",
+      "path": "/api/v3/leave-tracker/grant",
+      "documentation": "https://www.zoho.com/people/api/v3/leave-tracker/grant.html",
+      "documentationSha256": "eb18ea60ba4fbc9642d1390a7889b64553f8d8aae4add9170cd9d35a2308f8d4"
+    },
+    {
+      "tool": "leaveTracker.deleteLeaveGrantRequest",
+      "method": "DELETE",
+      "path": "/api/v3/leave-tracker/grant/{record_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/leave-tracker/grant/delete.html",
+      "documentationSha256": "b6f4204944a274f5da54106c919fca75c52524d09b77b6002d8a5fc2c95aeaab"
+    },
+    {
+      "tool": "leaveTracker.editLeaveGrantRequest",
+      "method": "PUT",
+      "path": "/api/v3/leave-tracker/grant/{record_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/leave-tracker/grant/edit.html",
+      "documentationSha256": "9131c485cfc0ff6e81d307d551a609ed77ac0ffb42bce6cfb08fe095d999f7e6"
+    },
+    {
+      "tool": "leaveTracker.getSpecificLeaveGrantRequest",
+      "method": "GET",
+      "path": "/api/v3/leave-tracker/grant/{record_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/leave-tracker/specificgrant.html",
+      "documentationSha256": "7b8d4b11a1f031ad2ebcf1913ddf43718160b9b03da81d4e543489b0cae6f5ac"
+    },
+    {
+      "tool": "leaveTracker.getSpecificLeaveRequest",
+      "method": "GET",
+      "path": "/api/v3/leave-tracker/leaves/{record_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/leave-tracker/specificleave.html",
+      "documentationSha256": "b9651503784c93be7ef62d6494e441a6d113ed61e8c7dd18487985eacf715790"
+    },
+    {
+      "tool": "leaveTracker.addCompensatoryRequest",
+      "method": "POST",
+      "path": "/api/v3/leave-tracker/compensatory",
+      "documentation": "https://www.zoho.com/people/api/v3/leave/-tracker/compensatory/add-compoff.html",
+      "documentationSha256": "deb0c118a57170b6bee41bf17cc0a1db328d90aa4e3e8852f1379cdef7438521"
+    },
+    {
+      "tool": "leaveTracker.getCompensatoryRequests",
+      "method": "GET",
+      "path": "/api/v3/leave-tracker/compensatory",
+      "documentation": "https://www.zoho.com/people/api/v3/leave/compensatory/get-compoff.html",
+      "documentationSha256": "cc09e3dbae8c505643af126c7024d99a3b65c2b89cd473e7d4be4afe3e8c7d68"
+    },
+    {
+      "tool": "leaveTracker.getSpecificCompensatoryRequest",
+      "method": "GET",
+      "path": "/api/v3/leave-tracker/compensatory/{record_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/leave/compensatory/specific-compoff.html",
+      "documentationSha256": "55b9dcd73a28bc18b1bff521b9fef8f1a2b0ef2a7688979922f29825b25cc61f"
+    },
+    {
+      "tool": "leaveTracker.leaveTypeWiseSummaryReport",
+      "method": "GET",
+      "path": "/api/v3/leave-tracker/reports/leave-type-summary/{leave_type_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/leave/reports/leave-type-summary.html",
+      "documentationSha256": "e3dab7f1c44126e9eec11ff64347dfa09d81a638ce632e8453de7eb5838d0ee8"
+    },
+    {
+      "tool": "shifts.deleteMapping",
+      "method": "DELETE",
+      "path": "/api/v3/shift/mapping/{map_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/shift/delete-mapping.html",
+      "documentationSha256": "22969dc1347fef2960a229cb301d579c7fb34a2bbf7eb752d144ac2227624735"
+    },
+    {
+      "tool": "shifts.getMapping",
+      "method": "GET",
+      "path": "/api/v3/shift/mapping",
+      "documentation": "https://www.zoho.com/people/api/v3/shift/get-mapping.html",
+      "documentationSha256": "10a543e0dfc67c993a6631fe06246ed3eb2e8dfb2e797cae0a816134259460b2"
+    },
+    {
+      "tool": "shifts.getSchedule",
+      "method": "GET",
+      "path": "/api/v3/shift/schedules",
+      "documentation": "https://www.zoho.com/people/api/v3/shift/get-schedules.html",
+      "documentationSha256": "7219c6291598556b6de5840e00534c134bb0f019d47db690b05d6031d4745527"
+    },
+    {
+      "tool": "shifts.mapShift",
+      "method": "POST",
+      "path": "/api/v3/shift/mapping",
+      "documentation": "https://www.zoho.com/people/api/v3/shift/map-shift.html",
+      "documentationSha256": "16365fa823acccf5f1c9daf6ae7ebf4c5601bb41cf8fbc693fb23bd329fc1036"
+    },
+    {
+      "tool": "shifts.getSpecificMapping",
+      "method": "GET",
+      "path": "/api/v3/shift/mapping/{map_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/shift/mapping-specific.html",
+      "documentationSha256": "7ab1feb865086762988ea3f5fd3b4cb1e21ee8462ef043636a97873c45973e6e"
+    },
+    {
+      "tool": "attendance.uploadSupportingDocument",
+      "method": "POST",
+      "path": "/api/v3/time-attendance/file",
+      "documentation": "https://www.zoho.com/people/api/v3/time-attendance/fileupload.html",
+      "documentationSha256": "89b197626b85ba87206711a7ae5ad3fd2ff015b519c481078e9a0106b6d26bca"
+    },
+    {
+      "tool": "timeTracker.getClientDetails",
+      "method": "GET",
+      "path": "/api/v3/time-tracker/clients/{client_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/time-tracker/client-details.html",
+      "documentationSha256": "b90b403ecbebdccbfbe3d76d74d545ea224dc05c39fd083feedcb8d28da6581f"
+    },
+    {
+      "tool": "timeTracker.deleteClients",
+      "method": "DELETE",
+      "path": "/api/v3/time-tracker/clients",
+      "documentation": "https://www.zoho.com/people/api/v3/time-tracker/clients-delete.html",
+      "documentationSha256": "38e7b84be017741cf036ed85047cf7e8080fd792a6ea6aadb85a2d63425bae91"
+    },
+    {
+      "tool": "timeTracker.getClients",
+      "method": "GET",
+      "path": "/api/v3/time-tracker/clients",
+      "documentation": "https://www.zoho.com/people/api/v3/time-tracker/clients-list.html",
+      "documentationSha256": "374eee27449b007c317e69c3625ba4953cc2a3a73c27331a477cc9db06081436"
+    },
+    {
+      "tool": "timeTracker.deleteJobs",
+      "method": "DELETE",
+      "path": "/api/v3/time-tracker/jobs",
+      "documentation": "https://www.zoho.com/people/api/v3/time-tracker/delete-jobs.html",
+      "documentationSha256": "40f7dfaf3f44d4db1613d94ea4034c9dd261d47f82e71eddd6af5200de7ea589"
+    },
+    {
+      "tool": "timeTracker.getJobsList",
+      "method": "GET",
+      "path": "/api/v3/time-tracker/jobs",
+      "documentation": "https://www.zoho.com/people/api/v3/time-tracker/get-jobs.html",
+      "documentationSha256": "5fac151746d922eaef8d64a0110fb900a911581b99646262e68433192d59a373"
+    },
+    {
+      "tool": "timeTracker.getJobsDetails",
+      "method": "GET",
+      "path": "/api/v3/time-tracker/jobs/{job_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/time-tracker/job-details.html",
+      "documentationSha256": "eb9634d0f8f343627edfac65a2d7f9e842e49080981080d91082c00857457ad1"
+    },
+    {
+      "tool": "timeTracker.changeJobStatus",
+      "method": "PATCH",
+      "path": "/api/v3/time-tracker/jobs/{job_id}/status",
+      "documentation": "https://www.zoho.com/people/api/v3/time-tracker/jobs-change-status.html",
+      "documentationSha256": "0f03ee96ed54caf61ba7bc4c61862b1ba478a3c7cfa98da35e3713b6b6dd1937"
+    },
+    {
+      "tool": "timeTracker.getProjectDetails",
+      "method": "GET",
+      "path": "/api/v3/time-tracker/projects/{project_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/time-tracker/project-details.html",
+      "documentationSha256": "00cc7839f1da2814607b062185e84ccf75ca918874ce74da7ac16258c9e1ebd6"
+    },
+    {
+      "tool": "timeTracker.deleteProjects",
+      "method": "DELETE",
+      "path": "/api/v3/time-tracker/projects",
+      "documentation": "https://www.zoho.com/people/api/v3/time-tracker/projects-delete.html",
+      "documentationSha256": "cc5a1b69ee2ad16487be64c382b630032dd00997c63c60fd794596e4e894abbc"
+    },
+    {
+      "tool": "timeTracker.getProjectsList",
+      "method": "GET",
+      "path": "/api/v3/time-tracker/projects",
+      "documentation": "https://www.zoho.com/people/api/v3/time-tracker/projects-list.html",
+      "documentationSha256": "80aedd983b52e96c7f0fb1d0e8ef96d17645fd52b65760c3fa3f45186f054a53"
+    },
+    {
+      "tool": "timeTracker.changeProjectStatus",
+      "method": "PATCH",
+      "path": "/api/v3/time-tracker/projects/{project_id}/status",
+      "documentation": "https://www.zoho.com/people/api/v3/time-tracker/projects-update.html",
+      "documentationSha256": "e2d754f8db0c00efd911d6ef08b3217cfa28f9311c338f6259ab34f89229760b"
+    },
+    {
+      "tool": "timeTracker.fetchWorkitem",
+      "method": "GET",
+      "path": "/api/timetracker/workitems",
+      "documentation": "https://www.zoho.com/people/api/timesheet/fetch-workitem.html",
+      "documentationSha256": "d99060e6388d5ca95a660940418f8767a4d709858674e0fb511940b1ab268e23"
+    },
+    {
+      "tool": "timeTracker.downloadAttachment",
+      "method": "GET",
+      "path": "/api/timetracker/download-file",
+      "documentation": "https://www.zoho.com/people/api/timesheet/download-attachment.html",
+      "documentationSha256": "518f791aae56963f4582e891f05bad4352116121f828731e6f6c613defc16bba"
+    },
+    {
+      "references": [
+        {
+          "url": "https://www.zoho.com/people/api/attendance/get-regularization-records.html",
+          "sha256": "c0f7bde4116696d203a42d9f34797c6e4cd711380b0cab8be8bfaf3c191d135c"
+        },
+        {
+          "url": "https://www.zoho.com/people/api/attendance-regularization.html",
+          "sha256": "73b554f827e982530326fe0440d4f015ddf93ecb66a110dfcb7dd1f20e8fd0b8"
+        }
+      ],
+      "tool": "attendance.getRegularizationRecords",
+      "method": "GET",
+      "path": "/api/attendance/getRegularizationRecords",
+      "documentation": "https://www.zoho.com/people/api/attendance/get-regularization-records.html",
+      "documentationSha256": "c0f7bde4116696d203a42d9f34797c6e4cd711380b0cab8be8bfaf3c191d135c"
+    },
+    {
+      "tool": "attendance.addRegularization",
+      "method": "POST",
+      "path": "/api/attendance/addRegularization",
+      "documentation": "https://www.zoho.com/people/api/attendance/add-regularization.html",
+      "documentationSha256": "e5439ce03de98cc52eeb9cbfd629c972ed3cd0c9fc04c32369ddd758437960e1"
+    },
+    {
+      "tool": "attendance.deleteRegularization",
+      "method": "POST",
+      "path": "/api/attendance/deleteRegularizations",
+      "documentation": "https://www.zoho.com/people/api/attendance/delete-regularization.html",
+      "documentationSha256": "a159234e041777f2d80d061ba963d4bb27e7ce9bce86b588c1189f81f2b96950"
+    },
+    {
+      "tool": "attendance.getRegularizationReasons",
+      "method": "GET",
+      "path": "/api/attendance/getAllRegReasons",
+      "documentation": "https://www.zoho.com/people/api/attendance/get-regularization-reasons.html",
+      "documentationSha256": "07152c6650aba63d066e2561f35794219ac0aae91a320a01c6e372987e16818d"
+    },
+    {
+      "tool": "attendance.getRegularizationFormFields",
+      "method": "GET",
+      "path": "/api/attendance/getRegFormFields",
+      "documentation": "https://www.zoho.com/people/api/attendance/get-regularization-form-fields.html",
+      "documentationSha256": "9ed408f9aa70aede2c429df387272f45d896c7584ea5b70788e98e6a875538a6"
+    },
+    {
+      "tool": "attendance.getPermissionRequests",
+      "method": "GET",
+      "path": "/api/attendance/getPermissionRequests",
+      "documentation": "https://www.zoho.com/people/api/attendance/get-permission-requests.html",
+      "documentationSha256": "74491b599ede77f326055a7729b8d49ffee0c5d4a2d32d2c280a8c26a677bd89"
+    },
+    {
+      "tool": "attendance.getPermissionApprovals",
+      "method": "GET",
+      "path": "/api/attendance/getPermissionApprovals",
+      "documentation": "https://www.zoho.com/people/api/attendance/get-permission-approvals.html",
+      "documentationSha256": "b8e3902616746c0d21e11fda635fb1c13c9425c24b605125236cf83effd1348a"
+    },
+    {
+      "tool": "attendance.getApplicablePermissionsForUsers",
+      "method": "GET",
+      "path": "/api/attendance/getApplicablePermForUser",
+      "documentation": "https://www.zoho.com/people/api/attendance/get-applicable-permission-for-users.html",
+      "documentationSha256": "8b47ea4abe70b1a311daadf3ec45110e467d2a9a9400eae9092e999b4e1f30f2"
+    },
+    {
+      "tool": "attendance.getPermissionBalance",
+      "method": "GET",
+      "path": "/api/attendance/getPermissionBalance",
+      "documentation": "https://www.zoho.com/people/api/attendance/get-permission-balance.html",
+      "documentationSha256": "e01f6326aa3daa5b40a51eb097fd8716dcb5786f890a62b95961b196f07d2759"
+    },
+    {
+      "tool": "attendance.getPermissionDetails",
+      "method": "GET",
+      "path": "/api/attendance/getPermissionDetails",
+      "documentation": "https://www.zoho.com/people/api/attendance/get-permission-details.html",
+      "documentationSha256": "7a8243ef9a89377ccba96298d47deec754a0e99a81fc49e7239fa746a06d9073"
+    },
+    {
+      "tool": "attendance.applyPermission",
+      "method": "GET",
+      "path": "/api/attendance/applyPermission",
+      "documentation": "https://www.zoho.com/people/api/attendance/apply-permission.html",
+      "documentationSha256": "d3450be8ecbff59338bc715bfcbfb2e17cf258e862048cef992e8b4316b472b6"
+    },
+    {
+      "tool": "attendance.cancelPermission",
+      "method": "POST",
+      "path": "/api/attendance/cancelPermission",
+      "documentation": "https://www.zoho.com/people/api/attendance/cancel-permission.html",
+      "documentationSha256": "11e4c6a8c5440699910aa3b7a52f7829e1e1987d53c92c1411ab3cbdea4e5e02"
+    },
+    {
+      "tool": "attendance.getOnDutyRequests",
+      "method": "GET",
+      "path": "/api/attendance/getMyODRequest",
+      "documentation": "https://www.zoho.com/people/api/attendance/get-onduty-requests.html",
+      "documentationSha256": "7191f999548dc360cb0fe063670dd406578b78f4b9b1c6a49ef054816c6046ae"
+    },
+    {
+      "tool": "attendance.getOnDutyApprovals",
+      "method": "GET",
+      "path": "/api/attendance/getODApprovals",
+      "documentation": "https://www.zoho.com/people/api/attendance/get-onduty-approvals.html",
+      "documentationSha256": "b22fe81d0a1c455a54dbba51fa5013c0d47b707bc925ba047fefeeb63a477a1a"
+    },
+    {
+      "tool": "attendance.getOnDutyDetails",
+      "method": "GET",
+      "path": "/api/attendance/getODDetails",
+      "documentation": "https://www.zoho.com/people/api/attendance/get-onduty-details.html",
+      "documentationSha256": "941b1b4468e8f359d3f2643d4b4f64ca4b44789c53ddc7a338b5c579f82a89df"
+    },
+    {
+      "tool": "attendance.addOnDutyRequests",
+      "method": "POST",
+      "path": "/api/attendance/addOnDuty",
+      "documentation": "https://www.zoho.com/people/api/attendance/add-onduty-requests.html",
+      "documentationSha256": "a00609f0b98fa2c1328278c2b3439068af198ba2c14673c00932f03055bd74a3"
+    },
+    {
+      "tool": "attendance.approveOnDuty",
+      "method": "POST",
+      "path": "/api/attendance/approveAttODDetails",
+      "documentation": "https://www.zoho.com/people/api/attendance/approve-onduty.html",
+      "documentationSha256": "1e49ada1248dc70c0fb1ab27c3583ac1d377feef08f2ecdc7a5681879cc001e1"
+    },
+    {
+      "tool": "attendance.getAllOnDutyTypes",
+      "method": "GET",
+      "path": "/api/attendance/getAllODTypes",
+      "documentation": "https://www.zoho.com/people/api/attendance/get-all-onduty.html",
+      "documentationSha256": "aa099617a9bcb7e3b04348c02c31257a3aa0511ce808f40b55865139af0d9c04"
+    },
+    {
+      "tool": "attendance.cancelOnDutyRequests",
+      "method": "PATCH",
+      "path": "/api/attendance/cancelOD",
+      "documentation": "https://www.zoho.com/people/api/attendance/cancel-onduty-request.html",
+      "documentationSha256": "0e9614bb6328fe2c491cd306cbe70cb7edead2732b299a11373efa8bddf2a639"
+    },
+    {
+      "tool": "attendance.deleteOnDutyRequest",
+      "method": "POST",
+      "path": "/api/attendance/deleteOD",
+      "documentation": "https://www.zoho.com/people/api/attendance/delete-onduty-request.html",
+      "documentationSha256": "a4c3820270e788f645476cefd6e740328708c3c633e158ffbb616b2ed9acf472"
+    },
+    {
+      "tool": "attendance.getWfhRequests",
+      "method": "GET",
+      "path": "/api/attendance/wfh/requests",
+      "documentation": "https://www.zoho.com/people/api/attendance/get-wfh-requests.html",
+      "documentationSha256": "2a6c33389652b6a3039dbbcc7389d093c9bec3929a06f4208829f4035913727e"
+    },
+    {
+      "tool": "attendance.getWfhRequestDetails",
+      "method": "GET",
+      "path": "/api/attendance/wfh/request",
+      "documentation": "https://www.zoho.com/people/api/attendance/get-wfh-request-details.html",
+      "documentationSha256": "9084bfd1943fd88da79e4b587b291f3d086e43091351b6a3ef725c6e3a4b64ba"
+    },
+    {
+      "tool": "attendance.addWfhRequest",
+      "method": "POST",
+      "path": "/api/attendance/wfh/request",
+      "documentation": "https://www.zoho.com/people/api/attendance/add-wfh-request.html",
+      "documentationSha256": "6ad3ef79d6bfc7bf3997137a51fe08ee79340ebfdf2ab5c947438e8718564305"
+    },
+    {
+      "tool": "attendance.approveOrRejectWfhRequest",
+      "method": "PUT",
+      "path": "/api/attendance/wfh/request",
+      "documentation": "https://www.zoho.com/people/api/attendance/approve-or-reject-wfh-request.html",
+      "documentationSha256": "71e5f135432cda46023e55341e81e16cf75155b217917751f8b4ff8ca2a4815e"
+    },
+    {
+      "tool": "attendance.cancelWfhRequest",
+      "method": "PATCH",
+      "path": "/api/attendance/wfh/request",
+      "documentation": "https://www.zoho.com/people/api/attendance/cancel-wfh-request.html",
+      "documentationSha256": "76607e1fd5f258a5a83aa8ab528a456b4d8e57e74ffcfdb0d5315d097e8042a8"
+    },
+    {
+      "tool": "attendance.deleteWfhRequest",
+      "method": "DELETE",
+      "path": "/api/attendance/wfh/request",
+      "documentation": "https://www.zoho.com/people/api/attendance/delete-wfh-request.html",
+      "documentationSha256": "d8a7168b344cb59e45fbf211b576e6bc28ca62ecc4f97470389f1b12e03d0986"
+    },
+    {
+      "tool": "attendance.getRecentWfhRequest",
+      "method": "GET",
+      "path": "/api/attendance/wfh/recent_request",
+      "documentation": "https://www.zoho.com/people/api/attendance/get-recent-wfh-request.html",
+      "documentationSha256": "b7a847a8867247b0d2b201a0b0c22937ee3a9f73351272f8f8c2cb09e91ae5b6"
+    },
+    {
+      "tool": "leaveTracker.bulkCancelLeaveRequests",
+      "method": "PATCH",
+      "path": "/api/v3/leave-tracker/leaves/cancel/bulk",
+      "documentation": "https://www.zoho.com/people/api/v3/leave/bulk-cancel.html",
+      "documentationSha256": "b883e8a72c93e3dd867c5119156b4dc481208ccc5a89cff36d77a012d0032006"
+    },
+    {
+      "tool": "leaveTracker.lossOfPayReport",
+      "method": "GET",
+      "path": "/api/v3/leave-tracker/reports/loss-of-pay",
+      "documentation": "https://www.zoho.com/people/api/leave/reports/loss-of-pay.html",
+      "documentationSha256": "9b961fe90bc365582857b5ec3fba0228641319ffe4b4752fb134f9c1d2f20988"
+    },
+    {
+      "tool": "leaveTracker.getHolidaysList",
+      "method": "GET",
+      "path": "/api/v3/leave-tracker/holidays",
+      "documentation": "https://www.zoho.com/people/api/leave-tracker/get-holidays-list.html",
+      "documentationSha256": "0fde16e90f10010c6fb113bf2aae208d086a3350760b8c97dc34c96f6830b18c"
+    },
+    {
+      "tool": "leaveTracker.getSpecificHoliday",
+      "method": "GET",
+      "path": "/api/v3/leave-tracker/holidays/{holiday_id}",
+      "documentation": "https://www.zoho.com/people/api/leave-tracker/get-specific-holiday.html",
+      "documentationSha256": "0b8cc3f75db615b3b3f25b32d10828bbdae4c6239484b98873669c91bd72d7d0"
+    },
+    {
+      "tool": "leaveTracker.addHoliday",
+      "method": "POST",
+      "path": "/api/v3/leave-tracker/holidays",
+      "documentation": "https://www.zoho.com/people/api/leave-tracker/add-holiday.html",
+      "documentationSha256": "2851e2192613feac70689e75e1d31a4d80b035306233026c89b74b070d1065b8"
+    },
+    {
+      "tool": "leaveTracker.editHoliday",
+      "method": "PUT",
+      "path": "/api/v3/leave-tracker/holidays/{holiday_id}",
+      "documentation": "https://www.zoho.com/people/api/leave-tracker/edit-holiday.html",
+      "documentationSha256": "ea6b15d54b703eba8c47b5f9c083617c3963012e7e40f2e1ff42c48978ef65e3"
+    },
+    {
+      "tool": "leaveTracker.deleteHoliday",
+      "method": "DELETE",
+      "path": "/api/v3/leave-tracker/holidays/{holiday_id}",
+      "documentation": "https://www.zoho.com/people/api/leave-tracker/delete-holiday.html",
+      "documentationSha256": "526a0193e66dbded26d6eed4fdc02d9f21194af6cb3ce10d80d1d8d1dc2231f1"
+    },
+    {
+      "tool": "leaveTracker.bulkAddHoliday",
+      "method": "POST",
+      "path": "/api/v3/leave-tracker/holidays/bulk",
+      "documentation": "https://www.zoho.com/people/api/add-bulk-holidays.html",
+      "documentationSha256": "65226c3696e9c8765fbd52b683523ba94a258978c7a293688372fe27d4b896b1"
+    },
+    {
+      "tool": "leaveTracker.bulkEditHoliday",
+      "method": "PUT",
+      "path": "/api/v3/leave-tracker/holidays/bulk",
+      "documentation": "https://www.zoho.com/people/api/edit-bulk-holidays.html",
+      "documentationSha256": "bd3c97d0c80b45a4f78c8a41ac935141ed52c2159b0737e456df5de9812de255"
+    },
+    {
+      "tool": "timeTracker.getPayPeriodList",
+      "method": "GET",
+      "path": "/api/v3/time-attendance/settings/pay-period-policies",
+      "documentation": "https://www.zoho.com/people/api/v3/time-attendance/get-payperiod-policies.html",
+      "documentationSha256": "ff592c46fbb0bb4fc72117504b30719d7a3ed8d74898d0c2c94430c1965a04bb"
+    },
+    {
+      "tool": "timeTracker.getSpecificPayPeriod",
+      "method": "GET",
+      "path": "/api/v3/time-attendance/settings/pay-period-policies/{pay_period_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/time-attendance/get-specific-payperiod.html",
+      "documentationSha256": "ab7775ccd3334e0108bf967dfedac5b784c689380d54c858cae00385c00492fe"
+    },
+    {
+      "tool": "timeTracker.addPayPeriod",
+      "method": "POST",
+      "path": "/api/v3/time-attendance/settings/pay-period-policies",
+      "documentation": "https://www.zoho.com/people/api/v3/time-attendance/add-payperiod.html",
+      "documentationSha256": "70b2139379a7f79e72fca3322d6ef9be210501963679de8b0417e265680440f2"
+    },
+    {
+      "tool": "timeTracker.editPayPeriod",
+      "method": "PUT",
+      "path": "/api/v3/time-attendance/settings/pay-period-policies/{pay_period_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/time-attendance/edit-payperiod.html",
+      "documentationSha256": "6c11c7cbfdad861885a21e9f36526ab8fffb56df6d52126273b2e2a5b547d14b"
+    },
+    {
+      "tool": "timeTracker.deletePayPeriod",
+      "method": "DELETE",
+      "path": "/api/v3/time-attendance/settings/pay-period-policies/{pay_period_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/time-attendance/delete-payperiod.html",
+      "documentationSha256": "b341555babd2168c3715210bcad830d0da80fcba7e56ff94d27457f0ba4506af"
+    },
+    {
+      "tool": "timeTracker.getWorkCalendarList",
+      "method": "GET",
+      "path": "/api/v3/time-attendance/settings/work-calendars",
+      "documentation": "https://www.zoho.com/people/api/v3/time-attendance/get-work-calendar.html",
+      "documentationSha256": "db9c53983128d76042cf2dd18e5e625ac917358aec3fdb478d3f0e3cec720f8a"
+    },
+    {
+      "tool": "timeTracker.getSpecificWorkCalendar",
+      "method": "GET",
+      "path": "/api/v3/time-attendance/settings/work-calendars/{work_calendar_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/time-attendance/get-specific-work-calendar.html",
+      "documentationSha256": "f01f5c97ca5ae7bf3801e16a5dab1123c260080bc7a2751907a050a7a910f7fd"
+    },
+    {
+      "tool": "timeTracker.addWorkCalendar",
+      "method": "POST",
+      "path": "/api/v3/time-attendance/settings/work-calendars",
+      "documentation": "https://www.zoho.com/people/api/v3/time-attendance/add-work-calendar.html",
+      "documentationSha256": "153c0a0eb558ff93cee064510e9e94196c2248701b20feff938097cc2b3ce497"
+    },
+    {
+      "tool": "timeTracker.editWorkCalendar",
+      "method": "PUT",
+      "path": "/api/v3/time-attendance/settings/work-calendars/{work_calendar_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/time-attendance/edit-work-calendar.html",
+      "documentationSha256": "51f60831cee244f7a1911b3edca6ac4237e9851514ee120d23d5a4c7c176c842"
+    },
+    {
+      "tool": "timeTracker.deleteWorkCalendar",
+      "method": "DELETE",
+      "path": "/api/v3/time-attendance/settings/work-calendars/{work_calendar_id}",
+      "documentation": "https://www.zoho.com/people/api/v3/time-attendance/delete-work-calendar.html",
+      "documentationSha256": "194f905f34979078c54214ccc746519e5b57bdc800678c722093807902d369c6"
+    }
+  ],
+  "sourceSha256": "f57b39d498eb729adba6fc90164256a89849f6a8592bbf8c4a3b630b8d2f8601"
+}

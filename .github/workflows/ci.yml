@@ -281,6 +281,8 @@ jobs:
         run: bun e2e/catalog-compat.mjs .generated/catalog-compat/ci all 8
       - name: Verify ElevenLabs tools load as the catalog serves it, with dropped routes
         run: bun e2e/elevenlabs-discovery.mjs .generated/elevenlabs-discovery/ci
+      - name: Verify Zoho People regional sign-in and approved API writes
+        run: bun e2e/zoho-people.mjs .generated/zoho-people/ci
       - name: Collect sanitized connector diagnostics
         if: always()
         run: node scripts/ci/collect-connector-evidence.mjs catalog-compat "$RUNNER_TEMP/connector-evidence.json"
