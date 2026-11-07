@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerE
 import type { CapacityForecastPoint, CapacityHistoryPoint } from "../capacity-contract.ts";
 import {
   amount,
+  candidateName,
   dayLabel,
   dayLong,
   dayMs,
@@ -10,7 +11,7 @@ import {
   hourMs,
   isOut,
   outSpans,
-  planName,
+  tooltipPlanRows,
   segments,
   isMeasuredCapacityPoint,
   weightSourceLabel,
@@ -359,7 +360,9 @@ export function CapacityChart({
                           textAnchor="end"
                           fill="var(--destructive)"
                         >
-                          {g.small ? `+${count}` : `${count} more ${candidate.label}`}
+                          {g.small
+                            ? `+${count}`
+                            : `${count} more ${candidateName(candidate, forecast?.provider ?? "")}`}
                         </text>
                         <text
                           x={g.left - 6}
@@ -852,9 +855,7 @@ function Tip({
     );
   const gateKnown = isMeasuredCapacityPoint(point);
   const raw = point.raw ?? { minimum: point.minimum, last: point.last, plans: point.plans };
-  const planValues = gateKnown ? point.plans : raw.plans;
-  const plans = planValues.filter((plan) => plan.minimum.accountCount > 0);
-  const rawByPlan = new Map(raw.plans.map((plan) => [JSON.stringify(plan.plan), plan]));
+  const plans = tooltipPlanRows(point);
   const coverage = point.coverage == null ? "Unavailable" : `${Math.round(point.coverage * 100)}%`;
   const sourceAt =
     point.sourceAt == null
@@ -888,30 +889,26 @@ function Tip({
       <table className="w-full border-collapse">
         <tbody>
           {plans.map((plan) => {
-            const flagged = plan.minimum.unknownWeightCount > 0;
-            const sources = [
-              ...new Set(plan.minimum.weights.map((weight) => weightSourceLabel[weight.source])),
-            ].join(", ");
+            const flagged = plan.flagged;
+            const sources = plan.sources.map((source) => weightSourceLabel[source]).join(", ");
             return (
-              <tr key={planName(plan.plan)}>
+              <tr key={plan.plan}>
                 <td className="py-0.5 align-top break-words [overflow-wrap:anywhere]">
-                  {planName(plan.plan)} ×{plan.minimum.accountCount}
+                  {plan.plan} ×{plan.accounts}
                   <span
                     className={`block text-[11px] ${flagged ? "text-warning" : "text-muted-foreground"}`}
                   >
                     {flagged ? "Flagged. " : ""}
                     {sources}
                   </span>
-                  {line.windowSeconds === 18_000 && rawByPlan.has(JSON.stringify(plan.plan)) && (
+                  {line.windowSeconds === 18_000 && plan.raw !== null && (
                     <span className="block text-[11px] text-muted-foreground">
-                      Provider quota:{" "}
-                      {amount(rawByPlan.get(JSON.stringify(plan.plan))!.minimum.remaining)} /{" "}
-                      {amount(rawByPlan.get(JSON.stringify(plan.plan))!.minimum.full)}
+                      Provider quota: {amount(plan.raw.remaining)} / {amount(plan.raw.full)}
                     </span>
                   )}
                 </td>
                 <td className="py-0.5 pl-2.5 text-right align-top whitespace-nowrap tabular-nums">
-                  {amount(plan.minimum.remaining)} / {amount(plan.minimum.full)}
+                  {amount(plan.remaining)} / {amount(plan.full)}
                 </td>
               </tr>
             );

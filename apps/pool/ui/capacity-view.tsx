@@ -6,6 +6,7 @@ import { providerName } from "./accounts.tsx";
 import { CapacityChart } from "./capacity-chart.tsx";
 import {
   amount,
+  candidateName,
   capacityLabs,
   dailyRows,
   dayLong,
@@ -13,6 +14,7 @@ import {
   forecastReasons,
   lineFacts,
   planChips,
+  exclusionName,
   pressing,
   verdict,
   whenLabel,
@@ -276,7 +278,7 @@ function Panel({
           >
             {chips.map((chip) => (
               <li
-                key={chip.plan}
+                key={chip.key}
                 className={`inline-flex min-h-[22px] max-w-full flex-wrap items-center gap-1 rounded-sm border px-[7px] text-xs break-words [overflow-wrap:anywhere] ${chip.flagged ? "border-dashed border-warning/45" : "border-border"}`}
               >
                 {chip.plan} <span className="text-muted-foreground">×{chip.accounts}</span>
@@ -380,20 +382,26 @@ function ForecastCaption({ line }: { line: CapacityLine }) {
       : "recurring demand peaks";
   const weight = candidate
     ? candidate.source === "unit"
-      ? `1 ${candidate.label} = 1 ${unit}`
-      : `${candidate.label}, ${candidate.source} weight ${amount(candidate.capacity)} ${unit}`
+      ? `1 ${candidateName(candidate, forecast?.provider ?? "")} = 1 ${unit}`
+      : `${candidateName(candidate, forecast?.provider ?? "")}, ${candidate.source} weight ${amount(candidate.capacity)} ${unit}`
     : "";
   const advice =
     forecast?.status !== "estimated"
       ? null
       : candidate && ordinaryAccounts != null && busyAccounts != null
-        ? `Sizing for ${sizingBasis}: ${ordinaryAccounts === 0 ? "no extra accounts" : `≈${ordinaryAccounts} more ${candidate.label} ${ordinaryAccounts === 1 ? "account" : "accounts"}`}, ${busyAccounts} on its busy path (${weight}).`
+        ? `Sizing for ${sizingBasis}: ${ordinaryAccounts === 0 ? "no extra accounts" : `≈${ordinaryAccounts} more ${candidateName(candidate, forecast?.provider ?? "")} ${ordinaryAccounts === 1 ? "account" : "accounts"}`}, ${busyAccounts} on its busy path (${weight}).`
         : forecast.history.completedWeeks < 4
           ? "Account advice starts after 4 completed weeks."
           : candidate
             ? "Account count unavailable because the forecast evidence is insufficient."
             : "No verified candidate weight is available for an account count.";
-  const exclusions = [...new Set([...(ordinary?.exclusions ?? []), ...(busy?.exclusions ?? [])])];
+  const exclusions = [
+    ...new Set(
+      [...(ordinary?.exclusions ?? []), ...(busy?.exclusions ?? [])].map((label) =>
+        exclusionName(label, forecast?.provider ?? ""),
+      ),
+    ),
+  ];
   const notes = [
     advice,
     forecast?.status === "estimated" && forecast.reasons.length
