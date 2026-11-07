@@ -167,7 +167,7 @@ diff --git a/packages/sdk/src/implementation/provider-continuity.ts b/packages/s
 new file mode 100644
 --- /dev/null
 +++ b/packages/sdk/src/implementation/provider-continuity.ts
-@@ -0,0 +1,192 @@
+@@ -0,0 +1,197 @@
 +/** Provider ref continuity within one app's deployment lineage. */
 +import { type Crypto, Effect, Schema } from "effect";
 +import type { AppRequirements } from "../contracts/apps.ts";
@@ -175,6 +175,16 @@ new file mode 100644
 +import { JsonObject, ProviderId, StorageError } from "../contracts/shared.ts";
 +import { query, type Query } from "./database.ts";
 +import { canonical, identifyProvider, methodCredential } from "./provider.ts";
++
++const isJsonObject = Schema.is(JsonObject);
++const sameMethod = (
++  first: ProviderDefinition["auth"][string],
++  second: ProviderDefinition["auth"][string],
++) => {
++  const before = methodCredential(first);
++  const after = methodCredential(second);
++  return isJsonObject(before) && isJsonObject(after) && canonical(before) === canonical(after);
++};
 +
 +/**
 + * Preserve a provider ref only for a strict addition of sign-in methods. Existing methods keep
@@ -192,10 +202,7 @@ new file mode 100644
 +    canonical(metadata(previous)) === canonical(metadata(next)) &&
 +    before.every(([name, method]) => {
 +      const current = Object.hasOwn(next.auth, name) ? next.auth[name] : undefined;
-+      return (
-+        current !== undefined &&
-+        canonical(methodCredential(method)) === canonical(methodCredential(current))
-+      );
++      return current !== undefined && sameMethod(method, current);
 +    })
 +  );
 +};
@@ -269,9 +276,7 @@ new file mode 100644
 +const compatibleMethods = (stored: ProviderDefinition, incoming: ProviderDefinition) =>
 +  Object.entries(incoming.auth).every(([name, method]) => {
 +    const old = Object.hasOwn(stored.auth, name) ? stored.auth[name] : undefined;
-+    return (
-+      old === undefined || canonical(methodCredential(old)) === canonical(methodCredential(method))
-+    );
++    return old === undefined || sameMethod(old, method);
 +  });
 +
 +/**

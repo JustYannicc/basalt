@@ -1,7 +1,7 @@
 {
   "identity": "basalt-additive-auth-provider-continuity",
   "file": "0411-additive-auth-provider-continuity.patch",
-  "content_sha256": "4d371482ab1e58585b8ef99f842f77bf55e00bbeed5852165f1760f42473ce52",
+  "content_sha256": "08b7d565f7e9e4cd9976aba9f084a49de95e2fbedf4354efc89faa45c0c0aeb4",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
