@@ -24,6 +24,7 @@ const configuration = Schema.Struct({
   checks: optional,
   dns: optional,
   ssh_public_key_ids: optional,
+  runtime: Schema.optional(Schema.Literal("firecracker")),
 });
 const application = Schema.Struct({
   id: Schema.String,
@@ -31,6 +32,7 @@ const application = Schema.Struct({
   account_id: Schema.String,
   version: Schema.Number,
   created_at: Schema.String,
+  updated_at: Schema.optional(Schema.String),
   scheduling_policy: Schema.String,
   instances: Schema.Number,
   max_instances: Schema.Number,
@@ -40,6 +42,7 @@ const application = Schema.Struct({
   durable_objects: Schema.optional(Schema.NullOr(Schema.Struct({ namespace_id: Schema.String }))),
   active_rollout_id: Schema.optional(Schema.NullOr(Schema.String)),
   health: optional,
+  network: Schema.optional(Schema.Struct({ bandwidth_limit_mbps: Schema.Literal(250) })),
 });
 const fieldNames: Record<string, string> = {
   account_id: "accountId",
@@ -80,17 +83,25 @@ export function decodeApplication(value: unknown) {
     const raw = Schema.decodeUnknownSync(application, { onExcessProperty: "error", errors: "all" })(
       value,
     );
-    const { active_rollout_id, health: _health, ...settings } = raw;
+    // These API readback fields are absent from the pinned SDK. Network metadata has one admitted value.
+    const {
+      active_rollout_id,
+      health: _health,
+      updated_at: _updatedAt,
+      network: _network,
+      ...settings
+    } = raw;
     const rename = (object: object) =>
       Object.fromEntries(
         Object.entries(object).map(([key, item]) => [fieldNames[key] ?? key, item]),
       );
+    const { runtime: _runtime, ...rawConfiguration } = raw.configuration;
     const parsed = Schema.decodeUnknownSync(applicationCodec, {
       onExcessProperty: "error",
       errors: "all",
     })({
       ...rename(settings),
-      configuration: rename(raw.configuration),
+      configuration: rename(rawConfiguration),
       durableObjects: raw.durable_objects == null ? undefined : rename(raw.durable_objects),
     });
     return {

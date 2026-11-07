@@ -23,6 +23,7 @@ import {
   inspectContainer,
   type StagedContainer,
   type FrozenContainer,
+  type BaselineNormalization,
 } from "./container.ts";
 import { imagePlanReasons } from "./plan-reasons.ts";
 import { assertSupportedPlan, newVerification } from "./plan-admission.ts";
@@ -38,7 +39,10 @@ export const preparePlan = (
   plan: Plan.Plan,
   namespaceApi = cloudflareArtifactsApi,
   inspect = inspectContainer,
-  recordPublication?: (container: FrozenContainer) => Promise<void>,
+  recordPublication?: (
+    container: FrozenContainer,
+    normalization?: BaselineNormalization,
+  ) => Promise<void>,
 ) =>
   Effect.gen(function* () {
     assertSupportedPlan(plan, yield* imagePlanReasons(plan));
@@ -101,7 +105,7 @@ export const preparePlan = (
                   );
                   if (recordPublication)
                     yield* Effect.tryPromise({
-                      try: () => recordPublication(staged.frozen),
+                      try: () => recordPublication(staged.frozen, staged.normalization),
                       catch: (error) => error,
                     });
                   containers.set(fqn, staged);

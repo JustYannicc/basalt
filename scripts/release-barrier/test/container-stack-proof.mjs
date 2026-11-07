@@ -23,7 +23,8 @@ import { Credentials } from "@distilled.cloud/cloudflare/Credentials";
 import { CloudflareEnvironment } from "alchemy/Cloudflare";
 import { Docker } from "alchemy/Docker/Docker";
 import { attributes, preparedUpload } from "../fixture.ts";
-import { describeContainer } from "../container.ts";
+import { describeContainer, sameContainerState, containerSnapshot } from "../container.ts";
+import { decodeApplication } from "../container-cloudflare.ts";
 import { deployStack } from "../deploy-stack.ts";
 import { cloudflareArtifactsApi } from "../../ensure-artifacts.ts";
 import { containerDriftApi, digest } from "../../upstream-tests/fixtures/container-drift-api.mjs";
@@ -80,6 +81,8 @@ export const proveContainerStack = (source, recompile, scenario) =>
     const events = [];
     const receipts = [];
     const publications = [];
+    const normalizations = [];
+    const recordedBaseline = scenario.startsWith("recorded-baseline");
     let releaseStarted = false;
     let attachmentPending = scenario === "dependency-only";
     let writes = 0,
@@ -279,6 +282,47 @@ export const proveContainerStack = (source, recompile, scenario) =>
     };
     yield* run(Apply.apply(yield* run(Plan.make(databaseSeed))));
     yield* run(Apply.apply(yield* run(Plan.make(stack))));
+    if (recordedBaseline) {
+      const key = { stack: stack.name, stage: stack.stage, fqn: "PoolContainer" };
+      const saved = yield* memory.get(key);
+      assert.ok(saved && "attr" in saved);
+      const {
+        vcpu: _vcpu,
+        memory: _memory,
+        memoryMib: _mib,
+        disk: _disk,
+        command: _command,
+        entrypoint: _entrypoint,
+        network: _network,
+        runtime: _runtime,
+        ...configuration
+      } = saved.attr.configuration;
+      yield* memory.set({
+        ...key,
+        value: {
+          ...saved,
+          attr: {
+            ...saved.attr,
+            version: 25,
+            configuration: { ...configuration, instanceType: "basic" },
+          },
+        },
+      });
+      api.app = {
+        ...api.app,
+        version: 26,
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:01Z",
+        network: { bandwidth_limit_mbps: 250 },
+        configuration: {
+          ...api.app.configuration,
+          command: [],
+          entrypoint: [],
+          network: { assign_ipv4: "none", assign_ipv6: "none", mode: "private" },
+          runtime: "firecracker",
+        },
+      };
+    }
     return yield* recompile((next) =>
       Effect.gen(function* () {
         stack = contextualize(next);
@@ -341,8 +385,9 @@ export const proveContainerStack = (source, recompile, scenario) =>
                 assert.ok(readiness.envChanges.includes("DATABASE_BUDGET_IMAGE_HASH"));
                 events.push("verification:admitted");
               },
-              publication: async (container) => {
+              publication: async (container, normalization) => {
                 publications.push(describeContainer(container));
+                if (normalization) normalizations.push(normalization);
                 events.push("image:retained");
               },
               io: {
@@ -358,7 +403,13 @@ export const proveContainerStack = (source, recompile, scenario) =>
                 serving: (container, _worker, candidate) =>
                   Effect.sync(() => {
                     assert.equal(api.app.configuration.image, container.configuration.image);
-                    if (["unhealthy-serving", "same-digest-unhealthy"].includes(scenario))
+                    if (
+                      [
+                        "unhealthy-serving",
+                        "same-digest-unhealthy",
+                        "recorded-baseline-unhealthy",
+                      ].includes(scenario)
+                    )
                       throw new Error("serving checks failed");
                     events.push("container:serving");
                     return {
@@ -380,6 +431,14 @@ export const proveContainerStack = (source, recompile, scenario) =>
                     assert.equal(api.rollouts, 0);
                     events.push("image:admitted");
                     staged = publication;
+                    if (recordedBaseline)
+                      assert.equal(
+                        sameContainerState(
+                          decodeApplication(api.app),
+                          containerSnapshot(publication.previous),
+                        ),
+                        true,
+                      );
                     return {
                       digest: publication.proposed.hash.digest,
                       configDigest: digest("4"),
@@ -388,13 +447,15 @@ export const proveContainerStack = (source, recompile, scenario) =>
                     };
                   }),
                 observeContainer: () =>
-                  staged
-                    .read()
-                    .pipe(
-                      Effect.map((value) =>
-                        scenario === "container-drift" ? { ...value, version: 99 } : value,
-                      ),
-                    ),
+                  recordedBaseline
+                    ? Effect.sync(() => decodeApplication(api.app))
+                    : staged
+                        .read()
+                        .pipe(
+                          Effect.map((value) =>
+                            scenario === "container-drift" ? { ...value, version: 99 } : value,
+                          ),
+                        ),
                 namespace: (account, token) =>
                   cloudflareArtifactsApi(account, token, async (_input, init) => {
                     assert.equal(init.method, "GET");
@@ -415,6 +476,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
                         "late-worker-rejection",
                         "new-ready-late-rejection",
                         "creating-ready-late-rejection",
+                        "recorded-baseline-rejected",
                       ].includes(scenario)
                     )
                       throw new Error("Rejected late upload");
@@ -444,6 +506,15 @@ export const proveContainerStack = (source, recompile, scenario) =>
           "publication survives later preparation or admission failure",
         );
         assert.equal(publications[0].inputHash, staged.proposed.hash.image);
+        if (recordedBaseline) {
+          assert.equal(publications[0].baselineVersion, 26);
+          assert.equal(publications[0].baselineDigest, staged.previous.hash.digest);
+          assert.notEqual(publications[0].imageDigest, publications[0].baselineDigest);
+          assert.equal(normalizations.length, 1);
+          assert.equal(normalizations[0].recordedVersion, 25);
+          assert.equal(normalizations[0].observedVersion, 26);
+          assert.equal(normalizations[0].disposition, "observed-baseline");
+        }
         const firstAdmission = events.findIndex((event) => event.startsWith("admit:"));
         assert.ok(events.indexOf("image:retained") >= 0);
         if (firstAdmission >= 0) assert.ok(events.indexOf("image:retained") < firstAdmission);
@@ -458,6 +529,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
           "dependency-only",
           "new-runtime-ready",
           "creating-runtime-ready",
+          "recorded-baseline",
         ].includes(scenario);
         const workerInputMatches = staged?.proposed.hash.image === capturedPoolInput;
         assert.equal(
@@ -505,13 +577,30 @@ export const proveContainerStack = (source, recompile, scenario) =>
           }
           assert.ok(events.includes("verification:admitted"));
           assert.equal(receipts.at(-1).phase, "complete");
+          if (recordedBaseline) {
+            const saved = yield* memory.get({
+              stack: stack.name,
+              stage: stack.stage,
+              fqn: "PoolContainer",
+            });
+            assert.equal(saved.attr.version, 27);
+            assert.equal(saved.attr.hash.digest, staged.proposed.hash.digest);
+            assert.equal(saved.attr.hash.image, capturedPoolInput);
+            assert.ok(events.indexOf("container:advance") > firstActivation);
+            assert.ok(events.indexOf("container:serving") > events.indexOf("container:advance"));
+          }
           attachmentPending = false;
           const next = yield* run(Plan.make(stack));
           unchangedAction = next.resources.PoolContainer.action;
           assert.equal(unchangedAction, "noop");
-        } else if (["unhealthy-serving", "same-digest-unhealthy"].includes(scenario)) {
-          assert.equal(api.writes, scenario === "unhealthy-serving" ? 1 : 0);
-          assert.equal(api.rollouts, scenario === "unhealthy-serving" ? 1 : 0);
+        } else if (
+          ["unhealthy-serving", "same-digest-unhealthy", "recorded-baseline-unhealthy"].includes(
+            scenario,
+          )
+        ) {
+          const changedImage = scenario !== "same-digest-unhealthy";
+          assert.equal(api.writes, changedImage ? 1 : 0);
+          assert.equal(api.rollouts, changedImage ? 1 : 0);
           assert.equal(receipts.at(-1).pendingContainer.phase, "verification");
           const saved = yield* memory.get({
             stack: stack.name,
@@ -519,7 +608,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
             fqn: "PoolContainer",
           });
           assert.equal(saved.attr.configuration.image, staged.previous.configuration.image);
-          assert.equal(saved.attr.version, staged.previous.version);
+          assert.equal(saved.attr.version, recordedBaseline ? 25 : staged.previous.version);
           assert.equal(saved.attr.hash.image, staged.previous.hash.image);
         } else {
           assert.equal(api.writes, 0);
@@ -530,12 +619,22 @@ export const proveContainerStack = (source, recompile, scenario) =>
               "late-worker-rejection",
               "new-ready-late-rejection",
               "creating-ready-late-rejection",
+              "recorded-baseline-rejected",
               "missing-startup",
               "over-ceiling",
             ].includes(scenario)
           ) {
             assert.ok(!events.some((event) => event.startsWith("command:")));
             assert.equal(writes, 0);
+            if (recordedBaseline) {
+              const saved = yield* memory.get({
+                stack: stack.name,
+                stage: stack.stage,
+                fqn: "PoolContainer",
+              });
+              assert.equal(saved.attr.version, 25);
+              assert.equal(saved.attr.hash.digest, staged.previous.hash.digest);
+            }
           }
         }
         assert.equal(dockerCalls, 0);

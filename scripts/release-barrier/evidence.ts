@@ -7,7 +7,11 @@ import {
   manifestDigest,
   type ReleaseManifest,
 } from "./manifest.ts";
-import { describeContainer, type FrozenContainer } from "./container.ts";
+import {
+  describeContainer,
+  type BaselineNormalization,
+  type FrozenContainer,
+} from "./container.ts";
 import { Schema } from "effect";
 import type { ServingContainer } from "./container-serving.ts";
 import type { VerificationAdmission } from "./plan-admission.ts";
@@ -42,10 +46,11 @@ export function releaseEvidence(directory: string, candidate: string, encryption
     async serving(value: ServingContainer) {
       await write(directory, "serving.json", value);
     },
-    async publication(container: FrozenContainer) {
+    async publication(container: FrozenContainer, normalization?: BaselineNormalization) {
       await write(directory, "publication.json", {
         candidate,
         containers: [describeContainer(container)],
+        ...(normalization ? { baselineNormalization: normalization } : {}),
       });
     },
     async manifest(manifest: ReleaseManifest) {
