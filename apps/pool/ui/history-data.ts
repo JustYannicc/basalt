@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { managersOnly } from "./overview-data.ts";
 import type { SeriesFetch } from "./series-model.ts";
 import {
   historyDateBounds,
@@ -15,6 +16,7 @@ interface LoadedHistory {
   readonly bounds: HistoryBounds;
   readonly firstAt: string | null;
   readonly series: HistorySeriesRead;
+  readonly seriesUnavailable?: string;
   readonly records: readonly PublicHistoryRecord[];
   readonly next: HistoryCursor | null;
 }
@@ -102,7 +104,7 @@ export function useHistory(
                 bounds,
               );
         if (!live()) return;
-        if (!usage.ok) {
+        if (!usage.ok && !managersOnly(usage)) {
           settle({ loadError: usage.message });
           return;
         }
@@ -110,7 +112,15 @@ export function useHistory(
           loaded: {
             bounds,
             firstAt,
-            series: usage.value,
+            series: usage.ok
+              ? usage.value
+              : { groups: [], asOf: null, changed: false, partial: false },
+            ...(!usage.ok
+              ? {
+                  seriesUnavailable:
+                    "You can read your own requests. Grouped pool totals are available to managers only.",
+                }
+              : {}),
             records: requestPage.value.records,
             next: requestPage.value.next,
           },

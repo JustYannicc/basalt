@@ -19,7 +19,13 @@ function useNow(every = 30_000) {
   return now;
 }
 
-export function App({ api, publicHistory }: { api: PoolApi; publicHistory?: PublicHistoryReader }) {
+export function App({
+  api,
+  publicHistory = api.publicHistory,
+}: {
+  api: PoolApi;
+  publicHistory?: PublicHistoryReader;
+}) {
   const fromSettings = useRef(
     window.parent !== window && window.location.hash === "#usage-history",
   );

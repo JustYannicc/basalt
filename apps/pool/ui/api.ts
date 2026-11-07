@@ -1,6 +1,14 @@
 import { json, type Schema } from "apps";
 import { createAppClient, queryReference } from "apps/client";
-import type { capacity, ComputerContext, computerContext, Result, usage, view } from "../index.ts";
+import type {
+  capacity,
+  ComputerContext,
+  computerContext,
+  publicHistory,
+  Result,
+  usage,
+  view,
+} from "../index.ts";
 import { productName } from "../deployment.ts";
 import type { PoolView, UsageSummary } from "../contract.ts";
 
@@ -17,6 +25,14 @@ function read<T>(promise: Promise<Result<T>>): Promise<Result<T>> {
 }
 
 export const pool = {
+  publicHistory: (input: import("../history-contract.ts").PublicHistoryQuery) =>
+    read(
+      client.query(
+        queryReference<typeof publicHistory>("publicHistory"),
+        input,
+        result<import("../history-contract.ts").PublicHistoryPage>(),
+      ),
+    ),
   capacity: (days: 7 | 30, to?: number) =>
     read(
       client.query(

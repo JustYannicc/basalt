@@ -80,7 +80,7 @@ export function History({
   };
 
   const name = (id: string) => displayProvider(providers, id);
-  const summary = loaded ? total(loaded.series.groups) : undefined;
+  const summary = loaded && !loaded.seriesUnavailable ? total(loaded.series.groups) : undefined;
   const importSources =
     loaded?.series.coverage?.sources.filter((source) => source.kind === "import") ?? [];
   const importFrom = importSources.reduce<string | null>(
@@ -106,7 +106,7 @@ export function History({
           filter.to ? `through ${filter.to}` : "to now",
         ].join(" · ")
       : loaded.firstAt
-        ? `All time · ${dateLabel(loaded.firstAt)} to ${dateLabel(loaded.series.coverage?.lastAt ?? loaded.firstAt)}`
+        ? `All time · ${dateLabel(loaded.firstAt)} to ${dateLabel(loaded.series.coverage?.lastAt ?? loaded.bounds.to)}`
         : "All time · no retained records"
     : "All time";
 
@@ -228,39 +228,50 @@ export function History({
                   Usage changed while this history was loading. Reload to refresh the totals.
                 </p>
               )}
-              <section
-                className="grid gap-4 border-b border-border py-5"
-                aria-label="History totals"
-              >
-                <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-                  <span className="text-lg font-semibold tabular-nums">
-                    {loaded.series.partial ? "At least " : ""}
-                    {(summary?.requests ?? 0).toLocaleString()}{" "}
-                    <span className="text-sm font-normal">retained records</span>
-                  </span>
-                  <span className="text-xs text-muted-foreground tabular-nums">
-                    {summary?.tokensKnown
-                      ? `${tokensShort(summary.tokens)}${summary.tokensMissing || summary.countsOnly ? "+" : ""} tokens reported by source`
-                      : "Token totals unavailable"}
-                  </span>
-                </div>
-                <HistoryChart groups={loaded.series.groups} />
-                {importSources.length > 0 && (
-                  <p className="text-sm text-muted-foreground text-pretty">
-                    <span className="font-medium text-foreground">
-                      Imported history · no person attributed.
-                    </span>{" "}
-                    {dateLabel(importFrom)}
-                    {importTo ? ` to ${dateLabel(importTo)}` : ""}. Imported prices are kept
-                    separate; Unpriced requests remain unpriced.
-                  </p>
-                )}
-              </section>
-              <HistoryBreakdown
-                groups={loaded.series.groups}
-                directory={directory}
-                providerName={name}
-              />
+              {loaded.seriesUnavailable ? (
+                <p
+                  role="status"
+                  className="border-b border-border py-3 text-sm text-muted-foreground"
+                >
+                  {loaded.seriesUnavailable}
+                </p>
+              ) : (
+                <>
+                  <section
+                    className="grid gap-4 border-b border-border py-5"
+                    aria-label="History totals"
+                  >
+                    <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+                      <span className="text-lg font-semibold tabular-nums">
+                        {loaded.series.partial ? "At least " : ""}
+                        {(summary?.requests ?? 0).toLocaleString()}{" "}
+                        <span className="text-sm font-normal">retained records</span>
+                      </span>
+                      <span className="text-xs text-muted-foreground tabular-nums">
+                        {summary?.tokensKnown
+                          ? `${tokensShort(summary.tokens)}${summary.tokensMissing || summary.countsOnly ? "+" : ""} tokens reported by source`
+                          : "Token totals unavailable"}
+                      </span>
+                    </div>
+                    <HistoryChart groups={loaded.series.groups} />
+                    {importSources.length > 0 && (
+                      <p className="text-sm text-muted-foreground text-pretty">
+                        <span className="font-medium text-foreground">
+                          Imported history · no person attributed.
+                        </span>{" "}
+                        {dateLabel(importFrom)}
+                        {importTo ? ` to ${dateLabel(importTo)}` : ""}. Imported prices are kept
+                        separate; Unpriced requests remain unpriced.
+                      </p>
+                    )}
+                  </section>
+                  <HistoryBreakdown
+                    groups={loaded.series.groups}
+                    directory={directory}
+                    providerName={name}
+                  />
+                </>
+              )}
               {pageError && (
                 <div
                   role="alert"

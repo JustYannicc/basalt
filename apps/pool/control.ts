@@ -1,5 +1,5 @@
 import type { QueryContext, ConnectContext } from "apps";
-import { requirements } from "./requirements.ts";
+import type { requirements } from "./requirements.ts";
 type Caller = QueryContext<typeof requirements> | ConnectContext<typeof requirements>;
 import { callerHeader, controlBasePath, type ControlError, type ControlErrorCode } from "./contract.ts";
 import { poolOrigin } from "./deployment.ts";

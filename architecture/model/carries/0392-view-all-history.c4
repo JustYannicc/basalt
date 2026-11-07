@@ -1,7 +1,7 @@
 model {
   extend basalt.pool {
     metadata {
-      constraint "Overview and Settings open the same usage-history route. Settings returns through a message from its retained app frame; standalone history returns to Overview. History reads bounded series windows and public metadata pages through caller-authenticated readers supplied by the parent integration. Imports remain separate from people and currencies and missing prices stay distinct."
+      constraint "Overview and Settings open the same usage-history route. Settings returns through a message from its retained app frame; standalone history returns to Overview. History reads bounded series windows and public metadata pages through the registered app query and its provisioned pool account and authenticated caller. The public entry and retained Settings frame use that same reader. Managers can read pool totals; members retain only their own request pages when grouped totals are denied. Imports remain separate from people and currencies and missing prices stay distinct."
     }
   }
 }
