@@ -17,6 +17,7 @@ export function proveZohoMcpUi({ Effect, target, actors, app, fixture, directory
       Effect.promise(() =>
         browser.newContext({
           viewport: { width: 1280, height: 900 },
+          recordVideo: { dir: join(directory, "video"), size: { width: 1280, height: 900 } },
           userAgent: `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${browser.version().split(".")[0]}.0.0.0 Safari/537.36`,
         }),
       ),
@@ -64,6 +65,7 @@ export function proveZohoMcpUi({ Effect, target, actors, app, fixture, directory
           : route.abort();
       });
       const page = await context.newPage();
+      const video = page.video();
       const errors = [];
       const setup = [];
       page.on("pageerror", (error) => errors.push(error.message));
@@ -102,6 +104,7 @@ export function proveZohoMcpUi({ Effect, target, actors, app, fixture, directory
             "Endpoint form has no horizontal overflow",
           );
         }
+        await page.setViewportSize({ width: 1280, height: 900 });
         const proceed = page.getByRole("button", { name: "Continue", exact: true });
         assert.equal(await proceed.isDisabled(), true);
         await input.fill("http://unlisted.invalid/mcp");
@@ -133,6 +136,7 @@ export function proveZohoMcpUi({ Effect, target, actors, app, fixture, directory
             animations: "disabled",
           });
         }
+        await page.setViewportSize({ width: 1280, height: 900 });
         const completed = context.waitForEvent("response", {
           predicate: (response) =>
             response.request().method() === "POST" &&
@@ -149,10 +153,13 @@ export function proveZohoMcpUi({ Effect, target, actors, app, fixture, directory
         assert.equal((await completed).status(), 200);
         await page.goto(appUrl);
         await page.getByRole("button", { name: "Connect new account", exact: true }).waitFor();
-        await page.screenshot({
-          path: join(directory, "zoho-mcp-connected-1280.png"),
-          animations: "disabled",
-        });
+        for (const width of [1280, 390]) {
+          await page.setViewportSize({ width, height: 900 });
+          await page.screenshot({
+            path: join(directory, `zoho-mcp-connected-${width}.png`),
+            animations: "disabled",
+          });
+        }
         check("hosted masked endpoint flow completes OAuth", true, true);
         check("hosted connect has no browser errors", errors, []);
       } catch (error) {
@@ -174,6 +181,8 @@ export function proveZohoMcpUi({ Effect, target, actors, app, fixture, directory
         throw error;
       } finally {
         await writeFile(join(directory, "browser-events.json"), JSON.stringify(events, null, 2));
+        await page.close();
+        if (video) await video.saveAs(join(directory, "zoho-mcp-flow.webm"));
       }
     });
   });
