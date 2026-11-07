@@ -108,7 +108,10 @@ export function ImportBoundary({
           <ImportView session={session} progress={progress} previous={previous} back={back} />
         ) : (
           <div className="mx-auto grid max-w-[56rem] gap-4 p-6">
-            <Problem>Only a pool manager can import usage history.</Problem>
+            <Problem>
+              Importing usage requires permission to manage and use this pool. Ask a pool manager to
+              check your access.
+            </Problem>
             <div>
               <Button variant="outline" onClick={back}>
                 Back to pool

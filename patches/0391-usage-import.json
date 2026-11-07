@@ -1,7 +1,7 @@
 {
   "identity": "basalt-self-service-usage-import",
   "file": "0391-usage-import.patch",
-  "content_sha256": "ee15c3487ed5979d80aad9aa426258edad67aa9e1a7eaaa31ff47d613c683183",
+  "content_sha256": "95f7a221481f389829c9fe330b1ccde93d238371f36ad1120894ab7ce830c164",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

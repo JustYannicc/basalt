@@ -25,7 +25,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/pool-import-usage.tsx b/ap
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/web/src/implementation/pages/pool-import-usage.tsx
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,59 @@
 +import type { App, AppId } from "@executor-js/sdk";
 +import { Button } from "@executor-js/ui/components/button";
 +import { useQuery } from "@executor-js/ui/dashboard/context";
@@ -47,7 +47,17 @@ new file mode 100644
 +  const { organization } = useOrganizationRoute();
 +  const query = useQuery(liveAppAtom({ organization, app }));
 +  const current = Option.getOrUndefined(query.data);
-+  if (!canUse || current === undefined || current.activeVersion === null) return null;
++  if (!canUse)
++    return (
++      <div className="grid gap-1">
++        <p className="text-sm font-medium">Import usage</p>
++        <p role="status" className="text-sm text-muted-foreground">
++          To import usage, you need permission to use this pool. Ask a pool manager to grant you use
++          access. Managing the pool does not include use access.
++        </p>
++      </div>
++    );
++  if (current === undefined || current.activeVersion === null) return null;
 +  return <ImportLink app={current} />;
 +}
 +

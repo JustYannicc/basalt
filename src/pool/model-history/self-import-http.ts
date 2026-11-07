@@ -22,7 +22,9 @@ async function readImportPage(request: Request) {
   if (bytes === undefined)
     return fail(413, "invalid_query", "Import a smaller usage metadata page.");
   return validateSelfImportPage(
-    historyObject(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes))),
+    historyObject(
+      JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes)),
+    ),
   );
 }
 
