@@ -748,7 +748,7 @@ new file mode 100644
 +          yield* control("arm");
 +          const start = yield* Clock.currentTimeMillis;
 +          const waiting = yield* Effect.forkChild(read());
-+          yield* control("held");
++          yield* evidence.json("statement-batch-held.json", yield* control("held"));
 +          const failed = yield* Fiber.join(waiting).pipe(
 +            Effect.timeout("12 seconds"),
 +            Effect.catchTag("TimeoutError", () =>
@@ -809,7 +809,7 @@ new file mode 100644
 +
 +          yield* control("arm");
 +          const cancelled = yield* Effect.forkChild(read());
-+          yield* control("held");
++          yield* evidence.json("statement-batch-cancel-held.json", yield* control("held"));
 +          const cancellationStarted = yield* Clock.currentTimeMillis;
 +          yield* Fiber.interrupt(cancelled);
 +          const cancelledState = yield* control("closed").pipe(Effect.timeout("7 seconds"));
