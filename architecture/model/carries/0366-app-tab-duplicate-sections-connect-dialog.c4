@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountPresentation {
+    metadata {
+      constraint "An app's Accounts tab names every account requirement so no two sections read alike, and the naming prompt that replaces a closing Connect dialog lets that dialog unmount at once and returns focus to what opened it."
+    }
+  }
+}

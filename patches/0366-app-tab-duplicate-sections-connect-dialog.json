@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-app-tab-duplicate-sections-connect-dialog",
+  "file": "0366-app-tab-duplicate-sections-connect-dialog.patch",
+  "content_sha256": "2963c9c85b0b8a1dafa9582c4a6e3339efb4e6124644dcd2c21c167aa2f53d1b",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
