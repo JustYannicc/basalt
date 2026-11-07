@@ -70,18 +70,12 @@
     }
   },
   "runs": {
-    "accountSource403": [
-      "host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"
-    ],
-    "accountSource503": [
-      "host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"
-    ],
+    "accountSource403": ["host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"],
+    "accountSource503": ["host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"],
     "accountSourceAllFail": [
       "host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"
     ],
-    "accountSourceSingle": [
-      "host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"
-    ]
+    "accountSourceSingle": ["host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"]
   },
   "inputs": [
     ".upstream/packages/apps/src/contracts/router.ts",
