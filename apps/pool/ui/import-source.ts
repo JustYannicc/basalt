@@ -1,3 +1,4 @@
+import { sqliteSource } from "./sqlite-source.ts";
 import type { UsageImportFormat, UsageImportPage, UsageImportResult } from "../import-contract.ts";
 
 const maximumBytes = 8 * 1024 * 1024;
@@ -211,10 +212,10 @@ export async function openImportSource(file: File): Promise<ImportSource> {
   if (file.size === 0)
     throw new Error("This file is empty. Choose a usage export with retained records.");
   const header = new TextDecoder().decode(await file.slice(0, 16).arrayBuffer());
-  if (header.startsWith("SQLite format 3"))
-    throw new Error(
-      "SQLite backups aren't supported by this build yet. Choose prepared metadata JSONL instead.",
-    );
+  if (header.startsWith("SQLite format 3")) {
+    if (file.size < 100) throw new Error("This SQLite backup is incomplete.");
+    return sqliteSource(file);
+  }
   const first = await lines(file).next();
   if (first.done) throw new Error("This file has no usage records.");
   let row: Record<string, unknown> | undefined;

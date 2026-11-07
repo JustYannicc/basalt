@@ -75,3 +75,105 @@ new file mode 100644
 +    </Button>
 +  );
 +}
+diff --git a/packages/sdk/src/implementation/worker-browser-build.ts b/packages/sdk/src/implementation/worker-browser-build.ts
+--- a/packages/sdk/src/implementation/worker-browser-build.ts
++++ b/packages/sdk/src/implementation/worker-browser-build.ts
+@@ -15,7 +15,7 @@
+ const namespace = "executor-browser";
+ const assetUrl = "executor-asset-url";
+ const scriptImports = new Set(["import-statement", "dynamic-import", "require-call"]);
+-const browserAsset = /\.(?:svg|woff2)$/;
++const browserAsset = /\.(?:svg|woff2|wasm)$/;
+ /** Metafile inputs carry their plugin namespace, as in `virtual:node_modules/react/index.js`. */
+ const packageInput = (input: string) =>
+   input.slice(input.indexOf(":") + 1).startsWith("node_modules/");
+@@ -79,7 +79,7 @@
+               }
+             : { path: args.path, namespace: wrapped.value.namespace };
+         });
+-        build.onResolve({ filter: /^[^./]|\.(?:svg|woff2)$/ }, async (args) => {
++        build.onResolve({ filter: /^[^./]|\.(?:svg|woff2|wasm)$/ }, async (args) => {
+           if (
+             args.pluginData === assetUrl ||
+             args.namespace === namespace ||
+@@ -158,7 +158,9 @@
+           if (isServerUiImport(args.path))
+             return { errors: [{ text: "Server app modules cannot be imported by the UI." }] };
+           if (browserAsset.test(args.path)) {
+-            const contents = filesystem.read(args.path);
++            const contents = args.path.endsWith(".wasm")
++              ? filesystem.readBinary(args.path)
++              : filesystem.read(args.path);
+             return contents === null
+               ? { errors: [{ text: "Browser asset missing." }] }
+               : { contents, loader: "file" };
+diff --git a/packages/sdk/src/implementation/worker-build.ts b/packages/sdk/src/implementation/worker-build.ts
+--- a/packages/sdk/src/implementation/worker-build.ts
++++ b/packages/sdk/src/implementation/worker-build.ts
+@@ -12,6 +12,7 @@
+ import type { Plugin } from "esbuild";
+ import { PublishedAppFramework, WorkerBundle } from "../contracts/worker-build.ts";
+ import { appProtocol } from "./app-protocols.ts";
++import { binaryFilePaths } from "./worker-binary-files.ts";
+ import { browserBuild } from "./worker-browser-build.ts";
+ import { sourceImports } from "./worker-source-imports.ts";
+ import { serverSourceMap, sourceLocation } from "./worker-source-map.ts";
+@@ -200,7 +201,7 @@
+       try: (signal) =>
+         createApp({
+           signal,
+-          files: filesystem,
++          files: binaryFilePaths(filesystem),
+           installDependencies: false,
+           server: entry,
+           externals: frameworkExports,
+diff --git a/packages/sdk/src/implementation/worker-binary-files.ts b/packages/sdk/src/implementation/worker-binary-files.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/worker-binary-files.ts
+@@ -0,0 +1,14 @@
++import type { FileSystem, InMemoryFileSystem } from "@cloudflare/worker-bundler";
++
++/**
++ * worker-bundler probes package-export existence through its text-only read method.
++ * Binary files need an existence marker there; the WASM and browser asset loaders
++ * read their bytes from the original filesystem, never from this resolver view.
++ */
++export const binaryFilePaths = (filesystem: InMemoryFileSystem): FileSystem => ({
++  read: (path) => filesystem.read(path) ?? (filesystem.readBinary(path) === null ? null : ""),
++  write: (path, content) => filesystem.write(path, content),
++  delete: (path) => filesystem.delete(path),
++  list: (prefix) => filesystem.list(prefix),
++  flush: () => filesystem.flush(),
++});
+diff --git a/package.json b/package.json
+--- a/package.json
++++ b/package.json
+@@ -132,6 +132,7 @@
+     "mcp:apps": "bun scripts/build-mcp-apps.ts"
+   },
+   "devDependencies": {
++    "@sqlite.org/sqlite-wasm": "3.54.1-build1",
+     "@alchemy.run/cloudflare-runtime": "2.0.0-beta.80",
+     "@changesets/cli": "2.31.1",
+     "@effect/platform-node": "4.0.1",
+diff --git a/bun.lock b/bun.lock
+--- a/bun.lock
++++ b/bun.lock
+@@ -5,6 +5,7 @@
+     "": {
+       "name": "executor-next",
+       "devDependencies": {
++        "@sqlite.org/sqlite-wasm": "3.54.1-build1",
+         "@alchemy.run/cloudflare-runtime": "2.0.0-beta.80",
+         "@changesets/cli": "2.31.1",
+         "@effect/platform-node": "4.0.1",
+@@ -885,6 +886,8 @@
+     "effect": "4.0.1",
+   },
+   "packages": {
++    "@sqlite.org/sqlite-wasm": ["@sqlite.org/sqlite-wasm@3.54.1-build1", "", {}, "sha512-foW427VBLJ3G87bsnvQTZCc9zYe0Fq1wH0pz1I6BlKLKXcArIAyTkHtq0iT2llmhcMQt9T/p6l5PpQQh+6O8uQ=="],
++
+     "@ai-sdk/gateway": ["@ai-sdk/gateway@4.0.87", "", { "dependencies": { "@ai-sdk/provider": "4.0.17", "@ai-sdk/provider-utils": "5.0.45", "@vercel/oidc": "3.2.0" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-6wJmX/D5OO7tvDJbtFdXdBuRt8AkCnW+FLK+W35UHe/tHgolAa4hclXtJcMSYnlTDy/t5DNRgdesVaoMXtwzow=="],
+
+     "@ai-sdk/provider": ["@ai-sdk/provider@4.0.17", "", { "dependencies": { "json-schema": "^0.4.0" } }, "sha512-VYMBxIQdcHqbIf1j+YZlI9Ati6LZ4wJe0GGd4z4a5H/KxTggjeOiyaVYTnfF7LHZK5jMQ+rofmzz4QPqf++NUw=="],

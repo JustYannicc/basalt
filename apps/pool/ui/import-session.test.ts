@@ -192,7 +192,7 @@ test("UTF-8 boundaries, empty files, raw SQLite, mixed formats and oversized lin
   await assert.rejects(openImportSource(new File([], "empty.jsonl")), /empty/);
   await assert.rejects(
     openImportSource(new File(["SQLite format 3\0"], "usage.sqlite")),
-    /aren't supported/,
+    /incomplete/,
   );
   await assert.rejects(
     openImportSource(new File([" ".repeat(8 * 1024 * 1024 + 1)], "large.jsonl")),

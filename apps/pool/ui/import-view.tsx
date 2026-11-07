@@ -88,12 +88,12 @@ export function ImportView({
                 Choose a usage export
               </label>
               <p className="text-sm text-muted-foreground">
-                Prepared metadata JSONL or a legacy CPA JSON snapshot.
+                Manager Plus SQLite backup, metadata JSONL, or a legacy CPA JSON snapshot.
               </p>
               <input
                 id={fileId}
                 type="file"
-                accept=".jsonl,.json,application/json"
+                accept=".sqlite,.sqlite3,.db,.jsonl,.json,application/json,application/vnd.sqlite3"
                 disabled={opening}
                 className="block min-h-11 w-full max-w-full text-sm file:mr-3 file:min-h-11 file:rounded-md file:border file:border-input file:bg-background file:px-3 file:text-foreground"
                 onChange={(event) => {
@@ -108,7 +108,14 @@ export function ImportView({
               )}
             </div>
             <div className="grid gap-2 text-sm text-muted-foreground">
-              <p>Manager Plus: prepared metadata JSONL. Home: its usage export in JSONL.</p>
+              <p>
+                Use a completed backup, not a live database. WAL files must be checkpointed into a
+                standalone backup with journal_mode=DELETE before selecting it.
+              </p>
+              <p>
+                Manager Plus: a standalone SQLite backup or prepared metadata JSONL. Home: its usage
+                export in JSONL.
+              </p>
               <p>
                 Older CPA: a v0/v1 JSON snapshot, up to 8 MiB. Only retained request details can be
                 imported; totals alone cannot become history.
