@@ -36,6 +36,14 @@ const commands: Record<
 };
 
 export const supportedCommand = (id: string) => Object.hasOwn(commands, id);
+
+/** This new read-only check first runs after activation, never during preparation or database work. */
+export const firstVerificationCommand = (id: string, props: ExecProps) =>
+  id === "PoolBackendBudgetRuntimeReady" &&
+  props.memo === false &&
+  !props.shell &&
+  commands[id]?.phase === "verification" &&
+  commands[id]?.command === props.command;
 export function commandPhase(id: string, props: ExecProps) {
   const rule = commands[id];
   if (!rule || rule.command !== props.command || props.shell)
