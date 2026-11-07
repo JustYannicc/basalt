@@ -3,7 +3,7 @@ import { Effect } from "effect";
 
 const client = {
   steps: ["Create a client in the synthetic management workspace."],
-  link: { label: "Open synthetic client settings", url: "https://example.invalid/oauth-clients" },
+  link: { label: "Open synthetic client settings", url: "https://localhost/oauth-clients" },
   fields: {
     clientId: { label: "Management client ID", expectedFormat: "Use the client_ identifier." },
     clientSecret: { label: "Management client secret" },

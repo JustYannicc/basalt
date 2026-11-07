@@ -21,8 +21,10 @@ const listen = async (handler, failures) => {
   );
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
+  const address = new URL("http://127.0.0.1");
+  address.port = String(server.address().port);
   return {
-    origin: `http://127.0.0.1:${server.address().port}`,
+    origin: address.origin,
     stop: () =>
       new Promise((resolve) => {
         server.close(resolve);
@@ -95,7 +97,9 @@ export async function startManagementProvider() {
           ${[...url.searchParams].map(([name, value]) => `<input type="hidden" name="${escape(name)}" value="${escape(value)}">`).join("")}
           <button name="decision" value="approve">Approve access</button>
           <button name="decision" value="cancel">Cancel sign-in</button>
-          <button name="decision" value="refuse">Refuse access</button></form>`);
+          <button name="decision" value="refuse">Refuse access</button>
+          <button name="decision" value="policy">Deny by policy</button>
+          <button name="decision" value="unknown">Refuse with service code</button></form>`);
         return;
       }
       const callback = new URL(url.searchParams.get("redirect_uri"));
@@ -110,13 +114,17 @@ export async function startManagementProvider() {
       } else {
         callback.searchParams.set(
           "error",
-          decision === "cancel" ? "access_denied" : "unauthorized_client",
+          decision === "cancel" || decision === "policy"
+            ? "access_denied"
+            : decision === "unknown"
+              ? "workspace_policy"
+              : "unauthorized_client",
         );
         callback.searchParams.set(
           "error_description",
           decision === "cancel"
             ? "Sign-in was cancelled."
-            : "Your WorkOS team has disabled sign-in for connected tools.",
+            : "Your WorkOS team has disabled sign-in for connected tools. Ask a team admin to enable it in Authentication settings.",
         );
       }
       response.writeHead(302, { location: callback.href });
