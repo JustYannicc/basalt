@@ -6,7 +6,7 @@ import * as Response from "effect/http/HttpClientResponse";
 export const digest = (c) => `sha256:${c.repeat(64)}`;
 export const image = (d) => `registry.cloudflare.com/fixture/fixture-pool@${d}`;
 
-export function containerDriftApi() {
+export function containerDriftApi({ rolloutOnly = false } = {}) {
   const state = {
     publishedDigest: digest("2"),
     app: {
@@ -22,6 +22,7 @@ export function containerDriftApi() {
     writes: 0,
     rollouts: 0,
     registryReads: 0,
+    registryMiss: false,
     applicationExists: true,
     updates: [],
   };
@@ -33,8 +34,8 @@ export function containerDriftApi() {
         Response.fromWeb(
           request,
           new globalThis.Response(null, {
-            status: 200,
-            headers: { "docker-content-digest": state.publishedDigest },
+            status: state.registryMiss ? 404 : 200,
+            headers: state.registryMiss ? {} : { "docker-content-digest": state.publishedDigest },
           }),
         ),
       );
@@ -50,7 +51,31 @@ export function containerDriftApi() {
     } else if (url.pathname.endsWith("/rollouts")) {
       state.writes++;
       state.rollouts++;
-      value = { id: "fixture-rollout" };
+      if (rolloutOnly) {
+        assert.equal(request.method, "POST");
+        assert.equal(request.body._tag, "Uint8Array");
+        const body = JSON.parse(Buffer.from(request.body.body).toString());
+        const currentVersion = state.app.version;
+        const previous = state.app.configuration;
+        const target = {
+          ...state.app,
+          configuration: body.target_configuration,
+          version: currentVersion + 1,
+        };
+        state.manualRollout = body.kind === "full_manual" ? target : undefined;
+        if (state.manualRollout)
+          state.app = { ...state.app, active_rollout_id: `fixture-rollout-${state.rollouts}` };
+        else state.app = target;
+        value = {
+          id: `fixture-rollout-${state.rollouts}`,
+          current_version: currentVersion,
+          target_version: target.version,
+          current_configuration: previous,
+          target_configuration: target.configuration,
+          kind: body.kind,
+          status: body.kind === "full_manual" ? "pending" : "completed",
+        };
+      } else value = { id: "fixture-rollout" };
     } else if (request.method === "DELETE") {
       state.writes++;
       state.applicationExists = false;
@@ -95,7 +120,10 @@ export function containerDriftApi() {
         delete body.configuration.instance_type;
         Object.assign(body.configuration, resources);
       }
-      state.app = { ...state.app, ...body, version: state.app.version + 1 };
+      if (rolloutOnly && request.method === "PATCH") {
+        const { configuration: _configuration, ...settings } = body;
+        state.app = { ...state.app, ...settings };
+      } else state.app = { ...state.app, ...body, version: state.app.version + 1 };
       value = state.app;
     }
     return Effect.succeed(

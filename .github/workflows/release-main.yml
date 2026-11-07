@@ -148,6 +148,8 @@ jobs:
       APP_DOMAIN_CONTROLLER_TOKEN: ${{ secrets.APP_DOMAIN_CONTROLLER_TOKEN }}
       POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
       POOL_DEPLOYMENT_KEY: ${{ secrets.POOL_DEPLOYMENT_KEY }}
+      POOL_ACCEPTANCE_KEY: ${{ secrets.POOL_ACCEPTANCE_KEY }}
+      POOL_ACCEPTANCE_MODEL: ${{ vars.POOL_ACCEPTANCE_MODEL }}
     steps:
       # No one approves this job, and Deploy usually dispatches it. Nothing quiesces writes first; the backup and the fail-closed drain step below gate it.
       - uses: actions/checkout@v4

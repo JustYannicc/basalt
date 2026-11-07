@@ -1,0 +1,48 @@
+{
+  "scenarios": {
+    "localNameAccountCheckDesktop": {
+      "title": "local naming check announces failure and retry success at 1280px",
+      "targets": {
+        "local": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Exercises the paired local dashboard and its live account checks."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Exercises the paired local dashboard and its live account checks."
+        }
+      }
+    },
+    "localNameAccountCheckPhone": {
+      "title": "local naming check announces failure and retry success at 390px",
+      "targets": {
+        "local": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Exercises the paired local dashboard and its live account checks."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Exercises the paired local dashboard and its live account checks."
+        }
+      }
+    }
+  },
+  "runs": {
+    "localNameAccountCheckDesktop": [
+      "declared:local"
+    ],
+    "localNameAccountCheckPhone": [
+      "declared:local"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/local/web/src/implementation/pages/name-account-dialog.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/name-account.tsx"
+  ]
+}

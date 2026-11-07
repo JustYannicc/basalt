@@ -11,6 +11,7 @@ import { slackSource, withSlackUserAuth } from "./slack.ts";
 import { miroSource, withMiroCapabilities } from "./miro.ts";
 import { elevenlabsSource, withElevenLabsSignIn } from "./elevenlabs.ts";
 import { vercelSource, withVercelSignIn } from "./vercel.ts";
+import { notionSource } from "./notion.ts";
 import { recipeAdditions } from "./recipes/index.ts";
 import { providerApps } from "./provider-apps/index.ts";
 import { aws } from "./aws/index.ts";
@@ -85,6 +86,11 @@ export async function handleCatalog(
   if (relative === "apps/vercel.json")
     return new Response(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(vercelSource)),
+      { headers },
+    );
+  if (relative === "apps/notion.json")
+    return new Response(
+      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(notionSource)),
       { headers },
     );
   if (relative === "apps/workos.json")

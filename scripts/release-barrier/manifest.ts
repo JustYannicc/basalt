@@ -1,5 +1,6 @@
 import type * as Workers from "@distilled.cloud/cloudflare/workers";
 import { createHash } from "node:crypto";
+import { describeContainer, type FrozenContainer } from "./container.ts";
 import type { ResourceDelta } from "./prop-diff.ts";
 
 export interface ModulePart {
@@ -19,10 +20,12 @@ export interface FrozenWorker {
 }
 
 export interface ReleaseManifest {
+  readonly schemaVersion?: 2;
   readonly candidate: string;
   readonly stack: string;
   readonly stage: string;
   readonly workers: readonly FrozenWorker[];
+  readonly containers?: readonly FrozenContainer[];
 }
 
 export type PlanRefusal = { reason: string } | ({ reason: string } & ResourceDelta);
@@ -88,11 +91,19 @@ export function manifestDigest(manifest: ReleaseManifest) {
       stack: manifest.stack,
       stage: manifest.stage,
       workers: manifest.workers.map(describeWorker),
+      ...(manifest.schemaVersion === 2
+        ? { schemaVersion: 2, containers: manifest.containers?.map(describeContainer) }
+        : {}),
     }),
   );
 }
 
 export function assertManifest(manifest: ReleaseManifest) {
+  if (
+    (manifest.containers?.length && manifest.schemaVersion !== 2) ||
+    (manifest.schemaVersion === 2 && manifest.containers?.length !== 1)
+  )
+    throw new BarrierRefusal("invalid-container-manifest");
   if (
     !/^[a-f0-9]{40}$/.test(manifest.candidate) ||
     !manifest.stack ||
@@ -135,6 +146,9 @@ export function snapshotManifest(manifest: ReleaseManifest): ReleaseManifest {
     candidate: manifest.candidate,
     stack: manifest.stack,
     stage: manifest.stage,
+    ...(manifest.schemaVersion === 2
+      ? { schemaVersion: 2, containers: structuredClone(manifest.containers) }
+      : {}),
     workers: manifest.workers.map((worker) => ({
       ...worker,
       metadata: structuredClone(worker.metadata),
