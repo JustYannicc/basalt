@@ -63,7 +63,7 @@
 --- /dev/null
 +++ b/health.ts
 @@ -0,0 +1,84 @@
-+import { decodeJson, json, object, string } from "apps";
++import { decodeJson, json, object, string, type AccountCheckContext, type AuthMethods } from "apps";
 +import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 +import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
 +import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -88,7 +88,7 @@
 +/** The optional identity read shares the check's cancellation and remaining deadline. */
 +export async function readMcpSelf(
 +  check: {
-+    fetch: typeof fetch;
++    fetch: AccountCheckContext<AuthMethods>["fetch"];
 +    signal: AbortSignal;
 +    deadline?: number;
 +  },
