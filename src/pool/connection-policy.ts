@@ -1,4 +1,4 @@
-import type { ProviderAppConnectionRequired } from "../../apps/pool/contract.ts";
+import { controlBasePath, type ProviderAppConnectionRequired } from "../../apps/pool/contract.ts";
 import { ControlFailure } from "./json.ts";
 
 class PoolConnectionRequired extends ControlFailure {
@@ -28,4 +28,13 @@ class PoolConnectionRequired extends ControlFailure {
 
 export function refusePoolAcquisition(pool: string): never {
   throw new PoolConnectionRequired(pool);
+}
+
+export function isPoolAcquisitionPath(method: string, pathname: string): boolean {
+  return [
+    `POST ${controlBasePath}/sign-ins`,
+    `POST ${controlBasePath}/login-files`,
+    `POST ${controlBasePath}/sign-ins/callback`,
+    `GET ${controlBasePath}/sign-ins/status`,
+  ].includes(`${method} ${pathname}`);
 }

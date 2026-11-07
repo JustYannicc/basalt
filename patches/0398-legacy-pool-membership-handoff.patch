@@ -699,10 +699,18 @@ index 0000000..3972b0b
 +  };
 +});
 diff --git a/e2e/support/pool-worker-runtime.ts b/e2e/support/pool-worker-runtime.ts
-index 54d3fa6..9efd36a 100644
+index 54d3fa6..64d1dd1 100644
 --- a/e2e/support/pool-worker-runtime.ts
 +++ b/e2e/support/pool-worker-runtime.ts
-@@ -154,12 +154,13 @@ export const poolWorkerRuntime = (toolsOrigin: string, homeOrigin?: string) =>
+@@ -43,6 +43,7 @@ export const poolWorkerRuntime = (toolsOrigin: string, homeOrigin?: string) =>
+             async destroy(){running=false},
+             async setInactivityTimeout(){},
+             getTcpPort(port){return {fetch(input,init){
++              if (!running) throw new Error("The synthetic container is stopped");
+               const request=new Request(input,init);
+               request.headers.set("x-e2e-container-port",String(port));
+               return env.HOME.fetch(request);
+@@ -154,12 +155,13 @@ export const poolWorkerRuntime = (toolsOrigin: string, homeOrigin?: string) =>
        (runtime) =>
          driver("dispose production pool Worker", () => runtime.dispose()).pipe(Effect.orDie),
      );
