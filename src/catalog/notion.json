@@ -23,7 +23,7 @@
     },
     {
       "path": "package.json",
-      "content": "{\n  \"name\": \"@executor.sh/notion\",\n  \"description\": \"Pages, databases, blocks, comments and search in Notion, through Notion's MCP server or the REST API for internal integrations.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"executor\": {\n    \"title\": \"Notion\"\n  },\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.10\",\n    \"@modelcontextprotocol/sdk\": \"1.32.1\"\n  }\n}\n"
+      "content": "{\n  \"name\": \"@executor.sh/notion\",\n  \"description\": \"Pages, databases, blocks, comments and search in Notion, through Notion's MCP server or the REST API for internal integrations.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"executor\": {\n    \"title\": \"Notion\"\n  },\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.14\",\n    \"@modelcontextprotocol/sdk\": \"1.32.1\"\n  }\n}\n"
     },
     {
       "path": "version.ts",

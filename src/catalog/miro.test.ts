@@ -7,6 +7,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { handleCatalog } from "./worker.ts";
 import { miroSource } from "./miro.ts";
+import { catalog } from "./settings.ts";
 
 const requestedScopes = [
   "boards:read",
@@ -132,7 +133,7 @@ test("Miro carry preserves the full OpenAPI package and aligns the app scopes wi
     carried.files.find((file: { path: string }) => file.path === "package.json")!.content,
   );
   assert.equal(manifest.dependencies.apps, provenance.appsVersion);
-  assert.equal(manifest.dependencies.apps, "0.0.1-beta.104-basalt.10");
+  assert.equal(manifest.dependencies.apps, catalog.framework);
   assert.deepEqual(
     published.files.map((file: { path: string }) => file.path),
     carried.files.map((file: { path: string }) => file.path),
