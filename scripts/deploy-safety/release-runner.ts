@@ -268,7 +268,11 @@ export function productionReleaseDependencies(
         imageEnvironment,
       );
     },
-    smoke: () => runCommand("node", ["scripts/smoke.ts"], repositoryRoot),
+    smoke: async () => {
+      const publicSmoke = await runCommand("node", ["scripts/smoke.ts"], repositoryRoot);
+      if (!publicSmoke.started || publicSmoke.exitCode !== 0) return publicSmoke;
+      return runCommand("node", ["scripts/verify-pool-stream.ts"], sourceRoot);
+    },
   };
 }
 

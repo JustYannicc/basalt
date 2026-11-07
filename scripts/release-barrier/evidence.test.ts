@@ -3,6 +3,8 @@ import { test } from "node:test";
 import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { containerPublication } from "./test/container-fixture.ts";
+import { describeContainer } from "./container.ts";
 import { releaseEvidence } from "./evidence.ts";
 import { BarrierRefusal, manifestDigest, type ReleaseManifest } from "./manifest.ts";
 
@@ -79,4 +81,24 @@ test("exact frozen requests stay private while refusal receipts retain the safe 
     assert.ok(!text.includes("private-binding-value"));
     assert.ok(!text.includes("exact-module-bytes"));
   }
+});
+
+test("image progress survives preparation failure without exposing its configuration", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "release-publication-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const evidence = releaseEvidence(root, candidate);
+  const proof = containerPublication();
+  const frozen = {
+    ...proof.frozen,
+    configuration: {
+      ...proof.frozen.configuration,
+      environmentVariables: [{ name: "PRIVATE", value: "private-configuration" }],
+    },
+  };
+  await evidence.publication(frozen);
+  await evidence.failure(new BarrierRefusal("preparation-or-provider-failed"));
+  const text = await readFile(join(root, "publication.json"), "utf8");
+  assert.deepEqual(JSON.parse(text), { candidate, containers: [describeContainer(frozen)] });
+  assert.ok(!text.includes("private-configuration"));
+  assert.ok(!text.includes("registry.cloudflare.com"));
 });

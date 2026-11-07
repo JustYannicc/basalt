@@ -51,9 +51,19 @@ Releases run one at a time in the `deploy-production` concurrency group, set on 
 
 Automatic mode validates deployment configuration before creating a deployment record, deploys, verifies the pool image, runs the public smoke check, and marks the record successful. Capture reads the immutable image's manifest and config with pull-only registry credentials, hashes both against their descriptors, and verifies the actual platform and OAuth completion capability label. Image verification binds the candidate's publication digest to the application and every active instance, and checks the live Worker's input fingerprint. Rollout observation shares the existing pool startup budget. The workflow log retains the candidate, platform, input fingerprint, capability label and immutable manifest/config digests before verification, including on failure.
 
-Production deploys use the Worker version barrier once, including manual releases and supported source-based rollbacks. The complete root stack is prepared in shadow state; all Worker uploads must return an immutable version ID and provider startup evidence at or below 750 ms before any activation or database Command runs. New resources, DO migrations, partial selections and unsupported resource changes refuse preflight. Activation uses those exact accepted IDs. A lost activation response retains pending intent and completed IDs; the complete deploy is never retried. Receipts contain hashes and version IDs, not binding values.
+Production deploys prepare the complete root stack in shadow state. An image-only update to the existing PoolContainer freezes effective build bytes and modes into a private snapshot, then publishes through Alchemy's existing publisher and verifies the immutable registry manifest, platform and capability before activation. Every Worker upload must return an immutable version ID and provider startup evidence at or below 750 ms before any activation or database Command runs. Verified image progress is retained before further preparation. After the isolated database phase, the barrier rechecks every native record not changed by that phase, including its unchanged dependencies, and live baselines, activates those exact Worker IDs, then rechecks the container baseline and submits its frozen full_manual rollout request. It records the rollout identity and target version, then explicitly advances its single 100% singleton step once. The rollout creates a new application version; application PATCH is not used for image changes. The recorded rollout ID and target version, application and all active instance digests, private desired-revision boot readiness and unsigned health/authentication probes must pass before native state is committed. The private readiness contract includes Home, node and policy health. It never rebuilds at activation. An equivalent published digest still passes the same serving checks before it updates the input fingerprint, without another rollout. EU placement, default scheduling, the basic instance size and maximum of one instance stay fixed; other resource changes, creation, replacement, attachment drift, unknown settings, DO migrations and partial selections refuse. The sole first-run exception is the registered PoolBackendBudgetRuntimeReady verification Command. Preparation resolves its declared hash output in shadow state without executing it; its actual read-only check runs after image verification and activation. It cannot provision infrastructure. A lost response retains pending intent and completed IDs; the complete deploy is never retried.
 
-`POOL_DEPLOYMENT_KEY` is a required independent 32-byte lowercase-hex Actions secret, stable across releases. `BASALT_RELEASE_ATTEMPT` belongs only to Commands. These changes prevent future per-release values from blocking version rollback; older versions with different secrets still require an explicit recovery decision. No rollback silently uses `force=true`, and a source checkout predating the barrier is refused rather than uploaded through the old path. To restore an admitted release's pre-activation Worker versions within its trusted Actions checkout, use `npm run deploy -- --recover <manifest.json> <receipt.json>` with the retained matching receipts and the same candidate environment. Recovery verifies all current target fingerprints and live version IDs before its first write, restores exact baseline IDs in reverse order, and reads each back. It resumes an uncertain recovery from observed versions. This restores Worker traffic only; database restore and other recovery gates remain separate, and it does not mark the release ledger successful.
+Refusal tables appear in both the error annotation and the step summary. When declarations are unchanged, they identify unresolved input paths and their upstream resources, changed bindings, and the effective image input hash comparison. A provider reconciliation whose cause is unavailable is labeled explicitly rather than inferred from an empty property list.
+
+`desired-upstream.json` records the desired source release identity separately from staged publication and verified serving receipts. A failed rollout never rewrites source pins. The optional model-stream probe uses `POOL_ACCEPTANCE_KEY` and `POOL_ACCEPTANCE_MODEL` only when configured. Without the dedicated credential it writes a visible not-configured line to the step summary; it does not block the account-free checks.
+
+`POOL_DEPLOYMENT_KEY` is a required independent 32-byte lowercase-hex Actions secret, stable across releases. `BASALT_RELEASE_ATTEMPT` belongs only to Commands. These changes prevent future per-release values from blocking version rollback; older versions with different secrets still require an explicit recovery decision. No rollback silently uses `force=true`, and a source checkout predating the barrier is refused rather than uploaded through the old path.
+
+To recover an admitted release within its trusted Actions checkout, use `npm run deploy -- --recover <manifest.json> <receipt.json>` with matching retained files and the same candidate environment. Keep `container-recovery.sealed.json` beside a container manifest. It contains the saved configuration encrypted with the existing `EXECUTOR_ENCRYPTION_KEY`; recovery needs the original key if that key has since rotated. Raw configuration and Worker module bytes stay private. Worker-only receipts remain readable. Container receipts use a new format that older recovery programs refuse.
+
+For a container release, first establish that the old binaries remain compatible with the applied database changes, then set `BASALT_RECOVERY_DATABASE_COMPATIBLE=true` in that recovery invocation. Unknown compatibility refuses before any recovery write. Recovery checks every Worker target and live version before changing the container, submits its exact saved digest and configuration as a new manually advanced recovery rollout, and verifies the application and every active instance's image, then requires the existing private runtime inspection to report a running, ready old-image boot before restoring Worker baseline IDs in reverse order. It records the verified restored digest, input hash and actual new application version in native state so the next release can proceed. It uses no image rebuild or mutable tag. This does not undo database writes, storage changes or in-flight requests, and does not mark the release ledger successful.
+
+Keep the resulting `recovery.json` beside the manifest when resuming. A rollout with a retained ID and target version is observed to convergence without another rollout call. An uncertain advance is observed through its known rollout ID without repeating next; an unconfirmed pending advance refuses. A lost rollout response with no attributable version stops for an explicit recovery decision; matching image bytes alone cannot establish who wrote a version. Foreign versions or configurations refuse. The production workflow concurrency group serializes releases, but the container API has no compare-and-swap field, so an out-of-band writer can still race between a baseline read and its mutation.
 
 Missing publication evidence, unresolved image drift or failed pool readiness marks the attempt failed and stops without automatic rollback, including after a partial deployment. Retain the logged publication evidence and review the exact image before manual recovery. A manual rollback also needs publication evidence before it can report success; a source that predates receipt capture cannot satisfy that guard.
 
@@ -215,17 +225,19 @@ The first run keeps everything. Review its inventory and ledger digests, then su
   "inventoryDigest": "DIGEST_FROM_REPORT",
   "ledgerDigest": "DIGEST_FROM_REPORT",
   "reviewedAt": "UTC_REVIEW_TIMESTAMP",
-  "branches": [{
-    "branch": "main",
-    "latestMigrationRecoveryBackupId": "EXACT_BACKUP_ID",
-    "pinnedBackupIds": [],
-    "restoreDependentBackupIds": [],
-    "evidenceDigests": {
-      "latestMigration": "SHA256_OF_PRIVATE_MIGRATION_EVIDENCE",
-      "pins": "SHA256_OF_PRIVATE_PIN_INVENTORY",
-      "restoreDependencies": "SHA256_OF_PRIVATE_RESTORE_EVIDENCE"
+  "branches": [
+    {
+      "branch": "main",
+      "latestMigrationRecoveryBackupId": "EXACT_BACKUP_ID",
+      "pinnedBackupIds": [],
+      "restoreDependentBackupIds": [],
+      "evidenceDigests": {
+        "latestMigration": "SHA256_OF_PRIVATE_MIGRATION_EVIDENCE",
+        "pins": "SHA256_OF_PRIVATE_PIN_INVENTORY",
+        "restoreDependencies": "SHA256_OF_PRIVATE_RESTORE_EVIDENCE"
+      }
     }
-  }]
+  ]
 }
 ```
 
