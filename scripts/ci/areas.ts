@@ -20,6 +20,7 @@ const accounts = [
   "slack-health",
   "gitlab-connectors",
   "workos-sign-in",
+  "clerk-sign-in",
   "vercel-sign-in",
   "elevenlabs-sign-in",
   "mcp-apps",
@@ -59,6 +60,7 @@ export const heavyJobs = [
   "aws-connectors",
   "gitlab-connectors",
   "workos-sign-in",
+  "clerk-sign-in",
   "vercel-sign-in",
   "elevenlabs-sign-in",
   "mcp-apps",
@@ -109,7 +111,11 @@ export const sharedInputs = [
 ];
 
 export const areas = [
-  { paths: ["e2e/workos-sign-in.mjs", "e2e/management-signin/**"], jobs: ["workos-sign-in"] },
+  {
+    paths: ["e2e/workos-sign-in.mjs", "e2e/management-signin/**"],
+    jobs: ["workos-sign-in", "clerk-sign-in"],
+  },
+  { paths: ["e2e/clerk-sign-in.mjs", "e2e/clerk-signin/**"], jobs: ["clerk-sign-in"] },
   { paths: ["clients/**"], jobs: ["client-mobile", "client-desktop", "client-native-product"] },
   {
     paths: ["src/tunnel/**", "e2e/native-*", ".upstream/**/{client-grants,device-authorization}*"],

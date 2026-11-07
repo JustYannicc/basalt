@@ -36,7 +36,12 @@ const escape = (value) =>
   value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
 
 /** The vendor boundary uses separate REST/MCP credentials and checks the actual PKCE verifier. */
-export async function startManagementProvider() {
+export async function startManagementProvider({
+  name = "WorkOS",
+  restToken = "sk_synthetic-workos-rest",
+  healthPath = "/organizations",
+  scopes = ["read", "write", "offline_access"],
+} = {}) {
   const calls = [];
   const failures = [];
   const codes = new Map();
@@ -47,11 +52,11 @@ export async function startManagementProvider() {
     calls.push({
       transport: "rest",
       path: url.pathname,
-      validCredential: request.headers.authorization === "Bearer sk_synthetic-workos-rest",
+      validCredential: request.headers.authorization === `Bearer ${restToken}`,
     });
-    if (request.headers.authorization !== "Bearer sk_synthetic-workos-rest")
+    if (request.headers.authorization !== `Bearer ${restToken}`)
       return json(response, { error: "unauthorized" }, 401);
-    if (url.pathname === "/organizations") return json(response, { data: [] });
+    if (url.pathname === healthPath) return json(response, { data: [] });
     if (url.pathname === "/fixture/read")
       return json(response, { transport: "rest", retainedKey: true });
     return json(response, { error: "Unknown route" }, 404);
@@ -62,7 +67,7 @@ export async function startManagementProvider() {
       return json(response, {
         resource: `${mcp.origin}/mcp`,
         authorization_servers: [mcp.origin],
-        scopes_supported: ["read", "write", "offline_access"],
+        scopes_supported: scopes,
       });
     if (url.pathname === "/.well-known/oauth-authorization-server")
       return json(response, {
@@ -74,7 +79,7 @@ export async function startManagementProvider() {
         grant_types_supported: ["authorization_code", "refresh_token"],
         token_endpoint_auth_methods_supported: ["none"],
         code_challenge_methods_supported: ["S256"],
-        scopes_supported: ["read", "write", "offline_access"],
+        scopes_supported: scopes,
       });
     if (url.pathname === "/register") {
       const input = JSON.parse(await body(request));
@@ -89,11 +94,19 @@ export async function startManagementProvider() {
     if (url.pathname === "/authorize") {
       assert.equal(url.searchParams.get("resource"), `${mcp.origin}/mcp`);
       assert.equal(url.searchParams.get("code_challenge_method"), "S256");
+      if (name === "Clerk") {
+        const requested = new Set((url.searchParams.get("scope") ?? "").split(" "));
+        assert.deepEqual(
+          [...requested].sort(),
+          [...scopes].sort(),
+          "Consent asks for exactly the seven permissions in Clerk’s documented table",
+        );
+      }
       const decision = url.searchParams.get("decision");
       if (decision === null) {
         response.writeHead(200, { "content-type": "text/html" });
-        response.end(`<!doctype html><meta name="viewport" content="width=device-width"><title>WorkOS authorization fixture</title>
-          <h1>WorkOS test workspace</h1><p>Synthetic authorization. No real account is used.</p><form action="/authorize">
+        response.end(`<!doctype html><meta name="viewport" content="width=device-width"><title>${escape(name)} authorization fixture</title>
+          <h1>${escape(name)} test workspace</h1><p>Synthetic authorization. No real account is used.</p><form action="/authorize">
           ${[...url.searchParams].map(([name, value]) => `<input type="hidden" name="${escape(name)}" value="${escape(value)}">`).join("")}
           <button name="decision" value="approve">Approve access</button>
           <button name="decision" value="cancel">Cancel sign-in</button>
@@ -124,7 +137,9 @@ export async function startManagementProvider() {
           "error_description",
           decision === "cancel"
             ? "Sign-in was cancelled."
-            : "Your WorkOS team has disabled sign-in for connected tools. Ask a team admin to enable it in Authentication settings.",
+            : name === "WorkOS"
+              ? "Your WorkOS team has disabled sign-in for connected tools. Ask a team admin to enable it in Authentication settings."
+              : "Access was declined.",
         );
       }
       response.writeHead(302, { location: callback.href });
@@ -161,7 +176,7 @@ export async function startManagementProvider() {
         access_token: "synthetic-management-oauth",
         token_type: "Bearer",
         refresh_token: "synthetic-management-refresh",
-        scope: "read write offline_access",
+        scope: scopes.join(" "),
         expires_in: 3600,
       });
     }
@@ -195,7 +210,7 @@ export async function startManagementProvider() {
       return result({
         protocolVersion: "2025-06-18",
         capabilities: { tools: {} },
-        serverInfo: { name: "WorkOS fixture", version: "1" },
+        serverInfo: { name: `${name} fixture`, version: "1" },
       });
     if (message.method === "tools/list")
       return result({

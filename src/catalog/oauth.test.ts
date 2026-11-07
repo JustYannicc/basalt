@@ -18,6 +18,7 @@ test("reviewed carried sources match the packages the catalog serves", async () 
   const reviews = oauthReviews(reviewData);
   for (const id of [
     "atlassian",
+    "clerk",
     "aws",
     "elevenlabs",
     "gitlab",

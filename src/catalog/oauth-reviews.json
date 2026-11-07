@@ -888,6 +888,19 @@
       }
     },
     {
+      "entry": "clerk",
+      "package": "@executor.sh/clerk",
+      "sourceSha256": "3232ff68085bac291d53d1ee9d78587c11a27f18d58fa56ecaad30326d53910a",
+      "methods": {
+        "oauth": {
+          "kind": "automatic",
+          "protocol": "cimd",
+          "metadata": "https://clerk.clerk.com/.well-known/oauth-authorization-server",
+          "metadataSha256": "158ac5428a3f49d85e6c3ab790e0bba4c2d4b813f163c583477a3e954994f9d9"
+        }
+      }
+    },
+    {
       "entry": "cleverreach",
       "package": "@executor.sh/cleverreach",
       "methods": {
