@@ -2,7 +2,7 @@
   "scenarios": {
     "poolEmptyHome": {
       "fixtures": "actors",
-      "title": "Empty Home pools skip global credentials while linked pools retain fresh scoped reads and policy",
+      "title": "Empty Home pools ignore failed credentials while populated reads stay concurrent and policy is enforced",
       "targets": {
         "cloud": {
           "status": "scheduled",

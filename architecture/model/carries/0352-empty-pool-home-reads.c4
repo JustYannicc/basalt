@@ -1,7 +1,7 @@
 model {
   extend basalt.modelGateway {
     metadata {
-      constraint "A pool view reads current Home membership before requesting global credentials or quota detail. Empty membership returns no accounts and omits completion timestamps for skipped reads. Nonempty credential and quota reads run concurrently after membership and quota details are read anew. Existing policy, redaction and persisted revision invalidation remain authoritative. Public Worker HTTP proof uses only an external Home/container fixture and never replaces host policy or SDK services."
+      constraint "A pool view starts credentials alongside current Home membership. Empty membership returns no accounts independently of credential failure and cancels and drains an unfinished credential read. Populated credentials never wait for membership to start; required credential and quota failures still fail the view after admitted reads drain. Quota details are scoped to current members and read anew. Completion timestamps omit canceled or skipped reads. Existing policy, redaction and persisted revision invalidation remain authoritative. Public Worker HTTP proof uses only external Home and container fixtures and never replaces host policy or SDK services."
     }
   }
 }

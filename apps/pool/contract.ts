@@ -99,7 +99,7 @@ export interface PoolView {
   readonly reading?: {
     readonly source: "snapshot" | "live";
     readonly revalidationFailed: boolean;
-    /** Completion of each Home read; skipped reads are absent. Provider timestamps stay original. */
+    /** Completion of each Home read; canceled or skipped reads are absent. Provider timestamps stay original. */
     readonly readAt: {
       readonly membership: string;
       readonly credentials?: string;

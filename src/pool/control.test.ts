@@ -230,6 +230,7 @@ test("only GET pool is available to a non-owner; empty reads create no Home reso
       revalidationFailed: false,
       readAt: {
         membership: f.deps.now().toISOString(),
+        credentials: f.deps.now().toISOString(),
       },
     },
   });
@@ -245,7 +246,7 @@ test("only GET pool is available to a non-owner; empty reads create no Home reso
   }
   assert.deepEqual(
     f.home.calls.map((call) => call.path),
-    ["/v8/management/channel-groups"],
+    ["/v8/management/channel-groups", "/v8/management/credentials"],
   );
 });
 
@@ -410,14 +411,34 @@ test("GET pool bypasses an in-flight attribution request and never loads its sta
   }
 });
 
-test("pool view waits for membership before starting credentials or quota", async () => {
+test("empty pool view ignores a failed global credential read", async () => {
   const f = await fixture();
-  f.home.addFile("a");
-  f.home.addGroup("pool-a", 10, ["a"]);
-  const entered = deferred<void>(),
-    release = deferred<void>();
-  f.home.override = async (path) => {
-    if (path.endsWith("/channel-groups")) {
+  f.home.override = (path) =>
+    path.endsWith("/credentials") ? Response.json({}, { status: 503 }) : undefined;
+  const response = await f.call("/pool");
+  assert.equal(response.status, 200);
+  const view = (await response.json()) as PoolView;
+  assert.deepEqual(view.accounts, []);
+  assert.equal(view.reading?.source, "live");
+  assert.equal(view.reading?.revalidationFailed, false);
+  assert.equal(view.reading?.readAt.credentials, undefined);
+  assert.equal(view.reading?.readAt.quota, undefined);
+});
+
+test("empty pool view cancels a hung credential read without waiting for it", async () => {
+  const f = await fixture();
+  const entered = deferred(),
+    release = deferred();
+  let aborted = false;
+  f.home.override = async (path, init) => {
+    if (path.endsWith("/credentials")) {
+      init?.signal?.addEventListener(
+        "abort",
+        () => {
+          aborted = true;
+        },
+        { once: true },
+      );
       entered.resolve();
       await release.promise;
     }
@@ -426,20 +447,50 @@ test("pool view waits for membership before starting credentials or quota", asyn
   const reading = f.call("/pool");
   await entered.promise;
   try {
-    assert.equal(
-      f.home.calls.some((call) => call.path.endsWith("/credentials")),
-      false,
-    );
-    assert.equal(
-      f.home.calls.some((call) => call.path.includes("/quota/credentials/")),
-      false,
-    );
+    await withoutWaitingForGate(reading);
+    const response = await reading;
+    assert.equal(response.status, 200);
+    assert.deepEqual(((await response.json()) as PoolView).accounts, []);
+    assert.equal(aborted, true);
   } finally {
     release.resolve();
     await reading;
   }
-  assert.ok(f.home.calls.some((call) => call.path.endsWith("/credentials")));
-  assert.ok(f.home.calls.some((call) => call.path.includes("/quota/credentials/")));
+});
+
+test("populated pool view still refuses a failed required credential read", async () => {
+  const f = await fixture();
+  f.home.addFile("a");
+  f.home.addGroup("pool-a", 10, ["a"]);
+  f.home.override = (path) =>
+    path.endsWith("/credentials") ? Response.json({}, { status: 503 }) : undefined;
+  await error(await f.call("/pool"), "backend_unavailable", 503);
+});
+
+test("pool view starts credentials before membership finishes", async () => {
+  const f = await fixture();
+  f.home.addFile("a");
+  f.home.addGroup("pool-a", 10, ["a"]);
+  const entered = deferred<void>(),
+    release = deferred<void>(),
+    credentials = deferred<void>();
+  f.home.override = async (path) => {
+    if (path.endsWith("/channel-groups")) {
+      entered.resolve();
+      await release.promise;
+    }
+    if (path.endsWith("/credentials")) credentials.resolve();
+    return undefined;
+  };
+  const reading = f.call("/pool");
+  await entered.promise;
+  try {
+    await withoutWaitingForGate(credentials.promise);
+    assert.ok(f.home.calls.some((call) => call.path.endsWith("/credentials")));
+  } finally {
+    release.resolve();
+    await reading;
+  }
 });
 
 test("pool view reads credentials and quota concurrently and reuses cached channel groups", async () => {

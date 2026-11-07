@@ -213,8 +213,7 @@ test("snapshot and live views apply the same pool filter and current owner flag 
 test("a failed Home branch drains the remaining reads before another revalidation may start", async () => {
   const cache = new PoolViewSnapshots(new MemoryStorage(), () => {});
   await cache.view("pool-a", false, async () => data());
-  const quota = gate<Response>();
-  const quotaEntered = gate<void>();
+  const membership = gate<Response>();
   const credentials = gate<void>();
   let reads = 0;
   const home = new PoolHome(
@@ -224,26 +223,22 @@ test("a failed Home branch drains the remaining reads before another revalidatio
         credentials.resolve();
         return Response.json({}, { status: 503 });
       }
-      if (path.endsWith("/channel-groups"))
-        return Response.json({
-          channel_groups: [{ id: 1, channel_name: "signalbox-pool-pool-a" }],
-        });
-      if (path.includes("/channel-group-details"))
+      if (path.endsWith("/channel-groups")) return membership.promise;
+      if (path.endsWith("/channel-group-details?channel_group_id=1"))
         return Response.json({
           channel_group_details: [{ id: 1, channel_group_id: 1, auth_id: "a" }],
         });
-      if (path.includes("/quota/credentials/")) {
-        quotaEntered.resolve();
-        return quota.promise;
-      }
+      if (path.endsWith("/quota/credentials/a")) return Response.json({ windows: [] });
       throw Error("Unexpected read");
     }),
     "pool-a",
   );
   await home.view(false, cache);
-  await Promise.all([credentials.promise, quotaEntered.promise]);
+  await credentials.promise;
   const followUp = home.view(false, cache, true);
-  quota.resolve(Response.json({ credential: { credential_id: "a" }, windows: [] }));
+  membership.resolve(
+    Response.json({ channel_groups: [{ id: 1, channel_name: "signalbox-pool-pool-a" }] }),
+  );
   const result = await followUp;
   assert.equal(result.reading?.revalidationFailed, true);
   assert.equal(result.reading?.source, "snapshot");
