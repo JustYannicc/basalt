@@ -131,8 +131,9 @@ export const poolDatabaseInfrastructure = Effect.gen(function* () {
     runtimeUrl: Output.all(runtime.pooledOrigin, readyHash).pipe(
       Output.map(([origin]) => Redacted.make(poolDatabaseUrl(Redacted.value(postgresUrl(origin))))),
     ),
-    workerOrigin: Output.all(runtime.pooledOrigin, readyHash).pipe(
-      Output.map(([origin]) => ({ ...origin, database: poolDatabase.name })),
+    // The Worker waits through runtimeUrl; Hyperdrive props must stay resolved during Command reruns.
+    workerOrigin: runtime.pooledOrigin.pipe(
+      Output.map((origin) => ({ ...origin, database: poolDatabase.name })),
     ),
   };
 });

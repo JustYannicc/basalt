@@ -89,6 +89,7 @@ try {
             return evalStack(actualRoot, inspectNext, { stage: settings.ALCHEMY_STAGE });
           },
           process.env.NATIVE_STACK_CONNECTION_CHANGE,
+          process.env.NATIVE_STACK_CONNECTION_TARGET,
         )
     : process.env.NATIVE_STACK_RELEASE_PROOF === "true"
       ? (await import("../release-phases/proof.mjs")).proveReleasePhases
