@@ -1,3 +1,5 @@
+import {writeFile} from "node:fs/promises";
+import {join} from "node:path";
 import assert from "node:assert/strict";
 import { Effect } from "effect";
 import { Browser } from "../../.upstream/e2e/support/browser.ts";
@@ -150,6 +152,27 @@ export const verifyPlanetScaleConnections = ({
     const health = yield* request("POST", `${prefix}/accounts/${signedIn.account.id}/health`);
     assert.equal(health.apps.find((check) => check.app === app.id)?.check?.status, "healthy");
 
+    // The permissions tool belongs to the app, not to one account.
+    const permissions = yield* client.request(session, "POST", `${path}/tools/call`, {
+      tool: "permissions",
+      input: {},
+    });
+    assert.equal(permissions.status, 200, JSON.stringify(permissions.body));
+    const own = permissions.body.find((row) => row.accountId === signedIn.account.id);
+    yield* Effect.promise(() => writeFile(join(directory, `access-${width}.json`), JSON.stringify({permissions: own},null,2), {mode:0o600}));
+    if (omitsGrantedScope) {
+      assert.equal(
+        own.permissions,
+        "Unknown: PlanetScale did not report this account's permissions.",
+      );
+      assert.equal(own.unavailableTools, null);
+    } else {
+      const granted = mode === "hosted" ? hostedScopes : registrationDefault;
+      for (const scope of granted)
+        assert.ok(own.permissions.includes(scope), `${scope} is reported`);
+      assert.ok(own.unavailableTools.includes("serviceToken.serviceTokens.listServiceTokens"));
+    }
+
     // Tools follow the reported grant: nothing PlanetScale did not grant is listed or reachable.
     const oauthTools = yield* listed();
     const expectedOauthTools = omitsGrantedScope ? legacyNames : mode === "hosted" ? api : limited;
@@ -178,26 +201,6 @@ export const verifyPlanetScaleConnections = ({
       forToken.status >= 400 && forToken.status < 500,
       "OAuth never reaches token-only tools",
     );
-    // The permissions tool belongs to the app, not to one account.
-    const permissions = yield* client.request(session, "POST", `${path}/tools/call`, {
-      tool: "permissions",
-      input: {},
-    });
-    assert.equal(permissions.status, 200, JSON.stringify(permissions.body));
-    const own = permissions.body.find((row) => row.accountId === signedIn.account.id);
-    if (omitsGrantedScope) {
-      assert.equal(
-        own.permissions,
-        "Unknown: PlanetScale did not report this account's permissions.",
-      );
-      assert.equal(own.unavailableTools, null);
-    } else {
-      const granted = mode === "hosted" ? hostedScopes : registrationDefault;
-      for (const scope of granted)
-        assert.ok(own.permissions.includes(scope), `${scope} is reported`);
-      assert.ok(own.unavailableTools.includes("serviceToken.serviceTokens.listServiceTokens"));
-    }
-
     yield* browser.use("Tools show the missing service-token section", async (page) => {
       await page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=tools`);
       const section = page.getByRole("region", {
