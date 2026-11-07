@@ -23,10 +23,13 @@ test("GitLab connector proof accepts the served framework and rejects changed so
       root: fileURLToPath(new URL("../../", import.meta.url)),
       catalogOrigin: `http://127.0.0.1:${server.address().port}`,
     };
-    const { source, provenance } = await loadGitLabCatalogSource(input);
+    const { source, published } = await loadGitLabCatalogSource(input);
     const manifest = JSON.parse(source.files.find((file) => file.path === "package.json").content);
     assert.equal(manifest.dependencies.apps, servedFrameworkVersion);
-    assert.notEqual(manifest.dependencies.apps, provenance.appsVersion);
+    const publisherManifest = JSON.parse(
+      published.files.find((file) => file.path === "package.json").content,
+    );
+    assert.notEqual(manifest.dependencies.apps, publisherManifest.dependencies.apps);
     changed = true;
     await assert.rejects(loadGitLabCatalogSource(input), /beyond its served framework/);
   } finally {
