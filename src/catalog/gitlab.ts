@@ -13,7 +13,7 @@ export const gitlabConnectionGuidance = [
   {
     requirement: "signIn",
     method: "mcp",
-    alternativeLabel: "Sign in with GitLab instead",
+    alternativeLabel: "Sign in with GitLab MCP instead",
     signIn: {
       description: "Sign in to use GitLab's MCP tools on this instance.",
       note: `Your access follows your GitLab role and your instance's settings. ${policy}`,
@@ -92,7 +92,7 @@ export function withGitLabInstances(feed: Feed): Feed {
         description:
           "Projects, merge requests, issues and pipelines on GitLab.com or your own GitLab server.",
         auth: [
-          { method: "mcp", kind: "oauth2", label: "Sign in with GitLab" },
+          { method: "mcp", kind: "oauth2", label: "Sign in with GitLab MCP" },
           { method: "oauth", kind: "oauth2", label: "OAuth 2.0" },
           { method: "token", kind: "secrets", label: "Personal access token" },
         ],

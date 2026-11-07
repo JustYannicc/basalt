@@ -166,7 +166,7 @@ test("our connectors list like every other app, with no notice beside their desc
     const source = feed.apps.find((app) => app.id === entry.id);
     if (entry.id === "gitlab")
       assert.deepEqual(entry.auth, [
-        { method: "mcp", kind: "oauth2", label: "Sign in with GitLab" },
+        { method: "mcp", kind: "oauth2", label: "Sign in with GitLab MCP" },
         { method: "oauth", kind: "oauth2", label: "OAuth 2.0" },
         { method: "token", kind: "secrets", label: "Personal access token" },
       ]);
