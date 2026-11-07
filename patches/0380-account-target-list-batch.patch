@@ -1,37 +1,34 @@
 diff --git a/packages/sdk/src/implementation/account-targets.ts b/packages/sdk/src/implementation/account-targets.ts
 --- a/packages/sdk/src/implementation/account-targets.ts
 +++ b/packages/sdk/src/implementation/account-targets.ts
-@@ -16,13 +16,22 @@
+@@ -16,13 +16,18 @@
  /** Saves target metadata and refuses bound accounts before any cloud credential resolution. */
  export const makeAccountTargets = (db: Query, host: MachineAccounts | undefined) => {
--  const read = (account: AccountId, owner: OwnerId) =>
--    Effect.gen(function* () {
--      const row = yield* query(() =>
--        db.findFirst("accountTargets", {
--          where: (b) => b.and(b("account", "=", account), b("owner", "=", owner)),
 +  const readMany = (accounts: readonly AccountId[], owner: OwnerId) =>
 +    Effect.gen(function* () {
 +      if (accounts.length === 0) return [];
 +      const rows = yield* query(() =>
 +        db.findMany("accountTargets", {
 +          where: (b) => b.and(b("account", "in", accounts), b("owner", "=", owner)),
-         }),
-       );
++        }),
++      );
++      return (yield* Effect.forEach(rows, decodeAccountTarget)).filter(
++        (binding) => binding !== undefined,
++      );
++    });
+   const read = (account: AccountId, owner: OwnerId) =>
+-    Effect.gen(function* () {
+-      const row = yield* query(() =>
+-        db.findFirst("accountTargets", {
+-          where: (b) => b.and(b("account", "=", account), b("owner", "=", owner)),
+-        }),
+-      );
 -      return yield* decodeAccountTarget(row);
 -    });
-+      return yield* Effect.forEach(rows, (row) => {
-+        const { device, deviceName, binding, manifestRevision, ...identity } = row;
-+        return Schema.decodeUnknownEffect(AccountTargetBinding)({
-+          ...identity,
-+          target: { device, deviceName, binding, manifestRevision },
-+        }).pipe(Effect.mapError(() => new StorageError()));
-+      });
-+    });
-+  const read = (account: AccountId, owner: OwnerId) =>
 +    readMany([account], owner).pipe(Effect.map((rows) => rows[0]));
    const authorize = (binding: AccountTargetBinding, managing: boolean) =>
      Effect.gen(function* () {
-@@ -145,10 +154,8 @@
+@@ -145,10 +150,8 @@
        }),
    };
 -  const execution = (input: {
@@ -46,7 +43,7 @@ diff --git a/packages/sdk/src/implementation/account-targets.ts b/packages/sdk/s
 +    Effect.gen(function* () {
        if (binding === undefined || binding.mode === "cloud") return undefined;
        const allowed =
-@@ -165,4 +172,22 @@
+@@ -165,4 +168,22 @@
          status,
        };
 +    });
@@ -69,7 +66,7 @@ diff --git a/packages/sdk/src/implementation/account-targets.ts b/packages/sdk/s
 +      );
      });
    const requireCloudCall = (input: {
-@@ -228,4 +253,4 @@
+@@ -228,4 +249,4 @@
        }
      });
 -  return { operations, execution, requireCloudCall, requireCloud };
