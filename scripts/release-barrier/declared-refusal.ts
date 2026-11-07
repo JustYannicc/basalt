@@ -33,6 +33,7 @@ const values = new Set([
 const numbers = new Set([
   "providerVersion",
   "savedProviderVersion",
+  "nativeProviderVersion",
   "domainCount",
   "corsCount",
   "lifecycleRuleCount",

@@ -9,6 +9,7 @@ import { declaredBucketCreate } from "./declared-changes.ts";
 import { declarationHistory } from "./declared-history.ts";
 import { BarrierRefusal, canonical, digest } from "./manifest.ts";
 import { declaredMismatch } from "./declared-refusal.ts";
+import { recordDeclaredReadiness, type DeclaredReadiness } from "./declared-prerequisites.ts";
 import { declaredChecks } from "./declared-checks.ts";
 import { havePropsChanged } from "alchemy/Diff";
 
@@ -136,6 +137,7 @@ export const prepareDeclaredBuckets = (
                   entry,
                   instanceId,
                   providerVersion: node.provider.version ?? 0,
+                  nativeProviderVersion: node.provider.version ?? 0,
                   target,
                   providerMode: node.mode,
                   logicalId: node.resource.LogicalId,
@@ -144,6 +146,7 @@ export const prepareDeclaredBuckets = (
                   entry: saved?.entry,
                   instanceId: saved?.instanceId,
                   providerVersion: saved?.providerVersion,
+                  nativeProviderVersion: row.providerVersion,
                   target: saved?.target,
                   providerMode: row.providerMode,
                   logicalId: row.logicalId,
@@ -178,4 +181,58 @@ export const prepareDeclaredBuckets = (
         })),
     );
     return prepared;
+  });
+
+/** Plan hydration is an observation; only the persisted acknowledged checkpoint owns an interrupted create. */
+export const prepareDeclaredStorage = (
+  evaluatedPlan: Plan.Plan,
+  declarations: DeclaredChanges | undefined,
+  scope: { stack: string; stage: string },
+  provider: BucketProvider,
+  record?: (value: DeclaredReadiness) => Promise<void>,
+) =>
+  Effect.gen(function* () {
+    let buckets = new Map<string, PreparedBucket>();
+    yield* declaredChecks([
+      {
+        fqn: "(declared storage)",
+        check: prepareDeclaredBuckets(
+          evaluatedPlan,
+          declarations,
+          scope.stack,
+          scope.stage,
+          provider,
+        ).pipe(
+          Effect.tap((value) =>
+            Effect.sync(() => {
+              buckets = value;
+            }),
+          ),
+          Effect.asVoid,
+        ),
+      },
+      {
+        fqn: "(declared storage)",
+        check: recordDeclaredReadiness(
+          evaluatedPlan,
+          declarations,
+          scope,
+          provider,
+          "before-upload",
+          record,
+        ).pipe(Effect.asVoid),
+      },
+    ]);
+    const plan = {
+      ...evaluatedPlan,
+      resources: Object.fromEntries(
+        Object.entries(evaluatedPlan.resources).map(([fqn, node]) => [
+          fqn,
+          buckets.get(fqn)?.resume && node.action === "create"
+            ? { ...node, state: buckets.get(fqn)!.native }
+            : node,
+        ]),
+      ),
+    };
+    return { plan, buckets };
   });

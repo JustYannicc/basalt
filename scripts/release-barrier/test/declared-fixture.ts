@@ -1,3 +1,4 @@
+import { retainedRemovedBucket, driftNativeProvider } from "./declared-state.ts";
 import { nativeBucketProvider } from "./native-bucket-provider.ts";
 import assert from "node:assert/strict";
 import * as Apply from "alchemy/Apply";
@@ -74,6 +75,9 @@ export function provisioning(
     multipleMissing?: boolean;
     recoveredForeign?: boolean;
     recordFails?: boolean;
+    orphanedHistory?: boolean;
+    nativeProviderDrift?: boolean;
+    rejectedAfterAcknowledgement?: boolean;
   } = {},
 ) {
   const events: string[] = [];
@@ -176,6 +180,8 @@ export function provisioning(
         });
         events.length = 0;
         const state = yield* yield* State;
+        if (options.orphanedHistory)
+          yield* retainedRemovedBucket({ stack: compiled.name, stage: compiled.stage });
         mutateAfterDatabase = async () => {
           if (options.lateDrift === "missing") stored = undefined;
           else {
@@ -221,7 +227,8 @@ export function provisioning(
             upload: () =>
               Effect.sync(() => {
                 events.push("upload");
-                if (options.rejectedUpload) throw new Error("synthetic rejection");
+                if (options.rejectedUpload || (options.rejectedAfterAcknowledgement && failedRead))
+                  throw new Error("synthetic rejection");
                 return { versionId: "accepted", startupTimeMs: 100 };
               }),
             buckets: {
@@ -274,6 +281,8 @@ export function provisioning(
           );
           assert.ok(first._tag === "Failure");
         }
+        if (options.nativeProviderDrift)
+          yield* driftNativeProvider({ stack: compiled.name, stage: compiled.stage });
         yield* deployStack(compiled, releaseOptions).pipe(Effect.provideContext(compiled.services));
         if (options.lostRow) {
           yield* state.delete({ stack: compiled.name, stage: compiled.stage, fqn: "DriveRecords" });

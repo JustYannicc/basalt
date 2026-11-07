@@ -30,7 +30,7 @@ import {
 } from "./bucket-cloudflare.ts";
 import { assertSupportedPlan } from "./plan-admission.ts";
 import { declaredMismatch } from "./declared-refusal.ts";
-import { prepareDeclaredBuckets } from "./declared-bucket-plan.ts";
+import { prepareDeclaredStorage } from "./declared-bucket-plan.ts";
 import { preserveDeclarationHistory } from "./declared-history.ts";
 import {
   assertBaselineWorkerInput,
@@ -94,6 +94,13 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
           readinessEvidence: options.declaredReadiness ? "configured" : null,
         },
       );
+    const { plan, buckets: declaredBuckets } = yield* prepareDeclaredStorage(
+      evaluatedPlan,
+      options.declarations,
+      scope,
+      buckets,
+      options.declaredReadiness,
+    );
     const prerequisites = (phase: DeclaredReadiness["phase"]) =>
       recordDeclaredReadiness(
         plan,
@@ -103,28 +110,13 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
         phase,
         options.declaredReadiness,
       );
-    const declaredBuckets = yield* prepareDeclaredBuckets(
-      evaluatedPlan,
-      options.declarations,
-      stack.name,
-      stack.stage,
-      buckets,
-    );
-    const plan = {
-      ...evaluatedPlan,
-      resources: Object.fromEntries(
-        Object.entries(evaluatedPlan.resources).map(([fqn, node]) => [
-          fqn,
-          declaredBuckets.get(fqn)?.resume && node.action === "create"
-            ? { ...node, state: declaredBuckets.get(fqn)!.native }
-            : node,
-        ]),
-      ),
-    };
-    yield* prerequisites("before-upload");
     for (const bucket of declaredBuckets.values())
       yield* Effect.promise(() =>
-        options.declared!({ bucket, lifecycle: "planned", outcome: "not-started" }),
+        options.declared!({
+          bucket,
+          lifecycle: bucket.resume ? "creating" : "planned",
+          outcome: bucket.resume ? "acknowledged" : "not-started",
+        }),
       );
     const prepared = yield* preparePlan(
       stack,

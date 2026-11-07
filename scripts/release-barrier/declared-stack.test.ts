@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Effect } from "effect";
+import { declaredEvidence } from "./declared-evidence.ts";
 import { provisioning } from "./test/declared-fixture.ts";
 
 test("provisioning creates a declared bucket only after whole-candidate admission and retains native state", async () => {
@@ -155,4 +156,54 @@ test("a failed intent receipt stops before POST and names evidence recording wit
   });
   assert.ok(!proof.events.includes("create-bucket"));
   assert.equal(proof.progress.filter((item) => item.outcome === "pending").length, 1);
+});
+
+test("resumed acknowledgement survives a rejected candidate upload in public progress", async () => {
+  const proof = provisioning({
+    nativeBucket: true,
+    readFailsOnce: true,
+    resume: true,
+    rejectedAfterAcknowledgement: true,
+  });
+  await assert.rejects(Effect.runPromise(proof.effect), /upload-rejected/);
+  assert.equal(proof.progress.at(-1)?.lifecycle, "creating");
+  assert.equal(proof.progress.at(-1)?.outcome, "acknowledged");
+  assert.equal(proof.events.filter((item) => item === "create-bucket").length, 1);
+  const progress = proof.progress.at(-1);
+  assert.ok(progress);
+  const evidence = declaredEvidence(async () => {}, "a".repeat(40), "b".repeat(64));
+  await evidence.declared(progress);
+  const summary = evidence.summary("failed", []);
+  assert.ok(summary.includes("| creating | creating | acknowledged |"));
+  assert.ok(!summary.includes("not-started"));
+});
+
+test("native provider-version drift names the differing persisted version", async () => {
+  const proof = provisioning({
+    nativeBucket: true,
+    readFailsOnce: true,
+    resume: true,
+    nativeProviderDrift: true,
+  });
+  await assert.rejects(Effect.runPromise(proof.effect), (error: unknown) => {
+    assert.ok(error instanceof Error && "delta" in error);
+    assert.ok(
+      JSON.stringify(error.delta).includes('"path":"nativeProviderVersion","old":0,"new":1'),
+    );
+    return true;
+  });
+  assert.equal(proof.events.filter((item) => item === "create-bucket").length, 1);
+});
+
+test("preflight aggregates a new missing dependency with a separate removed declaration", async () => {
+  const proof = provisioning({ featureBinding: true, orphanedHistory: true });
+  await assert.rejects(Effect.runPromise(proof.effect), (error: unknown) => {
+    assert.ok(error instanceof Error && "refusals" in error && Array.isArray(error.refusals));
+    assert.deepEqual([...new Set(error.refusals.map((item) => item.fqn))].sort(), [
+      "DriveRecords",
+      "RemovedRecords",
+    ]);
+    return true;
+  });
+  assert.deepEqual(proof.events, []);
 });
