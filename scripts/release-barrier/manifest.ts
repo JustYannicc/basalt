@@ -1,5 +1,6 @@
 import type * as Workers from "@distilled.cloud/cloudflare/workers";
 import { createHash } from "node:crypto";
+import type { ResourceDelta } from "./prop-diff.ts";
 
 export interface ModulePart {
   readonly name: string;
@@ -27,11 +28,13 @@ export interface ReleaseManifest {
 export class BarrierRefusal extends Error {
   readonly reason: string;
   readonly worker: string | undefined;
+  readonly delta: ResourceDelta | undefined;
 
-  constructor(reason: string, worker?: string) {
+  constructor(reason: string, worker?: string, delta?: ResourceDelta) {
     super(`Release barrier refused: ${reason}${worker ? ` (${worker})` : ""}`);
     this.reason = reason;
     this.worker = worker;
+    this.delta = delta;
   }
 }
 

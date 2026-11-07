@@ -61,6 +61,7 @@ export function releaseEvidence(directory: string, candidate: string) {
         ...(latest?.pendingUpload ? { pendingUpload: latest.pendingUpload } : {}),
         reason: error instanceof BarrierRefusal ? error.reason : "preparation-or-provider-failed",
         ...(error instanceof BarrierRefusal && error.worker ? { worker: error.worker } : {}),
+        ...(error instanceof BarrierRefusal && error.delta ? { delta: error.delta } : {}),
       };
       await write(directory, "failure.json", failure);
       return failure;
