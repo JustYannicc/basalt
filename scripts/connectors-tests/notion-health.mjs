@@ -9,6 +9,7 @@ let mode = "structured";
 let calls = [];
 const opened = new Set();
 const closed = new Set();
+const held = new Map();
 const pending = new Map();
 let abortOnCall;
 let hungSession;
@@ -30,6 +31,8 @@ const peer = Bun.serve({
       assert.ok(opened.has(session), "DELETE refers to an opened session");
       assert.ok(!closed.has(session), "session is closed only once");
       closed.add(session);
+      for (const close of held.get(session) ?? []) close();
+      held.delete(session);
       pending.get(session)?.(Response.json({}));
       pending.delete(session);
       return new Response(null, { status: 204 });
@@ -87,10 +90,46 @@ const peer = Bun.serve({
               ? { isError: true, content: [] }
               : { content: [], structuredContent: value };
     }
-    return Response.json(
-      { jsonrpc: "2.0", id: body.id, result },
-      { headers: { "mcp-session-id": session } },
-    );
+    const message = { jsonrpc: "2.0", id: body.id, result };
+    // Streamable HTTP servers may answer a request as a server-sent event stream instead of JSON.
+    // A server may keep a call's stream open after answering; the answer must still arrive.
+    if (mode === "held" && body.method === "tools/call") {
+      const encoder = new TextEncoder();
+      // Split between JSON tokens: a client joins the data lines with a newline.
+      const text = JSON.stringify(message);
+      const [head, tail] = [
+        text.slice(0, text.indexOf(",") + 1),
+        text.slice(text.indexOf(",") + 1),
+      ];
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode(": keep-alive\n\n"));
+            controller.enqueue(
+              encoder.encode(
+                `event: message\ndata: {"jsonrpc":"2.0","method":"notifications/message","params":{}}\n\n`,
+              ),
+            );
+            controller.enqueue(encoder.encode(`event: message\ndata: ${head}\ndata: ${tail}\n\n`));
+            held.set(session, [
+              ...(held.get(session) ?? []),
+              () => {
+                // The client may already have cancelled the stream after reading its answer.
+                try {
+                  controller.close();
+                } catch {}
+              },
+            ]);
+          },
+        }),
+        { headers: { "content-type": "text/event-stream", "mcp-session-id": session } },
+      );
+    }
+    if (mode === "stream")
+      return new Response(`event: message\ndata: ${JSON.stringify(message)}\n\n`, {
+        headers: { "content-type": "text/event-stream", "mcp-session-id": session },
+      });
+    return Response.json(message, { headers: { "mcp-session-id": session } });
   },
 });
 const directory = await mkdtemp(resolve(".upstream/packages/apps/.notion-health-"));
@@ -137,7 +176,7 @@ try {
     ]) {
       value = { id: "bot-synthetic", bot: name === undefined ? {} : { workspace_name: name } };
       for (const representation of method === "oauth"
-        ? ["structured", "text", "fallback"]
+        ? ["structured", "text", "fallback", "stream", "held"]
         : ["structured"]) {
         mode = representation;
         const result = await check(method);
