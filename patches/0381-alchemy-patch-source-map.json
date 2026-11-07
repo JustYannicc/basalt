@@ -1,0 +1,11 @@
+{
+  "identity": "alchemy-patch-source-map",
+  "file": "0381-alchemy-patch-source-map.patch",
+  "content_sha256": "d42b8a3424d5c8a502327c917a8385465ab0f5557f362601b2df81478fceda9a",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "alchemy-dependency-upgrade",
+  "requires": "The Worker upload-hook dependency patch preserves the package's existing source-map trailer and applies and reverses exactly on the pinned package."
+}

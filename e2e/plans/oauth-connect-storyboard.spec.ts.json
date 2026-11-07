@@ -1,7 +1,48 @@
 {
-  "scenarios": {},
-  "runs": {},
-  "inherited": ["oauthConnectStoryboard", "oauthNameAfterConnect"],
+  "scenarios": {
+    "oauthConnectStoryboard": {
+      "fixtures": "actors",
+      "title": "OAuth connect storyboard captures loading, consent, success and recovery frames",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a scoped loopback OAuth issuer for controlled capture."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted account dialogs and callback recovery."
+        }
+      }
+    },
+    "oauthNameAfterConnect": {
+      "fixtures": "actors",
+      "title": "A new OAuth account returns to its app to be named, keeps its default name when closed, and a reconnect from the app keeps its name",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a scoped loopback OAuth issuer."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted redirect returns to the app; local OAuth naming has its own scenario."
+        }
+      }
+    }
+  },
+  "runs": {
+    "oauthConnectStoryboard": [
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ],
+    "oauthNameAfterConnect": [
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ]
+  },
   "inputs": [
     ".upstream/packages/ui/src/implementation/dashboard/account-form.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/method-labels.ts",

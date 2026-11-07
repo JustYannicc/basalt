@@ -23,9 +23,7 @@
     }
   },
   "runs": {
-    "oauthClientIssuerMigration": [
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
-    ]
+    "oauthClientIssuerMigration": ["host-managed-accounts-adopted:audited-account-compatibility"]
   },
   "inherited": [],
   "inputs": [

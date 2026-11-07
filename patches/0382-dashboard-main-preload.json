@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-dashboard-main-preload",
+  "file": "0382-dashboard-main-preload.patch",
+  "content_sha256": "88b7923d54a8eddedebdce577e6cde317785ca4a376fe63cdb059877f72e5652",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

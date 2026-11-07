@@ -1,0 +1,488 @@
+diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/hosted/server/src/implementation/app-account-links.ts
+index bc076ae..8a7cf80 100644
+--- a/apps/hosted/server/src/implementation/app-account-links.ts
++++ b/apps/hosted/server/src/implementation/app-account-links.ts
+@@ -494,9 +494,10 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
+         Effect.gen(function* () {
+           const owner = yield* currentOwner;
+           const executor = yield* Effect.flatten(HostedExecutor);
+-          yield* requireCurrentAppAccess(params.app, "read");
++          const checked = yield* requireCurrentAppAccess(params.app, "read");
+           return yield* providerAccountMethodView(
+             yield* executor.apps.get({ owner, app: params.app }),
++            checked,
+           );
+         }),
+       )
+diff --git a/apps/hosted/server/src/implementation/provider-account-context.ts b/apps/hosted/server/src/implementation/provider-account-context.ts
+new file mode 100644
+index 0000000..0981151
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/provider-account-context.ts
+@@ -0,0 +1,133 @@
++import { permittedAppIds, permitsAction } from "@executor-js/authorization";
++import type { CatalogEntry } from "@executor-js/catalog/contracts";
++import { StorageError, identifyProvider, type App, type AppId } from "@executor-js/sdk/core";
++import { providerDeclaration } from "apps/host";
++import { Crypto, Effect, Option } from "effect";
++import { CurrentAuthorization } from "../contracts/authorization.ts";
++import { HostedCatalog } from "../contracts/catalog.ts";
++import { HostedExecutor } from "../contracts/executor.ts";
++import type { ProviderAccountDestination } from "../contracts/provider-account-policy.ts";
++import type { AppServiceIdentity } from "../contracts/service-install.ts";
++import { currentOwner } from "./access.ts";
++import { providers } from "./pool-provider-definitions.ts";
++import {
++  currentResourceAuthority,
++  policyDatabase,
++  visibleAppsWithAccessAs,
++  type ResourceAuthority,
++} from "./resource-policy.ts";
++import { recordedServiceInstalls } from "./service-install-records.ts";
++
++type Slot = App["requirements"]["accounts"][string];
++const unavailable = (reason: string) => ({ kind: "unavailable" as const, reason });
++const appRequirements = (app: App) =>
++  app.activeVersion === null
++    ? []
++    : Object.entries(app.requirements.accounts).filter(([, slot]) => slot.scope === "app");
++
++/** Prepare destination decisions and provider-app identity for one authorized call. */
++export const providerAccountContext = (
++  app: App,
++  requirements: readonly string[],
++  options: { readonly classify?: boolean; readonly actor?: ResourceAuthority } = {},
++) =>
++  Effect.gen(function* () {
++    const policy = yield* CurrentAuthorization;
++    const canManageAccounts = permitsAction(policy, "manage");
++    const identities = new Map<string, Effect.Success<ReturnType<typeof identifyProvider>>>();
++    const catalog = yield* Effect.cached(
++      Effect.gen(function* () {
++        const catalog = yield* Effect.serviceOption(HostedCatalog);
++        return Option.isNone(catalog)
++          ? Option.none()
++          : Option.some(yield* catalog.value.list.pipe(Effect.catch(() => Effect.succeed([]))));
++      }),
++    );
++    const resolve = (slot: Slot | undefined) =>
++      Effect.gen(function* () {
++        const family = slot?.definition.family?.id;
++        if (slot === undefined || family === undefined || !Object.hasOwn(providers, family))
++          return unavailable("This retained account must keep its existing link until adoption.");
++        let identity = identities.get(family);
++        if (identity === undefined) {
++          const definition = yield* providerDeclaration(
++            providers[family as keyof typeof providers],
++          );
++          identity = yield* identifyProvider(definition, yield* Crypto.Crypto);
++          identities.set(family, identity);
++        }
++        if (slot.provider !== identity.identity && slot.provider !== identity.legacy)
++          return unavailable("No provider app is registered for this account requirement.");
++        const entries = yield* catalog;
++        if (Option.isNone(entries)) return unavailable("The provider catalog is unavailable.");
++        const entry = entries.value.find((entry) => entry.id === `provider-${family}`);
++        return entry === undefined
++          ? unavailable("This provider app is not available in the catalog.")
++          : { kind: "provider" as const, family, slot, entry };
++      });
++    const requested = new Set(requirements);
++    const classification = options.classify ? appRequirements(app).map(([name]) => name) : [];
++    const plans = new Map<string, Effect.Success<ReturnType<typeof resolve>>>();
++    for (const requirement of new Set([...requested, ...classification]))
++      plans.set(requirement, yield* resolve(app.requirements.accounts[requirement]));
++    const classified = classification.flatMap((requirement) => {
++      const plan = plans.get(requirement)!;
++      return plan.kind === "provider" ? [{ requirement, ...plan }] : [];
++    });
++    const inventory =
++      canManageAccounts && [...requested].some((name) => plans.get(name)!.kind === "provider")
++        ? yield* Effect.gen(function* () {
++            const executor = yield* Effect.flatten(HostedExecutor);
++            const candidates = yield* executor.apps.list({
++              owner: yield* currentOwner,
++              ids: permittedAppIds(policy),
++            });
++            return yield* visibleAppsWithAccessAs(
++              options.actor ?? (yield* currentResourceAuthority),
++              candidates,
++            );
++          })
++        : undefined;
++    const apps = inventory?.apps ?? [];
++    const installApps =
++      classified.length !== 0
++        ? [...new Map([...apps, app].map((candidate) => [candidate.id, candidate])).values()]
++        : apps;
++    const recorded =
++      installApps.length === 0
++        ? new Map<AppId, AppServiceIdentity>()
++        : yield* recordedServiceInstalls(yield* policyDatabase, installApps);
++    const installed = (candidate: App, entry: CatalogEntry) => {
++      const service = recorded.get(candidate.id);
++      return service === undefined
++        ? candidate.copiedFrom?.name === entry.package
++        : service.id === (entry.service?.id ?? entry.package);
++    };
++    const found = classified.filter((plan) => installed(app, plan.entry));
++    const family = found[0]?.family;
++    const providerApp =
++      family === undefined || found.some((plan) => plan.family !== family)
++        ? null
++        : { family, requirements: found.map((plan) => plan.requirement) };
++    const destination = (requirement: string): ProviderAccountDestination => {
++      if (!requested.has(requirement))
++        throw new Error(`Provider account requirement was not prepared: ${requirement}`);
++      const plan = plans.get(requirement)!;
++      if (plan.kind === "unavailable") return plan;
++      if (!canManageAccounts) return unavailable("Account management access is required.");
++      const destinations = apps.flatMap((candidate) => {
++        if (!installed(candidate, plan.entry)) return [];
++        const access = inventory?.access.get(candidate.id);
++        return appRequirements(candidate).flatMap(([requirement, required]) =>
++          required.provider === plan.slot.provider &&
++          (required.contributed ? access?.canUse : access?.canManage)
++            ? [{ app: candidate.id, name: candidate.name, requirement }]
++            : [],
++        );
++      });
++      return destinations.length === 0
++        ? { kind: "catalog", entry: plan.entry.id }
++        : { kind: "apps", apps: destinations };
++    };
++    return { destination, providerApp, canManageAccounts };
++  }).pipe(Effect.mapError(() => new StorageError()));
+diff --git a/apps/hosted/server/src/implementation/provider-account-destination.ts b/apps/hosted/server/src/implementation/provider-account-destination.ts
+index ad5d5b0..6d57ca0 100644
+--- a/apps/hosted/server/src/implementation/provider-account-destination.ts
++++ b/apps/hosted/server/src/implementation/provider-account-destination.ts
+@@ -1,74 +1,9 @@
+-import { permittedAppIds, permitsAction } from "@executor-js/authorization";
+-import { StorageError, identifyProvider, type App } from "@executor-js/sdk/core";
+-import { providerDeclaration } from "apps/host";
+-import { Crypto, Effect, Option } from "effect";
+-import { CurrentAuthorization } from "../contracts/authorization.ts";
+-import { HostedCatalog } from "../contracts/catalog.ts";
+-import { HostedExecutor } from "../contracts/executor.ts";
+-import type { ProviderAccountDestination } from "../contracts/provider-account-policy.ts";
+-import { currentOwner } from "./access.ts";
+-import { providers } from "./pool-provider-definitions.ts";
+-import {
+-  applicationAccesses,
+-  currentResourceAuthority,
+-  policyDatabase,
+-  visibleApps,
+-} from "./resource-policy.ts";
+-import { recordedServiceInstalls } from "./service-install-records.ts";
++import type { App } from "@executor-js/sdk/core";
++import { Effect } from "effect";
++import { providerAccountContext } from "./provider-account-context.ts";
+ 
++/** Completion checks prepare only the requested requirement. */
+ export const providerAccountDestination = (app: App, requirement: string) =>
+-  Effect.gen(function* () {
+-    const unavailable = (reason: string): ProviderAccountDestination => ({
+-      kind: "unavailable",
+-      reason,
+-    });
+-    const slot = app.requirements.accounts[requirement];
+-    const lab = slot?.definition.family?.id;
+-    if (slot === undefined || lab === undefined || !Object.hasOwn(providers, lab))
+-      return unavailable("This retained account must keep its existing link until adoption.");
+-    const definition = yield* providerDeclaration(providers[lab as keyof typeof providers]);
+-    const identified = yield* identifyProvider(definition, yield* Crypto.Crypto);
+-    if (slot.provider !== identified.identity && slot.provider !== identified.legacy)
+-      return unavailable("No provider app is registered for this account requirement.");
+-    const catalog = yield* Effect.serviceOption(HostedCatalog);
+-    if (Option.isNone(catalog)) return unavailable("The provider catalog is unavailable.");
+-    const entries = yield* catalog.value.list.pipe(Effect.catch(() => Effect.succeed([])));
+-    const entry = entries.find((entry) => entry.id === `provider-${lab}`);
+-    if (entry === undefined)
+-      return unavailable("This provider app is not available in the catalog.");
+-    const policy = yield* CurrentAuthorization;
+-    if (!permitsAction(policy, "manage"))
+-      return unavailable("Account management access is required.");
+-    const executor = yield* Effect.flatten(HostedExecutor);
+-    const owner = yield* currentOwner;
+-    const apps = yield* executor.apps
+-      .list({ owner, ids: permittedAppIds(policy) })
+-      .pipe(Effect.flatMap(visibleApps));
+-    const recorded = yield* recordedServiceInstalls(yield* policyDatabase, apps);
+-    const access = new Map(
+-      (yield* applicationAccesses(
+-        apps.map((candidate) => candidate.id),
+-        yield* currentResourceAuthority,
+-      )).map((entry) => [entry.app, entry]),
+-    );
+-    const destinations = apps.flatMap((candidate) => {
+-      const service = recorded.get(candidate.id);
+-      const installed =
+-        service === undefined
+-          ? candidate.copiedFrom?.name === entry.package
+-          : service.id === (entry.service?.id ?? entry.package);
+-      if (!installed || candidate.activeVersion === null) return [];
+-      return Object.entries(candidate.requirements.accounts).flatMap(([requirement, required]) =>
+-        required.provider === slot.provider &&
+-        required.scope === "app" &&
+-        (required.contributed
+-          ? access.get(candidate.id)?.canUse
+-          : access.get(candidate.id)?.canManage)
+-          ? [{ app: candidate.id, name: candidate.name, requirement }]
+-          : [],
+-      );
+-    });
+-    return destinations.length === 0
+-      ? { kind: "catalog" as const, entry: entry.id }
+-      : { kind: "apps" as const, apps: destinations };
+-  }).pipe(Effect.mapError(() => new StorageError()));
++  Effect.map(providerAccountContext(app, [requirement]), (context) =>
++    context.destination(requirement),
++  );
+diff --git a/apps/hosted/server/src/implementation/provider-account-methods.ts b/apps/hosted/server/src/implementation/provider-account-methods.ts
+index 9d2db13..09f0fe5 100644
+--- a/apps/hosted/server/src/implementation/provider-account-methods.ts
++++ b/apps/hosted/server/src/implementation/provider-account-methods.ts
+@@ -1,5 +1,5 @@
+-import { registeredPool, requirementConnectionPolicies } from "./provider-account-policy.ts";
+-import { providerAppIdentity } from "./provider-app-identity.ts";
++import { providerAccountConnectionView } from "./provider-account-policy.ts";
++import type { CheckedAppAccess } from "./resource-policy.ts";
+ import {
+   AccountAcquisitionConfiguration,
+   AuthMethodInvalid,
+@@ -39,11 +39,10 @@ export const providerAccountMethods = (app: App) =>
+     return { unavailable, native };
+   });
+ 
+-export const providerAccountMethodView = (app: App) =>
++export const providerAccountMethodView = (app: App, checked?: CheckedAppAccess) =>
+   Effect.gen(function* () {
+     const methods = yield* providerAccountMethods(app);
+-    const providerApp = (yield* registeredPool(app.id)) ? null : yield* providerAppIdentity(app);
+-    const connections = yield* requirementConnectionPolicies(app, providerApp);
++    const { providerApp, connections } = yield* providerAccountConnectionView(app, checked);
+     return {
+       ...methods,
+       providerApp,
+diff --git a/apps/hosted/server/src/implementation/provider-account-policy.ts b/apps/hosted/server/src/implementation/provider-account-policy.ts
+index da5ad35..f42d834 100644
+--- a/apps/hosted/server/src/implementation/provider-account-policy.ts
++++ b/apps/hosted/server/src/implementation/provider-account-policy.ts
+@@ -1,5 +1,4 @@
+ import { AccountListReads } from "./account-list-reads.ts";
+-import { permitsAction } from "@executor-js/authorization";
+ import {
+   AccountAcquisitionConfiguration,
+   StorageError,
+@@ -7,14 +6,17 @@ import {
+   type AppId,
+ } from "@executor-js/sdk/core";
+ import { Effect } from "effect";
+-import { CurrentAuthorization } from "../contracts/authorization.ts";
+ import { CurrentOrganization } from "../contracts/organization.ts";
+ import { ProviderAppConnectionRequired } from "../contracts/provider-account-policy.ts";
+ import { HostedExecutor } from "../contracts/executor.ts";
+ import { currentOwner } from "./access.ts";
+ import { providerAccountDestination } from "./provider-account-destination.ts";
+-import { policyDatabase, requireCurrentAppAccess } from "./resource-policy.ts";
+-import { providerAppIdentity } from "./provider-app-identity.ts";
++import {
++  policyDatabase,
++  requireCurrentAppAccess,
++  type CheckedAppAccess,
++} from "./resource-policy.ts";
++import { providerAccountContext } from "./provider-account-context.ts";
+ 
+ export const registeredPool = (app: AppId) =>
+   Effect.gen(function* () {
+@@ -30,59 +32,58 @@ export const registeredPool = (app: AppId) =>
+     return rows.length !== 0;
+   }).pipe(Effect.catchTag("SqlError", () => new StorageError()));
+ 
+-export const requirementConnectionPolicies = (
+-  app: App,
+-  identity?: Effect.Success<ReturnType<typeof providerAppIdentity>>,
+-) =>
++export const providerAccountConnectionView = (app: App, checked?: CheckedAppAccess) =>
+   Effect.gen(function* () {
+     const pool = yield* registeredPool(app.id);
+-    const { access } = yield* requireCurrentAppAccess(app.id, "read");
+-    const manage = permitsAction(yield* CurrentAuthorization, "manage");
++    const { actor, access } =
++      checked?.access.app === app.id ? checked : yield* requireCurrentAppAccess(app.id, "read");
++    const context = yield* providerAccountContext(app, Object.keys(app.requirements.accounts), {
++      classify: !pool,
++      actor,
++    });
+     const { registrations } = yield* AccountAcquisitionConfiguration;
+-    const providerApp = pool
+-      ? null
+-      : identity === undefined
+-        ? yield* providerAppIdentity(app)
+-        : identity;
+-    return yield* Effect.forEach(Object.entries(app.requirements.accounts), ([requirement, slot]) =>
+-      Effect.gen(function* () {
+-        const allowed =
+-          manage &&
+-          (slot.scope === "user" || (slot.contributed ? access.canUse : access.canManage));
+-        const automatic = Object.values(slot.definition.auth).every(
+-          (method) => method.type === "secrets" && method.provisioned === true,
+-        );
+-        const destination = yield* providerAccountDestination(app, requirement);
+-        const importMethod =
+-          slot.definition.family?.id === "openai"
+-            ? "codex"
+-            : slot.definition.family?.id === "anthropic"
+-              ? "claude"
+-              : undefined;
+-        return {
+-          requirement,
+-          canConnect: allowed && !pool && !automatic,
+-          canSelect: allowed && !automatic && !(pool && requirement === "subscriptions"),
+-          importMethods:
+-            allowed &&
+-            !pool &&
+-            providerApp?.requirements.includes(requirement) &&
+-            importMethod !== undefined &&
+-            registrations.some(
+-              (entry) =>
+-                entry.current &&
+-                entry.provider === slot.provider &&
+-                entry.method === importMethod &&
+-                entry.driver.importCredentials !== undefined,
+-            )
+-              ? [importMethod]
+-              : [],
+-          destination,
+-        };
+-      }),
+-    );
++    const { providerApp, canManageAccounts } = context;
++    const connections = Object.entries(app.requirements.accounts).map(([requirement, slot]) => {
++      const allowed =
++        canManageAccounts &&
++        (slot.scope === "user" || (slot.contributed ? access.canUse : access.canManage));
++      const automatic = Object.values(slot.definition.auth).every(
++        (method) => method.type === "secrets" && method.provisioned === true,
++      );
++      const destination = context.destination(requirement);
++      const importMethod =
++        slot.definition.family?.id === "openai"
++          ? "codex"
++          : slot.definition.family?.id === "anthropic"
++            ? "claude"
++            : undefined;
++      return {
++        requirement,
++        canConnect: allowed && !pool && !automatic,
++        canSelect: allowed && !automatic && !(pool && requirement === "subscriptions"),
++        importMethods:
++          allowed &&
++          !pool &&
++          providerApp?.requirements.includes(requirement) &&
++          importMethod !== undefined &&
++          registrations.some(
++            (entry) =>
++              entry.current &&
++              entry.provider === slot.provider &&
++              entry.method === importMethod &&
++              entry.driver.importCredentials !== undefined,
++          )
++            ? [importMethod]
++            : [],
++        destination,
++      };
++    });
++    return { providerApp, connections };
+   });
+ 
++export const requirementConnectionPolicies = (app: App) =>
++  Effect.map(providerAccountConnectionView(app), (view) => view.connections);
++
+ /** Recheck persisted targets at completion, so an old form cannot acquire into a pool. */
+ export const requireProviderConnectionTarget = (app: App, requirement: string) =>
+   Effect.gen(function* () {
+diff --git a/apps/hosted/server/src/implementation/provider-app-identity.ts b/apps/hosted/server/src/implementation/provider-app-identity.ts
+deleted file mode 100644
+index 50c34fc..0000000
+--- a/apps/hosted/server/src/implementation/provider-app-identity.ts
++++ /dev/null
+@@ -1,46 +0,0 @@
+-import { identifyProvider, StorageError, type App } from "@executor-js/sdk/core";
+-import { providerDeclaration } from "apps/host";
+-import { Crypto, Effect, Option } from "effect";
+-import { HostedCatalog } from "../contracts/catalog.ts";
+-import { providers } from "./pool-provider-definitions.ts";
+-import { policyDatabase } from "./resource-policy.ts";
+-import { recordedServiceInstalls } from "./service-install-records.ts";
+-
+-/** Classification uses the configured installation and canonical declaration, including on read-only views. */
+-export const providerAppIdentity = (app: App) =>
+-  Effect.gen(function* () {
+-    const catalog = yield* Effect.serviceOption(HostedCatalog);
+-    if (app.activeVersion === null || Option.isNone(catalog)) return null;
+-    const entries = yield* catalog.value.list.pipe(Effect.catch(() => Effect.succeed([])));
+-    const installed = (yield* recordedServiceInstalls(yield* policyDatabase, [app])).get(app.id);
+-    const crypto = yield* Crypto.Crypto;
+-    const matches = yield* Effect.forEach(
+-      Object.entries(app.requirements.accounts),
+-      ([requirement, slot]) =>
+-        Effect.gen(function* () {
+-          const family = slot.definition.family?.id;
+-          if (family === undefined || slot.scope !== "app" || !Object.hasOwn(providers, family))
+-            return undefined;
+-          const entry = entries.find((entry) => entry.id === `provider-${family}`);
+-          if (
+-            entry === undefined ||
+-            (installed === undefined
+-              ? app.copiedFrom?.name !== entry.package
+-              : installed.id !== (entry.service?.id ?? entry.package))
+-          )
+-            return undefined;
+-          const definition = yield* providerDeclaration(
+-            providers[family as keyof typeof providers],
+-          );
+-          const id = yield* identifyProvider(definition, crypto);
+-          return slot.provider === id.identity || slot.provider === id.legacy
+-            ? { family, requirement }
+-            : undefined;
+-        }),
+-    );
+-    const found = matches.filter((match) => match !== undefined);
+-    const family = found[0]?.family;
+-    return family === undefined || found.some((match) => match.family !== family)
+-      ? null
+-      : { family, requirements: found.map((match) => match.requirement) };
+-  }).pipe(Effect.mapError(() => new StorageError()));
+diff --git a/apps/hosted/server/src/implementation/resource-policy.ts b/apps/hosted/server/src/implementation/resource-policy.ts
+index dce1a1b..939caef 100644
+--- a/apps/hosted/server/src/implementation/resource-policy.ts
++++ b/apps/hosted/server/src/implementation/resource-policy.ts
+@@ -457,6 +457,7 @@ export const requireCurrentAppAccess = (app: AppId, action: "read" | "manage" |
+     if (!permitsAppAction(checked.access, action)) return yield* new OrganizationForbidden();
+     return checked;
+   });
++export type CheckedAppAccess = Effect.Success<ReturnType<typeof requireCurrentAppAccess>>;
+ const permitsAppAction = (access: typeof AppAccess.Type, action: "read" | "manage" | "use") =>
+   action === "use"
+     ? access.canUse
+@@ -550,11 +551,17 @@ export const visibleApps = (apps: readonly App[]) =>
+   Effect.flatMap(currentResourceAuthority, (actor) => visibleAppsAs(actor, apps));
+ /** {@link visibleApps} for an actor already resolved in this operation. */
+ export const visibleAppsAs = (actor: ResourceAuthority, apps: readonly App[]) =>
++  Effect.map(visibleAppsWithAccessAs(actor, apps), (visible) => visible.apps);
++/** Read visibility and access together when the caller needs both. */
++export const visibleAppsWithAccessAs = (actor: ResourceAuthority, apps: readonly App[]) =>
+   Effect.gen(function* () {
+     const policies = yield* applicationAccesses(
+       apps.map((app) => app.id),
+       actor,
+     );
+     const usable = new Set(policies.filter((access) => access.canUse).map((access) => access.app));
+-    return apps.filter((app) => usable.has(app.id));
++    return {
++      apps: apps.filter((app) => usable.has(app.id)),
++      access: new Map(policies.map((access) => [access.app, access])),
++    };
+   });

@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The pinned dependency patch must apply and reverse at its exact hunk positions and retain the package's single WorkerProvider source-map trailer. Correcting patch metadata preserves the existing Worker upload hook and leaves merged carries immutable."
+    }
+  }
+}
