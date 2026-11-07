@@ -1,7 +1,7 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ClassificationReport } from "../releases/types.ts";
 import { SafetyGateError, type RecordedBackup } from "./contracts.ts";
@@ -47,6 +47,7 @@ export type ReleaseDependencies = {
   deploy(): Promise<CommandResult>;
   assertImages(): Promise<CommandResult>;
   smoke(): Promise<CommandResult>;
+  dispose?(): void;
   /** Where the runner notes a deploy retry; stderr by default. */
   log?(text: string): void;
 };
@@ -62,6 +63,7 @@ export type ManualRollbackDependencies = {
   deploy(): Promise<CommandResult>;
   assertImages(): Promise<CommandResult>;
   smoke(): Promise<CommandResult>;
+  dispose?(): void;
   log?(text: string): void;
 };
 
@@ -92,31 +94,35 @@ export async function executeRelease(
   mode: ReleaseMode,
   dependencies: ReleaseDependencies,
 ): Promise<ReleaseResult> {
-  assertReleaseMode(report, mode);
-  dependencies.validateCredentials();
-  const backup = report.databaseChanged ? await dependencies.assertBackup(report) : undefined;
+  try {
+    assertReleaseMode(report, mode);
+    dependencies.validateCredentials();
+    const backup = report.databaseChanged ? await dependencies.assertBackup(report) : undefined;
 
-  const deploymentId = await dependencies.begin(report, backup);
-  const deploy = await dependencies.deploy();
-  if (!deploy.started) {
-    await dependencies.mark(deploymentId, "failure");
-    throw new SafetyGateError(
-      "Production deployment process did not start; no rollback was attempted",
-    );
-  }
-  if (deploy.exitCode !== 0) {
-    return failReleaseAttempt(dependencies, deploymentId, "deployment command failed");
-  }
+    const deploymentId = await dependencies.begin(report, backup);
+    const deploy = await dependencies.deploy();
+    if (!deploy.started) {
+      await dependencies.mark(deploymentId, "failure");
+      throw new SafetyGateError(
+        "Production deployment process did not start; no rollback was attempted",
+      );
+    }
+    if (deploy.exitCode !== 0) {
+      return await failReleaseAttempt(dependencies, deploymentId, "deployment command failed");
+    }
 
-  await assertDeployedImages(deploymentId, dependencies);
-  const smoke = await dependencies.smoke();
-  if (!smoke.started || smoke.exitCode !== 0) {
     await assertDeployedImages(deploymentId, dependencies);
-    return failReleaseAttempt(dependencies, deploymentId, "production smoke check failed");
-  }
+    const smoke = await dependencies.smoke();
+    if (!smoke.started || smoke.exitCode !== 0) {
+      await assertDeployedImages(deploymentId, dependencies);
+      return await failReleaseAttempt(dependencies, deploymentId, "production smoke check failed");
+    }
 
-  await dependencies.mark(deploymentId, "success");
-  return { state: "deployed", deploymentId };
+    await dependencies.mark(deploymentId, "success");
+    return { state: "deployed", deploymentId };
+  } finally {
+    dependencies.dispose?.();
+  }
 }
 
 export async function executeManualRollback(
@@ -128,47 +134,51 @@ export async function executeManualRollback(
   workflowRef = process.env.GITHUB_WORKFLOW_REF,
   repository = process.env.GITHUB_REPOSITORY,
 ): Promise<{ state: "rolled-back"; deploymentId: number }> {
-  if (
-    eventName !== "workflow_dispatch" ||
-    ref !== "refs/heads/main" ||
-    !repository ||
-    workflowRef !== `${repository}/.github/workflows/release-rollback.yml@refs/heads/main`
-  )
-    throw new SafetyGateError("Manual rollback requires workflow_dispatch from trusted main");
-  if (!Number.isSafeInteger(expectedDeploymentId) || expectedDeploymentId < 1)
-    throw new SafetyGateError(
-      "Manual rollback requires the exact planned production deployment id",
-    );
-  if (!report.databaseChanged && !report.workflowChanged)
-    throw new SafetyGateError(
-      "Manual rollback is reserved for database or Workflow-identity releases",
-    );
+  try {
+    if (
+      eventName !== "workflow_dispatch" ||
+      ref !== "refs/heads/main" ||
+      !repository ||
+      workflowRef !== `${repository}/.github/workflows/release-rollback.yml@refs/heads/main`
+    )
+      throw new SafetyGateError("Manual rollback requires workflow_dispatch from trusted main");
+    if (!Number.isSafeInteger(expectedDeploymentId) || expectedDeploymentId < 1)
+      throw new SafetyGateError(
+        "Manual rollback requires the exact planned production deployment id",
+      );
+    if (!report.databaseChanged && !report.workflowChanged)
+      throw new SafetyGateError(
+        "Manual rollback is reserved for database or Workflow-identity releases",
+      );
 
-  if (report.databaseChanged) await dependencies.assertBackup(report);
-  if (report.workflowChanged) await dependencies.assertDrained(report);
-  await dependencies.prepare();
-  dependencies.validateCredentials();
+    if (report.databaseChanged) await dependencies.assertBackup(report);
+    if (report.workflowChanged) await dependencies.assertDrained(report);
+    await dependencies.prepare();
+    dependencies.validateCredentials();
 
-  const deploymentId = await dependencies.begin(report, expectedDeploymentId);
-  const deploy = await dependencies.deploy();
-  if (!deploy.started || deploy.exitCode !== 0) {
-    await dependencies.mark(deploymentId, "failure");
-    throw new SafetyGateError(
-      "Previous production release deployment failed; rollback remains unresolved",
-    );
+    const deploymentId = await dependencies.begin(report, expectedDeploymentId);
+    const deploy = await dependencies.deploy();
+    if (!deploy.started || deploy.exitCode !== 0) {
+      await dependencies.mark(deploymentId, "failure");
+      throw new SafetyGateError(
+        "Previous production release deployment failed; rollback remains unresolved",
+      );
+    }
+
+    await assertDeployedImages(deploymentId, dependencies);
+    const smoke = await dependencies.smoke();
+    if (!smoke.started || smoke.exitCode !== 0) {
+      await dependencies.mark(deploymentId, "failure");
+      throw new SafetyGateError(
+        "Previous production release public smoke failed; rollback remains unresolved",
+      );
+    }
+
+    await dependencies.mark(deploymentId, "success");
+    return { state: "rolled-back", deploymentId };
+  } finally {
+    dependencies.dispose?.();
   }
-
-  await assertDeployedImages(deploymentId, dependencies);
-  const smoke = await dependencies.smoke();
-  if (!smoke.started || smoke.exitCode !== 0) {
-    await dependencies.mark(deploymentId, "failure");
-    throw new SafetyGateError(
-      "Previous production release public smoke failed; rollback remains unresolved",
-    );
-  }
-
-  await dependencies.mark(deploymentId, "success");
-  return { state: "rolled-back", deploymentId };
 }
 
 export function assertReleaseMode(
@@ -214,6 +224,7 @@ export function productionReleaseDependencies(
     BASALT_POOL_IMAGE_RECEIPT: receiptPath,
   };
   return {
+    dispose: () => rmSync(dirname(receiptPath), { recursive: true, force: true }),
     validateCredentials: () => {
       validateCandidateSource(sourceRoot, candidateCommit);
       assertBarrierSource(sourceRoot);
@@ -359,6 +370,7 @@ export function productionManualRollbackDependencies(
     begin: (report, expectedDeploymentId) =>
       beginRollbackDeployment(report, environment, fetch, expectedDeploymentId),
     mark: (deploymentId, state) => finishDeployment(deploymentId, state, environment),
+    dispose: () => release.dispose?.(),
     deploy: release.deploy,
     assertImages: release.assertImages,
     smoke: () => runCommand("node", ["scripts/smoke.ts"], repositoryRoot),
