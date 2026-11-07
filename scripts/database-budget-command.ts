@@ -42,14 +42,21 @@ export async function runDatabaseBudgetCommand(
     check?: typeof checkDatabaseBackends;
     now?: () => number;
     timeout?: (milliseconds: number) => AbortSignal;
+    deadline?: (
+      milliseconds: number,
+      phase: "command" | "receipt" | "teardown",
+    ) => ReturnType<typeof liveDeadline>;
   } = {},
 ) {
   const now = adapters.now ?? Date.now;
+  const schedule = adapters.deadline ?? liveDeadline;
+  const within = <T>(work: Promise<T>, phase: "receipt" | "teardown") =>
+    withinDeadline(work, 1000, (milliseconds) => schedule(milliseconds, phase));
   const deadlines: ReturnType<typeof liveDeadline>[] = [];
   const timeout =
     adapters.timeout ??
     ((milliseconds: number) => {
-      const deadline = liveDeadline(milliseconds);
+      const deadline = schedule(milliseconds, "command");
       deadlines.push(deadline);
       return deadline.signal;
     });
@@ -122,7 +129,7 @@ export async function runDatabaseBudgetCommand(
       });
       opening.then(
         (connection) => {
-          if (startup.aborted) void withinDeadline(connection.close(), 1000).catch(() => {});
+          if (startup.aborted) void within(connection.close(), "teardown").catch(() => {});
         },
         () => {},
       );
@@ -137,7 +144,7 @@ export async function runDatabaseBudgetCommand(
         runtime: ready,
         elapsedMs: now() - startedAt,
       };
-      await withinDeadline(save(path, { startedAt, readyReceivedAt: now(), ready }), 1000);
+      await within(save(path, { startedAt, readyReceivedAt: now(), ready }), "receipt");
     } else {
       await check({
         adminUrl: source.DATABASE_BUDGET_ADMIN_URL ?? "",
@@ -156,7 +163,7 @@ export async function runDatabaseBudgetCommand(
         now,
         retain: async (value) => {
           receipt = contextual(value);
-          await withinDeadline(save(path, receipt), 1000);
+          await within(save(path, receipt), "receipt");
         },
       });
     }
@@ -170,17 +177,17 @@ export async function runDatabaseBudgetCommand(
       };
     receipt = contextual(receipt);
     // The CLI still emits the failure receipt if the destination cannot be written.
-    await withinDeadline(save(path, receipt), 1000).catch(() => {});
+    await within(save(path, receipt), "receipt").catch(() => {});
     failure = new DatabaseBudgetFailure(receipt);
   } finally {
     try {
       if (readiness) {
         try {
-          await withinDeadline(readiness.close(), 1000);
+          await within(readiness.close(), "teardown");
         } catch {
           if (!failure) {
             receipt = contextual({ ...receipt, outcome: "teardown-error", stage: "teardown" });
-            await withinDeadline(save(path, receipt), 1000).catch(() => {});
+            await within(save(path, receipt), "receipt").catch(() => {});
             failure = new DatabaseBudgetFailure(receipt);
           }
         }

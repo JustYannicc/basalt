@@ -3,11 +3,17 @@ import { ChunkStorage, type UsageStorage } from "./usage-storage.ts";
 
 export interface HomeViewData {
   accounts: Account[];
-  readAt: { membership: string; credentials: string; quota: string };
+  readAt: { membership: string; credentials?: string; quota?: string };
 }
 type Storage = Pick<UsageStorage, "get" | "put"> & Partial<Omit<UsageStorage, "get" | "put">>;
-interface Revision { all: number; pools: Record<string, number> }
-interface Saved { revision: string; data: HomeViewData }
+interface Revision {
+  all: number;
+  pools: Record<string, number>;
+}
+interface Saved {
+  revision: string;
+  data: HomeViewData;
+}
 const revisionsKey = "pool-view-revisions-v1";
 const snapshotKey = (pool: string) => `pool-view-snapshot-v1:${pool}`;
 
@@ -19,8 +25,9 @@ export class PoolViewSnapshots {
   private defer: (work: Promise<void>) => void;
   constructor(storage: Storage, defer: (work: Promise<void>) => void) {
     this.storage = new ChunkStorage({
-      get: storage.get.bind(storage), put: storage.put.bind(storage),
-      delete: (key) => storage.delete ? storage.delete(key) : storage.put(key, null),
+      get: storage.get.bind(storage),
+      put: storage.put.bind(storage),
+      delete: (key) => (storage.delete ? storage.delete(key) : storage.put(key, null)),
       ...(storage.transaction ? { transaction: storage.transaction.bind(storage) } : {}),
     });
     this.defer = defer;
@@ -38,12 +45,16 @@ export class PoolViewSnapshots {
   private saved(pool: string): Promise<Saved | undefined> {
     return this.run(async () => {
       const saved = await this.storage.get<Saved>(snapshotKey(pool));
-      return saved && Array.isArray(saved.data.accounts) && saved.revision === await this.revision(pool) ? saved : undefined;
+      return saved &&
+        Array.isArray(saved.data.accounts) &&
+        saved.revision === (await this.revision(pool))
+        ? saved
+        : undefined;
     });
   }
   async invalidate(pool?: string): Promise<void> {
     await this.run(async () => {
-      const revision = await this.storage.get<Revision>(revisionsKey) ?? { all: 0, pools: {} };
+      const revision = (await this.storage.get<Revision>(revisionsKey)) ?? { all: 0, pools: {} };
       if (pool === undefined) revision.all++;
       else revision.pools[pool] = (revision.pools[pool] ?? 0) + 1;
       await this.storage.put(revisionsKey, revision);
@@ -57,7 +68,7 @@ export class PoolViewSnapshots {
         const revision = await this.run(() => this.revision(pool));
         const data = await read();
         const committed = await this.run(async () => {
-          if (revision !== await this.revision(pool)) return false;
+          if (revision !== (await this.revision(pool))) return false;
           await this.storage.put(snapshotKey(pool), { revision, data } satisfies Saved);
           return true;
         });
@@ -68,7 +79,12 @@ export class PoolViewSnapshots {
       if (this.revalidations.get(pool) === work) this.revalidations.delete(pool);
     });
     this.revalidations.set(pool, work);
-    this.defer(work.then(() => {}, () => {}));
+    this.defer(
+      work.then(
+        () => {},
+        () => {},
+      ),
+    );
     return work;
   }
   async view(pool: string, fresh: boolean, read: () => Promise<HomeViewData>) {

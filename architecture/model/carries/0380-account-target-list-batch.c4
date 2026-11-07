@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Public SDK account lists read execution target metadata in one owner-scoped collection query instead of one query per saved account. Single-account reads and list reads share device execution projection, rechecking device authorization and availability on every read; cloud and unbound accounts omit execution metadata. The complete hosted resource-directory request counts real target queries across one and 35 saved accounts, while public SDK scenarios preserve online, offline, unavailable, disabled, cleared and foreign-owner results. No sign-in, credential or cross-request cache is added."
+    }
+  }
+}

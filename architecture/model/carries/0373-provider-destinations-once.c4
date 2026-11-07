@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.providerAccountMethods {
+    metadata {
+      constraint "Account methods derive every requirement's destination from one authorized set of reads per request; single-requirement rechecks read fresh."
+    }
+  }
+}

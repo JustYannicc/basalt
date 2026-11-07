@@ -505,50 +505,53 @@ export class PoolHome {
     }
   }
   async readView(now: () => Date): Promise<HomeViewData> {
-    const readAt = { membership: "", credentials: "", quota: "" };
+    const readAt: HomeViewData["readAt"] = { membership: "" };
+    const controller = new AbortController();
     const membership = timePoolRead(
       "membership",
       () => this.membership(),
       (value) => value.members.length,
     );
-    const reads = [
-      membership.then((value) => {
-        readAt.membership = now().toISOString();
-        return value;
-      }),
-      timePoolRead(
-        "credentials",
-        () => this.credentials(),
-        (value) => value.length,
-      ).then((value) => {
+    // Start speculatively so a populated pool never serializes credentials behind membership.
+    const credentials = timePoolRead(
+      "credentials",
+      () => this.credentials(controller.signal),
+      (value) => value.length,
+    ).then(
+      (files) => {
         readAt.credentials = now().toISOString();
-        return value;
-      }),
-      membership
-        .then(({ members }) => {
-          const ids = [...new Set(members.map((member) => member.auth_id))].sort();
-          for (const id of ids) this.client.dropQuotaDetail(id);
-          return timePoolRead(
-            "quota_detail",
-            () => this.client.quota(ids, true),
-            (value) => value.length,
-          );
-        })
-        .then((value) => {
+        return { files };
+      },
+      (error: unknown) => ({ error }),
+    );
+    try {
+      const members = await membership;
+      readAt.membership = now().toISOString();
+      if (!members.members.length) return { accounts: [], readAt };
+      const ids = [...new Set(members.members.map((member) => member.auth_id))].sort();
+      for (const id of ids) this.client.dropQuotaDetail(id);
+      const reads = [
+        credentials.then((result) => {
+          if ("error" in result) throw result.error;
+          return result.files;
+        }),
+        timePoolRead(
+          "quota_detail",
+          () => this.client.quota(ids, true),
+          (value) => value.length,
+        ).then((value) => {
           readAt.quota = now().toISOString();
           return value;
         }),
-    ] as const;
-    await Promise.allSettled(reads);
-    const [members, files, usage] = await Promise.all(reads);
-    return {
-      accounts: accountsView(
-        files,
-        usage,
-        new Set(members.members.map((member) => member.auth_id)),
-      ),
-      readAt,
-    };
+      ] as const;
+      await Promise.allSettled(reads);
+      const [files, usage] = await Promise.all(reads);
+      return { accounts: accountsView(files, usage, new Set(ids)), readAt };
+    } finally {
+      // homeResponse settles on abort even while container readiness or its port fetch is hung.
+      controller.abort();
+      await credentials;
+    }
   }
   async view(
     isOwner: boolean,
