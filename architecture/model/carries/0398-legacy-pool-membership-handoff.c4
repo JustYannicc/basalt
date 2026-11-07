@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "Recorded organization-owned pools complete a missing native membership handoff through authenticated reads, retained-pool reconciliation and account selection. The host changes only the membership marker under its organization lock and requires the existing signed dirty acknowledgement before commit. Existing native registrations invalidate even without a deployment; only a new legacy handoff requires an active deployment. Current native acquisition bindings remain authoritative; retained app-owned subscription credentials need their separate adoption. Durable dirty authority vetoes model use while a container is stopped; Home reconciliation warms it after the host commits and requires the exact clean policy acknowledgement. Blocked legacy acquisition routes never start a handoff. The controller repairs channel membership before serving the read, preserves credentials and the provisioned control account, and repeated reads make no material change. Managed Cloud e2e seeds bind to local Cloud and refuse non-local app and browser requests before sending them. An absent local-test binding preserves normal outbound requests and redirect handling."
+    }
+  }
+}

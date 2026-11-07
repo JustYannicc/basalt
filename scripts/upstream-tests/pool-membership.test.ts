@@ -91,8 +91,9 @@ test("app-link reservations are signed, opt-in, cover each pool and fail the nat
               old: { app: "app_old" },
             },
           })})`;
-          yield* sql`insert into executor_apps (id, owner, name) values
-            ('app_one', ${owner}, 'One'), ('app_two', ${owner}, 'Two'), ('app_old', ${owner}, 'Old')`;
+          yield* sql`insert into executor_deployments values ('dpl_one', ${JSON.stringify(requirements())})`;
+          yield* sql`insert into executor_apps (id, owner, name, active_deployment) values
+            ('app_one', ${owner}, 'One', 'dpl_one'), ('app_two', ${owner}, 'Two', null), ('app_old', ${owner}, 'Old', null)`;
           yield* sql.withTransaction(
             Effect.gen(function* () {
               yield* sql`create table native_link_write (id text primary key)`;

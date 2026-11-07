@@ -14,7 +14,7 @@ import {
   type UsageResponse,
 } from "../../apps/pool/contract.ts";
 import { openEnvelope, verifyPoolToken } from "./token.ts";
-import { refusePoolAcquisition } from "./connection-policy.ts";
+import { isPoolAcquisitionPath, refusePoolAcquisition } from "./connection-policy.ts";
 import { exportLoginFile } from "./login-export.ts";
 import { timePoolRead } from "./read-timing.ts";
 import type { HomeViewData, PoolViewSnapshots } from "./view-snapshot.ts";
@@ -821,15 +821,7 @@ export async function authorizeControl(
     return fail(403, "not_owner", "Only the pool owner can use this endpoint.");
   // Old app deployments and tools can still call these routes. Refuse before loading the
   // attribution queue, reading a body or letting a status read finalize a credential.
-  if (
-    [
-      "POST /sign-ins",
-      "POST /login-files",
-      "POST /sign-ins/callback",
-      "GET /sign-ins/status",
-    ].includes(routeKey)
-  )
-    refusePoolAcquisition(claims.pool);
+  if (isPoolAcquisitionPath(request.method, url.pathname)) refusePoolAcquisition(claims.pool);
   const observation =
     routeKey === "GET /accounts/:id/observations" ||
     routeKey === "POST /accounts/:id/observations/refresh";
