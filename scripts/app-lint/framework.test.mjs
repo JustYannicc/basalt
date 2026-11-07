@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { servedFrameworkVersion } from "../../framework-release.ts";
 import { onServedFramework } from "../../src/catalog/framework.ts";
+import { appsManifest, appsVersion } from "../../.upstream/e2e/support/apps-release.ts";
 import { discoverApps } from "./source.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -14,6 +15,11 @@ const repositories = JSON.parse(
   readFileSync(new URL("../catalog-sources.json", import.meta.url), "utf8"),
 );
 const frozenPackages = new Set(repositories.apps.map((app) => app.package));
+
+test("the prepared test registry emits the host framework version", () => {
+  assert.equal(appsVersion, host.version);
+  assert.equal(JSON.parse(appsManifest.content).dependencies.apps, host.version);
+});
 
 test("every maintained publisher and direct-install catalog pins the prepared host framework", () => {
   assert.equal(servedFrameworkVersion, host.version);
