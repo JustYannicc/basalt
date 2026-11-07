@@ -46,7 +46,9 @@ const privateFields = new Set([
 ]);
 
 function pathKey(key: string, parents: string[]) {
-  const privateMap = parents.some((parent) => /secret|binding|credential/i.test(parent));
+  const privateMap = parents.some(
+    (parent) => privatePath.test(parent) && !/^env(?:ironment_variables)?$/i.test(parent),
+  );
   const environment = parents.some((parent) => /^env(?:ironment_variables)?$/i.test(parent));
   if (
     !/^[a-zA-Z_][a-zA-Z0-9_-]{0,79}$/.test(key) ||
@@ -92,7 +94,7 @@ function publicScalar(value: unknown, keys: string[]): Scalar | undefined {
 /** Public receipts retain only selected scalar values, never arbitrary serialized props. */
 export function changedProps(olds: unknown, news: unknown): PropChange[] {
   const changes: PropChange[] = [];
-  const walk = (old: unknown, next: unknown, keys: string[], depth: number) => {
+  const walk = (old: unknown, next: unknown, keys: string[], rawKeys: string[], depth: number) => {
     if (changes.length >= 256 || Object.is(old, next)) return;
     const path = keys.join(".") || "$";
     if (depth >= 12) {
@@ -105,8 +107,8 @@ export function changedProps(olds: unknown, news: unknown): PropChange[] {
       const fields = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
       if (!fields.length && !deepEqual(old, next)) changes.push({ path, changed: true });
       for (const key of fields) {
-        const safeKey = pathKey(key, keys);
-        walk(before[key], after[key], [...keys, safeKey], depth + 1);
+        const safeKey = pathKey(key, rawKeys);
+        walk(before[key], after[key], [...keys, safeKey], [...rawKeys, key], depth + 1);
       }
       return;
     }
@@ -121,17 +123,23 @@ export function changedProps(olds: unknown, news: unknown): PropChange[] {
     }
     if (Array.isArray(old) && Array.isArray(next)) {
       for (let index = 0; index < Math.max(old.length, next.length); index++)
-        walk(old[index], next[index], [...keys, String(index)], depth + 1);
+        walk(
+          old[index],
+          next[index],
+          [...keys, String(index)],
+          [...rawKeys, String(index)],
+          depth + 1,
+        );
       return;
     }
-    const before = publicScalar(old, keys);
-    const after = publicScalar(next, keys);
+    const before = publicScalar(old, rawKeys);
+    const after = publicScalar(next, rawKeys);
     changes.push(
-      !privatePath.test(keys.join(".")) && before !== undefined && after !== undefined
+      !privatePath.test(rawKeys.join(".")) && before !== undefined && after !== undefined
         ? { path, old: before, new: after }
         : { path, changed: true },
     );
   };
-  walk(olds, news, [], 0);
+  walk(olds, news, [], [], 0);
   return changes;
 }
