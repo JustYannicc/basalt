@@ -84,6 +84,7 @@ export function ManagerOverview({
         days={days}
         name={name}
         onRetry={onRetry}
+        historyHref="#usage-history"
       />
       <Money
         overview={data.usage?.ok ? data.usage.value : undefined}

@@ -7,6 +7,8 @@ import { Freshness } from "./freshness.tsx";
 import { ManagerOverview, PersonalOverview } from "./overview.tsx";
 import { useOverview, type RangeDays } from "./overview-data.ts";
 import { usePool } from "./pool-view.ts";
+import { History } from "./history.tsx";
+import type { PublicHistoryReader } from "./history-model.ts";
 
 function useNow(every = 30_000) {
   const [now, setNow] = useState(() => Date.now());
@@ -17,7 +19,19 @@ function useNow(every = 30_000) {
   return now;
 }
 
-export function App({ api }: { api: PoolApi }) {
+export function App({ api, publicHistory }: { api: PoolApi; publicHistory?: PublicHistoryReader }) {
+  const fromSettings = useRef(
+    window.parent !== window && window.location.hash === "#usage-history",
+  );
+  const [route, setRoute] = useState(() =>
+    window.location.hash === "#usage-history" ? "history" : "overview",
+  );
+  useEffect(() => {
+    const readRoute = () =>
+      setRoute(window.location.hash === "#usage-history" ? "history" : "overview");
+    window.addEventListener("hashchange", readRoute);
+    return () => window.removeEventListener("hashchange", readRoute);
+  }, []);
   const { view, error, updating, reload, measurable } = usePool(api);
   const accountsReady = useRef(false);
   useLayoutEffect(() => {
@@ -60,6 +74,24 @@ export function App({ api }: { api: PoolApi }) {
   const count = view?.accounts.length ?? 0;
   const labs = new Set(view?.accounts.map((account) => account.provider)).size;
   const people = overview.usage?.ok ? overview.usage.value.directory.totalCount : undefined;
+
+  if (route === "history")
+    return (
+      <History
+        series={api.series}
+        publicHistory={publicHistory}
+        directory={overview.usage?.ok ? overview.usage.value.directory.members : []}
+        providers={view?.providers ?? []}
+        onBack={() => {
+          if (fromSettings.current) {
+            // Like the app-client handshake, this carries no data. The host checks the sender.
+            window.parent.postMessage({ type: "basalt:usage-history-back" }, "*");
+            fromSettings.current = false;
+          }
+          window.location.hash = "";
+        }}
+      />
+    );
 
   return (
     <div className="mx-auto flex min-h-dvh w-full max-w-[56rem] flex-col px-6 max-[540px]:px-4">
