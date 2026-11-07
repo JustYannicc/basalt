@@ -17,6 +17,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { digest, upstreamCache, withCacheLock } from "./upstream-cache.ts";
+import { touchPreparedKey } from "./upstream-cache-gc.ts";
 import {
   abandonInstallAttempt,
   atomicStoreJson,
@@ -202,7 +203,8 @@ async function prepareDependencyGeneration(root: string, pin: string) {
         }
         atomicStoreJson(join(root, ".basalt-dependencies.json"), { key, store });
         rememberDependencyConsumer(root, store, false);
-        collectDependencyStore();
+        touchPreparedKey(entry);
+        collectDependencyStore(pin);
         return selected;
       });
     } catch (error) {
