@@ -79,7 +79,7 @@ diff --git a/e2e/tests/dashboard-main-preload.spec.ts b/e2e/tests/dashboard-main
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/dashboard-main-preload.spec.ts
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,87 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, FileSystem, Schema } from "effect";
 +import { Actors } from "../support/actors.ts";
@@ -100,76 +100,72 @@ new file mode 100644
 +  ),
 +);
 +
-+layer(HostedLive, { excludeTestServices: true })("Dashboard main preload", (it) => {
-+  for (const [width, key] of [
-+    [1280, "dashboardMainPreloadDesktop"],
-+    [390, "dashboardMainPreloadPhone"],
-+  ] as const) {
-+    it.effect(scenarios[key].title, (context) =>
-+      withHostedCase(
-+        context,
-+        Effect.gen(function* () {
-+          const fs = yield* FileSystem.FileSystem;
-+          const browser = yield* Browser;
-+          const actors = yield* Actors;
-+          const evidence = yield* Evidence;
-+          const manifest = yield* Schema.decodeUnknownEffect(Manifest)(
-+            yield* fs.readFileString("apps/hosted/cloud/web/dist/client/.vite/manifest.json"),
-+          );
-+          const entry = manifest["src/client.tsx"];
-+          const main = manifest["src/main.tsx"];
-+          if (entry === undefined || main === undefined)
-+            throw new Error("The built dashboard manifest must contain its entry and main");
-+          expect(entry.isEntry).toBe(true);
-+          expect(entry.dynamicImports).toContain("src/main.tsx");
-+          yield* browser.login(actors.owner);
-+          const path = `/org/${actors.organization.slug}/apps`;
-+          const head = yield* browser.use("Read the real document head", (page) =>
-+            page
-+              .context()
-+              .request.get(path)
-+              .then((response) => response.text()),
-+          );
-+          const preloads = yield* browser.use(
-+            "Read module preloads from the server's HTML",
-+            (page) =>
-+              page.evaluate(
-+                (html) =>
-+                  Array.from(
-+                    new DOMParser()
-+                      .parseFromString(html, "text/html")
-+                      .head.querySelectorAll('link[rel="modulepreload"]'),
-+                    (link) => link.getAttribute("href"),
-+                  ),
-+                head,
-+              ),
-+          );
-+          yield* evidence.json("main-preload-manifest.json", {
-+            width,
-+            entry: entry.file,
-+            main: main.file,
-+            preloads,
-+          });
-+          expect(preloads, "The head must preload the current manifest's main module").toContain(
-+            `/${main.file}`,
-+          );
-+          expect(preloads.filter((href) => href === `/${main.file}`)).toHaveLength(1);
-+          const observed = yield* observeMainPreload({
-+            width,
-+            path,
-+            entry: `/${entry.file}`,
-+            main: `/${main.file}`,
-+          });
-+          yield* evidence.json("main-preload-network.json", observed);
-+          expect(observed.mainBeforeEntryRelease).toBe(true);
-+          expect(observed.hydratedWhileEntryHeld).toBe(false);
-+          expect(observed.dataRequestsWhileEntryHeld).toEqual([]);
-+          expect(observed.mainRequests).toBe(1);
-+          expect(observed.mainStatus).toBe(200);
-+        }),
++const mainPreloadAt = (width: number) =>
++  Effect.gen(function* () {
++    const fs = yield* FileSystem.FileSystem;
++    const browser = yield* Browser;
++    const actors = yield* Actors;
++    const evidence = yield* Evidence;
++    const manifest = yield* Schema.decodeUnknownEffect(Manifest)(
++      yield* fs.readFileString("apps/hosted/cloud/web/dist/client/.vite/manifest.json"),
++    );
++    const entry = manifest["src/client.tsx"];
++    const main = manifest["src/main.tsx"];
++    if (entry === undefined || main === undefined)
++      throw new Error("The built dashboard manifest must contain its entry and main");
++    expect(entry.isEntry).toBe(true);
++    expect(entry.dynamicImports).toContain("src/main.tsx");
++    yield* browser.login(actors.owner);
++    const path = `/org/${actors.organization.slug}/apps`;
++    const head = yield* browser.use("Read the real document head", (page) =>
++      page
++        .context()
++        .request.get(path)
++        .then((response) => response.text()),
++    );
++    const preloads = yield* browser.use("Read module preloads from the server's HTML", (page) =>
++      page.evaluate(
++        (html) =>
++          Array.from(
++            new DOMParser()
++              .parseFromString(html, "text/html")
++              .head.querySelectorAll('link[rel="modulepreload"]'),
++            (link) => link.getAttribute("href"),
++          ),
++        head,
 +      ),
 +    );
-+  }
++    yield* evidence.json("main-preload-manifest.json", {
++      width,
++      entry: entry.file,
++      main: main.file,
++      preloads,
++    });
++    expect(preloads, "The head must preload the current manifest's main module").toContain(
++      `/${main.file}`,
++    );
++    expect(preloads.filter((href) => href === `/${main.file}`)).toHaveLength(1);
++    const observed = yield* observeMainPreload({
++      width,
++      path,
++      entry: `/${entry.file}`,
++      main: `/${main.file}`,
++    });
++    yield* evidence.json("main-preload-network.json", observed);
++    expect(observed.mainBeforeEntryRelease).toBe(true);
++    expect(observed.hydratedWhileEntryHeld).toBe(false);
++    expect(observed.dataRequestsWhileEntryHeld).toEqual([]);
++    expect(observed.mainRequests).toBe(1);
++    expect(observed.mainStatus).toBe(200);
++  });
++
++layer(HostedLive, { excludeTestServices: true })("Dashboard main preload", (it) => {
++  it.effect(scenarios.dashboardMainPreloadDesktop.title, (context) =>
++    withHostedCase(context, mainPreloadAt(1280)),
++  );
++  it.effect(scenarios.dashboardMainPreloadPhone.title, (context) =>
++    withHostedCase(context, mainPreloadAt(390)),
++  );
 +});
 diff --git a/e2e/support/dashboard-main-preload.ts b/e2e/support/dashboard-main-preload.ts
 new file mode 100644
