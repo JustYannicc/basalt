@@ -6,7 +6,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/pool-usage.tsx b/apps/host
  import { dayRange, formats, type Formats, type Metric } from "./pool-usage-format.ts";
  import { PoolMemberRow, rowColumns } from "./pool-usage-row.tsx";
 +import { PoolImportUsage } from "./pool-import-usage.tsx";
- 
+
  /** A page is its cursor and how many people came before it, in the backend's order. */
  interface PageEntry {
 @@ -116,6 +117,11 @@
