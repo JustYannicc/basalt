@@ -2,7 +2,7 @@
   "identity": "e2e-navigation-hydration",
   "file": "0383-e2e-navigation-hydration.patch",
   "content_sha256": "bb00c58a927d2a90bc6c92966aa8a22ac7f7108705a66fc52f4371940cfc2824",
-  "kind": "upstream",
+  "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
   "workflow_sensitive": false
