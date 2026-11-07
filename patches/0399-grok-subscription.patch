@@ -1,0 +1,424 @@
+diff --git a/packages/sdk/src/contracts/interactive-accounts.ts b/packages/sdk/src/contracts/interactive-accounts.ts
+--- a/packages/sdk/src/contracts/interactive-accounts.ts
++++ b/packages/sdk/src/contracts/interactive-accounts.ts
+@@ -34,6 +34,7 @@
+     "timeout",
+     "home_unavailable",
+     "home_rejected",
++    "invalid_code",
+     "binding_changed",
+     "invalid_response",
+     "internal",
+@@ -60,18 +61,23 @@
+         ? "The app could not complete this sign-in step."
+         : receipt.errorClass === "binding_changed"
+           ? "A newer sign-in replaced this account connection."
+-          : receipt.errorClass === "runtime_unhealthy"
+-            ? "The sign-in backend is temporarily unhealthy."
+-            : receipt.errorClass === "home_rejected"
+-              ? "The sign-in backend rejected this step."
+-              : receipt.errorClass === "timeout"
+-                ? "The sign-in backend did not answer in time."
+-                : `The sign-in backend could not finish the ${receipt.phase.replaceAll("_", " ")} step.`,
++          : receipt.errorClass === "invalid_code"
++            ? "Paste the code xAI shows after sign-in, or a URL containing that code. The consent page address does not contain a code."
++            : receipt.errorClass === "runtime_unhealthy"
++              ? "The sign-in backend is temporarily unhealthy."
++              : receipt.errorClass === "home_rejected"
++                ? "The sign-in backend rejected this step."
++                : receipt.errorClass === "timeout"
++                  ? "The sign-in backend did not answer in time."
++                  : `The sign-in backend could not finish the ${receipt.phase.replaceAll("_", " ")} step.`,
+     retryable: receipt?.retryable ?? false,
+     recovery: {
+-      action: receipt?.retryable
+-        ? "Try again after the sign-in backend recovers."
+-        : "Cancel this sign-in and start a new connection.",
++      action:
++        receipt?.errorClass === "invalid_code"
++          ? "Correct the code and try again in this sign-in."
++          : receipt?.retryable
++            ? "Try again after the sign-in backend recovers."
++            : "Cancel this sign-in and start a new connection.",
+       instructions:
+         "Inspect the app's interactive connection handlers and backend. Keep its session private. Start a fresh connection after resolving the failure.",
+     },
+diff --git a/e2e/support/provider-apps-catalog.ts b/e2e/support/provider-apps-catalog.ts
+--- a/e2e/support/provider-apps-catalog.ts
++++ b/e2e/support/provider-apps-catalog.ts
+@@ -1 +1,2 @@
++import { withApps } from "./apps-release.ts";
+ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+@@ -19,2 +20,4 @@
+   action: Schema.String,
++  value: Schema.optionalKey(Schema.String),
++  session: Schema.optionalKey(Schema.String),
+   provider: Schema.String,
+@@ -30,3 +33,3 @@
+   const sources = new Map<string, typeof Source.Type>();
+-  for (const lab of ["openai", "anthropic"]) {
++  for (const lab of ["openai", "anthropic", "xai"]) {
+     const content = yield* fs.readFileString(
+@@ -34,3 +37,19 @@
+     );
+-    sources.set(lab, yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Source))(content));
++    const source = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Source))(content);
++    sources.set(lab, {
++      ...source,
++      files: source.files.map((file) =>
++        file.path === "package.json"
++          ? {
++              ...file,
++              content: JSON.stringify({
++                name: source.package,
++                private: true,
++                type: "module",
++                dependencies: withApps(),
++              }),
++            }
++          : file,
++      ),
++    });
+   }
+@@ -65,2 +84,5 @@
+   const failMirror = yield* Ref.make(false);
++  const xaiFlow = yield* Ref.make<"legacy" | "code" | "device">("code");
++  const xaiComplete = yield* Ref.make(false);
++  const sequence = yield* Ref.make(0);
+   const routes = Layer.mergeAll(
+@@ -131,5 +153,12 @@
+                   ? "OpenAI"
+-                  : "Anthropic",
++                  : lab === "xai"
++                    ? "xAI"
++                    : "Anthropic",
+             description: "Reusable model provider accounts for pools.",
+-            auth: [{ method: lab.startsWith("openai") ? "codex" : "claude", kind: "interactive" }],
++            auth: [
++              {
++                method: lab.startsWith("openai") ? "codex" : lab === "xai" ? "xai" : "claude",
++                kind: "interactive",
++              },
++            ],
+             icons: [],
+@@ -185,7 +214,49 @@
+           return HttpServerResponse.jsonUnsafe({ result: yield* Ref.get(observation) });
+-        if (input.action === "start")
+-          return HttpServerResponse.jsonUnsafe({
+-            session: `synthetic-session-${input.provider}`,
+-            paste: { label: "Callback URL" },
+-          });
++        if (input.action === "start") {
++          const next = yield* Ref.updateAndGet(sequence, (n) => n + 1);
++          const session = `synthetic-session-${input.provider}-${next}`;
++          const flow = yield* Ref.get(xaiFlow);
++          return HttpServerResponse.jsonUnsafe(
++            input.provider === "xai" && flow === "device"
++              ? {
++                  session,
++                  url: "https://accounts.x.ai/oauth2/device",
++                  code: "USER-CODE",
++                  expiresAt: now + 600_000,
++                }
++              : {
++                  session,
++                  ...(input.provider === "xai"
++                    ? {
++                        url: "https://accounts.x.ai/oauth2/consent?response_type=code&state=synthetic",
++                        expiresAt: now + 1_200_000,
++                      }
++                    : {}),
++                  paste: {
++                    label:
++                      input.provider === "xai" && flow !== "legacy"
++                        ? "Paste the code xAI shows you"
++                        : "Callback URL",
++                  },
++                },
++          );
++        }
++        if (input.provider === "xai" && input.action === "status" && !(yield* Ref.get(xaiComplete)))
++          return HttpServerResponse.jsonUnsafe({ state: "waiting" });
++        if (
++          input.provider === "xai" &&
++          input.action === "submit" &&
++          input.value !== "synthetic-callback"
++        )
++          return HttpServerResponse.jsonUnsafe(
++            {
++              error: "acquisition_unavailable",
++              receipt: {
++                phase: "oauth_callback",
++                errorClass: "invalid_code",
++                retryable: true,
++              },
++            },
++            { status: 503 },
++          );
+         if (input.action === "status" || input.action === "submit")
+@@ -193,3 +264,3 @@
+             state: "connected",
+-            ref: `synthetic-private-${input.provider}`,
++            ref: `synthetic-private-${input.provider}-${input.session ?? "default"}`,
+           });
+@@ -209,2 +280,4 @@
+     sources,
++    xaiFlow: (flow: "legacy" | "code" | "device") => Ref.set(xaiFlow, flow),
++    completeXai: Ref.set(xaiComplete, true),
+     calls: Ref.get(calls),
+diff --git a/e2e/tests/provider-apps.spec.ts b/e2e/tests/provider-apps.spec.ts
+--- a/e2e/tests/provider-apps.spec.ts
++++ b/e2e/tests/provider-apps.spec.ts
+@@ -79,7 +79,7 @@
+               path: "index.ts",
+               content: `import { defineApp } from "apps";
+ import { providers } from "./providers.ts";
+-export default defineApp({ app: { accounts: { openai: providers.openai.many(), anthropic: providers.anthropic.many() } } }, {});`,
++export default defineApp({ app: { accounts: { openai: providers.openai.many(), anthropic: providers.anthropic.many(), xai: providers.xai.many() } } }, {});`,
+             },
+           ],
+         });
+@@ -100,10 +100,11 @@
+         for (const [lab, method] of [
+           ["openai", "codex"],
+           ["anthropic", "claude"],
++          ["xai", "xai"],
+         ]) {
+           const installed = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
+             entry: `provider-${lab}`,
+-            name: lab === "openai" ? "OpenAI" : "Anthropic",
++            name: lab === "openai" ? "OpenAI" : lab === "xai" ? "xAI" : "Anthropic",
+           });
+           expect(installed.status, JSON.stringify(installed.body)).toBe(200);
+           const app = (yield* body(Resource, installed)).id;
+@@ -154,7 +155,7 @@
+             action: "upsert",
+             credential: {
+               type: "config",
+-              family: lab === "openai" ? "codex" : "claude",
++              family: method,
+               token: `synthetic-${lab}-key`,
+             },
+           });
+@@ -207,6 +208,19 @@
+           expect(
+             (yield* api.request(actors.owner, "POST", `${connectPath}/start`, { method })).status,
+           ).toBe(200);
++          if (lab === "xai") {
++            const invalid = yield* api.request(actors.owner, "POST", `${connectPath}/submit`, {
++              value: "https://accounts.x.ai/oauth2/consent?response_type=code",
++            });
++            expect(invalid.status).toBe(422);
++            expect(invalid.body).toMatchObject({
++              _tag: "InteractiveConnectionFailed",
++              receipt: { phase: "oauth_callback", errorClass: "invalid_code", retryable: true },
++            });
++            const waiting = yield* api.request(actors.owner, "GET", `${connectPath}/status`);
++            expect(waiting.status).toBe(200);
++            expect(waiting.body).toEqual({ state: "waiting" });
++          }
+           const completed = yield* api.request(actors.owner, "POST", `${connectPath}/submit`, {
+             value: "synthetic-callback",
+           });
+diff --git a/e2e/support/grok-subscription-ui.ts b/e2e/support/grok-subscription-ui.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/grok-subscription-ui.ts
+@@ -0,0 +1,129 @@
++import { expect } from "@effect/vitest";
++import { Effect } from "effect";
++import { Actors } from "./actors.ts";
++import { Browser } from "./browser.ts";
++import { Evidence } from "./evidence.ts";
++
++export const grokSubscriptionUi = (input: {
++  app: string;
++  width: number;
++  legacy: Effect.Effect<void>;
++  code: Effect.Effect<void>;
++  device: Effect.Effect<void>;
++  complete: Effect.Effect<void>;
++}) =>
++  Effect.gen(function* () {
++    const actors = yield* Actors,
++      browser = yield* Browser,
++      evidence = yield* Evidence;
++    const width = input.width;
++    yield* browser.login(actors.owner);
++    yield* browser.use("Set the xAI account viewport", (page) =>
++      page.setViewportSize({ width, height: 900 }),
++    );
++    yield* browser.use("Open xAI Accounts", (page) =>
++      page.goto(`/org/${actors.organization.slug}/apps/${input.app}?view=accounts`),
++    );
++    const connect = Effect.gen(function* () {
++      yield* browser.use("Connect a Grok subscription", (page) =>
++        page.getByRole("button", { name: "Connect new account", exact: true }).click(),
++      );
++      yield* browser.use("Open sign-in methods", (page) =>
++        page.getByRole("dialog").getByRole("combobox").click(),
++      );
++      yield* browser.use("Choose Grok subscription", (page) =>
++        page.getByRole("option", { name: "Grok subscription", exact: true }).click(),
++      );
++      yield* browser.use("Start Grok sign-in", (page) =>
++        page
++          .getByRole("dialog")
++          .getByRole("button", { name: "Sign in with Grok subscription", exact: true })
++          .click(),
++      );
++    });
++    const keepName = Effect.gen(function* () {
++      yield* browser.use("The saved account asks for a name", (page) =>
++        page.getByRole("dialog", { name: "Name this account" }).waitFor(),
++      );
++      yield* browser.use("Keep its name", (page) => page.keyboard.press("Escape"));
++    });
++    // A retained pre-upgrade prompt supplies the before image with synthetic accounts.
++    yield* input.legacy;
++    yield* connect;
++    yield* browser.use("The retained prompt asks for a callback", (page) =>
++      page.getByRole("dialog").getByLabel("Callback URL").waitFor(),
++    );
++    yield* evidence.attach(
++      `grok-before-${width}.png`,
++      "image/png",
++      yield* browser.use("Capture the old prompt", (page) => page.screenshot()),
++    );
++    yield* browser.use("Leave the old attempt", (page) => page.keyboard.press("Escape"));
++    yield* browser.use("The old dialog closed", (page) =>
++      page.getByRole("dialog").waitFor({ state: "detached" }),
++    );
++
++    yield* input.code;
++    yield* connect;
++    yield* browser.use("Paste the consent address by mistake", (page) =>
++      page
++        .getByRole("dialog")
++        .getByLabel("Paste the code xAI shows you")
++        .fill("https://accounts.x.ai/oauth2/consent?response_type=code"),
++    );
++    yield* browser.use("Submit the wrong paste", (page) =>
++      page.getByRole("dialog").getByRole("button", { name: "Connect", exact: true }).click(),
++    );
++    yield* browser.use("The error explains which code to copy", (page) =>
++      page
++        .getByRole("dialog")
++        .getByText(/The consent page address does not contain a code/)
++        .waitFor(),
++    );
++    expect(
++      yield* browser.use("The rejected paste is still editable", (page) =>
++        page.getByRole("dialog").getByLabel("Paste the code xAI shows you").inputValue(),
++      ),
++    ).toContain("/consent");
++    yield* evidence.attach(
++      `grok-correctable-${width}.png`,
++      "image/png",
++      yield* browser.use("Capture the correctable input error", (page) => page.screenshot()),
++    );
++    yield* browser.use("Correct the code in the same dialog", (page) =>
++      page
++        .getByRole("dialog")
++        .getByLabel("Paste the code xAI shows you")
++        .fill("synthetic-callback"),
++    );
++    yield* browser.use("Connect with the corrected code", (page) =>
++      page.getByRole("dialog").getByRole("button", { name: "Connect", exact: true }).click(),
++    );
++    yield* keepName;
++
++    yield* input.device;
++    yield* connect;
++    yield* browser.use("Device sign-in shows the code to enter", (page) =>
++      page.getByRole("dialog").getByText("USER-CODE", { exact: true }).waitFor(),
++    );
++    expect(
++      yield* browser.use("Device sign-in asks for no pasted callback", (page) =>
++        page.getByRole("dialog").getByRole("textbox").count(),
++      ),
++    ).toBe(0);
++    expect(
++      yield* browser.use("The button opens device verification", (page) =>
++        page
++          .getByRole("dialog")
++          .getByRole("link", { name: "Open Grok subscription" })
++          .getAttribute("href"),
++      ),
++    ).toBe("https://accounts.x.ai/oauth2/device");
++    yield* evidence.attach(
++      `grok-after-${width}.png`,
++      "image/png",
++      yield* browser.use("Capture device sign-in", (page) => page.screenshot()),
++    );
++    yield* input.complete;
++    yield* keepName;
++  });
+diff --git a/e2e/tests/grok-subscription.spec.ts b/e2e/tests/grok-subscription.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/grok-subscription.spec.ts
+@@ -0,0 +1,63 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { providerAccountProduct } from "../support/provider-account-product.ts";
++import { providerAppsCatalog } from "../support/provider-apps-catalog.ts";
++import { grokSubscriptionUi } from "../support/grok-subscription-ui.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Links = Schema.Array(Schema.Struct({ account: Resource }));
++
++layer(HostedLive, { excludeTestServices: true })("Grok subscription", (it) => {
++  for (const [scenario, width] of [
++    [scenarios.grokSubscriptionDesktop, 1280],
++    [scenarios.grokSubscriptionMobile, 390],
++  ] as const) {
++    it.effect(scenario.title, (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const api = yield* Api,
++            actors = yield* Actors;
++          const catalog = yield* providerAppsCatalog;
++          const prefix = `/api/organizations/${actors.organization.id}`;
++          yield* providerAccountProduct(catalog.origin, `${catalog.origin}/catalog/index.json`);
++          const installed = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++            entry: "provider-xai",
++            name: "xAI",
++          });
++          expect(installed.status, JSON.stringify(installed.body)).toBe(200);
++          const app = (yield* body(Resource, installed)).id;
++          const appPath = `${prefix}/apps/${app}`;
++          yield* Effect.addFinalizer(() =>
++            Effect.gen(function* () {
++              const links = yield* body(
++                Links,
++                yield* api.request(actors.owner, "GET", `${appPath}/accounts/app`),
++              );
++              yield* api.request(actors.owner, "DELETE", appPath);
++              for (const link of links)
++                yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${link.account.id}`);
++            }).pipe(Effect.orDie),
++          );
++          yield* grokSubscriptionUi({
++            app,
++            width,
++            legacy: catalog.xaiFlow("legacy"),
++            code: catalog.xaiFlow("code"),
++            device: catalog.xaiFlow("device"),
++            complete: catalog.completeXai,
++          });
++          const links = yield* body(
++            Links,
++            yield* api.request(actors.owner, "GET", `${appPath}/accounts/app`),
++          );
++          expect(new Set(links.map((link) => link.account.id)).size).toBe(2);
++        }),
++      ),
++    );
++  }
++});
