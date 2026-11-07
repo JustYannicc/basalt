@@ -76,8 +76,21 @@ try {
     import("alchemy/Output"),
   ]);
   phase = "evaluate";
-  const inspect =
-    process.env.NATIVE_STACK_RELEASE_PROOF === "true"
+  const connectionProof =
+    process.env.NATIVE_STACK_CONNECTION_PROOF === "true"
+      ? await import("../release-barrier/connection-proof.mjs")
+      : undefined;
+  const inspect = connectionProof
+    ? (stack) =>
+        connectionProof.proveConnectionPlan(
+          stack,
+          (inspectNext) => {
+            process.env.BASALT_RELEASE_ATTEMPT = "00000000-0000-4000-8000-000000000002";
+            return evalStack(actualRoot, inspectNext, { stage: settings.ALCHEMY_STAGE });
+          },
+          process.env.NATIVE_STACK_CONNECTION_CHANGE,
+        )
+    : process.env.NATIVE_STACK_RELEASE_PROOF === "true"
       ? (await import("../release-phases/proof.mjs")).proveReleasePhases
       : (stack) =>
           Effect.sync(() =>

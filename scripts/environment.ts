@@ -294,6 +294,7 @@ export function deployEnvironment(
     PLANETSCALE_REGION: deployment.databaseRegion,
     PLANETSCALE_CLUSTER_SIZE: deployment.databaseClusterSize,
     CLOUD_PLACEMENT_REGION: deployment.placementRegion,
+    BASALT_RELEASE_CANDIDATE: release,
     EXECUTOR_BUILD_VERSION: commit,
     // Released framework assets are immutable. Test and preview overrides do not opt in.
     EXECUTOR_COMPILER_CACHE_RELEASE: release,
