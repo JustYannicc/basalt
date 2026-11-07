@@ -1,0 +1,7 @@
+model {
+  extend basalt.catalog {
+    metadata {
+      constraint "Catalog connection guidance binds exact requirement and method names without changing credential identity. WorkOS management sign-in and its retained API-key provider use separate credentials and require approval for every mutation; switching methods offers only declared, same-scope requirements the server allows the caller to connect."
+    }
+  }
+}
