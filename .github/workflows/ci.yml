@@ -407,6 +407,8 @@ jobs:
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
         uses: ./.github/actions/setup-browser
+      - name: Verify browser navigation waits for hydration
+        run: node --test e2e/browser-hydration.test.mjs
       - name: Verify shared identities and incremental consent
         working-directory: .upstream
         run: >-

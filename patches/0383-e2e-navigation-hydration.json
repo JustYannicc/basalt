@@ -1,0 +1,9 @@
+{
+  "identity": "e2e-navigation-hydration",
+  "file": "0383-e2e-navigation-hydration.patch",
+  "content_sha256": "96d5565cad65eb81865c82c4aff351447651cbb62cde5463aff108d2a579031f",
+  "kind": "upstream",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

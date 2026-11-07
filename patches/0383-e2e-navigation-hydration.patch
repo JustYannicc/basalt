@@ -1,0 +1,214 @@
+diff --git a/e2e/support/browser-navigation.ts b/e2e/support/browser-navigation.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/browser-navigation.ts
+@@ -0,0 +1,64 @@
++import type { Page } from "playwright";
++
++const documentIsInteractive = () => {
++  const root = document.documentElement;
++  if (!root.hasAttribute("data-dashboard")) return true;
++  if (!root.hasAttribute("data-hydrated") || "$_TSR" in window) return false;
++  // Streamed regions respond only after React reveals them and attaches their fibers.
++  // Walking comment nodes avoids traversing every element in large account tables.
++  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_COMMENT);
++  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
++    if (!(node instanceof Comment)) continue;
++    if (node.data === "$?" || node.data === "$~") return false;
++    if (node.data !== "$") continue;
++    let first = node.nextSibling;
++    while (
++      first !== null &&
++      !(first instanceof Element) &&
++      !(first instanceof Comment && first.data === "/$")
++    )
++      first = first.nextSibling;
++    if (
++      first instanceof Element &&
++      !Object.keys(first).some((key) => key.startsWith("__reactFiber$"))
++    )
++      return false;
++  }
++  return true;
++};
++
++/** Gate navigation promises so a chained action cannot reach inert server-rendered controls. */
++export const guardNavigation = (page: Page) => {
++  let responsive = false;
++  page.on("framenavigated", (frame) => {
++    if (frame === page.mainFrame()) responsive = false;
++  });
++  const interactive = async () => {
++    if (responsive) return;
++    const ready = await page.waitForFunction(documentIsInteractive, undefined, {
++      timeout: 10000,
++      polling: 50,
++    });
++    await ready.dispose();
++    responsive = true;
++  };
++  const completed = async <A>(navigation: Promise<A>, waitUntil: string | undefined) => {
++    const result = await navigation;
++    // Explicit commit navigation is the existing escape hatch for first-paint and early-input proofs.
++    if (waitUntil !== "commit") await interactive();
++    return result;
++  };
++  const goto = page.goto.bind(page);
++  const reload = page.reload.bind(page);
++  const back = page.goBack.bind(page);
++  const forward = page.goForward.bind(page);
++  page.goto = (url, options) => completed(goto(url, options), options?.waitUntil);
++  page.reload = (options) => completed(reload(options), options?.waitUntil);
++  page.goBack = (options) => completed(back(options), options?.waitUntil);
++  page.goForward = (options) => completed(forward(options), options?.waitUntil);
++  return () =>
++    interactive().catch(() => {
++      // Deliberately blocked documents retain the driver's existing best-effort end-of-step wait.
++      responsive = true;
++    });
++};
+diff --git a/e2e/support/browser.ts b/e2e/support/browser.ts
+--- a/e2e/support/browser.ts
++++ b/e2e/support/browser.ts
+@@ -18,7 +18,6 @@
+   Layer,
+   Redacted,
+   Result,
+-  Schedule,
+ } from "effect";
+ import { Target, driver, type DriverFailed } from "./platform.ts";
+ import { targetHosts } from "./role-hosts.ts";
+@@ -27,6 +26,7 @@
+ import type { Session } from "./api.ts";
+ import { RecordingFocus } from "./recording-focus.ts";
+ import { captureUIObservations } from "./ui-observation.ts";
++import { guardNavigation } from "./browser-navigation.ts";
+ 
+ const launchBrowser = (
+   options: { readonly headless: boolean; readonly slowMo: number },
+@@ -109,8 +109,6 @@
+         originMatches?: boolean;
+       }[] = [];
+       let page: Page | undefined;
+-      // Whether the current document has been seen responding to input; see `interactive`.
+-      let responsive = false;
+       let tracing = true;
+       const context = yield* driver("create browser context", () =>
+         browser.newContext({
+@@ -219,6 +217,7 @@
+           const started = yield* Clock.currentTimeMillis;
+           page = yield* driver("open browser page", () => context.newPage());
+           const current = page;
++          const interactive = guardNavigation(current);
+           // Profile from the page's first script.
+           yield* driver(
+             "start browser coverage",
+@@ -235,7 +234,6 @@
+           current.setDefaultNavigationTimeout(30000);
+           current.on("framenavigated", (frame) => {
+             if (frame === current.mainFrame()) {
+-              responsive = false;
+               const url = new URL(frame.url());
+               const now = clock.currentTimeMillisUnsafe();
+               navigations.push({
+@@ -292,84 +290,17 @@
+                   : "NETWORK_ERROR",
+             });
+           });
+-          return { page: current, focus, capture };
++          return { page: current, focus, capture, interactive };
+         }),
+       );
+-      // Dashboard documents arrive rendered but respond to input only once hydrated, as for
+-      // a person waiting for the page's scripts. Regions stream in after the page itself
+-      // hydrates; TanStack removes `$_TSR` once the router has hydrated and the whole document
+-      // has arrived. Other pages, such as sign-in providers, do not wait. A scenario that stops
+-      // a dashboard from starting continues after the wait expires; its own assertions decide
+-      // the outcome.
+-      // The check walks only comment nodes natively, so it stays cheap on a page with a very
+-      // large DOM. An evaluation that a navigation interrupts is repeated on the new document.
+-      // Once a document responds or the wait expires, later steps skip the check until the page
+-      // navigates again.
+-      const interactive = (page: Page) =>
+-        Effect.suspend(() =>
+-          responsive
+-            ? Effect.void
+-            : driver("page responds to input", () =>
+-                page.evaluate(() => {
+-                  const root = document.documentElement;
+-                  if (!root.hasAttribute("data-dashboard")) return true;
+-                  if (!root.hasAttribute("data-hydrated") || "$_TSR" in window) return false;
+-                  // Regions streamed into the page hydrate after the page itself. React marks
+-                  // each element it has hydrated; the first element of every completed region
+-                  // must carry that mark.
+-                  // A region that has arrived is not shown at once: React batches reveals and
+-                  // may hold one for several hundred milliseconds after the router hydrates.
+-                  // Until then the region is marked `$?` or `$~`, its fallback is on screen and
+-                  // its content waits in a hidden element that does not respond to input.
+-                  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_COMMENT);
+-                  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+-                    if (!(node instanceof Comment)) continue;
+-                    if (node.data === "$?" || node.data === "$~") return false;
+-                    if (node.data !== "$") continue;
+-                    // The region ends at its closing marker; an empty region has no element.
+-                    let first = node.nextSibling;
+-                    while (
+-                      first !== null &&
+-                      !(first instanceof Element) &&
+-                      !(first instanceof Comment && first.data === "/$")
+-                    )
+-                      first = first.nextSibling;
+-                    if (
+-                      first instanceof Element &&
+-                      !Object.keys(first).some((key) => key.startsWith("__reactFiber$"))
+-                    )
+-                      return false;
+-                  }
+-                  return true;
+-                }),
+-              ).pipe(
+-                Effect.flatMap((ready) =>
+-                  ready
+-                    ? Effect.sync(() => {
+-                        responsive = true;
+-                      })
+-                    : Effect.fail("hydrating" as const),
+-                ),
+-                Effect.retry({ schedule: Schedule.spaced("50 millis") }),
+-                Effect.timeout("10 seconds"),
+-                Effect.ignore,
+-                // Wait once per document. A document that never responds is not waited on again
+-                // by later steps until the page navigates.
+-                Effect.ensuring(
+-                  Effect.sync(() => {
+-                    responsive = true;
+-                  }),
+-                ),
+-              ),
+-        );
+       const use = <A>(label: string, action: (page: Page) => Promise<A>) =>
+         evidence.step(
+           label,
+-          Effect.flatMap(getPage, ({ page, focus, capture }) =>
++          Effect.flatMap(getPage, ({ page, focus, capture, interactive }) =>
+             focus.use(
+               label,
+               driver(label, () => action(page)).pipe(
+-                Effect.tap(() => interactive(page)),
++                Effect.tap(() => driver("page responds to input", interactive)),
+                 Effect.tap(() => capture.settle),
+               ),
+             ),
+diff --git a/e2e/tests/route-loading.spec.ts b/e2e/tests/route-loading.spec.ts
+--- a/e2e/tests/route-loading.spec.ts
++++ b/e2e/tests/route-loading.spec.ts
+@@ -77,7 +77,8 @@
+           }),
+         ),
+     )
+-    .then(() => page.goto(path, { waitUntil: "load" }))
++    .then(() => page.goto(path, { waitUntil: "commit" }))
++    .then(() => page.waitForLoadState("load"))
+     .then(() =>
+       Promise.all([
+         headings(page),
