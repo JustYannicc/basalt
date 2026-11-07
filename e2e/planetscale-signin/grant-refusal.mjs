@@ -21,7 +21,7 @@ export const verifyRefusedGrant = ({
     );
     const attempt = yield* request(
       "POST",
-      `${prefix}/connections/${connection.connection}/oauth/start`,
+      `${prefix}/connections/${connection.id}/oauth/start`,
       { method: "signIn" },
     );
     yield* browser.use(
@@ -32,7 +32,11 @@ export const verifyRefusedGrant = ({
           .getByRole("heading", { name: "PlanetScale test authorization", exact: true })
           .waitFor();
         await page.getByRole("button", { name: "Authorize", exact: true }).click();
-        await page.getByText("Some access was not granted", { exact: true }).waitFor();
+        const failed = page.getByRole("heading", {name: "Account not connected", exact: true});
+        const saved = page.getByRole("dialog", {name: "Name this account", exact: true});
+        await failed.or(saved).waitFor();
+        assert.equal(await saved.count(), 0, "A missing required grant must not save an account");
+        await failed.waitFor();
         await page
           .getByText("Your existing sign-in and connected apps still work.", { exact: true })
           .waitFor();
@@ -69,7 +73,7 @@ export const verifyRefusedGrant = ({
         await noOverflow(page);
       },
     );
-    const failure = yield* request("GET", `${prefix}/connections/${connection.connection}`);
+    const failure = yield* request("GET", `${prefix}/connections/${connection.id}`);
     assert.equal(failure.state.status, "pending");
     assert.equal(failure.state.failure.error.reason, "scope_missing");
     assert.deepEqual(sorted(failure.state.failure.error.requestedScopes), sorted(hostedScopes));

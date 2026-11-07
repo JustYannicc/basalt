@@ -52,7 +52,7 @@ export const verifyPlanetScaleConnections = ({
       const dialog = await openConnect(page);
       await dialog.getByRole("button", { name: "Sign in with PlanetScale", exact: true }).waitFor();
       await dialog
-        .getByText("Sign in to manage your PlanetScale databases, branches and deploy requests.", {
+        .getByText("Connect your PlanetScale account to use its API tools.", {
           exact: true,
         })
         .waitFor();
