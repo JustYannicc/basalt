@@ -1387,10 +1387,10 @@ index 0000000..4b67015
 +  });
 diff --git a/e2e/support/tool-availability-retained.ts b/e2e/support/tool-availability-retained.ts
 new file mode 100644
-index 0000000..d39951b
+index 0000000..6751a25
 --- /dev/null
 +++ b/e2e/support/tool-availability-retained.ts
-@@ -0,0 +1,109 @@
+@@ -0,0 +1,118 @@
 +import { expect } from "@effect/vitest";
 +import { Effect, Schedule, Schema } from "effect";
 +import { Api, body } from "./api.ts";
@@ -1402,7 +1402,7 @@ index 0000000..d39951b
 +const Run = Schema.Struct({ status: Schema.String, output: Schema.optionalKey(Schema.Json) });
 +
 +/** A real published protocol-12 framework has workflows but no native tool-policy callback. */
-+export const verifyRetainedToolAvailability = Effect.gen(function* () {
++const retainedApp = Effect.gen(function* () {
 +  const api = yield* Api,
 +    actors = yield* Actors;
 +  const archive = yield* publishedRelease("0.0.1-beta.84");
@@ -1427,6 +1427,11 @@ index 0000000..d39951b
 +  const app = yield* body(Resource, response);
 +  const path = `${prefix}/apps/${app.id}`;
 +  yield* Effect.addFinalizer(() => api.request(actors.owner, "DELETE", path).pipe(Effect.orDie));
++  return { api, actors, archive, path };
++});
++
++export const verifyRetainedToolAvailability = Effect.gen(function* () {
++  const { api, actors, path } = yield* retainedApp;
 +  const run = () =>
 +    Effect.gen(function* () {
 +      const started = yield* api.request(actors.owner, "POST", `${path}/workflow-runs`, {
@@ -1465,8 +1470,12 @@ index 0000000..d39951b
 +  });
 +  expect(restore.status, JSON.stringify(restore.body)).toBe(200);
 +  expect(yield* run()).toEqual({ executed: true });
++});
++
++export const verifyAvailabilityUpgrade = Effect.gen(function* () {
++  const { api, actors, archive, path } = yield* retainedApp;
 +  const writesOff = yield* api.request(actors.owner, "PATCH", `${path}/tool-availability`, {
-+    revision: 2,
++    revision: 0,
 +    changes: [{ kind: "writes", enabled: false }],
 +  });
 +  expect(writesOff.status).toBe(200);
@@ -1491,7 +1500,7 @@ index 0000000..d39951b
 +      .body,
 +  ).toEqual({ executed: true });
 +  const enabled = yield* api.request(actors.owner, "PATCH", `${path}/tool-availability`, {
-+    revision: 3,
++    revision: 1,
 +    changes: [{ kind: "tool", tool: "added", enabled: true }],
 +  });
 +  expect(enabled.status).toBe(200);
@@ -1502,10 +1511,10 @@ index 0000000..d39951b
 +});
 diff --git a/e2e/support/tool-availability-ui.ts b/e2e/support/tool-availability-ui.ts
 new file mode 100644
-index 0000000..db42d2a
+index 0000000..5ac1c8b
 --- /dev/null
 +++ b/e2e/support/tool-availability-ui.ts
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,176 @@
 +import { expect } from "@effect/vitest";
 +import { Effect } from "effect";
 +import { Browser } from "./browser.ts";
@@ -1578,6 +1587,12 @@ index 0000000..db42d2a
 +    );
 +  yield* browser.use("Wait for the phone switch", (page) =>
 +    page.getByRole("switch", { name: "Enable records.write", exact: true }).first().waitFor(),
++  );
++  yield* browser.use("Wait for the phone list to finish opening", (page) =>
++    page.waitForFunction(() => {
++      const panel = document.getElementById("tools-list-panel");
++      return panel !== null && getComputedStyle(panel).opacity === "1";
++    }),
 +  );
 +  const box = yield* browser.use("Measure phone switch hit target", (page) =>
 +    page.getByRole("switch", { name: "Enable records.write", exact: true }).first().boundingBox(),
@@ -1778,11 +1793,14 @@ index 0000000..90704ae
 +});
 diff --git a/e2e/tests/tool-availability.spec.ts b/e2e/tests/tool-availability.spec.ts
 new file mode 100644
-index 0000000..40c63c2
+index 0000000..01f8d63
 --- /dev/null
 +++ b/e2e/tests/tool-availability.spec.ts
-@@ -0,0 +1,276 @@
-+import { verifyRetainedToolAvailability } from "../support/tool-availability-retained.ts";
+@@ -0,0 +1,282 @@
++import {
++  verifyAvailabilityUpgrade,
++  verifyRetainedToolAvailability,
++} from "../support/tool-availability-retained.ts";
 +import { verifyAvailabilityPages } from "../support/tool-availability-pages.ts";
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
@@ -1814,6 +1832,9 @@ index 0000000..40c63c2
 +});
 +
 +layer(HostedLive, { excludeTestServices: true })("App tool availability", (it) => {
++  it.effect(scenarios.toolAvailabilityUpgrade.title, (context) =>
++    withHostedCase(context, verifyAvailabilityUpgrade),
++  );
 +  it.effect(scenarios.toolAvailabilityAgent.title, (context) =>
 +    withHostedCase(
 +      context,

@@ -19,12 +19,32 @@
           "reason": "Hosted app instance availability follows organization app management authority."
         }
       }
+    },
+    "toolAvailabilityUpgrade": {
+      "fixtures": "actors",
+      "title": "new write tools stay off when a retained app upgrades",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-run",
+          "reason": "Managed local Cloud source upgrades require remote Git storage credentials. The same persisted availability and upgrade path is verified on self-host; Cloud tests cover retained workflow dispatch separately."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted app availability follows organization app management authority."
+        }
+      }
     }
   },
   "runs": {
     "toolAvailabilityAgent": [
       "declared:self-host",
       "declared:cloud"
+    ],
+    "toolAvailabilityUpgrade": [
+      "declared:self-host"
     ]
   },
   "inputs": [
