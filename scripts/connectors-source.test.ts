@@ -9,6 +9,7 @@ import { verifyConnectorsSource } from "./connectors-source.ts";
 import { poolWorkerRevisionPath, poolWorkerRevisionSource } from "./pool-worker-revision.ts";
 import { bundlePoolApp } from "./pool-app-bundle.ts";
 import { prepareTestPlans } from "./ci/declarations.ts";
+import { prepareE2e } from "./ci/prepare-e2e.ts";
 
 function verifyFixture(declaredPlans: boolean) {
   const root = mkdtempSync(join(tmpdir(), "connectors-source-test-"));
@@ -42,6 +43,9 @@ function verifyFixture(declaredPlans: boolean) {
       ".upstream/packages/ui/src/implementation/styles/fonts/LICENSE.txt": "license",
     }))
       write(path, content);
+    const inventorySource = ".upstream/e2e/tests/hitl-intent-scope.spec.ts";
+    const observerSource = ".upstream/e2e/support/document-requests.ts";
+    if (declaredPlans) write(inventorySource, "export const documentScoped = false;\n");
     const pin = initialize(upstream);
     write(".upstream/packages/example.ts", "export const carried = true;\n");
     const requiredSource = ".upstream/packages/required.ts";
@@ -80,6 +84,24 @@ function verifyFixture(declaredPlans: boolean) {
           config: [{ job: "fast", config: "example.config.ts" }],
         }),
       );
+      write(inventorySource, "export const documentScoped = true;\n");
+      write(observerSource, "export const observeDocument = true;\n");
+      git(upstream, "add", "-N", "e2e/support/document-requests.ts");
+      write(
+        "e2e/hitl-inventory-lifetime.patch",
+        git(
+          upstream,
+          "diff",
+          "--",
+          "e2e/tests/hitl-intent-scope.spec.ts",
+          "e2e/support/document-requests.ts",
+        ) + "\n",
+      );
+      write(inventorySource, "export const documentScoped = false;\n");
+      rmSync(join(root, observerSource));
+      prepareTestPlans(root, join(root, "plans-only"));
+      prepareE2e(root, upstream);
+      prepareE2e(root, upstream);
       prepareTestPlans(root, upstream);
     }
     const release = initialize(root);
@@ -98,6 +120,14 @@ function verifyFixture(declaredPlans: boolean) {
       commit: pin,
       patches: ["0001-example.patch"],
     });
+    if (declaredPlans) {
+      write(inventorySource, "export const documentScoped = false;\n");
+      assert.throws(() => verifyConnectorsSource(root), /differs from the carried patch set/);
+      write(inventorySource, "export const documentScoped = true;\n");
+      rmSync(join(root, observerSource));
+      assert.throws(() => verifyConnectorsSource(root));
+      write(observerSource, "export const observeDocument = true;\n");
+    }
     rmSync(join(root, requiredSource));
     assert.throws(() => verifyConnectorsSource(root));
     write(requiredSource, "export const required = true;\n");

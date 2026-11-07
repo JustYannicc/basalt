@@ -1,0 +1,336 @@
+diff --git a/e2e/support/document-requests.ts b/e2e/support/document-requests.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/document-requests.ts
+@@ -0,0 +1,82 @@
++import type { Page, Request } from "playwright";
++
++export type RequestEvent = "request" | "requestfinished" | "requestfailed";
++export interface RequestEvents {
++  mainFrame: Page["mainFrame"];
++  on(event: "request", listener: (request: Request) => void): unknown;
++  on(event: "requestfinished", listener: (request: Request) => void): unknown;
++  on(event: "requestfailed", listener: (request: Request) => void): unknown;
++  off(event: "request", listener: (request: Request) => void): unknown;
++  off(event: "requestfinished", listener: (request: Request) => void): unknown;
++  off(event: "requestfailed", listener: (request: Request) => void): unknown;
++}
++
++type Waiter = (error?: Error) => void;
++type Generation = {
++  pending: Set<Request>;
++  waiters: Set<Waiter>;
++  failure?: Error;
++};
++const generation = (): Generation => ({
++  pending: new Set<Request>(),
++  waiters: new Set<Waiter>(),
++});
++
++/** Network events can outlive a document, especially when a test route holds the old request. */
++export const documentRequests = (page: RequestEvents, matches: (request: Request) => boolean) => {
++  let current = generation();
++  const notify = () => {
++    if (current.pending.size > 0 && current.failure === undefined) return;
++    for (const waiter of current.waiters) waiter(current.failure);
++  };
++  const close = (error: Error) => {
++    for (const waiter of current.waiters) waiter(error);
++    current.pending.clear();
++  };
++  const requested = (request: Request) => {
++    // A history change stays in this document; only a main-frame document request replaces it.
++    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
++      close(new Error("The document changed before its requests settled"));
++      current = generation();
++    }
++    if (matches(request)) current.pending.add(request);
++  };
++  const finished = (request: Request) => {
++    if (current.pending.delete(request)) notify();
++  };
++  const failed = (request: Request) => {
++    if (!current.pending.delete(request)) return;
++    current.failure = new Error("A current-document request failed");
++    notify();
++  };
++  page.on("request", requested);
++  page.on("requestfinished", finished);
++  page.on("requestfailed", failed);
++  return {
++    wait: () => {
++      const observed = current;
++      if (observed.failure !== undefined) return Promise.reject(observed.failure);
++      if (observed.pending.size === 0) return Promise.resolve();
++      return new Promise<void>((resolve, reject) => {
++        const settled: Waiter = (error) => {
++          clearTimeout(timeout);
++          observed.waiters.delete(settled);
++          if (error === undefined) resolve();
++          else reject(error);
++        };
++        // Keep Browser's 15 second operation deadline on the driver clock, not the page's fake clock.
++        const timeout = setTimeout(
++          () => settled(new Error("Document requests did not settle within 15000ms")),
++          15_000,
++        );
++        observed.waiters.add(settled);
++      });
++    },
++    close: () => {
++      page.off("request", requested);
++      page.off("requestfinished", finished);
++      page.off("requestfailed", failed);
++      close(new Error("The request observer closed before its requests settled"));
++    },
++  };
++};
+diff --git a/e2e/tests/hitl-intent-scope.spec.ts b/e2e/tests/hitl-intent-scope.spec.ts
+--- a/e2e/tests/hitl-intent-scope.spec.ts
++++ b/e2e/tests/hitl-intent-scope.spec.ts
+@@ -13,6 +13,7 @@
+ import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
+ import { batchedReads, batchPath } from "../support/read-batches.ts";
+ import { workflowInputFixture } from "../support/workflow-input-fixture.ts";
++import { documentRequests } from "../support/document-requests.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ type QueueRead = {
+@@ -138,25 +139,31 @@
+           const answered: QueueRead[] = [];
+           const blocked: string[] = [];
+           let viewLoaded = yield* Deferred.make<void>();
+-          let inventoryInFlight = 0;
+           const record = (request: Request) => {
+             reads.push(...queueReads(request));
+             const bad = forbidden(request);
+             if (bad !== null) blocked.push(bad);
+-            if (readsInventory(request)) inventoryInFlight += 1;
+           };
+           const finished = (request: Request) => {
+             answered.push(...queueReads(request));
+-            if (readsInventory(request)) inventoryInFlight -= 1;
+             if (viewCode.test(new URL(request.url()).pathname))
+               Deferred.doneUnsafe(viewLoaded, Effect.void);
+           };
+-          const failed = (request: Request) => {
+-            if (readsInventory(request)) inventoryInFlight -= 1;
+-          };
+           const endpoints = () => reads.map((read) => read.endpoint).sort();
+ 
+           yield* browser.login(actors.owner);
++          const inventory = yield* Effect.acquireRelease(
++            browser.use("Observe this document's inventory requests", (page) =>
++              Promise.resolve(documentRequests(page, readsInventory)),
++            ),
++            (observer) =>
++              browser
++                .use("Stop observing inventory requests", () => {
++                  observer.close();
++                  return Promise.resolve();
++                })
++                .pipe(Effect.orDie),
++          );
+           yield* Effect.acquireRelease(
+             browser.use("Observe queue reads with the browser clock", (page) =>
+               page.clock
+@@ -172,7 +179,6 @@
+                 .then(() => {
+                   page.on("request", record);
+                   page.on("requestfinished", finished);
+-                  page.on("requestfailed", failed);
+                   return page.setViewportSize({ width, height: 844 });
+                 }),
+             ),
+@@ -181,7 +187,6 @@
+                 .use("Stop observing queue reads", (page) => {
+                   page.off("request", record);
+                   page.off("requestfinished", finished);
+-                  page.off("requestfailed", failed);
+                   return Promise.resolve();
+                 })
+                 .pipe(Effect.orDie),
+@@ -264,13 +269,7 @@
+                   ),
+                 ),
+               );
+-              yield* browser.use(`${label}: the inventory answers`, (page) => {
+-                const drained = (): Promise<void> =>
+-                  inventoryInFlight === 0
+-                    ? Promise.resolve()
+-                    : page.waitForEvent("requestfinished", readsInventory).then(drained);
+-                return drained();
+-              });
++              yield* browser.use(`${label}: the inventory answers`, () => inventory.wait());
+               yield* Deferred.await(viewLoaded);
+               yield* settle(`${label}: the answer settles`);
+             });
+diff --git a/e2e/tests/hitl-inventory-lifetime.spec.ts b/e2e/tests/hitl-inventory-lifetime.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/hitl-inventory-lifetime.spec.ts
+@@ -0,0 +1,164 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect } from "effect";
++import type { Page, Request } from "playwright";
++import { Actors } from "../support/actors.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import {
++  documentRequests,
++  type RequestEvent,
++  type RequestEvents,
++} from "../support/document-requests.ts";
++import { holdQuery } from "../support/query-transition.ts";
++import { scenarios } from "../test-plan.ts";
++
++const inventoryPath = /^\/api\/organizations\/[^/]+\/inventory$/;
++const readsInventory = (request: Request) =>
++  request.method() === "GET" && inventoryPath.test(new URL(request.url()).pathname);
++
++/** Delay only the old Request's terminal notifications, independent of browser cancellation order. */
++const controlledRequests = (page: Page) => {
++  const held = new Set<Request>();
++  const listeners = {
++    request: new Set<(request: Request) => void>(),
++    requestfinished: new Set<(request: Request) => void>(),
++    requestfailed: new Set<(request: Request) => void>(),
++  };
++  const deliver = (event: RequestEvent, request: Request) => {
++    for (const listener of listeners[event]) listener(request);
++  };
++  const requested = (request: Request) => deliver("request", request);
++  const finished = (request: Request) => {
++    if (!held.has(request)) deliver("requestfinished", request);
++  };
++  const failed = (request: Request) => {
++    if (!held.has(request)) deliver("requestfailed", request);
++  };
++  page.on("request", requested);
++  page.on("requestfinished", finished);
++  page.on("requestfailed", failed);
++  const source: RequestEvents = {
++    mainFrame: () => page.mainFrame(),
++    on: (event, listener) => listeners[event].add(listener),
++    off: (event, listener) => listeners[event].delete(listener),
++  };
++  return {
++    source,
++    hold: (request: Request) => held.add(request),
++    deliver,
++    close: () => {
++      page.off("request", requested);
++      page.off("requestfinished", finished);
++      page.off("requestfailed", failed);
++    },
++  };
++};
++
++layer(HostedLive, { excludeTestServices: true })("Inventory request lifetimes", (it) => {
++  it.effect(scenarios.hitlInventoryDocumentLifetime.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const browser = yield* Browser;
++        const actors = yield* Actors;
++        yield* browser.login(actors.owner);
++        const tracked = yield* Effect.acquireRelease(
++          browser.use("Observe inventory by document", (page) => {
++            const events = controlledRequests(page);
++            return Promise.resolve({
++              observer: documentRequests(events.source, readsInventory),
++              events,
++            });
++          }),
++          ({ observer, events }) =>
++            browser
++              .use("Close the inventory observer", () => {
++                observer.close();
++                events.close();
++                return Promise.resolve();
++              })
++              .pipe(Effect.orDie),
++        );
++        const { observer, events } = tracked;
++        const inventory = `/api/organizations/${actors.organization.slug}/inventory`;
++        const document = `/org/${actors.organization.slug}/connect`;
++        const startInventory = (label: string) =>
++          browser.use(label, (page) =>
++            Promise.all([
++              page.waitForRequest(readsInventory),
++              page.evaluate((path) => {
++                void fetch(path)
++                  .then((response) => response.arrayBuffer())
++                  .catch(() => undefined);
++              }, inventory),
++            ]).then(([request]) => request),
++          );
++        const beginWait = (label: string) =>
++          browser.use(label, () =>
++            Promise.resolve({
++              outcome: observer.wait().then(
++                () => ({ status: "settled" as const }),
++                (error: unknown) => ({
++                  status: "failed" as const,
++                  message: error instanceof Error ? error.message : "Unknown driver failure",
++                }),
++              ),
++            }),
++          );
++
++        for (const terminal of ["requestfinished", "requestfailed"] as const) {
++          yield* browser.use(`Open the old document for ${terminal}`, (page) =>
++            page.goto(document),
++          );
++          const oldHold = yield* holdQuery(inventoryPath, "continue");
++          const old = yield* startInventory("Start an old inventory GET and hold it");
++          yield* oldHold.requested;
++          events.hold(old);
++          yield* browser.use("Navigate while the old inventory is held", (page) =>
++            page.goto(document),
++          );
++          const currentHold = yield* holdQuery(inventoryPath, "continue");
++          const current = yield* startInventory("Start the new document's inventory GET");
++          yield* currentHold.requested;
++          const waiting = yield* beginWait("Wait for the new document's inventory");
++          yield* currentHold.release;
++          const result = yield* browser.use(
++            "The new inventory settles without the old one",
++            () => waiting.outcome,
++          );
++          expect(result, "The old document must not keep the new inventory pending").toEqual({
++            status: "settled",
++          });
++          const status = yield* browser.use("The real inventory GET succeeded", () =>
++            current.response().then((response) => response?.status()),
++          );
++          expect(status).toBe(200);
++          // Replay both terminal orders with the actual old Request. Browsers may report its
++          // cancellation before or after a held route is released.
++          yield* browser.use(`Deliver a late ${terminal} for the old document`, () => {
++            events.deliver(terminal, old);
++            return observer.wait();
++          });
++          yield* oldHold.release;
++        }
++
++        const failing = yield* holdQuery(inventoryPath, "fail");
++        yield* startInventory("Start a current inventory GET that will fail");
++        yield* failing.requested;
++        yield* browser.use("A same-document history change keeps the current request", (page) =>
++          page.evaluate(() => history.pushState(history.state, "", "?inventory-lifetime=1")),
++        );
++        const waiting = yield* beginWait("Wait before the current request fails");
++        yield* failing.release;
++        const failure = yield* browser.use(
++          "A current request failure wakes and rejects the wait",
++          () => waiting.outcome,
++        );
++        expect(failure).toEqual({ status: "failed", message: "A current-document request failed" });
++        yield* browser.use("The current failure remains visible to a later wait", () =>
++          expect(observer.wait()).rejects.toThrow("A current-document request failed"),
++        );
++      }),
++    ),
++  );
++});
