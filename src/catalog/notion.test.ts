@@ -81,7 +81,7 @@ test("Notion patch reproduces every carried file including the full index", () =
 
 test("Notion account checks use synthetic REST and MCP peers", () => {
   assert.match(
-    execFileSync("bun", ["src/catalog/notion-health.fixture.mjs"], {
+    execFileSync("bun", ["scripts/connectors-tests/notion-health.mjs"], {
       encoding: "utf8",
       cwd: fileURLToPath(new URL("../../", import.meta.url)),
       timeout: 60_000,

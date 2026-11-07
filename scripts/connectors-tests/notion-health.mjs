@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { Effect } from "effect";
-import source from "./notion.json" with { type: "json" };
+import source from "../../src/catalog/notion.json" with { type: "json" };
 
 let value = { id: "bot-synthetic", bot: { workspace_name: "Design workspace" } };
 let mode = "structured";
