@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "General hosted product services do not provide StatementBatch, and Cloud invocation pools do not enable statement grouping. Public data query and mutation requests use ordered live SDK reads after product authorization and caller-account selection. Account replacement, unlinking, relinking, caller isolation, access revocation and typed error responses retain their existing behavior. MCP keeps its own batch providers, joined account reads and object database grouping; SDK prefetch capabilities and App UI dispatch remain unchanged."
+    }
+  }
+}

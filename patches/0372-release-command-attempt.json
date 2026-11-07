@@ -1,0 +1,11 @@
+{
+  "identity": "release-command-attempt",
+  "file": "0372-release-command-attempt.patch",
+  "content_sha256": "72dcde20f30ea0b0f65c00a5eae42f464f63c68bc18bbdb3491369e82539fa9c",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false,
+  "remove_with": "upstream-release-command-settings",
+  "requires": "Release attempt identity is consumed only by deploy Commands, never through Worker Config binding interception."
+}

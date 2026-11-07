@@ -1,3 +1,4 @@
+import { requiredReleaseCommandAttempt } from "../../.upstream/apps/hosted/cloud/src/infrastructure/release-command-attempt.ts";
 import * as Command from "alchemy/Command";
 import * as Output from "alchemy/Output";
 import * as Planetscale from "alchemy/Planetscale";
@@ -96,9 +97,7 @@ export const poolDatabaseInfrastructure = Effect.gen(function* () {
       ? undefined
       : (yield* productionDatabaseMigration).migrations;
   const attempt =
-    isPreview || globalThis.__ALCHEMY_RUNTIME__
-      ? ""
-      : yield* Config.NonEmptyString("BASALT_RELEASE_ATTEMPT");
+    isPreview || globalThis.__ALCHEMY_RUNTIME__ ? "" : yield* requiredReleaseCommandAttempt;
   const script = fileURLToPath(new URL("../../scripts/ensure-pool-database.ts", import.meta.url));
   const ready = yield* Command.Exec("PoolDatabase", {
     // Alchemy splits the command on whitespace without a shell, so quotes would reach node literally.

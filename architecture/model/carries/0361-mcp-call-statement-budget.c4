@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Hosted clients register contribution-schema capability only after migration success; active deployment, contribution access and departures remain live SQL policy. Account targets join the selected account row with exact owner and credential-generation matching and are validated before cloud credentials or app code. Tool outcome accounting uses the original completion timestamp and host-owned work under an independent background span linked to the call. Both hosts refuse new work while closing and drain accepted work for at most 20 seconds before shared database and runtime resources close. Counts retain the existing two-second best-effort bound, report storage, timeout, interruption and refusal, and fall back inline when background ownership is unavailable. SQL discard proofs observe the host-owned background constructor, and traffic-failure proofs verify the persistence outcome, SQLSTATE and affected-account count. No crash durability is promised. The unchanged MCP statement budgets run in required self-host and isolated managed Cloud CI jobs. Public data-query composition counts the actual account-row SELECT independently of the ORM wrapper while retaining its one-read and one-batch limits."
+    }
+  }
+}

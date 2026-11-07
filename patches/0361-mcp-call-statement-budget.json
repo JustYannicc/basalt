@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-mcp-call-statement-budget",
+  "file": "0361-mcp-call-statement-budget.patch",
+  "content_sha256": "4dbd99cd89e95a99a070da97bcdb2c9c78700f3ea58d600f55bc3222494669ab",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}

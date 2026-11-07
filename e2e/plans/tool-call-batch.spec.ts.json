@@ -1,0 +1,45 @@
+{
+  "scenarios": {
+    "toolCallBatch": {
+      "fixtures": "actors",
+      "title": "an MCP tool call sends its checks and reads in one batch, reads changed links in one more, and waits for a grant renewed meanwhile",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Reads SQL spans from the self-host Motel collector; cloud-tool-call-batch.spec.ts covers Cloud's batch."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no hosted organization policies."
+        }
+      }
+    }
+  },
+  "runs": {
+    "toolCallBatch": ["declared:self-host"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/implementation/app-link-policy.ts",
+    ".upstream/apps/hosted/server/package.json",
+    ".upstream/apps/hosted/self-host/src/implementation/database-schema.ts",
+    ".upstream/apps/hosted/self-host/src/implementation/executor-services.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/invocation-database.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/executor.ts",
+    ".upstream/packages/sdk/src/implementation/storage-current.ts",
+    ".upstream/packages/sdk/src/implementation/selection.ts",
+    ".upstream/packages/sdk/src/implementation/tools.ts",
+    ".upstream/packages/sdk/src/implementation/account-targets.ts",
+    ".upstream/packages/sdk/src/implementation/account-traffic-store.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-link-schema.ts",
+    ".upstream/apps/hosted/server/src/implementation/background-work.ts",
+    ".upstream/packages/sdk/src/implementation/account-target-read.ts",
+    ".upstream/packages/sdk/src/implementation/account-tool-traffic.ts",
+    ".upstream/packages/sdk/src/implementation/selection-account-store.ts",
+    ".upstream/packages/sdk/src/implementation/storage-runtime.ts",
+    ".upstream/packages/sdk/src/implementation/database.ts"
+  ]
+}

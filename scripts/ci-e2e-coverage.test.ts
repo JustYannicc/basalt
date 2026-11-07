@@ -290,7 +290,9 @@ test("the fast lane checks all current omissions and the known compact row stays
   const recipe = records.find((record) => record.id === "e2e/pool-recipe-checks.mjs")!;
   assert.ok(recipe.selected);
   const errors = coverageErrors(records, []);
-  assert.ok(errors.some((error) => error.includes("tool-call-batch.spec.ts#toolCallBatch")));
+  assert.ok(
+    errors.some((error) => error.includes("account-cache-scope.spec.ts#accountCacheScope")),
+  );
   const workflow = readWorkflow();
   assert.ok(
     workflow.jobs.fast!.steps!.some(
@@ -305,4 +307,27 @@ test("the fast lane checks all current omissions and the known compact row stays
       error.includes("Remove stale E2E exception now selected by CI: e2e/pool-recipe-checks.mjs"),
     ),
   );
+});
+
+test("both MCP budget scenarios are selected and lose coverage when their real runner is removed", () => {
+  const records = realInventory();
+  const exceptions = baseline();
+  for (const { id, job } of [
+    { id: "tool-call-batch.spec.ts#toolCallBatch", job: "declared-self-host" },
+    { id: "cloud-tool-call-batch.spec.ts#cloudMcpCallBatch", job: "declared-cloud" },
+  ]) {
+    assert.ok(records.find((record) => record.id === id)?.selected, id);
+    assert.ok(
+      exceptions.every((group) => group.entries[id] === undefined),
+      id,
+    );
+    const workflow = readWorkflow();
+    workflow.jobs[job]!.steps = [];
+    assert.ok(
+      coverageErrors(realInventory(workflow), exceptions).some((error) =>
+        error.includes(`Ungated E2E: ${id}`),
+      ),
+      id,
+    );
+  }
 });

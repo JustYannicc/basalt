@@ -20,5 +20,13 @@
   "runs": {
     "accountTargets": ["declared:self-host"]
   },
-  "inputs": [".upstream/e2e/tests/account-targets.spec.ts"]
+  "inputs": [
+    ".upstream/e2e/tests/account-targets.spec.ts",
+    ".upstream/packages/sdk/src/implementation/account-targets.ts",
+    ".upstream/packages/sdk/src/implementation/account-target-read.ts",
+    ".upstream/packages/sdk/src/implementation/selection.ts",
+    ".upstream/packages/sdk/src/implementation/selection-account-store.ts",
+    ".upstream/packages/sdk/src/implementation/storage-runtime.ts",
+    ".upstream/e2e/support/account-target-sdk-source.ts"
+  ]
 }

@@ -1,0 +1,1409 @@
+diff --git a/apps/hosted/server/src/implementation/account-identity.ts b/apps/hosted/server/src/implementation/account-identity.ts
+index 6119ee1..27a1ffc 100644
+--- a/apps/hosted/server/src/implementation/account-identity.ts
++++ b/apps/hosted/server/src/implementation/account-identity.ts
+@@ -4,6 +4,9 @@ import {
+   StorageError,
+   type Account,
+   type AccountHealth,
++  type Executor,
++  type ProviderDefinition,
++  providerAccountTitle,
+   AppId,
+ } from "@executor-js/sdk/core";
+ import { AccountListReads } from "./account-list-reads.ts";
+@@ -22,10 +25,13 @@ import {
+ const redactAccount = (
+   account: Account,
+   identityLabels: ReadonlySet<string> | undefined,
+-): Account => ({
+-  ...account,
+-  label: identityLabels?.has(account.label) ? "Connected account" : account.label,
+-});
++): Account => {
++  const { identity: _identity, ...visible } = account;
++  return {
++    ...visible,
++    label: identityLabels?.has(account.label) ? "Connected account" : account.label,
++  };
++};
+ 
+ /** Use retained acquisition identity only to find copied labels, never to authorize identity. */
+ const acquisitionLabels = (accounts: readonly AccountId[]) =>
+@@ -252,3 +258,21 @@ export const visibleAccountStatuses = <
+       };
+     });
+   });
++
++/** Provider refusals use the same redacted metadata as the caller's own account rows. */
++export const visibleProviderAccountTitle = (
++  executor: Pick<Executor, "accounts">,
++  account: Pick<Account, "id" | "owner">,
++  provider: ProviderDefinition,
++  apps: readonly AppId[],
++) =>
++  Effect.gen(function* () {
++    const metadata = yield* executor.accounts.get({ owner: account.owner, account: account.id });
++    const health = yield* executor.accounts.health({
++      owner: account.owner,
++      account: account.id,
++      apps,
++    });
++    const [status] = yield* visibleAccountStatuses([{ account: metadata, health }]);
++    return providerAccountTitle({ ...status!.account, health: status!.health }, provider);
++  });
+diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+index 11b33ed..9f34380 100644
+--- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
++++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+@@ -1,3 +1,5 @@
++import { linkedApps } from "./accounts.ts";
++import { visibleProviderAccountTitle } from "./account-identity.ts";
+ import { AutomaticAccountCheck, automaticCheckAccounts } from "./account-recheck-authority.ts";
+ import { accountIdentityPlacements } from "./account-identity-placement.ts";
+ import { hostedToolPolicy } from "./tool-policy-evaluation.ts";
+@@ -288,6 +290,25 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
+         ),
+       );
+     const lifecycle: ResourceLifecycle = {
++      accountFailureTitle: (input) =>
++        asOwner(
++          input.app.owner,
++          Effect.gen(function* () {
++            const current = yield* executor;
++            const apps = yield* linkedApps(input.account.owner, input.account.id).pipe(
++              Effect.provideService(HostedExecutor, Effect.succeed(current)),
++            );
++            return yield* visibleProviderAccountTitle(
++              current,
++              input.account,
++              input.provider,
++              apps.map((app) => app.id),
++            );
++          }),
++        ).pipe(
++          Effect.provideService(CurrentUserId, input.actor),
++          Effect.mapError(() => new StorageError()),
++        ),
+       appCallAs: (input, work) =>
+         asOwner(
+           input.owner,
+diff --git a/apps/local/web/src/implementation/pages/app-tools.tsx b/apps/local/web/src/implementation/pages/app-tools.tsx
+index bec3084..45d3c77 100644
+--- a/apps/local/web/src/implementation/pages/app-tools.tsx
++++ b/apps/local/web/src/implementation/pages/app-tools.tsx
+@@ -1,4 +1,4 @@
+-import type { AppId } from "@executor-js/sdk";
++import { requirementAccountTitle } from "@executor-js/ui/contracts/account-identities";
+ import { AsyncResult } from "effect/reactivity";
+ import { Failure } from "../components/common.tsx";
+ import { useAtomValue } from "@effect/atom-react";
+@@ -68,15 +68,11 @@ export function AppTools(props: AppToolsProps) {
+       return <AccountSetup app={props.app} disconnected={false} />;
+     case "reconnect":
+       return (
+-        <AccountReconnect app={props.app.id} accounts={readiness.accounts} status="Needs sign-in" />
++        <AccountReconnect app={props.app} accounts={readiness.accounts} status="Needs sign-in" />
+       );
+     case "rejected":
+       return (
+-        <AccountReconnect
+-          app={props.app.id}
+-          accounts={readiness.accounts}
+-          status="Sign-in rejected"
+-        />
++        <AccountReconnect app={props.app} accounts={readiness.accounts} status="Sign-in rejected" />
+       );
+     case "unavailable":
+       return (
+@@ -95,7 +91,7 @@ function AccountReconnect({
+   accounts,
+   status,
+ }: {
+-  readonly app: AppId;
++  readonly app: App;
+   readonly accounts: ReadonlyArray<DashboardAccount>;
+   readonly status: string;
+ }) {
+@@ -109,7 +105,7 @@ function AccountReconnect({
+           <HugeiconsIcon icon={Key01Icon} strokeWidth={2} size={18} aria-hidden />
+           <div>
+             <h2>
+-              {account.label || account.providerName}{" "}
++              {requirementAccountTitle(account, Object.values(app.requirements.accounts))}{" "}
+               <span className="sign-in-status text-sign-in-warning text-[11px] font-medium whitespace-nowrap [.app-account-setup_h2_&]:ml-2">
+                 {status}
+               </span>
+@@ -117,7 +113,7 @@ function AccountReconnect({
+             <p>Sign in again to load tools.</p>
+           </div>
+           <Button asChild>
+-            <Link to="/apps/$appId" params={{ appId: app }} search={{ view: "accounts" }}>
++            <Link to="/apps/$appId" params={{ appId: app.id }} search={{ view: "accounts" }}>
+               Reconnect
+             </Link>
+           </Button>
+@@ -147,7 +143,7 @@ function LiveAppTools({ app, requirements, selected }: AppToolsProps) {
+       .flatMap((entry) => entry.linked)
+       .find((account) => account.id === reconnect.value.account);
+     if (account !== undefined)
+-      return <AccountReconnect app={app.id} accounts={[account]} status="Needs sign-in" />;
++      return <AccountReconnect app={app} accounts={[account]} status="Needs sign-in" />;
+   }
+   return (
+     <ToolBrowser
+diff --git a/e2e/support/provider-error-visibility.ts b/e2e/support/provider-error-visibility.ts
+new file mode 100644
+index 0000000..beff7ce
+--- /dev/null
++++ b/e2e/support/provider-error-visibility.ts
+@@ -0,0 +1,72 @@
++/** A shared unnamed account's tool failures obey the same privacy policy as its account row. */
++import { expect } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { appLinksFixture, ok } from "./app-links.ts";
++import { body } from "./api.ts";
++import { Browser } from "./browser.ts";
++import { Resource } from "./contracts.ts";
++
++const refusal = Schema.Struct({
++  _tag: Schema.Literal("AppProviderFailed"),
++  message: Schema.String,
++  account: Schema.Struct({ label: Schema.String }),
++});
++
++export const providerErrorVisibility = Effect.gen(function* () {
++  const fixture = yield* appLinksFixture([
++    {
++      path: "index.ts",
++      content: `import { defineApp, defineProvider, secrets, query, object, string, router, ProviderError } from "apps";
++const service = defineProvider({ name: "Shared service", auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) },
++  async health() { return { accountInfo: { email: "owner@company.test", displayName: "Hidden Owner" } }; }
++});
++export default defineApp({ app: { accounts: { service } } }, async ({ app: { accounts } }) => ({ tools: router({
++  read: query({ input: object({}) }, async () => { throw new ProviderError({ reason: "forbidden", status: 403, accountId: accounts.service.id }); }),
++}) }));`,
++    },
++  ]);
++  const { api, actors, prefix } = fixture;
++  const browser = yield* Browser;
++  const pending = yield* fixture.start(actors.owner, "app", "service", {
++    kind: "shared",
++    audience: { kind: "everyone" },
++  });
++  yield* ok(pending);
++  const saved = yield* api.request(
++    actors.owner,
++    "POST",
++    `${prefix}/connections/${(yield* body(Resource, pending)).id}/submit`,
++    {
++      method: "key",
++      label: "Default",
++      fields: { token: "synthetic-shared-key" },
++    },
++  );
++  yield* ok(saved);
++  const account = (yield* body(Resource, saved)).id;
++  yield* fixture.saved(actors.owner, account);
++  const checked = yield* api.request(actors.owner, "POST", `${prefix}/accounts/${account}/health`);
++  yield* ok(checked);
++  expect(checked.body).toMatchObject({ info: { email: "owner@company.test" } });
++  for (const [actor, title] of [
++    [actors.member, "Shared service account"],
++    [actors.owner, "owner@company.test"],
++  ] as const) {
++    yield* browser.login(actor);
++    yield* browser.use("Open caller's own Accounts list", (page) =>
++      page.goto(`/org/${actors.organization.slug}/accounts`),
++    );
++    const rowTitle = yield* browser.use("Read caller-visible account title", (page) =>
++      page.locator("[data-account-name]").filter({ hasText: title }).first().innerText(),
++    );
++    const called = yield* fixture.call(actor, "read");
++    expect(called.status, JSON.stringify(called.body)).toBe(502);
++    const error = yield* body(refusal, called);
++    expect(error.account.label).toBe(rowTitle);
++    expect(error.message).toContain(rowTitle);
++    if (actor === actors.member) {
++      expect(JSON.stringify(called.body)).not.toContain("owner@company.test");
++      expect(JSON.stringify(called.body)).not.toContain("Hidden Owner");
++    }
++  }
++});
+diff --git a/e2e/tests/account-identities.spec.ts b/e2e/tests/account-identities.spec.ts
+index f182db3..b7b6870 100644
+--- a/e2e/tests/account-identities.spec.ts
++++ b/e2e/tests/account-identities.spec.ts
+@@ -89,6 +89,46 @@ layer(TestLive, { excludeTestServices: true })("Verified account identities", (i
+           ids.push(account.identity.id);
+           bindings.push(account.id);
+           expect((yield* product.read(app)).status).toBe(200);
++          if (index === 0) {
++            expect(
++              (yield* product.request("PATCH", `/v1/accounts/${account.id}`, { label: "Work" }))
++                .status,
++            ).toBe(200);
++            const source = yield* body(
++              Schema.Struct({
++                files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
++              }),
++              yield* product.request("GET", `/v1/apps/${app}/source`),
++            );
++            const deployed = yield* product.request("POST", "/v1/apps/deploy", {
++              owner: "local",
++              app,
++              files: source.files.map((file) =>
++                file.path === "index.ts"
++                  ? {
++                      ...file,
++                      content: file.content
++                        .replace("query, object,", "query, ProviderError, object,")
++                        .replace(
++                          "tools: router({",
++                          'tools: router({ refuse: query({ input: object({}) }, async () => { throw new ProviderError({ reason: "forbidden", status: 403, accountId: accounts.service.id }); }),',
++                        ),
++                    }
++                  : file,
++              ),
++            });
++            expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++            const refusal = yield* product.request("POST", "/v1/tools/call", {
++              app,
++              tool: "refuse",
++              input: {},
++            });
++            expect(refusal.status).toBe(502);
++            expect(refusal.body).toMatchObject({
++              _tag: "AppProviderFailed",
++              account: { id: account.id, label: "same@example.test" },
++            });
++          }
+         }
+         expect(new Set(ids).size).toBe(1);
+         expect(new Set(bindings).size).toBe(5);
+diff --git a/e2e/tests/provider-errors.spec.ts b/e2e/tests/provider-errors.spec.ts
+index 11d2138..911549a 100644
+--- a/e2e/tests/provider-errors.spec.ts
++++ b/e2e/tests/provider-errors.spec.ts
+@@ -1,3 +1,4 @@
++import { providerErrorVisibility } from "../support/provider-error-visibility.ts";
+ import { expect, layer } from "@effect/vitest";
+ import { Clock, Effect, Schema } from "effect";
+ import { Actors } from "../support/actors.ts";
+@@ -111,7 +112,7 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
+       }).pipe(Effect.orDie),
+     );
+     // Connecting from the app links each account; the account array uses every linked one.
+-    const connect = (label: string) =>
++    const connect = (label: string, savedLabel = label) =>
+       Effect.gen(function* () {
+         const connection = yield* body(
+           Resource,
+@@ -121,12 +122,13 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
+           actors.owner,
+           "POST",
+           `${prefix}/connections/${connection.id}/submit`,
+-          { method: "apiKey", label, fields: { token: `synthetic-${label}` } },
++          { method: "apiKey", label: savedLabel, fields: { token: `synthetic-${label}` } },
+         );
+         expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+         accounts.push((yield* body(Resource, saved)).id);
+       });
+-    for (const label of ["work", "personal"]) yield* connect(label);
++    yield* connect("work", "Default");
++    yield* connect("personal", "Default 2");
+     const affected = accounts[1];
+     if (affected === undefined) return yield* Effect.die("Missing second account");
+     const tool =
+@@ -160,7 +162,11 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
+         expect(parsed).toMatchObject({
+           reason,
+           status,
+-          account: { id: affected, label: "personal" },
++          account: {
++            id: affected,
++            label:
++              kind === "custom" ? "Custom service account 2" : `${kind} provider errors account 2`,
++          },
+           ...(phase === undefined ? {} : { phase }),
+         });
+         expect(JSON.stringify(response.body)).not.toMatch(
+@@ -275,6 +281,7 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
+         failure: { source: "app", errorName: "Error", message: providerSecretMarker },
+       });
+     }
++    if (kind === "custom") yield* providerErrorVisibility;
+     if (kind !== "graphql") return;
+     for (const [code, reason] of [
+       ["UNAUTHENTICATED", "unauthorized"],
+@@ -322,7 +329,7 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
+     );
+     expect(
+       yield* browser.use("Account is named", (page) => page.getByRole("alert").textContent()),
+-    ).toContain("personal");
++    ).toContain("graphql provider errors account 2");
+     expect(
+       yield* browser.use("No blind auth retry", (page) =>
+         page.getByRole("button", { name: "Try again", exact: true }).count(),
+diff --git a/packages/sdk/src/contracts/account-kind.ts b/packages/sdk/src/contracts/account-kind.ts
+new file mode 100644
+index 0000000..38c9db6
+--- /dev/null
++++ b/packages/sdk/src/contracts/account-kind.ts
+@@ -0,0 +1,116 @@
++import {
++  declaredAccountOffering,
++  type AccountCredentialMechanism,
++  type AccountOffering,
++} from "apps/contracts";
++import type { ProviderDefinition } from "./provider.ts";
++
++interface DisplayKind {
++  readonly mechanism: AccountCredentialMechanism;
++  readonly offering?: AccountOffering;
++}
++
++// Verified legacy declarations, keyed by immutable provider identity and exact method.
++// Display only: never merge these hints into provider definitions, identities or access policy.
++const legacyKinds: Readonly<Record<string, Readonly<Record<string, DisplayKind>>>> = {
++  // Subscription: the retained pool provider's ChatGPT sign-in.
++  prv_18bb54217e216de5533e5baa846e78ee147913029f183f7b219880fe230b0856: {
++    codex: { mechanism: "interactive", offering: "subscription" },
++  },
++  // Vercel: Access token.
++  prv_2b75c3056562dbf5eeb5d1a37f9d5de7fb28a0dd83a6c76ffe7ea2e2d4a8605c: {
++    apiKey: { mechanism: "api-key" },
++  },
++  // Jev: TypeSafe API key.
++  prv_ba76d7b3d90a3fd6b0862b14a1d119537dbe5a69b573e6592ba7777366eaa911: {
++    apiKey: { mechanism: "api-key" },
++  },
++  // ElevenLabs: API key.
++  prv_6d677ada2e24ae9d7c21495d1a90ccf93e37bc185766a1ae0aaeb5792969df07: {
++    apiKey: { mechanism: "api-key" },
++  },
++};
++
++/** Compatibility for declarations that predate kind hints; no name or method-name guessing. */
++export const legacyAccountKind = (provider: string | undefined, method: string) => {
++  if (provider === undefined || !Object.hasOwn(legacyKinds, provider)) return undefined;
++  const methods = legacyKinds[provider]!;
++  return Object.hasOwn(methods, method) ? methods[method] : undefined;
++};
++
++/** Explicit declarations win, including ambiguity; compatibility is display-only. */
++export const accountMethodMechanism = (
++  definitions: readonly ProviderDefinition[],
++  method: string,
++  provider?: string,
++): AccountCredentialMechanism | undefined => {
++  const declared = new Set(
++    definitions.flatMap((definition) => {
++      const value = definition.family?.methods?.[method]?.mechanism;
++      return value === undefined ? [] : [value];
++    }),
++  );
++  if (declared.size > 0) return declared.size === 1 ? [...declared][0] : undefined;
++  const legacy = legacyAccountKind(provider, method);
++  if (legacy !== undefined) return legacy.mechanism;
++  const auth = definitions
++    .flatMap((definition) =>
++      Object.hasOwn(definition.auth, method) ? [definition.auth[method]] : [],
++    )
++    .find((value) => value !== undefined);
++  return auth === undefined
++    ? undefined
++    : auth.type === "oauth2"
++      ? "oauth"
++      : auth.type === "interactive"
++        ? "interactive"
++        : "other";
++};
++
++export const accountMethodOffering = (
++  definitions: readonly ProviderDefinition[],
++  method: string,
++  provider?: string,
++): AccountOffering => {
++  const families = definitions.map((definition) => definition.family);
++  if (families.some((family) => family?.methods?.[method]?.offering !== undefined))
++    return declaredAccountOffering(families, method) ?? "unknown";
++  const mechanisms = new Set(
++    families.flatMap((family) => {
++      const mechanism = family?.methods?.[method]?.mechanism;
++      return mechanism === undefined ? [] : [mechanism];
++    }),
++  );
++  if (mechanisms.size > 1) return "unknown";
++  return legacyAccountKind(provider, method)?.offering ?? "unknown";
++};
++
++export const connectionKindLabel = (
++  mechanism: AccountCredentialMechanism | undefined,
++  offering: AccountOffering | undefined,
++) => {
++  const label =
++    offering === "subscription"
++      ? "Subscription"
++      : offering === "metered_api"
++        ? "Metered API"
++        : offering === "prepaid"
++          ? "Prepaid"
++          : undefined;
++  return (
++    [mechanism === "api-key" ? "API key" : mechanism === "oauth" ? "OAuth" : undefined, label]
++      .filter((value) => value !== undefined)
++      .join(" · ") || undefined
++  );
++};
++
++/** A single consumer's declaration, for its account selection and detail rows. */
++export const accountMethodKindLabel = (
++  definition: ProviderDefinition,
++  method: string,
++  provider?: string,
++) =>
++  connectionKindLabel(
++    accountMethodMechanism([definition], method, provider),
++    accountMethodOffering([definition], method, provider),
++  );
+diff --git a/packages/sdk/src/contracts/account-title.ts b/packages/sdk/src/contracts/account-title.ts
+new file mode 100644
+index 0000000..e658113
+--- /dev/null
++++ b/packages/sdk/src/contracts/account-title.ts
+@@ -0,0 +1,95 @@
++import type { Account, AccountHealth } from "./account.ts";
++import { accountMethodKindLabel } from "./account-kind.ts";
++import type { ProviderDefinition } from "./provider.ts";
++
++/** The label the SDK gives an account saved without a name: "Default", then "Default 2", … */
++const generated = /^Default( \d+)?$/;
++
++/** A label the person gave the account; a generated or blank one is not a name. */
++export const authoredLabel = (label: string) => {
++  const trimmed = label.trim();
++  return trimmed === "" || generated.test(trimmed) ? undefined : label;
++};
++
++/** A generated or blank label's number, such as " 2" for "Default 2"; undefined for a name. */
++const generatedNumber = (label: string) => {
++  const trimmed = label.trim();
++  if (trimmed === "") return "";
++  const match = generated.exec(trimmed);
++  return match === null ? undefined : (match[1] ?? "");
++};
++
++/**
++ * A generated or blank label read as what the account is: its provider and kind, such as
++ * "ElevenLabs API key", keeping the generated number so "Default 2" reads "ElevenLabs API key 2".
++ * A combined kind such as "API key · Metered API" names the row by its first part.
++ */
++const describedLabel = (
++  label: string,
++  providerName: string | undefined,
++  kind: string | undefined,
++) => {
++  const number = generatedNumber(label);
++  const provider = providerName?.trim();
++  if (number === undefined || !provider) return undefined;
++  return `${provider} ${kind?.split(" · ")[0]?.trim() || "account"}${number}`;
++};
++
++/**
++ * What names an account's row on every account list: its verified identity, else the name the
++ * person gave it, else what its own check reported (an email first), else its provider and `kind`
++ * in place of a generated label ("Default 2" stays distinct), else `fallback`. A reported value
++ * never earns the verified mark and never groups rows; only `account.identity` does. A generated
++ * label never titles a row.
++ */
++export const accountTitle = (
++  account: Pick<Account, "label"> & {
++    readonly identity?: Account["identity"] | undefined;
++    readonly health?: Pick<AccountHealth, "info"> | undefined;
++    readonly providerName?: string | undefined;
++  },
++  fallback = "Unnamed account",
++  /** The account's declared kind, such as "API key", when the caller knows it. */
++  kind?: string,
++) =>
++  account.identity?.label ??
++  authoredLabel(account.label) ??
++  (account.health?.info?.email ||
++    account.health?.info?.displayName ||
++    account.health?.info?.username ||
++    describedLabel(account.label, account.providerName, kind) ||
++    `${fallback}${generatedNumber(account.label) ?? ""}`);
++
++/**
++ * What names one saved account's own controls, such as its "Manage" menu: the name the person gave
++ * it, else its row title, so a generated "Default" is never announced. A `binding`, one sign-in
++ * inside a grouped identity row, is named only by what is its own (provider, kind and number),
++ * never by the identity or a value its check reported, so sibling sign-ins keep distinct names.
++ */
++export const accountMenuName = (
++  account: Parameters<typeof accountTitle>[0],
++  /** The account's declared kind, such as "API key", when the caller knows it. */
++  kind?: string,
++  { binding = false }: { readonly binding?: boolean } = {},
++) =>
++  authoredLabel(account.label) ??
++  (binding
++    ? accountTitle({ label: account.label, providerName: account.providerName }, undefined, kind)
++    : accountTitle(account, undefined, kind));
++
++/** The same provider, mechanism and offering title used by an Accounts row. */
++export const providerAccountTitle = (
++  account: Parameters<typeof accountTitle>[0] & Pick<Account, "method" | "provider">,
++  provider?: ProviderDefinition,
++  fallback?: string,
++) => {
++  const kind =
++    provider === undefined
++      ? undefined
++      : accountMethodKindLabel(provider, account.method, account.provider);
++  return accountTitle(
++    { ...account, providerName: account.providerName ?? provider?.name },
++    fallback,
++    kind,
++  );
++};
+diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
+index 0ca0086..dcb5053 100644
+--- a/packages/sdk/src/contracts/account.ts
++++ b/packages/sdk/src/contracts/account.ts
+@@ -17,6 +17,7 @@ import type { App, AppAccounts } from "./apps.ts";
+ import { AccountId, AppId, JsonObject, OwnerId, ProviderId } from "./shared.ts";
+ import { AuthMethodInvalid, AuthMethodName, Provider, ProviderNotFound } from "./provider.ts";
+ import { SiteOrigin } from "@executor-js/utils/account-site";
++import { providerAccountTitle } from "./account-title.ts";
+ import { AccountIdentity } from "./account-identity.ts";
+ 
+ /**
+@@ -160,7 +161,16 @@ export const accountProblems = (
+         return [];
+       // App pages show tools that failed to load as an advisory failed check.
+       const reason = check.status === "tools_unavailable" ? "check_failed" : check.status;
+-      return [{ provider, account: entry.account.label, reason }];
++      return [
++        {
++          provider,
++          account: providerAccountTitle(
++            { ...entry.account, health: entry.health },
++            requirement.definition,
++          ),
++          reason,
++        },
++      ];
+     });
+   });
+ 
+diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
+index 5444854..a132b8f 100644
+--- a/packages/sdk/src/contracts/executor.ts
++++ b/packages/sdk/src/contracts/executor.ts
+@@ -43,7 +43,7 @@ import type {
+   VersionBuildFailed,
+ } from "./version.ts";
+ import type { Account } from "./account.ts";
+-import type { AccountProvisioned } from "./provider.ts";
++import type { AccountProvisioned, ProviderDefinition } from "./provider.ts";
+ import type {
+   AccountConnectionRefused,
+   AccountConnectionTargetChanged,
+@@ -165,6 +165,13 @@ export interface HostAccessLifecycle {
+  * bounded access acknowledgements described by HostAccessLifecycle.
+  */
+ export interface ResourceLifecycle {
++  /** The failure's saved actor sees the same account title as their own account row. */
++  readonly accountFailureTitle?: (input: {
++    readonly app: Pick<App, "id" | "owner">;
++    readonly actor: string | undefined;
++    readonly account: Pick<Account, "id" | "owner">;
++    readonly provider: ProviderDefinition;
++  }) => Effect.Effect<string, StorageError>;
+   readonly appCallAs?: <A, E, R>(
+     input: {
+       readonly app: AppId;
+diff --git a/packages/sdk/src/contracts/index.ts b/packages/sdk/src/contracts/index.ts
+index d6f848f..35939fe 100644
+--- a/packages/sdk/src/contracts/index.ts
++++ b/packages/sdk/src/contracts/index.ts
+@@ -1,3 +1,5 @@
++export * from "./account-title.ts";
++export * from "./account-kind.ts";
+ export * from "./tool-policy.ts";
+ export * from "./account-observation.ts";
+ export * from "./models.ts";
+diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+index 5770859..78216eb 100644
+--- a/packages/sdk/src/implementation/create.ts
++++ b/packages/sdk/src/implementation/create.ts
+@@ -1,3 +1,5 @@
++import type { AccountHealth } from "../contracts/account.ts";
++import { appProviderFailure } from "./provider-error.ts";
+ import type { ExecutorRuntimeDatabase } from "./storage-runtime.ts";
+ import { AccountTargetsHost } from "../contracts/account-target.ts";
+ import { makeAccountTargets } from "./account-targets.ts";
+@@ -365,6 +367,14 @@ export const createExecutor = (
+       options.workflowInputUrl,
+       options.toolPolicy,
+     );
++    const providerFailure = appProviderFailure({
++      db,
++      lifecycle: options.hooks,
++      readHealth: (account): Effect.Effect<Pick<AccountHealth, "info">, StorageError> =>
++        accountHealth
++          .health({ account: account.id, owner: account.owner, apps: [] })
++          .pipe(Effect.catchTag("AccountNotFound", () => Effect.succeed({ info: null }))),
++    });
+     const webhooks = makeWebhooks(
+       options.database,
+       runtime,
+@@ -373,6 +383,7 @@ export const createExecutor = (
+       crypto,
+       options.webhookOrigin ?? options.origin,
+       declarations,
++      providerFailure,
+       workflows.controls,
+       options.hooks,
+     );
+@@ -408,6 +419,7 @@ export const createExecutor = (
+         policy: toolListings,
+         search,
+       }),
++      providerFailure,
+       workflows.controls,
+       options.hooks,
+       makeAppConfirmations(db, appConnectionStore, options.appCalls),
+@@ -801,7 +813,7 @@ export const createExecutor = (
+       appConnections: appConnectionStore.operations,
+       publications: catalog.publications,
+       registry: catalog.registry,
+-      skills: makeSkills(db, runtime, crypto, declarations, options.blobs),
++      skills: makeSkills(db, runtime, crypto, declarations, options.blobs, providerFailure),
+       webhooks: {
+         ...webhooks.webhooks,
+         sources: webhookSources.sources,
+diff --git a/packages/sdk/src/implementation/provider-error.ts b/packages/sdk/src/implementation/provider-error.ts
+index c9e8b85..e5b7b8c 100644
+--- a/packages/sdk/src/implementation/provider-error.ts
++++ b/packages/sdk/src/implementation/provider-error.ts
+@@ -1,38 +1,89 @@
+-import type { Effect } from "effect";
++import { Effect } from "effect";
+ import type { ProviderError } from "apps/contracts";
+ import { AppProviderFailed, type RenewalFailure } from "../contracts/tools.ts";
++import { authoredLabel, providerAccountTitle } from "../contracts/account-title.ts";
++import type { ResourceLifecycle } from "../contracts/executor.ts";
++import { accountIdentity } from "./account-identities.ts";
++import type { Account, AccountHealth } from "../contracts/account.ts";
++import type { StorageError } from "../contracts/shared.ts";
++import type { Query } from "./database.ts";
+ import type { snapshot } from "./tools.ts";
+ 
+-/**
+- * Resolve attribution against this invocation's selected accounts; never trust authored labels or
+- * IDs. `renewal` is the outcome of renewing a refused account's credentials after a call that may
+- * write, which is never repeated.
+- */
+-export function appProviderFailure(
+-  state: Effect.Success<ReturnType<typeof snapshot>>,
+-  error: ProviderError,
+-  renewal?: "renewed" | RenewalFailure,
+-) {
+-  const selected = state.selections.flatMap(({ required, accounts }) =>
+-    accounts.map((account) => ({ account, provider: required.definition.name })),
+-  );
+-  const match = selected.find(({ account }) => account.id === error.accountId);
+-  return new AppProviderFailed({
+-    app: state.app.id,
+-    version: state.version.id,
+-    reason: error.reason,
+-    status: error.status,
+-    ...(error.phase === undefined ? {} : { phase: error.phase }),
+-    ...(error.upstream === undefined ? {} : { upstream: error.upstream }),
+-    ...(renewal === undefined
+-      ? {}
+-      : renewal === "renewed"
+-        ? { credentialsRenewed: true as const }
+-        : { renewalFailure: renewal }),
+-    ...(match === undefined
+-      ? {}
+-      : {
+-          account: { id: match.account.id, label: match.account.label, provider: match.provider },
+-        }),
+-  });
+-}
++/** Attribute a refusal to a selected account; display metadata is read only after it failed. */
++export const appProviderFailure =
++  ({
++    db,
++    lifecycle,
++    readHealth,
++  }: {
++    readonly db: Query;
++    readonly lifecycle: ResourceLifecycle | undefined;
++    readonly readHealth: (
++      account: Pick<Account, "id" | "owner">,
++    ) => Effect.Effect<Pick<AccountHealth, "info">, StorageError>;
++  }) =>
++  (
++    state: Effect.Success<ReturnType<typeof snapshot>>,
++    error: ProviderError,
++    renewal?: "renewed" | RenewalFailure,
++  ) =>
++    Effect.gen(function* () {
++      const selected = state.selections.flatMap(({ required, accounts }) =>
++        accounts.map((account) => ({ account, provider: required.definition })),
++      );
++      const match = selected.find(({ account }) => account.id === error.accountId);
++      const named =
++        match === undefined
++          ? undefined
++          : yield* Effect.gen(function* () {
++              // A host may hide copied labels too; failed visibility reads disclose no stored name.
++              const fallback = providerAccountTitle(
++                lifecycle?.accountFailureTitle === undefined
++                  ? match.account
++                  : {
++                      method: match.account.method,
++                      provider: match.account.provider,
++                      label:
++                        authoredLabel(match.account.label) === undefined ? match.account.label : "",
++                    },
++                match.provider,
++              );
++              const label = yield* Effect.suspend(() =>
++                lifecycle?.accountFailureTitle === undefined
++                  ? Effect.gen(function* () {
++                      const identity = yield* accountIdentity(db, match.account, lifecycle);
++                      const health =
++                        identity === undefined && authoredLabel(match.account.label) === undefined
++                          ? yield* readHealth(match.account)
++                          : undefined;
++                      return providerAccountTitle(
++                        { ...match.account, identity, health },
++                        match.provider,
++                      );
++                    })
++                  : lifecycle.accountFailureTitle({
++                      app: state.app,
++                      actor: state.actor,
++                      account: { id: match.account.id, owner: match.account.owner },
++                      provider: match.provider,
++                    }),
++              ).pipe(Effect.catchCause(() => Effect.succeed(fallback)));
++              return { id: match.account.id, label, provider: match.provider.name };
++            });
++      return yield* new AppProviderFailed({
++        app: state.app.id,
++        version: state.version.id,
++        reason: error.reason,
++        status: error.status,
++        ...(error.phase === undefined ? {} : { phase: error.phase }),
++        ...(error.upstream === undefined ? {} : { upstream: error.upstream }),
++        ...(renewal === undefined
++          ? {}
++          : renewal === "renewed"
++            ? { credentialsRenewed: true as const }
++            : { renewalFailure: renewal }),
++        ...(named === undefined ? {} : { account: named }),
++      });
++    });
++
++export type ProviderFailure = ReturnType<typeof appProviderFailure>;
+diff --git a/packages/sdk/src/implementation/skills.ts b/packages/sdk/src/implementation/skills.ts
+index 9219302..83ca45b 100644
+--- a/packages/sdk/src/implementation/skills.ts
++++ b/packages/sdk/src/implementation/skills.ts
+@@ -1,6 +1,6 @@
+ import { storedApp, storedVersion } from "./apps.ts";
+ import { snapshot as invocation } from "./tools.ts";
+-import { appProviderFailure } from "./provider-error.ts";
++import type { ProviderFailure } from "./provider-error.ts";
+ import { AppSkills, ProviderError } from "apps/contracts";
+ import { AppEvaluationFailed, evaluationFailure } from "../contracts/tools.ts";
+ import { AppNotDeployed } from "../contracts/apps.ts";
+@@ -63,6 +63,7 @@ export const makeSkills = (
+   crypto: Crypto.Crypto,
+   declarations: Declarations,
+   blobs: BlobStorage,
++  providerFailure: ProviderFailure,
+ ) => {
+   const snapshot = (input: typeof AppSkillInputs.list.Type, read: CatalogReadOptions = {}) =>
+     Effect.gen(function* () {
+@@ -99,14 +100,16 @@ export const makeSkills = (
+                     .skills({ app: app.id, build: state.version.build, sources, ...context })
+                     .pipe(
+                       // A service's rejection names the selected account, as in tool listing.
+-                      Effect.mapError((error) =>
+-                        Schema.is(ProviderError)(error)
+-                          ? appProviderFailure(state, error)
+-                          : evaluationFailure(
+-                              { app: app.id, version },
+-                              error,
+-                              "Skill evaluation failed",
+-                            ),
++                      Effect.catch((error) =>
++                        Effect.gen(function* () {
++                          if (Schema.is(ProviderError)(error))
++                            return yield* providerFailure(state, error);
++                          return yield* evaluationFailure(
++                            { app: app.id, version },
++                            error,
++                            "Skill evaluation failed",
++                          );
++                        }),
+                       ),
+                     ),
+                 {
+diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
+index 716cca4..8458bfa 100644
+--- a/packages/sdk/src/implementation/tools.ts
++++ b/packages/sdk/src/implementation/tools.ts
+@@ -5,7 +5,7 @@ import { AppViewUnavailable, type AppSourceHost } from "../contracts/app-views.t
+ import { observeToolLoad, toolsFailure, toolsProblem } from "./account-tools-health.ts";
+ import { McpAppViewSink, McpToolResult, type McpAppViewObservation } from "apps/contracts";
+ import { McpAppUiProfile, ProviderError } from "apps/contracts";
+-import { appProviderFailure } from "./provider-error.ts";
++import type { ProviderFailure } from "./provider-error.ts";
+ import { invocationAccount } from "./provider.ts";
+ import type { FirstPartyOAuthClient } from "../contracts/oauth.ts";
+ import type { UrlPolicy } from "@executor-js/utils/url-policy";
+@@ -629,14 +629,9 @@ type CallError = Effect.Error<ReturnType<Runtime["call"] | Runtime["query"] | Ru
+ type Renewal = "renewed" | RenewalFailure;
+ 
+ /** The typed error of a failed call. */
+-const runtimeFailure = (
+-  identity: { app: AppId; version: VersionId; tool: ToolName },
+-  state: InvocationSnapshot,
+-  renewal: Renewal | undefined,
+-) =>
+-  Match.type<CallError>().pipe(
++const runtimeFailure = (identity: { app: AppId; version: VersionId; tool: ToolName }) =>
++  Match.type<Exclude<CallError, ProviderError>>().pipe(
+     Match.tagsExhaustive({
+-      ProviderError: (error) => appProviderFailure(state, error, renewal),
+       OpenapiResponseError: ({ code, status, message, recovery }) =>
+         new ToolCallFailed({
+           ...identity,
+@@ -785,6 +780,7 @@ export const makeTools = (
+   credentials: Credentials,
+   crypto: Crypto.Crypto,
+   listings: Listings,
++  providerFailure: ProviderFailure,
+   workflows?: (state: InvocationSnapshot) => WorkflowHostControls,
+   lifecycle?: ResourceLifecycle,
+   configurationApproved?: (
+@@ -873,9 +869,10 @@ export const makeTools = (
+     error: Effect.Error<ReturnType<typeof runtime.index>>,
+     renewal?: Renewal,
+   ) =>
+-    Schema.is(ProviderError)(error)
+-      ? appProviderFailure(state, error, renewal)
+-      : evaluationFailure({ app: state.app.id, version: state.version.id }, error);
++    Effect.gen(function* () {
++      if (Schema.is(ProviderError)(error)) return yield* providerFailure(state, error, renewal);
++      return yield* evaluationFailure({ app: state.app.id, version: state.version.id }, error);
++    });
+   /**
+    * Run a tool, live or approved, and renew an account the service refuses. A 401 means the
+    * service did not perform the refused request, but an earlier request in the same call may
+@@ -940,8 +937,8 @@ export const makeTools = (
+         renewRefused(oauth, clients, sitePolicy, state, context, error).pipe(
+           Effect.flatMap((renewed) =>
+             renewed === undefined
+-              ? Effect.fail(catalogFailure(state, error))
+-              : inspect(renewed).pipe(Effect.mapError((error) => catalogFailure(state, error))),
++              ? catalogFailure(state, error)
++              : inspect(renewed).pipe(Effect.catch((error) => catalogFailure(state, error))),
+           ),
+         ),
+       ),
+@@ -983,7 +980,7 @@ export const makeTools = (
+         )?.error;
+         if (failed !== undefined)
+           return yield* Schema.is(ProviderError)(failed)
+-            ? appProviderFailure(state, failed)
++            ? providerFailure(state, failed)
+             : evaluationFailure({ app: state.app.id, version: state.version.id }, failed);
+         return yield* new ToolNotFound({
+           app: state.app.id,
+@@ -1006,7 +1003,7 @@ export const makeTools = (
+     inspectTool(state, name, context).pipe(
+       Effect.catch((error) =>
+         renewOnce(state, context, error).pipe(
+-          Effect.flatMap((renewal) => Effect.fail(catalogFailure(state, error, renewal))),
++          Effect.flatMap((renewal) => catalogFailure(state, error, renewal)),
+         ),
+       ),
+       Effect.flatMap(found(state, name)),
+@@ -1361,7 +1358,7 @@ export const makeTools = (
+     runtime.inspect(inspection(state, context)).pipe(
+       Effect.catch((error) =>
+         renewOnce(state, context, error).pipe(
+-          Effect.flatMap((renewal) => Effect.fail(catalogFailure(state, error, renewal))),
++          Effect.flatMap((renewal) => catalogFailure(state, error, renewal)),
+         ),
+       ),
+       Effect.map(toListing(state)),
+@@ -1527,7 +1524,7 @@ export const makeTools = (
+         )?.error;
+         if (failed !== undefined)
+           return yield* Schema.is(ProviderError)(failed)
+-            ? appProviderFailure(state, failed)
++            ? providerFailure(state, failed)
+             : evaluationFailure({ app: state.app.id, version: state.version.id }, failed);
+         yield* Effect.annotateCurrentSpan("executor.tools.source", "live");
+         yield* (
+@@ -1770,7 +1767,9 @@ export const makeTools = (
+               options?.issuer,
+             );
+           }
+-          return yield* Effect.fail(runtimeFailure(identity, state, renewal)(result.failure));
++          return yield* Schema.is(ProviderError)(result.failure)
++            ? providerFailure(state, result.failure, renewal)
++            : runtimeFailure(identity)(result.failure);
+         }).pipe(
+           Effect.mapError((failure) =>
+             // Only a query's renewal fails a call itself (`executeRenewing`), and a query keeps
+@@ -1944,13 +1943,13 @@ export const makeTools = (
+                       execute,
+                     );
+                     if (Result.isFailure(result))
+-                      return yield* Effect.fail(
+-                        runtimeFailure(
+-                          { app: saved.app, version: saved.version, tool: saved.tool },
+-                          state,
+-                          renewal,
+-                        )(result.failure),
+-                      );
++                      return yield* Schema.is(ProviderError)(result.failure)
++                        ? providerFailure(state, result.failure, renewal)
++                        : runtimeFailure({
++                            app: saved.app,
++                            version: saved.version,
++                            tool: saved.tool,
++                          })(result.failure);
+                     const value = result.success;
+                     if (!toolError && kind === "mutation" && configurationApproved !== undefined)
+                       yield* configurationApproved({
+diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/implementation/webhooks.ts
+index a77a303..5c8c521 100644
+--- a/packages/sdk/src/implementation/webhooks.ts
++++ b/packages/sdk/src/implementation/webhooks.ts
+@@ -1,5 +1,5 @@
+ import { ProviderError } from "apps/contracts";
+-import { appProviderFailure } from "./provider-error.ts";
++import type { ProviderFailure } from "./provider-error.ts";
+ import { AppProviderFailed, mayHaveWritten } from "../contracts/tools.ts";
+ import { CurrentActor, type ResourceLifecycle } from "../contracts/executor.ts";
+ import type { WorkflowHostControls } from "apps/contracts";
+@@ -112,6 +112,7 @@ export const makeWebhooks = (
+   crypto: Crypto.Crypto,
+   origin: string | undefined,
+   declarations: Declarations,
++  providerFailure: ProviderFailure,
+   workflows?: (state: InvocationSnapshot) => WorkflowHostControls,
+   lifecycle?: ResourceLifecycle,
+ ) => {
+@@ -259,22 +260,30 @@ export const makeWebhooks = (
+         command,
+       })
+       .pipe(
+-        Effect.mapError((error) =>
+-          Schema.is(ProviderError)(error)
+-            ? // Registering, completing, removing and handling a webhook may change the service.
+-              mayHaveWritten(AppProviderFailed, appProviderFailure(state, error))
+-            : new WebhookFailed({
+-                reason: command.operation === "webhook-handle" ? "delivery" : "definition",
+-              }),
++        Effect.catch((error) =>
++          Effect.gen(function* () {
++            if (Schema.is(ProviderError)(error))
++              return yield* providerFailure(state, error).pipe(
++                Effect.mapError((failure) =>
++                  Schema.is(AppProviderFailed)(failure)
++                    ? mayHaveWritten(AppProviderFailed, failure)
++                    : failure,
++                ),
++              );
++            return yield* new WebhookFailed({
++              reason: command.operation === "webhook-handle" ? "delivery" : "definition",
++            });
++          }),
+         ),
+       );
+   /** Dashboard reads may reuse a recent evaluation; `live` evaluates the current build now. */
+   const definitions = (state: InvocationSnapshot, live = false) =>
+     Effect.gen(function* () {
+       const failed = (error: unknown) =>
+-        Schema.is(ProviderError)(error)
+-          ? appProviderFailure(state, error)
+-          : new WebhookFailed({ reason: "definition" });
++        Effect.gen(function* () {
++          if (Schema.is(ProviderError)(error)) return yield* providerFailure(state, error);
++          return yield* new WebhookFailed({ reason: "definition" });
++        });
+       const value = yield* declarations.read(
+         "webhooks",
+         state,
+@@ -287,11 +296,11 @@ export const makeWebhooks = (
+               ...context,
+               command: { operation: "webhooks" },
+             })
+-            .pipe(Effect.mapError(failed)),
++            .pipe(Effect.catch(failed)),
+         { live },
+       );
+       return yield* Schema.decodeUnknownEffect(Schema.Array(HostedWebhook))(value).pipe(
+-        Effect.mapError(failed),
++        Effect.catch(failed),
+       );
+     });
+   const outsideTransaction = storage.reactivity.inTransaction.pipe(
+@@ -490,10 +499,11 @@ export const makeWebhooks = (
+         })
+         .pipe(
+           Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(HostedWebhook))),
+-          Effect.mapError((error) =>
+-            Schema.is(ProviderError)(error)
+-              ? appProviderFailure(state, error)
+-              : new WebhookFailed({ reason: "definition" }),
++          Effect.catch((error) =>
++            Effect.gen(function* () {
++              if (Schema.is(ProviderError)(error)) return yield* providerFailure(state, error);
++              return yield* new WebhookFailed({ reason: "definition" });
++            }),
+           ),
+         );
+       const hook = catalog.find((hook) => hook.name === parsed.name);
+diff --git a/packages/ui/src/contracts/account-identities.ts b/packages/ui/src/contracts/account-identities.ts
+index 5844e33..295f331 100644
+--- a/packages/ui/src/contracts/account-identities.ts
++++ b/packages/ui/src/contracts/account-identities.ts
+@@ -1,13 +1,12 @@
+-import { legacyAccountKind } from "./account-kind-compatibility.ts";
+-import { declaredAccountOffering } from "@executor-js/sdk";
+-/** Group only verified identities already visible in the product's authorized inventory. */
+-import type {
+-  AccountCredentialMechanism,
+-  AccountFamily,
+-  AccountOffering,
+-  AccountRequirement,
+-  ProviderDefinition,
++import {
++  providerAccountTitle,
++  accountMethodMechanism,
++  accountMethodOffering,
++  connectionKindLabel,
+ } from "@executor-js/sdk";
++export { accountMethodKindLabel, connectionKindLabel } from "@executor-js/sdk";
++/** Group only verified identities already visible in the product's authorized inventory. */
++import type { AccountFamily, AccountRequirement, ProviderDefinition } from "@executor-js/sdk";
+ import type { AccountSummary, Inventory } from "./dashboard.ts";
+ 
+ export interface AccountGroup {
+@@ -72,90 +71,13 @@ export const accountFamily = (
+   accountDefinitions(inventory, account).find((definition) => definition.family !== undefined)
+     ?.family;
+ 
+-/** Explicit declarations win, including ambiguity; compatibility is display-only. */
+-const methodMechanism = (
+-  definitions: readonly ProviderDefinition[],
+-  method: string,
+-  provider?: string,
+-): AccountCredentialMechanism | undefined => {
+-  const declared = new Set(
+-    definitions.flatMap((definition) => {
+-      const value = definition.family?.methods?.[method]?.mechanism;
+-      return value === undefined ? [] : [value];
+-    }),
+-  );
+-  if (declared.size > 0) return declared.size === 1 ? [...declared][0] : undefined;
+-  const legacy = legacyAccountKind(provider, method);
+-  if (legacy !== undefined) return legacy.mechanism;
+-  const auth = definitions
+-    .flatMap((definition) =>
+-      Object.hasOwn(definition.auth, method) ? [definition.auth[method]] : [],
+-    )
+-    .find((value) => value !== undefined);
+-  return auth === undefined
+-    ? undefined
+-    : auth.type === "oauth2"
+-      ? "oauth"
+-      : auth.type === "interactive"
+-        ? "interactive"
+-        : "other";
+-};
+-
+-const methodOffering = (
+-  definitions: readonly ProviderDefinition[],
+-  method: string,
+-  provider?: string,
+-): AccountOffering => {
+-  const families = definitions.map((definition) => definition.family);
+-  if (families.some((family) => family?.methods?.[method]?.offering !== undefined))
+-    return declaredAccountOffering(families, method) ?? "unknown";
+-  const mechanisms = new Set(
+-    families.flatMap((family) => {
+-      const mechanism = family?.methods?.[method]?.mechanism;
+-      return mechanism === undefined ? [] : [mechanism];
+-    }),
+-  );
+-  if (mechanisms.size > 1) return "unknown";
+-  return legacyAccountKind(provider, method)?.offering ?? "unknown";
+-};
+-
+ /** Credential mechanism never establishes readiness or granted permissions. */
+ export const accountMechanism = (inventory: Inventory, account: AccountSummary) =>
+-  methodMechanism(accountDefinitions(inventory, account), account.method, account.provider);
++  accountMethodMechanism(accountDefinitions(inventory, account), account.method, account.provider);
+ 
+ /** Funding needs an explicit declaration or a verified legacy display hint. */
+ export const accountOffering = (inventory: Inventory, account: AccountSummary) =>
+-  methodOffering(accountDefinitions(inventory, account), account.method, account.provider);
+-
+-export const connectionKindLabel = (
+-  mechanism: AccountCredentialMechanism | undefined,
+-  offering: AccountOffering | undefined,
+-) => {
+-  const label =
+-    offering === "subscription"
+-      ? "Subscription"
+-      : offering === "metered_api"
+-        ? "Metered API"
+-        : offering === "prepaid"
+-          ? "Prepaid"
+-          : undefined;
+-  return (
+-    [mechanism === "api-key" ? "API key" : mechanism === "oauth" ? "OAuth" : undefined, label]
+-      .filter((value) => value !== undefined)
+-      .join(" · ") || undefined
+-  );
+-};
+-
+-/** A single consumer's declaration, for its account selection and detail rows. */
+-export const accountMethodKindLabel = (
+-  definition: ProviderDefinition,
+-  method: string,
+-  provider?: string,
+-) =>
+-  connectionKindLabel(
+-    methodMechanism([definition], method, provider),
+-    methodOffering([definition], method, provider),
+-  );
++  accountMethodOffering(accountDefinitions(inventory, account), account.method, account.provider);
+ 
+ /**
+  * An account's title with the kind its own requirement declares for its method, for places that
+@@ -167,13 +89,7 @@ export const requirementAccountTitle = (
+   fallback?: string,
+ ) => {
+   const requirement = requirements.find((entry) => entry.provider === account.provider);
+-  return accountTitle(
+-    { ...account, providerName: account.providerName ?? requirement?.definition.name },
+-    fallback,
+-    requirement === undefined
+-      ? undefined
+-      : accountMethodKindLabel(requirement.definition, account.method, requirement.provider),
+-  );
++  return providerAccountTitle(account, requirement?.definition, fallback);
+ };
+ 
+ /** Connection labels describe declarations, never health, permission or current plan. */
+diff --git a/packages/ui/src/contracts/account-kind-compatibility.ts b/packages/ui/src/contracts/account-kind-compatibility.ts
+index ced38bf..c53f43c 100644
+--- a/packages/ui/src/contracts/account-kind-compatibility.ts
++++ b/packages/ui/src/contracts/account-kind-compatibility.ts
+@@ -1,34 +1 @@
+-import type { AccountCredentialMechanism, AccountOffering } from "@executor-js/sdk";
+-
+-interface DisplayKind {
+-  readonly mechanism: AccountCredentialMechanism;
+-  readonly offering?: AccountOffering;
+-}
+-
+-// Verified legacy declarations, keyed by immutable provider identity and exact method.
+-// Display only: never merge these hints into provider definitions, identities or access policy.
+-const legacyKinds: Readonly<Record<string, Readonly<Record<string, DisplayKind>>>> = {
+-  // Subscription: the retained pool provider's ChatGPT sign-in.
+-  prv_18bb54217e216de5533e5baa846e78ee147913029f183f7b219880fe230b0856: {
+-    codex: { mechanism: "interactive", offering: "subscription" },
+-  },
+-  // Vercel: Access token.
+-  prv_2b75c3056562dbf5eeb5d1a37f9d5de7fb28a0dd83a6c76ffe7ea2e2d4a8605c: {
+-    apiKey: { mechanism: "api-key" },
+-  },
+-  // Jev: TypeSafe API key.
+-  prv_ba76d7b3d90a3fd6b0862b14a1d119537dbe5a69b573e6592ba7777366eaa911: {
+-    apiKey: { mechanism: "api-key" },
+-  },
+-  // ElevenLabs: API key.
+-  prv_6d677ada2e24ae9d7c21495d1a90ccf93e37bc185766a1ae0aaeb5792969df07: {
+-    apiKey: { mechanism: "api-key" },
+-  },
+-};
+-
+-/** Compatibility for declarations that predate kind hints; no name or method-name guessing. */
+-export const legacyAccountKind = (provider: string | undefined, method: string) => {
+-  if (provider === undefined || !Object.hasOwn(legacyKinds, provider)) return undefined;
+-  const methods = legacyKinds[provider]!;
+-  return Object.hasOwn(methods, method) ? methods[method] : undefined;
+-};
++export { legacyAccountKind } from "@executor-js/sdk";
+diff --git a/packages/ui/src/contracts/account-title.ts b/packages/ui/src/contracts/account-title.ts
+index 36e6f8f..92664e0 100644
+--- a/packages/ui/src/contracts/account-title.ts
++++ b/packages/ui/src/contracts/account-title.ts
+@@ -1,76 +1 @@
+-import type { AccountSummary } from "./dashboard.ts";
+-
+-/** The label the SDK gives an account saved without a name: "Default", then "Default 2", … */
+-const generated = /^Default( \d+)?$/;
+-
+-/** A label the person gave the account; a generated or blank one is not a name. */
+-export const authoredLabel = (label: string) => {
+-  const trimmed = label.trim();
+-  return trimmed === "" || generated.test(trimmed) ? undefined : label;
+-};
+-
+-/** A generated or blank label's number, such as " 2" for "Default 2"; undefined for a name. */
+-const generatedNumber = (label: string) => {
+-  const trimmed = label.trim();
+-  if (trimmed === "") return "";
+-  const match = generated.exec(trimmed);
+-  return match === null ? undefined : (match[1] ?? "");
+-};
+-
+-/**
+- * A generated or blank label read as what the account is: its provider and kind, such as
+- * "ElevenLabs API key", keeping the generated number so "Default 2" reads "ElevenLabs API key 2".
+- * A combined kind such as "API key · Metered API" names the row by its first part.
+- */
+-const describedLabel = (
+-  label: string,
+-  providerName: string | undefined,
+-  kind: string | undefined,
+-) => {
+-  const number = generatedNumber(label);
+-  const provider = providerName?.trim();
+-  if (number === undefined || !provider) return undefined;
+-  return `${provider} ${kind?.split(" · ")[0]?.trim() || "account"}${number}`;
+-};
+-
+-/**
+- * What names an account's row on every account list: its verified identity, else the name the
+- * person gave it, else what its own check reported (an email first), else its provider and `kind`
+- * in place of a generated label ("Default 2" stays distinct), else `fallback`. A reported value
+- * never earns the verified mark and never groups rows; only `account.identity` does. A generated
+- * label never titles a row.
+- */
+-export const accountTitle = (
+-  account: Pick<AccountSummary, "label"> & {
+-    readonly identity?: AccountSummary["identity"] | undefined;
+-    readonly health?: AccountSummary["health"] | undefined;
+-    readonly providerName?: string | undefined;
+-  },
+-  fallback = "Unnamed account",
+-  /** The account's declared kind, such as "API key", when the caller knows it. */
+-  kind?: string,
+-) =>
+-  account.identity?.label ??
+-  authoredLabel(account.label) ??
+-  (account.health?.info?.email ||
+-    account.health?.info?.displayName ||
+-    account.health?.info?.username ||
+-    describedLabel(account.label, account.providerName, kind) ||
+-    `${fallback}${generatedNumber(account.label) ?? ""}`);
+-
+-/**
+- * What names one saved account's own controls, such as its "Manage" menu: the name the person gave
+- * it, else its row title, so a generated "Default" is never announced. A `binding`, one sign-in
+- * inside a grouped identity row, is named only by what is its own (provider, kind and number),
+- * never by the identity or a value its check reported, so sibling sign-ins keep distinct names.
+- */
+-export const accountMenuName = (
+-  account: Parameters<typeof accountTitle>[0],
+-  /** The account's declared kind, such as "API key", when the caller knows it. */
+-  kind?: string,
+-  { binding = false }: { readonly binding?: boolean } = {},
+-) =>
+-  authoredLabel(account.label) ??
+-  (binding
+-    ? accountTitle({ label: account.label, providerName: account.providerName }, undefined, kind)
+-    : accountTitle(account, undefined, kind));
++export { accountTitle, accountMenuName, authoredLabel } from "@executor-js/sdk";
+diff --git a/packages/ui/src/implementation/dashboard/account-row-health.tsx b/packages/ui/src/implementation/dashboard/account-row-health.tsx
+index 6412cc4..7ae8a94 100644
+--- a/packages/ui/src/implementation/dashboard/account-row-health.tsx
++++ b/packages/ui/src/implementation/dashboard/account-row-health.tsx
+@@ -186,6 +186,7 @@ const texts = {
+ export function AccountHealthCell({
+   health,
+   appName,
++  accountName,
+   recover,
+   link = false,
+   unavailableLabel = "Account unavailable",
+@@ -193,6 +194,7 @@ export function AccountHealthCell({
+ }: {
+   readonly health: AccountRowHealth;
+   readonly appName: (app: AppId) => string;
++  readonly accountName: (account: AccountSummary) => string;
+   readonly recover?: ReactNode;
+   /** Link an app's rejection to that app's accounts, where the account is reconnected. */
+   readonly link?: boolean;
+@@ -245,7 +247,7 @@ export function AccountHealthCell({
+   const where = sources
+     .map((source) => {
+       const by = source.app === undefined ? "sign-in check" : appName(source.app);
+-      return grouped ? `${by} (${source.account.label || "Unnamed account"})` : by;
++      return grouped ? `${by} (${accountName(source.account)})` : by;
+     })
+     .join(", ");
+   const when = formatMoment(new Date(check.checkedAt), format, shortMoment);
+diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+index 1d94857..d04cb7d 100644
+--- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
++++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+@@ -330,6 +330,11 @@ function AccountsList({
+                       <AccountHealthCell
+                         health={accountRowHealth(members)}
+                         appName={appName}
++                        accountName={(binding) =>
++                          accountMenuName(binding, accountKindLabel(data, binding), {
++                            binding: true,
++                          })
++                        }
+                         link
+                         traffic={traffic}
+                       />
+diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+index e50fafe..2d0b41e 100644
+--- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -24,7 +24,11 @@ import {
+   type FailureProps,
+   type Query,
+ } from "../../contracts/dashboard.ts";
+-import { accountMethodKindLabel, accountTitle } from "../../contracts/account-identities.ts";
++import {
++  accountMethodKindLabel,
++  accountTitle,
++  requirementAccountTitle,
++} from "../../contracts/account-identities.ts";
+ import { AppProviderIcon, ProviderIcon } from "./common.tsx";
+ import { AccountCheckResult } from "./account-health.tsx";
+ import {
+@@ -1671,6 +1675,9 @@ function AccountStatus({
+     <AccountHealthCell
+       health={appRowHealth(row, row.bindings[0]!)}
+       appName={() => appDisplayName(app, brand)}
++      accountName={(account) =>
++        requirementAccountTitle(account, Object.values(app.requirements.accounts))
++      }
+       recover={reconnect}
+       unavailableLabel="Unavailable"
+       traffic={traffic}
