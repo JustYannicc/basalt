@@ -107,8 +107,12 @@ export function liveDeadline(milliseconds: number) {
   return { signal: controller.signal, dispose: () => clearTimeout(timer) };
 }
 
-export async function withinDeadline<T>(work: Promise<T>, milliseconds: number) {
-  const deadline = liveDeadline(milliseconds);
+export async function withinDeadline<T>(
+  work: Promise<T>,
+  milliseconds: number,
+  schedule = liveDeadline,
+) {
+  const deadline = schedule(milliseconds);
   try {
     return await bounded(work, deadline.signal);
   } finally {

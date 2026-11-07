@@ -27,8 +27,9 @@ function fixture(directory: string) {
     bridge,
     `
     import {createServer} from "node:http";
+    import {stalled} from "./scheduler.mjs";
     export async function getPlatformProxy() {
-      if (process.env.FIXTURE_CASE === "opening") return new Promise(() => {});
+      if (process.env.FIXTURE_CASE === "opening") return stalled("command");
       let server, origin;
       if (["unready", "unreachable", "close-after-failure"].includes(process.env.FIXTURE_CASE)) {
         server = createServer((_request, response) => response.writeHead(503).end());
@@ -41,14 +42,14 @@ function fixture(directory: string) {
       }
       return {
         env: { POOL_OPERATIONS: { async fetch() {
-          if (process.env.FIXTURE_CASE === "readiness") return new Promise(() => {});
+          if (process.env.FIXTURE_CASE === "readiness") return stalled("command");
           if (["unready", "close-after-failure"].includes(process.env.FIXTURE_CASE))
             return globalThis.fetch(origin);
           if (process.env.FIXTURE_CASE === "unreachable")
             return globalThis.fetch(origin);
           const response = Response.json(${JSON.stringify(ready)});
           if (process.env.FIXTURE_CASE === "body")
-            Object.defineProperty(response, "json", {value: () => new Promise(() => {})});
+            Object.defineProperty(response, "json", {value: () => stalled("command")});
           return response;
         } } },
         async dispose() {
@@ -58,7 +59,7 @@ function fixture(directory: string) {
           }
           if (["close", "close-after-failure"].includes(process.env.FIXTURE_CASE)) {
             setInterval(() => {}, 10000);
-            return new Promise(() => {});
+            return stalled("teardown");
           }
         },
       };
@@ -68,11 +69,12 @@ function fixture(directory: string) {
   writeFileSync(
     driver,
     `
+    import {stalled} from "./scheduler.mjs";
     export default { Client: class {
       connection = {stream: {destroy() {}}};
       on() {}
       async connect() {
-        if (process.env.FIXTURE_CASE === "connect") return new Promise(() => {});
+        if (process.env.FIXTURE_CASE === "connect") return stalled("command");
       }
       async end() {}
       async query(sql) {
@@ -83,17 +85,60 @@ function fixture(directory: string) {
     } };
   `,
   );
+  writeFileSync(
+    join(directory, "scheduler.mjs"),
+    `
+    const pending = new Map();
+    export function deadline(milliseconds, phase) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), milliseconds);
+      pending.set(controller, phase);
+      return {signal: controller.signal, dispose() {
+        clearTimeout(timer);
+        pending.delete(controller);
+      }};
+    }
+    export function stalled(phase) {
+      // Expire only once the fixture has entered the operation that will never finish.
+      // Deferring also lets the caller register the teardown deadline after close() starts.
+      queueMicrotask(() => {
+        for (const [controller, kind] of pending) if (kind === phase) controller.abort();
+      });
+      return new Promise(() => {});
+    }
+  `,
+  );
+  writeFileSync(
+    join(directory, "command.mjs"),
+    `
+    import {runDatabaseBudgetCommand as run} from ${JSON.stringify(new URL("./database-budget-command.ts", import.meta.url).href)};
+    import {deadline} from "./scheduler.mjs";
+    export const runDatabaseBudgetCommand = (source, args) => run(source, args, {deadline});
+  `,
+  );
+  writeFileSync(
+    join(directory, "receipt.mjs"),
+    `
+    export {mkdir, readFile} from "node:fs/promises";
+    import {writeFile as write} from "node:fs/promises";
+    import {stalled} from "./scheduler.mjs";
+    let first = true;
+    export async function writeFile(...args) {
+      await write(...args);
+      if (first) { first = false; return stalled("receipt"); }
+    }
+  `,
+  );
   const preload = join(directory, "preload.mjs");
   writeFileSync(
     preload,
     `
     import { registerHooks } from "node:module";
     import { pathToFileURL } from "node:url";
-    const timer = globalThis.setTimeout;
-    // Accelerate the real deadline timers without adding a handle to the child.
-    globalThis.setTimeout = (callback, milliseconds, ...args) =>
-      timer(callback, milliseconds >= 10000 ? 500 : Math.min(milliseconds, 30), ...args);
     registerHooks({resolve(specifier, context, next) {
+      if (process.env.FIXTURE_CASE === "receipt" && specifier === "node:fs/promises" && context.parentURL === ${JSON.stringify(new URL("./database-budget-command.ts", import.meta.url).href)})
+        return {url: pathToFileURL(${JSON.stringify(join(directory, "receipt.mjs"))}).href, shortCircuit: true};
+      if (specifier === "./database-budget-command.ts") return {url: pathToFileURL(${JSON.stringify(join(directory, "command.mjs"))}).href, shortCircuit: true};
       if (specifier === "wrangler") return {url: pathToFileURL(${JSON.stringify(bridge)}).href, shortCircuit: true};
       if (specifier === "pg") return {url: pathToFileURL(${JSON.stringify(driver)}).href, shortCircuit: true};
       return next(specifier, context);
@@ -109,6 +154,7 @@ for (const [scenario, mode, outcome] of [
   ["opening", "ready", "abort"],
   ["readiness", "ready", "abort"],
   ["body", "ready", "abort"],
+  ["receipt", "ready", "abort"],
   ["connect", "verify", "abort"],
   ["close", "ready", "teardown-error"],
   ["close-after-failure", "ready", "readiness-error"],
@@ -224,4 +270,27 @@ test("an unwritable receipt destination still exits nonzero with the safe failur
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("the default deadline keeps a stalled operation alive until it aborts", () => {
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      `
+    import {bounded, liveDeadline} from ${JSON.stringify(new URL("./database-budget-readiness.ts", import.meta.url).href)};
+    const deadline = liveDeadline(1);
+    try { await bounded(new Promise(() => {}), deadline.signal); }
+    catch (error) { console.log(error.name); }
+    finally { deadline.dispose(); }
+  `,
+    ],
+    { encoding: "utf8", timeout: 5000, env: {} },
+  );
+  assert.equal(result.error, undefined);
+  assert.equal(result.signal, null);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), "AbortError");
+  assert.doesNotMatch(result.stderr, /unsettled top-level await/);
 });
