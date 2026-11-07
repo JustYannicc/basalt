@@ -155,7 +155,7 @@ test("legacy CPA keeps its bounded snapshot and returned offset, omitting messag
                 details: Array.from({ length: 201 }, () => ({
                   timestamp: "2020-01-01T00:00:00Z",
                   failed: false,
-                    auth_index: "private-account-sentinel",
+                  auth_index: "private-account-sentinel",
                   source: "private-filename-sentinel",
                   tokens: { input_tokens: 1 },
                   prompt: "private-message-sentinel",
