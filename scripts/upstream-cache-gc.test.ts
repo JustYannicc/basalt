@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { execFileSync, spawn } from "node:child_process";
+import childProcess, { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import {
   chmodSync,
@@ -20,6 +20,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test, type TestContext } from "node:test";
+import { fileURLToPath } from "node:url";
 import { withCacheLock } from "./upstream-cache.ts";
 import { installUpstreamDependencies } from "./upstream-dependencies.ts";
 import { collectUpstreamDependencies, createInstallAttempt } from "./upstream-store.ts";
@@ -29,6 +30,38 @@ function fixture(t: TestContext) {
   const cache = join(root, "cache");
   const previous = process.env.BASALT_UPSTREAM_CACHE;
   process.env.BASALT_UPSTREAM_CACHE = cache;
+  const usage = { files: new Set<string>(), unavailable: false };
+  const run = childProcess.spawnSync;
+  const repository = realpathSync(fileURLToPath(new URL("../", import.meta.url)));
+  // Unit fixtures own their usage snapshot; unrelated worktrees and host lsof failures cannot alter it.
+  const probe = t.mock.method(
+    childProcess,
+    "spawnSync",
+    (...parameters: Parameters<typeof run>) => {
+      const [command, args] = parameters;
+      if (command === "lsof") {
+        assert.deepEqual(args, ["-nP", "-F0n"]);
+        return {
+          pid: 0,
+          output: [null, "", ""],
+          stdout: [...usage.files].map((path) => `n${path}\0`).join("\n"),
+          stderr: "",
+          status: usage.unavailable ? 2 : 0,
+          signal: null,
+        };
+      }
+      if (command === "git" && args?.[0] === "-C" && args[1] === repository) {
+        assert.deepEqual(args.slice(2), ["worktree", "list", "--porcelain", "-z"]);
+        return { pid: 0, output: [null, "", ""], stdout: "", stderr: "", status: 0, signal: null };
+      }
+      return run(...parameters);
+    },
+  );
+  syncBuiltinESMExports();
+  t.after(() => {
+    probe.mock.restore();
+    syncBuiltinESMExports();
+  });
   t.after(() => {
     if (previous === undefined) delete process.env.BASALT_UPSTREAM_CACHE;
     else process.env.BASALT_UPSTREAM_CACHE = previous;
@@ -52,7 +85,7 @@ function fixture(t: TestContext) {
     utimesSync(join(entry, "last-used"), number, number);
     return { entry, store };
   };
-  return { root, cache, key };
+  return { root, cache, key, usage };
 }
 
 test("prepare collection retains the three most recently used keys and evicts older pins", async (t) => {
@@ -70,7 +103,7 @@ test("prepare collection retains the three most recently used keys and evicts ol
 });
 
 test("an open file protects its generation and key beyond the recent-key bound", async (t) => {
-  const { key } = fixture(t);
+  const { key, usage } = fixture(t);
   const held = key(1, "old");
   for (let index = 2; index <= 5; index++) key(index);
   const child = spawn(
@@ -85,11 +118,13 @@ test("an open file protects its generation and key beyond the recent-key bound",
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
   });
   await once(child, "message");
+  usage.files.add(join(held.store, "node_modules/payload"));
   await collectUpstreamDependencies("current");
   assert.equal(existsSync(held.store), true);
   const exit = once(child, "exit");
   child.send("close");
   await exit;
+  usage.files.clear();
   await collectUpstreamDependencies("current");
   assert.equal(existsSync(held.entry), false);
 });
@@ -137,16 +172,9 @@ test("a registered worktree reference protects a key without a consumer registra
 });
 
 test("failed open-handle observation skips collection rather than guessing", async (t) => {
-  const { root, key } = fixture(t);
+  const { key, usage } = fixture(t);
   const old = key(1, "old");
-  const bin = join(root, "bin");
-  mkdirSync(bin);
-  writeFileSync(join(bin, "lsof"), "#!/bin/sh\nexit 2\n", { mode: 0o755 });
-  const previous = process.env.PATH;
-  process.env.PATH = `${bin}:${previous}`;
-  t.after(() => {
-    process.env.PATH = previous;
-  });
+  usage.unavailable = true;
   await collectUpstreamDependencies("current");
   assert.equal(existsSync(old.store), true);
   assert.equal(readdirSync(join(old.entry, "generations")).length, 1);
