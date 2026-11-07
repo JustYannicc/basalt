@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-account-source-failure-isolation",
+  "file": "0412-account-source-failure-isolation.patch",
+  "content_sha256": "788e6cb7868710098918777fcc6bcafcbde4a69350ca2f4d4f7cca9c0d731ed9",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

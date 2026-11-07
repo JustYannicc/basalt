@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Combining selected account sources preserves each source's error without making a healthy source unusable. Catalog diagnostics identify failed accounts separately from healthy tools. Calls retain account selection, credential redaction, cancellation and approval authority; a selected failed source returns its own failure. Single-source failures remain failures."
+    }
+  }
+}
