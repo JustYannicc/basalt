@@ -1,0 +1,82 @@
+name: State store upgrade
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Inventory only, or apply the exact reviewed code upgrade
+        required: true
+        default: dry-run
+        type: choice
+        options: [dry-run, apply]
+      expected_worker_id:
+        description: Exact Worker ID from the dry-run receipt, required for apply
+        required: false
+        type: string
+      expected_deployment_id:
+        description: Exact serving deployment ID from the dry-run receipt, required for apply
+        required: false
+        type: string
+      expected_namespace_id:
+        description: Exact Store namespace ID from the dry-run receipt, required for apply
+        required: false
+        type: string
+      expected_version:
+        description: Explicit current State contract version 7, required for apply
+        required: false
+        type: string
+      expected_plan_sha256:
+        description: Exact plan checksum from the dry-run receipt, required for apply
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  upgrade:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: production-release
+      deployment: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Prepare the pinned SDK
+        run: npm run prepare:upstream
+      - name: Build the State Worker without credentials or State initialization
+        run: node scripts/state-store-upgrade/bundle.mjs "$RUNNER_TEMP/state-store-build"
+      - name: Run the protected operation
+        run: node scripts/state-store-upgrade/run.ts
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          STATE_UPGRADE_MODE: ${{ inputs.mode }}
+          STATE_UPGRADE_EXPECTED_WORKER_ID: ${{ inputs.expected_worker_id }}
+          STATE_UPGRADE_EXPECTED_DEPLOYMENT_ID: ${{ inputs.expected_deployment_id }}
+          STATE_UPGRADE_EXPECTED_NAMESPACE_ID: ${{ inputs.expected_namespace_id }}
+          STATE_UPGRADE_EXPECTED_VERSION: ${{ inputs.expected_version }}
+          STATE_UPGRADE_EXPECTED_PLAN_SHA256: ${{ inputs.expected_plan_sha256 }}
+          STATE_UPGRADE_BUNDLE_DIRECTORY: ${{ runner.temp }}/state-store-build/bundles/StateStoreUpgrade
+          STATE_UPGRADE_OUTPUT_DIRECTORY: ${{ runner.temp }}/state-store-upgrade
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: state-store-upgrade-${{ github.run_id }}
+          path: ${{ runner.temp }}/state-store-upgrade
+          if-no-files-found: error
+          retention-days: 30
