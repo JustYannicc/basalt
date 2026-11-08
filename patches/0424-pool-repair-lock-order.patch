@@ -1,0 +1,211 @@
+diff --git a/apps/hosted/server/src/implementation/pool-defaults.ts b/apps/hosted/server/src/implementation/pool-defaults.ts
+index 7971036..e5a02de 100644
+--- a/apps/hosted/server/src/implementation/pool-defaults.ts
++++ b/apps/hosted/server/src/implementation/pool-defaults.ts
+@@ -18,6 +18,7 @@ import { poolRollout } from "./pool-app-upgrades.ts";
+ import { awaitPoolWorker } from "./pool-worker-gate.ts";
+ import { ScheduleWakeup } from "../contracts/schedules.ts";
+ import { lockAppLinks } from "./app-accounts.ts";
++import { lockOrganizationAccess } from "./organization-access-lock.ts";
+ import { poolAppSetup } from "./resource-lifecycle.ts";
+ import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
+ export { PoolAppSource } from "../contracts/pool-defaults.ts";
+@@ -120,6 +121,9 @@ const reconcilePool = (
+     // short SDK transactions and release their connections before compilation.
+     const lockedState = (requireOwner = true) =>
+       Effect.gen(function* () {
++        yield* lockOrganizationAccess(organization).pipe(
++          Effect.provideService(SqlClient.SqlClient, sql),
++        );
+         const rows =
+           yield* sql`select coalesce(metadata::jsonb -> ${basaltPools}, '{}'::jsonb) as pools
+         from organization where id = ${organization} for no key update`;
+diff --git a/e2e/tests/pool-account-repair-contention.spec.ts b/e2e/tests/pool-account-repair-contention.spec.ts
+new file mode 100644
+index 0000000..77a5fb7
+--- /dev/null
++++ b/e2e/tests/pool-account-repair-contention.spec.ts
+@@ -0,0 +1,183 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Fiber, Schedule, Schema } from "effect";
++import { HttpClient } from "effect/http";
++import { randomUUID } from "node:crypto";
++import { Api, body } from "../support/api.ts";
++import { Actors } from "../support/actors.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { cloudLocks } from "../support/cloud-locks.ts";
++import { Evidence } from "../support/evidence.ts";
++import { RuntimeLive, Target } from "../support/platform.ts";
++import { scenarios } from "../test-plan.ts";
++
++const App = Schema.Struct({ id: Schema.String, activeVersion: Schema.String });
++const Choices = Schema.Struct({
++  recovery: Schema.optionalKey(Schema.Literal("restoring")),
++  accounts: Schema.Array(Schema.Struct({ account: Schema.Struct({ id: Schema.String }) })),
++});
++const Backends = Schema.Array(Schema.Struct({ pid: Schema.Number, query: Schema.String }));
++const Holder = Schema.Array(Schema.Struct({ pid: Schema.Number }));
++const source = `import { defineApp, defineProvider, object, query, router, secrets, string } from "apps";
++const pool = defineProvider({ name: "Host pool", auth: {
++  token: secrets({ provisioned: true, label: "Pool access", fields: object({ token: string() }) }),
++} });
++export default defineApp({ app: { accounts: { pool } } }, {
++  tools: router({ present: query({ input: object({}) }, async () => ({ valid: true })) }),
++});`;
++class Waiting extends Schema.TaggedError<Waiting>()("Waiting", {}) {}
++
++layer(RuntimeLive, { excludeTestServices: true })("Pool repair lock contention", (it) => {
++  it.effect(scenarios.cloudPoolAccountRepairContention.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          evidence = yield* Evidence,
++          target = yield* Target,
++          http = yield* HttpClient.HttpClient,
++          database = yield* cloudLocks;
++        const rows = (sql: string, params: readonly (string | number)[] = []) =>
++          database.run({ sql, params });
++        const deferJobs = () =>
++          rows(
++            `update hosted_provisioning set available_at = now() + interval '1 day'
++              where organization_id = $1 and status = 'queued'`,
++            [actors.organization.id],
++          );
++        const forgetPool = () =>
++          rows(
++            `update organization set metadata = (coalesce(metadata::jsonb, '{}'::jsonb)
++              - 'basaltPools')::text where id = $1`,
++            [actors.organization.id],
++          );
++        yield* deferJobs();
++        yield* Effect.addFinalizer(() =>
++          deferJobs().pipe(Effect.andThen(forgetPool), Effect.orDie),
++        );
++        const session = yield* body(
++          Schema.Struct({ user: Schema.Struct({ id: Schema.String }) }),
++          yield* api.request(actors.owner, "GET", "/api/auth/get-session"),
++        );
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const created = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "Contended pool repair",
++          files: [{ path: "index.ts", content: source }, appsManifest],
++        });
++        expect(created.status).toBe(200);
++        const app = yield* body(App, created);
++        const path = `${prefix}/apps/${app.id}`;
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* deferJobs();
++            yield* forgetPool();
++            yield* api.request(actors.owner, "DELETE", path);
++          }).pipe(Effect.orDie),
++        );
++        const updated = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
++          files: [
++            { path: "index.ts", content: `${source}\n// Owner keeps this source.\n` },
++            appsManifest,
++          ],
++        });
++        expect(updated.status).toBe(200);
++        const current = (yield* body(Schema.Struct({ app: App }), updated)).app;
++        expect(current.activeVersion).not.toBe(app.activeVersion);
++
++        const suffix = randomUUID().replaceAll("-", "");
++        const fn = `pool_repair_${suffix}`;
++        const gate = `pool-repair:${suffix}`;
++        yield* rows(`create function ${fn}() returns trigger language plpgsql as $$ begin
++          if new.app = TG_ARGV[0] and new.requirement = 'pool' then
++            perform pg_advisory_xact_lock(hashtextextended('${gate}', 0));
++          end if; return new; end $$`);
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* database.release;
++            yield* rows(`drop trigger if exists ${fn} on hosted_app_account_links`);
++            yield* rows(`drop function if exists ${fn}()`);
++          }).pipe(Effect.orDie),
++        );
++        yield* rows(`create trigger ${fn} before insert on hosted_app_account_links
++          for each row execute function ${fn}('${app.id.replaceAll("'", "''")}')`);
++        const [holder] = yield* database
++          .hold({
++            sql: "select pg_backend_pid() as pid, pg_advisory_xact_lock(hashtextextended($1, 0))",
++            params: [gate],
++          })
++          .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Holder)), Effect.orDie);
++        expect(holder).toBeDefined();
++        yield* rows(
++          `update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb),
++            '{basaltPools}', $1::jsonb)::text where id = $2`,
++          [
++            JSON.stringify({ [session.user.id]: { app: app.id, version: app.activeVersion } }),
++            actors.organization.id,
++          ],
++        );
++        yield* rows(
++          `delete from hosted_provisioning where organization_id = $1 and user_id = $2
++            and kind = 'member' and status = 'queued'`,
++          [actors.organization.id, session.user.id],
++        );
++        const choices = () => api.request(actors.owner, "GET", `${path}/accounts/app/pool`);
++        const initial = yield* choices();
++        expect(initial.status).toBe(200);
++        expect((yield* body(Choices, initial)).recovery).toBe("restoring");
++        const dispatch = yield* Effect.forkChild(
++          Effect.scoped(
++            http
++              .get(
++                `${target.metadata.origin}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent("* * * * *")}`,
++              )
++              .pipe(
++                Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))),
++                Effect.flatMap((response) => response.text),
++              ),
++          ).pipe(Effect.timeout("15 seconds")),
++        );
++        const blockedBy = (pid: number, statement: string) =>
++          rows(
++            `select pid, query from pg_stat_activity
++              where $1::integer = any(pg_blocking_pids(pid)) and query ilike $2`,
++            [pid, statement],
++          ).pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(Backends)),
++            Effect.filterOrFail(
++              (backends) => backends.length === 1,
++              () => new Waiting(),
++            ),
++            Effect.retry({ while: Schema.is(Waiting), schedule: Schedule.spaced("100 millis") }),
++            Effect.timeout("15 seconds"),
++          );
++        const [repair] = yield* blockedBy(holder!.pid, "%insert into hosted_app_account_links%");
++        const request = yield* Effect.forkChild(choices());
++        // Both orders contend here: the old reader waits on the app, the corrected one on access.
++        const [reader] = yield* blockedBy(repair!.pid, "select%");
++        yield* evidence.json("pool-repair-contention.json", { repair, reader });
++        yield* database.release;
++        const response = yield* Fiber.join(request);
++        yield* evidence.json("pool-repair-contended-read.json", { status: response.status });
++        expect(response.status).toBe(200);
++        yield* Fiber.join(dispatch);
++        // Account choices are projected before the handler waits for the access lock.
++        const afterRepair = yield* choices();
++        expect(afterRepair.status).toBe(200);
++        const restored = yield* body(Choices, afterRepair);
++        expect(restored.recovery).toBeUndefined();
++        expect(restored.accounts).toHaveLength(1);
++        const unchanged = yield* body(App, yield* api.request(actors.owner, "GET", path));
++        expect(unchanged.activeVersion).toBe(current.activeVersion);
++        const repeated = yield* choices();
++        expect(repeated.status).toBe(200);
++        expect((yield* body(Choices, repeated)).accounts).toEqual(restored.accounts);
++        yield* evidence.json("pool-repair-contention-restored.json", {
++          account: restored.accounts[0]?.account.id,
++          activeVersion: unchanged.activeVersion,
++          sourcePreserved: true,
++        });
++      }),
++    ),
++  );
++});
