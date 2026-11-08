@@ -60,7 +60,7 @@ export interface BaselineNormalization {
 }
 
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
-export function containerSnapshot(value: ContainerAttributes): ContainerSnapshot {
+export function containerSnapshot(value: ContainerSnapshot): ContainerSnapshot {
   return structuredClone({
     applicationId: value.applicationId,
     applicationName: value.applicationName,
@@ -299,7 +299,10 @@ export const stageContainer = (
     } satisfies StagedContainer;
   });
 
-export function sameContainerState(current: ContainerAttributes, expected: ContainerSnapshot) {
+export function sameContainerState(
+  current: ContainerSnapshot & { activeRolloutId?: string },
+  expected: ContainerSnapshot,
+) {
   return (
     current.applicationId === expected.applicationId &&
     current.accountId === expected.accountId &&

@@ -1,3 +1,5 @@
+import { State } from "alchemy/State/State";
+import { beginForwardJournal } from "./forward-journal.ts";
 import { operationFailure, withOperation } from "./operation-failure.ts";
 import * as Apply from "alchemy/Apply";
 import * as Plan from "alchemy/Plan";
@@ -29,6 +31,7 @@ import {
 
 export interface DeployStackOptions {
   candidate: string;
+  forwardEncryptionKey?: string;
   record(receipt: BarrierReceipt): Promise<void>;
   manifest(value: ReleaseManifest): Promise<void>;
   publication?(container: FrozenContainer, normalization?: BaselineNormalization): Promise<void>;
@@ -100,6 +103,9 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
       ),
     };
     yield* Effect.promise(() => options.manifest(manifest));
+    const journal = options.forwardEncryptionKey
+      ? yield* beginForwardJournal(stack, manifest, options.forwardEncryptionKey)
+      : undefined;
     const activated = new Map<string, Worker["Attributes"]>();
     const activatedContainers = new Map<string, ContainerAttributes>(
       [...prepared.containers].map(([id, staged]) => [id, staged.publication.proposed]),
@@ -135,7 +141,10 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
     yield* Effect.tryPromise({
       try: () =>
         releaseWorkers(manifest, {
-          record: options.record,
+          record: async (receipt) => {
+            if (journal) await run(journal.record(receipt));
+            await options.record(receipt);
+          },
           beforeActivate: () => run(database),
           provider: {
             upload: (worker) => run(io.upload(worker)),
@@ -186,6 +195,8 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
                   container,
                   { worker: worker.scriptName, accountId: worker.accountId },
                   options.candidate,
+                  undefined,
+                  { applicationVersion: observed.version },
                 ),
               );
               if (options.serving)
@@ -202,5 +213,10 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
       catch: (error) =>
         error instanceof BarrierRefusal ? error : new BarrierRefusal("release-operation-failed"),
     });
-    return yield* finishPlan(prepared, activated, databaseFqns, activatedContainers);
+    const finalizing = finishPlan(prepared, activated, databaseFqns, activatedContainers);
+    const finished = yield* journal
+      ? finalizing.pipe(Effect.provideService(State, Effect.succeed(journal.finalizingState)))
+      : finalizing;
+    if (journal) yield* journal.finish();
+    return finished;
   });

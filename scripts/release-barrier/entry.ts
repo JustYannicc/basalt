@@ -1,3 +1,5 @@
+import { undoForwardAdoption } from "./forward-undo.ts";
+import { resumeForwardRelease } from "./forward-resume.ts";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
@@ -22,15 +24,17 @@ if (
 if (process.env.ALCHEMY_STAGE !== "production")
   throw new Error("Release barrier requires the production stage");
 const args = process.argv.slice(2);
-if (args.length && (args.length !== 3 || args[0] !== "--recover"))
+const undoPath = args[0] === "--undo-forward" && args.length === 2 ? resolve(args[1]!) : undefined;
+if (args.length && !undoPath && (args.length !== 3 || args[0] !== "--recover"))
   throw new Error("Use --recover <manifest.json> <receipt.json>");
-const recoveryDirectory = args.length ? dirname(resolve(args[1]!)) : undefined;
-const recovery = args.length
-  ? {
-      manifest: JSON.parse(await readFile(resolve(args[1]!), "utf8")),
-      receipt: JSON.parse(await readFile(resolve(args[2]!), "utf8")),
-    }
-  : undefined;
+const recoveryDirectory = args[0] === "--recover" ? dirname(resolve(args[1]!)) : undefined;
+const recovery =
+  args[0] === "--recover"
+    ? {
+        manifest: JSON.parse(await readFile(resolve(args[1]!), "utf8")),
+        receipt: JSON.parse(await readFile(resolve(args[2]!), "utf8")),
+      }
+    : undefined;
 const containerRecovery =
   recovery && "containers" in readRecoveryManifest(recovery.manifest)
     ? {
@@ -80,22 +84,28 @@ const result = await Effect.runPromiseExit(
       evalStack(
         stack,
         (compiled) =>
-          (recovery
-            ? recoverStack(
-                compiled,
-                recovery.manifest,
-                recovery.receipt,
-                (value) => evidence.recovery(value),
-                containerRecovery,
-              )
-            : deployStack(compiled, {
-                candidate: process.env.BASALT_RELEASE_CANDIDATE!,
-                record: evidence.record,
-                publication: evidence.publication,
-                admission: evidence.admission,
-                serving: evidence.serving,
-                manifest: evidence.manifest,
-              })
+          (undoPath
+            ? undoForwardAdoption(compiled, undoPath)
+            : recovery
+              ? recoverStack(
+                  compiled,
+                  recovery.manifest,
+                  recovery.receipt,
+                  (value) => evidence.recovery(value),
+                  containerRecovery,
+                )
+              : Effect.gen(function* () {
+                  yield* resumeForwardRelease(compiled, { directory });
+                  return yield* deployStack(compiled, {
+                    candidate: process.env.BASALT_RELEASE_CANDIDATE!,
+                    forwardEncryptionKey: process.env.EXECUTOR_ENCRYPTION_KEY,
+                    record: evidence.record,
+                    publication: evidence.publication,
+                    admission: evidence.admission,
+                    serving: evidence.serving,
+                    manifest: evidence.manifest,
+                  });
+                })
           ).pipe(
             Effect.provideContext(compiled.services),
             Effect.provideService(State, Context.get(compiled.services, State)),
