@@ -2,10 +2,11 @@ import * as Workers from "@distilled.cloud/cloudflare/workers";
 import { State } from "alchemy/State/State";
 import { Effect, Schema } from "effect";
 import { declaredMismatch } from "./declared-refusal.ts";
-import { BarrierRefusal } from "./manifest.ts";
+import { classConstraint, classSchemaRefusal } from "./class-refusal.ts";
 
 const hash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
 export const classObservation = Schema.Struct({
+  workerId: Schema.NonEmptyString,
   accountId: Schema.NonEmptyString,
   scriptName: Schema.NonEmptyString,
   versionId: Schema.NonEmptyString,
@@ -60,8 +61,8 @@ export const classHistory = (value: unknown) => {
   if (!object(value) || !Object.hasOwn(value, key)) return {} satisfies typeof history.Type;
   try {
     return Schema.decodeUnknownSync(history, { onExcessProperty: "error" })(value[key]);
-  } catch {
-    throw new BarrierRefusal("declared-class-history-invalid", key);
+  } catch (error) {
+    throw classSchemaRefusal("declared-class-history-invalid", undefined, key, error);
   }
 };
 
@@ -103,7 +104,15 @@ export const preserveClassHistory = <A, E, R>(
             input.stack === scope.stack && input.stage === scope.stage
               ? object(input.value)
                 ? state.setOutput({ ...input, value: { ...input.value, [key]: saved } })
-                : Effect.die(new BarrierRefusal("declared-history-output-unsupported", key))
+                : Effect.die(
+                    classConstraint(
+                      "declared-history-output-unsupported",
+                      undefined,
+                      "nativeStackOutput",
+                      "object",
+                      typeof input.value,
+                    ),
+                  )
               : state.setOutput(input),
         }),
       ),

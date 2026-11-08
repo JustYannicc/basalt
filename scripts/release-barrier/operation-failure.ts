@@ -9,6 +9,7 @@ export type ReleaseOperation =
   | "read-class-expansion"
   | "deploy-class-expansion"
   | "stage-class-baseline-clone"
+  | "record-class-expansion"
   | "release-stack";
 
 const knownTypes = new Set([
@@ -19,6 +20,7 @@ const knownTypes = new Set([
   "CloudflareRateLimited",
   "InvalidRoute",
   "WorkerNotFound",
+  "WorkerVersionNotFound",
   "BadRequest",
   "Unauthorized",
   "Forbidden",
@@ -75,7 +77,7 @@ export class ReleaseOperationFailure extends BarrierRefusal {
     super(
       refusal?.reason ?? "release-operation-failed",
       refusal?.worker ?? resource,
-      refusal?.delta,
+      refusal?.delta && !refusal.worker ? { ...refusal.delta, fqn: resource } : refusal?.delta,
       refusal?.refusals,
     );
     this.operation = operation;

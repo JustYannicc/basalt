@@ -20,6 +20,7 @@ import { classApi, classRecoveryClient, type ClassApiOptions } from "./class-api
 import type { ClassProgress } from "../declared-class-contract.ts";
 import { describeWorker, canonical, digest, type ReleaseManifest } from "../manifest.ts";
 import type { BarrierReceipt } from "../barrier.ts";
+import type { releaseEvidence } from "../evidence.ts";
 import { recoverStack } from "../recover-stack.ts";
 import { Credentials } from "@distilled.cloud/cloudflare/Credentials";
 import * as HttpClient from "effect/http/HttpClient";
@@ -59,6 +60,8 @@ export function classProvisioning(
     deletedClass?: boolean;
     recordFails?: boolean;
     recover?: "pre-migration" | "compatible";
+    evidence?: ReturnType<typeof releaseEvidence>;
+    secondForeignWorker?: boolean;
   } = {},
 ) {
   const events: string[] = [];
@@ -138,10 +141,11 @@ export function classProvisioning(
     Effect.gen(function* () {
       yield* Command.Exec("PoolDatabase", { command: "node ensure-pool-database.ts", memo: false });
       yield* TestBucket("DriveRecords", bucketProps).pipe(RemovalPolicy.retain());
+      if (options.secondForeignWorker) yield* TestWorker("OtherData", {});
       return yield* TestWorker("AppData", {});
     }),
   );
-  const declarations = decodeDeclaredChanges({
+  const originalDeclarations = decodeDeclaredChanges({
     schemaVersion: 1,
     stack: "fixture",
     retentionOwner: "Fixture owner",
@@ -164,6 +168,18 @@ export function classProvisioning(
       },
     ],
   });
+  const declarations = options.secondForeignWorker
+    ? decodeDeclaredChanges({
+        ...originalDeclarations,
+        changes: [
+          ...originalDeclarations.changes,
+          {
+            ...originalDeclarations.changes.find((entry) => entry.action === "add-sqlite-class")!,
+            fqn: "OtherData",
+          },
+        ],
+      })
+    : originalDeclarations;
   const effect = evalStack(
     stack,
     (compiled) =>
@@ -181,16 +197,19 @@ export function classProvisioning(
         const release = {
           candidate: "a".repeat(40),
           declarations,
-          declared: async () => {},
-          declaredReadiness: async () => {},
+          declared: options.evidence?.declared ?? (async () => {}),
+          declaredReadiness: options.evidence?.declaredReadiness ?? (async () => {}),
           expansion: async (value) => {
             progress.push(value);
+            await options.evidence?.expansion(value);
             if (options.recordFails) throw new Error("Synthetic evidence write failure");
           },
           record: async (value) => {
+            await options.evidence?.record(value);
             receipt = value;
           },
           manifest: async (value) => {
+            await options.evidence?.manifest(value);
             manifest = value;
           },
           io: {

@@ -3,8 +3,10 @@ import { Effect, Schema } from "effect";
 import type { ClassContent, ClassObservation, ClassProvider } from "./declared-class-contract.ts";
 import type { ClassRecord } from "./class-history.ts";
 import { saveClassHistory } from "./class-history.ts";
-import { BarrierRefusal, canonical, digest } from "./manifest.ts";
+import { canonical, digest } from "./manifest.ts";
 import { withOperation } from "./operation-failure.ts";
+import { classConstraint, classRefusal } from "./class-refusal.ts";
+import { changedProps } from "./prop-diff.ts";
 import { declaredMismatch } from "./declared-refusal.ts";
 
 /** Legacy inherit selects the latest upload. Stage the exact active bytes with version-qualified binding inheritance first. */
@@ -12,9 +14,16 @@ export function cloneRequest(
   baseline: ClassObservation,
   content: ClassContent,
   marker: string,
+  fqn?: string,
 ): Workers.CreateBetaWorkerVersionRequest {
   if (baseline.previewUrlsEnabled)
-    throw new BarrierRefusal("declared-class-preview-routing-enabled");
+    throw classConstraint(
+      "declared-class-preview-routing-enabled",
+      fqn,
+      "previewUrlsEnabled",
+      "false",
+      "true",
+    );
   const settings = baseline.settings;
   return Schema.decodeUnknownSync(Schema.toType(Workers.CreateBetaWorkerVersionRequest), {
     onExcessProperty: "error",
@@ -92,21 +101,46 @@ export function assertClone(
     (saved.clone.versionId && actual.id !== saved.clone.versionId) ||
     canonical(withoutNull(expected)) !== canonical(withoutNull(observed))
   )
-    throw declaredMismatch(
-      "declared-class-clone-mismatch",
-      fqn,
+    throw classRefusal("declared-class-clone-mismatch", fqn, [
+      ...changedProps({ clone: withoutNull(expected) }, { clone: withoutNull(observed) }),
       {
-        cloneVersion: saved.clone.versionId ?? "pending",
-        payload: saved.clone.payload,
-        routed: false,
+        path: "clone.observationHash",
+        old: digest(canonical(withoutNull(expected))),
+        new: actual ? digest(canonical(withoutNull(observed))) : null,
       },
-      {
-        cloneVersion: actual?.id ?? null,
-        routed: actual?.urls.length ? true : false,
-        exactBaseline: false,
-      },
-      "Cloudflare.Worker",
-    );
+      ...(saved.clone.versionId && saved.clone.versionId !== actual?.id
+        ? [
+            {
+              path: "clone.versionIdentityHash",
+              old: digest(saved.clone.versionId),
+              new: actual ? digest(actual.id) : null,
+            },
+          ]
+        : []),
+      ...(actual?.urls.length
+        ? [{ path: "clone.routedUrlCount", old: 0, new: actual.urls.length }]
+        : []),
+      ...changedProps(
+        {
+          clone: {
+            assets: null,
+            cacheOptions: null,
+            containers: [],
+            exports: null,
+            migrations: null,
+          },
+        },
+        {
+          clone: {
+            assets: actual?.assets ?? null,
+            cacheOptions: actual?.cacheOptions ?? null,
+            containers: actual?.containers ?? [],
+            exports: actual?.exports ?? null,
+            migrations: actual?.migrations ?? null,
+          },
+        },
+      ),
+    ]);
 }
 
 export const prepareClassClone = (
@@ -118,7 +152,13 @@ export const prepareClassClone = (
 ) =>
   Effect.gen(function* () {
     if (digest(canonical(saved.clone.request)) !== saved.clone.payload)
-      throw new BarrierRefusal("declared-class-clone-recovery-invalid", fqn);
+      throw classConstraint(
+        "declared-class-clone-recovery-invalid",
+        fqn,
+        "clone.payloadHash",
+        saved.clone.payload,
+        digest(canonical(saved.clone.request)),
+      );
     const call = <A>(fn: () => Promise<A>) =>
       Effect.tryPromise({ try: fn, catch: (error) => error }).pipe(
         withOperation(fqn, "stage-class-baseline-clone"),
@@ -128,8 +168,8 @@ export const prepareClassClone = (
       throw declaredMismatch(
         "declared-class-live-baseline-drift",
         fqn,
-        { version: saved.baseline.versionId },
-        { version: active.versionId },
+        { baseline: saved.baseline, observationHash: digest(canonical(saved.baseline)) },
+        { baseline: active, observationHash: digest(canonical(active)) },
         "Cloudflare.Worker",
       );
     let next = saved;
@@ -138,7 +178,13 @@ export const prepareClassClone = (
       // The intent is durable before POST. A lost reply can only be reconciled by its exact marker and payload, never another POST.
       actual = yield* call(() => provider.clone(saved.baseline, "latest"));
       if (actual?.annotations?.workersMessage !== saved.clone.request.annotations?.workersMessage)
-        throw new BarrierRefusal("declared-class-clone-outcome-unknown", fqn);
+        throw classConstraint(
+          "declared-class-clone-outcome-unknown",
+          fqn,
+          "clone.attribution",
+          "exact-retained-marker-and-payload",
+          "unconfirmed",
+        );
     } else if (saved.clone.versionId)
       actual = yield* call(() => provider.clone(saved.baseline, saved.clone.versionId!));
     else {
@@ -162,11 +208,17 @@ export const prepareClassClone = (
     assertClone(fqn, next, latest);
     const confirmed = yield* call(() => provider.read(saved.baseline));
     if (canonical(confirmed) !== canonical(saved.baseline))
-      throw new BarrierRefusal("declared-class-live-baseline-drift", fqn);
+      throw classConstraint(
+        "declared-class-live-baseline-drift",
+        fqn,
+        "baseline.observationHash",
+        digest(canonical(saved.baseline)),
+        digest(canonical(confirmed)),
+      );
     return next;
   });
 
-/** Delete only the attributed inactive clone; a lost delete reply is reconciled through GET before any retry. */
+/** Only observed absence confirms an uncertain deletion. A still-visible clone requires investigation, never another DELETE. */
 export const removeClassClone = (
   fqn: string,
   saved: ClassRecord,
@@ -182,8 +234,22 @@ export const removeClassClone = (
       );
     const active = yield* call(() => provider.read(saved.baseline));
     if (active.versionId === id)
-      throw new BarrierRefusal("declared-class-clone-active-refused", fqn);
+      throw classConstraint(
+        "declared-class-clone-active-refused",
+        fqn,
+        "clone.active",
+        "false",
+        "true",
+      );
     const actual = yield* call(() => provider.clone(saved.baseline, id));
+    if (actual && saved.clone.status === "removal-pending")
+      throw classConstraint(
+        "declared-class-clone-removal-outcome-unknown",
+        fqn,
+        "clone.removal",
+        "observed-absent",
+        "removal-pending-still-visible",
+      );
     if (actual) {
       assertClone(fqn, saved, actual);
       yield* saveClassHistory(scope, fqn, {
@@ -192,7 +258,13 @@ export const removeClassClone = (
       });
       yield* call(() => provider.removeClone(saved.baseline, id));
       if (yield* call(() => provider.clone(saved.baseline, id)))
-        throw new BarrierRefusal("declared-class-clone-removal-unconfirmed", fqn);
+        throw classConstraint(
+          "declared-class-clone-removal-unconfirmed",
+          fqn,
+          "clone.removal",
+          "observed-absent",
+          "still-visible",
+        );
     }
     const next = { ...saved, clone: { ...saved.clone, status: "removed" as const } };
     yield* saveClassHistory(scope, fqn, next);

@@ -1,7 +1,7 @@
 import type { SqliteClassDeclaration } from "./declared-change-schema.ts";
 import { classNamespaces, type ClassObservation } from "./declared-class-contract.ts";
 import { declaredMismatch } from "./declared-refusal.ts";
-import { canonical } from "./manifest.ts";
+import { canonical, digest } from "./manifest.ts";
 import type { ClassRecord } from "./class-history.ts";
 
 const local = (
@@ -32,14 +32,25 @@ export function assertClassObservation(
     throw declaredMismatch(reason, entry.fqn, expected, actual, entry.type);
   };
   if (
+    observed.workerId !== saved.baseline.workerId ||
     observed.accountId !== saved.baseline.accountId ||
     observed.scriptName !== saved.baseline.scriptName ||
     observed.migrationTag !== saved.newTag
   )
     fail(
       "declared-class-prerequisite-drift",
-      { target: [saved.baseline.accountId, saved.baseline.scriptName], migrationTag: saved.newTag },
-      { target: [observed.accountId, observed.scriptName], migrationTag: observed.migrationTag },
+      {
+        workerIdentityHash: digest(saved.baseline.workerId),
+        accountIdentityHash: digest(saved.baseline.accountId),
+        scriptIdentityHash: digest(saved.baseline.scriptName),
+        migrationTagHash: digest(saved.newTag),
+      },
+      {
+        workerIdentityHash: digest(observed.workerId),
+        accountIdentityHash: digest(observed.accountId),
+        scriptIdentityHash: digest(observed.scriptName),
+        migrationTagHash: digest(observed.migrationTag),
+      },
     );
   const bindings = observed.settings.bindings ?? [];
   for (const binding of entry.addedBindings)

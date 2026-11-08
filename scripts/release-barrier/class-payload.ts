@@ -2,7 +2,9 @@ import * as Workers from "@distilled.cloud/cloudflare/workers";
 import { Schema } from "effect";
 import type { SqliteClassDeclaration } from "./declared-change-schema.ts";
 import type { ClassContent, ClassObservation } from "./declared-class-contract.ts";
-import { BarrierRefusal, canonical, digest, type ModulePart } from "./manifest.ts";
+import { declaredMismatch } from "./declared-refusal.ts";
+import { classRefusal } from "./class-refusal.ts";
+import { canonical, digest, type ModulePart } from "./manifest.ts";
 
 export const contentDigest = (content: ClassContent) =>
   digest(
@@ -31,7 +33,41 @@ export function expansionContent(
     content.mainModule.startsWith("/") ||
     content.mainModule.split("/").includes("..")
   )
-    throw new BarrierRefusal("declared-class-baseline-modules-unsupported", entry.fqn);
+    throw classRefusal("declared-class-baseline-modules-unsupported", entry.fqn, [
+      ...(!main ? [{ path: "baseline.mainModule", old: "present", new: null }] : []),
+      ...(names.size !== content.files.length
+        ? [
+            {
+              path: "baseline.moduleNames.duplicates",
+              old: 0,
+              new: content.files.length - names.size,
+            },
+          ]
+        : []),
+      ...(names.has(module)
+        ? [{ path: "baseline.reservedModule", old: "available", new: "occupied" }]
+        : []),
+      ...(main && main.type !== "application/javascript+module"
+        ? [
+            {
+              path: "baseline.mainModule.type",
+              old: "application/javascript+module",
+              new: `sha256:${digest(main.type)}`,
+            },
+          ]
+        : []),
+      ...(content.mainModule.includes("\\") ||
+      content.mainModule.startsWith("/") ||
+      content.mainModule.split("/").includes("..")
+        ? [
+            {
+              path: "baseline.mainModule.path",
+              old: "relative-module",
+              new: `sha256:${digest(content.mainModule)}`,
+            },
+          ]
+        : []),
+    ]);
   const path = "../".repeat(content.mainModule.split("/").length - 1) + module;
   const suffix = new TextEncoder().encode(
     `\nexport { ${[...entry.newSqliteClasses].sort().join(", ")} } from ${JSON.stringify(`./${path}`)};\n`,
@@ -70,7 +106,17 @@ export function expansionRequest(
     settings.usageModel === "bundled" ||
     settings.usageModel === "unbound"
   )
-    throw new BarrierRefusal("declared-class-baseline-settings-unsupported", entry.fqn);
+    throw declaredMismatch(
+      "declared-class-baseline-settings-unsupported",
+      entry.fqn,
+      { exports: null, cacheOptions: null, usageModel: "standard" },
+      {
+        exports: settings.exports,
+        cacheOptions: settings.cacheOptions,
+        usageModel: settings.usageModel ?? "standard",
+      },
+      entry.type,
+    );
   const withoutNull = (value: unknown): unknown =>
     Array.isArray(value)
       ? value.map(withoutNull)

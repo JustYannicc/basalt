@@ -7,7 +7,7 @@ import { classNamespaces, classTag, type ClassTarget } from "./declared-class-co
 import { declaredMismatch } from "./declared-refusal.ts";
 import { classRecoveryRequest } from "./class-recovery.ts";
 import type { RecoveryManifest } from "./recovery-manifest.ts";
-import { canonical } from "./manifest.ts";
+import { canonical, digest } from "./manifest.ts";
 
 const bindings = Schema.Array(
   Schema.Struct({
@@ -59,7 +59,17 @@ export const verifyClassRollback = (
           { native: saved.native, status: "ready", target: saved.baseline },
           { native, status: saved.status, target },
         );
-      classRecoveryRequest(saved);
+      classRecoveryRequest(saved, fqn);
+      const profile = yield* Workers.getBetaWorker({
+        accountId: target!.accountId,
+        workerId: target!.scriptName,
+      }).pipe(Retry.none);
+      if (profile.id !== saved.native.workerId || profile.id !== saved.baseline.workerId)
+        fail(
+          "declared-class-recovery-identity-drift",
+          { workerIdentityHash: digest(saved.native.workerId) },
+          { workerIdentityHash: digest(profile.id) },
+        );
       const live = yield* Workers.getScriptScriptAndVersionSetting(target!).pipe(Retry.none);
       const namespaces = classNamespaces({ scriptName: target!.scriptName, settings: live });
       if (

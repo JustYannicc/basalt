@@ -43,18 +43,6 @@ export function assertClassRequests(
     first.reason,
     first.worker,
     first.delta,
-    failures.flatMap(
-      (error) =>
-        error.refusals ?? [
-          {
-            reason: error.reason,
-            ...(error.delta ?? {
-              fqn: error.worker ?? "release-declarations.json",
-              type: "Cloudflare.Worker",
-              changed: [{ path: "$request", changed: true as const }],
-            }),
-          },
-        ],
-    ),
+    failures.flatMap((error) => error.refusals ?? [{ reason: error.reason, ...error.delta! }]),
   );
 }

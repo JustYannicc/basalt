@@ -5,6 +5,7 @@ import { getDurableObjectTagMap } from "alchemy/Cloudflare/Workers";
 import type { SqliteClassDeclaration } from "./declared-change-schema.ts";
 import { declaredMismatch } from "./declared-refusal.ts";
 import { canonical, digest, type ModulePart } from "./manifest.ts";
+import type { PropChange } from "./prop-diff.ts";
 import { versionMetadata } from "./version-request.ts";
 
 export interface ClassTarget {
@@ -12,6 +13,7 @@ export interface ClassTarget {
   scriptName: string;
 }
 export interface ClassObservation extends ClassTarget {
+  workerId: string;
   versionId: string;
   migrationTag: string;
   settings: Workers.GetScriptScriptAndVersionSettingResponse;
@@ -91,20 +93,48 @@ export const classNamespaces = (value: Pick<ClassObservation, "settings" | "scri
     ]),
   );
 
-export function classPlanMatches(node: Plan.Apply, entry: SqliteClassDeclaration) {
-  return (
-    node.resource.Type === entry.type &&
-    node.resource.FQN === entry.fqn &&
-    ["update", "noop"].includes(node.action) &&
-    !node.renamedFrom?.length &&
-    (node.state?.status === "created" || node.state?.status === "updated") &&
-    new Set(entry.newSqliteClasses).size === entry.newSqliteClasses.length &&
-    new Set(entry.addedBindings.map((binding) => binding.name)).size ===
-      entry.addedBindings.length &&
-    canonical([...new Set(entry.addedBindings.map((binding) => binding.className))].sort()) ===
-      canonical([...entry.newSqliteClasses].sort())
+export function classPlanChanges(node: Plan.Apply, entry: SqliteClassDeclaration): PropChange[] {
+  const changes: PropChange[] = [];
+  if (node.resource.Type !== entry.type)
+    changes.push({ path: "$declaration.type", old: entry.type, new: node.resource.Type });
+  if (node.resource.FQN !== entry.fqn)
+    changes.push({ path: "$declaration.fqn", old: entry.fqn, new: node.resource.FQN });
+  if (!["update", "noop"].includes(node.action))
+    changes.push({ path: "$declaration.action", old: "update-or-noop", new: node.action });
+  if (node.renamedFrom?.length)
+    changes.push({ path: "$declaration.renamedFrom.count", old: 0, new: node.renamedFrom.length });
+  if (node.state?.status !== "created" && node.state?.status !== "updated")
+    changes.push({
+      path: "$declaration.native.status",
+      old: "created-or-updated",
+      new: node.state?.status ?? null,
+    });
+  const duplicateClasses = entry.newSqliteClasses.length - new Set(entry.newSqliteClasses).size;
+  if (duplicateClasses)
+    changes.push({
+      path: "$declaration.newSqliteClasses.duplicates",
+      old: 0,
+      new: duplicateClasses,
+    });
+  const duplicateBindings =
+    entry.addedBindings.length - new Set(entry.addedBindings.map((binding) => binding.name)).size;
+  if (duplicateBindings)
+    changes.push({ path: "$declaration.addedBindings.duplicates", old: 0, new: duplicateBindings });
+  const expected = canonical([...entry.newSqliteClasses].sort());
+  const observed = canonical(
+    [...new Set(entry.addedBindings.map((binding) => binding.className))].sort(),
   );
+  if (expected !== observed)
+    changes.push({
+      path: "$declaration.addedBindings.classSetHash",
+      old: digest(expected),
+      new: digest(observed),
+    });
+  return changes;
 }
+
+export const classPlanMatches = (node: Plan.Apply, entry: SqliteClassDeclaration) =>
+  classPlanChanges(node, entry).length === 0;
 
 /** This verdict is reused by plan admission and both concrete request checks; it authorizes only the declared additive delta. */
 export function classRequestVerdict(upload: PreparedWorkerUpload, entry: SqliteClassDeclaration) {

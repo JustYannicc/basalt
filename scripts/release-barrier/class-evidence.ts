@@ -1,6 +1,7 @@
 import type { ClassProgress } from "./declared-class-contract.ts";
 import { classNamespaces } from "./declared-class-contract.ts";
-import { BarrierRefusal, canonical, digest } from "./manifest.ts";
+import { classConstraint, classRefusal } from "./class-refusal.ts";
+import { canonical, digest } from "./manifest.ts";
 import { sealRecovery } from "./recovery-envelope.ts";
 
 /** Exact baseline bytes and identities are retained encrypted; public evidence describes the expansion separately from candidate activation. */
@@ -20,7 +21,10 @@ export function classEvidence(
         previous &&
         (previous.value.entry !== value.entry || previous.value.payload !== value.payload)
       )
-        throw new BarrierRefusal("declared-class-evidence-drift", value.fqn);
+        throw classRefusal("declared-class-evidence-drift", value.fqn, [
+          { path: "entryHash", old: previous.value.entry, new: value.entry },
+          { path: "payloadHash", old: previous.value.payload, new: value.payload },
+        ]);
       const files =
         value.request.files === undefined
           ? []
@@ -34,7 +38,13 @@ export function classEvidence(
           files: await Promise.all(
             files.map(async (file) => {
               if (!(file instanceof File))
-                throw new BarrierRefusal("declared-class-recovery-invalid", value.fqn);
+                throw classConstraint(
+                  "declared-class-recovery-invalid",
+                  value.fqn,
+                  "recovery.files.type",
+                  "File",
+                  "not-File",
+                );
               return {
                 name: file.name,
                 type: file.type,
@@ -78,6 +88,7 @@ export function classEvidence(
           declaration: item.declaration,
           providerVersion: item.native.providerVersion,
           nativeIdentity: digest(item.native.instanceId),
+          physicalWorkerIdentity: digest(item.baseline.workerId),
           target: digest(
             canonical({ accountId: item.baseline.accountId, scriptName: item.baseline.scriptName }),
           ),

@@ -14,6 +14,9 @@ export interface ClassApiOptions {
   loseCloneReply?: boolean;
   refuseAfterClone?: boolean;
   previewsEnabled?: boolean;
+  foreignLiveWorker?: boolean;
+  loseDeleteReply?: boolean;
+  deleteApplied?: boolean;
 }
 
 export function classRecoveryClient(events: string[]) {
@@ -57,6 +60,19 @@ export function classRecoveryClient(events: string[]) {
                 namespace_id: "namespace-drive",
               },
             ],
+          };
+        else if (url.pathname.includes("/workers/workers/"))
+          result = {
+            id: "AppData",
+            name: "AppData",
+            created_on: "2026-11-07T00:00:00Z",
+            updated_on: "2026-11-07T00:00:00Z",
+            logpush: false,
+            observability: {},
+            references: [],
+            subdomain: { enabled: false, previews_enabled: false },
+            tags: [],
+            tail_consumers: [],
           };
         else {
           assert.ok(url.pathname.includes("/versions/"));
@@ -120,6 +136,7 @@ export function classApi(events: string[], options: ClassApiOptions) {
         throw new Error("Synthetic observation failure");
       }
       return {
+        workerId: options.foreignLiveWorker ? "replacement-worker" : target.scriptName,
         accountId: target.accountId,
         scriptName: target.scriptName,
         versionId: expanded ? "expanded" : "previous",
@@ -176,6 +193,10 @@ export function classApi(events: string[], options: ClassApiOptions) {
       assert.deepEqual(clone?.urls, []);
       removed++;
       cloneEvents.push("remove");
+      if (options.loseDeleteReply) {
+        if (options.deleteApplied) clone = undefined;
+        throw new Error("Synthetic lost delete response");
+      }
       clone = undefined;
     },
     deploy: async (request) => {

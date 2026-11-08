@@ -2,9 +2,10 @@ import * as Workers from "@distilled.cloud/cloudflare/workers";
 import * as Retry from "@distilled.cloud/cloudflare/Retry";
 import { Config, Effect, Redacted } from "effect";
 import type { ClassTarget, ClassContent } from "./declared-class-contract.ts";
+import { classConstraint, classRefusal } from "./class-refusal.ts";
+import { digest, canonical } from "./manifest.ts";
 import { classTag } from "./declared-class-contract.ts";
 import { readBaseline } from "./cloudflare.ts";
-import { BarrierRefusal } from "./manifest.ts";
 import { encodePathSegment, withBearer, type Fetcher } from "../deploy-safety/http.ts";
 import { readClassSettings } from "./class-settings.ts";
 
@@ -42,7 +43,14 @@ export const readClassContent = (
             const part = await reader.read();
             if (part.done) break;
             bytes += part.value.byteLength;
-            if (bytes > 16_000_000) throw new BarrierRefusal("declared-class-baseline-too-large");
+            if (bytes > 16_000_000)
+              throw classConstraint(
+                "declared-class-baseline-too-large",
+                undefined,
+                "baseline.bytes",
+                16_000_000,
+                bytes,
+              );
             chunks.push(part.value);
           }
         } finally {
@@ -54,7 +62,13 @@ export const readClassContent = (
         const files = [];
         for (const [name, file] of form) {
           if (!(file instanceof File) || file.name !== name || !file.type)
-            throw new BarrierRefusal("declared-class-baseline-modules-unsupported");
+            throw classConstraint(
+              "declared-class-baseline-modules-unsupported",
+              undefined,
+              "baseline.multipart.part",
+              "named-File-with-media-type",
+              "unsupported",
+            );
           files.push({ name, type: file.type, bytes: new Uint8Array(await file.arrayBuffer()) });
         }
         return { mainModule: response.headers.get("cf-entrypoint")!, files };
@@ -67,7 +81,20 @@ export const readDeclaredClass = (target: ClassTarget, fetcher: Fetcher = fetch)
   Effect.gen(function* () {
     const versions = yield* readBaseline(target);
     if (versions.length !== 1 || versions[0]!.percentage !== 100)
-      throw new BarrierRefusal("declared-class-split-baseline");
+      throw classRefusal("declared-class-split-baseline", undefined, [
+        { path: "baseline.activeVersions.count", old: 1, new: versions.length },
+        ...versions.flatMap((version, index) =>
+          version.percentage === 100
+            ? []
+            : [
+                {
+                  path: `baseline.activeVersions.${index}.percentage`,
+                  old: 100,
+                  new: version.percentage,
+                },
+              ],
+        ),
+      ]);
     const versionId = versions[0]!.versionId;
     const version = yield* Workers.getScriptVersion({ ...target, versionId }).pipe(Retry.none);
     const settings = yield* readClassSettings(target, fetcher);
@@ -76,7 +103,13 @@ export const readDeclaredClass = (target: ClassTarget, fetcher: Fetcher = fetch)
       workerId: target.scriptName,
     }).pipe(Retry.none);
     if (typeof profile.subdomain.previewsEnabled !== "boolean")
-      throw new BarrierRefusal("declared-class-preview-routing-unknown");
+      throw classConstraint(
+        "declared-class-preview-routing-unknown",
+        undefined,
+        "previewUrlsEnabled",
+        "observed-boolean",
+        "unavailable",
+      );
     const confirmed = yield* readBaseline(target);
     if (
       version.id !== versionId ||
@@ -86,8 +119,27 @@ export const readDeclaredClass = (target: ClassTarget, fetcher: Fetcher = fetch)
       !version.resources.scriptRuntime?.migrationTag ||
       classTag(settings.tags ?? []) !== version.resources.scriptRuntime.migrationTag
     )
-      throw new BarrierRefusal("declared-class-live-baseline-drift");
+      throw classRefusal("declared-class-live-baseline-drift", undefined, [
+        {
+          path: "baseline.versionIdentityHash",
+          old: digest(versionId),
+          new: version.id ? digest(version.id) : null,
+        },
+        {
+          path: "baseline.deploymentHash",
+          old: digest(canonical(versions)),
+          new: digest(canonical(confirmed)),
+        },
+        {
+          path: "baseline.migrationTagHash",
+          old: classTag(settings.tags ?? []) ? digest(classTag(settings.tags ?? [])!) : null,
+          new: version.resources.scriptRuntime?.migrationTag
+            ? digest(version.resources.scriptRuntime.migrationTag)
+            : null,
+        },
+      ]);
     return {
+      workerId: profile.id,
       accountId: target.accountId,
       scriptName: target.scriptName,
       versionId,

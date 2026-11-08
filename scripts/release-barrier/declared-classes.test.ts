@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { releaseEvidence } from "./evidence.ts";
 import { Effect } from "effect";
 import { classProvisioning } from "./test/declared-class-fixture.ts";
 
@@ -74,7 +78,7 @@ test("a declaration cannot authorize deletion alongside its new SQLite class", a
 test("failure to retain the expansion descriptor prevents its deployment", async () => {
   const proof = classProvisioning({
     recordFails: true,
-    expectedFailure: /Synthetic evidence write failure/,
+    expectedFailure: /release-operation-failed/,
   });
   await Effect.runPromise(proof.effect);
   assert.deepEqual(proof.events, []);
@@ -172,6 +176,55 @@ test("preview routing enabled refuses before staging any clone", async () => {
   const proof = classProvisioning({
     previewsEnabled: true,
     expectedFailure: /preview-routing-enabled/,
+  });
+  await Effect.runPromise(proof.effect);
+  assert.equal(proof.cloneState().staged, 0);
+  assert.deepEqual(proof.events, []);
+});
+
+test("combined provisioning preserves its frozen bucket identity through expansion and replan with real release evidence", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "class-release-evidence-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const evidence = releaseEvidence(join(root, "barrier"), "a".repeat(40), "b".repeat(64));
+  const proof = classProvisioning({ evidence });
+  await Effect.runPromise(proof.effect);
+  assert.deepEqual(proof.events, ["expand", "upload", "create-bucket", "activate"]);
+  const receipt = JSON.parse(
+    await readFile(join(root, "barrier", "declared-changes.json"), "utf8"),
+  );
+  assert.equal(receipt.resources[0].outcome, "confirmed");
+});
+
+test("a pending clone deletion never retries an uncertain DELETE when the clone remains visible", async () => {
+  const proof = classProvisioning({
+    loseDeleteReply: true,
+    rerun: true,
+    expectedFailure: /release-operation-failed/,
+  });
+  await Effect.runPromise(proof.effect);
+  assert.equal(proof.cloneState().removed, 1);
+  assert.equal(proof.failures.length, 2);
+  assert.match(String(proof.failures[1]), /clone-removal-outcome-unknown/);
+  assert.ok(!proof.events.includes("upload"));
+});
+
+test("a lost successful clone deletion reconciles absence without another DELETE", async () => {
+  const proof = classProvisioning({
+    loseDeleteReply: true,
+    deleteApplied: true,
+    rerun: true,
+    expectedFailure: /release-operation-failed/,
+  });
+  await Effect.runPromise(proof.effect);
+  assert.equal(proof.cloneState().removed, 1);
+  assert.equal(proof.failures.length, 1);
+  assert.ok(proof.events.includes("activate"));
+});
+
+test("a same-name foreign immutable Worker refuses before any clone or expansion", async () => {
+  const proof = classProvisioning({
+    foreignLiveWorker: true,
+    expectedFailure: /native-target-drift/,
   });
   await Effect.runPromise(proof.effect);
   assert.equal(proof.cloneState().staged, 0);

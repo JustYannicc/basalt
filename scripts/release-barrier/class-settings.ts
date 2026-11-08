@@ -7,19 +7,27 @@ import {
   type Fetcher,
 } from "../deploy-safety/http.ts";
 import type { ClassTarget } from "./declared-class-contract.ts";
-import { BarrierRefusal } from "./manifest.ts";
+import { classConstraint, classSchemaRefusal } from "./class-refusal.ts";
 
-const fromWire = (value: unknown): unknown =>
-  Array.isArray(value)
-    ? value.map(fromWire)
-    : value && typeof value === "object"
-      ? Object.fromEntries(
-          Object.entries(value).map(([key, item]) => [
-            key.replace(/[_/]+(.)/gu, (_match, char: string) => char.toUpperCase()),
-            fromWire(item),
-          ]),
-        )
-      : value;
+const fromWire = (value: unknown, path: readonly string[] = []): unknown => {
+  // These SDK fields contain caller data, not Cloudflare wire property names.
+  if (
+    path.length === 3 &&
+    path[0] === "bindings" &&
+    ["json", "algorithm", "keyJwk"].includes(path[2]!)
+  )
+    return value;
+  if (Array.isArray(value))
+    return value.map((item, index) => fromWire(item, [...path, String(index)]));
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => {
+        const name = key.replace(/[_/]+(.)/gu, (_match, char: string) => char.toUpperCase());
+        return [name, fromWire(item, [...path, name])];
+      }),
+    );
+  return value;
+};
 
 /** Ordinary SDK decoding drops unknown settings. An expansion must refuse those before a full-script PUT could reset them. */
 export const readClassSettings = (target: ClassTarget, fetcher: Fetcher = fetch) =>
@@ -48,7 +56,14 @@ export const readClassSettings = (target: ClassTarget, fetcher: Fetcher = fetch)
             const part = await reader.read();
             if (part.done) break;
             size += part.value.byteLength;
-            if (size > 2_000_000) throw new BarrierRefusal("declared-class-settings-too-large");
+            if (size > 2_000_000)
+              throw classConstraint(
+                "declared-class-settings-too-large",
+                undefined,
+                "settings.bytes",
+                2_000_000,
+                size,
+              );
             chunks.push(part.value);
           }
         } finally {
@@ -61,10 +76,15 @@ export const readClassSettings = (target: ClassTarget, fetcher: Fetcher = fetch)
         try {
           return Schema.decodeUnknownSync(
             Schema.toType(Workers.GetScriptScriptAndVersionSettingResponse),
-            { onExcessProperty: "error" },
+            { onExcessProperty: "error", errors: "all" },
           )(fromWire(value));
-        } catch {
-          throw new BarrierRefusal("declared-class-baseline-settings-unsupported");
+        } catch (error) {
+          throw classSchemaRefusal(
+            "declared-class-baseline-settings-unsupported",
+            undefined,
+            "settings",
+            error,
+          );
         }
       },
       catch: (error) => error,

@@ -1,7 +1,8 @@
 import type * as Workers from "@distilled.cloud/cloudflare/workers";
 import type { PreparedWorkerUpload } from "alchemy/Cloudflare/Workers/WorkerUploadHook";
+import { declaredMismatch } from "./declared-refusal.ts";
 import { havePropsChanged } from "alchemy/Diff";
-import { BarrierRefusal, canonical, digest, type FrozenWorker } from "./manifest.ts";
+import { canonical, digest, type FrozenWorker } from "./manifest.ts";
 
 const globalProps = [
   "observability",
@@ -34,8 +35,13 @@ const allowedMetadata = new Set([
   "streamingTailConsumers",
   "usageModel",
 ]);
-const refusal = (reason: string, upload: PreparedWorkerUpload) => {
-  throw new BarrierRefusal(reason, upload.fqn);
+const refusal = (
+  reason: string,
+  upload: PreparedWorkerUpload,
+  expected: unknown,
+  observed: unknown,
+) => {
+  throw declaredMismatch(reason, upload.fqn, expected, observed, "Cloudflare.Worker");
 };
 const sorted = (items: readonly string[]) => [...new Set(items)].sort();
 const localClasses = (
@@ -75,12 +81,30 @@ const matchesSpecified = (desired: unknown, observed: unknown): boolean => {
 export function versionMetadata(upload: PreparedWorkerUpload): Workers.PutScriptMetadata {
   const { metadata, scriptName } = upload.request;
   const observed = upload.previousSettings;
-  if (!observed || !upload.previousProps) refusal("missing-existing-settings", upload);
+  if (!observed || !upload.previousProps)
+    refusal(
+      "missing-existing-settings",
+      upload,
+      { previousSettings: "present", previousProps: "present" },
+      {
+        previousSettings: observed ? "present" : null,
+        previousProps: upload.previousProps ? "present" : null,
+      },
+    );
   for (const [key, value] of Object.entries(metadata))
     if (value !== undefined && !allowedMetadata.has(key))
-      refusal("unsupported-upload-metadata", upload);
+      refusal("unsupported-upload-metadata", upload, { [key]: null }, { [key]: value });
   if (metadata.bodyPart != null || metadata.keepBindings != null || metadata.usageModel != null)
-    refusal("unsupported-upload-metadata", upload);
+    refusal(
+      "unsupported-upload-metadata",
+      upload,
+      { bodyPart: null, keepBindings: null, usageModel: null },
+      {
+        bodyPart: metadata.bodyPart,
+        keepBindings: metadata.keepBindings,
+        usageModel: metadata.usageModel,
+      },
+    );
   const migrations = metadata.migrations;
   if (migrations) {
     const steps = "steps" in migrations ? (migrations.steps ?? []) : [migrations];
@@ -94,26 +118,65 @@ export function versionMetadata(upload: PreparedWorkerUpload): Workers.PutScript
         ),
       )
     )
-      refusal("durable-object-migration", upload);
+      refusal(
+        "durable-object-migration",
+        upload,
+        {
+          migrations: steps.map((step) =>
+            Object.fromEntries(
+              Object.entries(step)
+                .filter(([key]) => !["oldTag", "newTag"].includes(key))
+                .map(([key, value]) => [key, Array.isArray(value) ? [] : null]),
+            ),
+          ),
+        },
+        {
+          migrations: steps.map((step) =>
+            Object.fromEntries(
+              Object.entries(step).filter(([key]) => !["oldTag", "newTag"].includes(key)),
+            ),
+          ),
+        },
+      );
   }
   if (
     canonical(localClasses(metadata.bindings ?? [], scriptName)) !==
     canonical(localClasses(observed!.bindings ?? [], scriptName))
   )
-    refusal("durable-object-class-drift", upload);
+    refusal(
+      "durable-object-class-drift",
+      upload,
+      { localClassSetHash: digest(canonical(localClasses(observed!.bindings ?? [], scriptName))) },
+      { localClassSetHash: digest(canonical(localClasses(metadata.bindings ?? [], scriptName))) },
+    );
   for (const key of globalProps) {
     if (havePropsChanged({ value: upload.previousProps![key] }, { value: upload.props[key] }))
-      refusal("script-settings-change", upload);
+      refusal(
+        "script-settings-change",
+        upload,
+        { [key]: upload.previousProps![key] },
+        { [key]: upload.props[key] },
+      );
   }
   const tags = (values: readonly string[]) =>
     sorted(values.filter((tag) => !tag.startsWith("alchemy:migration-tag:")));
   if (canonical(tags(metadata.tags ?? [])) !== canonical(tags(observed!.tags ?? [])))
-    refusal("script-tags-drift", upload);
+    refusal(
+      "script-tags-drift",
+      upload,
+      { tags: tags(observed!.tags ?? []) },
+      { tags: tags(metadata.tags ?? []) },
+    );
   if ((metadata.streamingTailConsumers?.length ?? 0) > 0)
-    refusal("unobservable-streaming-tail-settings", upload);
+    refusal(
+      "unobservable-streaming-tail-settings",
+      upload,
+      { streamingTailConsumers: [] },
+      { streamingTailConsumers: metadata.streamingTailConsumers },
+    );
   for (const key of ["limits", "placement", "observability"] as const) {
     if (metadata[key] != null && !matchesSpecified(metadata[key], observed![key]))
-      refusal("script-settings-drift", upload);
+      refusal("script-settings-drift", upload, { [key]: observed![key] }, { [key]: metadata[key] });
   }
   if (
     (metadata.logpush ?? false) !== (observed!.logpush ?? false) ||
@@ -122,9 +185,25 @@ export function versionMetadata(upload: PreparedWorkerUpload): Workers.PutScript
       { value: observed!.tailConsumers ?? [] },
     )
   )
-    refusal("script-settings-drift", upload);
+    refusal(
+      "script-settings-drift",
+      upload,
+      { logpush: observed!.logpush ?? false, tailConsumers: observed!.tailConsumers ?? [] },
+      { logpush: metadata.logpush ?? false, tailConsumers: metadata.tailConsumers ?? [] },
+    );
   if (metadata.bindings?.some((binding) => binding.name === "BASALT_RELEASE_ATTEMPT"))
-    refusal("attempt-value-in-worker", upload);
+    refusal(
+      "attempt-value-in-worker",
+      upload,
+      { releaseAttemptBindings: { count: 0 } },
+      {
+        releaseAttemptBindings: {
+          count:
+            metadata.bindings?.filter((binding) => binding.name === "BASALT_RELEASE_ATTEMPT")
+              .length ?? 0,
+        },
+      },
+    );
   return {
     annotations: metadata.annotations,
     mainModule: metadata.mainModule,
@@ -154,7 +233,13 @@ export async function freezeUpload(
     metadata: structuredClone(metadata),
     files: await Promise.all(
       files.map(async (file) => {
-        if (!(file instanceof File) || !file.name) return refusal("unnamed-upload-part", upload);
+        if (!(file instanceof File) || !file.name)
+          return refusal(
+            "unnamed-upload-part",
+            upload,
+            { uploadPart: "named-File" },
+            { uploadPart: file instanceof File ? "empty-name" : "not-File" },
+          );
         return {
           name: file.name,
           type: file.type,

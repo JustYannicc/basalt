@@ -4,7 +4,7 @@ import { canonical } from "./manifest.ts";
 import type { BucketDeclaration, DeclaredChanges } from "./declared-change-schema.ts";
 import { changedProps } from "./prop-diff.ts";
 import type { PlanRefusal } from "./manifest.ts";
-import { classPlanMatches } from "./declared-class-contract.ts";
+import { classPlanMatches, classPlanChanges } from "./declared-class-contract.ts";
 
 export function declarationRefusals(plan: Plan.Plan, declarations?: DeclaredChanges) {
   const refusals: PlanRefusal[] = [];
@@ -15,9 +15,7 @@ export function declarationRefusals(plan: Plan.Plan, declarations?: DeclaredChan
         reason: "declaration-does-not-match-plan",
         fqn: entry.fqn,
         type: entry.type,
-        changed: [
-          { path: "$declaration.lifecycle", old: "existing-in-place-worker", new: node.action },
-        ],
+        changed: classPlanChanges(node, entry),
       });
     else if (entry.action === "create-bucket" && node && !bucketIntentMatches(node, entry))
       refusals.push({

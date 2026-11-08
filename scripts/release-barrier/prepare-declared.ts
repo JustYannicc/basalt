@@ -2,7 +2,7 @@ import * as Plan from "alchemy/Plan";
 import type { CompiledStack } from "alchemy/Stack";
 import { Effect } from "effect";
 import type { DeployStackOptions } from "./deploy-stack.ts";
-import type { BucketProvider } from "./declared-buckets.ts";
+import type { PreparedBucket, BucketProvider } from "./declared-buckets.ts";
 import type { ClassProvider } from "./declared-class-contract.ts";
 import { prepareDeclaredStorage } from "./declared-bucket-plan.ts";
 import { preparePlan } from "./alchemy-plan.ts";
@@ -20,7 +20,7 @@ export const prepareDeclaredRelease = (
 ) =>
   Effect.gen(function* () {
     const scope = { stack: stack.name, stage: stack.stage };
-    const attempt = (source: Plan.Plan) =>
+    const attempt = (source: Plan.Plan, frozen?: ReadonlyMap<string, PreparedBucket>) =>
       Effect.gen(function* () {
         assertSupportedPlan(source, new Map(), options.declarations);
         const { plan, buckets: declaredBuckets } = yield* prepareDeclaredStorage(
@@ -29,6 +29,7 @@ export const prepareDeclaredRelease = (
           scope,
           buckets,
           options.declaredReadiness,
+          frozen,
         );
         for (const bucket of declaredBuckets.values())
           yield* Effect.promise(() =>
@@ -60,7 +61,7 @@ export const prepareDeclaredRelease = (
       options.expansion,
     );
     if (expanded) {
-      result = yield* attempt(yield* Plan.make(stack));
+      result = yield* attempt(yield* Plan.make(stack), result.declaredBuckets);
       if (
         yield* expandDeclaredClasses(
           result.plan,

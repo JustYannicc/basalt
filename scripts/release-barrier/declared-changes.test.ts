@@ -172,3 +172,61 @@ test("a noop cannot silently ignore an unmatched bucket declaration", async () =
       error.refusals?.some((item) => item.reason === "declaration-does-not-match-plan") === true,
   );
 });
+
+test("class declaration refusal identifies resource type, action and native state separately", async () => {
+  const { plan } = await bucketPlan();
+  const declarations = decodeDeclaredChanges({
+    schemaVersion: 1,
+    stack: "basalt",
+    retentionOwner: "Fixture",
+    changes: [
+      {
+        action: "add-sqlite-class",
+        type: "Cloudflare.Worker",
+        fqn: "DriveRecords",
+        newSqliteClasses: ["DriveObject"],
+        addedBindings: [
+          {
+            type: "durable_object_namespace",
+            name: "DRIVE",
+            className: "DriveObject",
+            location: "local",
+          },
+        ],
+        retention: { data: true, nativeStateRow: true, recoveryDescriptor: true },
+      },
+    ],
+  });
+  assert.throws(
+    () => assertSupportedPlan(plan, new Map(), declarations),
+    (error) => {
+      assert.ok(error instanceof BarrierRefusal);
+      const refusal = error.refusals?.find(
+        (item) => item.reason === "declaration-does-not-match-plan",
+      );
+      assert.ok(refusal && "changed" in refusal);
+      assert.ok(
+        refusal.changed.some(
+          (item) =>
+            item.path === "$declaration.type" &&
+            "new" in item &&
+            item.old === "Cloudflare.Worker" &&
+            item.new === "Cloudflare.R2.Bucket",
+        ),
+      );
+      assert.ok(
+        refusal.changed.some(
+          (item) => item.path === "$declaration.action" && "new" in item && item.new === "create",
+        ),
+      );
+      assert.ok(
+        refusal.changed.some(
+          (item) =>
+            item.path === "$declaration.native.status" && "new" in item && item.new === null,
+        ),
+      );
+      assert.ok(!refusal.changed.some((item) => item.path === "$declaration.lifecycle"));
+      return true;
+    },
+  );
+});

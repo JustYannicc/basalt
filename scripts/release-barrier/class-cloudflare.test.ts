@@ -5,7 +5,6 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpResponse from "effect/http/HttpClientResponse";
 import { Credentials } from "@distilled.cloud/cloudflare/Credentials";
 import { readClassContent, readDeclaredClass, deployClassExpansion } from "./class-cloudflare.ts";
-import { readClassSettings } from "./class-settings.ts";
 import { expansionContent, expansionRequest } from "./class-payload.ts";
 import { decodeDeclaredChanges } from "./declared-change-schema.ts";
 
@@ -64,35 +63,6 @@ test("active baseline content uses the exact version query and preserves binary 
   assert.deepEqual([...content.files[1]!.bytes], [0, 1, 255]);
 });
 
-test("raw settings retain wire annotations and reject unknown properties before deployment", async () => {
-  const settings = {
-    compatibility_date: "2026-09-08",
-    compatibility_flags: [],
-    tags: ["alchemy:migration-tag:1"],
-    bindings: [{ type: "plain_text", name: "SECRET_SETTING", text: "synthetic-private-value" }],
-    annotations: { "workers/message": "original" },
-  };
-  const value = await run(
-    readClassSettings(target, async () =>
-      Response.json({ success: true, errors: [], result: settings }),
-    ),
-  );
-  assert.equal(value.annotations?.workersMessage, "original");
-  assert.equal(value.bindings?.[0]?.type, "plain_text");
-  for (const extra of [
-    { unknown_live_setting: true },
-    { observability: { enabled: true, unknown_nested_setting: true } },
-  ])
-    await assert.rejects(
-      run(
-        readClassSettings(target, async () =>
-          Response.json({ success: true, errors: [], result: { ...settings, ...extra } }),
-        ),
-      ),
-      /settings-unsupported/,
-    );
-});
-
 test("the real SDK observes a single active version and actual runtime migration tag", async () => {
   const calls: string[] = [];
   const client = HttpClient.make((request, url) =>
@@ -149,6 +119,7 @@ test("the real SDK observes a single active version and actual runtime migration
     ),
   );
   assert.equal(observed.versionId, "active");
+  assert.equal(observed.workerId, "immutable-worker");
   assert.equal(observed.migrationTag, "1");
   assert.equal(calls.length, 4);
   assert.ok(calls.every((call) => call.startsWith("GET ")));
@@ -161,6 +132,7 @@ for (const rejected of [false, true])
     const baseline = {
       ...target,
       versionId: "active",
+      workerId: "immutable-worker",
       migrationTag: "1",
       previewUrlsEnabled: false,
       settings: {

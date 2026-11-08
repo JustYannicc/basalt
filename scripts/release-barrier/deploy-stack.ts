@@ -42,6 +42,7 @@ import {
   deleteClassClone,
 } from "./class-cloudflare.ts";
 import type { ClassProvider, ClassProgress } from "./declared-class-contract.ts";
+import { declaredChecks } from "./declared-checks.ts";
 import { observeClassReadiness } from "./class-readiness.ts";
 import {
   assertBaselineWorkerInput,
@@ -125,24 +126,30 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
       classes,
     );
     const prerequisites = (phase: DeclaredReadiness["phase"]) =>
-      Effect.gen(function* () {
-        yield* recordDeclaredReadiness(
-          plan,
-          options.declarations,
-          scope,
-          buckets,
-          phase,
-          options.declaredReadiness,
-        );
-        yield* observeClassReadiness(
-          plan,
-          options.declarations,
-          scope,
-          classes,
-          phase,
-          options.expansion,
-        );
-      });
+      declaredChecks([
+        {
+          fqn: "(declared storage)",
+          check: recordDeclaredReadiness(
+            plan,
+            options.declarations,
+            scope,
+            buckets,
+            phase,
+            options.declaredReadiness,
+          ),
+        },
+        {
+          fqn: "(declared classes)",
+          check: observeClassReadiness(
+            plan,
+            options.declarations,
+            scope,
+            classes,
+            phase,
+            options.expansion,
+          ),
+        },
+      ]);
     const recordAdmission = options.admission;
     if (recordAdmission) yield* Effect.promise(() => recordAdmission(verificationAdmissions(plan)));
     for (const { frozen } of prepared.containers.values())
