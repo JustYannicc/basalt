@@ -27,6 +27,7 @@ jobs:
       boat_jobs: ${{ steps.jobs.outputs.boat_jobs }}
       boat_jobs_csv: ${{ steps.jobs.outputs.boat_jobs_csv }}
       matrices: ${{ steps.jobs.outputs.matrices }}
+      baseline_probe: ${{ steps.baseline.outputs.needed }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,6 +48,12 @@ jobs:
           fi
           base="$(git rev-parse --verify "$base^{commit}")"
           echo "base_sha=$base" >> "$GITHUB_OUTPUT"
+      - name: Select the live read-only baseline probe
+        id: baseline
+        env:
+          BASE_SHA: ${{ steps.comparison.outputs.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node scripts/release-barrier/probe-needed.ts
       - name: Select the PR fast lane or full suite
         id: jobs
         env:
@@ -66,6 +73,39 @@ jobs:
           path: .generated/ci/selection.json
           include-hidden-files: true
           if-no-files-found: error
+  baseline-probe:
+    needs: select
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      needs.select.outputs.baseline_probe == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: npm run prepare:upstream
+      - name: Read every production Worker baseline through the release client
+        run: bun scripts/release-barrier/baseline-probe-entry.ts
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: baseline-probe
+          path: .local/baseline-probe.json
+          include-hidden-files: true
+          if-no-files-found: warn
+
   cpa-pipeline:
     needs: select
     runs-on: ubuntu-latest
@@ -1968,6 +2008,7 @@ jobs:
         select,
         fast,
         cpa-pipeline,
+        baseline-probe,
         client-connection,
         client-mobile,
         client-desktop,
@@ -2028,6 +2069,7 @@ jobs:
         env:
           CI_NEEDS: ${{ toJSON(needs) }}
           CI_FULL_SUITE: ${{ needs.select.outputs.full_suite }}
+          CI_BASELINE_PROBE: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.select.outputs.baseline_probe == 'true' }}
           CI_JOBS: ${{ needs.select.outputs.jobs }}
           CI_BOAT_JOBS: ${{ needs.select.outputs.boat_jobs }}
         run: node scripts/ci/gate.ts

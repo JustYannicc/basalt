@@ -3,18 +3,20 @@ import { heavyJobs } from "./areas.ts";
 
 export const fastJobs = ["select", "fast", "cpa-pipeline", "client-connection", "boat-check"];
 export const bundleJobs = ["boat-bundle"];
+export const conditionalJobs = ["baseline-probe"];
 
 export function gateErrors(
   needs: Record<string, { result: string }>,
   selected: readonly string[],
   boat: readonly string[] = [],
   full?: boolean,
+  baselineProbeRequired = false,
 ) {
   const errors: string[] = [];
   if (full === false && selected.length) errors.push("Fast lane selected heavy jobs");
   if (full === true && [...selected].sort().join("\n") !== [...heavyJobs].sort().join("\n"))
     errors.push("Full suite must select every heavy job");
-  const expected = [...fastJobs, ...heavyJobs, ...bundleJobs];
+  const expected = [...fastJobs, ...heavyJobs, ...bundleJobs, ...conditionalJobs];
   if (
     new Set(selected).size !== selected.length ||
     selected.some((job) => !heavyJobs.includes(job))
@@ -27,6 +29,7 @@ export function gateErrors(
   for (const job of expected) {
     const required =
       fastJobs.includes(job) ||
+      (job === "baseline-probe" && baselineProbeRequired) ||
       (selected.includes(job) && !boat.includes(job)) ||
       (bundleJobs.includes(job) && boat.length > 0);
     if (needs[job]?.result !== (required ? "success" : "skipped"))
@@ -40,11 +43,14 @@ export function gateErrors(
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (!["true", "false"].includes(process.env.CI_FULL_SUITE ?? ""))
     throw new Error("Missing or invalid CI lane");
+  if (!["true", "false"].includes(process.env.CI_BASELINE_PROBE ?? ""))
+    throw new Error("Missing or invalid baseline probe selection");
   const errors = gateErrors(
     JSON.parse(process.env.CI_NEEDS ?? "null"),
     JSON.parse(process.env.CI_JOBS ?? "null"),
     JSON.parse(process.env.CI_BOAT_JOBS ?? "null"),
     process.env.CI_FULL_SUITE === "true",
+    process.env.CI_BASELINE_PROBE === "true",
   );
   for (const error of errors) console.error(error);
   if (errors.length) process.exitCode = 1;

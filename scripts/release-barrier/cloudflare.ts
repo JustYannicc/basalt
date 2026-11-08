@@ -5,7 +5,11 @@ import { BarrierRefusal, type FrozenWorker } from "./manifest.ts";
 import { uploadRequest } from "./version-request.ts";
 
 export const readBaseline = (worker: Pick<FrozenWorker, "accountId" | "scriptName">) =>
-  Workers.listScriptDeployments(worker).pipe(
+  // The SDK serializes excess properties as a body, including on GET. Callers pass upload and frozen objects.
+  Workers.listScriptDeployments({
+    accountId: worker.accountId,
+    scriptName: worker.scriptName,
+  }).pipe(
     Effect.map((response) => {
       const deployments = response.deployments;
       if (
@@ -18,7 +22,8 @@ export const readBaseline = (worker: Pick<FrozenWorker, "accountId" | "scriptNam
       )[0]!;
       return [...current.versions].sort((a, b) => a.versionId.localeCompare(b.versionId));
     }),
-    Retry.none,
+    // Baseline GETs are idempotent; keep the SDK's bounded transient policy local to reads.
+    Retry.policy(Retry.makeDefault),
   );
 
 export const uploadVersion = (worker: FrozenWorker) =>
