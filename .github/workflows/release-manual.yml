@@ -61,7 +61,7 @@ jobs:
           RELEASE_HEAD: ${{ steps.candidate.outputs.head }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.4
+          bun-version: 1.4.2
       - name: Prepare the read-only baseline client
         working-directory: ${{ runner.temp }}/candidate
         run: npm run prepare:upstream

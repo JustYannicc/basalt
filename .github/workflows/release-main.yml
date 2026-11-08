@@ -79,7 +79,7 @@ jobs:
       - if: steps.live.outputs.already_live == 'false'
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.4
+          bun-version: 1.4.2
       - name: Prepare the read-only baseline client
         if: steps.live.outputs.already_live == 'false'
         working-directory: ${{ runner.temp }}/candidate
