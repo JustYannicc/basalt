@@ -11,19 +11,16 @@ export interface ProviderFailure {
 const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const sanitize = (value: string, token: string) => {
-  const text = token ? value.replaceAll(token, "[REDACTED]") : value;
+  // Redact fields before substitutions can change escapes inside their quoted values.
+  const credentials = value.replace(
+    /["']?\b(?:authorization|(?:set-)?cookie|api[_-]?key|token|secret|password)["']?\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n]+)/gi,
+    "[CREDENTIAL]",
+  );
+  const text = token ? credentials.replaceAll(token, "[REDACTED]") : credentials;
   return text
     .replace(/bearer\s+[^\s,;"']+/gi, "Bearer [REDACTED]")
     .replace(/(?:https?:\/\/|file:\/\/)[^\s"'<>]+/gi, "[URL]")
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[EMAIL]")
-    .replace(
-      /["']?\b(?:authorization|(?:set-)?cookie)["']?\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n]+)/gi,
-      "[CREDENTIAL]",
-    )
-    .replace(
-      /["']?\b(?:api[_-]?key|token|secret|password)["']?\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;]+)/gi,
-      "[CREDENTIAL]",
-    )
     .replace(/\b[A-Za-z0-9_+/-]{24,}={0,2}\b/g, "[REDACTED]")
     .replace(/[\p{Cc}<>`]/gu, " ")
     .replace(/\s+/g, " ")
