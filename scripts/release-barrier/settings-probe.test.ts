@@ -8,11 +8,19 @@ import { normalizePlacement } from "./script-placement.ts";
 import { assertScriptSettings, scriptSettingFields } from "./script-settings.ts";
 import { BarrierRefusal } from "./manifest.ts";
 import { placementRepairTargets } from "./pending-placement.ts";
+import { CandidateSettingsReadFailure } from "./candidate-failure.ts";
 
-for (const mode of ["same", "drift", "repair", "repair-latest-upload"] as const) {
+for (const mode of [
+  "same",
+  "drift",
+  "repair",
+  "repair-latest-upload",
+  "repair-retirement-failure",
+] as const) {
   const drift = mode === "drift";
   const repair = mode.startsWith("repair");
   const latest = mode === "repair-latest-upload";
+  const retirementFailure = mode === "repair-retirement-failure";
   test(`full settings probe compares all 20 roles and ${mode}`, async (context) => {
     const requests: { method: string | undefined; path: string; bytes: number }[] = [];
     const server = createServer(async (request, response) => {
@@ -103,7 +111,7 @@ for (const mode of ["same", "drift", "repair", "repair-latest-upload"] as const)
       async (workers) =>
         workers.map((worker) => ({
           ...worker,
-          retiredPlacement: false,
+          ...(retirementFailure ? {} : { retiredPlacement: false }),
           metadata: {
             placement: { region: "aws:eu-central-1" },
             limits: { subrequests: 50_000 },
@@ -111,11 +119,24 @@ for (const mode of ["same", "drift", "repair", "repair-latest-upload"] as const)
             tags: [],
           },
         })),
+      async () => {
+        throw new CandidateSettingsReadFailure("projection", "ConfigError");
+      },
     );
     assert.equal(rows.length, 20);
-    assert.equal(requests.length, repair ? 69 : 61);
+    assert.equal(requests.length, retirementFailure ? 61 : repair ? 69 : 61);
     assert.ok(requests.every((request) => request.method === "GET" && request.bytes === 0));
     for (const row of rows) {
+      const retirementFailed = retirementFailure && ["Api", "AppPages"].includes(row.role);
+      if (retirementFailed) {
+        assert.equal(row.ok, false);
+        assert.equal(row.type, "CandidateSettingsReadFailure");
+        assert.equal(row.reason, "retirement: tag=ConfigError; stage=projection");
+        assert.equal(row.placements.attempts, 1);
+        assert.equal(row.placements.status, null);
+        assert.ok(row.placements.bytes > 0);
+        continue;
+      }
       assert.equal(row.ok, !drift || !["Api", "PublicSite"].includes(row.role));
       assert.deepEqual(row.compared, scriptSettingFields);
       assert.equal(row.placements.status, 200);

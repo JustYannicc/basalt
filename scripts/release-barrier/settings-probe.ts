@@ -25,6 +25,7 @@ import { safeProviderFailure } from "./operation-failure.ts";
 import { assertScriptSettings, scriptSettingFields } from "./script-settings.ts";
 import type { PropChange } from "./prop-diff.ts";
 import { verifyRepairBaseline } from "./repair-baseline.ts";
+import { CandidateSettingsReadFailure } from "./candidate-failure.ts";
 
 interface ReadMetrics {
   status: number | null;
@@ -56,6 +57,7 @@ export async function probeWorkerSettings(
   environment: NodeJS.ProcessEnv,
   apiBaseUrl = DEFAULT_API_BASE_URL,
   candidate?: CandidateReader,
+  retirementReader = candidateSettingsWithRetirements,
 ) {
   const base = new URL(apiBaseUrl);
   const prefix = base.pathname.replace(/\/$/, "");
@@ -150,8 +152,14 @@ export async function probeWorkerSettings(
           let failure: unknown;
           let compared = false;
           let repair: PendingPlacementRepair | undefined;
-          const run = <A, E>(effect: Effect.Effect<A, E, Credentials | HttpClient.HttpClient>) =>
-            Effect.runPromise(effect.pipe(Effect.provideContext(context)));
+          let readStage = "settings";
+          const run = async <A, E>(
+            effect: Effect.Effect<A, E, Credentials | HttpClient.HttpClient>,
+          ) => {
+            const exit = await Effect.runPromiseExit(effect.pipe(Effect.provideContext(context)));
+            if (Exit.isFailure(exit)) throw Cause.squash(exit.cause);
+            return exit.value;
+          };
           try {
             const input = {
               accountId,
@@ -176,6 +184,7 @@ export async function probeWorkerSettings(
               allow(versionPath);
               versionPaths.push(versionPath);
             }
+            readStage = "serving-version";
             const versions = await run(readActivePlacements(input, baseline));
             const declaration = expected.find((item) => item.role === worker.role)!;
             const target = placementRepairTargets.find(
@@ -185,26 +194,29 @@ export async function probeWorkerSettings(
               const priorPath = `${path}/versions/${target.prior}`;
               allow(priorPath);
               versionPaths.push(priorPath);
+              readStage = "retirement";
               const retired =
                 declaration.retiredPlacement ??
-                (
-                  await (retirements ??= candidateSettingsWithRetirements(
-                    workers,
-                    environment,
-                    nativeFetch,
-                  ))
-                ).find((row) => row.role === worker.role)?.retiredPlacement;
+                (await (retirements ??= retirementReader(workers, environment, nativeFetch))).find(
+                  (row) => row.role === worker.role,
+                )?.retiredPlacement;
+              readStage = "prior-version";
+              const prior = await run(
+                readVersionPlacement(accountId, worker.scriptName, target.prior),
+              );
+              readStage = "classification";
               repair = pendingPlacementRepair({
                 role: worker.role,
                 scriptName: worker.scriptName,
                 deploymentId: baselineRead.value.id,
                 baseline,
                 active: versions[0]!,
-                prior: await run(readVersionPlacement(accountId, worker.scriptName, target.prior)),
+                prior,
                 metadata: declaration.metadata,
                 settings,
                 retired: retired === true,
               });
+              readStage = "pre-activation-baseline";
               await run(verifyRepairBaseline({ ...input, baseline }, declaration.metadata, repair));
             } else
               assertScriptSettings(
@@ -234,11 +246,18 @@ export async function probeWorkerSettings(
             ok: compared,
             ...(failure
               ? {
-                  type: failure instanceof BarrierRefusal ? "BarrierRefusal" : provider!.type,
+                  type:
+                    failure instanceof CandidateSettingsReadFailure
+                      ? failure._tag
+                      : failure instanceof BarrierRefusal
+                        ? "BarrierRefusal"
+                        : provider!.type,
                   reason:
-                    failure instanceof BarrierRefusal
-                      ? failure.reason
-                      : (provider!.reason ?? "settings-read-failed"),
+                    failure instanceof CandidateSettingsReadFailure
+                      ? `${readStage}: ${failure.message}`
+                      : failure instanceof BarrierRefusal
+                        ? failure.reason
+                        : (provider!.reason ?? `${readStage}-read-failed`),
                 }
               : {}),
             ...metrics.get(`${path}/deployments`)!,
