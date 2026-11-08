@@ -198,7 +198,7 @@ export default Alchemy.Stack(
         observability: workerObservability,
         env: {
           WAITLIST: waitlist,
-          // Namespace 7101 is this binding's account-wide ID. Five sign-up tries per IP a minute.
+          // Rate limit namespaces are account-wide; 7101 is reserved for this binding.
           WAITLIST_LIMIT: Cloudflare.RateLimit("WAITLIST_LIMIT", {
             namespaceId: 7101,
             simple: { limit: 5, period: 60 },

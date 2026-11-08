@@ -45,6 +45,7 @@ export const home = {
     joined: "You're on the list. We'll write when it's your turn.",
     invalid: "That doesn't look like an email address. Check it and try again.",
     limited: "Too many tries from here. Wait a minute and try again.",
+    failed: "We couldn't save that just now. Try again in a moment.",
   },
   note: `${name} connects your agents to Gmail, Calendar and Drive with your own Google sign-in, so they can work in them for you.`,
 } as const;
@@ -82,7 +83,7 @@ const privacy: LegalPage = {
     },
     { h2: "Waiting list" },
     {
-      p: `If you join the waiting list on ${brand.zone}, we store your email address and when you joined. We use it only to invite you when it's your turn, and we don't send you anything else. Joining again changes nothing. To stop sign-ups being automated, we count recent attempts per IP address for a minute; the address itself isn't stored.`,
+      p: `If you join the waiting list on ${brand.zone}, we store your email address and when you joined. We use it only to invite you when it's your turn, and we don't send you anything else. Joining again changes nothing. To stop sign-ups being automated, we count recent attempts from each IP address for a minute. We don't store the IP address with your email.`,
     },
     {
       p: `To be removed from the waiting list, write to ${email} from that address. We delete it and confirm.`,

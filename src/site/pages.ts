@@ -133,14 +133,15 @@ export type HomeState = "open" | JoinResult;
 
 /**
  * A plain same-origin POST, so it works without scripts. The trap field sits off-screen and out
- * of the tab order; people never see it, and form-filling bots tend to.
+ * of the tab order, and its name matches nothing browsers autofill; people never fill it, and
+ * form-filling bots tend to.
  */
 function waitlist(state: HomeState): string {
   const { waitlist: copy } = home;
   if (state === "joined") return `<div class="join"><p class="status" role="status">${inline(copy.joined)}</p></div>`;
   const status =
     state === "open" ? "" : `<p class="status" role="alert">${inline(copy[state])}</p>`;
-  return `<form class="join" method="post" action="/waitlist"><p>${inline(copy.invite)}</p><div class="row"><label class="visually-hidden" for="email">${escapeHtml(copy.label)}</label><input id="email" name="email" type="email" required maxlength="254" autocomplete="email" inputmode="email" placeholder="you@example.com"${state === "invalid" ? ' aria-invalid="true"' : ""}><button type="submit">${escapeHtml(copy.button)}</button></div><div class="trap" aria-hidden="true"><label for="website">Leave this empty</label><input id="website" name="website" type="text" tabindex="-1" autocomplete="off"></div>${status}</form>`;
+  return `<form class="join" method="post" action="/waitlist"><p>${inline(copy.invite)}</p><div class="row"><label class="visually-hidden" for="email">${escapeHtml(copy.label)}</label><input id="email" name="email" type="email" required maxlength="254" autocomplete="email" inputmode="email" placeholder="you@example.com"${state === "invalid" ? ' aria-invalid="true"' : ""}><button type="submit">${escapeHtml(copy.button)}</button></div><div class="trap" aria-hidden="true"><label for="leave_empty">Leave this empty</label><input id="leave_empty" name="leave_empty" type="text" tabindex="-1" autocomplete="off"></div>${status}</form>`;
 }
 
 function homePage(state: HomeState): string {
@@ -193,9 +194,8 @@ const notFound = () =>
 
 // Every page is built from constants, so each is rendered once when the Worker starts.
 const homes = new Map<HomeState, string>(
-  (["open", "joined", "invalid", "limited"] as const).map((state) => [state, homePage(state)]),
+  (["open", "joined", "invalid", "limited", "failed"] as const).map((state) => [state, homePage(state)]),
 );
-/** The home page with the waiting list in the given state. */
 export const homeWith = (state: HomeState) => homes.get(state)!;
 
 const pages = new Map<string, string>([

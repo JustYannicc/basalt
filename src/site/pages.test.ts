@@ -35,7 +35,7 @@ test("the home page offers the waiting list: one email field, one button, a hidd
   assert.equal(home.match(/<input [^>]*type="email"[^>]*required/g)?.length, 1);
   assert.equal(home.match(/<button /g)?.length, 1);
   assert.match(home, /<button type="submit">Join the waiting list<\/button>/);
-  assert.match(home, /<div class="trap" aria-hidden="true">.*<input id="website" name="website" type="text" tabindex="-1" autocomplete="off">/);
+  assert.match(home, /<div class="trap" aria-hidden="true">.*<input id="leave_empty" name="leave_empty" type="text" tabindex="-1" autocomplete="off">/);
   assert.match(home, /<label class="visually-hidden" for="email">Email address<\/label>/);
   assert.doesNotMatch(home, /<script/i);
 });
@@ -68,7 +68,7 @@ test("privacy names the Limited Use commitment, complaint routes and the failed-
   assert.match(privacy, /rely on the EU Standard Contractual Clauses/);
   assert.match(privacy, /join the waiting list on signalbox\.run, we store your email address and when you joined/);
   assert.match(privacy, /only to invite you when it's your turn, and we don't send you anything else/);
-  assert.match(privacy, /count recent attempts per IP address for a minute; the address itself isn't stored/);
+  assert.match(privacy, /count recent attempts from each IP address for a minute\. We don't store the IP address with your email\./);
   assert.match(privacy, /To be removed from the waiting list, write to\s+info@signalbox\.run\s+from that address/);
   assert.match(privacy, /Waiting list: Cloudflare D1, restricted to the EU\./);
   assert.match(privacy, /Waiting list: until you're invited or ask to be removed\./);

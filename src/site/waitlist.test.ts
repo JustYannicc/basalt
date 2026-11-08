@@ -61,7 +61,7 @@ function site(limit?: number) {
           "CF-Connecting-IP": init.ip ?? "192.0.2.1",
           ...(init.origin === null ? {} : { Origin: init.origin ?? "https://signalbox.run" }),
         },
-        body: new URLSearchParams({ website: "", ...fields }),
+        body: new URLSearchParams({ leave_empty: "", ...fields }),
       }),
       env,
     );
@@ -110,7 +110,7 @@ test("an invalid address is refused with the form and a message, and nothing is 
 
 test("a filled trap field looks like success to the bot and stores nothing", async () => {
   const { post, rows } = site();
-  const response = await post({ email: "bot@example.com", website: "https://spam.example" });
+  const response = await post({ email: "bot@example.com", leave_empty: "https://spam.example" });
   assert.equal(response.status, 303);
   assert.equal(response.headers.get("location"), "/waitlist");
   assert.deepEqual(rows(), []);
@@ -122,6 +122,7 @@ test("each IP gets a few tries per period, counted before anything else, and oth
   assert.equal((await post({ email: "nope" })).status, 400);
   const limited = await post({ email: "three@example.com" });
   assert.equal(limited.status, 429);
+  assert.equal(limited.headers.get("retry-after"), "60");
   assert.match(await limited.text(), /Too many tries from here/);
   assert.equal((await post({ email: "four@example.com" }, { ip: "198.51.100.7" })).status, 303);
   assert.deepEqual(rows().map((row) => row.email), ["four@example.com", "one@example.com"]);
@@ -142,14 +143,72 @@ test("only same-origin form posts reach the list", async () => {
     env,
   );
   assert.equal(json.status, 415);
-  const large = await post({ email: "big@example.com", website: "", pad: "x".repeat(4096) });
+  const large = await post({ email: "big@example.com", leave_empty: "", pad: "x".repeat(4096) });
   assert.equal(large.status, 413);
   assert.deepEqual(rows().map((row) => row.email), ["ada@example.com"]);
   assert.equal((await handleSite(new Request("https://signalbox.run/", { method: "POST" }), env)).status, 405);
 });
 
+test("a body with no declared length is still capped, and a trailing slash posts the same form", async () => {
+  const { env, rows } = site();
+  const stream = (text: string) =>
+    new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(text));
+        controller.close();
+      },
+    });
+  const chunked = (path: string, text: string) =>
+    handleSite(
+      new Request(`https://signalbox.run${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: stream(text),
+        duplex: "half",
+      } as RequestInit),
+      env,
+    );
+  assert.equal((await chunked("/waitlist", `email=big%40example.com&pad=${"x".repeat(4096)}`)).status, 413);
+  assert.equal((await chunked("/waitlist/", "email=ada%40example.com&leave_empty=")).status, 303);
+  assert.deepEqual(rows().map((row) => row.email), ["ada@example.com"]);
+});
+
+test("a database failure keeps the form, says to try again, and never echoes the address", async () => {
+  const env: SiteEnv = {
+    WAITLIST: {
+      prepare: () => ({ bind: () => ({ run: async () => {} }), run: async () => {} }),
+      batch: async () => {
+        throw new Error("D1_ERROR: storage unavailable");
+      },
+    },
+    WAITLIST_LIMIT: { limit: async () => ({ success: true }) },
+  };
+  const errors: unknown[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => errors.push(args);
+  try {
+    const response = await handleSite(
+      new Request("https://signalbox.run/waitlist", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: "email=ada%40example.com&leave_empty=",
+      }),
+      env,
+    );
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    const html = await response.text();
+    assert.match(html, /We couldn't save that just now/);
+    assert.match(html, /<form class="join"/);
+    assert.doesNotMatch(html, /ada@example\.com|D1_ERROR/);
+    assert.doesNotMatch(JSON.stringify(errors), /ada@example\.com/);
+  } finally {
+    console.error = original;
+  }
+});
+
 test("addresses are trimmed and lowercased, and only plausible ones pass", () => {
   assert.equal(normalizeEmail(" Ada.Lovelace+list@Example.co.uk "), "ada.lovelace+list@example.co.uk");
-  for (const value of [undefined, null, 42, "ada@", "@example.com", "ada@example.", "ada@exa mple.com", "ada\u0000@example.com"])
+  for (const value of [undefined, null, 42, "ada@", "@example.com", "ada@example.", "ada@exa mple.com", "ada@example..com", "ada@.example.com", "ada\u0000@example.com"])
     assert.equal(normalizeEmail(value), undefined, String(value));
 });

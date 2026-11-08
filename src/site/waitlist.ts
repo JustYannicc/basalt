@@ -19,7 +19,7 @@ export interface WaitlistRateLimit {
   limit(options: { key: string }): Promise<{ success: boolean }>;
 }
 
-export type JoinResult = "joined" | "invalid" | "limited";
+export type JoinResult = "joined" | "invalid" | "limited" | "failed";
 
 // The table creates itself, so the database needs no migration history to start.
 const schema =
@@ -32,7 +32,7 @@ export function normalizeEmail(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const email = value.trim().toLowerCase();
   // RFC 5321 caps a path at 254 characters; one @, a dot in the domain, no spaces or controls.
-  if (email.length > 254 || !/^[^\s@\p{Cc}]{1,64}@[^\s@\p{Cc}]+\.[^\s@\p{Cc}.]+$/u.test(email))
+  if (email.length > 254 || !/^[^\s@\p{Cc}]{1,64}@(?:[^\s@\p{Cc}.]+\.)+[^\s@\p{Cc}.]+$/u.test(email))
     return undefined;
   return email;
 }
@@ -56,9 +56,15 @@ export async function joinWaitlist(
   if (typeof honeypot === "string" && honeypot !== "") return "joined";
   const address = normalizeEmail(email);
   if (address === undefined) return "invalid";
-  await database.batch([
-    database.prepare(schema),
-    database.prepare(insert).bind(address, now().toISOString()),
-  ]);
+  try {
+    await database.batch([
+      database.prepare(schema),
+      database.prepare(insert).bind(address, now().toISOString()),
+    ]);
+  } catch {
+    // Never log the address; the fixed line is enough to find the outage.
+    console.error("waitlist: database write failed");
+    return "failed";
+  }
   return "joined";
 }
