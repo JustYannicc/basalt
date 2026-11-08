@@ -23,9 +23,7 @@ export interface ProbeWorker {
 /** Evaluate only settings expressions against observed Worker identities; never read native state. */
 export const settingsFromDeclarations = (stack: CompiledStack, workers: readonly ProbeWorker[]) =>
   Effect.gen(function* () {
-    const declarations = Object.values(stack.resources)
-      .filter(isWorker)
-      .filter((resource) => resource.FQN !== "ArtifactsCredentials");
+    const declarations = Object.values(stack.resources).filter(isWorker);
     if (
       declarations.length !== baselineRoles.length ||
       declarations.some((resource) => !workers.some((worker) => worker.role === resource.FQN)) ||

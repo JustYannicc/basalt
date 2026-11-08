@@ -147,3 +147,33 @@ test("the exact damaged Api repair preserves non-default script settings through
   assert.ok(proof.events.includes("repair-version:accepted-Api:after"));
   assert.equal(proof.receipts.at(-1)?.phase, "complete");
 });
+
+test("a version-only upload can move the settings view before Api activation without changing its serving baseline", async () => {
+  const proof = fixture({ placementRepair: true, latestSettings: true });
+  await Effect.runPromise(proof.effect);
+  const uploaded = proof.events.indexOf("repair-upload:POST:versions");
+  const settings = proof.events.indexOf("repair-settings:before", uploaded + 1);
+  const activated = proof.events.indexOf("activate:Api:accepted-Api");
+  assert.ok(uploaded >= 0 && settings > uploaded && activated > settings);
+  assert.equal(proof.receipts.at(-1)?.phase, "complete");
+});
+
+test("an unserved candidate left by the previous refusal does not become the next repair baseline", async () => {
+  const proof = fixture({ placementRepair: true, latestSettings: true, previousUpload: true });
+  await Effect.runPromise(proof.effect);
+  assert.ok(proof.events.includes("repair-version:f53d98f3-538d-4d49-ba2e-896b765de46d:before"));
+  assert.equal(proof.receipts.at(-1)?.phase, "complete");
+});
+
+test("latest-upload repair settings cannot hide script-level drift before activation", async () => {
+  const proof = fixture({ placementRepair: true, latestSettings: true, settingsDrift: true });
+  await assert.rejects(Effect.runPromise(proof.effect), /script-tags-drift/);
+  assert.deepEqual(proof.receipts.at(-1)?.activated, []);
+  assert.ok(!proof.events.some((event) => event.startsWith("activate:")));
+});
+
+test("a changed serving deployment refuses even when its latest-upload settings match the repair", async () => {
+  const proof = fixture({ placementRepair: true, latestSettings: true, deploymentDrift: true });
+  await assert.rejects(Effect.runPromise(proof.effect), /placement-repair-deployment-drift/);
+  assert.deepEqual(proof.receipts.at(-1)?.activated, []);
+});

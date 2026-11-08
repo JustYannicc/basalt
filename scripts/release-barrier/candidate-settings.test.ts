@@ -20,7 +20,7 @@ test("the exact CI candidate reader names the missing release Command input", ()
   });
 });
 
-test("a probe-scoped attempt reads all 19 real candidate declarations without deployment-only inputs", () => {
+test("a probe-scoped attempt reads all 20 real candidate declarations without deployment-only inputs", () => {
   const result = discoverCandidateSettings(process.cwd(), "ready");
   assert.ok(typeof result === "object" && result !== null && "roles" in result && "ok" in result);
   assert.equal(result.ok, true);
@@ -58,7 +58,7 @@ for (const mode of ["entry-ready", "entry-missing-attempt"] as const)
       namespaceReads: number;
     };
     if (mode === "entry-ready") {
-      assert.equal(rows.length, 19, JSON.stringify(result));
+      assert.equal(rows.length, 20, JSON.stringify(result));
       assert.ok(
         rows.every((row) => row.ok),
         JSON.stringify(rows),

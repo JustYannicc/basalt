@@ -17,6 +17,7 @@ export const baselineRoles = [
   "AppDomainController",
   "AppOutbound",
   "AppPages",
+  "ArtifactsCredentials",
   "Authoring",
   "Catalog",
   "Dashboard",

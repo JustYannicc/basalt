@@ -9,10 +9,11 @@ import { assertScriptSettings, scriptSettingFields } from "./script-settings.ts"
 import { BarrierRefusal } from "./manifest.ts";
 import { placementRepairTargets } from "./pending-placement.ts";
 
-for (const mode of ["same", "drift", "repair"] as const) {
+for (const mode of ["same", "drift", "repair", "repair-latest-upload"] as const) {
   const drift = mode === "drift";
-  const repair = mode === "repair";
-  test(`full settings probe compares all 19 roles and ${mode}`, async (context) => {
+  const repair = mode.startsWith("repair");
+  const latest = mode === "repair-latest-upload";
+  test(`full settings probe compares all 20 roles and ${mode}`, async (context) => {
     const requests: { method: string | undefined; path: string; bytes: number }[] = [];
     const server = createServer(async (request, response) => {
       let bytes = 0;
@@ -44,10 +45,10 @@ for (const mode of ["same", "drift", "repair"] as const) {
         };
       else if (path.endsWith("/settings"))
         result = {
-          placement: target ? undefined : { mode: "targeted", target: [39] },
+          placement: target && !latest ? undefined : { mode: "targeted", target: [39] },
           logpush: drift && path.includes("publicsite"),
           limits:
-            target?.role === "Api"
+            target?.role === "Api" && !latest
               ? undefined
               : { subrequests: drift && path.includes("api-production") ? 100 : 50_000 },
           observability: { enabled: true, head_sampling_rate: 1 },
@@ -111,8 +112,8 @@ for (const mode of ["same", "drift", "repair"] as const) {
           },
         })),
     );
-    assert.equal(rows.length, 19);
-    assert.equal(requests.length, repair ? 60 : 58);
+    assert.equal(rows.length, 20);
+    assert.equal(requests.length, repair ? 69 : 61);
     assert.ok(requests.every((request) => request.method === "GET" && request.bytes === 0));
     for (const row of rows) {
       assert.equal(row.ok, !drift || !["Api", "PublicSite"].includes(row.role));
@@ -120,7 +121,7 @@ for (const mode of ["same", "drift", "repair"] as const) {
       assert.equal(row.placements.status, 200);
       assert.equal(
         row.placements.attempts,
-        repair && ["Api", "AppPages"].includes(row.role) ? 2 : 1,
+        repair && ["Api", "AppPages"].includes(row.role) ? 3 : 1,
       );
       assert.equal(
         Boolean(row.pendingPlacementRepair),

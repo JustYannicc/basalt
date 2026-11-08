@@ -24,6 +24,7 @@ import { BarrierRefusal } from "./manifest.ts";
 import { safeProviderFailure } from "./operation-failure.ts";
 import { assertScriptSettings, scriptSettingFields } from "./script-settings.ts";
 import type { PropChange } from "./prop-diff.ts";
+import { verifyRepairBaseline } from "./repair-baseline.ts";
 
 interface ReadMetrics {
   status: number | null;
@@ -204,6 +205,7 @@ export async function probeWorkerSettings(
                 settings,
                 retired: retired === true,
               });
+              await run(verifyRepairBaseline({ ...input, baseline }, declaration.metadata, repair));
             } else
               assertScriptSettings(
                 worker.role,

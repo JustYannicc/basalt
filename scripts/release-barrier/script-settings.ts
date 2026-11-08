@@ -33,6 +33,8 @@ const classes = (
   );
 const safeScalar = (value: unknown, path: string): string | number | null => {
   if (value == null) return null;
+  if (/^placement\.target\.\d+$/.test(path) && Number.isSafeInteger(value) && Number(value) >= 0)
+    return Number(value);
   if (
     /^(?:limits\.(?:cpuMs|subrequests)|observability\.(?:headSamplingRate|(?:logs|traces)\.headSamplingRate))$/.test(
       path,
