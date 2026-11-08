@@ -32,6 +32,7 @@ if (${JSON.stringify(drift)}) {
   f.hooks.read = count => {
     if (count === 11) {
       f.state.bindings[1].text = "changed-private-binding";
+      f.state.settings.compatibility_flags = ["private-flag-one", "private-flag-two"];
       f.state.settings.annotations = {
         "workers/message": "private-annotation-message",
         "workers/tag": "private-annotation-tag",
@@ -125,6 +126,13 @@ test("CLI error and summary both name all binding differences without exposing c
     assert.match(text, /PRIVATE_VALUE: text expected sha256:[a-f0-9]+, observed sha256:[a-f0-9]+/);
     assert.match(text, /annotations.workers\/message expected absent, observed sha256:[a-f0-9]+/);
     assert.match(text, /annotations.workers\/tag expected absent, observed sha256:[a-f0-9]+/);
+    assert.match(
+      text,
+      /compatibility_flags.0 expected sha256:[a-f0-9]+, observed sha256:[a-f0-9]+/,
+    );
+    assert.match(text, /compatibility_flags.1 expected absent, observed sha256:[a-f0-9]+/);
+    assert.ok(!text.includes("private-flag-one"));
+    assert.ok(!text.includes("private-flag-two"));
     assert.ok(!text.includes("private-annotation-message"));
     assert.ok(!text.includes("private-annotation-tag"));
     assert.ok(!text.includes("changed-private-binding"));

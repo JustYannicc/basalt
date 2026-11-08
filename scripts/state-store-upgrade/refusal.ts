@@ -60,20 +60,23 @@ const safeValue = (value: unknown, path: string): string | number | null => {
 };
 export function differences(resource: string, before: unknown, after: unknown): Change[] {
   const changes: Change[] = [];
-  const walk = (old: unknown, next: unknown, keys: string[]) => {
+  const walk = (old: unknown, next: unknown, keys: string[], display: string[]) => {
     if (Object.is(old, next)) return;
     if (keys.length < 12 && (record(old) || old == null) && (record(next) || next == null)) {
       const a = record(old) ? old : {};
       const b = record(next) ? next : {};
       const names = [...new Set([...Object.keys(a), ...Object.keys(b)])].sort();
       if (names.length) {
-        for (const key of names) walk(a[key], b[key], [...keys, key]);
+        for (const key of names) {
+          const path = [...keys, key];
+          walk(a[key], b[key], path, [...display, publicPropPath(path).split(".").at(-1)!]);
+        }
         return;
       }
     }
     if (keys.length < 12 && Array.isArray(old) && Array.isArray(next)) {
       for (let i = 0; i < Math.max(old.length, next.length); i++)
-        walk(old[i], next[i], [...keys, String(i)]);
+        walk(old[i], next[i], [...keys, String(i)], [...display, String(i)]);
       return;
     }
     if (digest(old) === digest(next) && (old === undefined) === (next === undefined)) return;
@@ -83,7 +86,7 @@ export function differences(resource: string, before: unknown, after: unknown): 
       keys[0] === "annotations" &&
       /^workers\/(?:message|tag|triggered_by)$/.test(keys[1]!)
         ? keys.join(".")
-        : publicPropPath(keys) || "$";
+        : display.join(".") || "$";
     changes.push({
       resource,
       property,
@@ -91,7 +94,7 @@ export function differences(resource: string, before: unknown, after: unknown): 
       observed: safeValue(next, property),
     });
   };
-  walk(before, after, []);
+  walk(before, after, [], []);
   return changes;
 }
 export function bindingDifferences(before: readonly Binding[], after: readonly Binding[]) {
