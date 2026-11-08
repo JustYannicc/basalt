@@ -3,9 +3,34 @@ import * as Retry from "@distilled.cloud/cloudflare/Retry";
 import { Effect } from "effect";
 import { BarrierRefusal, type FrozenWorker } from "./manifest.ts";
 import { uploadRequest } from "./version-request.ts";
+import type { ActiveWorkerPlacement } from "./script-placement.ts";
+import { readVersionPlacement } from "./active-placement-read.ts";
 
-export const readBaseline = (worker: Pick<FrozenWorker, "accountId" | "scriptName">) =>
-  Workers.listScriptDeployments(worker).pipe(
+export const readScriptSettings = (worker: Pick<FrozenWorker, "accountId" | "scriptName">) =>
+  Workers.getScriptScriptAndVersionSetting({
+    accountId: worker.accountId,
+    scriptName: worker.scriptName,
+  }).pipe(Retry.policy(Retry.makeDefault));
+
+export const readActivePlacements = (
+  worker: Pick<FrozenWorker, "accountId" | "scriptName">,
+  baseline: FrozenWorker["baseline"],
+) =>
+  Effect.all(
+    baseline.map(({ versionId }) =>
+      readVersionPlacement(worker.accountId, worker.scriptName, versionId).pipe(
+        Effect.map((version): ActiveWorkerPlacement => version),
+      ),
+    ),
+    { concurrency: "unbounded" },
+  );
+
+export const readCurrentDeployment = (worker: Pick<FrozenWorker, "accountId" | "scriptName">) =>
+  // The SDK serializes excess properties as a body, including on GET. Callers pass upload and frozen objects.
+  Workers.listScriptDeployments({
+    accountId: worker.accountId,
+    scriptName: worker.scriptName,
+  }).pipe(
     Effect.map((response) => {
       const deployments = response.deployments;
       if (
@@ -16,11 +41,18 @@ export const readBaseline = (worker: Pick<FrozenWorker, "accountId" | "scriptNam
       const current = [...deployments].sort(
         (a, b) => Date.parse(b.createdOn) - Date.parse(a.createdOn),
       )[0]!;
-      return [...current.versions].sort((a, b) => a.versionId.localeCompare(b.versionId));
+      if (!current.id) throw new BarrierRefusal("missing-live-deployment-id");
+      return {
+        id: current.id,
+        versions: [...current.versions].sort((a, b) => a.versionId.localeCompare(b.versionId)),
+      };
     }),
     // Baseline GETs are idempotent; keep the SDK's bounded transient policy local to reads.
     Retry.policy(Retry.makeDefault),
   );
+
+export const readBaseline = (worker: Pick<FrozenWorker, "accountId" | "scriptName">) =>
+  readCurrentDeployment(worker).pipe(Effect.map((current) => current.versions));
 
 export const uploadVersion = (worker: FrozenWorker) =>
   Workers.createScriptVersion(uploadRequest(worker)).pipe(

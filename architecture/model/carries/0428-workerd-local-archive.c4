@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Self-host packaging accepts an explicitly supplied archive as an alternate byte source for its pinned workerd. The same platform selection, release identity, SHA-256 assertion and decompression remain mandatory. An absent override retains the release-download path. Check warms one versioned archive cache before image jobs and provides the verified archive to an isolated image-build context; a cold release-source outage fails only the named warming job."
+    }
+  }
+}

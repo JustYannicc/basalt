@@ -450,6 +450,7 @@ for (const scenario of [
                     bootId: "next-boot",
                     workerInput: "input",
                     checkedAt: 1,
+                    instanceObservedAt: 1,
                     unsignedHealth: 200,
                     unsignedModels: 401,
                   }),

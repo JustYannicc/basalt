@@ -1,3 +1,4 @@
+import type { ServingDiagnostic } from "./serving-failure.ts";
 import { appendFile } from "node:fs/promises";
 import type { ReleaseOperationFailure } from "./operation-failure.ts";
 import type { PlanRefusal } from "./manifest.ts";
@@ -5,6 +6,7 @@ import type { ResourceDelta } from "./prop-diff.ts";
 
 interface Failure {
   reason: string;
+  serving?: ServingDiagnostic;
   operation?: ReleaseOperationFailure["operation"];
   provider?: ReleaseOperationFailure["provider"];
   worker?: string;
@@ -52,6 +54,14 @@ export function refusalTable(failure: Failure) {
         .filter((value) => value !== undefined)
         .join("; "),
     ]);
+  if (failure.serving) {
+    const value = failure.serving;
+    rows.push([
+      failure.worker ?? "PoolContainer",
+      `$serving.${value.check}`,
+      `${value.cause}; status=${value.status ?? "none"}; elapsedMs=${value.elapsedMs ?? "none"}; last=${JSON.stringify(value.observation ?? null)}`,
+    ]);
+  }
   return [
     "| Resource | Property | Old → new |",
     "| --- | --- | --- |",

@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { readDeclarations, patternForGroup } from "./ci/declarations.ts";
 import { selectPaths } from "./ci/affected.ts";
 import { heavyJobs } from "./ci/areas.ts";
-import { bundleJobs, fastJobs, gateErrors } from "./ci/gate.ts";
+import { bundleJobs, conditionalJobs, fastJobs, gateErrors } from "./ci/gate.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
 const workflow = parse(
@@ -101,10 +101,13 @@ test("affected selection and the full aggregate cannot skip the audited partitio
   assert.ok(selectPaths([".upstream/e2e/tests/account-cache-scope.spec.ts"]).jobs.includes(job));
   assert.ok(workflow.jobs.check.needs.includes(job));
   const needs = Object.fromEntries(
-    [...fastJobs, ...heavyJobs, ...bundleJobs].map((id) => [
+    [...fastJobs, ...heavyJobs, ...bundleJobs, ...conditionalJobs].map((id) => [
       id,
       {
-        result: bundleJobs.includes(id) ? "skipped" : "success",
+        result:
+          bundleJobs.includes(id) || (conditionalJobs.includes(id) && id !== "workerd-assets")
+            ? "skipped"
+            : "success",
       },
     ]),
   );

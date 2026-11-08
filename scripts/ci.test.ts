@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { carryTargets, changedInputs, jobRoutes, selectPaths } from "./ci/affected.ts";
 import { selectUnitTests } from "./ci/unit-tests.ts";
 import { heavyJobs } from "./ci/areas.ts";
-import { bundleJobs, fastJobs, gateErrors } from "./ci/gate.ts";
+import { bundleJobs, conditionalJobs, fastJobs, gateErrors } from "./ci/gate.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
 
@@ -180,9 +180,16 @@ test("AWS catalog, proof inputs and loopback carries select the AWS runtime proo
 test("the aggregate blocks missing, failed, cancelled and unexpectedly skipped work", () => {
   const selected = ["production-build"];
   const needs = Object.fromEntries(
-    [...fastJobs, ...heavyJobs, ...bundleJobs].map((job) => [
+    [...fastJobs, ...heavyJobs, ...bundleJobs, ...conditionalJobs].map((job) => [
       job,
-      { result: fastJobs.includes(job) || selected.includes(job) ? "success" : "skipped" },
+      {
+        result:
+          fastJobs.includes(job) ||
+          selected.includes(job) ||
+          (job === "workerd-assets" && selected.includes("upstream-image"))
+            ? "success"
+            : "skipped",
+      },
     ]),
   );
   assert.deepEqual(gateErrors(needs, selected), []);
@@ -200,11 +207,15 @@ test("every workflow job has a gate dependency and declared selection policy", (
     readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
   );
   const jobs = workflow.jobs;
-  const expected = [...fastJobs, ...heavyJobs, ...bundleJobs];
+  const expected = [...fastJobs, ...heavyJobs, ...bundleJobs, ...conditionalJobs];
   assert.deepEqual(Object.keys(jobs).sort(), [...expected, "check"].sort());
   assert.deepEqual([...jobs.check.needs].sort(), [...expected].sort());
   for (const job of heavyJobs) {
-    assert.equal(jobs[job].needs, "select", job);
+    assert.deepEqual(
+      jobs[job].needs,
+      job === "upstream-image" ? ["select", "workerd-assets"] : "select",
+      job,
+    );
     assert.equal(
       jobs[job].if,
       `contains(fromJSON(needs.select.outputs.hosted_jobs), '${job}')`,
@@ -240,7 +251,7 @@ test("only affected configured Boat jobs substitute for hosted jobs, and every b
   assert.throws(() => jobRoutes(selected, "unknown"));
   assert.throws(() => jobRoutes(selected, "production-build"));
   const needs = Object.fromEntries(
-    [...fastJobs, ...heavyJobs, ...bundleJobs].map((job) => [
+    [...fastJobs, ...heavyJobs, ...bundleJobs, ...conditionalJobs].map((job) => [
       job,
       {
         result:
@@ -272,10 +283,15 @@ test("access editor changes select the public independent-read guards", () => {
 test("fast-only and full gates reject missing work and dishonest lane selections", () => {
   const needs = (selected: readonly string[]) =>
     Object.fromEntries(
-      [...fastJobs, ...heavyJobs, ...bundleJobs].map((job) => [
+      [...fastJobs, ...heavyJobs, ...bundleJobs, ...conditionalJobs].map((job) => [
         job,
         {
-          result: fastJobs.includes(job) || selected.includes(job) ? "success" : "skipped",
+          result:
+            fastJobs.includes(job) ||
+            selected.includes(job) ||
+            (job === "workerd-assets" && selected.includes("upstream-image"))
+              ? "success"
+              : "skipped",
         },
       ]),
     );
@@ -474,4 +490,27 @@ test("hidden section reads select their browser guards", () => {
     ".upstream/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.tsx",
   ])
     assert.ok(selectPaths([path]).jobs.includes("human-in-the-loop"), path);
+});
+
+test("a selected image requires successful workerd warming and an unselected image skips it", () => {
+  const selected = ["upstream-image"];
+  const needs = Object.fromEntries(
+    [...fastJobs, ...heavyJobs, ...bundleJobs, ...conditionalJobs].map((job) => [
+      job,
+      {
+        result:
+          fastJobs.includes(job) || selected.includes(job) || job === "workerd-assets"
+            ? "success"
+            : "skipped",
+      },
+    ]),
+  );
+  assert.deepEqual(gateErrors(needs, selected), []);
+  for (const result of ["failure", "cancelled", "skipped"])
+    assert.ok(
+      gateErrors({ ...needs, "workerd-assets": { result } }, selected).some((error) =>
+        error.startsWith("workerd-assets:"),
+      ),
+    );
+  assert.ok(gateErrors(needs, []).some((error) => error.startsWith("workerd-assets:")));
 });

@@ -59,10 +59,81 @@ jobs:
           node scripts/deploy-safety/release.ts report --candidate "$RELEASE_HEAD" --candidate-root "$RUNNER_TEMP/candidate" > .local/production-report.json
         env:
           RELEASE_HEAD: ${{ steps.candidate.outputs.head }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Prepare the read-only baseline client
+        working-directory: ${{ runner.temp }}/candidate
+        run: npm run prepare:upstream
+      - name: Read every Worker baseline before the backup
+        working-directory: ${{ runner.temp }}/candidate
+        run: |
+          BASALT_RELEASE_ATTEMPT="$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')" \
+            bun scripts/release-barrier/baseline-probe-entry.ts
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          PLANETSCALE_ORGANIZATION: ${{ secrets.PLANETSCALE_ORGANIZATION }}
+          PLANETSCALE_API_TOKEN_ID: ${{ secrets.PLANETSCALE_API_TOKEN_ID }}
+          PLANETSCALE_API_TOKEN: ${{ secrets.PLANETSCALE_API_TOKEN }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_GOOGLE_CLIENT_ID }}
+          EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID }}
+          EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_ZENDESK_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_ZENDESK_CLIENT_ID }}
+          EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_GITLAB_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_GITLAB_CLIENT_ID }}
+          EXECUTOR_OAUTH_GITLAB_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_GITLAB_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_PLANETSCALE_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_PLANETSCALE_CLIENT_ID }}
+          EXECUTOR_OAUTH_PLANETSCALE_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_PLANETSCALE_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_MIRO_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_MIRO_CLIENT_ID }}
+          EXECUTOR_OAUTH_MIRO_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_MIRO_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_NOTION_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_NOTION_CLIENT_ID }}
+          EXECUTOR_OAUTH_NOTION_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_NOTION_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_TODOIST_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_TODOIST_CLIENT_ID }}
+          EXECUTOR_OAUTH_TODOIST_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_TODOIST_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_TRELLO_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_TRELLO_CLIENT_ID }}
+          EXECUTOR_OAUTH_TRELLO_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_TRELLO_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_ZOHO_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_ZOHO_CLIENT_ID }}
+          EXECUTOR_OAUTH_ZOHO_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_ZOHO_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID }}
+          EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_SLACK_REST_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_SLACK_REST_CLIENT_ID }}
+          EXECUTOR_OAUTH_SLACK_REST_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_SLACK_REST_CLIENT_SECRET }}
+          AUTH_GITHUB_CLIENT_ID: ${{ secrets.AUTH_GITHUB_CLIENT_ID }}
+          AUTH_GITHUB_CLIENT_SECRET: ${{ secrets.AUTH_GITHUB_CLIENT_SECRET }}
+          BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
+          EXECUTOR_ENCRYPTION_KEY: ${{ secrets.EXECUTOR_ENCRYPTION_KEY }}
+          MCP_SESSION_KEY_CURRENT: ${{ secrets.MCP_SESSION_KEY_CURRENT }}
+          MCP_SESSION_KEY_PREVIOUS: ${{ secrets.MCP_SESSION_KEY_PREVIOUS }}
+          APP_DOMAIN_CONTROL_SECRET: ${{ secrets.APP_DOMAIN_CONTROL_SECRET }}
+          POOL_APP_SIGNING_KEY: ${{ secrets.POOL_APP_SIGNING_KEY }}
+          GOOGLE_MAPS_ROUTES_API_KEY: ${{ secrets.GOOGLE_MAPS_ROUTES_API_KEY }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          SENTRY_OTLP_ENDPOINT: ${{ secrets.SENTRY_OTLP_ENDPOINT }}
+          POSTHOG_PROJECT_KEY: ${{ secrets.POSTHOG_PROJECT_KEY }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+          POOL_APP_SIGNING_KEY_PREVIOUS: ${{ secrets.POOL_APP_SIGNING_KEY_PREVIOUS }}
+          APP_DOMAIN_CONTROLLER_TOKEN: ${{ secrets.APP_DOMAIN_CONTROLLER_TOKEN }}
+          POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
+          POOL_DEPLOYMENT_KEY: ${{ secrets.POOL_DEPLOYMENT_KEY }}
+          POOL_ACCEPTANCE_KEY: ${{ secrets.POOL_ACCEPTANCE_KEY }}
+          POOL_ACCEPTANCE_MODEL: ${{ vars.POOL_ACCEPTANCE_MODEL }}
+
       - name: Complete the release backup before the deploy job
         run: node scripts/deploy-safety/release.ts backup-only --candidate "$RELEASE_HEAD" --candidate-root "$RUNNER_TEMP/candidate" --report .local/production-report.json
         env:
           RELEASE_HEAD: ${{ steps.candidate.outputs.head }}
+      - name: Retain the read-only baseline probe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-probe
+          path: ${{ runner.temp }}/candidate/.local/baseline-probe.json
+          include-hidden-files: true
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         with:
           name: manual-release-report

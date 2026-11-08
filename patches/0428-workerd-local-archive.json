@@ -1,0 +1,11 @@
+{
+  "identity": "workerd-local-archive",
+  "file": "0428-workerd-local-archive.patch",
+  "content_sha256": "783be96164233733c55cb957617e3a44a3862525c9ff90acfa85717c9bef7c5a",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "upstream-workerd-archive-cache",
+  "requires": "A supplied workerd archive changes only the byte source; the pinned platform, release and SHA-256 check remain authoritative. Without an override, packaging keeps the release download path."
+}

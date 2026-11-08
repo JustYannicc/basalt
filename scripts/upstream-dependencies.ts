@@ -17,6 +17,7 @@ import {
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { digest, upstreamCache, withCacheLock } from "./upstream-cache.ts";
 import { dependencyIdentity } from "./upstream-inputs.ts";
+import { omitReleaseLifecycles } from "./ci/dependency-lifecycles.ts";
 import {
   abandonInstallAttempt,
   atomicStoreJson,
@@ -91,7 +92,8 @@ function readonlyTree(path: string) {
 }
 
 async function prepareDependencyGeneration(root: string, pin: string, cacheHitOnly: boolean) {
-  const { files, key } = dependencyIdentity(root, pin);
+  const omitReleaseDownloads = process.env.BASALT_CI_OMIT_RELEASE_DOWNLOADS === "true";
+  const { files, key } = dependencyIdentity(root, pin, omitReleaseDownloads);
   const entry = join(upstreamCache(), "prepared", pin, key);
   const prepared = await withCacheLock(`${entry}.lock`, async () => {
     let generation = await withDependencyStoreLock(() => {
@@ -108,6 +110,13 @@ async function prepareDependencyGeneration(root: string, pin: string, cacheHitOn
         for (const file of files) {
           mkdirSync(dirname(join(attempt, file)), { recursive: true });
           cpSync(join(root, file), join(attempt, file));
+        }
+        // Check uses system Git; only upstream release packaging needs these bundled runtimes.
+        if (omitReleaseDownloads) {
+          omitReleaseLifecycles(attempt);
+          console.log(
+            "Check dependency cache miss: release-only lifecycles omitted; GitHub release hosts blocked",
+          );
         }
         await installPrivateAttempt(attempt);
         const trees = moduleTrees(attempt);
