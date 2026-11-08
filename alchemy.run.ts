@@ -177,8 +177,8 @@ export default Alchemy.Stack(
     // The public home and legal pages at the zone's apex. Previews share the zone, so only
     // production owns its apex.
     if (preview === undefined) {
-      // The home page's waiting list: emails and when they joined, kept in the EU, never removed
-      // with the stack. Operators read and delete rows in the D1 console or with wrangler.
+      // Provision separately from the waiting-list Worker binding so admission precedes creation.
+      // PublicSite binds this one declaration by reference; it is never declared twice.
       const waitlist = yield* Cloudflare.D1.Database("PublicSiteWaitlist", {
         name: "public-site-waitlist",
         jurisdiction: "eu",

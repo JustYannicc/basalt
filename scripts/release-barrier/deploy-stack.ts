@@ -1,3 +1,12 @@
+import type { D1Provider, D1Progress, PreparedD1 } from "./declared-d1-types.ts";
+import {
+  d1Account,
+  preflightDeclaredD1,
+  declaredD1Exists,
+  createDeclaredD1,
+  readDeclaredD1,
+} from "./d1-cloudflare.ts";
+import { createDeclaredDatabases } from "./declared-d1.ts";
 import { assertJournaledBaselineInput, type ForwardInputProof } from "./forward-worker-input.ts";
 import { State } from "alchemy/State/State";
 import { beginForwardJournal } from "./forward-journal.ts";
@@ -34,6 +43,24 @@ import type { BaselineNormalization, FrozenContainer } from "./container.ts";
 import { verifyServingContainer, type ServingContainer } from "./container-serving.ts";
 import { advanceContainer } from "./container-promotion.ts";
 import { freezeUpload } from "./version-request.ts";
+import { recordDeclaredReadiness, type DeclaredReadiness } from "./declared-prerequisites.ts";
+import type { DeclaredChanges } from "./declared-change-schema.ts";
+import {
+  createDeclaredBuckets,
+  type BucketProvider,
+  type BucketProgress,
+  type PreparedBucket,
+} from "./declared-buckets.ts";
+import {
+  bucketAccount,
+  readDeclaredBucket,
+  createDeclaredBucket,
+  configureDeclaredBucket,
+} from "./bucket-cloudflare.ts";
+import { assertSupportedPlan } from "./plan-admission.ts";
+import { declaredMismatch } from "./declared-refusal.ts";
+import { prepareDeclaredStorage } from "./declared-bucket-plan.ts";
+import { preserveDeclarationHistory } from "./declared-history.ts";
 import { inspectContainer, type ContainerAttributes } from "./container.ts";
 import {
   observeContainer,
@@ -43,6 +70,9 @@ import {
 
 export interface DeployStackOptions {
   candidate: string;
+  declarations?: DeclaredChanges;
+  declared?(progress: BucketProgress | D1Progress): Promise<void>;
+  declaredReadiness?(value: DeclaredReadiness): Promise<void>;
   forwardInput?: ForwardInputProof;
   forwardEncryptionKey?: string;
   record(receipt: BarrierReceipt): Promise<void>;
@@ -51,6 +81,8 @@ export interface DeployStackOptions {
   admission?(verifications: readonly VerificationAdmission[]): Promise<void>;
   serving?(container: ServingContainer): Promise<void>;
   io?: {
+    buckets?: BucketProvider;
+    d1?: D1Provider;
     baseline: typeof readBaseline;
     upload: typeof uploadVersion;
     placements?: typeof readActivePlacements;
@@ -67,21 +99,94 @@ type Services = Effect.Services<ReturnType<typeof readBaseline> | ReturnType<typ
 /** The ordinary release entry uses this full-stack path, including transitive Commands. */
 export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =>
   Effect.gen(function* () {
-    const plan = yield* Plan.make(stack).pipe(withOperation("(plan)", "plan-stack"));
+    const evaluatedPlan = yield* Plan.make(stack).pipe(withOperation("(plan)", "plan-stack"));
+    assertSupportedPlan(evaluatedPlan, new Map(), options.declarations);
+    const context = yield* Effect.context<Services>();
+    const run = <A, E>(effect: Effect.Effect<A, E, Services>) =>
+      Effect.runPromise(effect.pipe(Effect.provideContext(context)));
+    const buckets =
+      options.io?.buckets ??
+      ({
+        accountId: () => run(bucketAccount),
+        read: (target, fqn) => run(readDeclaredBucket(target, fqn)),
+        create: (target) => run(createDeclaredBucket(target)),
+        configure: (target) => run(configureDeclaredBucket(target)),
+      } satisfies BucketProvider);
+    const d1 =
+      options.io?.d1 ??
+      ({
+        accountId: () => run(d1Account),
+        preflight: (accountId) => run(preflightDeclaredD1(accountId)),
+        exists: (target) => run(declaredD1Exists(target)),
+        create: (target) => run(createDeclaredD1(target)),
+        read: (target, id, fqn) => run(readDeclaredD1(target, id, fqn)),
+      } satisfies D1Provider);
+    const scope = { stack: stack.name, stage: stack.stage };
+    if (options.declarations && (!options.declared || !options.declaredReadiness))
+      throw declaredMismatch(
+        "declared-evidence-required",
+        "release-declarations.json",
+        { creationEvidence: "configured", readinessEvidence: "configured" },
+        {
+          creationEvidence: options.declared ? "configured" : null,
+          readinessEvidence: options.declaredReadiness ? "configured" : null,
+        },
+      );
+    const {
+      plan,
+      buckets: declaredBuckets,
+      databases: declaredDatabases,
+    } = yield* prepareDeclaredStorage(
+      evaluatedPlan,
+      options.declarations,
+      scope,
+      buckets,
+      options.declaredReadiness,
+      d1,
+    );
+    const prerequisites = (phase: DeclaredReadiness["phase"]) =>
+      recordDeclaredReadiness(
+        plan,
+        options.declarations,
+        scope,
+        buckets,
+        phase,
+        options.declaredReadiness,
+        d1,
+      );
+    for (const bucket of declaredBuckets.values())
+      yield* Effect.promise(() =>
+        options.declared!({
+          bucket,
+          lifecycle: bucket.resume ? "creating" : "planned",
+          outcome: bucket.resume ? "acknowledged" : "not-started",
+        }),
+      );
+    for (const database of declaredDatabases.values())
+      yield* Effect.promise(() =>
+        options.declared!({
+          database,
+          lifecycle: database.resume ? "creating" : "planned",
+          outcome: database.resume ? "acknowledged" : "not-started",
+        }),
+      );
+    const declaredStorage = new Map<string, PreparedBucket | PreparedD1>([
+      ...declaredBuckets.entries(),
+      ...declaredDatabases.entries(),
+    ]);
     const prepared = yield* preparePlan(
       stack,
       plan,
       options.io?.namespace,
       options.io?.container,
       options.publication,
+      options.declarations,
+      declaredStorage,
     );
     const recordAdmission = options.admission;
     if (recordAdmission) yield* Effect.promise(() => recordAdmission(verificationAdmissions(plan)));
-    const context = yield* Effect.context<Services>();
     const state = yield* yield* State;
     const retired = yield* retiredPlacements(state, stack);
-    const run = <A, E>(effect: Effect.Effect<A, E, Services>) =>
-      Effect.runPromise(effect.pipe(Effect.provideContext(context)));
     const io = options.io ?? { baseline: readBaseline, upload: uploadVersion };
     const manifest: ReleaseManifest = {
       candidate: options.candidate,
@@ -149,6 +254,7 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
         options.forwardInput,
       );
     yield* Effect.promise(() => options.manifest(manifest));
+    yield* prerequisites("before-upload");
     const journal = options.forwardEncryptionKey
       ? yield* beginForwardJournal(stack, manifest, options.forwardEncryptionKey)
       : undefined;
@@ -162,6 +268,26 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
       for (const admit of prepared.admissions)
         yield* Effect.tryPromise({ try: admit, catch: (error) => error });
       yield* verifyNativeState(plan, stack.name, stack.stage);
+      yield* createDeclaredBuckets(
+        plan,
+        declaredBuckets,
+        { stack: stack.name, stage: stack.stage },
+        buckets,
+        options.candidate,
+        options.declared!,
+      );
+      yield* createDeclaredDatabases(
+        plan,
+        declaredDatabases,
+        { stack: stack.name, stage: stack.stage },
+        d1,
+        options.candidate,
+        options.declared!,
+      );
+      for (const fqn of declaredStorage.keys()) {
+        databaseFqns.add(fqn);
+        databaseChanges.add(fqn);
+      }
       const databasePlan = yield* Plan.make(stack, { include: ["PoolDatabase"] });
       if (
         Object.values(databasePlan.resources).some(
@@ -183,6 +309,7 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
       }
       yield* Apply.apply(databasePlan);
       yield* verifyNativeState(plan, stack.name, stack.stage, databaseChanges);
+      yield* prerequisites("before-activation");
     });
     yield* Effect.tryPromise({
       try: () =>
@@ -291,7 +418,10 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
       catch: (error) =>
         error instanceof BarrierRefusal ? error : new BarrierRefusal("release-operation-failed"),
     });
-    const finalizing = finishPlan(prepared, activated, databaseFqns, activatedContainers);
+    const finalizing = preserveDeclarationHistory(
+      finishPlan(prepared, activated, databaseFqns, activatedContainers),
+      { stack: stack.name, stage: stack.stage },
+    );
     const finished = yield* journal
       ? finalizing.pipe(Effect.provideService(State, Effect.succeed(journal.finalizingState)))
       : finalizing;
