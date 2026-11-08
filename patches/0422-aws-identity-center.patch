@@ -508,7 +508,7 @@ index 0000000..28e69a7
 +  });
 diff --git a/e2e/support/aws-identity-fixture.ts b/e2e/support/aws-identity-fixture.ts
 new file mode 100644
-index 0000000..cbd40ee
+index 0000000..e5f623f
 --- /dev/null
 +++ b/e2e/support/aws-identity-fixture.ts
 @@ -0,0 +1,555 @@
@@ -632,7 +632,7 @@ index 0000000..cbd40ee
 +        .slice(0, 12)
 +        .toUpperCase();
 +      credentials.set(roleKey(accountId, roleName), {
-+        accessKeyId: `ASIASYNTHETIC${digest}`,
++        accessKeyId: `synthetic-access-key-id-${digest}`,
 +        secretAccessKey: `synthetic-secret-${digest}`,
 +        sessionToken: `synthetic-session-${digest}`,
 +        expiration: Date.now() + 3_600_000,
@@ -1069,7 +1069,7 @@ index 0000000..cbd40ee
 +  });
 diff --git a/e2e/support/aws-identity-journey.ts b/e2e/support/aws-identity-journey.ts
 new file mode 100644
-index 0000000..ef83e76
+index 0000000..f7b25f8
 --- /dev/null
 +++ b/e2e/support/aws-identity-journey.ts
 @@ -0,0 +1,569 @@
@@ -1337,7 +1337,7 @@ index 0000000..ef83e76
 +      "secretAccessKey",
 +      "sessionToken",
 +      "sso:",
-+      "ASIASYNTHETIC",
++      "synthetic-access-key-id-",
 +    ])
 +      expect(serialized.includes(secret), `Public result exposed ${secret}`).toBe(false);
 +    expect(fixture.writes()).toHaveLength(0);
@@ -1886,7 +1886,7 @@ index 0000000..e8e18d6
 +});
 diff --git a/e2e/support/aws-signed-mcp.ts b/e2e/support/aws-signed-mcp.ts
 new file mode 100644
-index 0000000..fba5e55
+index 0000000..788ea2e
 --- /dev/null
 +++ b/e2e/support/aws-signed-mcp.ts
 @@ -0,0 +1,135 @@
@@ -1898,9 +1898,9 @@ index 0000000..fba5e55
 +import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 +
 +export const syntheticAws = {
-+  accessKeyId: "ASIASYNTHETICSTAGING",
-+  secretAccessKey: "synthetic-staging-secret-never-an-aws-credential",
-+  sessionToken: "synthetic-staging-session",
++  accessKeyId: "synthetic-access-key-id",
++  secretAccessKey: "synthetic-secret-access-key",
++  sessionToken: "synthetic-session-token",
 +};
 +const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 +const hmac = (key: string | Buffer, value: string) =>
