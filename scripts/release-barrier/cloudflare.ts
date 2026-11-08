@@ -5,7 +5,11 @@ import { BarrierRefusal, type FrozenWorker } from "./manifest.ts";
 import { uploadRequest } from "./version-request.ts";
 
 export const readBaseline = (worker: Pick<FrozenWorker, "accountId" | "scriptName">) =>
-  Workers.listScriptDeployments(worker).pipe(
+  // The SDK serializes excess properties as a body, including on GET. Callers pass upload and frozen objects.
+  Workers.listScriptDeployments({
+    accountId: worker.accountId,
+    scriptName: worker.scriptName,
+  }).pipe(
     Effect.map((response) => {
       const deployments = response.deployments;
       if (

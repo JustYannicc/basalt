@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { test } from "node:test";
 import { selectPaths } from "./ci/affected.ts";
 import { heavyJobs } from "./ci/areas.ts";
-import { gateErrors, fastJobs, bundleJobs } from "./ci/gate.ts";
+import { gateErrors, fastJobs, bundleJobs, conditionalJobs } from "./ci/gate.ts";
 import { patternForGroup, readDeclarations } from "./ci/declarations.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
@@ -124,9 +124,11 @@ test("account selection and the full aggregate require both Google halves", () =
     assert.ok(selected.includes(id));
     assert.ok(workflow.jobs.check.needs.includes(id));
     const needs = Object.fromEntries(
-      [...fastJobs, ...heavyJobs, ...bundleJobs].map((job) => [
+      [...fastJobs, ...heavyJobs, ...bundleJobs, ...conditionalJobs].map((job) => [
         job,
-        { result: bundleJobs.includes(job) ? "skipped" : "success" },
+        {
+          result: bundleJobs.includes(job) || conditionalJobs.includes(job) ? "skipped" : "success",
+        },
       ]),
     );
     assert.deepEqual(gateErrors(needs, heavyJobs, [], true), []);
