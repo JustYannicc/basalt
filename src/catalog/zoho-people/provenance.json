@@ -1330,14 +1330,10 @@
       "documentationSha256": "194f905f34979078c54214ccc746519e5b57bdc800678c722093807902d369c6"
     }
   ],
-  "sourceSha256": "e5a3b2e133da6161c04f33e1111ec0297b1fc94d54820dad12382d69c8bdf1a5",
+  "sourceSha256": "affcb345d058c6d74c331e1ad56debe4cc29de5c47db3b69749783828c7ffe5e",
   "mcp": {
     "documentation": "https://help.zoho.com/portal/en/kb/mcp/implementation-guide/articles/zoho-mcp-implementation-guide",
-    "hosts": [
-      "mcp.zoho.eu",
-      "mcp.zoho.com",
-      "mcp.zoho.in"
-    ],
+    "hosts": ["mcp.zoho.eu", "mcp.zoho.com", "mcp.zoho.in"],
     "coverage": "Only tools enabled on the connected server are discovered; no REST equivalence is claimed."
   }
 }

@@ -19,7 +19,7 @@
     },
     {
       "path": "package.json",
-      "content": "{\n  \"name\": \"@executor.sh/gitlab\",\n  \"description\": \"Projects, merge requests, issues, pipelines, repositories, groups, users and the rest of the GitLab REST API.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"executor\": {\n    \"title\": \"GitLab\"\n  },\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.11\",\n    \"@modelcontextprotocol/sdk\": \"1.32.1\"\n  }\n}\n"
+      "content": "{\n  \"name\": \"@executor.sh/gitlab\",\n  \"description\": \"Projects, merge requests, issues, pipelines, repositories, groups, users and the rest of the GitLab REST API.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"executor\": {\n    \"title\": \"GitLab\"\n  },\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.12\",\n    \"@modelcontextprotocol/sdk\": \"1.32.1\"\n  }\n}\n"
     },
     {
       "path": "mcp.ts",

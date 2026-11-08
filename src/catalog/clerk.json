@@ -19,7 +19,7 @@
     },
     {
       "path": "package.json",
-      "content": "{\n  \"name\": \"@executor.sh/clerk\",\n  \"description\": \"Manage Clerk users, organizations, sessions, invitations, domains, JWT templates and instance settings through the Backend API.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.11\",\n    \"@modelcontextprotocol/sdk\": \"1.32.1\"\n  },\n  \"executor\": {\n    \"title\": \"Clerk\"\n  }\n}\n"
+      "content": "{\n  \"name\": \"@executor.sh/clerk\",\n  \"description\": \"Manage Clerk users, organizations, sessions, invitations, domains, JWT templates and instance settings through the Backend API.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.12\",\n    \"@modelcontextprotocol/sdk\": \"1.32.1\"\n  },\n  \"executor\": {\n    \"title\": \"Clerk\"\n  }\n}\n"
     },
     {
       "path": "mcp.ts",

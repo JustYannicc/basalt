@@ -52,18 +52,6 @@
          { signal },
        ),
        {
---- a/package.json
-+++ b/package.json
-@@ -4,7 +4,8 @@
-   "private": true,
-   "type": "module",
-   "dependencies": {
--    "apps": "0.0.1-beta.100"
-+    "apps": "0.0.1-beta.104-basalt.11",
-+    "@modelcontextprotocol/sdk": "1.32.1"
-   },
-   "executor": {
-     "title": "ElevenLabs"
 --- /dev/null
 +++ b/mcp.ts
 @@ -0,0 +1,26 @@
@@ -93,3 +81,15 @@
 +    // Generating audio can spend credits even when a tool is not destructive.
 +    (tool) => (tool.kind === "query" ? undefined : always()),
 +  );
+--- a/package.json
++++ b/package.json
+@@ -4,7 +4,8 @@
+   "private": true,
+   "type": "module",
+   "dependencies": {
+-    "apps": "0.0.1-beta.100"
++    "apps": "0.0.1-beta.104-basalt.12",
++    "@modelcontextprotocol/sdk": "1.32.1"
+   },
+   "executor": {
+     "title": "ElevenLabs"

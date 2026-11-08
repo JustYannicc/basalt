@@ -227,64 +227,7 @@ model {
 
     poolRuntime = module "Pool runtime" {
       #basalt #v1 #deep
-      description """
-        Uses the released node WebSocket session pinning for Home-owned model catalogs.
-        Continuations on the same socket retain Home authority without a node-local model registration.
-        Metadata-only usage keeps the captured client identity until projection produces its fingerprint,
-        so Home can attribute records and charges without retaining credentials in the reporter or queue.
-        The image build verifies this through the actual Responses handler before plugin probes.
-        Projects application logs before the node formats or queues them and independently before
-        control-plane ingestion prints or stores them. Keeps a fixed count line, closed severity,
-        timestamp and validated generated request ID. Container log collection is enabled in the
-        stack. The supervisor forwards closed numeric maintenance signals during normal operation.
-        Pool admission does not depend on having an API-equivalent model price. The supervisor
-        detects Home billing support and sets allow_unpriced_models before readiness, requiring
-        persisted readback. Only the known legacy billing shape can omit that capability.
-        Home release updates require the same explicit policy; missing prices remain unknown,
-        never synthetic zero-price rules.
-        Unexpected process exits emit POOL_CHILD_EXIT with a closed home, node or home_import
-        child name, bounded numeric exit status and failure category before cleanup. Home exits also
-        attach at most eight Home-formatted error, fatal or panic records from stdout or stderr,
-        captured before startup-error projection. The producer formatter escapes embedded CR/LF
-        after interpolating messages and fields and appends one physical line delimiter. Embedded
-        headers remain in the original slot and are never parsed as additional records. Each record
-        matches at most one fixed pinned Home template. Whole dynamic error slots become one of
-        eleven priority-ordered labels; listen addresses become a constant. Unmatched records keep
-        only the level and unrecognized. The coordinator accepts at most about 4 bits per record,
-        8 records. Each record is at most 512 bytes; unformatted and oversized lines are omitted.
-        Dynamic details and text suppressed inside the runtime remain unavailable.
-        A runtime Home exit 1 permits two replacement generations per supervisor lifetime,
-        with 1-second then 5-second backoff and one 180-second deadline per recovery episode.
-        Replacement rotates boot identity and requires fresh policy and service health.
-        Exhaustion emits a closed recovery record and the normal runtime failure before exit 1.
-        A known startup exit retains exactly one closed receipt if its bounded reader drain
-        fails or exhausts the operation deadline. The drain failure stays terminal; it cannot
-        authorize another launch or publish readiness.
-        A runtime Home exit 1 permits two replacement generations per supervisor lifetime,
-        with 1-second then 5-second backoff and one 180-second deadline per recovery episode.
-        Replacement rotates boot identity and requires fresh policy and service health.
-        Recovery management reads reject EOF before the declared body length is consumed,
-        even when the partial body is valid JSON or empty; deadline checks still apply.
-        Exhaustion emits a closed recovery record and the normal runtime failure before exit 1.
-        It emits one `POOL_STARTUP_PHASE` record per measured phase with the exact fields
-        `phase`, `start_ms`, `end_ms`, and `duration_ms`. The phase enum is `home_boot`,
-        `bootstrap_import`, `config_apply`, `node_launch`, and `initial_health`. The integer
-        offsets are bounded to 24 hours from supervisor `main()` entry and use a monotonic clock;
-        duration equals end minus start. Supervisor failures, readiness HTTP errors and uncaught
-        exceptions still emit numeric categories on stderr, without exception text, class names,
-        tracebacks or client addresses.
-        `home_boot` measures each Home launch through the supervisor's readiness wait. An empty
-        database config ends the first wait early; the supervisor emits `bootstrap_import` and a
-        second `home_boot`. The wait includes Home initialization before its readiness response.
-        `bootstrap_import` appears only for an empty database config.
-        `config_apply` covers the fixed pool config patch. `node_launch` covers Home node-token
-        creation and node process launch. `initial_health` waits for Home and node health, including node initialization and mTLS
-        certificate enrollment after launch. Those parts are not timed separately.
-        Image pull precedes the supervisor and is not measured. Home migration, privacy-guard and
-        historical-purge timing is not emitted separately.
-        Historical cleanup starts alongside Home listener handling in bounded
-        transactions, independently of pool readiness, and does not gate readiness on its completion.
-      """
+      description """         Uses the released node WebSocket session pinning for Home-owned model catalogs.         Continuations on the same socket retain Home authority without a node-local model registration.         Metadata-only usage keeps the captured client identity until projection produces its fingerprint,         so Home can attribute records and charges without retaining credentials in the reporter or queue.         The image build verifies this through the actual Responses handler before plugin probes.         Projects application logs before the node formats or queues them and independently before         control-plane ingestion prints or stores them. Keeps a fixed count line, closed severity,         timestamp and validated generated request ID. Container log collection is enabled in the         stack. The supervisor forwards closed numeric maintenance signals during normal operation.         Pool admission does not depend on having an API-equivalent model price. The supervisor         detects Home billing support and sets allow_unpriced_models before readiness, requiring         persisted readback. Only the known legacy billing shape can omit that capability.         Home release updates require the same explicit policy; missing prices remain unknown,         never synthetic zero-price rules.         Unexpected process exits emit POOL_CHILD_EXIT with a closed home, node or home_import         child name, bounded numeric exit status and failure category before cleanup. Home exits also         attach at most eight Home-formatted error, fatal or panic records from stdout or stderr,         captured before startup-error projection. The producer formatter escapes embedded CR/LF         after interpolating messages and fields and appends one physical line delimiter. Embedded         headers remain in the original slot and are never parsed as additional records. Each record         matches at most one fixed pinned Home template. Whole dynamic error slots become one of         eleven priority-ordered labels; listen addresses become a constant. Unmatched records keep         only the level and unrecognized. The coordinator accepts at most about 4 bits per record,         8 records. Each record is at most 512 bytes; unformatted and oversized lines are omitted.         Dynamic details and text suppressed inside the runtime remain unavailable.         A runtime Home exit 1 permits two replacement generations per supervisor lifetime,         with 1-second then 5-second backoff and one 180-second deadline per recovery episode.         Replacement rotates boot identity and requires fresh policy and service health.         Exhaustion emits a closed recovery record and the normal runtime failure before exit 1.         A known startup exit retains exactly one closed receipt if its bounded reader drain         fails or exhausts the operation deadline. The drain failure stays terminal; it cannot         authorize another launch or publish readiness.         A runtime Home exit 1 permits two replacement generations per supervisor lifetime,         with 1-second then 5-second backoff and one 180-second deadline per recovery episode.         Replacement rotates boot identity and requires fresh policy and service health.         Recovery management reads reject EOF before the declared body length is consumed,         even when the partial body is valid JSON or empty; deadline checks still apply.         Exhaustion emits a closed recovery record and the normal runtime failure before exit 1.         It emits one `POOL_STARTUP_PHASE` record per measured phase with the exact fields         `phase`, `start_ms`, `end_ms`, and `duration_ms`. The phase enum is `home_boot`,         `bootstrap_import`, `config_apply`, `node_launch`, and `initial_health`. The integer         offsets are bounded to 24 hours from supervisor `main()` entry and use a monotonic clock;         duration equals end minus start. Supervisor failures, readiness HTTP errors and uncaught         exceptions still emit numeric categories on stderr, without exception text, class names,         tracebacks or client addresses.         `home_boot` measures each Home launch through the supervisor's readiness wait. An empty         database config ends the first wait early; the supervisor emits `bootstrap_import` and a         second `home_boot`. The wait includes Home initialization before its readiness response.         `bootstrap_import` appears only for an empty database config.         `config_apply` covers the fixed pool config patch. `node_launch` covers Home node-token         creation and node process launch. `initial_health` waits for Home and node health, including node initialization and mTLS         certificate enrollment after launch. Those parts are not timed separately.         Image pull precedes the supervisor and is not measured. Home migration, privacy-guard and         historical-purge timing is not emitted separately.         Historical cleanup starts alongside Home listener handling in bounded         transactions, independently of pool readiness, and does not gate readiness on its completion.       """
       metadata {
         code "containers/pool"
         libraries "socket|http.client"
@@ -300,40 +243,7 @@ model {
 
     poolDatabase = store "Pool database" {
       #basalt #v1
-      description """
-        Model request history lives in 16 fixed hash partitions with source-scoped Home usage IDs;
-        HTTP request traces are correlation metadata and may span several attempts.
-        Explicit metadata projections retain tokens, timing, status, attribution and immutable price
-        provenance forever. Row and statement triggers refuse UPDATE, DELETE and TRUNCATE. No history
-        table has cascading foreign keys or a retention deadline. Operator commands install the
-        additive schema and approve a count-only historical backfill separately. Activation and capture
-        wait for Home's existing privacy history migration before freezing legacy attribution.
-        Billing snapshots retain matched rule and requested/response/effective tier provenance.
-        A named private operator entrypoint returns bounded catalog and count-only plans using
-        the Worker's database connection. Schema writes require explicit GO and matching hashes;
-        remote invocation retains a target-bound private plan and started receipt. The operator accepts only
-        known v1 and v2 manifests, prints pending DDL and migration markers before apply, and refuses
-        changed statement previews. It refreshes the catalog for both versions before applying and refuses when
-        the current hash or pending statements differ from the approved plan. Capture defaults
-        off; production enables it after approved schema and backfill activation. Capture cannot
-        create its own activation cursor. Forward, historical and repeating sweep
-        cursors commit with their request rows. Each sweep freezes its upper bound so sustained
-        arrivals cannot prevent revisiting late commits. Missing model metadata remains unknown;
-        Home charges round half up to twelve decimal places without rejecting extra precision.
-        The import endpoint accepts paginated Home JSONL, Manager Plus metadata JSONL or legacy per-request snapshots, defaults
-        to a read-only dry run and requires a signed matching approval before inserting a batch.
-        It stores neither exports nor prompts, raw keys, human labels or error text. Aggregate-only
-        history stays explicitly unimportable. Historical API prices need a model/provider mapping
-        and dated rates; only validated complete token breakdowns can receive a calculated price.
-        Local Home imports explicitly bind to the local source and resolve its exact usage IDs and
-        attribution before signed approval, deduplicating against capture in either order.
-        Manager Plus event hashes retain a stable source-scoped identity independent of source row IDs. Its absent authoritative billing and unproved token semantics stay unpriced and legacy. External imports reject changed retained contents even across concurrent inserts; local Home imports retain their canonical attribution resolution. Remote usage IDs stay source-scoped; display-only HTTP codes never fill unknown status. Remote exports use fixed
-        read-only Home routes with offset pagination, never a consumable usage queue.
-        Guards diagnostic usage and application-log inserts and updates from older writers.
-        Application-log cleanup extends the existing privacy journal, including completed usage
-        cleanups, with an indexed upper bound and atomic cursor/count commits for at most 100 rows. Its separate
-        processed-log count preserves the original usage audit receipt across retries and restarts.
-      """
+      description """         Model request history lives in 16 fixed hash partitions with source-scoped Home usage IDs;         HTTP request traces are correlation metadata and may span several attempts.         Explicit metadata projections retain tokens, timing, status, attribution and immutable price         provenance forever. Row and statement triggers refuse UPDATE, DELETE and TRUNCATE. No history         table has cascading foreign keys or a retention deadline. Operator commands install the         additive schema and approve a count-only historical backfill separately. Activation and capture         wait for Home's existing privacy history migration before freezing legacy attribution.         Billing snapshots retain matched rule and requested/response/effective tier provenance.         A named private operator entrypoint returns bounded catalog and count-only plans using         the Worker's database connection. Schema writes require explicit GO and matching hashes;         remote invocation retains a target-bound private plan and started receipt. The operator accepts only         known v1 and v2 manifests, prints pending DDL and migration markers before apply, and refuses         changed statement previews. It refreshes the catalog for both versions before applying and refuses when         the current hash or pending statements differ from the approved plan. Capture defaults         off; production enables it after approved schema and backfill activation. Capture cannot         create its own activation cursor. Forward, historical and repeating sweep         cursors commit with their request rows. Each sweep freezes its upper bound so sustained         arrivals cannot prevent revisiting late commits. Missing model metadata remains unknown;         Home charges round half up to twelve decimal places without rejecting extra precision.         The import endpoint accepts paginated Home JSONL, Manager Plus metadata JSONL or legacy per-request snapshots, defaults         to a read-only dry run and requires a signed matching approval before inserting a batch.         It stores neither exports nor prompts, raw keys, human labels or error text. Aggregate-only         history stays explicitly unimportable. Historical API prices need a model/provider mapping         and dated rates; only validated complete token breakdowns can receive a calculated price.         Local Home imports explicitly bind to the local source and resolve its exact usage IDs and         attribution before signed approval, deduplicating against capture in either order.         Manager Plus event hashes retain a stable source-scoped identity independent of source row IDs. Its absent authoritative billing and unproved token semantics stay unpriced and legacy. External imports reject changed retained contents even across concurrent inserts; local Home imports retain their canonical attribution resolution. Remote usage IDs stay source-scoped; display-only HTTP codes never fill unknown status. Remote exports use fixed         read-only Home routes with offset pagination, never a consumable usage queue.         Guards diagnostic usage and application-log inserts and updates from older writers.         Application-log cleanup extends the existing privacy journal, including completed usage         cleanups, with an indexed upper bound and atomic cursor/count commits for at most 100 rows. Its separate         processed-log count preserves the original usage audit receipt across retries and restarts.       """
       metadata { database "basalt_pool"; region "eu-central" }
     }
 
