@@ -14,6 +14,7 @@ const account = {
   provider: { name: "Metadata fixture", auth: {} },
   method: "oauth",
   generation: 7,
+  mcpEndpoint: "https://mcp.example.test/server",
   oauthScopes: ["read", "write"],
   fields: { access_token: "exsec2.fixture", scope: "exsec2.scope" },
 };
@@ -22,19 +23,26 @@ const input = Schema.decodeUnknownSync(HostInvocation)({
   accounts: { app: { one: account, many: [account] }, user: { one: account, many: [account] } },
 });
 
-test("retained protocol 35 receives no OAuth metadata in single or many slots in either scope", async () => {
-  const adapter = await Effect.runPromise(appProtocol(35));
-  const encoded = adapter.invocation(input);
-  assert.equal(encoded.includes('"oauthScopes"'), false);
-  const decoded = JSON.parse(encoded);
-  assert.equal(decoded.accounts.app.one.fields.scope, "exsec2.scope");
-  assert.equal(decoded.accounts.user.many[0].generation, 7);
+test("retained protocols omit OAuth metadata while protocol 36 keeps its MCP endpoint", async () => {
+  for (const version of [35, 36]) {
+    const adapter = await Effect.runPromise(appProtocol(version));
+    const encoded = adapter.invocation(input);
+    assert.equal(encoded.includes('"oauthScopes"'), false);
+    const decoded = JSON.parse(encoded);
+    assert.equal(decoded.accounts.app.one.fields.scope, "exsec2.scope");
+    assert.equal(decoded.accounts.user.many[0].generation, 7);
+    assert.equal(
+      decoded.accounts.app.one.mcpEndpoint,
+      version === 36 ? account.mcpEndpoint : undefined,
+    );
+  }
 });
 
-test("the current protocol keeps host-recorded metadata without changing credential handles", async () => {
+test("the metadata protocol keeps grant metadata and MCP endpoints without changing credential handles", async () => {
   const adapter = await Effect.runPromise(appProtocol(oauthScopesProtocol));
   const decoded = JSON.parse(adapter.invocation(input));
   assert.deepEqual(decoded.accounts.app.one.oauthScopes, ["read", "write"]);
+  assert.equal(decoded.accounts.app.one.mcpEndpoint, account.mcpEndpoint);
   assert.equal(decoded.accounts.app.one.fields.access_token, "exsec2.fixture");
   assert.deepEqual(input.accounts.app.one, account);
 });
@@ -52,7 +60,7 @@ test("workflow steps strip metadata only for retained consumers", async () => {
     resolve: () => Effect.succeed({ accounts: Redacted.make(input.accounts) }),
     invoke: () => Effect.succeed(null),
   };
-  for (const version of [35, oauthScopesProtocol]) {
+  for (const version of [35, 36, oauthScopesProtocol]) {
     const adapter = await Effect.runPromise(appProtocol(version));
     const context = await Effect.runPromise(adapter.workflow(execution).resolve());
     assert.equal(
