@@ -194,7 +194,7 @@ model {
     technology "Official Bun npm packages and Node distributions"
     metadata { hosts "registry.npmjs.org|nodejs.org" }
   }
-  basalt.build -[sync]-> toolchainPackages "restore versioned Bun archives and checksum-pinned Node distributions without consulting GitHub manifests"
+  basalt.build -[sync]-> toolchainPackages "restore versioned Bun archives and checksum-pinned Node distributions without remote manifest lookups"
   releaseMirror = adapter "Release mirror" {
     #external
     technology "npm mirror"
