@@ -18,7 +18,13 @@ for (const mode of ["release-state-v7", "release-state-v8", "forward-state-v7"] 
       (result.stateRequests as { method: string }[]).every((request) => request.method === "GET"),
     );
     if (mode !== "release-state-v8") {
-      assert.ok("failure" in result && "logs" in result && "summary" in result);
+      assert.ok(
+        "failure" in result &&
+          "logs" in result &&
+          "summary" in result &&
+          "reason" in result &&
+          "delta" in result,
+      );
       const expected = {
         phase: mode === "forward-state-v7" ? "forward-probe" : "release",
         expected: 8,
@@ -42,8 +48,8 @@ for (const mode of ["release-state-v7", "release-state-v8", "forward-state-v7"] 
         {
           ok: result.ok,
           enteredState: result.enteredState,
-          reason: (result as { reason: unknown }).reason,
-          delta: (result as { delta: unknown }).delta,
+          reason: result.reason,
+          delta: result.delta,
           stateRequests: result.stateRequests,
         },
         {
