@@ -20,6 +20,7 @@ type CandidateProof =
   | "entry-ready"
   | "entry-missing-attempt"
   | "entry-inventory-refusals"
+  | "forward-state-v7"
   | "release-state-v7"
   | "release-state-v8"
   | "retirement-ready"

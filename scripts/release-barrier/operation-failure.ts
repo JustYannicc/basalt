@@ -87,6 +87,7 @@ export class ReleaseOperationFailure extends BarrierRefusal {
       refusal?.worker ?? resource,
       refusal?.delta,
       refusal?.refusals,
+      refusal?.stateStore,
     );
     this.operation = operation;
     this.provider = refusal ? undefined : safeProviderFailure(error);

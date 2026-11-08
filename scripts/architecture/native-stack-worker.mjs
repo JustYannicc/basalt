@@ -82,12 +82,16 @@ try {
       candidateProof === "ready" ||
       candidateProof.startsWith("retirement-") ||
       candidateProof.startsWith("release-state-") ||
+      candidateProof.startsWith("forward-state-") ||
       candidateProof.startsWith("entry-")
     ) {
       const { randomUUID } = await import("node:crypto");
       process.env.BASALT_RELEASE_ATTEMPT = randomUUID();
     }
-    if (candidateProof.startsWith("release-state-")) {
+    if (
+      candidateProof.startsWith("release-state-") ||
+      candidateProof.startsWith("forward-state-")
+    ) {
       const { releaseStateProof } = await import("../release-barrier/test/release-state-proof.mjs");
       emit(JSON.stringify(await releaseStateProof(settings, http, candidateProof)));
       process.exit(0);
