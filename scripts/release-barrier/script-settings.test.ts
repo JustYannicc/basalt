@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { preparedUpload } from "./fixture.ts";
 import { freezeUpload } from "./version-request.ts";
-import * as Workers from "@distilled.cloud/cloudflare/workers";
-import { Schema } from "effect";
+import { Effect } from "effect";
+import { HttpClient, HttpClientResponse } from "effect/http";
+import { Credentials, apiTokenCredentials } from "@distilled.cloud/cloudflare/Credentials";
+import { readScriptSettings } from "./cloudflare.ts";
 import { discoverScriptSettings } from "../architecture/native-stack.ts";
 
 // Script settings return numeric target IDs; the exact active version resolves their meaning.
@@ -23,22 +25,36 @@ test("freezes Api placement from the live numeric settings shape and exact activ
     redactQueryString: true,
     logs: { enabled: true, invocationLogs: true, persist: true },
   };
-  input.previousSettings = Schema.decodeUnknownSync(
-    Workers.GetScriptScriptAndVersionSettingResponse,
-  )({
+  const live = {
     ...input.previousSettings,
     placement: { mode: "targeted", target: [39] },
     limits: { subrequests: 50_000 },
     observability: {
       enabled: true,
-      headSamplingRate: 1,
-      redactQueryString: true,
-      logs: { enabled: true, headSamplingRate: 1, persist: true, invocationLogs: true },
-      traces: { enabled: false, persist: true, headSamplingRate: 1 },
+      head_sampling_rate: 1,
+      redact_query_string: true,
+      logs: { enabled: true, head_sampling_rate: 1, persist: true, invocation_logs: true },
+      traces: { enabled: false, persist: true, head_sampling_rate: 1 },
     },
     logpush: false,
-    tailConsumers: [],
-  });
+    tail_consumers: [],
+  };
+  input.previousSettings = await Effect.runPromise(
+    readScriptSettings(input.request).pipe(
+      Effect.provideService(
+        HttpClient.HttpClient,
+        HttpClient.make((request) =>
+          Effect.succeed(
+            HttpClientResponse.fromWeb(request, Response.json({ success: true, result: live })),
+          ),
+        ),
+      ),
+      Effect.provideService(
+        Credentials,
+        Effect.succeed(apiTokenCredentials({ apiToken: "synthetic" })),
+      ),
+    ),
+  );
   const baseline = [{ versionId: "active", percentage: 100 }];
   await assert.doesNotReject(() =>
     freezeUpload(input, baseline, [
