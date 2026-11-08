@@ -2,9 +2,7 @@
   "scenarios": {
     "toolAvailabilityAgent": {
       "fixtures": "actors",
-      "managementApps": [
-        "owner"
-      ],
+      "managementApps": ["owner"],
       "title": "agents manage generic app tool availability through approval and hidden tools stay out of discovery and calls",
       "targets": {
         "self-host": {
@@ -39,13 +37,8 @@
     }
   },
   "runs": {
-    "toolAvailabilityAgent": [
-      "declared:self-host",
-      "declared:cloud"
-    ],
-    "toolAvailabilityUpgrade": [
-      "declared:self-host"
-    ]
+    "toolAvailabilityAgent": ["declared:self-host", "declared:cloud"],
+    "toolAvailabilityUpgrade": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/contracts/api.ts",
@@ -59,17 +52,22 @@
     ".upstream/apps/hosted/server/src/implementation/mcp.ts",
     ".upstream/apps/hosted/server/src/implementation/migrations.ts",
     ".upstream/apps/hosted/server/src/implementation/resource-lifecycle.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-policy.ts",
     ".upstream/apps/hosted/server/src/implementation/tool-availability-handlers.ts",
+    ".upstream/apps/hosted/server/src/implementation/tool-availability-read.ts",
     ".upstream/apps/hosted/server/src/implementation/tool-availability-store.ts",
     ".upstream/apps/hosted/server/src/implementation/tool-availability.ts",
     ".upstream/apps/hosted/server/src/implementation/tool-policy-evaluation.ts",
     ".upstream/apps/hosted/server/src/implementation/tools.ts",
     ".upstream/e2e/support/app-package.ts",
+    ".upstream/e2e/support/profile-removal-rollback.ts",
     ".upstream/e2e/support/tool-availability-fixture.ts",
     ".upstream/e2e/support/tool-availability-pages.ts",
     ".upstream/e2e/support/tool-availability-recovery.ts",
     ".upstream/e2e/support/tool-availability-retained.ts",
+    ".upstream/e2e/tests/grouped-accounts.spec.ts",
     ".upstream/e2e/tests/import-approvals.spec.ts",
+    ".upstream/e2e/tests/provider-errors.spec.ts",
     ".upstream/e2e/tests/tool-availability.spec.ts",
     ".upstream/e2e/tests/workflow-dependency-tool-policy.spec.ts",
     ".upstream/packages/mcp-auth/src/implementation/backend.ts",
