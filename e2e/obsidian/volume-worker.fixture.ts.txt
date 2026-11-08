@@ -1,0 +1,49 @@
+/// <reference types="@cloudflare/workers-types" />
+import { DurableObject } from "cloudflare:workers";
+import { Schema } from "effect";
+import { openVault } from "../../src/drive/vault.ts";
+import { DriveListInput, DriveReadInput, DriveSearchInput, DriveHistoryInput, DriveWriteInput, DriveMoveInput, DriveRestoreInput } from "../../.upstream/packages/apps/src/contracts/drive.ts";
+
+interface Environment { OBJECTS: R2Bucket; VAULTS: DurableObjectNamespace }
+const batch = Schema.Struct({ base: Schema.String, operation: Schema.String, edits: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.NullOr(Schema.String) })) });
+export class VolumeVault extends DurableObject<Environment> {
+  private ready;
+  constructor(ctx: DurableObjectState, env: Environment) {
+    super(ctx, env);
+    this.ready = ctx.blockConcurrencyWhile(() => this.open());
+  }
+  private open() {
+    return openVault({ storage: this.ctx.storage, accountStorage: this.ctx.storage, bucket: this.env.OBJECTS, prefix: "volume/", cacheBytes: 2 * 1024 * 1024, now: () => Date.UTC(2026, 10, 7), limits: { classA: 20_000, classB: 1_000_000 } });
+  }
+  override async fetch(request: Request) {
+    try {
+      const vault = await this.ready, method = new URL(request.url).pathname.slice(1);
+      if (method === "initialize") return Response.json({ root: vault.root });
+      if (method === "status") return Response.json(await vault.status());
+      if (method === "clear") { await vault.clearCaches(); return Response.json({ ok: true }); }
+      if (method === "rebuild") {
+        await vault.clearCaches();
+        // Fault injection destroys only the test's reconstructible drive index and author cache.
+        for (const table of ["drive_objects", "drive_packs", "drive_refs", "drive_receipts", "drive_journal", "drive_identity", "vault_authors", "vault_tree_usage"])
+          this.ctx.storage.sql.exec(`DROP TABLE IF EXISTS ${table}`);
+        this.ready = this.open();
+        return Response.json({ root: (await this.ready).root });
+      }
+      const actions: Record<string, (body: unknown) => Promise<unknown>> = {
+        apply: body => vault.service.apply(Schema.decodeUnknownSync(batch)(body)),
+        list: body => vault.service.list(Schema.decodeUnknownSync(DriveListInput)(body)),
+        read: body => vault.service.read(Schema.decodeUnknownSync(DriveReadInput)(body)),
+        search: body => vault.service.search(Schema.decodeUnknownSync(DriveSearchInput)(body)),
+        history: body => vault.service.history(Schema.decodeUnknownSync(DriveHistoryInput)(body)),
+        write: body => vault.service.write(Schema.decodeUnknownSync(DriveWriteInput)(body)),
+        move: body => vault.service.move(Schema.decodeUnknownSync(DriveMoveInput)(body)),
+        restore: body => vault.service.restore(Schema.decodeUnknownSync(DriveRestoreInput)(body)),
+      };
+      const action = actions[method];
+      if (!action) return new Response("Unknown test route", { status: 404 });
+      const input: unknown = await request.json();
+      return Response.json(await action(input));
+    } catch (error) { return Response.json({ error: String(error) }, { status: 500 }); }
+  }
+}
+export default { fetch(request: Request, env: Environment) { return env.VAULTS.get(env.VAULTS.idFromName("volume")).fetch(request); } };

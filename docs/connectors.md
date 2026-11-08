@@ -80,7 +80,9 @@ Create a Slack app named Signalbox from [its registration manifest](../src/catal
 
 ElevenLabs uses the existing official catalog app with each person's own API key. Enter it through the secure native connection form; no hosted OAuth app or deployment secret is needed. The key must permit `GET https://api.elevenlabs.io/v1/user` for its health check and any selected tools. Keys can have endpoint restrictions and expiry. The app uses `api.elevenlabs.io`; regional residency hosts are not supported by this catalog version. This source integration does not establish a live call from a local agent.
 
-AWS uses each person's access key ID and secret access key. Temporary credentials also need their session token. Select a supported commercial AWS region in the secure connection form. One-click OAuth is unavailable for this Signalbox connection. The app reads STS caller identity and lists general-purpose S3 bucket names and creation dates in the configured region. STS identity does not require an IAM permission; listing buckets requires `s3:ListAllMyBuckets` on `Resource: "*"`. GovCloud, China and other AWS partitions are unsupported. The catalog source and its helper mocks do not establish native authorization or a live AWS account call.
+AWS IAM Identity Center connects through your company's AWS access portal URL and its Identity Center region. Continue through AWS and your normal company sign-in, including Okta when configured. The AWS page lists your assigned accounts and roles. Each task chooses its account and role; a saved default is optional and can be cleared. Scripts and presigned URLs require approval of the exact target and arguments. Production marks follow account IDs when names change. Refresh accounts updates assignments, and re-sign-in keeps the saved connection, its name, links and choices. Cancelling re-sign-in keeps the previous session.
+
+Existing AWS OAuth connections and their tools remain available separately. To add one, finish AWS sign-in and paste the full address from its localhost page into the connection form. No desktop listener is needed. The app does not accept manually entered access keys. Company permissions and policies still decide what either sign-in can access.
 
 Zendesk stays available in the catalog without hosted credentials. Each account selects its own Zendesk site during connection. The native connection binds that site to OAuth authorization, callback, saved grant, refresh, health and API requests. Tool input and catalog query parameters cannot choose or change it. The app keeps current-user and ticket shortcuts and serves the operations from Zendesk's official Support API v2 OpenAPI document. It requests `read` and `write`, bounded by the signed-in person's normal Zendesk permissions. Reads run without approval; every imported mutation and the `createTicket` shortcut require approval. Zendesk still checks each user's role and plan permissions. The catalog and app use the Z mark from Zendesk's primary logo.
 
@@ -102,12 +104,12 @@ The optional global Zendesk client uses `EXECUTOR_OAUTH_ZENDESK_CLIENT_ID` and `
 
 After approval, [claim the global client and associate it with the app listing](https://developer.zendesk.com/documentation/apps/app-developer-guide/managing-global-oauth-clients-and-app-associations/). Supply these values through GitHub Actions before deploying:
 
-| Setting | Store | Destination |
-| --- | --- | --- |
-| `EXECUTOR_OAUTH_ZENDESK_CLIENT_ID` | Secret containing the approved global identifier | Tools API Worker secret binding |
-| `EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET` | Secret | Tools API Worker secret binding |
-| `ZENDESK_MARKETPLACE_ORGANIZATION_ID` | Variable containing the assigned publisher organization ID | Catalog Worker binding |
-| `ZENDESK_MARKETPLACE_APP_ID` | Variable containing the assigned app ID | Catalog Worker binding |
+| Setting                                | Store                                                      | Destination                     |
+| -------------------------------------- | ---------------------------------------------------------- | ------------------------------- |
+| `EXECUTOR_OAUTH_ZENDESK_CLIENT_ID`     | Secret containing the approved global identifier           | Tools API Worker secret binding |
+| `EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET` | Secret                                                     | Tools API Worker secret binding |
+| `ZENDESK_MARKETPLACE_ORGANIZATION_ID`  | Variable containing the assigned publisher organization ID | Catalog Worker binding          |
+| `ZENDESK_MARKETPLACE_APP_ID`           | Variable containing the assigned app ID                    | Catalog Worker binding          |
 
 The catalog adds the assigned IDs and product name to [Marketplace request headers](https://developer.zendesk.com/documentation/marketplace/building-a-marketplace-app/request-header-requirements-for-marketplace-apps/), including health checks. Both IDs must be present or both absent. No placeholder IDs are sent, and neither ID selects a customer's site. The former `EXECUTOR_ZENDESK_SUBDOMAIN` setting is ignored and not forwarded.
 
@@ -139,4 +141,6 @@ The catalog no longer lists the separate **GitLab MCP** app; MCP sign-in is part
 
 ## PlanetScale
 
-Hosted sign-in uses an optional organization-owned [PlanetScale OAuth app](https://planetscale.com/docs/api/reference/oauth). Register the deployed OAuth callback and the catalog app’s 28 scopes. Supply `EXECUTOR_OAUTH_PLANETSCALE_CLIENT_ID` and `EXECUTOR_OAUTH_PLANETSCALE_CLIENT_SECRET` through deployment secrets. Incomplete pairs are omitted. Manual OAuth and service tokens remain available. This setup does not use dynamic client registration.
+PlanetScale uses the [carried app](../src/catalog/planetscale.json). New hosted sign-in uses an optional organization-owned [PlanetScale OAuth app](https://planetscale.com/docs/api/reference/oauth) with the deployed OAuth callback and exactly the 33 permissions in its [hosted client](../patches/0432-planetscale-full-hosted-oauth.patch). Supply `EXECUTOR_OAUTH_PLANETSCALE_CLIENT_ID` and `EXECUTOR_OAUTH_PLANETSCALE_CLIENT_SECRET` through deployment secrets. Incomplete pairs are omitted. A permission added to the client must also be selected on the PlanetScale app before release, or sign-in reports it missing.
+
+Without the hosted client, the new sign-in method registers a client automatically and receives PlanetScale's limited default grant. Reported scopes filter the tools available from that account. DCR makes no requested-scope claim; if PlanetScale omits its grant, the account stays unknown and the previous tool listing remains. A hosted connection with a partial or unreported grant fails before an account is saved, and the recovery screen shows requested, granted and missing access. PlanetScale still authorizes each call. Existing OAuth and service-token accounts keep their original provider and root tool names. The 34 operations PlanetScale documents as service-token-only have new aliases in a separate section with **Add service token**. Regenerate `scopes.ts` and the tool-name inventory when the OpenAPI document changes.

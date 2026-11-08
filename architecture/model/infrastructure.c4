@@ -251,7 +251,7 @@ model {
   databaseProvider = adapter "Database provider" {
     #external
     technology "PlanetScale API"
-    metadata { hosts "api.planetscale.com"; sdks "alchemy/Planetscale" }
+    metadata { hosts "api.planetscale.com|planetscale.com|app.planetscale.com|auth.planetscale.com"; sdks "alchemy/Planetscale" }
   }
   containerRegistry = adapter "Container registry" {
     #external

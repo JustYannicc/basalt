@@ -3,9 +3,9 @@
   "publishedUrl": "https://catalog.executor.sh/apps/spotify.json",
   "snapshotCaptured": "2026-11-08",
   "publishedSha256": "750880ed3f1c11d31845a3b80047de92b9046423caca11864928a1f35db8c9a5",
-  "carriedSha256": "3198d88a9b06a909ed32e2f0c9d7c7d851090d87cce300b13b3e8f774aa7abd9",
-  "patchSha256": "15d7f11c8b090f6e3703e3e4d9a7feb38b3afe6b590f42b860f0c224794c5236",
-  "appsVersion": "0.0.1-beta.104-basalt.11",
+  "carriedSha256": "166cf1f95ef17a2830b2e926e822d48ee42ce64537cafd43e07a8baf67f8686b",
+  "patchSha256": "5d6b0790fda3e47068144ce0c7a920073be4dbf9e5161c5cef3a8be36be1b283",
+  "appsVersion": "0.0.1-beta.104-basalt.13",
   "license": "Not declared in the published package",
   "contribution": {
     "state": "Account checks name the account by the person's email or display name instead of the opaque user id; publication not claimed"

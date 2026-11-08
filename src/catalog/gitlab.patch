@@ -1,5 +1,3 @@
-diff --git a/README.md b/README.md
-index 1751738..4789607 100644
 --- a/README.md
 +++ b/README.md
 @@ -1,15 +1,19 @@
@@ -30,11 +28,9 @@ index 1751738..4789607 100644
 +## Instance origins
 +
 +Enter the HTTPS origin without a path. A private origin needs an exact entry in EXECUTOR_URL_ALLOW_HTTP_ORIGINS on the deployment and network access from the tools service. This setting does not allow sibling hosts or ports. Redirects to origins outside the deployment policy are refused.
-diff --git a/index.ts b/index.ts
-index d224099..4165f9b 100644
 --- a/index.ts
 +++ b/index.ts
-@@ -15,12 +15,14 @@ import { always } from "apps/operations/approval";
+@@ -15,12 +15,14 @@
  import { liveOpenapiRouter } from "apps/openapi";
  import { icons } from "./icon.js";
  import { options } from "./openapi.js";
@@ -49,7 +45,7 @@ index d224099..4165f9b 100644
    auth: {
      token: secrets({
        label: "Access token",
-@@ -36,29 +38,55 @@ const gitlab = defineProvider({
+@@ -36,29 +38,55 @@
      }),
    },
    async health({ account, fetch, signal }) {
@@ -113,9 +109,6 @@ index d224099..4165f9b 100644
          { signal },
        ),
        { title: "GitLab", description, icons },
-diff --git a/mcp.ts b/mcp.ts
-new file mode 100644
-index 0000000..6780f1c
 --- /dev/null
 +++ b/mcp.ts
 @@ -0,0 +1,30 @@
@@ -149,8 +142,6 @@ index 0000000..6780f1c
 +    await mcpRouter({ url: mcpUrl(account.site), account, headers: headers(account), ...context }),
 +    () => always(),
 +  );
-diff --git a/package.json b/package.json
-index 01c579d..8d83813 100644
 --- a/package.json
 +++ b/package.json
 @@ -7,6 +7,7 @@
@@ -158,7 +149,7 @@ index 01c579d..8d83813 100644
    },
    "dependencies": {
 -    "apps": "0.0.1-beta.100"
-+    "apps": "0.0.1-beta.104-basalt.11",
++    "apps": "0.0.1-beta.104-basalt.13",
 +    "@modelcontextprotocol/sdk": "1.32.1"
    }
  }

@@ -1,0 +1,3282 @@
+[
+  {
+    "name": "organizations.listOrganizations",
+    "namespace": "organizations",
+    "method": "get",
+    "path": "/organizations",
+    "operationId": "list_organizations",
+    "oauthScopes": [
+      "user:read_organizations"
+    ]
+  },
+  {
+    "name": "organizations.getOrganization",
+    "namespace": "organizations",
+    "method": "get",
+    "path": "/organizations/{organization}",
+    "operationId": "get_organization",
+    "oauthScopes": [
+      "user:read_organizations",
+      "organization:read_organization"
+    ]
+  },
+  {
+    "name": "organizations.updateOrganization",
+    "namespace": "organizations",
+    "method": "patch",
+    "path": "/organizations/{organization}",
+    "operationId": "update_organization",
+    "oauthScopes": [
+      "organization:write_organization"
+    ]
+  },
+  {
+    "name": "organizations.listAuditLogs",
+    "namespace": "organizations",
+    "method": "get",
+    "path": "/organizations/{organization}/audit-log",
+    "operationId": "list_audit_logs",
+    "oauthScopes": [
+      "organization:read_audit_logs"
+    ]
+  },
+  {
+    "name": "billingPaymentMethod.getOrganizationBillingPaymentMethod",
+    "namespace": "billingPaymentMethod",
+    "method": "get",
+    "path": "/organizations/{organization}/billing/payment-method",
+    "operationId": "get_organization_billing_payment_method",
+    "oauthScopes": [
+      "organization:read_payment_method"
+    ]
+  },
+  {
+    "name": "billingPaymentMethod.deleteOrganizationBillingPaymentMethod",
+    "namespace": "billingPaymentMethod",
+    "method": "delete",
+    "path": "/organizations/{organization}/billing/payment-method",
+    "operationId": "delete_organization_billing_payment_method",
+    "oauthScopes": [
+      "organization:write_payment_method"
+    ]
+  },
+  {
+    "name": "billingPaymentMethodSetup.updatePaymentMethod",
+    "namespace": "billingPaymentMethodSetup",
+    "method": "post",
+    "path": "/organizations/{organization}/billing/payment-method-setups",
+    "operationId": "update_payment_method",
+    "oauthScopes": [
+      "organization:write_payment_method"
+    ]
+  },
+  {
+    "name": "billingPaymentMethodSetup.getPaymentMethodSetup",
+    "namespace": "billingPaymentMethodSetup",
+    "method": "get",
+    "path": "/organizations/{organization}/billing/payment-method-setups/{id}",
+    "operationId": "get_payment_method_setup",
+    "oauthScopes": [
+      "organization:write_payment_method"
+    ]
+  },
+  {
+    "name": "organizations.listClusterSizeSkus",
+    "namespace": "organizations",
+    "method": "get",
+    "path": "/organizations/{organization}/cluster-size-skus",
+    "operationId": "list_cluster_size_skus",
+    "oauthScopes": [
+      "user:read_organizations",
+      "organization:read_organization"
+    ]
+  },
+  {
+    "name": "databases.listDatabases",
+    "namespace": "databases",
+    "method": "get",
+    "path": "/organizations/{organization}/databases",
+    "operationId": "list_databases",
+    "oauthScopes": [
+      "organization:read_databases"
+    ]
+  },
+  {
+    "name": "databases.createDatabase",
+    "namespace": "databases",
+    "method": "post",
+    "path": "/organizations/{organization}/databases",
+    "operationId": "create_database",
+    "oauthScopes": [
+      "organization:create_databases"
+    ]
+  },
+  {
+    "name": "databases.getDatabase",
+    "namespace": "databases",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}",
+    "operationId": "get_database",
+    "oauthScopes": [
+      "organization:read_databases",
+      "database:read_database"
+    ]
+  },
+  {
+    "name": "databases.updateDatabaseSettings",
+    "namespace": "databases",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}",
+    "operationId": "update_database_settings",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "databases.deleteDatabase",
+    "namespace": "databases",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}",
+    "operationId": "delete_database",
+    "oauthScopes": [
+      "organization:delete_databases",
+      "database:delete_database"
+    ]
+  },
+  {
+    "name": "backupPolicies.listBackupPolicies",
+    "namespace": "backupPolicies",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/backup-policies",
+    "operationId": "list_backup_policies",
+    "oauthScopes": [
+      "organization:read_backups",
+      "database:read_backups"
+    ]
+  },
+  {
+    "name": "backupPolicies.createBackupPolicy",
+    "namespace": "backupPolicies",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/backup-policies",
+    "operationId": "create_backup_policy",
+    "oauthScopes": [
+      "organization:write_backups",
+      "database:write_backups"
+    ]
+  },
+  {
+    "name": "backupPolicies.getBackupPolicy",
+    "namespace": "backupPolicies",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/backup-policies/{id}",
+    "operationId": "get_backup_policy",
+    "oauthScopes": [
+      "organization:read_backups",
+      "database:read_backups"
+    ]
+  },
+  {
+    "name": "backupPolicies.updateBackupPolicy",
+    "namespace": "backupPolicies",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}/backup-policies/{id}",
+    "operationId": "update_backup_policy",
+    "oauthScopes": [
+      "organization:write_backups",
+      "database:write_backups"
+    ]
+  },
+  {
+    "name": "backupPolicies.deleteBackupPolicy",
+    "namespace": "backupPolicies",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/backup-policies/{id}",
+    "operationId": "delete_backup_policy",
+    "oauthScopes": [
+      "organization:write_backups",
+      "database:write_backups"
+    ]
+  },
+  {
+    "name": "databaseBranches.listBranches",
+    "namespace": "databaseBranches",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches",
+    "operationId": "list_branches",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "databaseBranches.createBranch",
+    "namespace": "databaseBranches",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches",
+    "operationId": "create_branch",
+    "oauthScopes": [
+      "organization:write_branches",
+      "organization:restore_production_branch_backups",
+      "organization:restore_backups",
+      "database:write_branches",
+      "database:restore_production_branch_backups",
+      "database:restore_backups",
+      "branch:restore_backups"
+    ]
+  },
+  {
+    "name": "databaseBranches.getBranch",
+    "namespace": "databaseBranches",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}",
+    "operationId": "get_branch",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "databaseBranches.updateBranch",
+    "namespace": "databaseBranches",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}",
+    "operationId": "update_branch",
+    "oauthScopes": [
+      "organization:write_branches",
+      "organization:write_databases",
+      "database:write_branches",
+      "database:write_database",
+      "branch:write_branch"
+    ]
+  },
+  {
+    "name": "databaseBranches.deleteBranch",
+    "namespace": "databaseBranches",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}",
+    "operationId": "delete_branch",
+    "oauthScopes": [
+      "organization:delete_branches",
+      "organization:delete_production_branches",
+      "database:delete_branches",
+      "database:delete_production_branches",
+      "branch:delete_branch"
+    ]
+  },
+  {
+    "name": "apiNekiAdmins.getAdmin",
+    "namespace": "apiNekiAdmins",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/admin",
+    "operationId": "get_admin",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiNekiAdmins.updateAdmin",
+    "namespace": "apiNekiAdmins",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/admin",
+    "operationId": "update_admin",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "apiNekiAdmins.listAdminSizeSkus",
+    "namespace": "apiNekiAdmins",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/admin-size-skus",
+    "operationId": "list_admin_size_skus",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiNekiAdminChangeRequests.listAdminChangeRequests",
+    "namespace": "apiNekiAdminChangeRequests",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/admin/change-requests",
+    "operationId": "list_admin_change_requests",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiNekiAdminChangeRequests.getAdminChangeRequest",
+    "namespace": "apiNekiAdminChangeRequests",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/admin/change-requests/{id}",
+    "operationId": "get_admin_change_request",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiNekiAdminChangeRequests.cancelAdminChangeRequest",
+    "namespace": "apiNekiAdminChangeRequests",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/admin/change-requests/{id}",
+    "operationId": "cancel_admin_change_request",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "apiNekiAdminParameters.listAdminParameters",
+    "namespace": "apiNekiAdminParameters",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/admin/parameters",
+    "operationId": "list_admin_parameters",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "backups.listBackups",
+    "namespace": "backups",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/backups",
+    "operationId": "list_backups",
+    "oauthScopes": [
+      "organization:read_backups",
+      "database:read_backups",
+      "branch:read_backups"
+    ]
+  },
+  {
+    "name": "backups.createBackup",
+    "namespace": "backups",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/backups",
+    "operationId": "create_backup",
+    "oauthScopes": [
+      "organization:write_backups",
+      "database:write_backups",
+      "branch:write_backups"
+    ]
+  },
+  {
+    "name": "backups.getBackup",
+    "namespace": "backups",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/backups/{id}",
+    "operationId": "get_backup",
+    "oauthScopes": [
+      "organization:read_backups",
+      "database:read_backups",
+      "branch:read_backups"
+    ]
+  },
+  {
+    "name": "backups.updateBackup",
+    "namespace": "backups",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/backups/{id}",
+    "operationId": "update_backup",
+    "oauthScopes": [
+      "organization:write_backups",
+      "database:write_backups",
+      "branch:write_backups"
+    ]
+  },
+  {
+    "name": "backups.deleteBackup",
+    "namespace": "backups",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/backups/{id}",
+    "operationId": "delete_backup",
+    "oauthScopes": [
+      "organization:delete_backups",
+      "organization:delete_production_branch_backups",
+      "database:delete_backups",
+      "database:delete_production_branch_backups",
+      "branch:delete_backups"
+    ]
+  },
+  {
+    "name": "apiBranchBouncerResizes.listBranchBouncerResizeRequests",
+    "namespace": "apiBranchBouncerResizes",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/bouncer-resizes",
+    "operationId": "list_branch_bouncer_resize_requests",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "bouncers.listBouncers",
+    "namespace": "bouncers",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/bouncers",
+    "operationId": "list_bouncers",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "bouncers.createBouncer",
+    "namespace": "bouncers",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/bouncers",
+    "operationId": "create_bouncer",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "bouncers.getBouncer",
+    "namespace": "bouncers",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/bouncers/{bouncer}",
+    "operationId": "get_bouncer",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "bouncers.deleteBouncer",
+    "namespace": "bouncers",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/bouncers/{bouncer}",
+    "operationId": "delete_bouncer",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "bouncerResizes.listBouncerResizeRequests",
+    "namespace": "bouncerResizes",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/bouncers/{bouncer}/resizes",
+    "operationId": "list_bouncer_resize_requests",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "bouncerResizes.updateBouncerResizeRequest",
+    "namespace": "bouncerResizes",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/bouncers/{bouncer}/resizes",
+    "operationId": "update_bouncer_resize_request",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "bouncerResizes.cancelBouncerResizeRequest",
+    "namespace": "bouncerResizes",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/bouncers/{bouncer}/resizes",
+    "operationId": "cancel_bouncer_resize_request",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "apiChangeRequests.listChangeRequests",
+    "namespace": "apiChangeRequests",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/change-requests",
+    "operationId": "list_change_requests",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiChangeRequests.getChangeRequest",
+    "namespace": "apiChangeRequests",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/change-requests/{id}",
+    "operationId": "get_change_request",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiChangeRequests.cancelChangeRequest",
+    "namespace": "apiChangeRequests",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/change-requests/{id}",
+    "operationId": "cancel_change_request",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "branchChanges.listBranchChangeRequests",
+    "namespace": "branchChanges",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/changes",
+    "operationId": "list_branch_change_requests",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "branchChanges.updateBranchChangeRequest",
+    "namespace": "branchChanges",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/changes",
+    "operationId": "update_branch_change_request",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "branchChanges.getBranchChangeRequest",
+    "namespace": "branchChanges",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/changes/{id}",
+    "operationId": "get_branch_change_request",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "databaseBranches.updateBranchClusterConfig",
+    "namespace": "databaseBranches",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/cluster",
+    "operationId": "update_branch_cluster_config",
+    "oauthScopes": []
+  },
+  {
+    "name": "branchConfigChanges.listBranchConfigChangeRequests",
+    "namespace": "branchConfigChanges",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/config-changes",
+    "operationId": "list_branch_config_change_requests",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "branchConfigChanges.createBranchConfigChangeRequest",
+    "namespace": "branchConfigChanges",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/config-changes",
+    "operationId": "create_branch_config_change_request",
+    "oauthScopes": []
+  },
+  {
+    "name": "branchConfigChanges.submitBranchConfigChangeRequests",
+    "namespace": "branchConfigChanges",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/config-changes/submit",
+    "operationId": "submit_branch_config_change_requests",
+    "oauthScopes": []
+  },
+  {
+    "name": "branchConfigChanges.getBranchConfigChangeRequest",
+    "namespace": "branchConfigChanges",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/config-changes/{id}",
+    "operationId": "get_branch_config_change_request",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "branchConfigChanges.cancelBranchConfigChangeRequest",
+    "namespace": "branchConfigChanges",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/config-changes/{id}",
+    "operationId": "cancel_branch_config_change_request",
+    "oauthScopes": []
+  },
+  {
+    "name": "apiNekiShardConfigurationProfiles.listShardConfigurationProfiles",
+    "namespace": "apiNekiShardConfigurationProfiles",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles",
+    "operationId": "list_shard_configuration_profiles",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiNekiShardConfigurationProfiles.createShardConfigurationProfile",
+    "namespace": "apiNekiShardConfigurationProfiles",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles",
+    "operationId": "create_shard_configuration_profile",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "apiNekiShardConfigurationProfiles.runShardConfigurationProfilesMaintenance",
+    "namespace": "apiNekiShardConfigurationProfiles",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/maintenance",
+    "operationId": "run_shard_configuration_profiles_maintenance",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "apiNekiShardConfigurationProfiles.getShardConfigurationProfile",
+    "namespace": "apiNekiShardConfigurationProfiles",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}",
+    "operationId": "get_shard_configuration_profile",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiNekiShardConfigurationProfiles.updateShardConfigurationProfile",
+    "namespace": "apiNekiShardConfigurationProfiles",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}",
+    "operationId": "update_shard_configuration_profile",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "apiNekiShardConfigurationProfiles.deleteShardConfigurationProfile",
+    "namespace": "apiNekiShardConfigurationProfiles",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}",
+    "operationId": "delete_shard_configuration_profile",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "apiNekiShardConfigurationProfileChangeRequests.listShardConfigurationProfileChangeRequests",
+    "namespace": "apiNekiShardConfigurationProfileChangeRequests",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}/change-requests",
+    "operationId": "list_shard_configuration_profile_change_requests",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiNekiShardConfigurationProfileChangeRequests.getShardConfigurationProfileChangeRequest",
+    "namespace": "apiNekiShardConfigurationProfileChangeRequests",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}/change-requests/{id}",
+    "operationId": "get_shard_configuration_profile_change_request",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiNekiShardConfigurationProfileChangeRequests.cancelShardConfigurationProfileChangeRequest",
+    "namespace": "apiNekiShardConfigurationProfileChangeRequests",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}/change-requests/{id}",
+    "operationId": "cancel_shard_configuration_profile_change_request",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "apiNekiShardConfigurationProfiles.duplicateShardConfigurationProfile",
+    "namespace": "apiNekiShardConfigurationProfiles",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}/duplicate",
+    "operationId": "duplicate_shard_configuration_profile",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "apiNekiShardConfigurationProfileExtensions.listShardConfigurationProfileExtensions",
+    "namespace": "apiNekiShardConfigurationProfileExtensions",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}/extensions",
+    "operationId": "list_shard_configuration_profile_extensions",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiNekiShardConfigurationProfiles.runShardConfigurationProfileMaintenance",
+    "namespace": "apiNekiShardConfigurationProfiles",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}/maintenance",
+    "operationId": "run_shard_configuration_profile_maintenance",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "apiNekiShardConfigurationProfileParameters.listShardConfigurationProfileParameters",
+    "namespace": "apiNekiShardConfigurationProfileParameters",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}/parameters",
+    "operationId": "list_shard_configuration_profile_parameters",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiNekiShardConfigurationProfileShards.listShardConfigurationProfileShards",
+    "namespace": "apiNekiShardConfigurationProfileShards",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}/shards",
+    "operationId": "list_shard_configuration_profile_shards",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiNekiShardConfigurationProfileShards.createShardConfigurationProfileShard",
+    "namespace": "apiNekiShardConfigurationProfileShards",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}/shards",
+    "operationId": "create_shard_configuration_profile_shard",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "apiNekiShardConfigurationProfileShards.assignShardConfigurationProfileShards",
+    "namespace": "apiNekiShardConfigurationProfileShards",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}/shards",
+    "operationId": "assign_shard_configuration_profile_shards",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "apiNekiShardConfigurationProfileShards.deleteShardConfigurationProfileShards",
+    "namespace": "apiNekiShardConfigurationProfileShards",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}/shards",
+    "operationId": "delete_shard_configuration_profile_shards",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "apiNekiShardConfigurationProfileShards.bulkCreateShardConfigurationProfileShards",
+    "namespace": "apiNekiShardConfigurationProfileShards",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}/shards/bulk",
+    "operationId": "bulk_create_shard_configuration_profile_shards",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "apiNekiShardConfigurationProfileShards.getShardConfigurationProfileShard",
+    "namespace": "apiNekiShardConfigurationProfileShards",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}/shards/{id}",
+    "operationId": "get_shard_configuration_profile_shard",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiNekiShardConfigurationProfileShards.updateShardConfigurationProfileShard",
+    "namespace": "apiNekiShardConfigurationProfileShards",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}/shards/{id}",
+    "operationId": "update_shard_configuration_profile_shard",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "apiNekiShardConfigurationProfileShards.deleteShardConfigurationProfileShard",
+    "namespace": "apiNekiShardConfigurationProfileShards",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}/shards/{id}",
+    "operationId": "delete_shard_configuration_profile_shard",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "apiDataTopology.getDataTopology",
+    "namespace": "apiDataTopology",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/data-topology",
+    "operationId": "get_data_topology",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiDataTopology.updateDataTopology",
+    "namespace": "apiDataTopology",
+    "method": "put",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/data-topology",
+    "operationId": "update_data_topology",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_databases",
+      "branch:write_branch"
+    ]
+  },
+  {
+    "name": "apiReadOnlyReplicaChanges.listDedicatedReadReplicaChangeRequests",
+    "namespace": "apiReadOnlyReplicaChanges",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/dedicated-read-replica-changes",
+    "operationId": "list_dedicated_read_replica_change_requests",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "dedicatedReadReplicas.listDedicatedReadReplicas",
+    "namespace": "dedicatedReadReplicas",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/dedicated-read-replicas",
+    "operationId": "list_dedicated_read_replicas",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "dedicatedReadReplicas.createDedicatedReadReplica",
+    "namespace": "dedicatedReadReplicas",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/dedicated-read-replicas",
+    "operationId": "create_dedicated_read_replica",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "dedicatedReadReplicas.getDedicatedReadReplica",
+    "namespace": "dedicatedReadReplicas",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/dedicated-read-replicas/{dedicated_read_replica}",
+    "operationId": "get_dedicated_read_replica",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "dedicatedReadReplicas.updateDedicatedReadReplica",
+    "namespace": "dedicatedReadReplicas",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/dedicated-read-replicas/{dedicated_read_replica}",
+    "operationId": "update_dedicated_read_replica",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "dedicatedReadReplicas.deleteDedicatedReadReplica",
+    "namespace": "dedicatedReadReplicas",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/dedicated-read-replicas/{dedicated_read_replica}",
+    "operationId": "delete_dedicated_read_replica",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "apiNekiDefaultShardConfigurationProfiles.getDefaultShardConfigurationProfile",
+    "namespace": "apiNekiDefaultShardConfigurationProfiles",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/default-configuration-profile",
+    "operationId": "get_default_shard_configuration_profile",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiNekiDefaultShardConfigurationProfiles.setDefaultShardConfigurationProfile",
+    "namespace": "apiNekiDefaultShardConfigurationProfiles",
+    "method": "put",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/default-configuration-profile",
+    "operationId": "set_default_shard_configuration_profile",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "databaseBranches.demoteBranch",
+    "namespace": "databaseBranches",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/demote",
+    "operationId": "demote_branch",
+    "oauthScopes": [
+      "organization:demote_branches",
+      "database:demote_branches"
+    ]
+  },
+  {
+    "name": "clusterExtensions.listExtensions",
+    "namespace": "clusterExtensions",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/extensions",
+    "operationId": "list_extensions",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiQueryInsights.listBranchQueries",
+    "namespace": "apiQueryInsights",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/insights",
+    "operationId": "list_branch_queries",
+    "oauthScopes": [
+      "organization:read_databases",
+      "database:read_database"
+    ]
+  },
+  {
+    "name": "apiAnomalies.listBranchAnomalies",
+    "namespace": "apiAnomalies",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/insights/anomalies",
+    "operationId": "list_branch_anomalies",
+    "oauthScopes": [
+      "organization:read_databases",
+      "database:read_database"
+    ]
+  },
+  {
+    "name": "apiAnomalies.getBranchAnomaly",
+    "namespace": "apiAnomalies",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/insights/anomalies/{id}",
+    "operationId": "get_branch_anomaly",
+    "oauthScopes": [
+      "organization:read_databases",
+      "database:read_database"
+    ]
+  },
+  {
+    "name": "apiQueryInsightsErrors.listBranchQueryErrors",
+    "namespace": "apiQueryInsightsErrors",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/insights/errors",
+    "operationId": "list_branch_query_errors",
+    "oauthScopes": [
+      "organization:read_databases",
+      "database:read_database"
+    ]
+  },
+  {
+    "name": "apiQueryInsightsErrors.getBranchQueryError",
+    "namespace": "apiQueryInsightsErrors",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/insights/errors/{fingerprint}",
+    "operationId": "get_branch_query_error",
+    "oauthScopes": [
+      "organization:read_databases",
+      "database:read_database"
+    ]
+  },
+  {
+    "name": "apiQueryInsights.getBranchQuery",
+    "namespace": "apiQueryInsights",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/insights/queries/{id}",
+    "operationId": "get_branch_query",
+    "oauthScopes": [
+      "organization:read_databases",
+      "database:read_database"
+    ]
+  },
+  {
+    "name": "apiQueryInsightsTags.listBranchQueryTags",
+    "namespace": "apiQueryInsightsTags",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/insights/tags",
+    "operationId": "list_branch_query_tags",
+    "oauthScopes": [
+      "organization:read_databases",
+      "database:read_database"
+    ]
+  },
+  {
+    "name": "apiQueryInsightsTags.listBranchQueryTagSummaries",
+    "namespace": "apiQueryInsightsTags",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/insights/tags/summaries",
+    "operationId": "list_branch_query_tag_summaries",
+    "oauthScopes": [
+      "organization:read_databases",
+      "database:read_database"
+    ]
+  },
+  {
+    "name": "apiQueryInsightsTags.getBranchQueryTag",
+    "namespace": "apiQueryInsightsTags",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/insights/tags/{tag}",
+    "operationId": "get_branch_query_tag",
+    "oauthScopes": [
+      "organization:read_databases",
+      "database:read_database"
+    ]
+  },
+  {
+    "name": "apiQueryInsights.getQueryStatistics",
+    "namespace": "apiQueryInsights",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/insights/{fingerprint}",
+    "operationId": "get_query_statistics",
+    "oauthScopes": [
+      "organization:read_databases",
+      "database:read_database"
+    ]
+  },
+  {
+    "name": "apiQueryInsights.getQuerySummary",
+    "namespace": "apiQueryInsights",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/insights/{fingerprint}/summary",
+    "operationId": "get_query_summary",
+    "oauthScopes": [
+      "organization:read_databases",
+      "database:read_database"
+    ]
+  },
+  {
+    "name": "apiQueryInsightsTrafficBudgets.listTrafficBudgetsForQuery",
+    "namespace": "apiQueryInsightsTrafficBudgets",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/insights/{fingerprint}/traffic/budgets",
+    "operationId": "list_traffic_budgets_for_query",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "databaseBranchKeyspaces.listKeyspaces",
+    "namespace": "databaseBranchKeyspaces",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/keyspaces",
+    "operationId": "list_keyspaces",
+    "oauthScopes": []
+  },
+  {
+    "name": "databaseBranchKeyspaces.createKeyspace",
+    "namespace": "databaseBranchKeyspaces",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/keyspaces",
+    "operationId": "create_keyspace",
+    "oauthScopes": []
+  },
+  {
+    "name": "databaseBranchKeyspaces.getKeyspace",
+    "namespace": "databaseBranchKeyspaces",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/keyspaces/{keyspace}",
+    "operationId": "get_keyspace",
+    "oauthScopes": []
+  },
+  {
+    "name": "databaseBranchKeyspaces.updateKeyspace",
+    "namespace": "databaseBranchKeyspaces",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/keyspaces/{keyspace}",
+    "operationId": "update_keyspace",
+    "oauthScopes": []
+  },
+  {
+    "name": "databaseBranchKeyspaces.deleteKeyspace",
+    "namespace": "databaseBranchKeyspaces",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/keyspaces/{keyspace}",
+    "operationId": "delete_keyspace",
+    "oauthScopes": []
+  },
+  {
+    "name": "keyspaceConfigChanges.listKeyspaceConfigChangeRequests",
+    "namespace": "keyspaceConfigChanges",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/keyspaces/{keyspace}/config-changes",
+    "operationId": "list_keyspace_config_change_requests",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "keyspaceConfigChanges.createKeyspaceConfigChangeRequest",
+    "namespace": "keyspaceConfigChanges",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/keyspaces/{keyspace}/config-changes",
+    "operationId": "create_keyspace_config_change_request",
+    "oauthScopes": []
+  },
+  {
+    "name": "keyspaceConfigChanges.getKeyspaceConfigChangeRequest",
+    "namespace": "keyspaceConfigChanges",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/keyspaces/{keyspace}/config-changes/{id}",
+    "operationId": "get_keyspace_config_change_request",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "keyspaceConfigChanges.cancelKeyspaceConfigChangeRequest",
+    "namespace": "keyspaceConfigChanges",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/keyspaces/{keyspace}/config-changes/{id}",
+    "operationId": "cancel_keyspace_config_change_request",
+    "oauthScopes": []
+  },
+  {
+    "name": "keyspaceResizes.listKeyspaceResizeRequests",
+    "namespace": "keyspaceResizes",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/keyspaces/{keyspace}/resizes",
+    "operationId": "list_keyspace_resize_requests",
+    "oauthScopes": []
+  },
+  {
+    "name": "keyspaceResizes.updateKeyspaceResizeRequest",
+    "namespace": "keyspaceResizes",
+    "method": "put",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/keyspaces/{keyspace}/resizes",
+    "operationId": "update_keyspace_resize_request",
+    "oauthScopes": []
+  },
+  {
+    "name": "keyspaceResizes.cancelKeyspaceResizeRequest",
+    "namespace": "keyspaceResizes",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/keyspaces/{keyspace}/resizes",
+    "operationId": "cancel_keyspace_resize_request",
+    "oauthScopes": []
+  },
+  {
+    "name": "keyspaceResizes.getKeyspaceResizeRequest",
+    "namespace": "keyspaceResizes",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/keyspaces/{keyspace}/resizes/{id}",
+    "operationId": "get_keyspace_resize_request",
+    "oauthScopes": []
+  },
+  {
+    "name": "databaseBranchKeyspaces.getKeyspaceRolloutStatus",
+    "namespace": "databaseBranchKeyspaces",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/keyspaces/{keyspace}/rollout-status",
+    "operationId": "get_keyspace_rollout_status",
+    "oauthScopes": []
+  },
+  {
+    "name": "keyspaceVSchemas.getKeyspaceVschema",
+    "namespace": "keyspaceVSchemas",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/keyspaces/{keyspace}/vschema",
+    "operationId": "get_keyspace_vschema",
+    "oauthScopes": []
+  },
+  {
+    "name": "keyspaceVSchemas.updateKeyspaceVschema",
+    "namespace": "keyspaceVSchemas",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/keyspaces/{keyspace}/vschema",
+    "operationId": "update_keyspace_vschema",
+    "oauthScopes": []
+  },
+  {
+    "name": "branchLogSignatures.createBranchLogSignature",
+    "namespace": "branchLogSignatures",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/logs/signatures",
+    "operationId": "create_branch_log_signature",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiBranchMaintenances.runBranchMaintenance",
+    "namespace": "apiBranchMaintenances",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/maintenance",
+    "operationId": "run_branch_maintenance",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "maintenanceSchedules.getBranchMaintenanceWindow",
+    "namespace": "maintenanceSchedules",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/maintenance-window",
+    "operationId": "get_branch_maintenance_window",
+    "oauthScopes": [
+      "organization:read_databases",
+      "database:read_database"
+    ]
+  },
+  {
+    "name": "maintenanceSchedules.updateBranchMaintenanceWindow",
+    "namespace": "maintenanceSchedules",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/maintenance-window",
+    "operationId": "update_branch_maintenance_window",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "metrics.getBranchMetrics",
+    "namespace": "metrics",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/metrics",
+    "operationId": "get_branch_metrics",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "metrics.getInstantBranchMetrics",
+    "namespace": "metrics",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/metrics/instant",
+    "operationId": "get_instant_branch_metrics",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "metrics.getBranchKeyspaceTableMetrics",
+    "namespace": "metrics",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/metrics/keyspace-tables",
+    "operationId": "get_branch_keyspace_table_metrics",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "metrics.getBranchQueryMetrics",
+    "namespace": "metrics",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/metrics/query",
+    "operationId": "get_branch_query_metrics",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "metrics.getBranchTableMetrics",
+    "namespace": "metrics",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/metrics/tables",
+    "operationId": "get_branch_table_metrics",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "metrics.getTabletMetrics",
+    "namespace": "metrics",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/metrics/tablets",
+    "operationId": "get_tablet_metrics",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "metrics.getInstantTabletMetrics",
+    "namespace": "metrics",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/metrics/tablets-instant",
+    "operationId": "get_instant_tablet_metrics",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "metrics.getBranchTagMetrics",
+    "namespace": "metrics",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/metrics/tag",
+    "operationId": "get_branch_tag_metrics",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "moveTables.listMoveTablesWorkflows",
+    "namespace": "moveTables",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/move-tables/workflows",
+    "operationId": "list_move_tables_workflows",
+    "oauthScopes": [
+      "organization:read_workflows",
+      "database:read_workflows"
+    ]
+  },
+  {
+    "name": "moveTables.createMoveTablesWorkflow",
+    "namespace": "moveTables",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/move-tables/workflows",
+    "operationId": "create_move_tables_workflow",
+    "oauthScopes": [
+      "organization:write_workflows",
+      "database:write_workflows"
+    ]
+  },
+  {
+    "name": "moveTables.getMoveTablesWorkflow",
+    "namespace": "moveTables",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/move-tables/workflows/{workflow}",
+    "operationId": "get_move_tables_workflow",
+    "oauthScopes": [
+      "organization:read_workflows",
+      "database:read_workflows"
+    ]
+  },
+  {
+    "name": "moveTables.cancelMoveTablesWorkflow",
+    "namespace": "moveTables",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/move-tables/workflows/{workflow}/cancel",
+    "operationId": "cancel_move_tables_workflow",
+    "oauthScopes": [
+      "organization:write_workflows",
+      "database:write_workflows"
+    ]
+  },
+  {
+    "name": "moveTables.completeMoveTablesWorkflow",
+    "namespace": "moveTables",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/move-tables/workflows/{workflow}/complete",
+    "operationId": "complete_move_tables_workflow",
+    "oauthScopes": [
+      "organization:write_workflows",
+      "database:write_workflows"
+    ]
+  },
+  {
+    "name": "moveTables.reverseTrafficMoveTablesWorkflow",
+    "namespace": "moveTables",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/move-tables/workflows/{workflow}/reverse-traffic",
+    "operationId": "reverse_traffic_move_tables_workflow",
+    "oauthScopes": [
+      "organization:write_workflows",
+      "database:write_workflows"
+    ]
+  },
+  {
+    "name": "moveTables.startMoveTablesWorkflow",
+    "namespace": "moveTables",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/move-tables/workflows/{workflow}/start",
+    "operationId": "start_move_tables_workflow",
+    "oauthScopes": [
+      "organization:write_workflows",
+      "database:write_workflows"
+    ]
+  },
+  {
+    "name": "moveTables.getMoveTablesWorkflowStatus",
+    "namespace": "moveTables",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/move-tables/workflows/{workflow}/status",
+    "operationId": "get_move_tables_workflow_status",
+    "oauthScopes": [
+      "organization:read_workflows",
+      "database:read_workflows"
+    ]
+  },
+  {
+    "name": "moveTables.stopMoveTablesWorkflow",
+    "namespace": "moveTables",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/move-tables/workflows/{workflow}/stop",
+    "operationId": "stop_move_tables_workflow",
+    "oauthScopes": [
+      "organization:write_workflows",
+      "database:write_workflows"
+    ]
+  },
+  {
+    "name": "moveTables.switchTrafficMoveTablesWorkflow",
+    "namespace": "moveTables",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/move-tables/workflows/{workflow}/switch-traffic",
+    "operationId": "switch_traffic_move_tables_workflow",
+    "oauthScopes": [
+      "organization:write_workflows",
+      "database:write_workflows"
+    ]
+  },
+  {
+    "name": "apiNekiChangeRequests.listNekiChangeRequests",
+    "namespace": "apiNekiChangeRequests",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/neki-changes",
+    "operationId": "list_neki_change_requests",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiNekiChangeRequests.getNekiChangeRequest",
+    "namespace": "apiNekiChangeRequests",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/neki-changes/{id}",
+    "operationId": "get_neki_change_request",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiNekiChangeRequests.cancelNekiChangeRequest",
+    "namespace": "apiNekiChangeRequests",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/neki-changes/{id}",
+    "operationId": "cancel_neki_change_request",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "clusterParameters.listParameters",
+    "namespace": "clusterParameters",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/parameters",
+    "operationId": "list_parameters",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "databaseBranchPasswords.listPasswords",
+    "namespace": "databaseBranchPasswords",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/passwords",
+    "operationId": "list_passwords",
+    "oauthScopes": [
+      "organization:manage_passwords",
+      "organization:manage_production_branch_passwords",
+      "organization:manage_read_only_passwords",
+      "organization:manage_production_read_only_passwords",
+      "database:manage_passwords",
+      "database:manage_production_branch_passwords",
+      "database:manage_read_only_passwords",
+      "database:manage_production_read_only_passwords",
+      "branch:manage_passwords",
+      "branch:manage_read_only_passwords"
+    ]
+  },
+  {
+    "name": "databaseBranchPasswords.createPassword",
+    "namespace": "databaseBranchPasswords",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/passwords",
+    "operationId": "create_password",
+    "oauthScopes": [
+      "organization:manage_passwords",
+      "organization:manage_production_branch_passwords",
+      "organization:manage_read_only_passwords",
+      "organization:manage_production_read_only_passwords",
+      "database:manage_passwords",
+      "database:manage_production_branch_passwords",
+      "database:manage_read_only_passwords",
+      "database:manage_production_read_only_passwords",
+      "branch:manage_passwords",
+      "branch:manage_read_only_passwords"
+    ]
+  },
+  {
+    "name": "databaseBranchPasswords.getPassword",
+    "namespace": "databaseBranchPasswords",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/passwords/{id}",
+    "operationId": "get_password",
+    "oauthScopes": [
+      "organization:manage_passwords",
+      "organization:manage_production_branch_passwords",
+      "organization:manage_read_only_passwords",
+      "organization:manage_production_read_only_passwords",
+      "database:manage_passwords",
+      "database:manage_production_branch_passwords",
+      "database:manage_read_only_passwords",
+      "database:manage_production_read_only_passwords",
+      "branch:manage_passwords",
+      "branch:manage_read_only_passwords"
+    ]
+  },
+  {
+    "name": "databaseBranchPasswords.updatePassword",
+    "namespace": "databaseBranchPasswords",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/passwords/{id}",
+    "operationId": "update_password",
+    "oauthScopes": [
+      "organization:manage_passwords",
+      "organization:manage_production_branch_passwords",
+      "organization:manage_read_only_passwords",
+      "organization:manage_production_read_only_passwords",
+      "database:manage_passwords",
+      "database:manage_production_branch_passwords",
+      "database:manage_read_only_passwords",
+      "database:manage_production_read_only_passwords",
+      "branch:manage_passwords",
+      "branch:manage_read_only_passwords"
+    ]
+  },
+  {
+    "name": "databaseBranchPasswords.deletePassword",
+    "namespace": "databaseBranchPasswords",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/passwords/{id}",
+    "operationId": "delete_password",
+    "oauthScopes": [
+      "organization:manage_passwords",
+      "organization:manage_production_branch_passwords",
+      "organization:manage_read_only_passwords",
+      "organization:manage_production_read_only_passwords",
+      "database:manage_passwords",
+      "database:manage_production_branch_passwords",
+      "database:manage_read_only_passwords",
+      "database:manage_production_read_only_passwords",
+      "branch:manage_passwords",
+      "branch:manage_read_only_passwords"
+    ]
+  },
+  {
+    "name": "databaseBranchPasswords.renewPassword",
+    "namespace": "databaseBranchPasswords",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/passwords/{id}/renew",
+    "operationId": "renew_password",
+    "oauthScopes": [
+      "organization:manage_passwords",
+      "organization:manage_production_branch_passwords",
+      "organization:manage_read_only_passwords",
+      "organization:manage_production_read_only_passwords",
+      "database:manage_passwords",
+      "database:manage_production_branch_passwords",
+      "database:manage_read_only_passwords",
+      "database:manage_production_read_only_passwords",
+      "branch:manage_passwords",
+      "branch:manage_read_only_passwords"
+    ]
+  },
+  {
+    "name": "databaseBranches.promoteBranch",
+    "namespace": "databaseBranches",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/promote",
+    "operationId": "promote_branch",
+    "oauthScopes": [
+      "organization:promote_branches",
+      "database:promote_branches"
+    ]
+  },
+  {
+    "name": "queryInsightsReports.listGeneratedQueryPatternsReports",
+    "namespace": "queryInsightsReports",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/query-patterns",
+    "operationId": "list_generated_query_patterns_reports",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "queryInsightsReports.createQueryPatternsReport",
+    "namespace": "queryInsightsReports",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/query-patterns",
+    "operationId": "create_query_patterns_report",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "queryInsightsReports.getQueryPatternsReportStatus",
+    "namespace": "queryInsightsReports",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/query-patterns/{id}",
+    "operationId": "get_query_patterns_report_status",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "queryInsightsReports.deleteQueryPatternsReport",
+    "namespace": "queryInsightsReports",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/query-patterns/{id}",
+    "operationId": "delete_query_patterns_report",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "queryInsightsReports.getQueryPatternsReport",
+    "namespace": "queryInsightsReports",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/query-patterns/{id}/download",
+    "operationId": "get_query_patterns_report",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "branchChanges.cancelBranchChangeRequest",
+    "namespace": "branchChanges",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/resizes",
+    "operationId": "cancel_branch_change_request",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "apiBranchResizes.listBranchResizeRequests",
+    "namespace": "apiBranchResizes",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/resizes",
+    "operationId": "list_branch_resize_requests",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiBranchResizes.updateBranchResizeRequest",
+    "namespace": "apiBranchResizes",
+    "method": "put",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/resizes",
+    "operationId": "update_branch_resize_request",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "apiBranchResizes.getBranchResizeRequest",
+    "namespace": "apiBranchResizes",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/resizes/{resize}",
+    "operationId": "get_branch_resize_request",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "roles.listRoles",
+    "namespace": "roles",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/roles",
+    "operationId": "list_roles",
+    "oauthScopes": [
+      "organization:manage_passwords",
+      "organization:manage_production_branch_passwords",
+      "organization:manage_read_only_passwords",
+      "organization:manage_production_read_only_passwords",
+      "database:manage_passwords",
+      "database:manage_production_branch_passwords",
+      "database:manage_read_only_passwords",
+      "database:manage_production_read_only_passwords",
+      "branch:manage_passwords",
+      "branch:manage_read_only_passwords"
+    ]
+  },
+  {
+    "name": "roles.createRole",
+    "namespace": "roles",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/roles",
+    "operationId": "create_role",
+    "oauthScopes": [
+      "organization:manage_passwords",
+      "organization:manage_production_branch_passwords",
+      "organization:manage_read_only_passwords",
+      "organization:manage_production_read_only_passwords",
+      "database:manage_passwords",
+      "database:manage_production_branch_passwords",
+      "database:manage_read_only_passwords",
+      "database:manage_production_read_only_passwords",
+      "branch:manage_passwords",
+      "branch:manage_read_only_passwords"
+    ]
+  },
+  {
+    "name": "roles.getDefaultRole",
+    "namespace": "roles",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/roles/default",
+    "operationId": "get_default_role",
+    "oauthScopes": [
+      "organization:manage_passwords",
+      "organization:manage_production_branch_passwords",
+      "organization:manage_read_only_passwords",
+      "organization:manage_production_read_only_passwords",
+      "database:manage_passwords",
+      "database:manage_production_branch_passwords",
+      "database:manage_read_only_passwords",
+      "database:manage_production_read_only_passwords",
+      "branch:manage_passwords",
+      "branch:manage_read_only_passwords"
+    ]
+  },
+  {
+    "name": "roles.resetDefaultRole",
+    "namespace": "roles",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/roles/reset-default",
+    "operationId": "reset_default_role",
+    "oauthScopes": [
+      "organization:manage_passwords",
+      "organization:manage_production_branch_passwords",
+      "organization:manage_read_only_passwords",
+      "organization:manage_production_read_only_passwords",
+      "database:manage_passwords",
+      "database:manage_production_branch_passwords",
+      "database:manage_read_only_passwords",
+      "database:manage_production_read_only_passwords",
+      "branch:manage_passwords",
+      "branch:manage_read_only_passwords"
+    ]
+  },
+  {
+    "name": "roles.getRole",
+    "namespace": "roles",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/roles/{id}",
+    "operationId": "get_role",
+    "oauthScopes": [
+      "organization:manage_passwords",
+      "organization:manage_production_branch_passwords",
+      "organization:manage_read_only_passwords",
+      "organization:manage_production_read_only_passwords",
+      "database:manage_passwords",
+      "database:manage_production_branch_passwords",
+      "database:manage_read_only_passwords",
+      "database:manage_production_read_only_passwords",
+      "branch:manage_passwords",
+      "branch:manage_read_only_passwords"
+    ]
+  },
+  {
+    "name": "roles.updateRole",
+    "namespace": "roles",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/roles/{id}",
+    "operationId": "update_role",
+    "oauthScopes": [
+      "organization:manage_passwords",
+      "organization:manage_production_branch_passwords",
+      "organization:manage_read_only_passwords",
+      "organization:manage_production_read_only_passwords",
+      "database:manage_passwords",
+      "database:manage_production_branch_passwords",
+      "database:manage_read_only_passwords",
+      "database:manage_production_read_only_passwords",
+      "branch:manage_passwords",
+      "branch:manage_read_only_passwords"
+    ]
+  },
+  {
+    "name": "roles.deleteRole",
+    "namespace": "roles",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/roles/{id}",
+    "operationId": "delete_role",
+    "oauthScopes": [
+      "organization:manage_passwords",
+      "organization:manage_production_branch_passwords",
+      "organization:manage_read_only_passwords",
+      "organization:manage_production_read_only_passwords",
+      "database:manage_passwords",
+      "database:manage_production_branch_passwords",
+      "database:manage_read_only_passwords",
+      "database:manage_production_read_only_passwords",
+      "branch:manage_passwords",
+      "branch:manage_read_only_passwords"
+    ]
+  },
+  {
+    "name": "roles.reassignRoleObjects",
+    "namespace": "roles",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/roles/{id}/reassign",
+    "operationId": "reassign_role_objects",
+    "oauthScopes": [
+      "organization:manage_passwords",
+      "organization:manage_production_branch_passwords",
+      "organization:manage_read_only_passwords",
+      "organization:manage_production_read_only_passwords",
+      "database:manage_passwords",
+      "database:manage_production_branch_passwords",
+      "database:manage_read_only_passwords",
+      "database:manage_production_read_only_passwords",
+      "branch:manage_passwords",
+      "branch:manage_read_only_passwords"
+    ]
+  },
+  {
+    "name": "roles.renewRole",
+    "namespace": "roles",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/roles/{id}/renew",
+    "operationId": "renew_role",
+    "oauthScopes": [
+      "organization:manage_passwords",
+      "organization:manage_production_branch_passwords",
+      "organization:manage_read_only_passwords",
+      "organization:manage_production_read_only_passwords",
+      "database:manage_passwords",
+      "database:manage_production_branch_passwords",
+      "database:manage_read_only_passwords",
+      "database:manage_production_read_only_passwords",
+      "branch:manage_passwords",
+      "branch:manage_read_only_passwords"
+    ]
+  },
+  {
+    "name": "roles.resetRole",
+    "namespace": "roles",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/roles/{id}/reset",
+    "operationId": "reset_role",
+    "oauthScopes": [
+      "organization:manage_passwords",
+      "organization:manage_production_branch_passwords",
+      "organization:manage_read_only_passwords",
+      "organization:manage_production_read_only_passwords",
+      "database:manage_passwords",
+      "database:manage_production_branch_passwords",
+      "database:manage_read_only_passwords",
+      "database:manage_production_read_only_passwords",
+      "branch:manage_passwords",
+      "branch:manage_read_only_passwords"
+    ]
+  },
+  {
+    "name": "apiNekiRouters.listRouterSizeSkus",
+    "namespace": "apiNekiRouters",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/router-size-skus",
+    "operationId": "list_router_size_skus",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiNekiRouters.listRouters",
+    "namespace": "apiNekiRouters",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/routers",
+    "operationId": "list_routers",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiNekiRouters.createRouter",
+    "namespace": "apiNekiRouters",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/routers",
+    "operationId": "create_router",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "apiNekiRouters.getRouter",
+    "namespace": "apiNekiRouters",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/routers/{router}",
+    "operationId": "get_router",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiNekiRouters.updateRouter",
+    "namespace": "apiNekiRouters",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/routers/{router}",
+    "operationId": "update_router",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "apiNekiRouters.deleteRouter",
+    "namespace": "apiNekiRouters",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/routers/{router}",
+    "operationId": "delete_router",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "apiNekiRouterChangeRequests.listRouterChangeRequests",
+    "namespace": "apiNekiRouterChangeRequests",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/routers/{router}/change-requests",
+    "operationId": "list_router_change_requests",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiNekiRouterChangeRequests.getRouterChangeRequest",
+    "namespace": "apiNekiRouterChangeRequests",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/routers/{router}/change-requests/{id}",
+    "operationId": "get_router_change_request",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiNekiRouterChangeRequests.cancelRouterChangeRequest",
+    "namespace": "apiNekiRouterChangeRequests",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/routers/{router}/change-requests/{id}",
+    "operationId": "cancel_router_change_request",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "apiNekiRouterParameters.listRouterParameters",
+    "namespace": "apiNekiRouterParameters",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/routers/{router}/parameters",
+    "operationId": "list_router_parameters",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "databaseBranches.enableSafeMigrations",
+    "namespace": "databaseBranches",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/safe-migrations",
+    "operationId": "enable_safe_migrations",
+    "oauthScopes": []
+  },
+  {
+    "name": "databaseBranches.updateSafeMigrations",
+    "namespace": "databaseBranches",
+    "method": "put",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/safe-migrations",
+    "operationId": "update_safe_migrations",
+    "oauthScopes": []
+  },
+  {
+    "name": "databaseBranches.disableSafeMigrations",
+    "namespace": "databaseBranches",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/safe-migrations",
+    "operationId": "disable_safe_migrations",
+    "oauthScopes": []
+  },
+  {
+    "name": "databaseBranches.getBranchSchema",
+    "namespace": "databaseBranches",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/schema",
+    "operationId": "get_branch_schema",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "databaseBranches.lintBranchSchema",
+    "namespace": "databaseBranches",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/schema/lint",
+    "operationId": "lint_branch_schema",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiNekiShards.listShards",
+    "namespace": "apiNekiShards",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/shards",
+    "operationId": "list_shards",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiNekiShards.createShard",
+    "namespace": "apiNekiShards",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/shards",
+    "operationId": "create_shard",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "apiNekiShards.getShard",
+    "namespace": "apiNekiShards",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/shards/{id}",
+    "operationId": "get_shard",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "apiNekiShards.updateShard",
+    "namespace": "apiNekiShards",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/shards/{id}",
+    "operationId": "update_shard",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "apiNekiShards.deleteShard",
+    "namespace": "apiNekiShards",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/shards/{id}",
+    "operationId": "delete_shard",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "switchovers.listSwitchovers",
+    "namespace": "switchovers",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/switchovers",
+    "operationId": "list_switchovers",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "switchovers.createSwitchover",
+    "namespace": "switchovers",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/switchovers",
+    "operationId": "create_switchover",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "switchovers.getSwitchover",
+    "namespace": "switchovers",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/switchovers/{id}",
+    "operationId": "get_switchover",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "trafficBudgets.listTrafficBudgets",
+    "namespace": "trafficBudgets",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/traffic/budgets",
+    "operationId": "list_traffic_budgets",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "trafficBudgets.createTrafficBudget",
+    "namespace": "trafficBudgets",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/traffic/budgets",
+    "operationId": "create_traffic_budget",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "trafficRules.createTrafficRule",
+    "namespace": "trafficRules",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/traffic/budgets/{budget_id}/rules",
+    "operationId": "create_traffic_rule",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "trafficRules.deleteTrafficRule",
+    "namespace": "trafficRules",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/traffic/budgets/{budget_id}/rules/{id}",
+    "operationId": "delete_traffic_rule",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "trafficBudgets.getTrafficBudget",
+    "namespace": "trafficBudgets",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/traffic/budgets/{id}",
+    "operationId": "get_traffic_budget",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "trafficBudgets.updateTrafficBudget",
+    "namespace": "trafficBudgets",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/traffic/budgets/{id}",
+    "operationId": "update_traffic_budget",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "trafficBudgets.deleteTrafficBudget",
+    "namespace": "trafficBudgets",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/traffic/budgets/{id}",
+    "operationId": "delete_traffic_budget",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "branchVitessParameters.listBranchVitessParameters",
+    "namespace": "branchVitessParameters",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/vitess-parameters",
+    "operationId": "list_branch_vitess_parameters",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches",
+      "branch:read_branch"
+    ]
+  },
+  {
+    "name": "vtctldOperations.getVtctldOperation",
+    "namespace": "vtctldOperations",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/branches/{branch}/vtctld/operations/{id}",
+    "operationId": "get_vtctld_operation",
+    "oauthScopes": [
+      "organization:read_workflows",
+      "organization:manage_branch_topologies",
+      "organization:manage_production_branch_topologies",
+      "database:read_workflows",
+      "database:manage_branch_topologies",
+      "database:manage_production_branch_topologies",
+      "branch:manage_topology"
+    ]
+  },
+  {
+    "name": "databasePostgresIpRestrictions.listDatabasePostgresCidrs",
+    "namespace": "databasePostgresIpRestrictions",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/cidrs",
+    "operationId": "list_database_postgres_cidrs",
+    "oauthScopes": [
+      "organization:read_databases",
+      "database:read_database"
+    ]
+  },
+  {
+    "name": "databasePostgresIpRestrictions.createDatabasePostgresCidr",
+    "namespace": "databasePostgresIpRestrictions",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/cidrs",
+    "operationId": "create_database_postgres_cidr",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "databasePostgresIpRestrictions.getDatabasePostgresCidr",
+    "namespace": "databasePostgresIpRestrictions",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/cidrs/{id}",
+    "operationId": "get_database_postgres_cidr",
+    "oauthScopes": [
+      "organization:read_databases",
+      "database:read_database"
+    ]
+  },
+  {
+    "name": "databasePostgresIpRestrictions.updateDatabasePostgresCidr",
+    "namespace": "databasePostgresIpRestrictions",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}/cidrs/{id}",
+    "operationId": "update_database_postgres_cidr",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "databasePostgresIpRestrictions.deleteDatabasePostgresCidr",
+    "namespace": "databasePostgresIpRestrictions",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/cidrs/{id}",
+    "operationId": "delete_database_postgres_cidr",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "deployRequests.getDeployQueue",
+    "namespace": "deployRequests",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/deploy-queue",
+    "operationId": "get_deploy_queue",
+    "oauthScopes": []
+  },
+  {
+    "name": "deployRequests.listDeployRequests",
+    "namespace": "deployRequests",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/deploy-requests",
+    "operationId": "list_deploy_requests",
+    "oauthScopes": [
+      "organization:read_deploy_requests",
+      "database:read_deploy_requests"
+    ]
+  },
+  {
+    "name": "deployRequests.createDeployRequest",
+    "namespace": "deployRequests",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/deploy-requests",
+    "operationId": "create_deploy_request",
+    "oauthScopes": [
+      "organization:write_deploy_requests",
+      "database:write_deploy_requests"
+    ]
+  },
+  {
+    "name": "deployRequests.getDeployRequest",
+    "namespace": "deployRequests",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/deploy-requests/{number}",
+    "operationId": "get_deploy_request",
+    "oauthScopes": [
+      "organization:read_deploy_requests",
+      "database:read_deploy_requests"
+    ]
+  },
+  {
+    "name": "deployRequests.closeDeployRequest",
+    "namespace": "deployRequests",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}/deploy-requests/{number}",
+    "operationId": "close_deploy_request",
+    "oauthScopes": [
+      "organization:write_deploy_requests",
+      "database:write_deploy_requests"
+    ]
+  },
+  {
+    "name": "deployRequests.updateAggressiveCutover",
+    "namespace": "deployRequests",
+    "method": "put",
+    "path": "/organizations/{organization}/databases/{database}/deploy-requests/{number}/aggressive-cutover",
+    "operationId": "update_aggressive_cutover",
+    "oauthScopes": [
+      "organization:deploy_deploy_requests",
+      "database:deploy_deploy_requests"
+    ]
+  },
+  {
+    "name": "deployRequests.completeGatedDeployRequest",
+    "namespace": "deployRequests",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/deploy-requests/{number}/apply-deploy",
+    "operationId": "complete_gated_deploy_request",
+    "oauthScopes": [
+      "organization:deploy_deploy_requests",
+      "database:deploy_deploy_requests"
+    ]
+  },
+  {
+    "name": "deployRequests.updateAutoApply",
+    "namespace": "deployRequests",
+    "method": "put",
+    "path": "/organizations/{organization}/databases/{database}/deploy-requests/{number}/auto-apply",
+    "operationId": "update_auto_apply",
+    "oauthScopes": [
+      "organization:deploy_deploy_requests",
+      "database:deploy_deploy_requests"
+    ]
+  },
+  {
+    "name": "deployRequests.updateAutoDeleteBranch",
+    "namespace": "deployRequests",
+    "method": "put",
+    "path": "/organizations/{organization}/databases/{database}/deploy-requests/{number}/auto-delete-branch",
+    "operationId": "update_auto_delete_branch",
+    "oauthScopes": [
+      "organization:deploy_deploy_requests",
+      "database:deploy_deploy_requests"
+    ]
+  },
+  {
+    "name": "deployRequests.cancelDeployRequest",
+    "namespace": "deployRequests",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/deploy-requests/{number}/cancel",
+    "operationId": "cancel_deploy_request",
+    "oauthScopes": [
+      "organization:deploy_deploy_requests",
+      "database:deploy_deploy_requests"
+    ]
+  },
+  {
+    "name": "deployRequests.completeErroredDeploy",
+    "namespace": "deployRequests",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/deploy-requests/{number}/complete-deploy",
+    "operationId": "complete_errored_deploy",
+    "oauthScopes": [
+      "organization:deploy_deploy_requests",
+      "database:deploy_deploy_requests"
+    ]
+  },
+  {
+    "name": "deployRequests.queueDeployRequest",
+    "namespace": "deployRequests",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/deploy-requests/{number}/deploy",
+    "operationId": "queue_deploy_request",
+    "oauthScopes": [
+      "organization:deploy_deploy_requests",
+      "database:deploy_deploy_requests"
+    ]
+  },
+  {
+    "name": "deployRequests.getDeployment",
+    "namespace": "deployRequests",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/deploy-requests/{number}/deployment",
+    "operationId": "get_deployment",
+    "oauthScopes": [
+      "organization:read_deploy_requests",
+      "database:read_deploy_requests"
+    ]
+  },
+  {
+    "name": "deployRequests.forceCutoverDeployRequest",
+    "namespace": "deployRequests",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/deploy-requests/{number}/force-cutover",
+    "operationId": "force_cutover_deploy_request",
+    "oauthScopes": [
+      "organization:deploy_deploy_requests",
+      "database:deploy_deploy_requests"
+    ]
+  },
+  {
+    "name": "deployRequests.listDeployOperations",
+    "namespace": "deployRequests",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/deploy-requests/{number}/operations",
+    "operationId": "list_deploy_operations",
+    "oauthScopes": [
+      "organization:read_deploy_requests",
+      "database:read_deploy_requests"
+    ]
+  },
+  {
+    "name": "deployRequests.completeRevert",
+    "namespace": "deployRequests",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/deploy-requests/{number}/revert",
+    "operationId": "complete_revert",
+    "oauthScopes": [
+      "organization:deploy_deploy_requests",
+      "database:deploy_deploy_requests"
+    ]
+  },
+  {
+    "name": "deployRequests.listDeployRequestReviews",
+    "namespace": "deployRequests",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/deploy-requests/{number}/reviews",
+    "operationId": "list_deploy_request_reviews",
+    "oauthScopes": [
+      "organization:read_deploy_requests",
+      "database:read_deploy_requests"
+    ]
+  },
+  {
+    "name": "deployRequests.reviewDeployRequest",
+    "namespace": "deployRequests",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/deploy-requests/{number}/reviews",
+    "operationId": "review_deploy_request",
+    "oauthScopes": [
+      "organization:approve_deploy_requests",
+      "database:approve_deploy_requests"
+    ]
+  },
+  {
+    "name": "deployRequests.skipRevertPeriod",
+    "namespace": "deployRequests",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/deploy-requests/{number}/skip-revert",
+    "operationId": "skip_revert_period",
+    "oauthScopes": [
+      "organization:deploy_deploy_requests",
+      "database:deploy_deploy_requests"
+    ]
+  },
+  {
+    "name": "deployRequests.checkDeployRequestStorage",
+    "namespace": "deployRequests",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/deploy-requests/{number}/storage-check",
+    "operationId": "check_deploy_request_storage",
+    "oauthScopes": [
+      "organization:read_deploy_requests",
+      "database:read_deploy_requests"
+    ]
+  },
+  {
+    "name": "deployRequests.getDeployRequestThrottler",
+    "namespace": "deployRequests",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/deploy-requests/{number}/throttler",
+    "operationId": "get_deploy_request_throttler",
+    "oauthScopes": [
+      "organization:read_deploy_requests",
+      "database:read_deploy_requests"
+    ]
+  },
+  {
+    "name": "deployRequests.updateDeployRequestThrottler",
+    "namespace": "deployRequests",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}/deploy-requests/{number}/throttler",
+    "operationId": "update_deploy_request_throttler",
+    "oauthScopes": [
+      "organization:deploy_deploy_requests",
+      "database:deploy_deploy_requests"
+    ]
+  },
+  {
+    "name": "maintenanceEvents.listMaintenanceEvents",
+    "namespace": "maintenanceEvents",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/maintenance-events",
+    "operationId": "list_maintenance_events",
+    "oauthScopes": [
+      "organization:read_databases",
+      "database:read_database"
+    ]
+  },
+  {
+    "name": "maintenanceEvents.getMaintenanceEvent",
+    "namespace": "maintenanceEvents",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/maintenance-events/{id}",
+    "operationId": "get_maintenance_event",
+    "oauthScopes": [
+      "organization:read_databases",
+      "database:read_database"
+    ]
+  },
+  {
+    "name": "maintenanceEvents.rescheduleMaintenanceEvent",
+    "namespace": "maintenanceEvents",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}/maintenance-events/{id}",
+    "operationId": "reschedule_maintenance_event",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "maintenanceSchedules.listMaintenanceSchedules",
+    "namespace": "maintenanceSchedules",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/maintenance-schedules",
+    "operationId": "list_maintenance_schedules",
+    "oauthScopes": [
+      "organization:read_databases",
+      "database:read_database"
+    ]
+  },
+  {
+    "name": "maintenanceSchedules.getMaintenanceSchedule",
+    "namespace": "maintenanceSchedules",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/maintenance-schedules/{id}",
+    "operationId": "get_maintenance_schedule",
+    "oauthScopes": [
+      "organization:read_databases",
+      "database:read_database"
+    ]
+  },
+  {
+    "name": "maintenanceSchedules.updateMaintenanceSchedule",
+    "namespace": "maintenanceSchedules",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}/maintenance-schedules/{id}",
+    "operationId": "update_maintenance_schedule",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "maintenanceWindows.listMaintenanceWindows",
+    "namespace": "maintenanceWindows",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/maintenance-schedules/{id}/windows",
+    "operationId": "list_maintenance_windows",
+    "oauthScopes": [
+      "organization:read_databases",
+      "database:read_database"
+    ]
+  },
+  {
+    "name": "databases.listReadOnlyRegions",
+    "namespace": "databases",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/read-only-regions",
+    "operationId": "list_read_only_regions",
+    "oauthScopes": [
+      "organization:read_branches",
+      "database:read_branches"
+    ]
+  },
+  {
+    "name": "databases.listDatabaseRegions",
+    "namespace": "databases",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/regions",
+    "operationId": "list_database_regions",
+    "oauthScopes": [
+      "organization:read_databases",
+      "database:read_database"
+    ]
+  },
+  {
+    "name": "schemaRecommendations.listSchemaRecommendations",
+    "namespace": "schemaRecommendations",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/schema-recommendations",
+    "operationId": "list_schema_recommendations",
+    "oauthScopes": [
+      "organization:read_databases",
+      "database:read_database"
+    ]
+  },
+  {
+    "name": "schemaRecommendations.getSchemaRecommendation",
+    "namespace": "schemaRecommendations",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/schema-recommendations/{number}",
+    "operationId": "get_schema_recommendation",
+    "oauthScopes": [
+      "organization:read_databases",
+      "database:read_database"
+    ]
+  },
+  {
+    "name": "schemaRecommendations.dismissSchemaRecommendation",
+    "namespace": "schemaRecommendations",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/schema-recommendations/{number}/dismiss",
+    "operationId": "dismiss_schema_recommendation",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "databases.getDatabaseThrottler",
+    "namespace": "databases",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/throttler",
+    "operationId": "get_database_throttler",
+    "oauthScopes": [
+      "organization:read_databases",
+      "database:read_database"
+    ]
+  },
+  {
+    "name": "databases.updateDatabaseThrottler",
+    "namespace": "databases",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}/throttler",
+    "operationId": "update_database_throttler",
+    "oauthScopes": [
+      "organization:deploy_deploy_requests",
+      "database:deploy_deploy_requests"
+    ]
+  },
+  {
+    "name": "webhooks.listWebhooks",
+    "namespace": "webhooks",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/webhooks",
+    "operationId": "list_webhooks",
+    "oauthScopes": [
+      "organization:read_databases",
+      "database:read_database"
+    ]
+  },
+  {
+    "name": "webhooks.createWebhook",
+    "namespace": "webhooks",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/webhooks",
+    "operationId": "create_webhook",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "webhooks.getWebhook",
+    "namespace": "webhooks",
+    "method": "get",
+    "path": "/organizations/{organization}/databases/{database}/webhooks/{id}",
+    "operationId": "get_webhook",
+    "oauthScopes": [
+      "organization:read_databases",
+      "database:read_database"
+    ]
+  },
+  {
+    "name": "webhooks.updateWebhook",
+    "namespace": "webhooks",
+    "method": "patch",
+    "path": "/organizations/{organization}/databases/{database}/webhooks/{id}",
+    "operationId": "update_webhook",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "webhooks.deleteWebhook",
+    "namespace": "webhooks",
+    "method": "delete",
+    "path": "/organizations/{organization}/databases/{database}/webhooks/{id}",
+    "operationId": "delete_webhook",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "webhooks.testWebhook",
+    "namespace": "webhooks",
+    "method": "post",
+    "path": "/organizations/{organization}/databases/{database}/webhooks/{id}/test",
+    "operationId": "test_webhook",
+    "oauthScopes": [
+      "organization:write_databases",
+      "database:write_database"
+    ]
+  },
+  {
+    "name": "organizationInvitations.listOrganizationInvitations",
+    "namespace": "organizationInvitations",
+    "method": "get",
+    "path": "/organizations/{organization}/invitations",
+    "operationId": "list_organization_invitations",
+    "oauthScopes": [
+      "organization:write_members"
+    ]
+  },
+  {
+    "name": "organizationInvitations.createOrganizationInvitation",
+    "namespace": "organizationInvitations",
+    "method": "post",
+    "path": "/organizations/{organization}/invitations",
+    "operationId": "create_organization_invitation",
+    "oauthScopes": [
+      "organization:write_members"
+    ]
+  },
+  {
+    "name": "organizationInvitations.cancelOrganizationInvitation",
+    "namespace": "organizationInvitations",
+    "method": "delete",
+    "path": "/organizations/{organization}/invitations/{id}",
+    "operationId": "cancel_organization_invitation",
+    "oauthScopes": [
+      "organization:write_members"
+    ]
+  },
+  {
+    "name": "invoices.listInvoices",
+    "namespace": "invoices",
+    "method": "get",
+    "path": "/organizations/{organization}/invoices",
+    "operationId": "list_invoices",
+    "oauthScopes": [
+      "organization:read_invoices"
+    ]
+  },
+  {
+    "name": "invoices.getInvoice",
+    "namespace": "invoices",
+    "method": "get",
+    "path": "/organizations/{organization}/invoices/{id}",
+    "operationId": "get_invoice",
+    "oauthScopes": [
+      "organization:read_invoices"
+    ]
+  },
+  {
+    "name": "invoices.getInvoiceLineItems",
+    "namespace": "invoices",
+    "method": "get",
+    "path": "/organizations/{organization}/invoices/{id}/line-items",
+    "operationId": "get_invoice_line_items",
+    "oauthScopes": [
+      "organization:read_invoices"
+    ]
+  },
+  {
+    "name": "organizationMembers.listOrganizationMembers",
+    "namespace": "organizationMembers",
+    "method": "get",
+    "path": "/organizations/{organization}/members",
+    "operationId": "list_organization_members",
+    "oauthScopes": [
+      "organization:read_organization"
+    ]
+  },
+  {
+    "name": "organizationMembers.getOrganizationMembership",
+    "namespace": "organizationMembers",
+    "method": "get",
+    "path": "/organizations/{organization}/members/{id}",
+    "operationId": "get_organization_membership",
+    "oauthScopes": [
+      "organization:read_organization"
+    ]
+  },
+  {
+    "name": "organizationMembers.updateOrganizationMembership",
+    "namespace": "organizationMembers",
+    "method": "patch",
+    "path": "/organizations/{organization}/members/{id}",
+    "operationId": "update_organization_membership",
+    "oauthScopes": [
+      "organization:write_organization"
+    ]
+  },
+  {
+    "name": "organizationMembers.removeOrganizationMember",
+    "namespace": "organizationMembers",
+    "method": "delete",
+    "path": "/organizations/{organization}/members/{id}",
+    "operationId": "remove_organization_member",
+    "oauthScopes": [
+      "organization:write_organization"
+    ]
+  },
+  {
+    "name": "oAuthApplications.listOauthApplications",
+    "namespace": "oAuthApplications",
+    "method": "get",
+    "path": "/organizations/{organization}/oauth-applications",
+    "operationId": "list_oauth_applications",
+    "oauthScopes": []
+  },
+  {
+    "name": "oAuthApplications.getOauthApplication",
+    "namespace": "oAuthApplications",
+    "method": "get",
+    "path": "/organizations/{organization}/oauth-applications/{application_id}",
+    "operationId": "get_oauth_application",
+    "oauthScopes": []
+  },
+  {
+    "name": "oAuthApplications.listOauthTokens",
+    "namespace": "oAuthApplications",
+    "method": "get",
+    "path": "/organizations/{organization}/oauth-applications/{application_id}/tokens",
+    "operationId": "list_oauth_tokens",
+    "oauthScopes": []
+  },
+  {
+    "name": "oAuthApplications.getOauthToken",
+    "namespace": "oAuthApplications",
+    "method": "get",
+    "path": "/organizations/{organization}/oauth-applications/{application_id}/tokens/{token_id}",
+    "operationId": "get_oauth_token",
+    "oauthScopes": []
+  },
+  {
+    "name": "oAuthApplications.deleteOauthToken",
+    "namespace": "oAuthApplications",
+    "method": "delete",
+    "path": "/organizations/{organization}/oauth-applications/{application_id}/tokens/{token_id}",
+    "operationId": "delete_oauth_token",
+    "oauthScopes": []
+  },
+  {
+    "name": "oAuthTokens.createOauthToken",
+    "namespace": "oAuthTokens",
+    "method": "post",
+    "path": "/organizations/{organization}/oauth-applications/{id}/token",
+    "operationId": "create_oauth_token",
+    "oauthScopes": []
+  },
+  {
+    "name": "organizations.listRegionsForOrganization",
+    "namespace": "organizations",
+    "method": "get",
+    "path": "/organizations/{organization}/regions",
+    "operationId": "list_regions_for_organization",
+    "oauthScopes": [
+      "user:read_organizations",
+      "organization:read_organization"
+    ]
+  },
+  {
+    "name": "serviceTokens.listServiceTokens",
+    "namespace": "serviceTokens",
+    "method": "get",
+    "path": "/organizations/{organization}/service-tokens",
+    "operationId": "list_service_tokens",
+    "oauthScopes": []
+  },
+  {
+    "name": "serviceTokens.createServiceToken",
+    "namespace": "serviceTokens",
+    "method": "post",
+    "path": "/organizations/{organization}/service-tokens",
+    "operationId": "create_service_token",
+    "oauthScopes": []
+  },
+  {
+    "name": "serviceTokens.getServiceToken",
+    "namespace": "serviceTokens",
+    "method": "get",
+    "path": "/organizations/{organization}/service-tokens/{id}",
+    "operationId": "get_service_token",
+    "oauthScopes": []
+  },
+  {
+    "name": "serviceTokens.deleteServiceToken",
+    "namespace": "serviceTokens",
+    "method": "delete",
+    "path": "/organizations/{organization}/service-tokens/{id}",
+    "operationId": "delete_service_token",
+    "oauthScopes": []
+  },
+  {
+    "name": "organizationSso.getOrganizationSso",
+    "namespace": "organizationSso",
+    "method": "get",
+    "path": "/organizations/{organization}/sso",
+    "operationId": "get_organization_sso",
+    "oauthScopes": [
+      "organization:manage_sso"
+    ]
+  },
+  {
+    "name": "organizationSso.enableOrganizationSso",
+    "namespace": "organizationSso",
+    "method": "post",
+    "path": "/organizations/{organization}/sso",
+    "operationId": "enable_organization_sso",
+    "oauthScopes": [
+      "organization:manage_sso"
+    ]
+  },
+  {
+    "name": "organizationSso.disableOrganizationSso",
+    "namespace": "organizationSso",
+    "method": "delete",
+    "path": "/organizations/{organization}/sso",
+    "operationId": "disable_organization_sso",
+    "oauthScopes": [
+      "organization:manage_sso"
+    ]
+  },
+  {
+    "name": "organizationSso.configureOrganizationSso",
+    "namespace": "organizationSso",
+    "method": "post",
+    "path": "/organizations/{organization}/sso/configure",
+    "operationId": "configure_organization_sso",
+    "oauthScopes": [
+      "organization:manage_sso"
+    ]
+  },
+  {
+    "name": "organizationSso.enableOrganizationSsoDirectory",
+    "namespace": "organizationSso",
+    "method": "post",
+    "path": "/organizations/{organization}/sso/directory",
+    "operationId": "enable_organization_sso_directory",
+    "oauthScopes": [
+      "organization:manage_sso"
+    ]
+  },
+  {
+    "name": "organizationSso.disableOrganizationSsoDirectory",
+    "namespace": "organizationSso",
+    "method": "delete",
+    "path": "/organizations/{organization}/sso/directory",
+    "operationId": "disable_organization_sso_directory",
+    "oauthScopes": [
+      "organization:manage_sso"
+    ]
+  },
+  {
+    "name": "organizationSsoDomains.listOrganizationSsoDomains",
+    "namespace": "organizationSsoDomains",
+    "method": "get",
+    "path": "/organizations/{organization}/sso/domains",
+    "operationId": "list_organization_sso_domains",
+    "oauthScopes": [
+      "organization:manage_sso"
+    ]
+  },
+  {
+    "name": "organizationSsoDomains.createOrganizationSsoDomain",
+    "namespace": "organizationSsoDomains",
+    "method": "post",
+    "path": "/organizations/{organization}/sso/domains",
+    "operationId": "create_organization_sso_domain",
+    "oauthScopes": [
+      "organization:manage_sso"
+    ]
+  },
+  {
+    "name": "organizationSsoDomains.getOrganizationSsoDomain",
+    "namespace": "organizationSsoDomains",
+    "method": "get",
+    "path": "/organizations/{organization}/sso/domains/{id}",
+    "operationId": "get_organization_sso_domain",
+    "oauthScopes": [
+      "organization:manage_sso"
+    ]
+  },
+  {
+    "name": "organizationSsoDomains.deleteOrganizationSsoDomain",
+    "namespace": "organizationSsoDomains",
+    "method": "delete",
+    "path": "/organizations/{organization}/sso/domains/{id}",
+    "operationId": "delete_organization_sso_domain",
+    "oauthScopes": [
+      "organization:manage_sso"
+    ]
+  },
+  {
+    "name": "organizationTeams.listOrganizationTeams",
+    "namespace": "organizationTeams",
+    "method": "get",
+    "path": "/organizations/{organization}/teams",
+    "operationId": "list_organization_teams",
+    "oauthScopes": [
+      "organization:read_organization"
+    ]
+  },
+  {
+    "name": "organizationTeams.createOrganizationTeam",
+    "namespace": "organizationTeams",
+    "method": "post",
+    "path": "/organizations/{organization}/teams",
+    "operationId": "create_organization_team",
+    "oauthScopes": [
+      "organization:write_organization"
+    ]
+  },
+  {
+    "name": "organizationTeams.getOrganizationTeam",
+    "namespace": "organizationTeams",
+    "method": "get",
+    "path": "/organizations/{organization}/teams/{team}",
+    "operationId": "get_organization_team",
+    "oauthScopes": [
+      "organization:read_organization"
+    ]
+  },
+  {
+    "name": "organizationTeams.updateOrganizationTeam",
+    "namespace": "organizationTeams",
+    "method": "patch",
+    "path": "/organizations/{organization}/teams/{team}",
+    "operationId": "update_organization_team",
+    "oauthScopes": [
+      "organization:write_organization"
+    ]
+  },
+  {
+    "name": "organizationTeams.deleteOrganizationTeam",
+    "namespace": "organizationTeams",
+    "method": "delete",
+    "path": "/organizations/{organization}/teams/{team}",
+    "operationId": "delete_organization_team",
+    "oauthScopes": [
+      "organization:write_organization"
+    ]
+  },
+  {
+    "name": "teamMembers.listOrganizationTeamMembers",
+    "namespace": "teamMembers",
+    "method": "get",
+    "path": "/organizations/{organization}/teams/{team}/members",
+    "operationId": "list_organization_team_members",
+    "oauthScopes": [
+      "organization:read_organization"
+    ]
+  },
+  {
+    "name": "teamMembers.addOrganizationTeamMember",
+    "namespace": "teamMembers",
+    "method": "post",
+    "path": "/organizations/{organization}/teams/{team}/members",
+    "operationId": "add_organization_team_member",
+    "oauthScopes": [
+      "organization:write_organization"
+    ]
+  },
+  {
+    "name": "teamMembers.getOrganizationTeamMember",
+    "namespace": "teamMembers",
+    "method": "get",
+    "path": "/organizations/{organization}/teams/{team}/members/{id}",
+    "operationId": "get_organization_team_member",
+    "oauthScopes": [
+      "organization:read_organization"
+    ]
+  },
+  {
+    "name": "teamMembers.removeOrganizationTeamMember",
+    "namespace": "teamMembers",
+    "method": "delete",
+    "path": "/organizations/{organization}/teams/{team}/members/{id}",
+    "operationId": "remove_organization_team_member",
+    "oauthScopes": [
+      "organization:write_organization"
+    ]
+  },
+  {
+    "name": "postgresVersions.listPostgresVersions",
+    "namespace": "postgresVersions",
+    "method": "get",
+    "path": "/postgres-versions",
+    "operationId": "list_postgres_versions",
+    "oauthScopes": []
+  },
+  {
+    "name": "regions.listPublicRegions",
+    "namespace": "regions",
+    "method": "get",
+    "path": "/regions",
+    "operationId": "list_public_regions",
+    "oauthScopes": []
+  },
+  {
+    "name": "users.getCurrentUser",
+    "namespace": "users",
+    "method": "get",
+    "path": "/user",
+    "operationId": "get_current_user",
+    "oauthScopes": [
+      "user:read_user"
+    ]
+  }
+]
