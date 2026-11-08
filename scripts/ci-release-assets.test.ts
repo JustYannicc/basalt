@@ -103,18 +103,24 @@ test("Check does not invoke upstream release packaging that requires the omitted
     readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
   );
   assert.equal(workflow.env.BASALT_CI_OMIT_RELEASE_DOWNLOADS, "true");
+  const releaseRuntimeCommand =
+    /(?:scripts\/releases\/|apps\/local\/desktop\/|\bdugite\b|bun run releases?:|bun run desktop:|bunx electron|electron\/cli\.js|e2e:desktop)/;
+  const checkJob = (steps: { run?: string }[], id: string) => {
+    for (const step of steps) assert.doesNotMatch(step.run ?? "", releaseRuntimeCommand, id);
+  };
   for (const [id, job] of Object.entries(workflow.jobs) as [
     string,
     { steps: { run?: string }[] },
   ][]) {
-    for (const step of job.steps) {
-      assert.doesNotMatch(
-        step.run ?? "",
-        /(?:scripts\/releases\/|bun run releases?:|bun run desktop:|bunx electron|electron\/cli\.js|e2e:desktop)/,
-        id,
-      );
-    }
+    checkJob(job.steps, id);
   }
+  for (const command of [
+    "node .upstream/apps/local/desktop/scripts/launcher.mjs",
+    "bun run desktop:start",
+    "node scripts/releases/package.ts",
+    'node -e \'require("dugite").exec(["--version"], ".")\'',
+  ])
+    assert.throws(() => checkJob([{ run: command }], "native-runtime-regression"));
   const upstream = new URL("../.upstream/", import.meta.url);
   const files = execFileSync(
     "git",
