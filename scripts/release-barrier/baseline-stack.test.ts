@@ -113,8 +113,9 @@ const sdkFixture = (
 };
 
 test("every captured Worker baseline retries its first transient GET and releases exact versions", async (context) => {
-  const directory = await mkdtemp(join(tmpdir(), "baseline-success-"));
-  context.after(() => rm(directory, { recursive: true, force: true }));
+  const root = await mkdtemp(join(tmpdir(), "baseline-success-"));
+  const directory = join(root, "release-barrier");
+  context.after(() => rm(root, { recursive: true, force: true }));
   const evidence = releaseEvidence(directory, "a".repeat(40));
   const proof = sdkFixture("once", evidence);
   const exit = await proof.run();
@@ -138,8 +139,9 @@ test("every captured Worker baseline retries its first transient GET and release
 for (const scenario of ["transport", "forbidden"] as const)
   for (const failedWorker of ["Api", "Router"])
     test(`permanent ${scenario} ${failedWorker} baseline failure remains bounded and safely typed`, async (context) => {
-      const directory = await mkdtemp(join(tmpdir(), "baseline-failure-"));
-      context.after(() => rm(directory, { recursive: true, force: true }));
+      const root = await mkdtemp(join(tmpdir(), "baseline-failure-"));
+      const directory = join(root, "release-barrier");
+      context.after(() => rm(root, { recursive: true, force: true }));
       const evidence = releaseEvidence(directory, "a".repeat(40));
       const proof = sdkFixture(scenario, evidence, failedWorker);
       const exit = await proof.run();
