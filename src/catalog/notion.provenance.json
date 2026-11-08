@@ -2,8 +2,8 @@
   "package": "@executor.sh/notion",
   "publishedUrl": "https://catalog.executor.sh/apps/notion.json",
   "publishedSha256": "032f541c7d3f65eab78e8037accfe63eca5ebed6367f000b158236a3c18d5d42",
-  "carriedSha256": "70bfdf87a42bbfc80539e84048b73204e15f2c1a33b4f928d6aed28d7ee9b6d2",
-  "patchSha256": "e6bd118ff2ead325963eb26b8663714b9efcf725db583d691f8c616473861825",
+  "carriedSha256": "3f8e31ef32ddbd7cd2a035c9ce215dcc702997e157ededf5f9703cdf0aad3e4b",
+  "patchSha256": "f103ab7580c504eb140bbdd0fc8ee47298d5ed61af94fb9ddc64b06d6f651748",
   "appsVersion": "0.0.1-beta.104-basalt.11",
   "license": "Not declared in the published package",
   "contribution": {
