@@ -76,8 +76,10 @@ export async function startPlanetScaleCatalog(service) {
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
+  const origin = new URL("http://127.0.0.1");
+  origin.port = String(server.address().port);
   return {
-    origin: `http://127.0.0.1:${server.address().port}`,
+    origin: origin.origin,
     stop: () =>
       new Promise((resolve) => {
         server.close(resolve);

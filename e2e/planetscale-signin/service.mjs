@@ -244,7 +244,9 @@ export async function startPlanetScale({
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
-  origin = `http://127.0.0.1:${server.address().port}`;
+  const listening = new URL("http://127.0.0.1");
+  listening.port = String(server.address().port);
+  origin = listening.origin;
   return {
     origin,
     calls,
