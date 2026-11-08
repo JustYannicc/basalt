@@ -70,9 +70,24 @@ export function fastPlan(document: unknown, context: FastContext) {
     if (typeof step.uses === "string") {
       if (step.if !== undefined) throw new Error("Unsupported conditional fast setup action");
       if (step.uses === "actions/checkout@v4") continue;
+      if (
+        ["./.github/actions/desktop-release-assets", "./.github/actions/setup-actionlint"].includes(
+          step.uses,
+        )
+      ) {
+        skipped.push({
+          name: "Restore release assets",
+          reason: "download cache requires GitHub Actions",
+        });
+        continue;
+      }
       if (!object(step.with)) throw new Error("Fast tool setup needs explicit versions");
-      if (step.uses === "actions/setup-node@v4") nodeVersion = String(step.with["node-version"]);
-      else if (step.uses === "oven-sh/setup-bun@v2") {
+      if (step.uses === "./.github/actions/setup-node" || step.uses === "actions/setup-node@v4")
+        nodeVersion = String(step.with["node-version"]);
+      else if (
+        step.uses === "./.github/actions/setup-bun" ||
+        step.uses === "oven-sh/setup-bun@v2"
+      ) {
         const version = String(step.with["bun-version"]);
         const reference = /^\$\{\{ env\.([A-Z0-9_]+) \}\}$/.exec(version);
         bunVersion = reference ? env[reference[1]!] : version;

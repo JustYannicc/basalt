@@ -183,6 +183,23 @@ model {
     technology "GitHub Releases"
     metadata { hosts "github.com|codeload.github.com" }
   }
+  goModules = adapter "Go module source" {
+    #external
+    technology "Go module proxy and checksum database"
+    metadata { hosts "proxy.golang.org|sum.golang.org" }
+  }
+  basalt.build -[sync]-> goModules "build actionlint with an exact verified Go toolchain and checksum-pinned source"
+  toolchainPackages = adapter "Toolchain packages" {
+    #external
+    technology "Official Bun npm packages and Node distributions"
+    metadata { hosts "registry.npmjs.org|nodejs.org" }
+  }
+  basalt.build -[sync]-> toolchainPackages "restore verified toolchain archives with native extraction and both command entry points without remote manifest lookups"
+  releaseMirror = adapter "Release mirror" {
+    #external
+    technology "npm mirror"
+    metadata { hosts "npmmirror.com|cdn.npmmirror.com" }
+  }
   providerSource = adapter "Provider source" {
     #external
     technology "GitHub raw source"
@@ -221,7 +238,8 @@ model {
     technology "npm registry · Alpine packages"
     metadata { hosts "registry.npmjs.org|dl-cdn.alpinelinux.org"; sdks "package:npm|package:apk" }
   }
-  basalt.build -[sync]-> releaseSource "download verified release sources and binaries"
+  basalt.build -[sync]-> releaseSource "warm verified compatibility archives before offline image builds"
+  basalt.build -[sync]-> releaseMirror "download checksum-verified desktop runtimes and packaging tools"
   basalt.deployment -[sync]-> releaseSource "download CI actions"
   basalt.build -[sync]-> containerRegistry "pull pinned images"
   basalt.deployment -[sync]-> containerRegistry "verify published image metadata"
