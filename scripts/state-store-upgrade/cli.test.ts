@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { workerId } from "./plan.ts";
 
-function run(mode?: string, expected = false, drift = false) {
+function run(mode?: string, expected = false, drift = false, providerFailure = false) {
   const root = process.cwd();
   const directory = mkdtempSync(join(tmpdir(), "state-upgrade-cli-"));
   const bundle = join(directory, "bundle");
@@ -46,7 +46,9 @@ if (${JSON.stringify(drift)}) {
     PLAN_SHA256: f.expected.planSha256,
   })) process.env["STATE_UPGRADE_EXPECTED_" + name] = value;
 }
-globalThis.fetch=f.fetcher;
+globalThis.fetch=${JSON.stringify(providerFailure)}
+  ? async () => Response.json({ success: false, errors: [{code: 10021, message: 'Invalid metadata field observability. ' + JSON.stringify({password: 'https://example.test/"synthetic-tail'}) + ' Bearer never-log-provider-token {"password":"short-value"} Cookie: session=tiny'}], messages: [{message: "Use version metadata only."}] }, {status: 400})
+  : f.fetcher;
 process.on('exit',()=>writeFileSync(${JSON.stringify(join(directory, "requests.json"))},JSON.stringify(f.requests)));
 `,
   );
@@ -93,6 +95,10 @@ test("the real CLI defaults to a read-only plan and retains the complete safe re
   assert.ok(result.requests.length > 0);
   assert.ok(result.requests.every((request) => request.method === "GET"));
   assert.equal(JSON.parse(result.stdout).planSha256, result.receipt.planSha256);
+  assert.equal(result.receipt.plan.upload.method, "POST");
+  assert.equal(result.receipt.plan.upload.metadata.main_module, "Api.js");
+  assert.equal(result.receipt.plan.upload.query.bindings_inherit, "strict");
+  assert.ok(!("observability" in result.receipt.plan.upload.metadata));
   assert.match(result.summary, /No Secrets Store resource is created, updated or deleted/);
   for (const text of [
     result.stdout,
@@ -139,4 +145,18 @@ test("CLI error and summary both name all binding differences without exposing c
     assert.ok(!text.includes("never-print-this-binding-value"));
   }
   assert.ok(result.requests.every((request) => request.method === "GET"));
+});
+
+test("CLI receipt, error and summary retain sanitized provider causes", () => {
+  const result = run(undefined, false, false, true);
+  assert.equal(result.status, 1);
+  assert.equal(result.receipt.error.provider.errors[0].code, 10021);
+  for (const text of [result.stderr, result.summary, JSON.stringify(result.receipt)]) {
+    assert.match(text, /Invalid metadata field observability/);
+    assert.match(text, /Use version metadata only/);
+    assert.ok(!text.includes("never-log-provider-token"));
+    assert.ok(!text.includes("short-value"));
+    assert.ok(!text.includes("session=tiny"));
+    assert.ok(!text.includes("synthetic-tail"));
+  }
 });

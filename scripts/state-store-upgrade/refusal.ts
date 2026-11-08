@@ -1,3 +1,4 @@
+import type { ProviderFailure } from "./provider-failure.ts";
 import { publicPropPath } from "../release-barrier/prop-diff.ts";
 import { digest } from "./encoding.ts";
 import type { Binding } from "./plan.ts";
@@ -14,12 +15,14 @@ export class UpgradeRefusal extends Error {
   readonly expected: string | number | null;
   readonly observed: string | number | null;
   readonly changes: Change[];
+  readonly provider?: ProviderFailure;
   constructor(
     resource: string,
     property: string,
     expected: string | number | null,
     observed: string | number | null,
     changes?: Change[],
+    provider?: ProviderFailure,
   ) {
     const all = changes ?? [{ resource, property, expected, observed }];
     super(
@@ -28,13 +31,23 @@ export class UpgradeRefusal extends Error {
           (change) =>
             `${change.resource}: ${change.property} expected ${change.expected}, observed ${change.observed}`,
         )
-        .join("; "),
+        .join("; ") +
+        (provider
+          ? "; Cloudflare " +
+            [
+              ...provider.errors.map((row) => `error ${row.code ?? "unknown"}: ${row.message}`),
+              ...provider.messages.map((row) => `message ${row.code ?? "unknown"}: ${row.message}`),
+              ...(provider.body === "json" ? [] : [`body ${provider.body}`]),
+              ...(provider.omitted ? [`${provider.omitted} additional entries omitted`] : []),
+            ].join("; ")
+          : ""),
     );
     this.resource = resource;
     this.property = property;
     this.expected = expected;
     this.observed = observed;
     this.changes = all;
+    this.provider = provider;
   }
 }
 const record = (value: unknown): value is Record<string, unknown> =>
