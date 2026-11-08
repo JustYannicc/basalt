@@ -4,6 +4,7 @@ import { havePropsChanged } from "alchemy/Diff";
 import { assertScriptSettings, settingsRefusal } from "./script-settings.ts";
 import type { ActiveWorkerPlacement } from "./script-placement.ts";
 import { BarrierRefusal, canonical, digest, type FrozenWorker } from "./manifest.ts";
+import type { PendingPlacementRepair } from "./pending-placement.ts";
 
 const globalProps = [
   "observability",
@@ -44,6 +45,7 @@ export function versionMetadata(
   upload: PreparedWorkerUpload,
   versions: readonly ActiveWorkerPlacement[] = [],
   baseline: readonly { versionId: string }[] = [],
+  repair?: PendingPlacementRepair,
 ): Workers.PutScriptMetadata {
   const { metadata, scriptName } = upload.request;
   const observed = upload.previousSettings;
@@ -78,10 +80,21 @@ export function versionMetadata(
       Object.fromEntries(changed.map((key) => [key, upload.previousProps![key]])),
       Object.fromEntries(changed.map((key) => [key, upload.props[key]])),
     );
-  assertScriptSettings(upload.fqn, scriptName, metadata, observed!, versions, baseline);
+  assertScriptSettings(
+    upload.fqn,
+    scriptName,
+    metadata,
+    repair ? { ...observed!, placement: metadata.placement } : observed!,
+    versions,
+    baseline,
+  );
   if (metadata.bindings?.some((binding) => binding.name === "BASALT_RELEASE_ATTEMPT"))
     refusal("attempt-value-in-worker", upload);
   return {
+    // Placement is version-scoped even when declarations are unchanged.
+    placement: metadata.placement,
+    limits: metadata.limits,
+    observability: metadata.observability,
     annotations: metadata.annotations,
     mainModule: metadata.mainModule,
     bindings: metadata.bindings,
@@ -99,10 +112,11 @@ export async function freezeUpload(
   upload: PreparedWorkerUpload,
   baseline: FrozenWorker["baseline"],
   versions: readonly ActiveWorkerPlacement[] = [],
+  repair?: PendingPlacementRepair,
 ): Promise<FrozenWorker> {
   const raw = upload.request.files;
   const files = raw === undefined ? [] : Array.isArray(raw) ? raw : [raw];
-  const metadata = versionMetadata(upload, versions, baseline);
+  const metadata = versionMetadata(upload, versions, baseline, repair);
   return {
     id: upload.fqn,
     accountId: upload.request.accountId,
@@ -120,6 +134,7 @@ export async function freezeUpload(
       }),
     ),
     baseline,
+    ...(repair ? { pendingPlacementRepair: repair } : {}),
   };
 }
 

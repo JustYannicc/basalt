@@ -1,3 +1,4 @@
+import type { PendingPlacementRepair } from "./pending-placement.ts";
 import type * as Workers from "@distilled.cloud/cloudflare/workers";
 import { createHash } from "node:crypto";
 import { describeContainer, type FrozenContainer } from "./container.ts";
@@ -12,6 +13,7 @@ export interface ModulePart {
 
 export interface FrozenWorker {
   readonly id: string;
+  readonly pendingPlacementRepair?: PendingPlacementRepair;
   readonly accountId: string;
   readonly scriptName: string;
   readonly sourceMetadata?: string;
@@ -50,6 +52,9 @@ export const digest = (value: string | Uint8Array) =>
 export function describeWorker(worker: FrozenWorker) {
   return {
     id: worker.id,
+    ...(worker.pendingPlacementRepair
+      ? { pendingPlacementRepair: worker.pendingPlacementRepair }
+      : {}),
     target: digest(canonical({ accountId: worker.accountId, scriptName: worker.scriptName })),
     sourceMetadata: worker.sourceMetadata,
     metadata: digest(canonical(worker.metadata)),

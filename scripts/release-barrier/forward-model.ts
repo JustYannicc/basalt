@@ -109,7 +109,26 @@ export function verifyForwardWorkers(
           canonical(current.versions) !==
             canonical([{ versionId: accepted.versionId, percentage: 100 }])))
     )
-      throw new BarrierRefusal("forward-worker-drift", worker.id);
+      throw new BarrierRefusal("forward-worker-drift", worker.id, {
+        fqn: worker.id,
+        type: "Cloudflare.Worker",
+        changed: [
+          {
+            path: "deployment.versions",
+            old: canonical({ baseline: worker.baseline, accepted: accepted?.versionId ?? null }),
+            new: canonical(current?.versions ?? null),
+          },
+          ...(current?.target === worker.target
+            ? []
+            : [
+                {
+                  path: "deployment.target",
+                  old: worker.target,
+                  new: current?.target ?? "missing",
+                },
+              ]),
+        ],
+      });
   }
 }
 
@@ -196,7 +215,7 @@ export function forwardAdoption(
     isBaseline || alreadyAdopted
       ? before
       : before.status === "updating"
-        ? { ...before, old: { ...before.old, attr } }
+        ? { ...before, attr, old: { ...before.old, attr } }
         : { ...before, attr };
   return {
     before,

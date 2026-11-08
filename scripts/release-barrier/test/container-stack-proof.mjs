@@ -26,6 +26,9 @@ import { attributes, preparedUpload } from "../fixture.ts";
 import { describeContainer, sameContainerState, containerSnapshot } from "../container.ts";
 import { decodeApplication } from "../container-cloudflare.ts";
 import { deployStack } from "../deploy-stack.ts";
+import { forwardAdoption } from "../forward-model.ts";
+import { encodeState } from "alchemy/State/StateEncoding";
+import { describeWorker } from "../manifest.ts";
 import { cloudflareArtifactsApi } from "../../ensure-artifacts.ts";
 import { containerDriftApi, digest } from "../../upstream-tests/fixtures/container-drift-api.mjs";
 
@@ -82,6 +85,8 @@ export const proveContainerStack = (source, recompile, scenario) =>
     const receipts = [];
     const publications = [];
     const normalizations = [];
+    let replayOptions;
+    let lastManifest;
     const recordedBaseline = scenario.startsWith("recorded-baseline");
     const sameDigest = [
       "same-digest",
@@ -373,136 +378,141 @@ export const proveContainerStack = (source, recompile, scenario) =>
         releaseStarted = true;
         const exit = yield* Effect.exit(
           run(
-            deployStack(stack, {
-              candidate: "a".repeat(40),
-              record: async (receipt) => {
-                receipts.push(receipt);
-              },
-              manifest: async () => {},
-              admission: async (verifications) => {
-                assert.equal(verifications.length, 1);
-                const readiness = verifications[0];
-                assert.equal(readiness.fqn, "PoolBackendBudgetRuntimeReady");
-                assert.equal(
-                  readiness.lifecycle,
-                  plan.resources.PoolBackendBudgetRuntimeReady.state?.status ?? "absent",
-                );
-                assert.ok(readiness.envChanges.includes("DATABASE_BUDGET_IMAGE_HASH"));
-                events.push("verification:admitted");
-              },
-              publication: async (container, normalization) => {
-                publications.push(describeContainer(container));
-                if (normalization) normalizations.push(normalization);
-                events.push("image:retained");
-              },
-              io: {
-                advanceContainer: (_target, rollout) =>
-                  Effect.sync(() => {
-                    assert.equal(staged.rolloutRequest.kind, "full_manual");
-                    assert.equal(rollout.id, "fixture-rollout-1");
-                    assert.ok(api.manualRollout);
-                    assert.equal(api.app.version, rollout.currentVersion);
-                    api.app = { ...api.manualRollout, active_rollout_id: null };
-                    events.push("container:advance");
-                  }),
-                serving: (container, _worker, candidate) =>
-                  Effect.sync(() => {
-                    assert.equal(api.app.configuration.image, container.configuration.image);
-                    if (
-                      [
-                        "unhealthy-serving",
-                        "same-digest-unhealthy",
-                        "recorded-baseline-unhealthy",
-                      ].includes(scenario)
-                    )
-                      throw new Error("serving checks failed");
-                    events.push("container:serving");
-                    return {
-                      candidate,
-                      applicationVersion: api.app.version,
-                      digest: container.imageDigest,
-                      inputHash: container.inputHash,
-                      bootId: "fixture-boot",
-                      instanceId: "a".repeat(64),
-                      workerInput: "fixture-input",
-                      checkedAt: 123,
-                      unsignedHealth: 200,
-                      unsignedModels: 401,
-                    };
-                  }),
-                container: (publication) =>
-                  Effect.sync(() => {
-                    assert.equal(api.writes, 0);
-                    assert.equal(api.rollouts, 0);
-                    events.push("image:admitted");
-                    staged = publication;
-                    if (recordedBaseline)
-                      assert.equal(
-                        sameContainerState(
-                          decodeApplication(api.app),
-                          containerSnapshot(publication.previous),
-                        ),
-                        true,
-                      );
-                    return {
-                      digest: publication.proposed.hash.digest,
-                      configDigest: digest("4"),
-                      platform: "linux/amd64",
-                      capabilityLabel: "1",
-                    };
-                  }),
-                observeContainer: () =>
-                  recordedBaseline
-                    ? Effect.sync(() => decodeApplication(api.app))
-                    : staged
-                        .read()
-                        .pipe(
-                          Effect.map((value) =>
-                            scenario === "container-drift" ? { ...value, version: 99 } : value,
+            deployStack(
+              stack,
+              (replayOptions = {
+                candidate: "a".repeat(40),
+                record: async (receipt) => {
+                  receipts.push(receipt);
+                },
+                manifest: async (value) => {
+                  lastManifest = value;
+                },
+                admission: async (verifications) => {
+                  assert.equal(verifications.length, 1);
+                  const readiness = verifications[0];
+                  assert.equal(readiness.fqn, "PoolBackendBudgetRuntimeReady");
+                  assert.equal(
+                    readiness.lifecycle,
+                    plan.resources.PoolBackendBudgetRuntimeReady.state?.status ?? "absent",
+                  );
+                  assert.ok(readiness.envChanges.includes("DATABASE_BUDGET_IMAGE_HASH"));
+                  events.push("verification:admitted");
+                },
+                publication: async (container, normalization) => {
+                  publications.push(describeContainer(container));
+                  if (normalization) normalizations.push(normalization);
+                  events.push("image:retained");
+                },
+                io: {
+                  advanceContainer: (_target, rollout) =>
+                    Effect.sync(() => {
+                      assert.equal(staged.rolloutRequest.kind, "full_manual");
+                      assert.equal(rollout.id, "fixture-rollout-1");
+                      assert.ok(api.manualRollout);
+                      assert.equal(api.app.version, rollout.currentVersion);
+                      api.app = { ...api.manualRollout, active_rollout_id: null };
+                      events.push("container:advance");
+                    }),
+                  serving: (container, _worker, candidate) =>
+                    Effect.sync(() => {
+                      assert.equal(api.app.configuration.image, container.configuration.image);
+                      if (
+                        [
+                          "unhealthy-serving",
+                          "same-digest-unhealthy",
+                          "recorded-baseline-unhealthy",
+                        ].includes(scenario)
+                      )
+                        throw new Error("serving checks failed");
+                      events.push("container:serving");
+                      return {
+                        candidate,
+                        applicationVersion: api.app.version,
+                        digest: container.imageDigest,
+                        inputHash: container.inputHash,
+                        bootId: "fixture-boot",
+                        instanceId: "a".repeat(64),
+                        workerInput: "fixture-input",
+                        checkedAt: 123,
+                        unsignedHealth: 200,
+                        unsignedModels: 401,
+                      };
+                    }),
+                  container: (publication) =>
+                    Effect.sync(() => {
+                      assert.equal(api.writes, 0);
+                      assert.equal(api.rollouts, 0);
+                      events.push("image:admitted");
+                      staged = publication;
+                      if (recordedBaseline)
+                        assert.equal(
+                          sameContainerState(
+                            decodeApplication(api.app),
+                            containerSnapshot(publication.previous),
                           ),
-                        ),
-                namespace: (account, token) =>
-                  cloudflareArtifactsApi(account, token, async (_input, init) => {
-                    assert.equal(init.method, "GET");
-                    return Response.json({
-                      success: true,
-                      result: [{ namespace: "basalt-production-apps", jurisdiction: "eu" }],
-                    });
-                  }),
-                baseline: () => Effect.succeed([{ versionId: "previous", percentage: 100 }]),
-                upload: (worker) =>
-                  Effect.sync(() => {
-                    assert.equal(api.writes, 0);
-                    assert.equal(api.rollouts, 0);
-                    events.push(`admit:${worker.id}`);
-                    if (
-                      worker.id === "Router" &&
-                      [
-                        "late-worker-rejection",
-                        "new-ready-late-rejection",
-                        "creating-ready-late-rejection",
-                        "recorded-baseline-rejected",
-                      ].includes(scenario)
-                    )
-                      throw new Error("Rejected late upload");
-                    if (worker.id === "Router" && scenario === "source-drift")
-                      writeFileSync(
-                        join(context, "Dockerfile"),
-                        readFileSync(join(context, "Dockerfile"), "utf8") +
-                          "\nLABEL changed_after_freeze=true\n",
-                      );
-                    return {
-                      versionId: `accepted-${worker.id}`,
-                      ...(worker.id === "Router" && scenario === "missing-startup"
-                        ? {}
-                        : {
-                            startupTimeMs:
-                              scenario === "over-ceiling" && worker.id === "Router" ? 751 : 100,
-                          }),
-                    };
-                  }),
-              },
-            }),
+                          true,
+                        );
+                      return {
+                        digest: publication.proposed.hash.digest,
+                        configDigest: digest("4"),
+                        platform: "linux/amd64",
+                        capabilityLabel: "1",
+                      };
+                    }),
+                  observeContainer: () =>
+                    recordedBaseline
+                      ? Effect.sync(() => decodeApplication(api.app))
+                      : staged
+                          .read()
+                          .pipe(
+                            Effect.map((value) =>
+                              scenario === "container-drift" ? { ...value, version: 99 } : value,
+                            ),
+                          ),
+                  namespace: (account, token) =>
+                    cloudflareArtifactsApi(account, token, async (_input, init) => {
+                      assert.equal(init.method, "GET");
+                      return Response.json({
+                        success: true,
+                        result: [{ namespace: "basalt-production-apps", jurisdiction: "eu" }],
+                      });
+                    }),
+                  baseline: () => Effect.succeed([{ versionId: "previous", percentage: 100 }]),
+                  upload: (worker) =>
+                    Effect.sync(() => {
+                      assert.equal(api.writes, 0);
+                      assert.equal(api.rollouts, 0);
+                      events.push(`admit:${worker.id}`);
+                      if (
+                        worker.id === "Router" &&
+                        [
+                          "late-worker-rejection",
+                          "new-ready-late-rejection",
+                          "creating-ready-late-rejection",
+                          "recorded-baseline-rejected",
+                        ].includes(scenario)
+                      )
+                        throw new Error("Rejected late upload");
+                      if (worker.id === "Router" && scenario === "source-drift")
+                        writeFileSync(
+                          join(context, "Dockerfile"),
+                          readFileSync(join(context, "Dockerfile"), "utf8") +
+                            "\nLABEL changed_after_freeze=true\n",
+                        );
+                      return {
+                        versionId: `accepted-${worker.id}`,
+                        ...(worker.id === "Router" && scenario === "missing-startup"
+                          ? {}
+                          : {
+                              startupTimeMs:
+                                scenario === "over-ceiling" && worker.id === "Router" ? 751 : 100,
+                            }),
+                      };
+                    }),
+                },
+              }),
+            ),
           ),
         );
         assert.equal(
@@ -530,6 +540,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
         const succeeded = Exit.isSuccess(exit);
         const expectedSuccess = [
           "success",
+          "updating-forward",
           "same-digest",
           "dependency-only",
           "new-runtime-ready",
@@ -598,6 +609,49 @@ export const proveContainerStack = (source, recompile, scenario) =>
           const next = yield* run(Plan.make(stack));
           unchangedAction = next.resources.PoolContainer.action;
           assert.equal(unchangedAction, "noop");
+          if (scenario === "updating-forward") {
+            const key = { stack: stack.name, stage: stack.stage, fqn: "PoolContainer" };
+            const saved = yield* memory.get(key);
+            const baseline = { ...saved, attr: staged.previous };
+            const wrapped = { ...baseline, status: "updating", old: baseline };
+            const manifest = {
+              ...lastManifest,
+              workers: lastManifest.workers.map(describeWorker),
+              containers: lastManifest.containers.map(describeContainer),
+            };
+            const packet = {
+              schemaVersion: 1,
+              manifest,
+              frozen: { ...manifest, containers: lastManifest.containers },
+              receipt: receipts.at(-1),
+              nativeBefore: encodeState(wrapped),
+            };
+            const adopted = forwardAdoption(packet, wrapped, {
+              ...staged.proposed,
+              version: api.app.version,
+            });
+            assert.equal(adopted.after.attr.hash.image, staged.proposed.hash.image);
+            assert.equal(adopted.after.old.attr.hash.image, staged.proposed.hash.image);
+            yield* memory.set({ ...key, value: adopted.after });
+            const writesBefore = api.writes;
+            const rolloutsBefore = api.rollouts;
+            api.writes = 0;
+            api.rollouts = 0;
+            baselinePoolInput = capturedPoolInput;
+            yield* recompile((next) => {
+              stack = contextualize(next);
+              return run(deployStack(stack, { ...replayOptions, admission: undefined }));
+            });
+            assert.equal(api.writes, 0, "replay must not redeploy the verified container");
+            assert.equal(api.rollouts, 0);
+            api.writes = writesBefore;
+            api.rollouts = rolloutsBefore;
+            const finalized = yield* memory.get(key);
+            assert.equal(finalized.attr.hash.image, staged.proposed.hash.image);
+            assert.equal(finalized.attr.version, api.app.version);
+            const finalPlan = yield* run(Plan.make(stack));
+            assert.equal(finalPlan.resources.PoolContainer.action, "noop");
+          }
         } else if (
           ["unhealthy-serving", "same-digest-unhealthy", "recorded-baseline-unhealthy"].includes(
             scenario,

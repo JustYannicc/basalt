@@ -1,3 +1,4 @@
+import { containerDrift } from "./container-diagnostics.ts";
 import { State } from "alchemy/State/State";
 import { encodeState } from "alchemy/State/StateEncoding";
 import type { CompiledStack } from "alchemy/Stack";
@@ -84,6 +85,20 @@ export const resumeForwardRelease = (
         ),
       catch: (error) => error,
     });
+    if (
+      placements.version !== observed.version ||
+      placements.digest !== adoption.receipt.digest ||
+      placements.activeRolloutId
+    )
+      throw containerDrift(
+        "forward-application-observation-drift",
+        { version: observed.version, digest: adoption.receipt.digest, activeRolloutId: null },
+        {
+          version: placements.version,
+          digest: placements.digest,
+          activeRolloutId: placements.activeRolloutId ?? null,
+        },
+      );
     if (
       !pool ||
       !placements.instances.length ||

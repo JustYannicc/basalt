@@ -1,3 +1,5 @@
+import { releaseEvidence } from "./evidence.ts";
+import { reportRefusal, refusalTable } from "./refusal-report.ts";
 import { mkdir, writeFile, appendFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { evalStack } from "alchemy/Stack";
@@ -86,10 +88,12 @@ try {
     .map(([field, value]) => `| ${field} | ${JSON.stringify(value).replaceAll("|", "&#124;")} |`)
     .join("\n")}`;
 } catch (error) {
+  const evidence = releaseEvidence(directory, process.env.GITHUB_SHA ?? "0".repeat(40));
+  const detail = await evidence.failure(error);
+  await reportRefusal(detail, process.env.GITHUB_STEP_SUMMARY);
   const failure = safeProviderFailure(error);
-  const reason = error instanceof BarrierRefusal ? error.reason : failure.type;
-  report = { schemaVersion: 1, readOnly: true, ok: false, reason, ...failure };
-  table = `| Field | Refusal |\n| --- | --- |\n| forward-reconciliation | ${reason}; status=${failure.status ?? "none"} |`;
+  report = { ...detail, readOnly: true, ok: false, ...failure };
+  table = refusalTable(detail);
   process.exitCode = 1;
 } finally {
   globalThis.fetch = nativeFetch;

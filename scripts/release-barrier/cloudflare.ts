@@ -25,7 +25,7 @@ export const readActivePlacements = (
     { concurrency: "unbounded" },
   );
 
-export const readBaseline = (worker: Pick<FrozenWorker, "accountId" | "scriptName">) =>
+export const readCurrentDeployment = (worker: Pick<FrozenWorker, "accountId" | "scriptName">) =>
   // The SDK serializes excess properties as a body, including on GET. Callers pass upload and frozen objects.
   Workers.listScriptDeployments({
     accountId: worker.accountId,
@@ -41,11 +41,18 @@ export const readBaseline = (worker: Pick<FrozenWorker, "accountId" | "scriptNam
       const current = [...deployments].sort(
         (a, b) => Date.parse(b.createdOn) - Date.parse(a.createdOn),
       )[0]!;
-      return [...current.versions].sort((a, b) => a.versionId.localeCompare(b.versionId));
+      if (!current.id) throw new BarrierRefusal("missing-live-deployment-id");
+      return {
+        id: current.id,
+        versions: [...current.versions].sort((a, b) => a.versionId.localeCompare(b.versionId)),
+      };
     }),
     // Baseline GETs are idempotent; keep the SDK's bounded transient policy local to reads.
     Retry.policy(Retry.makeDefault),
   );
+
+export const readBaseline = (worker: Pick<FrozenWorker, "accountId" | "scriptName">) =>
+  readCurrentDeployment(worker).pipe(Effect.map((current) => current.versions));
 
 export const uploadVersion = (worker: FrozenWorker) =>
   Workers.createScriptVersion(uploadRequest(worker)).pipe(

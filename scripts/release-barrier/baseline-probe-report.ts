@@ -22,7 +22,7 @@ export async function reportBaselineProbe(
           "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: |",
           ...settings.map(
             (row) =>
-              `| ${row.role} | ${row.settings.status ?? ""} | ${row.settings.bytes} | ${row.settings.ms} | ${row.settings.attempts} | ${row.placements.status ?? ""} | ${row.placements.bytes} | ${row.placements.ms} | ${row.placements.attempts} | ${row.compared.join(", ")} | ${row.differences.length} |`,
+              `| ${row.role} | ${row.settings.status ?? ""} | ${row.settings.bytes} | ${row.settings.ms} | ${row.settings.attempts} | ${row.placements.status ?? ""} | ${row.placements.bytes} | ${row.placements.ms} | ${row.placements.attempts} | ${row.compared.join(", ")} | ${row.pendingPlacementRepair ? "pending-placement-repair: {} → targeted39/aws:eu-central-1" : row.differences.length} |`,
           ),
         ].join("\n")
       : "");

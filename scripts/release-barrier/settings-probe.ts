@@ -8,8 +8,14 @@ import { Cause, Effect, Exit } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { brand } from "../../brand.ts";
 import { baselineInventory, type BaselineProbeRow } from "./baseline-probe.ts";
-import { candidateScriptSettings, type ProbeWorker } from "./candidate-settings.ts";
-import { readActivePlacements, readBaseline, readScriptSettings } from "./cloudflare.ts";
+import { candidateSettingsWithRetirements, type ProbeWorker } from "./candidate-settings.ts";
+import { readActivePlacements, readCurrentDeployment, readScriptSettings } from "./cloudflare.ts";
+import { readVersionPlacement } from "./active-placement-read.ts";
+import {
+  pendingPlacementRepair,
+  placementRepairTargets,
+  type PendingPlacementRepair,
+} from "./pending-placement.ts";
 import { BarrierRefusal } from "./manifest.ts";
 import { safeProviderFailure } from "./operation-failure.ts";
 import { assertScriptSettings, scriptSettingFields } from "./script-settings.ts";
@@ -26,10 +32,16 @@ export interface SettingsProbeRow extends BaselineProbeRow {
   placements: ReadMetrics;
   compared: readonly string[];
   differences: readonly PropChange[];
+  pendingPlacementRepair?: PendingPlacementRepair;
 }
-type CandidateReader = (
-  workers: readonly ProbeWorker[],
-) => ReturnType<typeof candidateScriptSettings>;
+type CandidateReader = (workers: readonly ProbeWorker[]) => Promise<
+  readonly {
+    role: string;
+    scriptName: string;
+    metadata: Workers.PutScriptMetadata;
+    retiredPlacement?: boolean;
+  }[]
+>;
 const empty = (): ReadMetrics => ({ status: null, bytes: 0, ms: 0, attempts: 0 });
 
 /** No module/content reads, writes, redirects, queries or latest-version inheritance are allowed. */
@@ -38,7 +50,7 @@ export async function probeWorkerSettings(
   apiToken: string,
   environment: NodeJS.ProcessEnv,
   apiBaseUrl = DEFAULT_API_BASE_URL,
-  candidate: CandidateReader = (workers) => candidateScriptSettings(workers, environment),
+  candidate?: CandidateReader,
 ) {
   const base = new URL(apiBaseUrl);
   const prefix = base.pathname.replace(/\/$/, "");
@@ -103,7 +115,9 @@ export async function probeWorkerSettings(
       try: async () => {
         globalThis.fetch = measuredFetch;
         try {
-          return await candidate(workers);
+          return await (candidate
+            ? candidate(workers)
+            : candidateSettingsWithRetirements(workers, environment, nativeFetch));
         } finally {
           globalThis.fetch = nativeFetch;
         }
@@ -129,6 +143,7 @@ export async function probeWorkerSettings(
           const versionPaths: string[] = [];
           let failure: unknown;
           let compared = false;
+          let repair: PendingPlacementRepair | undefined;
           const run = <A, E>(effect: Effect.Effect<A, E, Credentials | HttpClient.HttpClient>) =>
             Effect.runPromise(effect.pipe(Effect.provideContext(context)));
           try {
@@ -140,13 +155,13 @@ export async function probeWorkerSettings(
               files: [],
             };
             const reads = await Promise.allSettled([
-              run(readBaseline(input)),
+              run(readCurrentDeployment(input)),
               run(readScriptSettings(input)),
             ]);
             const [baselineRead, settingsRead] = reads;
             if (baselineRead.status === "rejected") throw baselineRead.reason;
             if (settingsRead.status === "rejected") throw settingsRead.reason;
-            const baseline = baselineRead.value;
+            const baseline = baselineRead.value.versions;
             const settings = settingsRead.value;
             for (const { versionId } of baseline) {
               if (!/^[A-Za-z0-9_-]{1,80}$/.test(versionId))
@@ -156,14 +171,34 @@ export async function probeWorkerSettings(
               versionPaths.push(versionPath);
             }
             const versions = await run(readActivePlacements(input, baseline));
-            assertScriptSettings(
-              worker.role,
-              worker.scriptName,
-              expected.find((item) => item.role === worker.role)!.metadata,
-              settings,
-              versions,
-              baseline,
+            const declaration = expected.find((item) => item.role === worker.role)!;
+            const target = placementRepairTargets.find(
+              (target) => target.role === worker.role && target.scriptName === worker.scriptName,
             );
+            if (target && versions.some((version) => version.id === target.version)) {
+              const priorPath = `${path}/versions/${target.prior}`;
+              allow(priorPath);
+              versionPaths.push(priorPath);
+              repair = pendingPlacementRepair({
+                role: worker.role,
+                scriptName: worker.scriptName,
+                deploymentId: baselineRead.value.id,
+                baseline,
+                active: versions[0]!,
+                prior: await run(readVersionPlacement(accountId, worker.scriptName, target.prior)),
+                metadata: declaration.metadata,
+                settings,
+                retired: "retiredPlacement" in declaration && declaration.retiredPlacement === true,
+              });
+            } else
+              assertScriptSettings(
+                worker.role,
+                worker.scriptName,
+                expected.find((item) => item.role === worker.role)!.metadata,
+                settings,
+                versions,
+                baseline,
+              );
             compared = true;
           } catch (error) {
             failure = error;
@@ -195,6 +230,7 @@ export async function probeWorkerSettings(
             placements,
             compared: compared || failure instanceof BarrierRefusal ? scriptSettingFields : [],
             differences: failure instanceof BarrierRefusal ? (failure.delta?.changed ?? []) : [],
+            ...(repair ? { pendingPlacementRepair: repair } : {}),
           };
         }),
       ),

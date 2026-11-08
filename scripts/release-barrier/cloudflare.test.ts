@@ -80,3 +80,87 @@ test("version upload never retries a transient transport failure", async () => {
   );
   assert.equal(attempts, 1);
 });
+
+test("the real version multipart preserves declared limits, placement and observability", async () => {
+  const input = preparedUpload();
+  Object.assign(input.request.metadata, {
+    limits: { subrequests: 50000 },
+    placement: { region: "aws:eu-central-1" },
+    observability: { enabled: true, logs: { enabled: true, invocationLogs: true } },
+    logpush: true,
+    tailConsumers: [{ service: "fixture-tail" }],
+    tags: ["fixture-tag"],
+    bindings: [{ type: "durable_object_namespace", name: "Store", className: "Store" }],
+  });
+  const complete = {
+    ...input,
+    previousSettings: {
+      limits: { subrequests: 50000 },
+      placement: { region: "aws:eu-central-1" },
+      observability: { enabled: true, logs: { enabled: true, invocationLogs: true } },
+      logpush: true,
+      tailConsumers: [{ service: "fixture-tail" }],
+      tags: ["fixture-tag"],
+      bindings: [{ type: "durable_object_namespace" as const, name: "Store", className: "Store" }],
+    },
+  };
+  const worker = await freezeUpload(complete, [{ versionId: "old", percentage: 100 }]);
+  let metadata: Record<string, unknown> | undefined;
+  const sdk = HttpClient.make((request) =>
+    Effect.promise(async () => {
+      assert.equal(request.body._tag, "FormData");
+      if (request.body._tag !== "FormData") throw new Error("Expected multipart upload");
+      const part = request.body.formData.get("metadata");
+      assert.ok(part !== null);
+      metadata = JSON.parse(typeof part === "string" ? part : await part.text());
+      return HttpResponse.fromWeb(
+        request,
+        Response.json({ success: true, result: { id: "new", startup_time_ms: 100 } }),
+      );
+    }),
+  );
+  await Effect.runPromise(
+    uploadVersion(worker).pipe(
+      Effect.provideService(HttpClient.HttpClient, sdk),
+      Effect.provideService(
+        Credentials,
+        Effect.succeed({
+          type: "apiToken",
+          apiToken: Redacted.make("synthetic"),
+          apiBaseUrl: "https://fixture.invalid",
+        }),
+      ),
+    ),
+  );
+  assert.deepEqual(metadata?.limits, { subrequests: 50000 });
+  assert.deepEqual(metadata?.placement, { region: "aws:eu-central-1" });
+  assert.deepEqual(metadata?.observability, {
+    enabled: true,
+    logs: { enabled: true, invocation_logs: true },
+  });
+  assert.deepEqual(metadata?.bindings, [
+    { type: "durable_object_namespace", name: "Store", class_name: "Store" },
+  ]);
+  // These are script-scoped: the frozen baseline comparison, rather than an unsupported version field, protects them.
+  for (const key of ["logpush", "tail_consumers", "tags", "streaming_tail_consumers"])
+    assert.equal(metadata?.[key], undefined);
+  for (const key of ["logpush", "tailConsumers", "tags"] as const) {
+    const changed = preparedUpload();
+    if (key === "logpush") changed.request.metadata.logpush = true;
+    if (key === "tailConsumers")
+      changed.request.metadata.tailConsumers = [{ service: "different" }];
+    if (key === "tags") changed.request.metadata.tags = ["different"];
+    await assert.rejects(freezeUpload(changed, worker.baseline));
+  }
+  const streaming = preparedUpload();
+  streaming.request.metadata.streamingTailConsumers = [{ service: "unobservable" }];
+  await assert.rejects(
+    freezeUpload(streaming, worker.baseline),
+    /unobservable-streaming-tail-settings/,
+  );
+  const classes = preparedUpload();
+  classes.request.metadata.bindings = [
+    { type: "durable_object_namespace", name: "Store", className: "New" },
+  ];
+  await assert.rejects(freezeUpload(classes, worker.baseline), /durable-object-class-drift/);
+});

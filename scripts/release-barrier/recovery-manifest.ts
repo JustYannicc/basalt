@@ -1,3 +1,4 @@
+import { placementRepairReceipt } from "./pending-placement.ts";
 import { containerHealth } from "./container-health.ts";
 import { Schema } from "effect";
 import { BarrierRefusal } from "./manifest.ts";
@@ -8,6 +9,7 @@ const baseline = Schema.Array(
   Schema.Struct({ versionId: Schema.String, percentage: Schema.Number }),
 );
 export const recoveryWorker = Schema.Struct({
+  pendingPlacementRepair: Schema.optional(placementRepairReceipt),
   id: Schema.String,
   target: Schema.String,
   metadata: Schema.String,

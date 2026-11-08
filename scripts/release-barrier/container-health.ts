@@ -28,52 +28,58 @@ export async function verifyContainerHealth(
 ) {
   const opening = openPoolOperations(target);
   let connection: Awaited<typeof opening> | undefined;
-  let failed = false;
-  try {
-    connection = await bounded(opening, signal);
-    const response = await bounded(
-      connection.service.fetch(
-        new Request(`http://pool-operations${runtimeRecoveryPath}`, { signal }),
-      ),
-      signal,
-    );
-    if (!response.ok) {
-      await bounded(response.body?.cancel() ?? Promise.resolve(), signal);
-      throw new ServingFailure({
-        check: "runtime-health",
-        cause: "http-status",
-        status: response.status,
-        expectedStatus: 200,
-      });
-    }
-    const value = Schema.decodeUnknownSync(status)(await bounded(response.json(), signal));
-    if (!value.running || !value.ready)
-      throw new ServingFailure({
-        check: "runtime-health",
-        cause: value.running ? "not-ready" : "not-running",
-      });
-    if (
-      value.imageHash !== workerImageHash ||
-      !/^[a-f0-9]{64}$/.test(value.instanceId) ||
-      !value.bootId ||
-      !/^[a-zA-Z0-9-]{1,128}$/.test(value.bootId)
-    )
-      throw new Error();
-    return { instanceId: value.instanceId, bootId: value.bootId, checkedAt: Date.now() };
-  } catch (error) {
-    failed = true;
-    if (diagnostic) throw servingFailure("runtime-health", error);
-    throw new BarrierRefusal("container-recovery-runtime-unhealthy");
-  } finally {
-    if (connection) {
-      try {
-        await bounded(connection.close(), signal);
-      } catch (error) {
-        if (!failed)
-          throw diagnostic
-            ? servingFailure("bridge-close", error)
-            : new BarrierRefusal("container-recovery-runtime-unhealthy");
+  const read = async () => {
+    try {
+      connection = await bounded(opening, signal);
+      const response = await bounded(
+        connection.service.fetch(
+          new Request(`http://pool-operations${runtimeRecoveryPath}`, { signal }),
+        ),
+        signal,
+      );
+      if (!response.ok) {
+        await bounded(response.body?.cancel() ?? Promise.resolve(), signal);
+        throw new ServingFailure({
+          check: "runtime-health",
+          cause: "http-status",
+          status: response.status,
+          expectedStatus: 200,
+        });
       }
-    } else void opening.then((value) => value.close()).catch(() => {});
+      const value = Schema.decodeUnknownSync(status)(await bounded(response.json(), signal));
+      if (!value.running || !value.ready)
+        throw new ServingFailure({
+          check: "runtime-health",
+          cause: value.running ? "not-ready" : "not-running",
+        });
+      if (
+        value.imageHash !== workerImageHash ||
+        !/^[a-f0-9]{64}$/.test(value.instanceId) ||
+        !value.bootId ||
+        !/^[a-zA-Z0-9-]{1,128}$/.test(value.bootId)
+      )
+        throw new Error();
+      return { instanceId: value.instanceId, bootId: value.bootId, checkedAt: Date.now() };
+    } catch (error) {
+      if (diagnostic) throw servingFailure("runtime-health", error);
+      throw new BarrierRefusal("container-recovery-runtime-unhealthy");
+    }
+  };
+  const outcome = await read().then(
+    (value) => ({ ok: true as const, value }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+  let cleanupFailure: unknown;
+  try {
+    if (connection) await bounded(connection.close(), signal);
+    else void opening.then((value) => value.close()).catch(() => {});
+  } catch (error) {
+    cleanupFailure = error;
   }
+  if (!outcome.ok) throw outcome.error;
+  if (cleanupFailure)
+    throw diagnostic
+      ? servingFailure("bridge-close", cleanupFailure)
+      : new BarrierRefusal("container-recovery-runtime-unhealthy");
+  return outcome.value;
 }

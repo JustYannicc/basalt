@@ -8,7 +8,22 @@ import type { Worker } from "alchemy/Cloudflare";
 import { Effect } from "effect";
 import { verificationAdmissions, type VerificationAdmission } from "./plan-admission.ts";
 import { preparePlan, finishPlan } from "./alchemy-plan.ts";
-import { readActivePlacements, readBaseline, uploadVersion } from "./cloudflare.ts";
+import {
+  readActivePlacements,
+  readBaseline,
+  readCurrentDeployment,
+  readScriptSettings,
+  uploadVersion,
+} from "./cloudflare.ts";
+import { readVersionPlacement } from "./active-placement-read.ts";
+import {
+  pendingPlacementRepair,
+  placementRepairTargets,
+  assertRepairedPlacement,
+  assertRepairedVersionPlacement,
+} from "./pending-placement.ts";
+import { assertScriptSettings } from "./script-settings.ts";
+import { retiredPlacements, retirePlacement } from "./placement-retirement.ts";
 import { needsPlacementProof } from "./script-placement.ts";
 import { releaseWorkers, type BarrierReceipt } from "./barrier.ts";
 import { BarrierRefusal, type ReleaseManifest } from "./manifest.ts";
@@ -67,6 +82,8 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
     for (const { frozen } of prepared.containers.values())
       assertBaselineWorkerInput(frozen, prepared.captured.get("PoolWorker")?.previousSettings);
     const context = yield* Effect.context<Services>();
+    const state = yield* yield* State;
+    const retired = yield* retiredPlacements(state, stack);
     const run = <A, E>(effect: Effect.Effect<A, E, Services>) =>
       Effect.runPromise(effect.pipe(Effect.provideContext(context)));
     const io = options.io ?? { baseline: readBaseline, upload: uploadVersion };
@@ -91,10 +108,36 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
                 io.baseline(upload.request).pipe(withOperation(upload.fqn, "read-worker-baseline")),
               );
               try {
-                const versions = needsPlacementProof(upload.previousSettings?.placement)
-                  ? await run((io.placements ?? readActivePlacements)(upload.request, baseline))
-                  : [];
-                return await freezeUpload(upload, baseline, versions);
+                const repairTarget = placementRepairTargets.find(
+                  (target) =>
+                    target.role === upload.fqn &&
+                    target.scriptName === upload.request.scriptName &&
+                    baseline.some((version) => version.versionId === target.version),
+                );
+                const versions =
+                  repairTarget || needsPlacementProof(upload.previousSettings?.placement)
+                    ? await run((io.placements ?? readActivePlacements)(upload.request, baseline))
+                    : [];
+                const repair = repairTarget
+                  ? pendingPlacementRepair({
+                      role: upload.fqn,
+                      scriptName: upload.request.scriptName,
+                      deploymentId: (await run(readCurrentDeployment(upload.request))).id,
+                      baseline,
+                      active: versions[0]!,
+                      prior: await run(
+                        readVersionPlacement(
+                          upload.request.accountId,
+                          upload.request.scriptName,
+                          repairTarget.prior,
+                        ),
+                      ),
+                      metadata: upload.request.metadata,
+                      settings: upload.previousSettings!,
+                      retired: retired.includes(upload.fqn),
+                    })
+                  : undefined;
+                return await freezeUpload(upload, baseline, versions, repair);
               } catch (error) {
                 throw operationFailure(error, upload.fqn, "freeze-worker-upload");
               }
@@ -152,7 +195,28 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
             async activate(worker, versionId) {
               const upload = prepared.captured.get(worker.id);
               if (!upload) throw new BarrierRefusal("missing-prepared-worker", worker.id);
+              if (worker.pendingPlacementRepair) {
+                const version = await run(
+                  readVersionPlacement(worker.accountId, worker.scriptName, versionId),
+                );
+                assertRepairedVersionPlacement(worker.id, versionId, version);
+                const settings = await run(readScriptSettings(worker));
+                if (JSON.stringify(settings.placement ?? {}) !== "{}")
+                  throw new BarrierRefusal("placement-repair-baseline-drift", worker.id);
+                assertScriptSettings(worker.id, worker.scriptName, worker.metadata, {
+                  ...settings,
+                  placement: worker.metadata.placement,
+                });
+              }
               activated.set(worker.id, await run(upload.activate(versionId)));
+              if (worker.pendingPlacementRepair) {
+                const version = await run(
+                  readVersionPlacement(worker.accountId, worker.scriptName, versionId),
+                );
+                const settings = await run(readScriptSettings(worker));
+                assertRepairedPlacement(worker.id, versionId, version, settings);
+                await run(retirePlacement(state, stack, worker.id));
+              }
             },
           },
           containers: {

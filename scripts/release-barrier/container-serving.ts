@@ -45,7 +45,6 @@ export const verifyServingContainer = (
         let startup: ReturnType<ServingClock["deadline"]> | undefined;
         let connection: Awaited<ReturnType<typeof openDeploymentReadiness>> | undefined;
         let observation: ServingObservation | undefined;
-        let failed = false;
         let allocationFailure: ServingFailure | undefined;
         const kickAbort = new AbortController();
         const target = {
@@ -83,182 +82,196 @@ export const verifyServingContainer = (
           key: Redacted.value(key),
           target: { candidate, workerInput: poolWorkerRevision, imageHash: container.inputHash },
         });
-        try {
-          connection = await check("bridge-open", () => bounded(opening, allocation.signal));
-          // This signed request can start/adopt the instance. Scheduling is observed separately;
-          // a slow warm response must not consume the instance's own startup budget.
-          let kickFailure: ServingFailure | undefined;
-          void connection
-            .ready(AbortSignal.any([allocation.signal, kickAbort.signal]))
-            .catch((error) => {
-              kickFailure = servingFailure("deployment-readiness", error);
-            });
-          const allocationEnd = began + containerAllocationMs;
-          while (clock.now() < allocationEnd) {
-            if (
-              kickFailure?.serving.status !== undefined &&
-              kickFailure.serving.status < 500 &&
-              kickFailure.serving.status !== 429
-            )
-              throw kickFailure;
-            try {
-              await observe(allocation.signal);
-            } catch (error) {
-              const failure = servingFailure("instance-start", error);
-              if (!retryable(failure)) throw failure;
-              allocationFailure = failure;
-            }
-            if (
-              atTarget() &&
-              observation?.instances.length &&
-              observation.instances.every(
-                (instance) => instance.digest === target.digest && instance.state === "running",
+        const verify = async () => {
+          try {
+            connection = await check("bridge-open", () => bounded(opening, allocation.signal));
+            // This signed request can start/adopt the instance. Scheduling is observed separately;
+            // a slow warm response must not consume the instance's own startup budget.
+            let kickFailure: ServingFailure | undefined;
+            void connection
+              .ready(AbortSignal.any([allocation.signal, kickAbort.signal]))
+              .catch((error) => {
+                kickFailure = servingFailure("deployment-readiness", error);
+              });
+            const allocationEnd = began + containerAllocationMs;
+            while (clock.now() < allocationEnd) {
+              if (
+                kickFailure?.serving.status !== undefined &&
+                kickFailure.serving.status < 500 &&
+                kickFailure.serving.status !== 429
               )
-            )
-              break;
-            if (observation?.version !== undefined && observation.version > target.version)
-              throw new ServingFailure({ check: "application-image", cause: "version-drift" });
-            try {
-              await pause(allocationEnd, allocation.signal);
-            } catch {
-              break;
-            }
-          }
-          if (clock.now() >= allocationEnd)
-            throw (
-              allocationFailure ??
-              new ServingFailure({ check: "instance-start", cause: "instance-deadline" })
-            );
-          kickAbort.abort();
-          allocation.dispose();
-          const instanceObservedAt = clock.now();
-          runtime = clock.deadline(containerServingMs);
-          startup = clock.deadline(containerStartupMs);
-          const startupEnd = instanceObservedAt + containerStartupMs;
-          let ready: Awaited<ReturnType<typeof connection.ready>> | undefined;
-          let last = new ServingFailure({ check: "deployment-readiness", cause: "not-ready" });
-          while (clock.now() < startupEnd) {
-            try {
-              ready = await check("deployment-readiness", () =>
-                bounded(connection!.ready(startup!.signal), startup!.signal),
-              );
-              if (clock.now() >= startupEnd) break;
-              break;
-            } catch (error) {
-              last = servingFailure("deployment-readiness", error);
-              if (!retryable(last)) throw last;
+                throw kickFailure;
               try {
-                await pause(startupEnd, startup.signal);
+                await observe(allocation.signal);
+              } catch (error) {
+                const failure = servingFailure("instance-start", error);
+                if (!retryable(failure)) throw failure;
+                allocationFailure = failure;
+              }
+              if (
+                atTarget() &&
+                observation?.instances.length &&
+                observation.instances.every(
+                  (instance) => instance.digest === target.digest && instance.state === "running",
+                )
+              )
+                break;
+              if (observation?.version !== undefined && observation.version > target.version)
+                throw new ServingFailure({ check: "application-image", cause: "version-drift" });
+              try {
+                await pause(allocationEnd, allocation.signal);
               } catch {
                 break;
               }
             }
-          }
-          if (!ready || clock.now() >= startupEnd) throw last;
-          const servingEnd = instanceObservedAt + containerServingMs;
-          while (clock.now() < servingEnd) {
-            try {
-              await observe(runtime.signal);
-              if (!atTarget())
-                throw new ServingFailure({ check: "application-image", cause: "target-drift" });
-              if (
-                !observation?.instances.length ||
-                observation.instances.some(
-                  (instance) => instance.digest !== target.digest || instance.state !== "running",
-                )
-              )
-                throw new ServingFailure({ check: "instance-image", cause: "not-running" });
-              const health = await check("runtime-health", () =>
-                verifyContainerHealth(worker, container.inputHash, runtime!.signal, true),
+            if (clock.now() >= allocationEnd)
+              throw (
+                allocationFailure ??
+                new ServingFailure({ check: "instance-start", cause: "instance-deadline" })
               );
-              if (
-                health.bootId !== ready.bootId ||
-                health.instanceId !== ready.instanceId ||
-                !observation.instances.some((instance) => instance.id === health.instanceId)
-              ) {
-                if (startup.signal.aborted)
-                  throw new ServingFailure({ check: "boot-identity", cause: "identity-mismatch" });
+            kickAbort.abort();
+            allocation.dispose();
+            const instanceObservedAt = clock.now();
+            runtime = clock.deadline(containerServingMs);
+            startup = clock.deadline(containerStartupMs);
+            const startupEnd = instanceObservedAt + containerStartupMs;
+            let ready: Awaited<ReturnType<typeof connection.ready>> | undefined;
+            let last = new ServingFailure({ check: "deployment-readiness", cause: "not-ready" });
+            while (clock.now() < startupEnd) {
+              try {
                 ready = await check("deployment-readiness", () =>
                   bounded(connection!.ready(startup!.signal), startup!.signal),
                 );
-                throw new ServingFailure({ check: "boot-identity", cause: "not-ready" });
-              }
-              for (const [path, expected, stage] of [
-                ["/health", 200, "unsigned-health"],
-                ["/v1/models", 401, "unsigned-model-auth"],
-              ] as const) {
-                await check(stage, async () => {
-                  const response = await bounded(
-                    fetcher(`https://${brand.host}${path}`, {
-                      method: "GET",
-                      redirect: "manual",
-                      signal: AbortSignal.any([runtime!.signal, AbortSignal.timeout(15_000)]),
-                    }),
-                    runtime!.signal,
-                  );
-                  await bounded(response.body?.cancel() ?? Promise.resolve(), runtime!.signal);
-                  if (response.status !== expected)
-                    throw new ServingFailure({
-                      check: stage,
-                      cause: "http-status",
-                      status: response.status,
-                      expectedStatus: expected,
-                    });
-                });
-              }
-              if (clock.now() >= servingEnd) break;
-              return {
-                candidate,
-                applicationVersion: target.version,
-                digest: container.imageDigest,
-                inputHash: container.inputHash,
-                bootId: ready.bootId,
-                instanceId: ready.instanceId,
-                workerInput: ready.workerInput,
-                checkedAt: clock.now(),
-                instanceObservedAt,
-                unsignedHealth: 200 as const,
-                unsignedModels: 401 as const,
-              };
-            } catch (error) {
-              last = servingFailure("runtime-health", error);
-              if (!retryable(last)) throw last;
-              try {
-                await pause(servingEnd, runtime.signal);
-              } catch {
+                if (clock.now() >= startupEnd) break;
                 break;
+              } catch (error) {
+                last = servingFailure("deployment-readiness", error);
+                if (!retryable(last)) throw last;
+                try {
+                  await pause(startupEnd, startup.signal);
+                } catch {
+                  break;
+                }
               }
             }
-          }
-          throw last;
-        } catch (error) {
-          failed = true;
-          const failure = servingFailure("instance-start", error);
-          failure.serving.elapsedMs = Math.max(0, clock.now() - began);
-          if (observation)
-            failure.serving.observation = {
-              ...observation,
-              instances: observation.instances.slice(0, 20),
-            };
-          throw failure;
-        } finally {
-          kickAbort.abort();
-          try {
-            if (connection) {
+            if (!ready || clock.now() >= startupEnd) throw last;
+            const servingEnd = instanceObservedAt + containerServingMs;
+            while (clock.now() < servingEnd) {
               try {
-                await check("bridge-close", () =>
-                  bounded(connection!.close(), runtime?.signal ?? allocation.signal),
+                await observe(runtime.signal);
+                if (!atTarget())
+                  throw new ServingFailure({ check: "application-image", cause: "target-drift" });
+                if (
+                  !observation?.instances.length ||
+                  observation.instances.some(
+                    (instance) => instance.digest !== target.digest || instance.state !== "running",
+                  )
+                )
+                  throw new ServingFailure({ check: "instance-image", cause: "not-running" });
+                const health = await check("runtime-health", () =>
+                  verifyContainerHealth(worker, container.inputHash, runtime!.signal, true),
                 );
+                if (
+                  health.bootId !== ready.bootId ||
+                  health.instanceId !== ready.instanceId ||
+                  !observation.instances.some((instance) => instance.id === health.instanceId)
+                ) {
+                  if (startup.signal.aborted)
+                    throw new ServingFailure({
+                      check: "boot-identity",
+                      cause: "identity-mismatch",
+                    });
+                  ready = await check("deployment-readiness", () =>
+                    bounded(connection!.ready(startup!.signal), startup!.signal),
+                  );
+                  throw new ServingFailure({ check: "boot-identity", cause: "not-ready" });
+                }
+                for (const [path, expected, stage] of [
+                  ["/health", 200, "unsigned-health"],
+                  ["/v1/models", 401, "unsigned-model-auth"],
+                ] as const) {
+                  await check(stage, async () => {
+                    const response = await bounded(
+                      fetcher(`https://${brand.host}${path}`, {
+                        method: "GET",
+                        redirect: "manual",
+                        signal: AbortSignal.any([runtime!.signal, AbortSignal.timeout(15_000)]),
+                      }),
+                      runtime!.signal,
+                    );
+                    await bounded(response.body?.cancel() ?? Promise.resolve(), runtime!.signal);
+                    if (response.status !== expected)
+                      throw new ServingFailure({
+                        check: stage,
+                        cause: "http-status",
+                        status: response.status,
+                        expectedStatus: expected,
+                      });
+                  });
+                }
+                if (clock.now() >= servingEnd) break;
+                return {
+                  candidate,
+                  applicationVersion: target.version,
+                  digest: container.imageDigest,
+                  inputHash: container.inputHash,
+                  bootId: ready.bootId,
+                  instanceId: ready.instanceId,
+                  workerInput: ready.workerInput,
+                  checkedAt: clock.now(),
+                  instanceObservedAt,
+                  unsignedHealth: 200 as const,
+                  unsignedModels: 401 as const,
+                };
               } catch (error) {
-                if (!failed) throw error;
+                last = servingFailure("runtime-health", error);
+                if (!retryable(last)) throw last;
+                try {
+                  await pause(servingEnd, runtime.signal);
+                } catch {
+                  break;
+                }
               }
-            } else void opening.then((value) => value.close()).catch(() => {});
-          } finally {
-            allocation.dispose();
-            startup?.dispose();
-            runtime?.dispose();
+            }
+            throw last;
+          } catch (error) {
+            const failure = servingFailure("instance-start", error);
+            failure.serving.elapsedMs = Math.max(0, clock.now() - began);
+            if (observation)
+              failure.serving.observation = {
+                ...observation,
+                instances: observation.instances.slice(0, 20),
+              };
+            throw failure;
           }
+        };
+        const outcome = await verify().then(
+          (value) => ({ ok: true as const, value }),
+          (error: unknown) => ({ ok: false as const, error }),
+        );
+        kickAbort.abort();
+        let cleanupFailure: unknown;
+        try {
+          if (connection)
+            await check("bridge-close", () =>
+              bounded(connection!.close(), runtime?.signal ?? allocation.signal),
+            );
+          else void opening.then((value) => value.close()).catch(() => {});
+        } catch (error) {
+          cleanupFailure = error;
+        } finally {
+          allocation.dispose();
+          startup?.dispose();
+          runtime?.dispose();
         }
+        if (!outcome.ok) throw outcome.error;
+        if (cleanupFailure) {
+          const failure = servingFailure("bridge-close", cleanupFailure);
+          failure.serving.elapsedMs = Math.max(0, clock.now() - began);
+          if (observation) failure.serving.observation = observation;
+          throw failure;
+        }
+        return outcome.value;
       },
       catch: (error) => servingFailure("instance-start", error),
     });
