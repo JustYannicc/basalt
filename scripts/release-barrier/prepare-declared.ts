@@ -8,6 +8,7 @@ import { prepareDeclaredStorage } from "./declared-bucket-plan.ts";
 import { preparePlan } from "./alchemy-plan.ts";
 import { expandDeclaredClasses } from "./declared-classes.ts";
 import { assertSupportedPlan } from "./plan-admission.ts";
+import { observeWorkerBaselines } from "./worker-baselines.ts";
 import { BarrierRefusal } from "./manifest.ts";
 
 /** Replan only after an observed expansion changed the live baseline and native namespace mapping. */
@@ -48,7 +49,8 @@ export const prepareDeclaredRelease = (
           options.declarations,
           declaredBuckets,
         );
-        return { plan, prepared, declaredBuckets };
+        const workerBaselines = yield* observeWorkerBaselines(prepared.captured, stack, options.io);
+        return { plan, prepared, declaredBuckets, workerBaselines };
       });
     let result = yield* attempt(evaluated);
     const expanded = yield* expandDeclaredClasses(
@@ -59,6 +61,7 @@ export const prepareDeclaredRelease = (
       options.candidate,
       classes,
       options.expansion,
+      result.workerBaselines,
     );
     if (expanded) {
       result = yield* attempt(yield* Plan.make(stack), result.declaredBuckets);
@@ -71,6 +74,7 @@ export const prepareDeclaredRelease = (
           options.candidate,
           classes,
           options.expansion,
+          result.workerBaselines,
         )
       )
         throw new BarrierRefusal("declared-class-expansion-did-not-settle");

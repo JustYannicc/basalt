@@ -1,3 +1,4 @@
+import type { WorkerBaseline } from "./worker-baselines.ts";
 import type * as Plan from "alchemy/Plan";
 import type { PreparedPlan } from "./alchemy-plan.ts";
 import type { DeclaredChanges } from "./declared-change-schema.ts";
@@ -24,6 +25,7 @@ export const expandDeclaredClasses = (
   candidate: string,
   provider: ClassProvider,
   record?: (value: ClassProgress) => Promise<void>,
+  workerBaselines: ReadonlyMap<string, WorkerBaseline> = new Map(),
 ) =>
   Effect.gen(function* () {
     const targets = yield* prepareDeclaredClasses(
@@ -34,6 +36,7 @@ export const expandDeclaredClasses = (
       candidate,
       provider,
       record,
+      workerBaselines,
     );
     const call = <A>(
       fqn: string,

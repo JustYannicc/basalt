@@ -13,19 +13,12 @@ import { finishPlan } from "./alchemy-plan.ts";
 import {
   readActivePlacements,
   readBaseline,
-  readCurrentDeployment,
   readScriptSettings,
   uploadVersion,
 } from "./cloudflare.ts";
+import { assertRepairedPlacement, assertRepairedVersionPlacement } from "./pending-placement.ts";
 import { readVersionPlacement } from "./active-placement-read.ts";
-import {
-  pendingPlacementRepair,
-  placementRepairTargets,
-  assertRepairedPlacement,
-  assertRepairedVersionPlacement,
-} from "./pending-placement.ts";
-import { retiredPlacements, retirePlacement } from "./placement-retirement.ts";
-import { needsPlacementProof } from "./script-placement.ts";
+import { retirePlacement } from "./placement-retirement.ts";
 import { releaseWorkers, type BarrierReceipt } from "./barrier.ts";
 import { BarrierRefusal, type ReleaseManifest } from "./manifest.ts";
 import { cloudflareArtifactsApi } from "../ensure-artifacts.ts";
@@ -136,7 +129,7 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
         clone: (target, version) => run(readClassClone(target, version)),
         removeClone: (target, version) => run(deleteClassClone(target, version)),
       } satisfies ClassProvider);
-    const { plan, prepared, declaredBuckets } = yield* prepareDeclaredRelease(
+    const { plan, prepared, declaredBuckets, workerBaselines } = yield* prepareDeclaredRelease(
       stack,
       evaluatedPlan,
       options,
@@ -171,7 +164,6 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
     const recordAdmission = options.admission;
     if (recordAdmission) yield* Effect.promise(() => recordAdmission(verificationAdmissions(plan)));
     const state = yield* yield* State;
-    const retired = yield* retiredPlacements(state, stack);
     const io = options.io ?? { baseline: readBaseline, upload: uploadVersion };
     const manifest: ReleaseManifest = {
       candidate: options.candidate,
@@ -190,40 +182,9 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
           [...prepared.captured.values()]
             .sort((a, b) => a.fqn.localeCompare(b.fqn))
             .map(async (upload) => {
-              const baseline = await run(
-                io.baseline(upload.request).pipe(withOperation(upload.fqn, "read-worker-baseline")),
-              );
               try {
-                const repairTarget = placementRepairTargets.find(
-                  (target) =>
-                    target.role === upload.fqn &&
-                    target.scriptName === upload.request.scriptName &&
-                    baseline.some((version) => version.versionId === target.version),
-                );
-                const versions =
-                  repairTarget || needsPlacementProof(upload.previousSettings?.placement)
-                    ? await run((io.placements ?? readActivePlacements)(upload.request, baseline))
-                    : [];
-                const repair = repairTarget
-                  ? pendingPlacementRepair({
-                      role: upload.fqn,
-                      scriptName: upload.request.scriptName,
-                      deploymentId: (await run(readCurrentDeployment(upload.request))).id,
-                      baseline,
-                      active: versions[0]!,
-                      prior: await run(
-                        readVersionPlacement(
-                          upload.request.accountId,
-                          upload.request.scriptName,
-                          repairTarget.prior,
-                        ),
-                      ),
-                      metadata: upload.request.metadata,
-                      settings: upload.previousSettings!,
-                      retired: retired.includes(upload.fqn),
-                    })
-                  : undefined;
-                return await freezeUpload(upload, baseline, versions, repair);
+                const proof = workerBaselines.get(upload.fqn)!;
+                return await freezeUpload(upload, proof.baseline, proof.versions, proof.repair);
               } catch (error) {
                 throw operationFailure(error, upload.fqn, "freeze-worker-upload");
               }

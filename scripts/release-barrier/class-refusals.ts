@@ -1,3 +1,4 @@
+import type { WorkerBaseline } from "./worker-baselines.ts";
 import type { PreparedPlan } from "./alchemy-plan.ts";
 import type { SqliteClassDeclaration } from "./declared-change-schema.ts";
 import type { ClassRecord } from "./class-history.ts";
@@ -11,6 +12,7 @@ export function assertClassRequests(
   prepared: Pick<PreparedPlan, "captured">,
   entries: readonly SqliteClassDeclaration[],
   history: Readonly<Record<string, ClassRecord>>,
+  workerBaselines: ReadonlyMap<string, WorkerBaseline> = new Map(),
 ) {
   const failures: BarrierRefusal[] = [];
   for (const fqn of Object.keys(history))
@@ -30,7 +32,10 @@ export function assertClassRequests(
     try {
       if (entry && (!saved || ["clone-pending", "clone-ready"].includes(saved.status)))
         classRequestVerdict(upload, entry);
-      else versionMetadata(upload);
+      else {
+        const proof = workerBaselines.get(fqn);
+        versionMetadata(upload, proof?.versions, proof?.baseline, proof?.repair);
+      }
     } catch (error) {
       if (!(error instanceof BarrierRefusal)) throw error;
       failures.push(error);

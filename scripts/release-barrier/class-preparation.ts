@@ -1,3 +1,4 @@
+import type { WorkerBaseline } from "./worker-baselines.ts";
 import type * as Plan from "alchemy/Plan";
 import { State } from "alchemy/State/State";
 import { Effect, Option } from "effect";
@@ -37,6 +38,7 @@ export const prepareDeclaredClasses = (
   candidate: string,
   provider: ClassProvider,
   record?: (value: ClassProgress) => Promise<void>,
+  workerBaselines: ReadonlyMap<string, WorkerBaseline> = new Map(),
 ) =>
   Effect.gen(function* () {
     const state = yield* yield* State;
@@ -75,9 +77,9 @@ export const prepareDeclaredClasses = (
       [
         {
           fqn: "(Worker requests)",
-          check: Effect.sync(() => assertClassRequests(prepared, entries, history)).pipe(
-            Effect.as(Option.none<PreparedClass>()),
-          ),
+          check: Effect.sync(() =>
+            assertClassRequests(prepared, entries, history, workerBaselines),
+          ).pipe(Effect.as(Option.none<PreparedClass>())),
         },
         ...entries.map((entry) => ({
           fqn: entry.fqn,

@@ -1,3 +1,5 @@
+import { classCompanion, type CompanionMode } from "./class-companion.ts";
+import { retirePlacement } from "../placement-retirement.ts";
 import assert from "node:assert/strict";
 import * as Apply from "alchemy/Apply";
 import * as Plan from "alchemy/Plan";
@@ -62,10 +64,12 @@ export function classProvisioning(
     recover?: "pre-migration" | "compatible";
     evidence?: ReturnType<typeof releaseEvidence>;
     secondForeignWorker?: boolean;
+    companion?: CompanionMode;
   } = {},
 ) {
   const events: string[] = [];
   const api = classApi(events, options);
+  const companion = classCompanion(options.companion ?? "numeric", events);
   const progress: ClassProgress[] = [];
   const failures: unknown[] = [];
   const recoveryFailures: unknown[] = [];
@@ -79,6 +83,17 @@ export function classProvisioning(
         const hook = yield* Effect.serviceOption(WorkerUploadHook);
         if (Option.isNone(hook)) return api.attributes(id);
         const upload = preparedUpload(id);
+        if (id === "Api" && companion)
+          return yield* hook.value.capture(
+            yield* companion.prepare({
+              ...upload,
+              activate: () =>
+                Effect.sync(() => {
+                  companion.activate();
+                  return api.attributes(id);
+                }),
+            }),
+          );
         const binding = {
           type: "durable_object_namespace",
           name: "DRIVE",
@@ -111,7 +126,7 @@ export function classProvisioning(
         });
       }),
     delete: () => Effect.die("No Worker deletion"),
-  });
+  }).pipe(Layer.provide(companion.services));
   const commands = Command.ExecProvider().pipe(
     Layer.provide(
       Layer.succeed(Command.CommandExecutor, {
@@ -141,6 +156,7 @@ export function classProvisioning(
     Effect.gen(function* () {
       yield* Command.Exec("PoolDatabase", { command: "node ensure-pool-database.ts", memo: false });
       yield* TestBucket("DriveRecords", bucketProps).pipe(RemovalPolicy.retain());
+      if (options.companion) yield* TestWorker("Api", {});
       if (options.secondForeignWorker) yield* TestWorker("OtherData", {});
       return yield* TestWorker("AppData", {});
     }),
@@ -194,6 +210,10 @@ export function classProvisioning(
           ),
         });
         events.length = 0;
+        if (companion?.retired) {
+          const state = yield* yield* State;
+          yield* retirePlacement(state, compiled, "Api");
+        }
         const release = {
           candidate: "a".repeat(40),
           declarations,
@@ -213,15 +233,23 @@ export function classProvisioning(
             manifest = value;
           },
           io: {
-            baseline: () =>
-              Effect.succeed([
-                { versionId: api.expanded() ? "expanded" : "previous", percentage: 100 },
-              ]),
-            upload: () =>
+            baseline: (request) =>
+              Effect.succeed(
+                request.scriptName !== "AppData" && options.companion
+                  ? companion.baseline(request.scriptName)
+                  : [{ versionId: api.expanded() ? "expanded" : "previous", percentage: 100 }],
+              ),
+            ...(options.companion?.startsWith("numeric")
+              ? { placements: () => companion!.placements() }
+              : {}),
+            upload: (worker) =>
               Effect.sync(() => {
                 events.push("upload");
                 if (options.reject) throw new Error("Synthetic admission refusal");
-                return { versionId: "accepted", startupTimeMs: 100 };
+                return {
+                  versionId: worker.id === "Api" ? "accepted-Api" : "accepted",
+                  startupTimeMs: 100,
+                };
               }),
             classes: api.provider,
             buckets: {
@@ -244,7 +272,10 @@ export function classProvisioning(
         } satisfies DeployStackOptions;
         const attempt = Effect.gen(function* () {
           const result = yield* Effect.exit(
-            deployStack(compiled, release).pipe(Effect.provideContext(compiled.services)),
+            deployStack(compiled, release).pipe(
+              Effect.provide(companion.services),
+              Effect.provideContext(compiled.services),
+            ),
           );
           if (Exit.isFailure(result)) {
             const error = Cause.squash(result.cause);
@@ -274,7 +305,10 @@ export function classProvisioning(
           }
           if (options.futureMissing) api.removeNamespace();
           const second = yield* Effect.exit(
-            deployStack(compiled, release).pipe(Effect.provideContext(compiled.services)),
+            deployStack(compiled, release).pipe(
+              Effect.provide(companion.services),
+              Effect.provideContext(compiled.services),
+            ),
           );
           if (Exit.isFailure(second)) failures.push(Cause.squash(second.cause));
           else if (
