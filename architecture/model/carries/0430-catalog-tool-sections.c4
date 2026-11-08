@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Catalog hints may explain an empty tool section only when the active app still declares its requirement and method, linked-account state is known, that method is absent, and the live section has no tools or discovery error. A discovery error below the section path suppresses the same hint. Connection actions use the existing account dialog with the actual app and requirement; current host policy and server authorization remain authoritative. Search filtering never changes this decision. Catalog guidance does not declare credentials or alter saved accounts."
+    }
+  }
+}
