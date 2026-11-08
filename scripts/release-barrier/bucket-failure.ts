@@ -10,7 +10,7 @@ export type BucketOperation =
   | "record-intent"
   | "commit-native-state";
 
-/** Provider text and URLs are private. Only bounded numeric diagnostics cross into the refusal receipt. */
+/** Provider text and URLs are private. Retain only closed tags and bounded numeric diagnostics. */
 export function bucketFailure(
   error: unknown,
   fqn: string,
@@ -21,6 +21,8 @@ export function bucketFailure(
   const changed: PropChange[] = [{ path: "$operation", old: null, new: operation }];
   const provider = safeProviderFailure(error);
   changed.push({ path: "$provider.type", old: null, new: provider.type });
+  if (provider.reason !== undefined)
+    changed.push({ path: "$provider.reason", old: null, new: provider.reason });
   if (provider.status !== undefined)
     changed.push({ path: "$provider.status", old: null, new: provider.status });
   for (const [index, code] of (provider.codes ?? []).entries())
