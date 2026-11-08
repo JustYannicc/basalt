@@ -1,0 +1,11 @@
+{
+  "identity": "oauth-renewal-recovery",
+  "file": "0427-oauth-renewal-recovery.patch",
+  "content_sha256": "2f81601e91fcbaa10be65f31cb1c5a29f1fa9989ba8cdc7a26b00dac3d002010",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "upstream-oauth-renewal-health-recovery",
+  "requires": "Renewal health preserves bounded reasons and evidence. Invalid grants require reconnecting through the existing flow; old failures remain readable and account identity stays intact."
+}

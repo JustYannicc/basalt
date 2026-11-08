@@ -1,0 +1,52 @@
+--- a/index.ts
++++ b/index.ts
+@@ -3,6 +3,7 @@
+   decodeJson,
+   defineApp,
+   defineProvider,
++  json,
+   oauth2,
+   object,
+   router,
+@@ -14,7 +15,12 @@
+ import { icons } from "./icon.js";
+ import { options } from "./openapi.js";
+
+-const Me = object({ id: string() });
++// Spotify answers null for a missing display name, so these are read as JSON and checked.
++const Me = object({ id: string(), display_name: json().optional(), email: json().optional() });
++
++/** Trimmed text, or undefined when blank or not text. */
++const shown = (value: unknown) =>
++  typeof value === "string" && value.trim() ? value.trim() : undefined;
+
+ const spotify = defineProvider({
+   name: "Spotify",
+@@ -52,10 +58,16 @@
+       headers: { Authorization: `Bearer ${account.fields.access_token}`, Accept: "application/json" },
+     });
+     const me = await decodeJson(response, Me);
++    // The account reads as the person: their email, else their display name. Spotify's user id is
++    // an opaque string for most accounts, so it identifies the account but never names it.
++    // Names fit the host's 255 characters; a cut email would name someone else, so it is left out.
++    const email = shown(me.email);
++    const displayName = shown(me.display_name)?.slice(0, 255);
+     return {
+       accountInfo: {
+         externalId: me.id,
+-        username: me.id,
++        ...(email === undefined || email.length > 255 ? {} : { email }),
++        ...(displayName === undefined ? {} : { displayName }),
+         profileUrl: `https://open.spotify.com/user/${me.id}`,
+       },
+     };
+--- a/package.json
++++ b/package.json
+@@ -7,6 +7,6 @@
+     "title": "Spotify"
+   },
+   "dependencies": {
+-    "apps": "0.0.1-beta.100"
++    "apps": "0.0.1-beta.104-basalt.10"
+   }
+ }

@@ -6,7 +6,11 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { ConfigProvider, Effect, Layer, Option, Redacted, Schema } from "effect";
 import { HttpRouter, HttpServer } from "effect/http";
 import { SqlClient } from "effect/sql";
+import { fumadb } from "../../.upstream/packages/fumadb-effect/src/index.ts";
 import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.ts";
+import { schema } from "../../.upstream/packages/fumadb-effect/src/schema.ts";
+import { sqlAdapter } from "../../.upstream/packages/fumadb-effect/src/sql.ts";
+import { accountAcquisitions } from "../../.upstream/packages/sdk/src/implementation/account-acquisition-schema.ts";
 import { openEnvelope, signEnvelope } from "../../src/pool/token.ts";
 
 const upstream = new URL("../../.upstream/", import.meta.url);
@@ -15,6 +19,10 @@ const signingKey = "ab".repeat(32);
 const organization = "org_membership";
 const pool = "app_membership";
 const owner = `organization:${organization}`;
+const acquisitionStorage = fumadb({
+  namespace: "pool-membership-fixture",
+  schemas: [schema({ version: "1.0.0", tables: { accountAcquisitions } })],
+}).client(sqlAdapter({ provider: "postgresql" }));
 const requirements = (homeScope: "app" | "user" = "app") => ({
   accounts: {
     home: { scope: homeScope, provider: "prv_home" },
@@ -29,6 +37,9 @@ const database = (
   Effect.scoped(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
+      const migrator = yield* acquisitionStorage.createMigrator;
+      const migration = yield* migrator.migrateToLatest();
+      yield* migration.execute;
       for (const statement of [
         "create table organization (id text primary key, metadata text)",
         'create table member (id text primary key, "organizationId" text, "userId" text, role text)',
@@ -37,7 +48,6 @@ const database = (
         "create table hosted_account_access (account_id text primary key, organization_id text, kind text, personal_user_id text, creator_id text)",
         "create table hosted_app_account_links (app text, requirement text, subject text, account text, created_at timestamptz)",
         "create table executor_accounts (id text primary key, owner text, provider text, method text, credential_generation integer)",
-        "create table executor_account_acquisitions (account text primary key, owner text, provider text, method text, generation integer, driver text, driver_revision text, revision text, removal jsonb)",
       ])
         yield* sql.unsafe(statement);
       yield* run(sql);
@@ -236,7 +246,8 @@ test("the signed native reader returns only current app links and verified Home 
               (${account}, ${owner}, ${p}, 'apiKey', ${generation})`;
           yield* sql`insert into hosted_app_account_links values
               (${pool}, ${req}, null, ${account}, now())`;
-          yield* sql`insert into executor_account_acquisitions values
+          yield* sql`insert into executor_account_acquisitions
+            (account, owner, provider, method, generation, driver, driver_revision, revision, removal) values
               (${account}, ${owner}, ${p}, 'apiKey', ${account === "acc_stale" ? 1 : 2}, ${driver},
                 ${account === "acc_driver_changed" ? "home-r0" : "home-r1"}, 'binding-r1', ${removal})`;
         }

@@ -1,0 +1,647 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts b/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
+index 1e1b122..be4218b 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
+@@ -28,6 +28,29 @@ export const inventoryQueries = {
+     join executor_accounts account on account.id = l.account
+     where a.owner = 'organization:' || $1 and account.owner = a.owner
+     order by l.app, l.requirement, l.account, l.subject nulls first limit 2001`,
++  "pool-bindings": `select distinct o.id as organization, app.id as pool, l.requirement,
++    a.id as account, a.credential_generation as generation, r.driver, r.driver_revision,
++    r.revision as binding_revision, r.generation = a.credential_generation as generation_matches,
++    r.owner = a.owner and r.provider = a.provider and r.method = a.method as identity_matches,
++    r.removal is not null as removing, coalesce(r.mirror_ready, false) as mirror_ready,
++    r.mirror_reference is not null as has_mirror_reference,
++    entry.value ->> 'membership' as membership
++    from organization o
++    cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
++    join executor_apps app on app.id = entry.value ->> 'app' and app.owner = 'organization:' || o.id
++    join hosted_app_account_links l on l.app = app.id and l.subject is null
++    join executor_accounts a on a.id = l.account and a.owner = app.owner
++    left join executor_account_acquisitions r on r.account = a.id
++    where o.id = $1 order by pool, l.requirement, account limit 2001`,
++  "pool-locks": `with target as (select hashtextextended('executor-access:' || $1, 0) as key)
++    select l.pid, l.granted, l.mode, pg_blocking_pids(l.pid) as blockers,
++      a.state, a.wait_event_type, a.wait_event
++    from pg_locks l cross join target left join pg_stat_activity a on a.pid = l.pid
++    where l.locktype = 'advisory' and l.objsubid = 1
++      and l.database = (select oid from pg_database where datname = current_database())
++      and l.classid::bigint = ((target.key >> 32) & 4294967295)
++      and l.objid::bigint = (target.key & 4294967295)
++    order by l.pid, l.granted limit 2001`,
+   "retired-tokens": `select distinct a.id, a.owner, a.provider, a.method,
+     p.organization_id, p.creator_id, p.kind, p.revision
+     from executor_accounts a
+diff --git a/apps/hosted/server/src/contracts/organization.ts b/apps/hosted/server/src/contracts/organization.ts
+index 70615b4..48d2ddf 100644
+--- a/apps/hosted/server/src/contracts/organization.ts
++++ b/apps/hosted/server/src/contracts/organization.ts
+@@ -191,6 +191,8 @@ export class OrganizationIcons extends Context.Service<
+ export const Inventory = Schema.Struct({
+   /** The accounts the caller linked to each listed app and may use. */
+   links: Schema.Array(Schema.Struct({ app: AppId, account: AccountId })),
++  /** App selections, limited to the apps and accounts visible in this inventory. */
++  appLinks: Schema.Array(Schema.Struct({ app: AppId, account: AccountId })),
+   apps: Schema.Array(AppScreenRecord),
+   /** Each account's checks by the apps listed here; reading them never runs a check. */
+   accounts: Schema.Array(
+diff --git a/apps/hosted/server/src/implementation/organization.ts b/apps/hosted/server/src/implementation/organization.ts
+index 98cc908..3a3281f 100644
+--- a/apps/hosted/server/src/implementation/organization.ts
++++ b/apps/hosted/server/src/implementation/organization.ts
+@@ -23,7 +23,7 @@ import { currentResourceAuthority, visibleAccountsAs, visibleAppsAs } from "./re
+ import { readOrganizationIconUpload } from "./organization-icons.ts";
+ import { OrganizationTombstones } from "../contracts/organization-removal.ts";
+ import { requireOrganizationAdmin } from "./access.ts";
+-import { callerLinkedAccounts } from "./app-accounts.ts";
++import { appLinkedAccounts, callerLinkedAccounts } from "./app-accounts.ts";
+ import { appUiIndicators } from "./app-ui.ts";
+ import { CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
+ import { APIError } from "better-auth/api";
+@@ -272,13 +272,23 @@ export const inventory = (owner: OwnerId) =>
+           ),
+         ),
+       );
+-    if (policy.tools.kind === "all") return { apps, accounts: yield* withHealth(accounts), links };
+     const selected = new Set(links.map((link) => link.account));
+-    return {
+-      apps,
+-      accounts: yield* withHealth(accounts.filter((account) => selected.has(account.id))),
+-      links,
+-    };
++    const listedAccounts =
++      policy.tools.kind === "all"
++        ? accounts
++        : accounts.filter((account) => selected.has(account.id));
++    const listedIds = new Set(listedAccounts.map((account) => account.id));
++    const appLinks = [
++      ...new Map(
++        (yield* appLinkedAccounts(
++          yield* policyDatabase,
++          apps.map((app) => app.id),
++        ))
++          .filter((link) => listedIds.has(link.id))
++          .map((link) => [`${link.app}\u0000${link.id}`, { app: link.app, account: link.id }]),
++      ).values(),
++    ];
++    return { apps, accounts: yield* withHealth(listedAccounts), links, appLinks };
+   });
+ /** Organization routes do not own app/account operations. */
+ export const hostedOrganizationHandlers = HttpApiBuilder.group(
+diff --git a/apps/hosted/server/src/implementation/pool-membership-mirrors.ts b/apps/hosted/server/src/implementation/pool-membership-mirrors.ts
+new file mode 100644
+index 0000000..a19586c
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-membership-mirrors.ts
+@@ -0,0 +1,46 @@
++import {
++  AccountAcquisitionHost,
++  AccountId,
++  OwnerId,
++  StorageError,
++  type AppId,
++  type Executor,
++} from "@executor-js/sdk/core";
++import { Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import { usableAppLinks } from "./app-link-policy.ts";
++
++const Candidate = Schema.Struct({ account: AccountId, owner: OwnerId, generation: Schema.Int });
++
++/** Retained selections need the same mirror as new selections, before the organization lock. */
++export const preparePoolMembershipMirrors = (
++  executor: Executor,
++  organization: string,
++  pool: AppId,
++) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const rows = yield* sql`select distinct a.id as account, a.owner,
++      a.credential_generation as generation from ${yield* usableAppLinks(sql, [pool])}
++      and exists (select 1 from organization o
++        cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
++        where o.id = ${organization} and entry.value ->> 'app' = app.id
++          and app.owner = 'organization:' || o.id)
++      and exists (select 1 from executor_deployments d where d.id = app.active_deployment
++        and d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'scope' = 'app'
++        and d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'provider' = a.provider
++        and d.requirements::jsonb -> 'accounts' -> l.requirement -> 'definition' -> 'auth' -> a.method ->> 'type' = 'secrets'
++        and coalesce(d.requirements::jsonb -> 'accounts' -> l.requirement -> 'definition' -> 'auth' -> a.method ->> 'provisioned', 'false') <> 'true')
++      and not exists (select 1 from executor_account_acquisitions r where r.account = a.id
++        and (r.driver <> 'basalt-home' or r.owner <> a.owner or r.provider <> a.provider
++          or r.method <> a.method or r.generation <> a.credential_generation
++          or r.removal is not null or r.mirror_reference is null or r.mirror_ready))`;
++    const candidates = yield* Schema.decodeUnknownEffect(Schema.Array(Candidate))(rows);
++    for (const candidate of candidates)
++      yield* executor[AccountAcquisitionHost].ensureMirror({
++        account: candidate.account,
++        owner: candidate.owner,
++        expectedGeneration: candidate.generation,
++        operation: `native-pool-link:${pool}:${candidate.account}:${candidate.generation}`,
++      });
++  }).pipe(Effect.mapError(() => new StorageError()));
+diff --git a/apps/hosted/server/src/implementation/pool-membership.ts b/apps/hosted/server/src/implementation/pool-membership.ts
+index 4ad22d2..3258293 100644
+--- a/apps/hosted/server/src/implementation/pool-membership.ts
++++ b/apps/hosted/server/src/implementation/pool-membership.ts
+@@ -15,6 +15,7 @@ import { HostedExecutor } from "../contracts/executor.ts";
+ import { withOrganizationAccessLock } from "./organization-access-lock.ts";
+ import { policyDatabase, usableAppLinks } from "./resource-policy.ts";
+ import { openEnvelope } from "./pool-token.ts";
++import { preparePoolMembershipMirrors } from "./pool-membership-mirrors.ts";
+ import { reconcilePoolMembership } from "./pool-membership-reconcile.ts";
+ 
+ const NativePoolAccountFields = {
+@@ -173,6 +174,9 @@ export const readNativePoolMembership = Effect.gen(function* () {
+     return HttpServerResponse.empty({ status: 401 });
+   const sql = yield* policyDatabase;
+   const executor = yield* Effect.flatten(HostedExecutor);
++  yield* preparePoolMembershipMirrors(executor, value.organization, value.pool).pipe(
++    Effect.provideService(SqlClient.SqlClient, sql),
++  );
+   const membership = yield* nativePoolMembership(value.organization, value.pool, executor).pipe(
+     Effect.provideService(SqlClient.SqlClient, sql),
+   );
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+index e24344c..1ea60a2 100644
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -424,7 +424,7 @@ export const startCloudEnvironment = (input: {
+       CLOUD_DEV_DASHBOARD: nativePoolBackend ? "source" : "built",
+       CLOUD_DEV_API_PORT: String(apiPort),
+       CLOUD_DEV_WEB_PORT: new URL(input.origin).port,
+-      ...(nativePoolBackend
++      ...(nativePoolBackend || process.env.BASALT_E2E_POOL_SETUP === "1"
+         ? { EXECUTOR_CATALOG_URL: `${browser}/native-provider-fixture/catalog/index.json` }
+         : {}),
+       ...appListener.environment,
+diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.ts
+index a82a08d..214ecbb 100644
+--- a/e2e/support/cloud-pool-gateway.ts
++++ b/e2e/support/cloud-pool-gateway.ts
+@@ -211,6 +211,7 @@ export const cloudPoolGateway = (origin: string, directory: string, api: URL) =>
+       peer.configure,
+       peer.control,
+       peer.usage,
++      peer.mirrors,
+       HttpRouter.add(
+         "GET",
+         "/pool/v1/release",
+diff --git a/e2e/support/legacy-pool-home.ts b/e2e/support/legacy-pool-home.ts
+index 842adcf..38f1063 100644
+--- a/e2e/support/legacy-pool-home.ts
++++ b/e2e/support/legacy-pool-home.ts
+@@ -8,9 +8,12 @@ import { createServer } from "node:http";
+ export const legacyPoolHome = (
+   pool: string,
+   accounts: readonly { id: string; provider: string }[],
++  beforeMirror?: Effect.Effect<void>,
+ ) =>
+   Effect.gen(function* () {
+     const members = new Map<number, string>();
++    const credentials = new Map(accounts.map((account) => [account.id, account]));
++    const mirrors: string[] = [];
+     const users: { id: number; username: string }[] = [];
+     const writes: string[] = [];
+     let sequence = 0;
+@@ -82,9 +85,26 @@ export const legacyPoolHome = (
+         members.delete(id);
+         return HttpServerResponse.jsonUnsafe({ ok: true });
+       }
++      if (path === "/v8/management/credentials" && request.method === "DELETE") {
++        credentials.delete(url.searchParams.get("id") ?? "");
++        return HttpServerResponse.jsonUnsafe({ ok: true });
++      }
++      if (path === "/v8/management/credentials" && request.method === "POST") {
++        if (beforeMirror !== undefined) yield* beforeMirror;
++        const value = yield* request.json.pipe(
++          Effect.flatMap(
++            Schema.decodeUnknownEffect(
++              Schema.Struct({ uuid: Schema.String, type: Schema.String, token: Schema.String }),
++            ),
++          ),
++        );
++        credentials.set(value.uuid, { id: value.uuid, provider: value.type });
++        mirrors.push(value.uuid);
++        return HttpServerResponse.jsonUnsafe({ name: `${value.uuid}.json` });
++      }
+       if (path === "/v8/management/credentials")
+         return HttpServerResponse.jsonUnsafe({
+-          files: accounts.map((account) => ({
++          files: [...credentials.values()].map((account) => ({
+             ...account,
+             label: account.id,
+             token: "synthetic-private-credential",
+@@ -125,5 +145,6 @@ export const legacyPoolHome = (
+       origin: `http://127.0.0.1:${server.address.port}`,
+       members: Effect.sync(() => [...members.values()].sort()),
+       writes: Effect.sync(() => [...writes]),
++      mirrors: Effect.sync(() => [...mirrors]),
+     };
+   });
+diff --git a/e2e/support/legacy-pool-key.ts b/e2e/support/legacy-pool-key.ts
+new file mode 100644
+index 0000000..e59dac3
+--- /dev/null
++++ b/e2e/support/legacy-pool-key.ts
+@@ -0,0 +1,99 @@
++import { Effect, FileSystem, Path, Schema } from "effect";
++import { Actors } from "./actors.ts";
++import { Api, body } from "./api.ts";
++import { productionOpsClient, Response, Inventory } from "./production-ops-client.ts";
++import { cloudLocks } from "./cloud-locks.ts";
++
++const Resource = Schema.Struct({ id: Schema.String });
++const Source = Schema.Struct({
++  files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
++});
++
++/** A saved key selected before native pool links required a credential mirror. */
++export const legacyPoolKey = (pool: string) =>
++  Effect.gen(function* () {
++    const api = yield* Api,
++      actors = yield* Actors,
++      database = yield* cloudLocks,
++      fs = yield* FileSystem.FileSystem,
++      path = yield* Path.Path;
++    const prefix = `/api/organizations/${actors.organization.id}`;
++    const source = yield* fs
++      .readFileString(path.resolve("../src/catalog/provider-apps/jev.json"))
++      .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Source))));
++    const provider = yield* body(
++      Resource,
++      yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++        name: "Retained Jev",
++        files: source.files,
++      }),
++    );
++    const connection = yield* body(
++      Resource,
++      yield* api.request(
++        actors.owner,
++        "POST",
++        `${prefix}/apps/${provider.id}/accounts/app/jev/connections`,
++        { destination: { kind: "personal" } },
++      ),
++    );
++    const saved = yield* api.request(
++      actors.owner,
++      "POST",
++      `${prefix}/connections/${connection.id}/submit`,
++      { method: "apiKey", fields: { token: "synthetic-retained-jev-token" } },
++    );
++    const account = yield* body(Resource, saved);
++    const selected = yield* database.run({
++      sql: `insert into hosted_app_account_links (app, requirement, subject, account, linked_by)
++        select app.id, 'jev', null, a.id, access.creator_id from executor_apps app
++        join hosted_app_access access on access.id=app.id
++        join executor_accounts a on a.id=$1 and a.owner=app.owner
++        where app.id=$2 and app.owner='organization:' || $3 returning account`,
++      params: [account.id, pool, actors.organization.id],
++    });
++    if (selected.length !== 1) return yield* Effect.die("Retained key link was not inserted");
++    const binding = () =>
++      database.run({
++        sql: `select a.id, a.credential_generation as generation, r.driver,
++          r.generation=a.credential_generation as generation_matches, r.removal is not null as removing,
++          r.mirror_ready, r.revision from executor_accounts a
++          left join executor_account_acquisitions r on r.account=a.id where a.id=$1`,
++        params: [account.id],
++      });
++    const selection = database.run({
++      sql: `select l.account, l.requirement, l.linked_by, p.kind,
++        p.personal_user_id = l.linked_by as owner_matches,
++        hosted_contribution_access(l.app, l.account, l.linked_by) as usable,
++        d.requirements::jsonb -> 'accounts' -> l.requirement as requirement_definition
++        from hosted_app_account_links l join executor_apps app on app.id=l.app
++        join executor_deployments d on d.id=app.active_deployment
++        join hosted_account_access p on p.account_id=l.account
++        where l.app=$1 and l.account=$2`,
++      params: [pool, account.id],
++    });
++    const operations = yield* productionOpsClient;
++    const inventory = () =>
++      operations.request(operations.read("pool-bindings")).pipe(
++        Effect.flatMap((response) => body(Response, response)),
++        Effect.flatMap((response) =>
++          Schema.decodeUnknownEffect(Inventory)(operations.decrypt(response.artifact)),
++        ),
++        Effect.flatMap((inventory) =>
++          Schema.decodeUnknownEffect(
++            Schema.Array(
++              Schema.Struct({
++                account: Schema.String,
++                driver: Schema.NullOr(Schema.String),
++                generation_matches: Schema.NullOr(Schema.Boolean),
++                identity_matches: Schema.NullOr(Schema.Boolean),
++                removing: Schema.Boolean,
++                mirror_ready: Schema.Boolean,
++                has_mirror_reference: Schema.Boolean,
++              }),
++            ),
++          )(inventory.rows),
++        ),
++      );
++    return { account: account.id, binding, selection, inventory, provider: provider.id };
++  });
+diff --git a/e2e/support/pool-product-peer.ts b/e2e/support/pool-product-peer.ts
+index 3972b0b..25daae7 100644
+--- a/e2e/support/pool-product-peer.ts
++++ b/e2e/support/pool-product-peer.ts
+@@ -60,6 +60,22 @@ export const poolProductPeer = Effect.gen(function* () {
+         return HttpServerResponse.jsonUnsafe({ configured: true });
+       }),
+     ),
++    mirrors: HttpRouter.add(
++      "POST",
++      "/pool/v1/account-mirrors",
++      Effect.gen(function* () {
++        const pools = [...origins.keys()];
++        if (pools.length !== 1) return HttpServerResponse.empty({ status: 404 });
++        const request = yield* HttpServerRequest.HttpServerRequest;
++        return (yield* forward(
++          pools[0]!,
++          request.url,
++          "POST",
++          request.headers,
++          yield* request.text,
++        ))!;
++      }),
++    ),
+     control: HttpRouter.add(
+       "GET",
+       "/pool/v1/*",
+diff --git a/e2e/support/production-ops-inventory-rows.ts b/e2e/support/production-ops-inventory-rows.ts
+index eabe307..2a06778 100644
+--- a/e2e/support/production-ops-inventory-rows.ts
++++ b/e2e/support/production-ops-inventory-rows.ts
+@@ -97,6 +97,11 @@ export const productionOpsInventoryRows = Effect.gen(function* () {
+         JSON.stringify(row === own ? { owner: row.user } : {}),
+       ],
+     });
++    yield* database.run({
++      sql: `insert into hosted_app_account_links (app, requirement, account, subject, linked_by)
++        values ($1, 'retained-binding', $2, null, $3)`,
++      params: [row.app, row.account, row.user],
++    });
+     yield* database.run({
+       sql: `insert into hosted_contributed_departure_jobs (id, organization_id, user_id, status) values ($1, $2, $3, 'succeeded')`,
+       params: [row.job, row.organization, row.user],
+diff --git a/e2e/tests/pool-legacy-handoff.spec.ts b/e2e/tests/pool-legacy-handoff.spec.ts
+index 6c9d05a..e448ab6 100644
+--- a/e2e/tests/pool-legacy-handoff.spec.ts
++++ b/e2e/tests/pool-legacy-handoff.spec.ts
+@@ -7,6 +7,7 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { cloudLocks } from "../support/cloud-locks.ts";
+ import { Evidence } from "../support/evidence.ts";
+ import { legacyPoolHome } from "../support/legacy-pool-home.ts";
++import { legacyPoolKey } from "../support/legacy-pool-key.ts";
+ import { driver, Target } from "../support/platform.ts";
+ import { poolWorkerRuntime } from "../support/pool-worker-runtime.ts";
+ import { scenarios } from "../test-plan.ts";
+@@ -115,7 +116,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy pool membership handoff
+         const control = beforeLinks.find((link) => link.requirement === "pool")!.account.id;
+         const controlState = () =>
+           database.run({
+-            sql: `select id, owner, provider, method, credential_generation from executor_accounts where id=$1`,
++            sql: `select id, owner, provider, method, credential_generation, md5(encrypted_credentials::text) as credentials_hash from executor_accounts where id=$1`,
+             params: [control],
+           });
+         const beforeControl = yield* controlState();
+@@ -127,11 +128,41 @@ layer(HostedLive, { excludeTestServices: true })("Legacy pool membership handoff
+             params: [actors.organization.id, pool.id],
+           });
+         yield* legacy();
++        const retainedKey = yield* legacyPoolKey(pool.id);
++        expect((yield* retainedKey.binding())[0]).toMatchObject({ driver: null });
++        expect(
++          (yield* retainedKey.inventory()).find((row) => row.account === retainedKey.account),
++        ).toMatchObject({
++          driver: null,
++          generation_matches: null,
++          identity_matches: null,
++          removing: false,
++          mirror_ready: false,
++          has_mirror_reference: false,
++        });
++        yield* evidence.json("retained-key-selection.json", {
++          selected: yield* retainedKey.selection,
++          links: yield* links(),
++        });
++        expect((yield* links()).some((link) => link.account.id === retainedKey.account)).toBe(true);
+         const homeAccounts = ["codex", "claude", "claude", "claude"].map((provider, index) => ({
+           id: `synthetic-cloud-native-reference-${index + 1}`,
+           provider,
+         }));
+-        const home = yield* legacyPoolHome(pool.id, homeAccounts);
++        const mirrorLocks: boolean[] = [];
++        const home = yield* legacyPoolHome(
++          pool.id,
++          homeAccounts,
++          database
++            .run({
++              sql: "select pg_try_advisory_xact_lock(hashtextextended($1, 0)) as acquired",
++              params: [`executor-access:${actors.organization.id}`],
++            })
++            .pipe(
++              Effect.tap((rows) => Effect.sync(() => mirrorLocks.push(rows[0]?.acquired === true))),
++              Effect.asVoid,
++            ),
++        );
+         const worker = yield* poolWorkerRuntime(target.metadata.origin, home.origin);
+         expect(yield* home.members).toEqual([]);
+         expect(
+@@ -152,6 +183,23 @@ layer(HostedLive, { excludeTestServices: true })("Legacy pool membership handoff
+               Effect.orDie,
+             ),
+         );
++        // Delete the saved key while its Home peer is still alive, even after a failed assertion.
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            const unlinked = yield* api.request(
++              actors.owner,
++              "DELETE",
++              `${prefix}/apps/${retainedKey.provider}/accounts/app/jev/${retainedKey.account}`,
++            );
++            expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(200);
++            const removed = yield* api.request(
++              actors.owner,
++              "DELETE",
++              `${prefix}/accounts/${retainedKey.account}`,
++            );
++            expect(removed.status, JSON.stringify(removed.body)).toBe(200);
++          }).pipe(Effect.orDie),
++        );
+         // Apply the production history schema through its private operations API on this run's database.
+         for (const sql of [
+           "DO $$ BEGIN CREATE ROLE basalt_pool_owner NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$",
+@@ -189,7 +237,49 @@ layer(HostedLive, { excludeTestServices: true })("Legacy pool membership handoff
+           home: yield* home.members,
+         });
+         expect(first.status, JSON.stringify(first.body)).toBe(200);
+-        const view = yield* body(View, first);
++        const restored = yield* body(View, first);
++        expect(restored.value.accounts).toHaveLength(5);
++        expect(
++          (yield* retainedKey.inventory()).find((row) => row.account === retainedKey.account),
++        ).toMatchObject({
++          driver: "basalt-home",
++          generation_matches: true,
++          identity_matches: true,
++          removing: false,
++          mirror_ready: true,
++          has_mirror_reference: true,
++        });
++        const mirrored = yield* retainedKey.binding();
++        expect(mirrored[0]).toMatchObject({
++          driver: "basalt-home",
++          generation_matches: true,
++          removing: false,
++          mirror_ready: true,
++        });
++        expect(yield* home.mirrors).toHaveLength(1);
++        expect(mirrorLocks).toEqual([true]);
++        const reset = yield* api.request(
++          actors.owner,
++          "GET",
++          `${prefix}/pools/${pool.id}/accounts/${accounts[0]!.id}/reset-attempt`,
++        );
++        expect(reset.status, JSON.stringify(reset.body)).toBe(200);
++        expect(reset.body).toBeNull();
++        expect((yield* read()).body).toMatchObject({ ok: true });
++        expect(yield* retainedKey.binding()).toEqual(mirrored);
++        expect(yield* home.mirrors).toHaveLength(1);
++        expect(
++          (yield* api.request(
++            actors.owner,
++            "DELETE",
++            `${appPath}/accounts/app/jev/${retainedKey.account}`,
++          )).status,
++        ).toBe(200);
++        expect(
++          (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${retainedKey.account}`))
++            .status,
++        ).toBe(200);
++        const view = yield* body(View, yield* read());
+         yield* browser.login(actors.owner);
+         for (const width of [1280, 390]) {
+           const empty = view.value.accounts.length === 0;
+@@ -229,6 +319,58 @@ layer(HostedLive, { excludeTestServices: true })("Legacy pool membership handoff
+         expect(yield* links()).toEqual(beforeLinks);
+         expect(yield* controlState()).toEqual(beforeControl);
+ 
++        const inventory = yield* api.request(actors.owner, "GET", `${prefix}/inventory`);
++        yield* evidence.json("pool-account-inventory.json", {
++          status: inventory.status,
++          body: inventory.body,
++        });
++        const privateInventory = yield* api.request(actors.member, "GET", `${prefix}/inventory`);
++        expect(privateInventory.status).toBe(200);
++        for (const hidden of [pool.id, ...accounts.map((account) => account.id)])
++          expect(JSON.stringify(privateInventory.body)).not.toContain(hidden);
++        const provider = yield* body(
++          Resource,
++          yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++            entry: "provider-openai",
++            name: "OpenAI",
++            newInstance: true,
++          }),
++        );
++        const missingUsage: number[] = [];
++        for (const width of [1280, 390]) {
++          missingUsage.push(
++            yield* browser.use(`The provider account shows its pool at ${width}px`, (page) =>
++              page
++                .setViewportSize({ width, height: 900 })
++                .then(() =>
++                  page.goto(`/org/${actors.organization.slug}/apps/${provider.id}?view=accounts`),
++                )
++                .then(() =>
++                  page
++                    .getByRole("heading", {
++                      name: "Where your OpenAI accounts are used",
++                      exact: true,
++                    })
++                    .waitFor(),
++                )
++                .then(() => page.getByText("No other app", { exact: true }).count()),
++            ),
++          );
++          yield* browser.checkpoint(`provider-account-pool-use-${width}`);
++        }
++        yield* browser.use("Stop provider polling before closing its backend", (page) =>
++          page.goto("about:blank"),
++        );
++
++        expect(missingUsage).toEqual([0, 0]);
++        const inventoryLinks = yield* body(
++          Schema.Struct({
++            appLinks: Schema.Array(Schema.Struct({ app: Schema.String, account: Schema.String })),
++          }),
++          inventory,
++        );
++        expect(inventoryLinks.appLinks).toContainEqual({ app: pool.id, account: accounts[0]!.id });
++
+         const usage = `${appPath}/pool-usage`;
+         const query = {
+           from: "2026-11-01T00:00:00Z",
+diff --git a/e2e/tests/production-ops.spec.ts b/e2e/tests/production-ops.spec.ts
+index 3bc3d58..4da38cb 100644
+--- a/e2e/tests/production-ops.spec.ts
++++ b/e2e/tests/production-ops.spec.ts
+@@ -63,6 +63,8 @@ layer(HostedLive, { excludeTestServices: true })("Production operations", (it) =
+           "accounts",
+           "pools",
+           "app-links",
++          "pool-bindings",
++          "pool-locks",
+           "retired-tokens",
+           "departures",
+           "workflows",
+@@ -227,6 +229,7 @@ layer(HostedLive, { excludeTestServices: true })("Production operations", (it) =
+             accounts: ["id", wanted.account],
+             pools: ["app", wanted.app],
+             "app-links": ["app", wanted.app],
++            "pool-bindings": ["account", wanted.account],
+             "retired-tokens": ["id", wanted.account],
+             departures: ["id", wanted.job],
+             workflows: ["id", wanted.workflow],
+@@ -271,6 +274,38 @@ layer(HostedLive, { excludeTestServices: true })("Production operations", (it) =
+             if (selection === "retired-tokens")
+               expect(rows.map((row) => row.id)).toEqual([wanted.account]);
+           }
++          const held = yield* accounts.database.hold({
++            sql: "select pg_backend_pid() as pid from pg_advisory_xact_lock(hashtextextended($1, 0))",
++            params: [`executor-access:${wanted.organization}`],
++          });
++          try {
++            for (const organization of [wanted.organization, excluded.organization]) {
++              const response = yield* request(read("pool-locks", organization));
++              expect(response.status).toBe(200);
++              const encrypted = yield* body(Response, response);
++              const inventory = yield* Schema.decodeUnknownEffect(Inventory)(
++                decrypt(encrypted.artifact),
++              );
++              const rows = yield* Schema.decodeUnknownEffect(
++                Schema.Array(Schema.Struct({ pid: Schema.Number, granted: Schema.Boolean })),
++              )(inventory.rows);
++              expect(rows.some((row) => row.pid === held[0]!.pid)).toBe(
++                organization === wanted.organization,
++              );
++              for (const row of inventory.rows)
++                expect(Object.keys(row ?? {}).sort()).toEqual([
++                  "blockers",
++                  "granted",
++                  "mode",
++                  "pid",
++                  "state",
++                  "wait_event",
++                  "wait_event_type",
++                ]);
++            }
++          } finally {
++            yield* accounts.database.release;
++          }
+         }
+         const snapshot = yield* request({
+           action: "backup",

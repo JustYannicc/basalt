@@ -132,6 +132,15 @@ export const areas = [
   },
   {
     paths: [
+      "e2e/oauth-renewal-recovery.mjs",
+      "e2e/oauth-renewal-recovery/**",
+      ".upstream/packages/sdk/src/contracts/oauth-failure-evidence.ts",
+      ".upstream/packages/ui/src/contracts/account-check-recovery.ts",
+    ],
+    jobs: ["oauth-account-regressions"],
+  },
+  {
+    paths: [
       "src/catalog/aws*",
       "src/catalog/aws*/**",
       "src/catalog/{worker,feed,settings,oauth-policy}.ts",

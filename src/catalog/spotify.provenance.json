@@ -1,0 +1,13 @@
+{
+  "package": "@executor.sh/spotify",
+  "publishedUrl": "https://catalog.executor.sh/apps/spotify.json",
+  "snapshotCaptured": "2026-11-08",
+  "publishedSha256": "750880ed3f1c11d31845a3b80047de92b9046423caca11864928a1f35db8c9a5",
+  "carriedSha256": "a374fb92fd6939324f31eb143ed5db8a000fa81c3763817b5913197ef1095afa",
+  "patchSha256": "32f958f91a00e9564a720bcec763962fe5aa2291ff89fdaa66c87ad218af597b",
+  "appsVersion": "0.0.1-beta.104-basalt.10",
+  "license": "Not declared in the published package",
+  "contribution": {
+    "state": "Account checks name the account by the person's email or display name instead of the opaque user id; publication not claimed"
+  }
+}

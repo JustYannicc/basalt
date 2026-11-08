@@ -1,0 +1,8 @@
+model {
+  extend basalt.toolsGateway {
+    renewalRecovery = part "Account renewal recovery" {
+      description "Closed OAuth evidence survives account health checks and informs supported reconnection without changing grant classification."
+      metadata { code ".upstream/packages/sdk/src/contracts/oauth-failure-evidence.ts|.upstream/packages/ui/src/contracts/account-check-recovery.ts" }
+    }
+  }
+}
