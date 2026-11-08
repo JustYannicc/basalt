@@ -15,6 +15,7 @@ permissions:
 
 env:
   E2E_BUN_VERSION: 1.4.2
+  BASALT_CI_OMIT_RELEASE_DOWNLOADS: "true"
 
 jobs:
   select:
@@ -35,6 +36,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - uses: ./.github/actions/desktop-release-assets
+        with:
+          warm: "true"
       - name: Resolve the comparison commit
         id: comparison
         env:
@@ -206,6 +213,9 @@ jobs:
   client-desktop:
     needs: select
     if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'client-desktop')
+    env:
+      ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+      ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -225,12 +235,20 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.4
+      - uses: ./.github/actions/desktop-release-assets
+        id: desktop-assets
+        with:
+          require-hit: ${{ matrix.platform == 'linux' }}
       - run: bun install --cwd clients --frozen-lockfile
       - run: bun install --cwd clients/desktop --frozen-lockfile
       - run: bun run --cwd clients/desktop typecheck
       - run: bun run --cwd clients/desktop build
       - name: Package the unsigned development client
         run: bun run --cwd clients/desktop package:${{ matrix.platform }}
+      - uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/basalt-desktop-release-assets
+          key: ${{ steps.desktop-assets.outputs.key }}
       - uses: actions/upload-artifact@v4
         with:
           name: client-desktop-${{ matrix.platform }}
@@ -1697,6 +1715,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - uses: ./.github/actions/desktop-release-assets
+        with:
+          require-hit: "true"
       - name: Check container Python names and imports
         run: |
           python3 -m venv "$RUNNER_TEMP/container-python-lint"

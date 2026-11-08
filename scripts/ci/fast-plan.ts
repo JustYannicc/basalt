@@ -70,6 +70,13 @@ export function fastPlan(document: unknown, context: FastContext) {
     if (typeof step.uses === "string") {
       if (step.if !== undefined) throw new Error("Unsupported conditional fast setup action");
       if (step.uses === "actions/checkout@v4") continue;
+      if (step.uses === "./.github/actions/desktop-release-assets") {
+        skipped.push({
+          name: "Restore release assets",
+          reason: "download cache requires GitHub Actions",
+        });
+        continue;
+      }
       if (!object(step.with)) throw new Error("Fast tool setup needs explicit versions");
       if (step.uses === "actions/setup-node@v4") nodeVersion = String(step.with["node-version"]);
       else if (step.uses === "oven-sh/setup-bun@v2") {
