@@ -370,6 +370,8 @@ jobs:
         run: bun e2e/elevenlabs-discovery.mjs .generated/elevenlabs-discovery/ci
       - name: Verify Zoho People regional sign-in and approved API writes
         run: bun e2e/zoho-people.mjs .generated/zoho-people/ci
+      - name: Set up the Zoho connection proof's browser
+        uses: ./.github/actions/setup-browser
       - name: Verify private Zoho MCP OAuth, tool approvals and masked URL entry
         run: bun e2e/zoho-people-mcp.mjs .generated/zoho-people-mcp/ci
       - name: Collect sanitized connector diagnostics
