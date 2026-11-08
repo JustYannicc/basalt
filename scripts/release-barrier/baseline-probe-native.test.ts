@@ -77,6 +77,7 @@ test(
             messages: [],
             result: baselineRoles.map((role) => ({
               id: `basalt-${role.toLowerCase()}-production-fixture`,
+              tags: ["alchemy:stack:basalt", "alchemy:stage:production", `alchemy:id:${role}`],
             })),
           }),
         );

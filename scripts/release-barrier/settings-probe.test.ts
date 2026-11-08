@@ -13,11 +13,13 @@ import { CandidateSettingsReadFailure } from "./candidate-failure.ts";
 for (const mode of [
   "same",
   "drift",
+  "inventory-refusals",
   "repair",
   "repair-latest-upload",
   "repair-retirement-failure",
 ] as const) {
   const drift = mode === "drift";
+  const inventoryFailure = mode === "inventory-refusals";
   const repair = mode.startsWith("repair");
   const latest = mode === "repair-latest-upload";
   const retirementFailure = mode === "repair-retirement-failure";
@@ -32,14 +34,30 @@ for (const mode of [
         ? placementRepairTargets.find((target) => path.includes(target.scriptName))
         : undefined;
       let result: unknown;
-      if (path.endsWith("/scripts"))
-        result = baselineRoles.map((role) => ({
-          id: repair
-            ? (placementRepairTargets.find((target) => target.role === role)?.scriptName ??
-              `basalt-${role.toLowerCase()}-production-fixture`)
-            : `basalt-${role.toLowerCase()}-production-fixture`,
-        }));
-      else if (path.endsWith("/deployments"))
+      if (path.endsWith("/scripts")) {
+        const scripts = baselineRoles
+          .filter((role) => !inventoryFailure || role !== "PublicSite")
+          .map((role) => ({
+            tags: ["alchemy:stack:basalt", "alchemy:stage:production", `alchemy:id:${role}`],
+            id:
+              role === "ArtifactsCredentials"
+                ? `basalt-artifactscredentials-pr${"a".repeat(24)}`
+                : repair
+                  ? (placementRepairTargets.find((target) => target.role === role)?.scriptName ??
+                    `basalt-${role.toLowerCase()}-production-fixture`)
+                  : `basalt-${role.toLowerCase()}-production-fixture`,
+          }));
+        result = inventoryFailure
+          ? [
+              ...scripts,
+              scripts.find((script) => script.tags.includes("alchemy:id:Router"))!,
+              {
+                id: "private-fixture",
+                tags: ["alchemy:stack:basalt", "alchemy:stage:production", "alchemy:id:Private"],
+              },
+            ]
+          : scripts;
+      } else if (path.endsWith("/deployments"))
         result = {
           deployments: [
             {
@@ -123,10 +141,39 @@ for (const mode of [
         throw new CandidateSettingsReadFailure("projection", "ConfigError");
       },
     );
-    assert.equal(rows.length, 20);
-    assert.equal(requests.length, retirementFailure ? 61 : repair ? 69 : 61);
+    assert.equal(rows.length, inventoryFailure ? 21 : 20);
+    assert.deepEqual(
+      rows
+        .filter((row) => row.role !== "(inventory)")
+        .map((row) => row.role)
+        .sort(),
+      [...baselineRoles].sort(),
+    );
+    assert.equal(
+      requests.length,
+      inventoryFailure ? 55 : retirementFailure ? 61 : repair ? 69 : 61,
+    );
+    assert.ok(
+      requests.some((request) =>
+        request.path.includes(`basalt-artifactscredentials-pr${"a".repeat(24)}/settings`),
+      ),
+    );
     assert.ok(requests.every((request) => request.method === "GET" && request.bytes === 0));
     for (const row of rows) {
+      if (inventoryFailure && ["PublicSite", "Router", "(inventory)"].includes(row.role)) {
+        assert.equal(row.ok, false);
+        assert.equal(row.type, "BaselineInventoryError");
+        assert.equal(row.attempts + row.settings.attempts + row.placements.attempts, 0);
+        assert.match(
+          row.reason!,
+          row.role === "PublicSite"
+            ? /missing-worker/
+            : row.role === "Router"
+              ? /duplicate-worker/
+              : /unexpected-worker/,
+        );
+        continue;
+      }
       const retirementFailed = retirementFailure && ["Api", "AppPages"].includes(row.role);
       if (retirementFailed) {
         assert.equal(row.ok, false);
@@ -261,6 +308,7 @@ test("declaration metadata reads cannot broaden the probe's account, method or q
         success: true,
         result: baselineRoles.map((role) => ({
           id: `basalt-${role.toLowerCase()}-production-fixture`,
+          tags: ["alchemy:stack:basalt", "alchemy:stage:production", `alchemy:id:${role}`],
         })),
         errors: [],
         messages: [],

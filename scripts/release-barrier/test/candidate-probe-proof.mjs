@@ -8,12 +8,19 @@ import { fixtureAccount } from "../../architecture/native-stack-fixtures.ts";
 export async function candidateProbeProof(settings, mode, declarationHttp, source) {
   const workers = baselineRoles.map((role) => ({
     role,
-    scriptName: `basalt-${role.toLowerCase()}-production-fixture`,
+    scriptName:
+      role === "ArtifactsCredentials"
+        ? `basalt-artifactscredentials-pr${"a".repeat(24)}`
+        : `basalt-${role.toLowerCase()}-production-fixture`,
   }));
-  const scripts = workers.map((worker) => ({
-    id: worker.scriptName,
-    tags: ["alchemy:stack:basalt", "alchemy:stage:production", `alchemy:id:${worker.role}`],
-  }));
+  const scripts = workers
+    .filter((worker) => mode !== "entry-inventory-refusals" || worker.role !== "PublicSite")
+    .map((worker) => ({
+      id: worker.scriptName,
+      tags: ["alchemy:stack:basalt", "alchemy:stage:production", `alchemy:id:${worker.role}`],
+    }));
+  if (mode === "entry-inventory-refusals")
+    scripts.push(scripts.find((worker) => worker.tags.includes("alchemy:id:Router")));
   const prefix = `/client/v4/accounts/${fixtureAccount}`;
   const requests = [];
   let declarations = [];
@@ -112,6 +119,7 @@ export async function candidateProbeProof(settings, mode, declarationHttp, sourc
     rows,
     summary,
     errors,
+    requests: requests.filter((path) => path.endsWith("/settings")).length,
     namespaceReads: requests.filter((path) => path.endsWith("/durable_objects/namespaces")).length,
   };
 }

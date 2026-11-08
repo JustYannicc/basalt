@@ -26,16 +26,18 @@ export const settingsFromDeclarations = (stack: CompiledStack, workers: readonly
     const declarations = Object.values(stack.resources).filter(isWorker);
     if (
       declarations.length !== baselineRoles.length ||
-      declarations.some((resource) => !workers.some((worker) => worker.role === resource.FQN)) ||
+      baselineRoles.some((role) => !declarations.some((resource) => resource.FQN === role)) ||
+      new Set(declarations.map((resource) => resource.FQN)).size !== declarations.length ||
+      new Set(workers.map((worker) => worker.role)).size !== workers.length ||
       workers.some((worker) => !declarations.some((resource) => resource.FQN === worker.role))
     )
       throw new BarrierRefusal("candidate-worker-coverage");
     const upstream = Object.fromEntries(
       workers.map((worker) => [worker.role, { workerName: worker.scriptName }]),
     );
-    return yield* Effect.forEach(declarations, (resource) =>
+    return yield* Effect.forEach(workers, (worker) =>
       Effect.gen(function* () {
-        const worker = workers.find((worker) => worker.role === resource.FQN)!;
+        const resource = declarations.find((resource) => resource.FQN === worker.role)!;
         const props = resource.Props;
         const settings = yield* Output.evaluate(
           {

@@ -44,25 +44,40 @@ export interface BaselineProbeRow {
   attempts: number;
 }
 
+export interface ObservedProbeWorker {
+  role: string;
+  scriptName: string;
+}
+
 export class BaselineInventoryError extends Error {
   readonly refusals: readonly { role: string; reason: string }[];
-  constructor(refusals: BaselineInventoryError["refusals"]) {
+  readonly workers: readonly ObservedProbeWorker[];
+  constructor(
+    refusals: BaselineInventoryError["refusals"],
+    workers: readonly ObservedProbeWorker[] = [],
+  ) {
     super(refusals.map((item) => `${item.role}: ${item.reason}`).join("; "));
     this.refusals = refusals;
+    this.workers = workers;
   }
 }
 
-export function baselineInventory(scripts: readonly { id?: string | null }[]) {
-  const production = scripts.flatMap((script) =>
-    typeof script.id === "string" && /^basalt-.+-production-[a-z0-9]+$/.test(script.id)
-      ? [{ id: script.id }]
-      : [],
+export function baselineInventory(
+  scripts: readonly { id?: string | null; tags?: readonly string[] | null }[],
+) {
+  // Physical names may be truncated. These are the identities the provider writes into each script.
+  const production = scripts.filter(
+    (script) =>
+      script.tags?.includes("alchemy:stack:basalt") &&
+      script.tags.includes("alchemy:stage:production"),
   );
+  const identities = production.map((script) => ({
+    script,
+    ids: script.tags!.filter((tag) => tag.startsWith("alchemy:id:")),
+  }));
   const refusals: { role: string; reason: string }[] = [];
   const workers = baselineRoles.flatMap((role) => {
-    const matches = production.filter((script) =>
-      script.id.startsWith(`basalt-${role.toLowerCase()}-production-`),
-    );
+    const matches = identities.filter(({ ids }) => ids.includes(`alchemy:id:${role}`));
     if (matches.length !== 1) {
       refusals.push({
         role,
@@ -70,19 +85,30 @@ export function baselineInventory(scripts: readonly { id?: string | null }[]) {
       });
       return [];
     }
-    return [{ role, scriptName: matches[0]!.id }];
+    const { script, ids } = matches[0]!;
+    if (
+      ids.length !== 1 ||
+      script.tags!.filter((tag) => tag.startsWith("alchemy:stack:")).length !== 1 ||
+      script.tags!.filter((tag) => tag.startsWith("alchemy:stage:")).length !== 1 ||
+      typeof script.id !== "string" ||
+      !/^[a-z0-9][a-z0-9-]{0,62}$/.test(script.id)
+    ) {
+      refusals.push({
+        role,
+        reason: `invalid-worker-identity; logical-id tags expected 1, observed ${ids.length}; stack tags expected 1, observed ${script.tags!.filter((tag) => tag.startsWith("alchemy:stack:")).length}; stage tags expected 1, observed ${script.tags!.filter((tag) => tag.startsWith("alchemy:stage:")).length}; valid script ID expected true, observed ${typeof script.id === "string" && /^[a-z0-9][a-z0-9-]{0,62}$/.test(script.id)}`,
+      });
+      return [];
+    }
+    return [{ role, scriptName: script.id }];
   });
-  for (const script of production.filter(
-    (script) =>
-      !baselineRoles.some((role) =>
-        script.id.startsWith(`basalt-${role.toLowerCase()}-production-`),
-      ),
+  for (const { script, ids } of identities.filter(
+    ({ ids }) => !ids.some((id) => baselineRoles.some((role) => id === `alchemy:id:${role}`)),
   ))
     refusals.push({
       role: "(inventory)",
-      reason: `unexpected-worker; expected 0, observed 1; target sha256:${digest(script.id)}`,
+      reason: `unexpected-worker; expected 0, observed 1; target sha256:${digest(JSON.stringify([script.id, ids]))}`,
     });
-  if (refusals.length) throw new BaselineInventoryError(refusals);
+  if (refusals.length) throw new BaselineInventoryError(refusals, workers);
   return workers;
 }
 
@@ -119,7 +145,15 @@ export async function probeBaselines(
   };
   const program = Effect.gen(function* () {
     const inventory = yield* Workers.listScripts({ accountId });
-    const workers = baselineInventory(inventory.result);
+    let workers;
+    let refusals: BaselineInventoryError["refusals"] = [];
+    try {
+      workers = baselineInventory(inventory.result);
+    } catch (error) {
+      if (!(error instanceof BaselineInventoryError)) throw error;
+      workers = error.workers;
+      refusals = error.refusals;
+    }
     for (const worker of workers)
       metrics.set(`${listPath}/${encodeURIComponent(worker.scriptName)}/deployments`, {
         status: null,
@@ -127,7 +161,7 @@ export async function probeBaselines(
         attempts: 0,
       });
     const context = yield* Effect.context<Credentials | HttpClient.HttpClient>();
-    return yield* Effect.promise(() =>
+    const rows = yield* Effect.promise(() =>
       Promise.all(
         workers.map(async (worker): Promise<BaselineProbeRow> => {
           const start = performance.now();
@@ -160,6 +194,18 @@ export async function probeBaselines(
         }),
       ),
     );
+    return [
+      ...rows,
+      ...refusals.map((refusal): BaselineProbeRow => ({
+        ...refusal,
+        ok: false,
+        type: "BaselineInventoryError",
+        status: null,
+        bytes: 0,
+        ms: 0,
+        attempts: 0,
+      })),
+    ].sort((a, b) => a.role.localeCompare(b.role));
   });
   const result = await Effect.runPromiseExit(
     program.pipe(

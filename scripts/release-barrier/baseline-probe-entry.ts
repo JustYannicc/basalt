@@ -1,4 +1,4 @@
-import { BaselineInventoryError, type BaselineProbeRow } from "./baseline-probe.ts";
+import { baselineRoles, BaselineInventoryError, type BaselineProbeRow } from "./baseline-probe.ts";
 import { reportBaselineProbe } from "./baseline-probe-report.ts";
 import { probeWorkerSettings } from "./settings-probe.ts";
 import { deployEnvironment } from "../environment.ts";
@@ -39,17 +39,12 @@ try {
       : failure.type === "Error" || failure.type === "unknown"
         ? candidateReadFailure(error, "inventory")
         : undefined;
-  rows = (
-    error instanceof BaselineInventoryError
-      ? error.refusals
-      : [
-          {
-            role: "(inventory)",
-            reason: candidate?.message ?? failure.reason ?? "inventory-read-failed",
-          },
-        ]
-  ).map((item) => ({
-    ...item,
+  rows = baselineRoles.map((role) => ({
+    role,
+    reason:
+      error instanceof BaselineInventoryError
+        ? error.refusals.map((item) => `${item.role}: ${item.reason}`).join("; ")
+        : (candidate?.message ?? failure.reason ?? "inventory-read-failed"),
     ok: false,
     type:
       error instanceof BaselineInventoryError

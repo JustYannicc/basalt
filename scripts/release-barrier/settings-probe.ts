@@ -7,7 +7,11 @@ import {
 import { Cause, Effect, Exit } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { brand } from "../../brand.ts";
-import { baselineInventory, type BaselineProbeRow } from "./baseline-probe.ts";
+import {
+  BaselineInventoryError,
+  baselineInventory,
+  type BaselineProbeRow,
+} from "./baseline-probe.ts";
 import {
   candidateScriptSettings,
   candidateSettingsWithRetirements,
@@ -111,7 +115,15 @@ export async function probeWorkerSettings(
   };
   const program = Effect.gen(function* () {
     const inventory = yield* Workers.listScripts({ accountId });
-    const workers = baselineInventory(inventory.result);
+    let workers;
+    let inventoryRefusals: BaselineInventoryError["refusals"] = [];
+    try {
+      workers = baselineInventory(inventory.result);
+    } catch (error) {
+      if (!(error instanceof BaselineInventoryError)) throw error;
+      workers = error.workers;
+      inventoryRefusals = error.refusals;
+    }
     for (const worker of workers) {
       const path = `${listPath}/${encodeURIComponent(worker.scriptName)}`;
       allow(`${path}/deployments`);
@@ -144,7 +156,7 @@ export async function probeWorkerSettings(
       throw new BarrierRefusal("candidate-worker-coverage");
     let retirements: ReturnType<typeof candidateSettingsWithRetirements> | undefined;
     const context = yield* Effect.context<Credentials | HttpClient.HttpClient>();
-    return yield* Effect.promise(() =>
+    const rows = yield* Effect.promise(() =>
       Promise.all(
         workers.map(async (worker): Promise<SettingsProbeRow> => {
           const path = `${listPath}/${encodeURIComponent(worker.scriptName)}`;
@@ -270,6 +282,19 @@ export async function probeWorkerSettings(
         }),
       ),
     );
+    return [
+      ...rows,
+      ...inventoryRefusals.map((refusal): SettingsProbeRow => ({
+        ...refusal,
+        ok: false,
+        type: "BaselineInventoryError",
+        ...empty(),
+        settings: empty(),
+        placements: empty(),
+        compared: [],
+        differences: [],
+      })),
+    ].sort((a, b) => a.role.localeCompare(b.role));
   });
   const result = await Effect.runPromiseExit(
     program.pipe(

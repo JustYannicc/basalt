@@ -9,10 +9,19 @@ import { reportBaselineProbe } from "./baseline-probe-report.ts";
 test("every inventory refusal reaches the job error, summary and safe receipt", async (context) => {
   const scripts = baselineRoles
     .filter((role) => !["Api", "PublicSite"].includes(role))
-    .map((role) => ({ id: `basalt-${role.toLowerCase()}-production-fixture` }));
+    .map((role) => ({
+      id: `basalt-${role.toLowerCase()}-production-fixture`,
+      tags: ["alchemy:stack:basalt", "alchemy:stage:production", `alchemy:id:${role}`],
+    }));
   scripts.push(
-    { id: "basalt-router-production-second" },
-    { id: "basalt-privatefixture-production-fixture" },
+    {
+      id: "basalt-router-production-second",
+      tags: ["alchemy:stack:basalt", "alchemy:stage:production", "alchemy:id:Router"],
+    },
+    {
+      id: "basalt-privatefixture-production-fixture",
+      tags: ["alchemy:stack:basalt", "alchemy:stage:production", "alchemy:id:Private"],
+    },
   );
   let refusal: BaselineInventoryError | undefined;
   try {
@@ -26,7 +35,7 @@ test("every inventory refusal reaches the job error, summary and safe receipt", 
     refusal.refusals.map((item) => item.role),
     ["Api", "PublicSite", "Router", "(inventory)"],
   );
-  const rows = refusal.refusals.map((item) => ({
+  const failures = refusal.refusals.map((item) => ({
     ...item,
     type: "BaselineInventoryError",
     ok: false,
@@ -35,6 +44,18 @@ test("every inventory refusal reaches the job error, summary and safe receipt", 
     ms: 1,
     attempts: 0,
   }));
+  const rows = [
+    ...refusal.workers.map(({ role }) => ({
+      role,
+      ok: true,
+      status: 200,
+      bytes: 10,
+      ms: 1,
+      attempts: 1,
+    })),
+    ...failures,
+  ];
+  assert.equal(rows.length, 21);
   const root = await mkdtemp(join(tmpdir(), "baseline-report-"));
   context.after(() => rm(root, { recursive: true, force: true }));
   const output = join(root, "receipt.json"),
@@ -50,7 +71,8 @@ test("every inventory refusal reaches the job error, summary and safe receipt", 
   assert.deepEqual(JSON.parse(retained), rows);
   assert.equal(logs.join("\n") + "\n", text);
   assert.equal(errors.length, 4);
-  for (const row of rows) {
+  for (const row of rows) assert.ok(text.includes(`| ${row.role} |`));
+  for (const row of failures) {
     assert.ok(text.includes(row.reason));
     assert.ok(
       errors.some(

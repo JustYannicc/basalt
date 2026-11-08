@@ -67,7 +67,11 @@ for (const mode of ["entry-ready", "entry-missing-attempt"] as const)
       assert.ok(namespaceReads >= 2);
       assert.deepEqual(errors, []);
     } else {
-      assert.equal(rows.length, 1);
+      assert.equal(rows.length, 20);
+      assert.deepEqual(
+        rows.map((row) => row.role),
+        baselineRoles,
+      );
       assert.deepEqual(rows[0]!.candidateFailure, {
         tag: "CandidateSettingsReadFailure",
         causeTag: "MissingInput",
@@ -81,3 +85,23 @@ for (const mode of ["entry-ready", "entry-missing-attempt"] as const)
       );
     }
   });
+
+test("the actual CI reader probes healthy declarations after inventory refusals without inventing names", () => {
+  const result = discoverCandidateSettings(process.cwd(), "entry-inventory-refusals");
+  assert.ok(
+    typeof result === "object" && result !== null && "rows" in result && "requests" in result,
+  );
+  const rows = result.rows as { ok: boolean; role: string; reason?: string }[];
+  assert.equal(rows.length, 20);
+  assert.equal(result.requests, 18);
+  assert.deepEqual(
+    rows
+      .filter((row) => !row.ok)
+      .map((row) => row.role)
+      .sort(),
+    ["PublicSite", "Router"],
+  );
+  assert.equal(rows.find((row) => row.role === "ArtifactsCredentials")!.ok, true);
+  assert.match(rows.find((row) => row.role === "PublicSite")!.reason!, /missing-worker/);
+  assert.match(rows.find((row) => row.role === "Router")!.reason!, /duplicate-worker/);
+});
