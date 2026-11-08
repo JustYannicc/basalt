@@ -1,3 +1,4 @@
+import { placementRepairTargets } from "./pending-placement.ts";
 import type { ContainerHealth } from "./container-health.ts";
 import { Schema } from "effect";
 import { BarrierRefusal, canonical, digest } from "./manifest.ts";
@@ -87,6 +88,14 @@ export async function recoverWorkers(
         worker.baseline.reduce((sum, version) => sum + version.percentage, 0) !== 100
       )
         throw new BarrierRefusal("invalid-recovery-baseline", worker.id);
+      if (
+        placementRepairTargets.some(
+          (target) =>
+            target.role === worker.id &&
+            worker.baseline.some((version) => version.versionId === target.version),
+        )
+      )
+        throw new BarrierRefusal("damaged-placement-version-rollback-refused", worker.id);
       const current = await provider.read(worker);
       if (current.target !== worker.target)
         throw new BarrierRefusal("recovery-target-drift", worker.id);

@@ -7,51 +7,70 @@ import { baselineRoles } from "./baseline-probe.ts";
 import { normalizePlacement } from "./script-placement.ts";
 import { assertScriptSettings, scriptSettingFields } from "./script-settings.ts";
 import { BarrierRefusal } from "./manifest.ts";
+import { placementRepairTargets } from "./pending-placement.ts";
 
-for (const drift of [false, true])
-  test(`full settings probe compares all 19 roles and ${drift ? "names drift" : "accepts normalized placement"}`, async (context) => {
+for (const mode of ["same", "drift", "repair"] as const) {
+  const drift = mode === "drift";
+  const repair = mode === "repair";
+  test(`full settings probe compares all 19 roles and ${mode}`, async (context) => {
     const requests: { method: string | undefined; path: string; bytes: number }[] = [];
     const server = createServer(async (request, response) => {
       let bytes = 0;
       for await (const chunk of request) bytes += chunk.length;
       const path = request.url!;
       requests.push({ method: request.method, path, bytes });
+      const target = repair
+        ? placementRepairTargets.find((target) => path.includes(target.scriptName))
+        : undefined;
       let result: unknown;
       if (path.endsWith("/scripts"))
         result = baselineRoles.map((role) => ({
-          id: `basalt-${role.toLowerCase()}-production-fixture`,
+          id: repair
+            ? (placementRepairTargets.find((target) => target.role === role)?.scriptName ??
+              `basalt-${role.toLowerCase()}-production-fixture`)
+            : `basalt-${role.toLowerCase()}-production-fixture`,
         }));
       else if (path.endsWith("/deployments"))
         result = {
           deployments: [
             {
-              id: "deployment",
+              id: target?.deployment ?? "deployment",
               created_on: "2026-11-01T00:00:00Z",
               source: "api",
               strategy: "percentage",
-              versions: [{ version_id: "active", percentage: 100 }],
+              versions: [{ version_id: target?.version ?? "active", percentage: 100 }],
             },
           ],
         };
       else if (path.endsWith("/settings"))
         result = {
-          placement: { mode: "targeted", target: [39] },
+          placement: target ? undefined : { mode: "targeted", target: [39] },
           logpush: drift && path.includes("publicsite"),
-          limits: { subrequests: drift && path.includes("api-production") ? 100 : 50_000 },
+          limits:
+            target?.role === "Api"
+              ? undefined
+              : { subrequests: drift && path.includes("api-production") ? 100 : 50_000 },
           observability: { enabled: true, head_sampling_rate: 1 },
           tags: [],
           bindings: [],
           tail_consumers: [],
         };
-      else if (path.endsWith("/versions/active"))
+      else if (path.includes("/versions/"))
         result = {
-          id: "active",
+          id: path.split("/").at(-1),
           resources: {
+            script_runtime:
+              target?.role === "Api" && path.endsWith(target.prior)
+                ? { limits: { subrequests: 50000 } }
+                : {},
             script: {
-              placement: {
-                mode: "targeted",
-                target: [{ id: 39, type: "region", region: "aws:eu-central-1" }],
-              },
+              placement:
+                target && path.endsWith(target.version)
+                  ? undefined
+                  : {
+                      mode: "targeted",
+                      target: [{ id: 39, type: "region", region: "aws:eu-central-1" }],
+                    },
               secret_fixture: "private-fixture",
             },
           },
@@ -83,6 +102,7 @@ for (const drift of [false, true])
       async (workers) =>
         workers.map((worker) => ({
           ...worker,
+          retiredPlacement: false,
           metadata: {
             placement: { region: "aws:eu-central-1" },
             limits: { subrequests: 50_000 },
@@ -92,13 +112,20 @@ for (const drift of [false, true])
         })),
     );
     assert.equal(rows.length, 19);
-    assert.equal(requests.length, 58);
+    assert.equal(requests.length, repair ? 60 : 58);
     assert.ok(requests.every((request) => request.method === "GET" && request.bytes === 0));
     for (const row of rows) {
       assert.equal(row.ok, !drift || !["Api", "PublicSite"].includes(row.role));
       assert.deepEqual(row.compared, scriptSettingFields);
       assert.equal(row.placements.status, 200);
-      assert.equal(row.placements.attempts, 1);
+      assert.equal(
+        row.placements.attempts,
+        repair && ["Api", "AppPages"].includes(row.role) ? 2 : 1,
+      );
+      assert.equal(
+        Boolean(row.pendingPlacementRepair),
+        repair && ["Api", "AppPages"].includes(row.role),
+      );
       if (!row.ok)
         assert.ok(
           row.differences.some(
@@ -107,10 +134,11 @@ for (const drift of [false, true])
         );
     }
     assert.doesNotMatch(
-      JSON.stringify(rows),
+      JSON.stringify(rows.map(({ pendingPlacementRepair: _repair, ...row }) => row)),
       /private-fixture|resources|secret_fixture|scriptName/,
     );
   });
+}
 
 test("numeric placement refuses absent, foreign and conflicting active-version proofs", () => {
   const numeric = { mode: "targeted", target: [39] };

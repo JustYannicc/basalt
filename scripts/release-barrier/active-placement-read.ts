@@ -11,11 +11,12 @@ const responseSchema = Schema.Struct({
     id: Schema.String,
     resources: Schema.Struct({
       script: Schema.optional(Schema.Struct({ placement: Schema.optional(Schema.Unknown) })),
+      script_runtime: Schema.optional(Schema.Struct({ limits: Schema.optional(Schema.Unknown) })),
     }),
   }),
 });
 
-/** The pinned SDK's version schema strips placement. Decode only this documented immutable metadata. */
+/** The pinned SDK's version schema strips placement. Decode only the immutable placement and runtime limits needed by the repair guard. */
 export const readVersionPlacement = (accountId: string, scriptName: string, versionId: string) =>
   Effect.gen(function* () {
     const credentials = yield* yield* Credentials;
@@ -57,7 +58,13 @@ export const readVersionPlacement = (accountId: string, scriptName: string, vers
       const decoded = yield* Schema.decodeUnknownEffect(responseSchema)(body);
       if (decoded.result.id !== versionId)
         throw new BarrierRefusal("active-version-identity-drift");
-      return { id: versionId, placement: decoded.result.resources.script?.placement };
+      return {
+        id: versionId,
+        placement: decoded.result.resources.script?.placement,
+        ...(decoded.result.resources.script_runtime?.limits === undefined
+          ? {}
+          : { limits: decoded.result.resources.script_runtime.limits }),
+      };
     });
     return yield* read.pipe(
       Effect.tapError((error) => Ref.set(lastError, error)),

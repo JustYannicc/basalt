@@ -160,7 +160,8 @@ try {
           containerProof.proveContainerStack(
             stack,
             (inspectNext) => {
-              process.env.BASALT_RELEASE_ATTEMPT = "00000000-0000-4000-8000-000000000002";
+              const previous = Number(process.env.BASALT_RELEASE_ATTEMPT?.slice(-12) ?? 1);
+              process.env.BASALT_RELEASE_ATTEMPT = `00000000-0000-4000-8000-${String(previous + 1).padStart(12, "0")}`;
               return evalStack(actualRoot, inspectNext, { stage: settings.ALCHEMY_STAGE });
             },
             process.env.NATIVE_STACK_CONTAINER_PROOF,

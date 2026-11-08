@@ -74,6 +74,9 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
   baseline-probe:
+    permissions:
+      contents: read
+      actions: read
     needs: select
     if: >-
       github.event_name == 'pull_request' &&
@@ -97,7 +100,10 @@ jobs:
         run: |
           BASALT_RELEASE_ATTEMPT="$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')" \
             bun scripts/release-barrier/baseline-probe-entry.ts
+          BASALT_RELEASE_ATTEMPT="$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')" \
+            bun scripts/release-barrier/forward-probe-entry.ts
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           PLANETSCALE_ORGANIZATION: ${{ secrets.PLANETSCALE_ORGANIZATION }}
@@ -155,6 +161,15 @@ jobs:
           name: baseline-probe
           path: .local/baseline-probe.json
           include-hidden-files: true
+          if-no-files-found: warn
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: forward-reconciliation
+          path: .local/forward-probe/*.json
+          include-hidden-files: true
+          retention-days: 3
           if-no-files-found: warn
 
   cpa-pipeline:
