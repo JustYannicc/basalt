@@ -13,7 +13,7 @@ import { WorkerUploadHook } from "alchemy/Cloudflare/Workers/WorkerUploadHook";
 import { Context, Effect, Exit, Layer, Option } from "effect";
 import type { Worker } from "alchemy/Cloudflare";
 import { withReleaseRuntime } from "../runtime.ts";
-import { deployStack } from "../deploy-stack.ts";
+import { deployStack, type DeployStackOptions } from "../deploy-stack.ts";
 import { attributes, preparedUpload } from "../fixture.ts";
 import { cloudflareArtifactsApi } from "../../ensure-artifacts.ts";
 import type { BarrierReceipt } from "../barrier.ts";
@@ -30,6 +30,7 @@ export const fixture = (
     baselineError?: CloudflareHttpError;
     baseline?: typeof import("../cloudflare.ts").readBaseline;
     extraWorkers?: readonly string[];
+    evidence?: Pick<DeployStackOptions, "record" | "manifest">;
     preparationError?: unknown;
     freezeError?: unknown;
     reject?: boolean;
@@ -179,8 +180,9 @@ export const fixture = (
           candidate: "a".repeat(40),
           record: async (receipt) => {
             receipts.push(receipt);
+            await options.evidence?.record(receipt);
           },
-          manifest: async () => {},
+          manifest: options.evidence?.manifest ?? (async () => {}),
           io: {
             namespace: (account, token) =>
               cloudflareArtifactsApi(account, token, async (_input, init) => {

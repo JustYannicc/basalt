@@ -37,7 +37,11 @@ const workerIds = [
   "Sso",
 ].sort();
 
-const sdkFixture = (failure: "once" | "transport" | "forbidden", failedWorker = "Api") => {
+const sdkFixture = (
+  failure: "once" | "transport" | "forbidden",
+  evidence: ReturnType<typeof releaseEvidence>,
+  failedWorker = "Api",
+) => {
   const reads = new Map<string, number>();
   const client = HttpClient.make((request, url) =>
     Effect.suspend(() => {
@@ -84,6 +88,7 @@ const sdkFixture = (failure: "once" | "transport" | "forbidden", failedWorker = 
     }),
   );
   const proof = fixture({
+    evidence,
     extraWorkers: workerIds.filter((id) => !["Api", "Router"].includes(id)),
     baseline: (worker) =>
       Effect.gen(function* () {
@@ -107,8 +112,11 @@ const sdkFixture = (failure: "once" | "transport" | "forbidden", failedWorker = 
   return { ...proof, reads, run };
 };
 
-test("every captured Worker baseline retries its first transient GET and releases exact versions", async () => {
-  const proof = sdkFixture("once");
+test("every captured Worker baseline retries its first transient GET and releases exact versions", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "baseline-success-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const evidence = releaseEvidence(directory, "a".repeat(40));
+  const proof = sdkFixture("once", evidence);
   const exit = await proof.run();
   assert.ok(Exit.isSuccess(exit), Exit.isFailure(exit) ? String(Cause.squash(exit.cause)) : "");
   assert.deepEqual(
@@ -116,6 +124,11 @@ test("every captured Worker baseline retries its first transient GET and release
     workerIds.map((id) => [id, 3]),
   );
   assert.equal(proof.receipts.at(-1)?.phase, "complete");
+  const manifest = JSON.parse(await readFile(join(directory, "manifest.json"), "utf8"));
+  assert.deepEqual(
+    manifest.workers.map((worker: { id: string }) => worker.id),
+    workerIds,
+  );
   assert.deepEqual(
     proof.receipts.at(-1)?.activated,
     workerIds.map((worker) => ({ worker, versionId: `accepted-${worker}` })),
@@ -127,7 +140,8 @@ for (const scenario of ["transport", "forbidden"] as const)
     test(`permanent ${scenario} ${failedWorker} baseline failure remains bounded and safely typed`, async (context) => {
       const directory = await mkdtemp(join(tmpdir(), "baseline-failure-"));
       context.after(() => rm(directory, { recursive: true, force: true }));
-      const proof = sdkFixture(scenario, failedWorker);
+      const evidence = releaseEvidence(directory, "a".repeat(40));
+      const proof = sdkFixture(scenario, evidence, failedWorker);
       const exit = await proof.run();
       assert.ok(Exit.isFailure(exit));
       assert.deepEqual(
@@ -137,9 +151,7 @@ for (const scenario of ["transport", "forbidden"] as const)
           scenario === "transport" && worker === failedWorker ? 9 : 1,
         ]),
       );
-      const failure = await releaseEvidence(directory, "a".repeat(40)).failure(
-        Cause.squash(exit.cause),
-      );
+      const failure = await evidence.failure(Cause.squash(exit.cause));
       assert.equal(failure.operation, "read-worker-baseline");
       assert.equal(failure.worker, failedWorker);
       assert.deepEqual(
@@ -149,6 +161,8 @@ for (const scenario of ["transport", "forbidden"] as const)
           : { type: "Forbidden" },
       );
       assert.equal(failure.manifest, null);
+      assert.equal(failure.phase, "preparation");
+      await assert.rejects(readFile(join(directory, "manifest.json")), { code: "ENOENT" });
       assert.deepEqual(failure.activated, []);
       assert.deepEqual(proof.events, []);
       assert.equal(proof.writes(), 0);
