@@ -3652,16 +3652,6 @@
       }
     },
     {
-      "entry": "planetscale",
-      "package": "@executor.sh/planetscale",
-      "methods": {
-        "oauth2": {
-          "kind": "deferred",
-          "message": "Signalbox has not verified one-click sign-in for PlanetScale yet. You can connect with your own OAuth app."
-        }
-      }
-    },
-    {
       "entry": "planning-center-online",
       "package": "@executor.sh/planning-center-online",
       "methods": {
@@ -5588,6 +5578,22 @@
           "message": "Signalbox has not verified one-click sign-in for ZoomInfo yet. You can connect with your own OAuth app."
         }
       }
+    },
+    {
+      "entry": "planetscale",
+      "package": "@executor.sh/planetscale",
+      "methods": {
+        "oauth2": {
+          "kind": "deferred",
+          "message": "Existing PlanetScale OAuth accounts remain connected. Use the separate sign-in method for new OAuth accounts."
+        },
+        "signIn": {
+          "kind": "hosted",
+          "client": "planetscale",
+          "message": "Shared sign-in for PlanetScale is not configured on this host. You can connect with your own OAuth app or a service token."
+        }
+      },
+      "sourceSha256": "a9e1693b258819d197cedaa07ea60ed6e95bbd083b9c230706d707a2237eeda4"
     }
   ]
 }

@@ -24,6 +24,7 @@ test("reviewed carried sources match the packages the catalog serves", async () 
     "gitlab",
     "miro",
     "notion",
+    "planetscale",
     "slack",
     "vercel",
     "workos",

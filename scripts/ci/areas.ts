@@ -22,6 +22,7 @@ const accounts = [
   "workos-sign-in",
   "gitlab-sign-in",
   "clerk-sign-in",
+  "planetscale-sign-in",
   "vercel-sign-in",
   "elevenlabs-sign-in",
   "mcp-apps",
@@ -63,6 +64,7 @@ export const heavyJobs = [
   "workos-sign-in",
   "gitlab-sign-in",
   "clerk-sign-in",
+  "planetscale-sign-in",
   "vercel-sign-in",
   "elevenlabs-sign-in",
   "mcp-apps",
@@ -119,6 +121,15 @@ export const areas = [
   },
   { paths: ["e2e/clerk-sign-in.mjs", "e2e/clerk-signin/**"], jobs: ["clerk-sign-in"] },
   { paths: ["e2e/gitlab-sign-in.mjs", "e2e/gitlab-signin/**"], jobs: ["gitlab-sign-in"] },
+  {
+    paths: [
+      "e2e/planetscale-sign-in.mjs",
+      "e2e/planetscale-signin/**",
+      "src/catalog/planetscale*",
+      ".upstream/apps/hosted/server/src/implementation/planetscale-oauth.ts",
+    ],
+    jobs: ["planetscale-sign-in"],
+  },
   { paths: ["clients/**"], jobs: ["client-mobile", "client-desktop", "client-native-product"] },
   {
     paths: ["src/tunnel/**", "e2e/native-*", ".upstream/**/{client-grants,device-authorization}*"],
