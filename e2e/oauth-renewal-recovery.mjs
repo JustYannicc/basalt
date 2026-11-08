@@ -221,7 +221,7 @@ const program = Effect.gen(function* () {
       );
       // The next interactive sign-in succeeds. The existing recovery flow owns all credential writes.
       yield* issuer.configure({ tokenError: null });
-      const ui = yield* proveRecoveryUi({ target, actors, app, label, directory, ...scenario });
+      const ui = yield* proveRecoveryUi({ actors, app, label, directory, ...scenario });
       if (scenario.reconnect) {
         assert.equal(ui.accountId, account.id, "Reconnect replaced the existing account ID");
         assert.deepEqual(yield* linkSnapshot(), links, "Reconnect changed the existing app links");

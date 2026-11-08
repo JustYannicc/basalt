@@ -6,16 +6,7 @@ import { Browser } from "../../.upstream/e2e/support/browser.ts";
 import { assertPrivate } from "./fixture.mjs";
 
 /** Read persisted health through both dashboards at phone width, then use their existing recovery. */
-export const proveRecoveryUi = ({
-  target,
-  actors,
-  app,
-  label,
-  directory,
-  name,
-  reason,
-  reconnect,
-}) =>
+export const proveRecoveryUi = ({ actors, app, label, directory, name, reason, reconnect }) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
     const screenshots = [];
@@ -96,13 +87,18 @@ export const proveRecoveryUi = ({
       await inline.click();
       const dialog = page.getByRole("dialog", { name: "Reconnect Renewal fixture", exact: true });
       await dialog.waitFor({ state: "visible" });
+      const reconnectButton = dialog.getByRole("button", {
+        name: "Reconnect Renewal fixture",
+        exact: true,
+      });
+      await reconnectButton.waitFor({ state: "visible" });
       await capture(page, "reconnect-dialog");
       const completed = page.context().waitForEvent("response", {
         predicate: (response) =>
           response.request().method() === "POST" &&
           new URL(response.url()).pathname.endsWith("/oauth/complete"),
       });
-      await dialog.getByRole("button", { name: "Reconnect Renewal fixture", exact: true }).click();
+      await reconnectButton.click();
       const response = await completed;
       assert.equal(response.status(), 200, "Existing OAuth reconnect did not complete");
       const account = await response.json();
