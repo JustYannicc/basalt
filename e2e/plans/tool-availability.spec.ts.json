@@ -1,0 +1,83 @@
+{
+  "scenarios": {
+    "toolAvailabilityAgent": {
+      "fixtures": "actors",
+      "managementApps": ["owner"],
+      "title": "agents manage generic app tool availability through approval and hidden tools stay out of discovery and calls",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted app instance availability follows organization app management authority."
+        }
+      }
+    },
+    "toolAvailabilityUpgrade": {
+      "fixtures": "actors",
+      "title": "new write tools stay off when a retained app upgrades",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-run",
+          "reason": "Managed local Cloud source upgrades require remote Git storage credentials. The same persisted availability and upgrade path is verified on self-host; Cloud tests cover retained workflow dispatch separately."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted app availability follows organization app management authority."
+        }
+      }
+    }
+  },
+  "runs": {
+    "toolAvailabilityAgent": ["declared:self-host", "declared:cloud"],
+    "toolAvailabilityUpgrade": ["declared:self-host"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/contracts/api.ts",
+    ".upstream/apps/hosted/server/src/contracts/tool-availability-error.ts",
+    ".upstream/apps/hosted/server/src/contracts/tool-availability.ts",
+    ".upstream/apps/hosted/server/src/contracts/tools.ts",
+    ".upstream/apps/hosted/server/src/implementation/api.ts",
+    ".upstream/apps/hosted/server/src/implementation/authorization.ts",
+    ".upstream/apps/hosted/server/src/implementation/executor-app.ts",
+    ".upstream/apps/hosted/server/src/implementation/mcp-http.ts",
+    ".upstream/apps/hosted/server/src/implementation/mcp.ts",
+    ".upstream/apps/hosted/server/src/implementation/migrations.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-lifecycle.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-policy.ts",
+    ".upstream/apps/hosted/server/src/implementation/tool-availability-handlers.ts",
+    ".upstream/apps/hosted/server/src/implementation/tool-availability-read.ts",
+    ".upstream/apps/hosted/server/src/implementation/tool-availability-store.ts",
+    ".upstream/apps/hosted/server/src/implementation/tool-availability.ts",
+    ".upstream/apps/hosted/server/src/implementation/tool-policy-evaluation.ts",
+    ".upstream/apps/hosted/server/src/implementation/tools.ts",
+    ".upstream/e2e/support/app-package.ts",
+    ".upstream/e2e/support/profile-removal-rollback.ts",
+    ".upstream/e2e/support/tool-availability-fixture.ts",
+    ".upstream/e2e/support/tool-availability-pages.ts",
+    ".upstream/e2e/support/tool-availability-recovery.ts",
+    ".upstream/e2e/support/tool-availability-retained.ts",
+    ".upstream/e2e/tests/grouped-accounts.spec.ts",
+    ".upstream/e2e/tests/import-approvals.spec.ts",
+    ".upstream/e2e/tests/provider-errors.spec.ts",
+    ".upstream/e2e/tests/tool-availability.spec.ts",
+    ".upstream/e2e/tests/workflow-dependency-tool-policy.spec.ts",
+    ".upstream/packages/mcp-auth/src/implementation/backend.ts",
+    ".upstream/packages/mcp/src/contracts/backend.ts",
+    ".upstream/packages/mcp/src/implementation/execute.ts",
+    ".upstream/packages/mcp/src/implementation/executions.ts",
+    ".upstream/packages/sdk/src/contracts/executor.ts",
+    ".upstream/packages/sdk/src/contracts/tools.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts",
+    ".upstream/packages/sdk/src/implementation/tool-search-store.ts",
+    ".upstream/packages/sdk/src/implementation/tools.ts"
+  ]
+}

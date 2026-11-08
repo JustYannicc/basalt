@@ -34,7 +34,9 @@ Create a separate GitHub OAuth App named Signalbox with homepage `https://app.si
 
 Google and GitHub connector credentials are optional and use the four `EXECUTOR_OAUTH_*` secrets in [GitHub Actions secrets](self-hosting.md#github-actions-secrets). GitHub Actions supplies them and Alchemy writes their runtime copies. No person enters a client secret to connect their account. Missing or incomplete pairs are omitted, with one deployment warning per unavailable connector. Sign-in, pools and computer setup deploy independently.
 
-GitLab uses the [carried site-aware app](../src/catalog/gitlab.json). GitLab.com keeps the hosted one-click OAuth client when its optional credentials are configured. Its `api` scope includes `read_user` and grants write access; mutating tools still require approval.
+GitLab uses the [carried site-aware app](../src/catalog/gitlab.json). Its first choice signs in to the selected instance's GitLab MCP server with only the `mcp` scope. Sign-in needs no GitLab app where the instance advertises automatic client registration; elsewhere the form explains how to register an application on that instance with Confidential cleared. A signed-in account reaches only that server's tools, each behind approval, and never the REST tools. Personal access tokens and OAuth apps remain the full REST API alternatives, offered from the same dialog. The connect form opens each setup page on the selected instance. Administrators can disable MCP, automatic registration, personal OAuth apps or personal access tokens independently; when every route is off, the person must ask an administrator to allow one.
+
+GitLab.com keeps the hosted one-click REST OAuth client when its optional credentials are configured. Its `api` scope includes `read_user` and grants write access; mutating tools still require approval. That client is never offered for MCP sign-in, which asks for a scope it does not allow.
 
 For each self-managed instance, create a separate confidential OAuth application on that instance. Enable authorization-code and refresh-token access, set callback `https://app.signalbox.run/api/oauth/callback`, and request `api` and `read_user`. In Basalt, add a separate GitLab account for each instance, enter its exact HTTPS origin, then enter that instance's OAuth client ID and secret. The shared GitLab.com client is never sent to a self-managed origin. A reconnect keeps the saved origin; add another account to connect a different instance.
 
@@ -102,12 +104,12 @@ The optional global Zendesk client uses `EXECUTOR_OAUTH_ZENDESK_CLIENT_ID` and `
 
 After approval, [claim the global client and associate it with the app listing](https://developer.zendesk.com/documentation/apps/app-developer-guide/managing-global-oauth-clients-and-app-associations/). Supply these values through GitHub Actions before deploying:
 
-| Setting | Store | Destination |
-| --- | --- | --- |
-| `EXECUTOR_OAUTH_ZENDESK_CLIENT_ID` | Secret containing the approved global identifier | Tools API Worker secret binding |
-| `EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET` | Secret | Tools API Worker secret binding |
-| `ZENDESK_MARKETPLACE_ORGANIZATION_ID` | Variable containing the assigned publisher organization ID | Catalog Worker binding |
-| `ZENDESK_MARKETPLACE_APP_ID` | Variable containing the assigned app ID | Catalog Worker binding |
+| Setting                                | Store                                                      | Destination                     |
+| -------------------------------------- | ---------------------------------------------------------- | ------------------------------- |
+| `EXECUTOR_OAUTH_ZENDESK_CLIENT_ID`     | Secret containing the approved global identifier           | Tools API Worker secret binding |
+| `EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET` | Secret                                                     | Tools API Worker secret binding |
+| `ZENDESK_MARKETPLACE_ORGANIZATION_ID`  | Variable containing the assigned publisher organization ID | Catalog Worker binding          |
+| `ZENDESK_MARKETPLACE_APP_ID`           | Variable containing the assigned app ID                    | Catalog Worker binding          |
 
 The catalog adds the assigned IDs and product name to [Marketplace request headers](https://developer.zendesk.com/documentation/marketplace/building-a-marketplace-app/request-header-requirements-for-marketplace-apps/), including health checks. Both IDs must be present or both absent. No placeholder IDs are sent, and neither ID selects a customer's site. The former `EXECUTOR_ZENDESK_SUBDOMAIN` setting is ignored and not forwarded.
 
@@ -135,7 +137,7 @@ For Slack, run `node scripts/check-slack.ts --preflight`, then `node scripts/che
 
 ## GitLab MCP
 
-Install **GitLab MCP** from the catalog and enter your instance origin. The server must enable MCP and support HTTP transport. Connect using an instance OAuth application with the `mcp` scope, or a fine-grained personal token with MCP tool Execute permission. Legacy personal, project and group tokens do not work with GitLab MCP. The REST app remains separate. Each MCP tool call asks for approval.
+The catalog no longer lists the separate **GitLab MCP** app; MCP sign-in is part of GitLab. Installed copies keep reading their carried source, including its fine-grained personal token method, so existing accounts and links keep working.
 
 ## PlanetScale
 

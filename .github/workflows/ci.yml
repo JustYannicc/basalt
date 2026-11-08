@@ -176,6 +176,93 @@ jobs:
             .generated/native-mobile-*/result.json
             .generated/native-mobile-*/failure*.txt
           if-no-files-found: warn
+  clerk-sign-in:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'clerk-sign-in')
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - run: bun run --cwd .upstream e2e:prepare
+      - run: bunx playwright install --with-deps chromium
+        working-directory: .upstream
+      - name: Verify Clerk sign-in, cancellation, refusal and retained API keys
+        run: bun e2e/clerk-sign-in.mjs .generated/clerk-sign-in/ci
+      - name: Collect sanitized connector diagnostics
+        if: always()
+        run: node scripts/ci/collect-connector-evidence.mjs clerk-sign-in "$RUNNER_TEMP/connector-evidence.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: clerk-sign-in-evidence
+          path: ${{ runner.temp }}/connector-evidence.json
+          if-no-files-found: error
+
+  workos-sign-in:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'workos-sign-in')
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - run: bun run --cwd .upstream e2e:prepare
+      - run: bunx playwright install --with-deps chromium
+        working-directory: .upstream
+      - name: Verify WorkOS sign-in, cancellation, refusal and retained API keys
+        run: bun e2e/workos-sign-in.mjs .generated/workos-sign-in/ci
+      - name: Collect sanitized connector diagnostics
+        if: always()
+        run: node scripts/ci/collect-connector-evidence.mjs workos-sign-in "$RUNNER_TEMP/connector-evidence.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: workos-sign-in-evidence
+          path: ${{ runner.temp }}/connector-evidence.json
+          if-no-files-found: error
+
+  gitlab-sign-in:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'gitlab-sign-in')
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - run: bun run --cwd .upstream e2e:prepare
+      - run: bunx playwright install --with-deps chromium
+        working-directory: .upstream
+      - name: Verify GitLab MCP sign-in, instance setup guidance and full REST access
+        run: bun e2e/gitlab-sign-in.mjs .generated/gitlab-sign-in/ci
+      - name: Collect sanitized connector diagnostics
+        if: always()
+        run: node scripts/ci/collect-connector-evidence.mjs gitlab-sign-in "$RUNNER_TEMP/connector-evidence.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gitlab-sign-in-evidence
+          path: ${{ runner.temp }}/connector-evidence.json
+          if-no-files-found: error
+
   vercel-sign-in:
     needs: select
     if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'vercel-sign-in')
@@ -281,6 +368,10 @@ jobs:
         run: bun e2e/catalog-compat.mjs .generated/catalog-compat/ci all 8
       - name: Verify ElevenLabs tools load as the catalog serves it, with dropped routes
         run: bun e2e/elevenlabs-discovery.mjs .generated/elevenlabs-discovery/ci
+      - name: Verify Zoho People regional sign-in and approved API writes
+        run: bun e2e/zoho-people.mjs .generated/zoho-people/ci
+      - name: Verify private Zoho MCP OAuth, tool approvals and masked URL entry
+        run: bun e2e/zoho-people-mcp.mjs .generated/zoho-people-mcp/ci
       - name: Collect sanitized connector diagnostics
         if: always()
         run: node scripts/ci/collect-connector-evidence.mjs catalog-compat "$RUNNER_TEMP/connector-evidence.json"
@@ -1854,13 +1945,22 @@ jobs:
           POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
           POOL_TEST_POOLED_URL: postgresql://fixture_root:fixture-only@localhost:6432/postgres
           POOL_TEST_HOME_BUDGET_CLIENT: ${{ runner.temp }}/home-budget-client
+      - name: Compile and serve the SQLite upload worker assets
+        run: node scripts/pool-tests/sqlite-compiler-proof.mjs "${{ runner.temp }}/sqlite-upload-compiled"
       - name: Check the pool runtime and database contracts
         run: node --test --test-concurrency=1 scripts/pool-tests/*.test.ts
         env:
           POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
+          SQLITE_COMPILED_OUTPUT: ${{ runner.temp }}/sqlite-upload-compiled
           POOL_TEST_IMAGE: basalt-1409-pool:test
           POOL_TEST_LEGACY_IMAGE: basalt-1409-pool:privacy-legacy
           POOL_TEST_USAGE_PRIVACY_IMAGE: basalt-1409-pool:usage-privacy-baseline
+      - name: Set up the import flow's browser
+        uses: ./.github/actions/setup-browser
+      - name: Verify usage imports through the pool app and database
+        run: node --test scripts/pool-ui-tests/usage-import.test.mjs
+        env:
+          POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
       - name: Release pool build disk
         if: always()
         run: |
@@ -1996,6 +2096,9 @@ jobs:
         declared-cloud,
         account-acquisition,
         account-usage,
+        clerk-sign-in,
+        workos-sign-in,
+        gitlab-sign-in,
         vercel-sign-in,
         elevenlabs-sign-in,
         boat-bundle,

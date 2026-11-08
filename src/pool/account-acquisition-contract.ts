@@ -18,6 +18,7 @@ export const acquisitionErrorClasses = [
   "timeout",
   "home_unavailable",
   "home_rejected",
+  "invalid_code",
   "binding_changed",
   "invalid_response",
   "internal",

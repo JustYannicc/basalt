@@ -1,0 +1,36 @@
+{
+  "scenarios": {
+    "accountPlanNames": {
+      "fixtures": "actors",
+      "title": "subscription plan names match the provider on account rows and app and pool Accounts tabs at desktop and phone widths",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses synthetic loopback allowance services."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Shared display rule is exercised through hosted rows."
+        }
+      }
+    }
+  },
+  "runs": {
+    "accountPlanNames": ["account-acquisition:account-usage-rows-and-cells"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/web/src/implementation/pages/account-observations-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/accounts-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx",
+    ".upstream/packages/apps/src/contracts/account-plan-name.ts",
+    ".upstream/packages/ui/src/contracts/account-identities.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/account-observation-format.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/account-observations.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-row.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/accounts-client.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx"
+  ]
+}

@@ -8,6 +8,8 @@ class AcquisitionFailure extends Error {
     this.receipt = receipt;
   }
 }
+export const invalidSignInCode = () =>
+  new AcquisitionFailure({ phase: "oauth_callback", errorClass: "invalid_code", retryable: true });
 export function acquisitionReceipt(error: unknown): AcquisitionReceipt {
   if (error instanceof AcquisitionFailure) return error.receipt;
   return {

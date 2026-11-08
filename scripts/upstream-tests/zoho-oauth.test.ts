@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ConfigProvider, Effect, Redacted } from "effect";
+import { ConfigProvider, Effect, Redacted, Schema } from "effect";
+import peopleSource from "../../src/catalog/zoho-people/source.json" with { type: "json" };
 
 const { firstPartyOAuthClients } = await import(
   new URL(
@@ -52,7 +53,7 @@ test("the eight Zoho data centers share one optional Multi-DC pair and preserve 
     EXECUTOR_OAUTH_ZOHO_CLIENT_ID: "synthetic-zoho-client",
     EXECUTOR_OAUTH_ZOHO_CLIENT_SECRET: "synthetic-zoho-secret",
   });
-  assert.equal(configured.length, 10);
+  assert.equal(configured.length, 13);
   for (const [region, accounts, api] of regions) {
     const client = configured.find((client) => client.id === `zoho-${region}`)!;
     assert.ok(client);
@@ -85,5 +86,42 @@ test("a partial Zoho pair fails with setting names without repeating the secret"
         return true;
       },
     );
+  }
+});
+
+test("People reuses the Zoho pair with separate scopes and product hosts", async () => {
+  const declaration = peopleSource.files.find((file) => file.path === "scopes.json");
+  assert.ok(declaration);
+  const scopes = Schema.decodeUnknownSync(Schema.Array(Schema.String))(
+    JSON.parse(declaration.content),
+  );
+  const configured = await clients({
+    EXECUTOR_PRODUCT_NAME: "Signalbox",
+    EXECUTOR_OAUTH_ZOHO_CLIENT_ID: "synthetic-zoho-client",
+    EXECUTOR_OAUTH_ZOHO_CLIENT_SECRET: "synthetic-zoho-secret",
+  });
+  for (const [region, accounts] of regions.slice(0, 3)) {
+    const client = configured.find((client) => client.id === `zoho-people-${region}`)!;
+    assert.ok(client);
+    assert.equal(client.clientId, "synthetic-zoho-client");
+    assert.equal(Redacted.value(client.clientSecret), "synthetic-zoho-secret");
+    assert.equal(client.label, `Signalbox for Zoho People (${region.toUpperCase()})`);
+    assert.equal(client.server.authorizationUrl, `https://${accounts}/oauth/v2/auth`);
+    assert.equal(client.server.tokenUrl, `https://${accounts}/oauth/v2/token`);
+    assert.equal(client.server.scopeSeparator, ",");
+    assert.equal(client.server.grantedScopeSeparator, ",");
+    assert.deepEqual(client.server.authorizationParams, {
+      access_type: "offline",
+      prompt: "consent",
+    });
+    assert.deepEqual(client.placement, {
+      hosts: ["people.zoho.eu", "people.zoho.com", "people.zoho.in"],
+      scheme: "Zoho-oauthtoken",
+    });
+    assert.ok(client.defaultScopes.every((scope) => scope.startsWith("ZOHOPEOPLE.")));
+    assert.deepEqual(new Set(client.defaultScopes), new Set(scopes));
+    assert.ok(client.defaultScopes.includes("ZOHOPEOPLE.timetracker.CREATE"));
+    assert.ok(client.defaultScopes.includes("ZOHOPEOPLE.timetracker.DELETE"));
+    assert.ok(!JSON.stringify(client).includes("synthetic-zoho-secret"));
   }
 });

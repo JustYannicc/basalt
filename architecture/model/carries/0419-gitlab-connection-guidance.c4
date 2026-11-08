@@ -1,0 +1,7 @@
+model {
+  extend basalt.catalog {
+    metadata {
+      constraint "A site-aware outside service stays one catalog app: credential preflight checks the selected origin under host network policy; its MCP sign-in on the account's selected site asks only for the MCP scope, registers a client only where that site advertises registration, and reaches only that server's tools, each behind approval. Token and own-OAuth methods keep the unchanged REST provider and its saved accounts. Guide links on a provider's site template open on the selected site, and a site chosen in the connect dialog carries across that app's method alternatives."
+    }
+  }
+}

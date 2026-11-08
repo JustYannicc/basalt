@@ -102,6 +102,7 @@
     ".upstream/packages/sdk/src/implementation/worker-model-rpc.ts",
     ".upstream/packages/sdk/src/implementation/workerd-client.ts",
     ".upstream/packages/sdk/src/implementation/workerd-entry.ts",
-    ".upstream/packages/sdk/src/implementation/workflows.ts"
+    ".upstream/packages/sdk/src/implementation/workflows.ts",
+    ".upstream/e2e/support/profile-removal-rollback.ts"
   ]
 }

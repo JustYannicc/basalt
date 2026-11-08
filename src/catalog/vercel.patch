@@ -39,17 +39,6 @@
          { signal },
        ),
        {
---- a/package.json
-+++ b/package.json
-@@ -7,6 +7,7 @@
-     "title": "Vercel"
-   },
-   "dependencies": {
--    "apps": "0.0.1-beta.100"
-+    "apps": "0.0.1-beta.104-basalt.13",
-+    "@modelcontextprotocol/sdk": "1.32.1"
-   }
- }
 --- /dev/null
 +++ b/mcp.ts
 @@ -0,0 +1,25 @@
@@ -78,3 +67,14 @@
 +    await mcpRouter({ url, account, headers: headers(account), ...context }),
 +    (tool) => (toolAnnotations(tool)?.destructiveHint === true ? always() : undefined),
 +  );
+--- a/package.json
++++ b/package.json
+@@ -7,6 +7,7 @@
+     "title": "Vercel"
+   },
+   "dependencies": {
+-    "apps": "0.0.1-beta.100"
++    "apps": "0.0.1-beta.104-basalt.12",
++    "@modelcontextprotocol/sdk": "1.32.1"
+   }
+ }

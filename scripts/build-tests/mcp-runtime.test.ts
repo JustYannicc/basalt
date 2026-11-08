@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { assertMcpRuntimeBundle, checkMcpRuntimeBundle } from "../mcp-runtime-bundle.ts";
 
-test("the production MCP upload contains no migration or schema introspection engine", () => {
+test("the production MCP upload contains no migration, OAuth server or auth database engine", () => {
   checkMcpRuntimeBundle();
 });
 
@@ -27,4 +27,18 @@ test("the MCP boundary rejects a retained migrator or introspector, regardless o
 test("the MCP boundary refuses an absent attribution or a different Worker", () => {
   assert.throws(() => assertMcpRuntimeBundle({ worker: "mcp-server", sources: {} }));
   assert.throws(() => assertMcpRuntimeBundle({ worker: "api", sources: { "entry.ts": 1 } }));
+});
+
+test("the MCP boundary rejects a duplicate OAuth server or auth database at any size", () => {
+  for (const source of [
+    "apps/hosted/cloud/src/infrastructure/mcp-auth.ts",
+    "apps/hosted/cloud/src/infrastructure/auth-database.ts",
+    "node_modules/@better-auth/oauth-provider/dist/index.mjs",
+    "node_modules/.bun/@better-auth+oauth-provider@1.7.5/node_modules/@better-auth/oauth-provider/dist/index.mjs",
+  ]) {
+    assert.throws(
+      () => assertMcpRuntimeBundle({ worker: "mcp-server", sources: { [source]: 1 } }),
+      /must not upload an OAuth server or auth database/,
+    );
+  }
 });

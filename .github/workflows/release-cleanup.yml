@@ -54,7 +54,7 @@ jobs:
           node-version: 24.18.0
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.4
+          bun-version: 1.4.2
       - name: Prepare the trusted stack definition
         run: npm run prepare:upstream
       - name: Restore the encrypted checkpoint, destroy, and verify absence

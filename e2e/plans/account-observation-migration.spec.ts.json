@@ -234,6 +234,7 @@
     ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx",
     ".upstream/packages/utils/src/account-display-privacy.ts",
     ".upstream/playground/sdk/storage.ts",
-    ".upstream/scripts/check-app-protocols.ts"
+    ".upstream/scripts/check-app-protocols.ts",
+    ".upstream/e2e/support/profile-removal-rollback.ts"
   ]
 }

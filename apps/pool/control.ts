@@ -1,7 +1,12 @@
 import type { QueryContext, ConnectContext } from "apps";
-import { requirements } from "./requirements.ts";
+import type { requirements } from "./requirements.ts";
 type Caller = QueryContext<typeof requirements> | ConnectContext<typeof requirements>;
-import { callerHeader, controlBasePath, type ControlError, type ControlErrorCode } from "./contract.ts";
+import {
+  callerHeader,
+  controlBasePath,
+  type ControlError,
+  type ControlErrorCode,
+} from "./contract.ts";
 import { poolOrigin } from "./deployment.ts";
 
 export type Result<T> =
@@ -14,7 +19,12 @@ export async function control<T>(
   init: { method?: string; body?: unknown } = {},
 ): Promise<Result<T>> {
   const pool = ctx.app.accounts.pool;
-  if (!pool) return { ok: false, error: "unauthorized", message: "This pool isn't linked to its access account." };
+  if (!pool)
+    return {
+      ok: false,
+      error: "unauthorized",
+      message: "This pool isn't linked to its access account.",
+    };
   const headers: Record<string, string> = { ...pool.headers(), accept: "application/json" };
   // The pool Worker decides what the caller may change. Without a caller, nothing changes.
   const caller = ctx.user?.id;
@@ -32,6 +42,9 @@ export async function control<T>(
   if (typeof failure?.error === "string" && typeof failure.message === "string") {
     return { ok: false, error: failure.error, message: failure.message };
   }
-  return { ok: false, error: "backend_unavailable", message: "The pool didn't answer. Try again in a moment." };
+  return {
+    ok: false,
+    error: "backend_unavailable",
+    message: "The pool didn't answer. Try again in a moment.",
+  };
 }
-

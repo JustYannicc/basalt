@@ -1,6 +1,8 @@
+import { accountPlanName } from "apps";
 import type {
   CapacityAggregate,
   CapacityForecast,
+  CapacityForecastShortfall,
   CapacityHistoryPoint,
   CapacityRefillEvent,
   CapacityWeightSource,
@@ -392,7 +394,7 @@ export function verdict(
       ? "the sustained demand rise"
       : "recurring demand peaks";
   const sizingDetail = sizingNeed
-    ? `Sizing for ${sizingBasis} needs up to ${sizingCount} more ${forecast.ordinary?.candidate?.label ?? "verified-plan"} accounts on the busy path.`
+    ? `Sizing for ${sizingBasis} needs up to ${sizingCount} more ${forecast.ordinary?.candidate ? candidateName(forecast.ordinary.candidate, forecast.provider) : "verified-plan"} accounts on the busy path.`
     : null;
   const short =
     sizingNeed && !projectedOut && shortfall === 0 && busy === 0
@@ -461,6 +463,7 @@ export function dailyRows(points: readonly CapacityHistoryPoint[], to: number): 
 }
 
 export interface PlanChip {
+  readonly key: string;
   readonly plan: string;
   readonly accounts: number;
   readonly flagged: boolean;
@@ -475,7 +478,20 @@ export const weightSourceLabel: Record<CapacityWeightSource, string> = {
   "unknown-plan": "plan unknown · 1x",
 };
 
-export const planName = (plan: string | null) => plan ?? "No plan reported";
+export const planName = (plan: string | null, provider: string) =>
+  plan === null
+    ? "No plan reported"
+    : accountPlanName(plan, provider === "codex" ? "openai" : provider);
+
+/** Exclusions can contain server-authored explanations rather than plan identifiers. */
+export const exclusionName = (label: string, provider: string) =>
+  label === "Unverified plan" || label === "Unknown plan" ? label : planName(label, provider);
+
+/** Unit sizing labels are not plans; reported and table candidates name a plan. */
+export const candidateName = (
+  candidate: NonNullable<CapacityForecastShortfall["candidate"]>,
+  provider: string,
+) => (candidate.source === "unit" ? candidate.label : planName(candidate.label, provider));
 
 const forecastReasonLabels: Record<string, string> = {
   "invalid-input": "forecast inputs are invalid",
@@ -502,19 +518,84 @@ export const forecastReasons = (reasons: readonly string[]) =>
 /** The plans in the latest snapshot, flagged where the weight is the unknown-plan 1x fallback. */
 export function planChips(point: CapacityHistoryPoint | null): PlanChip[] {
   if (!point) return [];
-  return point.plans
-    .filter((plan) => plan.last !== null && plan.last.accountCount > 0)
-    .map((plan) => {
-      const last = plan.last!;
-      const sources = [...new Set(last.weights.map((weight) => weight.source))];
-      const flagged = last.unknownWeightCount > 0;
-      const note = flagged
-        ? weightSourceLabel["unknown-plan"]
-        : sources.length === 1 && sources[0] !== "reference-plan"
-          ? weightSourceLabel[sources[0]!]
-          : null;
-      return { plan: planName(plan.plan), accounts: last.accountCount, flagged, note };
-    });
+  const groups = new Map<
+    string,
+    { accounts: number; flagged: boolean; sources: Set<CapacityWeightSource> }
+  >();
+  for (const plan of point.plans) {
+    const last = plan.last;
+    if (last === null || last.accountCount <= 0) continue;
+    const name = planName(plan.plan, point.provider);
+    const group = groups.get(name) ?? {
+      accounts: 0,
+      flagged: false,
+      sources: new Set<CapacityWeightSource>(),
+    };
+    group.accounts += last.accountCount;
+    group.flagged ||= last.unknownWeightCount > 0;
+    for (const weight of last.weights) group.sources.add(weight.source);
+    groups.set(name, group);
+  }
+  return [...groups].map(([plan, group]) => {
+    const sources = [...group.sources];
+    const note = group.flagged
+      ? weightSourceLabel["unknown-plan"]
+      : sources.length === 1 && sources[0] !== "reference-plan"
+        ? weightSourceLabel[sources[0]!]
+        : null;
+    return { key: plan, plan, accounts: group.accounts, flagged: group.flagged, note };
+  });
+}
+
+/** Merge only tooltip presentation; hourly capacity and per-plan source readings stay intact. */
+export function tooltipPlanRows(point: CapacityHistoryPoint) {
+  const raw = point.raw ?? point;
+  const plans = isMeasuredCapacityPoint(point) ? point.plans : raw.plans;
+  const rawByPlan = new Map(raw.plans.map((plan) => [plan.plan, plan.minimum]));
+  const groups = new Map<
+    string,
+    {
+      accounts: number;
+      remaining: number;
+      full: number;
+      flagged: boolean;
+      sources: Set<CapacityWeightSource>;
+      raw: { remaining: number; full: number } | null;
+      rawComplete: boolean;
+    }
+  >();
+  for (const plan of plans) {
+    if (plan.minimum.accountCount <= 0) continue;
+    const name = planName(plan.plan, point.provider);
+    const group = groups.get(name) ?? {
+      accounts: 0,
+      remaining: 0,
+      full: 0,
+      flagged: false,
+      sources: new Set<CapacityWeightSource>(),
+      raw: null,
+      rawComplete: true,
+    };
+    group.accounts += plan.minimum.accountCount;
+    group.remaining += plan.minimum.remaining;
+    group.full += plan.minimum.full;
+    group.flagged ||= plan.minimum.unknownWeightCount > 0;
+    for (const weight of plan.minimum.weights) group.sources.add(weight.source);
+    const quota = rawByPlan.get(plan.plan);
+    if (quota)
+      group.raw = {
+        remaining: (group.raw?.remaining ?? 0) + quota.remaining,
+        full: (group.raw?.full ?? 0) + quota.full,
+      };
+    if (quota === undefined) group.rawComplete = false;
+    groups.set(name, group);
+  }
+  return [...groups].map(([plan, { sources, raw, rawComplete, ...group }]) => ({
+    ...group,
+    plan,
+    sources: [...sources],
+    raw: rawComplete ? raw : null,
+  }));
 }
 
 const units = new Intl.NumberFormat("en", { maximumFractionDigits: 1 });

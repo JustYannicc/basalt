@@ -95,6 +95,7 @@
   },
   "inherited": [],
   "inputs": [
+    ".upstream/packages/apps/scripts/reference.mjs",
     ".upstream/packages/apps/src/implementation/mcp.ts",
     ".upstream/packages/apps/src/contracts/mcp.ts",
     ".upstream/packages/apps/src/implementation/mcp-catalog.ts",

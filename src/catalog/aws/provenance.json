@@ -1,10 +1,10 @@
 {
   "kind": "new-app-contribution",
   "upstreamIssue": "https://github.com/UsefulSoftwareCo/executor/issues/2372",
-  "sourceSha256": "0caaf5a6c3aff67e14a981ece0deb4826087a675fcc00ff9d501f225440c515e",
+  "sourceSha256": "343ed68a86246c8fd961f73f7169360d744c141ccd0432550a2c6e575cb29a7a",
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",
-    "apps": "0.0.1-beta.104-basalt.13",
+    "apps": "0.0.1-beta.104-basalt.12",
     "react": "19.2.0",
     "react-dom": "19.2.0"
   },
@@ -27,7 +27,7 @@
   },
   "catalogSource": {
     "repository": "https://github.com/JustYannicc/signalbox-app-aws",
-    "commit": "85353a96a38daa657137e37acecc172ca13c43a6",
+    "commit": "3dcd825858ac74eb0b0cab08ae16c6480f34299b",
     "fileSha256": {
       "README.md": "4a7f9eff7991585abf3176a103790d729b8af5862c4df8b3c1d90f6e99bb2f61",
       "connection.ts": "c79f17b3854d380d7cf55ccaf1b297880f383606a20e3a728f19e488bc838ccc",
@@ -40,7 +40,7 @@
       "index.ts": "3d76e00355ce86625f5aa85da400ecae6a866441b8568eedddd6446b3cec2d6c",
       "migrations/0001_identity_center.sql": "39b1b23f0c2eae660367b1804d89361e46d676b2c5551fef279a18789d49e11f",
       "operations.ts": "54e58542b0d28db990ee83bfae27860baa95d4ab7ce6b0ec725beca725162308",
-      "package.json": "4e57ecf3dc9472e2c79f4f04f6cbc324272a7bf84b848cdd472f46dee0adc767",
+      "package.json": "262a40abf4b117508a807ddf2d6ab8cb3bef0c8154c7609913ecaab248cf3623",
       "provider.ts": "417904326e2afa9964dfdddaa932c373bbb251529d17cc6a98635ed697e240a9",
       "requirements.ts": "a7a5c8cd5c77a37a5a6890458b7013d131ed82f86e41e38ab8d4d580ceb430d1",
       "safe-result.ts": "a0458b969cb996cb504f37eb668c808b788834239f2000b77815b3b7b01cedca",
@@ -64,6 +64,6 @@
       "vendor/aws4fetch.js": "aea0f8576a89a9afea973904bb92e98a642265eb5159ff940ede689ad8e910f0",
       "wire.ts": "b90fe097fdaad8fd83e974cb99fb68a9889b81eef8fbadf819e1535bfef8aa15"
     },
-    "snapshotSha256": "0caaf5a6c3aff67e14a981ece0deb4826087a675fcc00ff9d501f225440c515e"
+    "snapshotSha256": "343ed68a86246c8fd961f73f7169360d744c141ccd0432550a2c6e575cb29a7a"
   }
 }

@@ -375,7 +375,6 @@
       "hosted.spec.ts#password": "bf89fef7e1ab0ede2ce2da57bb141fcf020f0a437f995c40919cb3c67be97d7d",
       "hosted.spec.ts#scale": "8e2d91a0006b0acb6924385ca1f664992e1faacfe904fc04c82c22686c9a7cec",
       "hosted.spec.ts#telemetry": "8bd47b7e537ede82702a5bacf28f36dcca4552edcacd6915ba9b8bccc9823743",
-      "import-approvals.spec.ts#importApprovals": "4985304f995243471e418b926e4917f34b8405e8718c8b9a300e00d963e6e888",
       "imported-json-schema-documents.spec.ts#importedJsonSchemaDocuments": "b938117fee0a7bf31a771ad29343e8b12f2fbc2aab5e94229aeeed687415433c",
       "installer.spec.ts#the install scripts install the checked release archive for this machine, keep the previous version and refuse an archive that does not match SHA256SUMS": "b070fc587e745c57022ebabdb8695d303ec53868adb4bd8dac854f92afbd8b9d",
       "instance-analytics.spec.ts#selfHostAnalytics": "ff9eb14774137d4647f2c42e2554f10a44d7c99c6df616e14a52bf9b8289ed95",
@@ -561,7 +560,6 @@
       "mcp-protocol-versions.spec.ts#mcpProtocolVersions": "f54b77acf342eb3e0ab510e5824d1f9fe7634be92cb24aba1e76a3dac6139107",
       "mcp-protocol-versions.spec.ts#mcpCancelledCalls": "52fb87335fafb3a7add4fc4990d099ad6c2055f28085ee6f674234d9fd19d905",
       "mcp-search-concise.spec.ts#mcpSearchConcise": "ae3aecdef3862c09999696fa399c7af1430fe6b56f106bd8a9fea49b88b46c3b",
-      "mcp-server.spec.ts#mcpSkills": "635e31289c08cba6aa94c1fae265cb6b9cc271f2b2cb72e13e5937d1a77aca1f",
       "mcp-telemetry-privacy.spec.ts#mcpTelemetryPrivacy": "47536ea64ec880ae9dda926aa08bd7c8eecb2131c5e49b0fd6cc9dfc0df44773",
       "mcp-tool-input.spec.ts#mcpToolInput": "2c0688eddb8b4aff47233585240753fcfa7d9e11efa7c7a9ad2c6f25f416405e",
       "mcp-tool-input.spec.ts#localMcpToolInput": "74adaf666918f194c4c138af0d4af479a2fe5f4c3b9d857f9d844be1a03415ab",
@@ -806,6 +804,12 @@
       "workflows.spec.ts#workflowTermination": "d3c72b1fbbbc49db3787368be765fcf187f8563e15539d3dab65422021165e68",
       "workspace-source-writes.spec.ts#workspaceSourceWrites": "e6cba96786268649b9d8fc774ec2cb101eca9c4c04864c14f21cbfbb03de3801",
       "workspace-source.spec.ts#workspaceSource": "d1b628eabe5f99277d18e5248a6df80f42e0bff6823c61e64a48c405dc98b785"
+    }
+  },
+  {
+    "reason": "mcpSkills remains an inherited manual scenario with no declared Basalt CI group. Reviewed for carry 0417: the prepared spec change adds a private-grant HTTP 404 assertion only to mcpProtocol; the mcpSkills body and its target plan are unchanged. Keep this one identity manual pending CI adoption; any prepared spec or plan change requires renewed review.",
+    "entries": {
+      "mcp-server.spec.ts#mcpSkills": "6f85ff4841635eb91ecc6bee9b5ce870c87f66a078aaa858e4d87f5a932c03f6"
     }
   },
   {

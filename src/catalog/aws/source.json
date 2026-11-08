@@ -47,7 +47,7 @@
     },
     {
       "path": "package.json",
-      "content": "{\n  \"name\": \"aws\",\n  \"private\": true,\n  \"description\": \"AWS services through the official managed MCP server, using your own AWS identity and permissions.\",\n  \"type\": \"module\",\n  \"dependencies\": {\n    \"@modelcontextprotocol/sdk\": \"1.32.1\",\n    \"apps\": \"0.0.1-beta.104-basalt.13\",\n    \"react\": \"19.2.0\",\n    \"react-dom\": \"19.2.0\"\n  },\n  \"executor\": {\n    \"title\": \"AWS\"\n  }\n}\n"
+      "content": "{\n  \"name\": \"aws\",\n  \"private\": true,\n  \"description\": \"AWS services through the official managed MCP server, using your own AWS identity and permissions.\",\n  \"type\": \"module\",\n  \"dependencies\": {\n    \"@modelcontextprotocol/sdk\": \"1.32.1\",\n    \"apps\": \"0.0.1-beta.104-basalt.12\",\n    \"react\": \"19.2.0\",\n    \"react-dom\": \"19.2.0\"\n  },\n  \"executor\": {\n    \"title\": \"AWS\"\n  }\n}\n"
     },
     {
       "path": "provider.ts",
