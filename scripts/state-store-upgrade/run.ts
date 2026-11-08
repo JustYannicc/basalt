@@ -100,6 +100,7 @@ try {
               expected: error.expected,
               observed: error.observed,
               changes: error.changes,
+              ...(error.provider ? { provider: error.provider } : {}),
             }
           : {
               resource: workerId,

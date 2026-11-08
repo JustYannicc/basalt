@@ -1,3 +1,4 @@
+import { comparableSettings, uploadMetadata } from "./metadata.ts";
 import { digest, bytesDigest } from "./encoding.ts";
 import { UpgradeRefusal, differences, bindingDifferences, refuseChanges } from "./refusal.ts";
 
@@ -102,6 +103,7 @@ export function makePlan(observed: Observation, candidate: Candidate) {
     digest(observed.settings.compatibility_flags),
     digest(candidate.compatibility.flags),
   );
+  const metadata = uploadMetadata(observed, candidate);
   return {
     schemaVersion: 1,
     operation: "state-store-code-upgrade",
@@ -113,7 +115,22 @@ export function makePlan(observed: Observation, candidate: Candidate) {
     priorWorkerVersionId: observed.versionId,
     namespace: observed.namespace,
     encryptionKeyIdentitySha256: digest(observed.encryptionKey),
-    settingsSha256: digest(observed.settings),
+    settingsSha256: digest(comparableSettings(observed.settings)),
+    upload: {
+      method: "POST",
+      query: { bindings_inherit: "strict" },
+      metadata,
+      metadataSha256: bytesDigest(new TextEncoder().encode(JSON.stringify(metadata))),
+      omittedScriptFields: [
+        "placement",
+        "limits",
+        "observability",
+        "logpush",
+        "tail_consumers",
+        "tags",
+      ],
+      providerManagedFields: ["annotations.workers/triggered_by"],
+    },
     runtimeSettingsSha256: digest(observed.runtimeSettings),
     bindingsSha256: bindingDigest(observed.bindings),
     bindings: [...observed.bindings]
@@ -176,8 +193,8 @@ export function assertExpected(observed: Observation, plan: Plan, expected: Expe
 }
 
 export function assertUnchanged(before: Observation, after: Observation, version: number) {
-  const { bindings: _beforeBindings, ...beforeSettings } = before.settings;
-  const { bindings: _afterBindings, ...afterSettings } = after.settings;
+  const { bindings: _beforeBindings, ...beforeSettings } = comparableSettings(before.settings);
+  const { bindings: _afterBindings, ...afterSettings } = comparableSettings(after.settings);
   refuseChanges([
     ...differences(
       workerId,
@@ -193,23 +210,4 @@ export function assertUnchanged(before: Observation, after: Observation, version
   ]);
 }
 
-/** Strict inheritance copies existing bindings without sending secrets or assigning a namespace. */
-export function uploadMetadata(observed: Observation, candidate: Candidate) {
-  const metadata: Record<string, unknown> = {
-    main_module: candidate.main,
-    bindings: observed.bindings.map(({ name }) => ({ name, type: "inherit" })),
-  };
-  for (const key of [
-    "compatibility_date",
-    "compatibility_flags",
-    "placement",
-    "limits",
-    "observability",
-    "annotations",
-    "cache_options",
-  ])
-    if (observed.settings[key] !== undefined) metadata[key] = observed.settings[key];
-  for (const key of ["compatibility_date", "compatibility_flags", "limits", "placement"])
-    if (observed.runtimeSettings[key] !== undefined) metadata[key] = observed.runtimeSettings[key];
-  return metadata;
-}
+export { uploadMetadata } from "./metadata.ts";
