@@ -28,7 +28,23 @@ function run(mode?: string, expected = false, drift = false) {
 import { fixture } from ${JSON.stringify(pathToFileURL(join(root, "scripts/state-store-upgrade/fixture.ts")).href)};
 import { writeFileSync } from 'node:fs';
 const f=fixture();
-${drift ? `f.state.settings.observability={enabled:false};f.state.bindings[1].text="changed-private-binding";` : ""}
+if (${JSON.stringify(drift)}) {
+  f.hooks.read = count => {
+    if (count === 11) {
+      f.state.bindings[1].text = "changed-private-binding";
+      f.state.settings.annotations = {
+        "workers/message": "private-annotation-message",
+        "workers/tag": "private-annotation-tag",
+      };
+    }
+  };
+  process.env.STATE_UPGRADE_MODE = "apply";
+  for (const [name, value] of Object.entries({
+    WORKER_ID: f.expected.workerId, DEPLOYMENT_ID: f.expected.deploymentId,
+    NAMESPACE_ID: f.expected.namespaceId, VERSION: f.expected.version,
+    PLAN_SHA256: f.expected.planSha256,
+  })) process.env["STATE_UPGRADE_EXPECTED_" + name] = value;
+}
 globalThis.fetch=f.fetcher;
 process.on('exit',()=>writeFileSync(${JSON.stringify(join(directory, "requests.json"))},JSON.stringify(f.requests)));
 `,
@@ -107,6 +123,10 @@ test("CLI error and summary both name all binding differences without exposing c
   assert.equal(result.status, 1);
   for (const text of [result.stderr, result.summary]) {
     assert.match(text, /PRIVATE_VALUE: text expected sha256:[a-f0-9]+, observed sha256:[a-f0-9]+/);
+    assert.match(text, /annotations.workers\/message expected absent, observed sha256:[a-f0-9]+/);
+    assert.match(text, /annotations.workers\/tag expected absent, observed sha256:[a-f0-9]+/);
+    assert.ok(!text.includes("private-annotation-message"));
+    assert.ok(!text.includes("private-annotation-tag"));
     assert.ok(!text.includes("changed-private-binding"));
     assert.ok(!text.includes("never-print-this-binding-value"));
   }

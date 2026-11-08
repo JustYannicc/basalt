@@ -249,6 +249,10 @@ test("simultaneous drift names every changed resource and field without binding 
     if (count === 11) {
       f.state.settings.observability = { enabled: false };
       f.state.settings.logpush = true;
+      f.state.settings.annotations = {
+        "workers/message": "private-message",
+        "workers/tag": "private-tag",
+      };
       f.state.bindings[1]!.text = "changed-private-binding";
       f.state.namespace.class = "OtherStore";
       f.state.encryptionKey.modified_on = "2026-11-08T01:00:00Z";
@@ -258,6 +262,16 @@ test("simultaneous drift names every changed resource and field without binding 
     assert.ok(error instanceof UpgradeRefusal);
     assert.match(error.message, /observability.enabled expected true, observed false/);
     assert.match(error.message, /logpush expected false, observed true/);
+    assert.match(
+      error.message,
+      /annotations.workers\/message expected absent, observed sha256:[a-f0-9]+/,
+    );
+    assert.match(
+      error.message,
+      /annotations.workers\/tag expected absent, observed sha256:[a-f0-9]+/,
+    );
+    assert.ok(!error.message.includes("private-message"));
+    assert.ok(!error.message.includes("private-tag"));
     assert.match(
       error.message,
       /PRIVATE_VALUE: text expected sha256:[a-f0-9]+, observed sha256:[a-f0-9]+/,

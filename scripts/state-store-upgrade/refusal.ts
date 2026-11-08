@@ -1,4 +1,5 @@
-import { settingsRefusal } from "../release-barrier/script-settings.ts";
+import { publicPropPath } from "../release-barrier/prop-diff.ts";
+import { digest } from "./encoding.ts";
 import type { Binding } from "./plan.ts";
 
 export interface Change {
@@ -36,15 +37,62 @@ export class UpgradeRefusal extends Error {
     this.changes = all;
   }
 }
+const record = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+const safeValue = (value: unknown, path: string): string | number | null => {
+  if (value === undefined) return "absent";
+  if (value === null) return null;
+  if (
+    /^(?:logpush|observability\.(?:enabled|redactQueryString|(?:logs|traces|issues)\.(?:enabled|invocationLogs|persist)))$/.test(
+      path,
+    ) &&
+    typeof value === "boolean"
+  )
+    return String(value);
+  if (
+    /^limits\.(?:cpu_ms|cpuMs|subrequests)$/.test(path) &&
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= 0
+  )
+    return value;
+  return `sha256:${digest(value)}`;
+};
 export function differences(resource: string, before: unknown, after: unknown): Change[] {
-  return (settingsRefusal("state-store-drift", resource, before, after).delta?.changed ?? []).map(
-    (change) => ({
+  const changes: Change[] = [];
+  const walk = (old: unknown, next: unknown, keys: string[]) => {
+    if (Object.is(old, next)) return;
+    if (keys.length < 12 && (record(old) || old == null) && (record(next) || next == null)) {
+      const a = record(old) ? old : {};
+      const b = record(next) ? next : {};
+      const names = [...new Set([...Object.keys(a), ...Object.keys(b)])].sort();
+      if (names.length) {
+        for (const key of names) walk(a[key], b[key], [...keys, key]);
+        return;
+      }
+    }
+    if (keys.length < 12 && Array.isArray(old) && Array.isArray(next)) {
+      for (let i = 0; i < Math.max(old.length, next.length); i++)
+        walk(old[i], next[i], [...keys, String(i)]);
+      return;
+    }
+    if (digest(old) === digest(next) && (old === undefined) === (next === undefined)) return;
+    // Cloudflare's annotation names contain slashes. Keep lookup keys separate from display paths.
+    const property =
+      keys.length === 2 &&
+      keys[0] === "annotations" &&
+      /^workers\/(?:message|tag|triggered_by)$/.test(keys[1]!)
+        ? keys.join(".")
+        : publicPropPath(keys) || "$";
+    changes.push({
       resource,
-      property: change.path,
-      expected: "old" in change ? change.old : "redacted",
-      observed: "new" in change ? change.new : "redacted",
-    }),
-  );
+      property,
+      expected: safeValue(old, property),
+      observed: safeValue(next, property),
+    });
+  };
+  walk(before, after, []);
+  return changes;
 }
 export function bindingDifferences(before: readonly Binding[], after: readonly Binding[]) {
   const names = [...new Set([...before, ...after].map((binding) => binding.name))].sort();
