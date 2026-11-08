@@ -65,6 +65,8 @@ run("node", ["scripts/prepare-drive.ts"], root);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "src/setup")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/pool-tests/sdk")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "clients")]);
+run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "clients/obsidian")]);
+run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "e2e/obsidian/runtime")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "src/tunnel")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/architecture")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/app-lint")]);

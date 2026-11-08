@@ -2206,9 +2206,10 @@ jobs:
         run: npm run check:startup
       - name: Verify installed cloud Obsidian and native attachment import
         run: node --test e2e/obsidian/installed.test.ts
+      - name: Verify bounded Obsidian vault storage and history
+        run: node e2e/obsidian/large-vault.ts .generated/obsidian-volume-ci .generated/obsidian-volume-ci-report.json 100 workerd
       - name: Build and typecheck the Obsidian plugin against its public API
         run: |
-          bun install --cwd clients/obsidian --frozen-lockfile
           node .upstream/node_modules/typescript/bin/tsc -p clients/obsidian/tsconfig.json
           node clients/obsidian/build.mjs
       - name: Generate the architecture model for typechecking
