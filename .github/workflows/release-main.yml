@@ -76,6 +76,21 @@ jobs:
           node scripts/deploy-safety/release.ts report --candidate "$RELEASE_HEAD" --candidate-root "$RUNNER_TEMP/candidate" > .local/production-report.json
         env:
           RELEASE_HEAD: ${{ steps.candidate.outputs.head }}
+      - if: steps.live.outputs.already_live == 'false'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Prepare the read-only baseline client
+        if: steps.live.outputs.already_live == 'false'
+        working-directory: ${{ runner.temp }}/candidate
+        run: npm run prepare:upstream
+      - name: Read every Worker baseline before the backup
+        if: steps.live.outputs.already_live == 'false'
+        working-directory: ${{ runner.temp }}/candidate
+        run: bun scripts/release-barrier/baseline-probe-entry.ts
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       - name: Complete the release backup before the deploy job
         if: steps.live.outputs.already_live == 'false'
         run: node scripts/deploy-safety/release.ts backup-only --candidate "$RELEASE_HEAD" --candidate-root "$RUNNER_TEMP/candidate" --report .local/production-report.json

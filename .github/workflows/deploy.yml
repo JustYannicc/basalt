@@ -118,6 +118,9 @@ jobs:
           POOL_ACCEPTANCE_MODEL: ${{ vars.POOL_ACCEPTANCE_MODEL }}
       - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
         run: npm run prepare:upstream
+      - name: Read every Worker baseline before release work
+        if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
+        run: bun scripts/release-barrier/baseline-probe-entry.ts
       - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
         run: npm run check
       - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
