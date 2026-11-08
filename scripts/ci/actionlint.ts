@@ -67,7 +67,7 @@ export function ensureActionlint(root = actionlintCache()) {
           GOSUMDB: "sum.golang.org",
           GONOPROXY: "none",
           GONOSUMDB: "none",
-          GOTOOLCHAIN: "local",
+          GOTOOLCHAIN: "go1.25.0",
         },
       },
     );
