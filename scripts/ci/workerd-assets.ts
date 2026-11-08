@@ -10,7 +10,7 @@ import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { prepareUpstreamCheckout } from "../upstream-cache.ts";
 import { readPatchManifest } from "../releases/patches.ts";
-import { downloadVerified, verifyArchive } from "./verified-download.ts";
+import { downloadVerified, verifyArchive } from "./verified-download.mjs";
 import { omitReleaseLifecycles } from "./dependency-lifecycles.ts";
 
 export function workerdAsset(upstream: string) {

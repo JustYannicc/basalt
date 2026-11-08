@@ -11,7 +11,7 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { downloadVerified } from "./verified-download.ts";
+import { downloadVerified } from "./verified-download.mjs";
 
 export const actionlintVersion = "1.7.12";
 export const actionlintSource = {

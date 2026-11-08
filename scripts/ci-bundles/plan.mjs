@@ -97,6 +97,7 @@ export function suitePlan(workflow, ids) {
           ![
             "./.github/actions/setup-browser",
             "./.github/actions/setup-bun",
+            "./.github/actions/setup-node",
             "./.github/actions/desktop-release-assets",
             "actions/cache/save@v4",
           ].includes(step.uses)

@@ -82,7 +82,8 @@ export function fastPlan(document: unknown, context: FastContext) {
         continue;
       }
       if (!object(step.with)) throw new Error("Fast tool setup needs explicit versions");
-      if (step.uses === "actions/setup-node@v4") nodeVersion = String(step.with["node-version"]);
+      if (step.uses === "./.github/actions/setup-node" || step.uses === "actions/setup-node@v4")
+        nodeVersion = String(step.with["node-version"]);
       else if (
         step.uses === "./.github/actions/setup-bun" ||
         step.uses === "oven-sh/setup-bun@v2"

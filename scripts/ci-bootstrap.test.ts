@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { actionlintSource } from "./ci/actionlint.ts";
-import { downloadVerified } from "./ci/verified-download.ts";
+import { downloadVerified } from "./ci/verified-download.mjs";
 
 test("verified cache hits make no request, and corrupt archives fail before use", () => {
   const root = mkdtempSync(join(tmpdir(), "basalt-archive-cache-"));
@@ -68,12 +68,34 @@ test("Check toolchain bootstraps use official non-GitHub sources on every runner
   for (const id of Object.keys(workflow.jobs)) {
     for (const step of workflow.jobs[id].steps) {
       assert.ok(!step.uses?.startsWith("oven-sh/setup-bun@"), id);
-      if (step.uses?.startsWith("actions/setup-node@"))
-        assert.equal(step.with?.mirror, "https://nodejs.org/dist", id);
+      assert.ok(!step.uses?.startsWith("actions/setup-node@"), id);
     }
   }
   const versions = workflow.jobs["boat-bundle"].steps
     .filter((step: { uses?: string }) => step.uses === "./.github/actions/setup-bun")
     .map((step: { with: Record<string, string> }) => step.with["bun-version"]);
   assert.deepEqual(versions, ["1.4.4", "1.4.2"]);
+});
+
+test("Node bootstrap reads only pinned official archives and refuses unknown versions", async () => {
+  const { nodeAsset } = await import("./ci/setup-node.mjs");
+  for (const platform of ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64"]) {
+    const asset = nodeAsset("24.18.0", platform);
+    assert.equal(asset.url, `https://nodejs.org/dist/v24.18.0/${asset.file}`);
+    assert.match(asset.integrity, /^sha256-/);
+    assert.match(asset.key, /node-dist-v1-24\.18\.0-.*[a-f0-9]{64}$/);
+  }
+  assert.throws(() => nodeAsset("unknown"), /No checksum-pinned Node/);
+  assert.throws(() => nodeAsset("24.18.0", "unknown"), /No checksum-pinned Node/);
+  const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
+  const workflow = parse(
+    readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
+  );
+  for (const id of ["select", "fast", "boat-bundle", "workerd-assets", "check", "client-desktop"])
+    assert.ok(
+      workflow.jobs[id].steps.some(
+        (step: { uses?: string }) => step.uses === "./.github/actions/setup-node",
+      ),
+      id,
+    );
 });

@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 
-export function verifyArchive(path: string, integrity: string) {
+export function verifyArchive(path, integrity) {
   const [algorithm, expected] = integrity.split("-");
   if (algorithm !== "sha256" && algorithm !== "sha512")
     throw new Error("Unsupported archive digest");
@@ -11,7 +11,7 @@ export function verifyArchive(path: string, integrity: string) {
     throw new Error(`Archive checksum mismatch: ${path}`);
 }
 
-export function downloadVerified(url: string, integrity: string, path: string) {
+export function downloadVerified(url, integrity, path) {
   if (existsSync(path)) {
     verifyArchive(path, integrity);
     console.log(`Verified archive cache hit: ${path}`);

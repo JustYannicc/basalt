@@ -2,7 +2,7 @@ import { appendFileSync, chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { downloadVerified } from "./verified-download.ts";
+import { downloadVerified } from "./verified-download.mjs";
 
 export function bunAsset(version: string, platform = `${process.platform}-${process.arch}`) {
   const versions: Record<string, Record<string, { url: string; integrity: string }>> = JSON.parse(
