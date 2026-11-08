@@ -1,6 +1,6 @@
 import { appendFileSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { digest } from "../upstream-cache.ts";
 
 export function desktopAssetKey(lock: string, platform: string) {
@@ -27,9 +27,7 @@ async function main(mode: string | undefined) {
     const electron = createRequire(require.resolve("electron/package.json"));
     const builder = createRequire(require.resolve("electron-builder/package.json"));
     const appBuilder = createRequire(builder.resolve("app-builder-lib/package.json"));
-    const { downloadArtifact } = await import(
-      pathToFileURL(electron.resolve("@electron/get")).href
-    );
+    const { downloadArtifact } = electron("@electron/get");
     await downloadArtifact({
       version: require("electron/package.json").version,
       artifactName: "electron",

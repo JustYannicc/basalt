@@ -183,6 +183,11 @@ model {
     technology "GitHub Releases"
     metadata { hosts "github.com|codeload.github.com" }
   }
+  releaseMirror = adapter "Release mirror" {
+    #external
+    technology "npm mirror"
+    metadata { hosts "npmmirror.com|cdn.npmmirror.com" }
+  }
   providerSource = adapter "Provider source" {
     #external
     technology "GitHub raw source"
@@ -222,6 +227,7 @@ model {
     metadata { hosts "registry.npmjs.org|dl-cdn.alpinelinux.org"; sdks "package:npm|package:apk" }
   }
   basalt.build -[sync]-> releaseSource "download verified release sources and binaries"
+  basalt.build -[sync]-> releaseMirror "download checksum-verified desktop runtimes and packaging tools"
   basalt.deployment -[sync]-> releaseSource "download CI actions"
   basalt.build -[sync]-> containerRegistry "pull pinned images"
   basalt.deployment -[sync]-> containerRegistry "verify published image metadata"
