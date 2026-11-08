@@ -1,0 +1,7 @@
+model {
+  extend basalt.catalog {
+    metadata {
+      constraint "PlanetScale retains its legacy provider identity, auth declarations and every existing API tool name. A separate sign-in provider uses the configured hosted client and requires its exact reviewed scopes to be confirmed before saving an account; refusal records requested, reported and missing access with recovery. Automatic registration is a limited fallback only when no hosted client is configured. Host protocol p39 passes grant-scoped oauthScopes metadata from the same credential snapshot without exposing credential fields; retained adapters omit it. Known new grants filter tools; unknown legacy and DCR grants remain explicitly unknown without changing their previous tool behavior. Service-token-only operations retain their old names and gain aliases in the generic tool section, whose action opens the normal token form."
+    }
+  }
+}

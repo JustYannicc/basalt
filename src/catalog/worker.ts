@@ -20,6 +20,7 @@ import { zendeskAddition } from "./zendesk/source.ts";
 import { zendeskMarketplaceMetadata, type ZendeskMarketplaceMetadata } from "./zendesk/metadata.ts";
 import { googleMapsAddition } from "./google-maps/index.ts";
 import { workosSource, withWorkOSSignIn } from "./workos.ts";
+import { planetscaleSource, withPlanetScaleAccess } from "./planetscale.ts";
 import { clerkSource, withClerkSignIn } from "./clerk.ts";
 
 // AWS source stays in the catalog until maintainers identify a maintained destination.
@@ -102,6 +103,11 @@ export async function handleCatalog(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(workosSource)),
       { headers },
     );
+  if (relative === "apps/planetscale.json")
+    return new Response(
+      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(planetscaleSource)),
+      { headers },
+    );
   if (relative === "apps/clerk.json")
     return new Response(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(clerkSource)),
@@ -136,7 +142,7 @@ export async function handleCatalog(
     if (!response.ok || response.status !== 200) return unavailable();
     let body: string;
     if (relative === "index.json") {
-      const upstream = withClerkSignIn(
+      const upstream = withPlanetScaleAccess(withClerkSignIn(
         withWorkOSSignIn(
           withElevenLabsSignIn(
             withVercelSignIn(
@@ -146,7 +152,7 @@ export async function handleCatalog(
             ),
           ),
         ),
-      );
+      ));
       const feed = {
         ...upstream,
         apps: upstream.apps.filter(

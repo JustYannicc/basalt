@@ -18,6 +18,16 @@ const layouts = {
   "workos-sign-in": ["workos-sign-in/ci"],
   "gitlab-sign-in": ["gitlab-sign-in/ci"],
   "clerk-sign-in": ["clerk-sign-in/ci"],
+  "planetscale-sign-in": [
+    "planetscale-sign-in/ci/hosted",
+    "planetscale-sign-in/ci/dcr",
+    "planetscale-sign-in/ci/unknown",
+    "planetscale-sign-in/ci/refused",
+    "planetscale-sign-in/ci/unreported",
+    "planetscale-sign-in/ci/rfc",
+    "planetscale-sign-in/ci/retained",
+    "planetscale-sign-in/ci/retained-unknown",
+  ],
   "vercel-sign-in": ["vercel-sign-in/ci"],
   "elevenlabs-sign-in": ["elevenlabs-sign-in/ci"],
   "catalog-compat": [
