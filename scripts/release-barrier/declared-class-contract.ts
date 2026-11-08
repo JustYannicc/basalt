@@ -1,3 +1,4 @@
+import type { WorkerBaseline } from "./worker-baselines.ts";
 import type * as Workers from "@distilled.cloud/cloudflare/workers";
 import type * as Plan from "alchemy/Plan";
 import type { PreparedWorkerUpload } from "alchemy/Cloudflare/Workers/WorkerUploadHook";
@@ -137,7 +138,11 @@ export const classPlanMatches = (node: Plan.Apply, entry: SqliteClassDeclaration
   classPlanChanges(node, entry).length === 0;
 
 /** This verdict is reused by plan admission and both concrete request checks; it authorizes only the declared additive delta. */
-export function classRequestVerdict(upload: PreparedWorkerUpload, entry: SqliteClassDeclaration) {
+export function classRequestVerdict(
+  upload: PreparedWorkerUpload,
+  entry: SqliteClassDeclaration,
+  proof?: WorkerBaseline,
+) {
   const metadata = upload.request.metadata;
   const old = upload.previousSettings;
   const fail = (reason: string, expected: unknown, actual: unknown): never => {
@@ -224,15 +229,20 @@ export function classRequestVerdict(upload: PreparedWorkerUpload, entry: SqliteC
       { tags: stripDoTags(metadata.tags) },
     );
   // Keep the ordinary settings and metadata guards. Only this exact declaration's class/tag delta is projected as observed.
-  versionMetadata({
-    ...upload,
-    request: { ...upload.request, metadata: { ...metadata, migrations: undefined } },
-    previousSettings: {
-      ...old!,
-      bindings: [...(old!.bindings ?? []), ...expected],
-      tags: metadata.tags,
+  versionMetadata(
+    {
+      ...upload,
+      request: { ...upload.request, metadata: { ...metadata, migrations: undefined } },
+      previousSettings: {
+        ...old!,
+        bindings: [...(old!.bindings ?? []), ...expected],
+        tags: metadata.tags,
+      },
     },
-  });
+    proof?.versions,
+    proof?.baseline,
+    proof?.repair,
+  );
   return {
     entry: digest(canonical(entry)),
     oldTag: migration!.oldTag!,

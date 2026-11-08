@@ -17,6 +17,8 @@ export interface ClassApiOptions {
   foreignLiveWorker?: boolean;
   loseDeleteReply?: boolean;
   deleteApplied?: boolean;
+  numericClassPlacement?: boolean;
+  classPlacementDrift?: boolean;
 }
 
 export function classRecoveryClient(events: string[]) {
@@ -112,23 +114,25 @@ export function classApi(events: string[], options: ClassApiOptions) {
   let missingNamespace = false;
   let failedObservation = false;
   let expandedFiles: { name: string; type: string; bytes: Uint8Array }[] = [];
-  const settings = (): ClassObservation["settings"] => ({
-    compatibilityDate: "2026-09-08",
-    compatibilityFlags: [],
-    bindings:
-      expanded && !missingNamespace
-        ? [
-            {
-              type: "durable_object_namespace",
-              name: "DRIVE",
-              className: "DriveObject",
-              namespaceId: "namespace-drive",
-            },
-          ]
-        : [],
-    tags: [`alchemy:migration-tag:${expanded ? 2 : 1}`],
-    annotations: expanded ? { workersMessage: options.foreignMarker ? "foreign" : marker } : {},
-  });
+  const settings = (): ClassObservation["settings"] =>
+    Schema.decodeUnknownSync(Schema.toType(Workers.GetScriptScriptAndVersionSettingResponse))({
+      ...(options.numericClassPlacement ? { placement: { mode: "targeted", target: [39] } } : {}),
+      compatibilityDate: "2026-09-08",
+      compatibilityFlags: [],
+      bindings:
+        expanded && !missingNamespace
+          ? [
+              {
+                type: "durable_object_namespace",
+                name: "DRIVE",
+                className: "DriveObject",
+                namespaceId: "namespace-drive",
+              },
+            ]
+          : [],
+      tags: [`alchemy:migration-tag:${expanded ? 2 : 1}`],
+      annotations: expanded ? { workersMessage: options.foreignMarker ? "foreign" : marker } : {},
+    });
   const provider: ClassProvider = {
     read: async (target) => {
       if (expanded && options.failObservationOnce && !failedObservation) {

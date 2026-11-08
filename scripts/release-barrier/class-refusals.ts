@@ -31,7 +31,7 @@ export function assertClassRequests(
     const saved = history[fqn];
     try {
       if (entry && (!saved || ["clone-pending", "clone-ready"].includes(saved.status)))
-        classRequestVerdict(upload, entry);
+        classRequestVerdict(upload, entry, workerBaselines.get(fqn));
       else {
         const proof = workerBaselines.get(fqn);
         versionMetadata(upload, proof?.versions, proof?.baseline, proof?.repair);

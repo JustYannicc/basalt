@@ -178,7 +178,7 @@ export const prepareDeclaredClasses = (
               const next = { ...saved, observed };
               return Option.some({ entry, node, saved: next, fresh: false });
             }
-            const verdict = classRequestVerdict(upload, entry);
+            const verdict = classRequestVerdict(upload, entry, workerBaselines.get(entry.fqn));
             if (
               observed.accountId !== upload.request.accountId ||
               observed.scriptName !== upload.request.scriptName ||

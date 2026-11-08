@@ -33,3 +33,31 @@ for (const [companion, reason] of [
       ),
     );
   });
+
+test("the declared class Worker preserves numeric placement through expansion, replan and a completed rerun", async () => {
+  const proof = classProvisioning({ numericClassPlacement: true, rerun: true });
+  await Effect.runPromise(proof.effect);
+  assert.deepEqual(proof.failures, []);
+  assert.deepEqual(proof.events, [
+    "expand",
+    "upload",
+    "create-bucket",
+    "activate",
+    "upload",
+    "activate",
+  ]);
+  assert.equal(proof.cloneState().staged, 1);
+  assert.equal(proof.cloneState().removed, 1);
+});
+
+test("foreign placement on the declared class Worker refuses before a clone or expansion", async () => {
+  const proof = classProvisioning({
+    numericClassPlacement: true,
+    classPlacementDrift: true,
+    expectedFailure: /script-settings-drift/,
+  });
+  await Effect.runPromise(proof.effect);
+  assert.equal(proof.failures.length, 1);
+  assert.deepEqual(proof.events, []);
+  assert.equal(proof.cloneState().staged, 0);
+});

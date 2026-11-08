@@ -23,7 +23,9 @@ export const observeWorkerBaselines = (
       [...captured.values()],
       (upload) =>
         Effect.gen(function* () {
-          const baseline = yield* (io?.baseline ?? readBaseline)(upload.request);
+          const baseline = yield* (io?.baseline ?? readBaseline)(upload.request).pipe(
+            withOperation(upload.fqn, "read-worker-baseline"),
+          );
           const repairTarget = placementRepairTargets.find(
             (target) =>
               target.role === upload.fqn &&

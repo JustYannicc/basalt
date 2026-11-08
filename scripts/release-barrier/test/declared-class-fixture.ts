@@ -107,6 +107,9 @@ export function classProvisioning(
             ...upload.request,
             metadata: {
               ...upload.request.metadata,
+              ...(options.numericClassPlacement
+                ? { placement: { region: "aws:eu-central-1" } }
+                : {}),
               bindings: [binding],
               tags: [`alchemy:migration-tag:${api.expanded() ? 3 : 2}`],
               migrations: {
@@ -239,8 +242,29 @@ export function classProvisioning(
                   ? companion.baseline(request.scriptName)
                   : [{ versionId: api.expanded() ? "expanded" : "previous", percentage: 100 }],
               ),
-            ...(options.companion?.startsWith("numeric")
-              ? { placements: () => companion!.placements() }
+            ...(options.companion?.startsWith("numeric") || options.numericClassPlacement
+              ? {
+                  placements: (request, baseline) =>
+                    request.scriptName === "AppData"
+                      ? Effect.succeed(
+                          baseline.map(({ versionId }) => ({
+                            id: versionId,
+                            placement: {
+                              mode: "targeted",
+                              target: [
+                                {
+                                  id: 39,
+                                  type: "region",
+                                  region: options.classPlacementDrift
+                                    ? "aws:eu-west-1"
+                                    : "aws:eu-central-1",
+                                },
+                              ],
+                            },
+                          })),
+                        )
+                      : companion.placements(),
+                }
               : {}),
             upload: (worker) =>
               Effect.sync(() => {
