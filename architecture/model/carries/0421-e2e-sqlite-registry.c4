@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The isolated E2E npm registry pins every dependency the pool app compiles, including SQLite WASM 3.54.1-build1 in both registry roots. Archives must match the updater-generated integrity, while unrelated locked package entries remain unchanged."
+    }
+  }
+}
