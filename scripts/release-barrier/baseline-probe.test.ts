@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { baselineInventory, baselineRoles } from "./baseline-probe.ts";
-import { gateErrors, fastJobs, bundleJobs } from "../ci/gate.ts";
-import { heavyJobs } from "../ci/areas.ts";
+import { gateErrors, fastJobs } from "../ci/gate.ts";
+
+const { parse } = createRequire(new URL("../architecture/package.json", import.meta.url))("yaml");
+const workflow = parse(
+  readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"),
+);
 
 const scripts = baselineRoles.map((role) => ({
   id: `basalt-${role.toLowerCase()}-production-fixture`,
@@ -11,7 +16,7 @@ const scripts = baselineRoles.map((role) => ({
 
 test("selected baseline probe must pass the aggregate Check and unselected probes must skip", () => {
   const needs = Object.fromEntries(
-    [...fastJobs, ...heavyJobs, ...bundleJobs].map((job) => [
+    workflow.jobs.check.needs.map((job: string) => [
       job,
       { result: fastJobs.includes(job) ? "success" : "skipped" },
     ]),
