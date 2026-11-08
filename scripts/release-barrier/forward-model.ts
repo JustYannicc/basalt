@@ -1,3 +1,4 @@
+import { containerDrift } from "./container-diagnostics.ts";
 import { configurationCodec, attachmentCodec } from "./container-schema.ts";
 import type { PersistedState } from "alchemy/State/State";
 import { encodeState } from "alchemy/State/StateEncoding";
@@ -184,7 +185,18 @@ export function forwardAdoption(
       configuration: container.configuration,
     });
   if (!isBaseline && !isCandidate)
-    throw new BarrierRefusal("forward-container-drift", container.id);
+    throw containerDrift(
+      "forward-container-drift",
+      activation
+        ? {
+            ...container.baseline,
+            version: activation.version,
+            configuration: container.configuration,
+          }
+        : container.baseline,
+      { ...containerSnapshot(observed), activeRolloutId: observed.activeRolloutId },
+      container.id,
+    );
   const native = containerSnapshot(identity);
   const currentHash = encodedRecordHash(before);
   const journaledWrite =

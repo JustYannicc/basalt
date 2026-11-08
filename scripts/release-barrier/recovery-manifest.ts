@@ -10,6 +10,7 @@ const baseline = Schema.Array(
 );
 export const recoveryWorker = Schema.Struct({
   pendingPlacementRepair: Schema.optional(placementRepairReceipt),
+  baselineImageHash: Schema.optional(Schema.String),
   id: Schema.String,
   target: Schema.String,
   metadata: Schema.String,

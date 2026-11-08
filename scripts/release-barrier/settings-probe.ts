@@ -8,7 +8,11 @@ import { Cause, Effect, Exit } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { brand } from "../../brand.ts";
 import { baselineInventory, type BaselineProbeRow } from "./baseline-probe.ts";
-import { candidateSettingsWithRetirements, type ProbeWorker } from "./candidate-settings.ts";
+import {
+  candidateScriptSettings,
+  candidateSettingsWithRetirements,
+  type ProbeWorker,
+} from "./candidate-settings.ts";
 import { readActivePlacements, readCurrentDeployment, readScriptSettings } from "./cloudflare.ts";
 import { readVersionPlacement } from "./active-placement-read.ts";
 import {
@@ -117,7 +121,7 @@ export async function probeWorkerSettings(
         try {
           return await (candidate
             ? candidate(workers)
-            : candidateSettingsWithRetirements(workers, environment, nativeFetch));
+            : candidateScriptSettings(workers, environment));
         } finally {
           globalThis.fetch = nativeFetch;
         }
@@ -135,6 +139,7 @@ export async function probeWorkerSettings(
       )
     )
       throw new BarrierRefusal("candidate-worker-coverage");
+    let retirements: ReturnType<typeof candidateSettingsWithRetirements> | undefined;
     const context = yield* Effect.context<Credentials | HttpClient.HttpClient>();
     return yield* Effect.promise(() =>
       Promise.all(
@@ -179,6 +184,15 @@ export async function probeWorkerSettings(
               const priorPath = `${path}/versions/${target.prior}`;
               allow(priorPath);
               versionPaths.push(priorPath);
+              const retired =
+                declaration.retiredPlacement ??
+                (
+                  await (retirements ??= candidateSettingsWithRetirements(
+                    workers,
+                    environment,
+                    nativeFetch,
+                  ))
+                ).find((row) => row.role === worker.role)?.retiredPlacement;
               repair = pendingPlacementRepair({
                 role: worker.role,
                 scriptName: worker.scriptName,
@@ -188,7 +202,7 @@ export async function probeWorkerSettings(
                 prior: await run(readVersionPlacement(accountId, worker.scriptName, target.prior)),
                 metadata: declaration.metadata,
                 settings,
-                retired: "retiredPlacement" in declaration && declaration.retiredPlacement === true,
+                retired: retired === true,
               });
             } else
               assertScriptSettings(

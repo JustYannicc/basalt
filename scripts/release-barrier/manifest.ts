@@ -13,6 +13,7 @@ export interface ModulePart {
 
 export interface FrozenWorker {
   readonly id: string;
+  readonly baselineImageHash?: string;
   readonly pendingPlacementRepair?: PendingPlacementRepair;
   readonly accountId: string;
   readonly scriptName: string;
@@ -52,6 +53,7 @@ export const digest = (value: string | Uint8Array) =>
 export function describeWorker(worker: FrozenWorker) {
   return {
     id: worker.id,
+    ...(worker.baselineImageHash ? { baselineImageHash: worker.baselineImageHash } : {}),
     ...(worker.pendingPlacementRepair
       ? { pendingPlacementRepair: worker.pendingPlacementRepair }
       : {}),

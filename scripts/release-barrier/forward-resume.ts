@@ -1,3 +1,4 @@
+import { forwardWorkerInput } from "./forward-worker-input.ts";
 import { containerDrift } from "./container-diagnostics.ts";
 import { State } from "alchemy/State/State";
 import { encodeState } from "alchemy/State/StateEncoding";
@@ -23,7 +24,17 @@ import { sealRecovery } from "./recovery-envelope.ts";
 
 export const resumeForwardRelease = (
   stack: CompiledStack,
-  options: { dryRun?: boolean; directory: string },
+  options: {
+    dryRun?: boolean;
+    directory: string;
+    io?: {
+      baseline?: typeof readBaseline;
+      container?: typeof observeContainer;
+      rollout?: typeof readManualRollout;
+      observation?: typeof readServingObservation;
+      health?: typeof verifyContainerHealth;
+    };
+  },
 ) =>
   Effect.gen(function* () {
     const state = yield* yield* State;
@@ -59,17 +70,17 @@ export const resumeForwardRelease = (
         Schema.Struct({ accountId: Schema.String, workerName: Schema.String }),
       )(attr);
       const target = { accountId: identity.accountId, scriptName: identity.workerName };
-      const versions = yield* readBaseline(target);
+      const versions = yield* (options.io?.baseline ?? readBaseline)(target);
       live.set(worker.id, { target: digest(canonical(target)), versions });
       if (worker.id === "PoolWorker") pool = target;
     }
     verifyForwardWorkers(packet, live);
     const container = packet.frozen.containers[0]!;
-    const observed = yield* observeContainer(container.baseline);
+    const observed = yield* (options.io?.container ?? observeContainer)(container.baseline);
     const adoption = forwardAdoption(packet, saved, observed);
     const activation = packet.receipt.containers?.find((item) => item.container === container.id);
     if (adoption.receipt.disposition !== "baseline" && activation?.rolloutId) {
-      const rollout = yield* readManualRollout(container.baseline, {
+      const rollout = yield* (options.io?.rollout ?? readManualRollout)(container.baseline, {
         id: activation.rolloutId,
         currentVersion: container.baseline.version,
         targetVersion: activation.version,
@@ -78,7 +89,7 @@ export const resumeForwardRelease = (
     }
     const placements = yield* Effect.tryPromise({
       try: () =>
-        readServingObservation(
+        (options.io?.observation ?? readServingObservation)(
           { ...container.baseline, version: observed.version, digest: adoption.receipt.digest },
           Redacted.value(token),
           AbortSignal.timeout(15_000),
@@ -107,11 +118,17 @@ export const resumeForwardRelease = (
       )
     )
       throw new BarrierRefusal("forward-instance-not-serving");
+    const input = forwardWorkerInput(
+      packet,
+      live.get("PoolWorker"),
+      observed,
+      adoption.receipt.inputHash,
+    );
     const health = yield* Effect.tryPromise({
       try: () =>
-        verifyContainerHealth(
+        (options.io?.health ?? verifyContainerHealth)(
           { worker: pool!.scriptName, accountId: pool!.accountId },
-          adoption.receipt.inputHash,
+          input.workerInputHash,
           AbortSignal.timeout(30_000),
           true,
         ),
@@ -122,6 +139,7 @@ export const resumeForwardRelease = (
     const report = {
       ...adoption.receipt,
       readOnly: !!options.dryRun,
+      ...(input.continuation ? { continuation: input.continuation } : {}),
       instanceId: health.instanceId,
       bootId: health.bootId,
       instances: placements.instances,
@@ -162,7 +180,14 @@ export const resumeForwardRelease = (
     if (encodedRecordHash(current) !== report.before)
       throw new BarrierRefusal("forward-native-before-drift", "PoolContainer");
     if (report.disposition === "already-adopted") {
-      yield* writeForwardJournal(state, stack, Redacted.value(key), packet, true, packet.adoption);
+      yield* writeForwardJournal(
+        state,
+        stack,
+        Redacted.value(key),
+        packet,
+        !input.continuation,
+        packet.adoption,
+      );
       return report;
     }
     // Persist the exact backup and write intent before the only resource record write.
@@ -176,7 +201,7 @@ export const resumeForwardRelease = (
     const after = yield* state.get(containerKey(stack));
     if (encodedRecordHash(after) !== report.after)
       throw new BarrierRefusal("forward-native-write-unconfirmed", "PoolContainer");
-    yield* writeForwardJournal(state, stack, Redacted.value(key), packet, true, {
+    yield* writeForwardJournal(state, stack, Redacted.value(key), packet, !input.continuation, {
       before: report.before,
       after: report.after,
       backup,

@@ -1,3 +1,4 @@
+import { assertJournaledBaselineInput, type ForwardInputProof } from "./forward-worker-input.ts";
 import { State } from "alchemy/State/State";
 import { beginForwardJournal } from "./forward-journal.ts";
 import { operationFailure, withOperation } from "./operation-failure.ts";
@@ -33,11 +34,7 @@ import type { BaselineNormalization, FrozenContainer } from "./container.ts";
 import { verifyServingContainer, type ServingContainer } from "./container-serving.ts";
 import { advanceContainer } from "./container-promotion.ts";
 import { freezeUpload } from "./version-request.ts";
-import {
-  assertBaselineWorkerInput,
-  inspectContainer,
-  type ContainerAttributes,
-} from "./container.ts";
+import { inspectContainer, type ContainerAttributes } from "./container.ts";
 import {
   observeContainer,
   decodeContainerRollout,
@@ -46,6 +43,7 @@ import {
 
 export interface DeployStackOptions {
   candidate: string;
+  forwardInput?: ForwardInputProof;
   forwardEncryptionKey?: string;
   record(receipt: BarrierReceipt): Promise<void>;
   manifest(value: ReleaseManifest): Promise<void>;
@@ -79,8 +77,6 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
     );
     const recordAdmission = options.admission;
     if (recordAdmission) yield* Effect.promise(() => recordAdmission(verificationAdmissions(plan)));
-    for (const { frozen } of prepared.containers.values())
-      assertBaselineWorkerInput(frozen, prepared.captured.get("PoolWorker")?.previousSettings);
     const context = yield* Effect.context<Services>();
     const state = yield* yield* State;
     const retired = yield* retiredPlacements(state, stack);
@@ -145,6 +141,13 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
         ),
       ),
     };
+    for (const { frozen } of prepared.containers.values())
+      assertJournaledBaselineInput(
+        frozen,
+        prepared.captured.get("PoolWorker")?.previousSettings,
+        manifest.workers.find((worker) => worker.id === "PoolWorker"),
+        options.forwardInput,
+      );
     yield* Effect.promise(() => options.manifest(manifest));
     const journal = options.forwardEncryptionKey
       ? yield* beginForwardJournal(stack, manifest, options.forwardEncryptionKey)

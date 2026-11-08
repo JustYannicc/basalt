@@ -117,6 +117,12 @@ export async function freezeUpload(
   const raw = upload.request.files;
   const files = raw === undefined ? [] : Array.isArray(raw) ? raw : [raw];
   const metadata = versionMetadata(upload, versions, baseline, repair);
+  const baselineBinding =
+    upload.fqn === "PoolWorker"
+      ? upload.previousSettings?.bindings?.find(
+          (binding) => binding.name === "POOL_IMAGE_HASH" && binding.type === "plain_text",
+        )
+      : undefined;
   return {
     id: upload.fqn,
     accountId: upload.request.accountId,
@@ -134,6 +140,9 @@ export async function freezeUpload(
       }),
     ),
     baseline,
+    ...(baselineBinding?.type === "plain_text" && baselineBinding.text
+      ? { baselineImageHash: baselineBinding.text }
+      : {}),
     ...(repair ? { pendingPlacementRepair: repair } : {}),
   };
 }

@@ -95,6 +95,7 @@ for (const mode of ["same", "drift", "repair"] as const) {
       async (workers) =>
         workers.map((worker) => ({
           ...worker,
+          retiredPlacement: false,
           metadata: {
             placement: { region: "aws:eu-central-1" },
             limits: { subrequests: 50_000 },

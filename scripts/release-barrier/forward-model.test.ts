@@ -12,6 +12,9 @@ import {
 } from "./forward-model.ts";
 import { beginForwardJournal, readForwardJournal } from "./forward-journal.ts";
 import { undoForwardRecord } from "./forward-write.ts";
+import { BarrierRefusal } from "./manifest.ts";
+import { refusalTable } from "./refusal-report.ts";
+import { forwardWorkerInput } from "./forward-worker-input.ts";
 import { readOnlyProbeFetch } from "./probe-network.ts";
 import { containerRelease } from "./test/container-fixture.ts";
 import { releaseWorkers, type BarrierReceipt } from "./barrier.ts";
@@ -218,4 +221,45 @@ test("probe refuses State writes, production uploads and signed readiness POSTs"
     { method: "POST" },
   );
   assert.equal(sent.length, 1);
+});
+
+test("forward container drift names the property and old/new values in the job table", async () => {
+  const f = await fixture();
+  assert.throws(
+    () => forwardAdoption(f.packet, f.saved, { ...f.observed, maxInstances: 2 }),
+    (error) => {
+      assert.ok(error instanceof BarrierRefusal);
+      const table = refusalTable({
+        reason: error.reason,
+        worker: error.worker,
+        delta: error.delta,
+      });
+      assert.match(table, /maxInstances/);
+      assert.match(table, /1/);
+      assert.match(table, /2/);
+      return true;
+    },
+  );
+});
+
+test("a later interrupted journal keeps the live PoolWorker baseline binding independently of the container", async () => {
+  const f = await fixture();
+  const worker = f.packet.manifest.workers.find((worker) => worker.id === "PoolWorker")!;
+  const packet = {
+    ...f.packet,
+    manifest: {
+      ...f.packet.manifest,
+      workers: f.packet.manifest.workers.map((item) =>
+        item === worker ? { ...item, baselineImageHash: f.frozen.inputHash } : item,
+      ),
+    },
+  };
+  const input = forwardWorkerInput(
+    packet,
+    { target: worker.target, versions: worker.baseline },
+    f.previous,
+    f.frozen.baselineInputHash,
+  );
+  assert.equal(input.workerInputHash, f.frozen.inputHash);
+  assert.equal(input.continuation?.containerInputHash, f.frozen.baselineInputHash);
 });

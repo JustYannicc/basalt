@@ -109,7 +109,10 @@ export async function candidateScriptSettings(
                   Effect.provideService(FetchHttpClient.Fetch, retirementFetch),
                 )
               : [];
-            return rows.map((row) => ({ ...row, retiredPlacement: retired.includes(row.role) }));
+            return rows.map((row) => ({
+              ...row,
+              ...(retirementFetch ? { retiredPlacement: retired.includes(row.role) } : {}),
+            }));
           }).pipe(
             Effect.catchCause((cause) =>
               Effect.fail(candidateReadFailure(Cause.squash(cause), "projection")),

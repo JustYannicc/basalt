@@ -26,6 +26,10 @@ import { attributes, preparedUpload } from "../fixture.ts";
 import { describeContainer, sameContainerState, containerSnapshot } from "../container.ts";
 import { decodeApplication } from "../container-cloudflare.ts";
 import { deployStack } from "../deploy-stack.ts";
+import { resumeForwardRelease } from "../forward-resume.ts";
+import { verifyContainerHealth } from "../container-health.ts";
+import { RuntimeRecovery } from "../../../src/pool/runtime-recovery.ts";
+import { imageDigest } from "../container.ts";
 import { forwardAdoption } from "../forward-model.ts";
 import { encodeState } from "alchemy/State/StateEncoding";
 import { describeWorker } from "../manifest.ts";
@@ -85,6 +89,8 @@ export const proveContainerStack = (source, recompile, scenario) =>
     const receipts = [];
     const publications = [];
     const normalizations = [];
+    const liveVersions = new Map();
+    let replaying = false;
     let replayOptions;
     let lastManifest;
     const recordedBaseline = scenario.startsWith("recorded-baseline");
@@ -186,6 +192,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
               return result;
             }
             const upload = preparedUpload(input.id);
+            if (scenario === "partial-worker-forward") upload.request.accountId = "0".repeat(32);
             if (input.id === "PoolWorker") {
               capturedPoolInput = input.news.env.POOL_IMAGE_HASH;
               upload.previousSettings.bindings.push({
@@ -205,8 +212,15 @@ export const proveContainerStack = (source, recompile, scenario) =>
             return yield* hook.value.capture({
               ...upload,
               proposed: result,
-              activate: () =>
+              activate: (versionId) =>
                 Effect.sync(() => {
+                  liveVersions.set(input.id, [{ versionId, percentage: 100 }]);
+                  if (
+                    scenario === "partial-worker-forward" &&
+                    input.id === "PoolWorker" &&
+                    !replaying
+                  )
+                    throw new Error("Interrupted after PoolWorker activation");
                   events.push(`activate:${input.id}`);
                   return result;
                 }),
@@ -376,12 +390,15 @@ export const proveContainerStack = (source, recompile, scenario) =>
         events.length = 0;
         if (!sameDigest) api.publishedDigest = digest("3");
         releaseStarted = true;
-        const exit = yield* Effect.exit(
+        let exit = yield* Effect.exit(
           run(
             deployStack(
               stack,
               (replayOptions = {
                 candidate: "a".repeat(40),
+                ...(scenario === "partial-worker-forward"
+                  ? { forwardEncryptionKey: "b".repeat(64) }
+                  : {}),
                 record: async (receipt) => {
                   receipts.push(receipt);
                 },
@@ -478,7 +495,12 @@ export const proveContainerStack = (source, recompile, scenario) =>
                         result: [{ namespace: "basalt-production-apps", jurisdiction: "eu" }],
                       });
                     }),
-                  baseline: () => Effect.succeed([{ versionId: "previous", percentage: 100 }]),
+                  baseline: (worker) =>
+                    Effect.succeed(
+                      liveVersions.get(worker.scriptName) ?? [
+                        { versionId: "previous", percentage: 100 },
+                      ],
+                    ),
                   upload: (worker) =>
                     Effect.sync(() => {
                       assert.equal(api.writes, 0);
@@ -515,6 +537,102 @@ export const proveContainerStack = (source, recompile, scenario) =>
             ),
           ),
         );
+        if (scenario === "partial-worker-forward") {
+          assert.ok(Exit.isFailure(exit));
+          assert.equal(receipts.at(-1).pending.worker, "PoolWorker");
+          assert.equal(api.writes, 0);
+          const key = { stack: stack.name, stage: stack.stage, fqn: "PoolContainer" };
+          const before = yield* memory.get(key);
+          const candidateWorkerHash = capturedPoolInput;
+          const instanceId = "a".repeat(64);
+          const runtime = new RuntimeRecovery(
+            {
+              instanceId,
+              imageHash: candidateWorkerHash,
+              running: () => true,
+              status: async () => ({ boot_id: "fixture-boot" }),
+              restart: async () => {
+                throw new Error("Passive proof must not restart");
+              },
+            },
+            { get: async () => undefined, put: async () => {} },
+          );
+          const forward = yield* run(
+            resumeForwardRelease(stack, {
+              directory: context,
+              io: {
+                baseline: (worker) =>
+                  Effect.succeed(
+                    liveVersions.get(worker.scriptName) ?? [
+                      { versionId: "previous", percentage: 100 },
+                    ],
+                  ),
+                container: () => staged.read(),
+                observation: async () => ({
+                  version: api.app.version,
+                  digest: imageDigest(api.app.configuration.image),
+                  instances: [
+                    {
+                      id: instanceId,
+                      state: "running",
+                      digest: imageDigest(api.app.configuration.image),
+                      startedAt: "2026-11-08T00:00:00Z",
+                    },
+                  ],
+                }),
+                health: (target, hash, signal, diagnostic) =>
+                  verifyContainerHealth(
+                    {
+                      ...target,
+                      connect: async () => ({
+                        dispose: async () => {},
+                        env: {
+                          POOL_OPERATIONS: {
+                            fetch: async (request) => {
+                              assert.equal(request.method, "GET");
+                              return Response.json(await runtime.inspect());
+                            },
+                          },
+                        },
+                      }),
+                    },
+                    hash,
+                    signal,
+                    diagnostic,
+                  ),
+              },
+            }),
+          );
+          assert.ok(forward.continuation);
+          assert.equal(forward.continuation.workerInputHash, candidateWorkerHash);
+          const after = yield* memory.get(key);
+          assert.equal(
+            after.attr.hash.image,
+            before.attr.hash.image,
+            "baseline attrs remain real before rollout",
+          );
+          const pendingJournal = yield* memory.getOutput({
+            stack: `${stack.name}-release-barrier`,
+            stage: stack.stage,
+          });
+          assert.equal(
+            pendingJournal.complete,
+            false,
+            "continuation survives failure before the next Plan",
+          );
+          baselinePoolInput = candidateWorkerHash;
+          replaying = true;
+          events.length = 0;
+          publications.length = 0;
+          exit = yield* Effect.exit(
+            recompile((next) => {
+              stack = contextualize(next);
+              return run(
+                deployStack(stack, { ...replayOptions, forwardInput: forward.continuation }),
+              );
+            }),
+          );
+        }
         assert.equal(
           publications.length,
           1,
@@ -541,6 +659,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
         const expectedSuccess = [
           "success",
           "updating-forward",
+          "partial-worker-forward",
           "same-digest",
           "dependency-only",
           "new-runtime-ready",

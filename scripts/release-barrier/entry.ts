@@ -95,9 +95,10 @@ const result = await Effect.runPromiseExit(
                   containerRecovery,
                 )
               : Effect.gen(function* () {
-                  yield* resumeForwardRelease(compiled, { directory });
+                  const forward = yield* resumeForwardRelease(compiled, { directory });
                   return yield* deployStack(compiled, {
                     candidate: process.env.BASALT_RELEASE_CANDIDATE!,
+                    forwardInput: forward?.continuation,
                     forwardEncryptionKey: process.env.EXECUTOR_ENCRYPTION_KEY,
                     record: evidence.record,
                     publication: evidence.publication,
