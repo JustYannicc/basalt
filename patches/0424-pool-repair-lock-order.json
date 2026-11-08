@@ -1,0 +1,9 @@
+{
+  "identity": "executor-pool-repair-lock-order",
+  "file": "0424-pool-repair-lock-order.patch",
+  "content_sha256": "f999b17527c6e141d32d68f80c634964acadda16ee45077c239c3dcff3ea7c8b",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
