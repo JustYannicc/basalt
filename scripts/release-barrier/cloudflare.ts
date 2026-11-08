@@ -18,7 +18,8 @@ export const readBaseline = (worker: Pick<FrozenWorker, "accountId" | "scriptNam
       )[0]!;
       return [...current.versions].sort((a, b) => a.versionId.localeCompare(b.versionId));
     }),
-    Retry.none,
+    // Baseline GETs are idempotent; keep the SDK's bounded transient policy local to reads.
+    Retry.policy(Retry.makeDefault),
   );
 
 export const uploadVersion = (worker: FrozenWorker) =>
