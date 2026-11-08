@@ -1,0 +1,26 @@
+name: Cache pinned pool compatibility archives
+description: Warm the historical image's exact release pins before an offline build.
+runs:
+  using: composite
+  steps:
+    - name: Identify the frozen pool release pins
+      id: pins
+      shell: bash
+      run: node scripts/ci/pool-release-assets.ts identify
+    - uses: actions/cache/restore@v4
+      id: cache
+      with:
+        path: ${{ steps.pins.outputs.path }}
+        key: ${{ steps.pins.outputs.key }}
+    - name: Warm the pinned pool release archives
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: node scripts/ci/pool-release-assets.ts warm
+    - name: Verify the restored pool release archives
+      shell: bash
+      run: node scripts/ci/pool-release-assets.ts verify
+    - uses: actions/cache/save@v4
+      if: steps.cache.outputs.cache-hit != 'true'
+      with:
+        path: ${{ steps.pins.outputs.path }}
+        key: ${{ steps.pins.outputs.key }}

@@ -7,7 +7,7 @@
     },
     {
       "path": "package.json",
-      "content": "{\n  \"name\": \"provider-xai\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.10\"\n  }\n}\n"
+      "content": "{\n  \"name\": \"provider-xai\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.11\"\n  }\n}\n"
     },
     {
       "path": "providers.ts",

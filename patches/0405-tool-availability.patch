@@ -1,0 +1,3886 @@
+diff --git a/apps/docs/content/concepts/tools-and-approvals.md b/apps/docs/content/concepts/tools-and-approvals.md
+index 224bfd1..0b6f006 100644
+--- a/apps/docs/content/concepts/tools-and-approvals.md
++++ b/apps/docs/content/concepts/tools-and-approvals.md
+@@ -37,6 +37,23 @@ Which tools are available can depend on the app's configuration. A tool needing
+ an unfilled requirement is not usable, and an imported app only exposes what the
+ upstream service currently offers.
+ 
++## Choosing which tools agents can use
++
++In a hosted app's **Tools** tab, app managers can turn individual tools or whole
++groups off for everyone using that app. Switched-off tools disappear from agent
++search and listings, and calls to their old paths are refused. Other apps and
++saved accounts keep their own access.
++
++Use **Show hidden tools** to find and restore a switched-off tool. **Turn off all
++writes** keeps tools off unless their metadata explicitly marks them read-only;
++new write tools stay off after upgrades too. You can turn on individual exceptions
++or restore all writes. Enabling a tool keeps its existing permission and approval
++checks.
++
++Agents can read these settings and ask to change them through the built-in
++management app's `toolAvailability` tools, including over MCP. Changes require
++the same app management authority and use the normal approval flow.
++
+ ## Approvals
+ 
+ An **approval** is declared on the individual query or mutation. There is no
+diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
+index 88b5470..3617f27 100644
+--- a/apps/hosted/cloud/src/infrastructure/executor.ts
++++ b/apps/hosted/cloud/src/infrastructure/executor.ts
+@@ -122,6 +122,7 @@ export const cloudExecutor = Effect.fn(function* (
+       const executor = yield* createExecutor({
+         appCalls: lifecycle.appCalls,
+         toolPolicy: lifecycle.toolPolicy,
++        toolAccess: lifecycle.toolAccess,
+         database: storage,
+         secret: key,
+         origin,
+diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
+index e3fbe25..d2c77a2 100644
+--- a/apps/hosted/self-host/src/implementation/executor-services.ts
++++ b/apps/hosted/self-host/src/implementation/executor-services.ts
+@@ -122,6 +122,7 @@ export const selfHostExecutorServices = <E, R>(
+       const executor = yield* createExecutor({
+         appCalls: lifecycle.appCalls,
+         toolPolicy: lifecycle.toolPolicy,
++        toolAccess: lifecycle.toolAccess,
+         database: storage,
+         secret: key,
+         origin,
+diff --git a/apps/hosted/server/src/contracts/api.ts b/apps/hosted/server/src/contracts/api.ts
+index 7723886..473268c 100644
+--- a/apps/hosted/server/src/contracts/api.ts
++++ b/apps/hosted/server/src/contracts/api.ts
+@@ -1,3 +1,5 @@
++import { HostedToolAvailability } from "./tool-availability.ts";
++export { ToolAvailability, ToolAvailabilityChange } from "./tool-availability.ts";
+ import { HostedToolPolicies } from "./tool-policies.ts";
+ import { HostedAppConnections } from "./app-connections.ts";
+ import { HostedModels } from "./models.ts";
+@@ -195,6 +197,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
+     HostedModels,
+     HostedAppConnections,
+     HostedToolPolicies,
++    HostedToolAvailability,
+     HostedOAuthClients,
+     HostedAppData,
+     HostedMcpConnections,
+diff --git a/apps/hosted/server/src/contracts/tool-availability-error.ts b/apps/hosted/server/src/contracts/tool-availability-error.ts
+new file mode 100644
+index 0000000..bf08094
+--- /dev/null
++++ b/apps/hosted/server/src/contracts/tool-availability-error.ts
+@@ -0,0 +1,6 @@
++import { ApiError } from "@executor-js/utils/api-error";
++export class ToolSwitchedOff extends ApiError.define({
++  tag: "ToolSwitchedOff",
++  status: 403,
++  message: "This tool is switched off for this app. An app manager can turn it back on.",
++}) {}
+diff --git a/apps/hosted/server/src/contracts/tool-availability.ts b/apps/hosted/server/src/contracts/tool-availability.ts
+new file mode 100644
+index 0000000..a418f5c
+--- /dev/null
++++ b/apps/hosted/server/src/contracts/tool-availability.ts
+@@ -0,0 +1,73 @@
++import { AppId, ToolName, ToolIndex, Tool, ToolNotFound } from "@executor-js/sdk/core";
++import { ApiError } from "@executor-js/utils/api-error";
++import { Schema } from "effect";
++import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
++import { RequiredAction } from "./authorization.ts";
++import { OrganizationReference, RequireOrganization } from "./organization.ts";
++import { discoveryErrors } from "./tools.ts";
++
++export const ToolAvailability = Schema.Struct({
++  revision: Schema.Int,
++  defaultMode: Schema.Literals(["all", "read-only"]),
++  overrides: Schema.Array(Schema.Struct({ tool: ToolName, enabled: Schema.Boolean })),
++});
++export type ToolAvailability = typeof ToolAvailability.Type;
++export const ToolAvailabilityChange = Schema.Union([
++  Schema.Struct({ kind: Schema.Literal("tool"), tool: ToolName, enabled: Schema.Boolean }),
++  Schema.Struct({
++    kind: Schema.Literal("group"),
++    path: Schema.NonEmptyString,
++    enabled: Schema.Boolean,
++  }),
++  Schema.Struct({ kind: Schema.Literal("writes"), enabled: Schema.Boolean }),
++  Schema.Struct({
++    kind: Schema.Literal("default"),
++    defaultMode: ToolAvailability.fields.defaultMode,
++  }),
++]);
++export type ToolAvailabilityChange = typeof ToolAvailabilityChange.Type;
++export class ToolAvailabilityConflict extends ApiError.define({
++  tag: "ToolAvailabilityConflict",
++  status: 409,
++  message: "These tool settings changed. Reload them before saving again.",
++}) {}
++export class ToolAvailabilityInvalid extends ApiError.define({
++  tag: "ToolAvailabilityInvalid",
++  status: 422,
++  message: "A tool or group is no longer in this app. Reload the tool list.",
++}) {}
++const params = { organization: OrganizationReference, app: AppId };
++const prefix = "/api/organizations/:organization/apps/:app/tool-availability";
++const errors = [...discoveryErrors, ToolAvailabilityConflict, ToolAvailabilityInvalid];
++export const HostedToolAvailability = HttpApiGroup.make("toolAvailability")
++  .add(
++    HttpApiEndpoint.get("list", prefix, {
++      params,
++      success: Schema.Struct({
++        ...ToolAvailability.fields,
++        catalog: ToolIndex,
++        enabledTools: Schema.Array(ToolName),
++        groups: Schema.Array(Schema.Struct({ path: Schema.String, tools: Schema.Array(ToolName) })),
++      }),
++      error: discoveryErrors,
++    }).annotate(RequiredAction, "manage"),
++  )
++  .add(
++    HttpApiEndpoint.get("get", `${prefix}/tools/:tool`, {
++      params: { ...params, tool: ToolName },
++      success: Tool,
++      error: [...discoveryErrors, ToolNotFound],
++    }).annotate(RequiredAction, "manage"),
++  )
++  .add(
++    HttpApiEndpoint.patch("update", prefix, {
++      params,
++      payload: Schema.Struct({
++        revision: Schema.Int,
++        changes: Schema.Array(ToolAvailabilityChange),
++      }),
++      success: ToolAvailability,
++      error: errors,
++    }).annotate(RequiredAction, "manage"),
++  )
++  .middleware(RequireOrganization);
+diff --git a/apps/hosted/server/src/contracts/tools.ts b/apps/hosted/server/src/contracts/tools.ts
+index e6d19f9..0968ff2 100644
+--- a/apps/hosted/server/src/contracts/tools.ts
++++ b/apps/hosted/server/src/contracts/tools.ts
+@@ -1,3 +1,4 @@
++import { ToolSwitchedOff } from "./tool-availability-error.ts";
+ import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
+ import { RequiredAction } from "./authorization.ts";
+ /** Account-dependent discovery and execution within a configured app. */
+@@ -55,7 +56,7 @@ import {
+ } from "./organization.ts";
+ 
+ const params = { organization: OrganizationReference, app: AppId };
+-const discoveryErrors = [
++export const discoveryErrors = [
+   StorageError,
+   CredentialsError,
+   AppNotFound,
+@@ -87,6 +88,7 @@ const callPayload = Schema.Struct({
+   version: Schema.optional(VersionId),
+ }).pipe(withLegacyKeys({ version: "deployment" }));
+ const callErrors = [
++  ToolSwitchedOff,
+   AccountDeviceOffline,
+   AccountExecutionUnavailable,
+   ...discoveryErrors,
+@@ -103,6 +105,7 @@ const callErrors = [
+ ] as const;
+ const approval = { ...params, requestId: ApprovalRequestId };
+ const reviewErrors = [
++  ToolSwitchedOff,
+   ...discoveryErrors,
+   ToolNotFound,
+   RequestInvalid,
+diff --git a/apps/hosted/server/src/implementation/api.ts b/apps/hosted/server/src/implementation/api.ts
+index c0641d0..6a4e880 100644
+--- a/apps/hosted/server/src/implementation/api.ts
++++ b/apps/hosted/server/src/implementation/api.ts
+@@ -1,3 +1,4 @@
++import { hostedToolAvailabilityHandlers } from "./tool-availability-handlers.ts";
+ import { hostedToolPolicyHandlers } from "./tool-policy-handlers.ts";
+ import { hostedAppConnectionHandlers } from "./app-connections.ts";
+ import { hostedAccountResetHandlers } from "./account-resets.ts";
+@@ -96,6 +97,7 @@ export const hostedHandlers = Layer.mergeAll(
+   hostedModelHandlers,
+   hostedAppConnectionHandlers,
+   hostedToolPolicyHandlers,
++  hostedToolAvailabilityHandlers,
+   hostedOAuthClientHandlers,
+   hostedWebhookSetupHandlers,
+   hostedWebhookHandlers,
+diff --git a/apps/hosted/server/src/implementation/authorization.ts b/apps/hosted/server/src/implementation/authorization.ts
+index 9076af1..058b377 100644
+--- a/apps/hosted/server/src/implementation/authorization.ts
++++ b/apps/hosted/server/src/implementation/authorization.ts
+@@ -1,3 +1,9 @@
++import {
++  currentAvailability,
++  toolEnabled,
++  availabilityNeedsMetadata,
++} from "./tool-availability-store.ts";
++import { ToolSwitchedOff } from "../contracts/tool-availability-error.ts";
+ import {
+   permitsApp,
+   permitsTool,
+@@ -67,7 +73,16 @@ export const authorizeTool = (
+       tool: { name: input.tool },
+       accounts: userAccountIds(input.accounts),
+     };
+-    if (!requiresToolMetadata(policy.tools, input.app)) {
++    if (
++      !permitsApp(policy, input.app) ||
++      (!requiresToolMetadata(policy.tools, input.app) && !permitsTool(policy, request))
++    )
++      return yield* new OrganizationForbidden();
++    const availability = yield* currentAvailability(input.app);
++    const needsMetadata = availabilityNeedsMetadata(availability, input.tool);
++    if (!needsMetadata && !toolEnabled(availability, { name: input.tool }))
++      return yield* new ToolSwitchedOff();
++    if (!needsMetadata && !requiresToolMetadata(policy.tools, input.app)) {
+       if (!permitsTool(policy, request)) return yield* new OrganizationForbidden();
+       return { tool: undefined, kind: input.kind } satisfies ToolAuthorization;
+     }
+@@ -77,9 +92,12 @@ export const authorizeTool = (
+       (yield* executor.tools
+         .get(input)
+         .pipe(Effect.catchTag("ToolNotFound", () => Effect.fail(new OrganizationForbidden()))));
++    if (!toolEnabled(availability, tool)) return yield* new ToolSwitchedOff();
++    if (needsMetadata && input.kind === "mutation") return yield* new ToolSwitchedOff();
+     const permission = runPermission(policy, { ...request, tool });
+     if (permission === undefined) return yield* new OrganizationForbidden();
+-    if (permission === "any") return { tool, kind: input.kind } satisfies ToolAuthorization;
++    if (permission === "any")
++      return { tool, kind: needsMetadata ? "query" : input.kind } satisfies ToolAuthorization;
+     if (input.kind === "mutation") return yield* new OrganizationForbidden();
+     return { tool, kind: "query" } satisfies ToolAuthorization;
+   });
+diff --git a/apps/hosted/server/src/implementation/executor-app.ts b/apps/hosted/server/src/implementation/executor-app.ts
+index 2040914..b110555 100644
+--- a/apps/hosted/server/src/implementation/executor-app.ts
++++ b/apps/hosted/server/src/implementation/executor-app.ts
+@@ -9,8 +9,9 @@ import type { HostedApiDocument } from "../contracts/api.ts";
+ const managementIndex = (
+   origin: string,
+   apiKey = false,
+-) => `import { defineApp, dynamicSkills } from "apps";
++) => `import { defineApp, dynamicSkills, withApprovals } from "apps";
+ import { liveOpenapiRouter } from "apps/openapi";
++import { always } from "apps/operations/approval";
+ import { wellKnownSkills } from "apps/skills";
+ import { provider } from "./provider.ts";
+ import configuration from "./openapi.json";
+@@ -38,7 +39,7 @@ export default defineApp({ user: { accounts: { service: provider } } }, async (c
+     ...(context.signal === undefined ? {} : { signal: context.signal }),
+   });
+   const skills = dynamicSkills({ list: () => wellKnownSkills({ url: ${JSON.stringify(`${origin}/.well-known/agent-skills/index.json`)}, cache: context.cache, fetch: context.fetch, signal: context.signal }) });
+-  return { tools, dynamicSkills: skills };
++  return { tools: withApprovals(tools, (_operation, name) => name === "toolAvailability.update" ? always() : undefined), dynamicSkills: skills };
+ });
+ `;
+ 
+diff --git a/apps/hosted/server/src/implementation/mcp-http.ts b/apps/hosted/server/src/implementation/mcp-http.ts
+index 707a9cb..9403300 100644
+--- a/apps/hosted/server/src/implementation/mcp-http.ts
++++ b/apps/hosted/server/src/implementation/mcp-http.ts
+@@ -51,6 +51,7 @@ import {
+   type CallState,
+ } from "../contracts/executor.ts";
+ import { FoldReadAhead, readSelection, SelectionReadAhead } from "./access.ts";
++import { ToolAvailabilityReadAhead } from "./tool-availability-read.ts";
+ import { callerAccounts } from "./app-accounts.ts";
+ import { resourceAuthorityForLinks } from "./resource-policy.ts";
+ import { BearerHashes } from "./bearer-access.ts";
+@@ -129,6 +130,11 @@ const requestBackend: McpBackend<RequestError> = {
+   searchableTools: (input, options) =>
+     Effect.flatMap(RequestBackend, (backend) => backend.searchableTools(input, options)),
+   searchTools: (input) => Effect.flatMap(RequestBackend, (backend) => backend.searchTools(input)),
++  unavailableToolReason: (input) =>
++    Effect.flatMap(
++      RequestBackend,
++      (backend) => backend.unavailableToolReason?.(input) ?? Effect.succeed(undefined),
++    ),
+   callTool: (input, options) =>
+     Effect.flatMap(RequestBackend, (backend) => backend.callTool(input, options)),
+   resumeInvocation: (request, response, options) =>
+@@ -370,6 +376,17 @@ export const dispatchHostedMcp = <E, R>(
+             current: read.app,
+           }),
+           Effect.provideService(FoldReadAhead, fold),
++          Effect.provideService(
++            ToolAvailabilityReadAhead,
++            fold !== undefined && Exit.isSuccess(fold.result)
++              ? {
++                  organization,
++                  app: input.app,
++                  tool: input.tool,
++                  definition: fold.result.value.toolAvailability,
++                }
++              : undefined,
++          ),
+           Effect.provideService(InvocationPrefetch, read.invocation),
+         );
+       });
+@@ -395,6 +412,12 @@ export const dispatchHostedMcp = <E, R>(
+       listSkills: (input, options) =>
+         current.pipe(Effect.flatMap((fresh) => fresh.listSkills(input, options))),
+       readSkill: (input) => current.pipe(Effect.flatMap((fresh) => fresh.readSkill(input))),
++      unavailableToolReason: (input) =>
++        current.pipe(
++          Effect.flatMap(
++            (fresh) => fresh.unavailableToolReason?.(input) ?? Effect.succeed(undefined),
++          ),
++        ),
+ 
+       authorizeElicitation: (input) =>
+         current.pipe(
+diff --git a/apps/hosted/server/src/implementation/mcp.ts b/apps/hosted/server/src/implementation/mcp.ts
+index 9d38172..c8470ab 100644
+--- a/apps/hosted/server/src/implementation/mcp.ts
++++ b/apps/hosted/server/src/implementation/mcp.ts
+@@ -1,3 +1,4 @@
++import { ToolName } from "@executor-js/sdk/core";
+ import { CurrentAuthorization } from "../contracts/authorization.ts";
+ import {
+   CurrentUsage,
+@@ -263,6 +264,26 @@ export const hostedMcpBackend = Effect.gen(function* () {
+       observe("searchableTools", grantRefusal(searchableTools(input, options)), "read"),
+     searchTools: (input) =>
+       observe("searchTools", observeToolSearch(input, searchTools(input)), "read"),
++    unavailableToolReason: (input) =>
++      Effect.gen(function* () {
++        yield* authorizeApp(input.app);
++        yield* requireAppAccess(input.app, "use");
++        const executor = yield* sdk;
++        const { version, accounts } = yield* selectedActiveVersion(
++          executor,
++          yield* currentOwner,
++          input,
++        );
++        return yield* authorizeTool({
++          app: input.app,
++          tool: ToolName.make(input.tool),
++          version,
++          accounts,
++        }).pipe(
++          Effect.as(undefined),
++          Effect.catchTag("ToolSwitchedOff", (error) => Effect.succeed(error.message)),
++        );
++      }).pipe((work) => observe("unavailableToolReason", work, "read")),
+     callTool: (input, options?: ToolInvocationOptions) =>
+       Effect.gen(function* () {
+         const owner = yield* currentOwner;
+diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
+index e69f0af..a97f73d 100644
+--- a/apps/hosted/server/src/implementation/migrations.ts
++++ b/apps/hosted/server/src/implementation/migrations.ts
+@@ -1,3 +1,4 @@
++import { migrateToolAvailability } from "./tool-availability-store.ts";
+ import { migrateToolPolicies } from "./tool-policy-schema.ts";
+ /** Schema ownership is separate even though auth and product share one Postgres database. */
+ import type { BetterAuthOptions } from "better-auth";
+@@ -148,6 +149,10 @@ const hostedProductMigrations = migrateProductSteps("private_hosted_migrations",
+   "15_hosted_routes": migrateHostedRoutes,
+   "16_tool_policies": migrateToolPolicies,
+   "17_account_rechecks": migrateAccountRechecks,
++  "18_tool_availability": Effect.gen(function* () {
++    yield* migrateToolAvailability;
++    yield* queueExecutorAppUpgrades;
++  }),
+ });
+ 
+ /**
+diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+index 9f34380..46d72b7 100644
+--- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
++++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+@@ -1,3 +1,4 @@
++import { hostedToolAccess } from "./tool-availability-store.ts";
+ import { linkedApps } from "./accounts.ts";
+ import { visibleProviderAccountTitle } from "./account-identity.ts";
+ import { AutomaticAccountCheck, automaticCheckAccounts } from "./account-recheck-authority.ts";
+@@ -937,6 +938,7 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
+     hooks,
+     appCalls: hostedWorkflowApprovals(executor, yield* SqlClient.SqlClient),
+     toolPolicy: hostedToolPolicy(yield* SqlClient.SqlClient),
++    toolAccess: hostedToolAccess(yield* SqlClient.SqlClient),
+     /** Let the hooks reach the executor they were created for. */
+     attach: (instance: Executor) =>
+       Effect.sync(() => {
+diff --git a/apps/hosted/server/src/implementation/resource-policy.ts b/apps/hosted/server/src/implementation/resource-policy.ts
+index 939caef..4cd5df6 100644
+--- a/apps/hosted/server/src/implementation/resource-policy.ts
++++ b/apps/hosted/server/src/implementation/resource-policy.ts
+@@ -251,6 +251,7 @@ export type AppAccountReads = typeof AppAccountReads.Type;
+ 
+ const MemberLinksPolicy = Schema.Struct({
+   ...MemberAppPolicy.fields,
++  toolAvailability: Schema.NullOr(Schema.String),
+   userLinks: Schema.String,
+   appLinks: Schema.String,
+ });
+@@ -277,7 +278,9 @@ export const resourceAuthorityForLinks = (
+     (select coalesce(json_agg(${sql.literal(linkedAccountJson)} order by l.created_at, a.id),
+       '[]'::json)::text from ${usableLinks(sql, { subject: user, apps: [app] })}) as "userLinks",
+     (select coalesce(json_agg(${sql.literal(linkedAccountJson)} order by l.created_at, a.id),
+-      '[]'::json)::text from ${yield* usableAppLinks(sql, [app])}) as "appLinks"
++      '[]'::json)::text from ${yield* usableAppLinks(sql, [app])}) as "appLinks",
++    (select availability.definition::text from hosted_tool_availability availability
++      where availability.app_id = p.id and availability.organization_id = p.organization_id) as "toolAvailability"
+     from member m
+     left join hosted_app_access p on p.id = ${app} and p.organization_id = m."organizationId"
+     where m."organizationId" = ${organization} and m."userId" = ${user}`;
+@@ -300,6 +303,7 @@ export const resourceAuthorityForLinks = (
+         },
+         actor,
+       ),
++      toolAvailability: row.toolAvailability,
+       accounts: Effect.all({
+         user: Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(LinkedAccount)))(
+           row.userLinks,
+diff --git a/apps/hosted/server/src/implementation/tool-availability-handlers.ts b/apps/hosted/server/src/implementation/tool-availability-handlers.ts
+new file mode 100644
+index 0000000..d55ee0f
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/tool-availability-handlers.ts
+@@ -0,0 +1,17 @@
++import { HttpApiBuilder } from "effect/http-api";
++import { HostedApi } from "../contracts/api.ts";
++import {
++  getAvailabilityTool,
++  listToolAvailability,
++  updateToolAvailability,
++} from "./tool-availability.ts";
++
++export const hostedToolAvailabilityHandlers = HttpApiBuilder.group(
++  HostedApi,
++  "toolAvailability",
++  (handlers) =>
++    handlers
++      .handle("list", ({ params }) => listToolAvailability(params.app))
++      .handle("get", ({ params }) => getAvailabilityTool(params.app, params.tool))
++      .handle("update", ({ params, payload }) => updateToolAvailability(params.app, payload)),
++);
+diff --git a/apps/hosted/server/src/implementation/tool-availability-read.ts b/apps/hosted/server/src/implementation/tool-availability-read.ts
+new file mode 100644
+index 0000000..cdc0beb
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/tool-availability-read.ts
+@@ -0,0 +1,14 @@
++import type { AppId } from "@executor-js/sdk/core";
++import { Context } from "effect";
++import type { OrganizationId } from "../contracts/organization.ts";
++
++/** One MCP call's availability from its access snapshot, never retained in the session cache. */
++export const ToolAvailabilityReadAhead = Context.Reference<
++  | {
++      readonly organization: OrganizationId;
++      readonly app: AppId;
++      readonly tool: string;
++      readonly definition: string | null;
++    }
++  | undefined
++>("hosted/ToolAvailabilityReadAhead", { defaultValue: () => undefined });
+diff --git a/apps/hosted/server/src/implementation/tool-availability-store.ts b/apps/hosted/server/src/implementation/tool-availability-store.ts
+new file mode 100644
+index 0000000..396f582
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/tool-availability-store.ts
+@@ -0,0 +1,137 @@
++import { AppId, StorageError, type ToolName } from "@executor-js/sdk/core";
++import { Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import { ToolAvailability } from "../contracts/tool-availability.ts";
++import type { OrganizationId } from "../contracts/organization.ts";
++import { policyDatabase } from "./resource-policy.ts";
++import { CurrentOrganization } from "../contracts/organization.ts";
++import { ToolAvailabilityReadAhead } from "./tool-availability-read.ts";
++
++export const migrateToolAvailability = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  yield* sql`create table if not exists hosted_tool_availability (
++    organization_id text not null,
++    app_id text not null,
++    definition jsonb not null,
++    primary key (organization_id, app_id),
++    foreign key (organization_id, app_id) references hosted_app_access (organization_id, id) on delete cascade
++  )`;
++});
++export const defaultAvailability: ToolAvailability = {
++  revision: 0,
++  defaultMode: "all",
++  overrides: [],
++};
++const snapshotAvailability = (
++  read: NonNullable<Effect.Success<typeof ToolAvailabilityReadAhead>>,
++) =>
++  read.definition === null
++    ? Effect.succeed(defaultAvailability)
++    : Schema.decodeUnknownEffect(Schema.fromJsonString(ToolAvailability))(read.definition).pipe(
++        Effect.mapError(() => new StorageError()),
++      );
++
++// A nested or later runtime invocation must read again, even if it inherited the call's context.
++const consumedAvailability = new WeakSet<object>();
++
++export const availabilityFilter = (state: ToolAvailability) => {
++  const overrides = new Map<string, boolean>(
++    state.overrides.map((item) => [item.tool, item.enabled]),
++  );
++  return (tool: { readonly name: string; readonly readOnly?: boolean | undefined }) =>
++    overrides.get(tool.name) ?? (state.defaultMode === "all" || tool.readOnly === true);
++};
++export const toolEnabled = (
++  state: ToolAvailability,
++  tool: { readonly name: string; readonly readOnly?: boolean | undefined },
++) =>
++  state.overrides.find((item) => item.tool === tool.name)?.enabled ??
++  (state.defaultMode === "all" || tool.readOnly === true);
++export const availabilityNeedsMetadata = (state: ToolAvailability, name: string) =>
++  state.defaultMode === "read-only" && !state.overrides.some((item) => item.tool === name);
++export const availabilityScope = (state: ToolAvailability) => ({
++  all: state.defaultMode === "all",
++  readOnly: state.defaultMode === "read-only",
++  names: state.overrides.filter((item) => item.enabled).map((item) => item.tool),
++  excludedNames: state.overrides.filter((item) => !item.enabled).map((item) => item.tool),
++});
++export const readAvailability = (
++  sql: SqlClient.SqlClient,
++  organization: OrganizationId,
++  apps: readonly AppId[],
++) =>
++  Effect.gen(function* () {
++    if (apps.length === 0) return new Map<AppId, ToolAvailability>();
++    const ahead = yield* ToolAvailabilityReadAhead;
++    if (
++      ahead !== undefined &&
++      ahead.organization === organization &&
++      apps.length === 1 &&
++      apps[0] === ahead.app
++    )
++      return new Map([[ahead.app, yield* snapshotAvailability(ahead)]]);
++    const rows = yield* sql`select app_id as app, definition from hosted_tool_availability
++      where organization_id = ${organization} and ${sql.in("app_id", apps)}`;
++    const decoded = yield* Schema.decodeUnknownEffect(
++      Schema.Array(Schema.Struct({ app: AppId, definition: ToolAvailability })),
++    )(rows);
++    return new Map(decoded.map((row) => [row.app, row.definition]));
++  }).pipe(Effect.mapError(() => new StorageError()));
++export const currentAvailabilities = (apps: readonly AppId[]) =>
++  Effect.gen(function* () {
++    const sql = yield* policyDatabase;
++    const { organization } = yield* CurrentOrganization;
++    return yield* readAvailability(sql, organization, apps);
++  });
++export const currentAvailability = (app: AppId) =>
++  currentAvailabilities([app]).pipe(Effect.map((states) => states.get(app) ?? defaultAvailability));
++/** Group names follow dotted routers, or the first underscore prefix for flat APIs. */
++export const toolGroups = (tools: readonly { readonly name: ToolName }[]) => {
++  const groups = new Map<string, ToolName[]>();
++  for (const tool of tools) {
++    const parts = tool.name.split(".");
++    const paths =
++      parts.length > 1
++        ? parts.slice(0, -1).map((_, index) => parts.slice(0, index + 1).join("."))
++        : tool.name.includes("_")
++          ? [tool.name.slice(0, tool.name.indexOf("_"))]
++          : [];
++    for (const path of paths) {
++      const names = groups.get(path) ?? [];
++      names.push(tool.name);
++      groups.set(path, names);
++    }
++  }
++  return [...groups].map(([path, tools]) => ({ path, tools }));
++};
++
++/** Trusted runtime dispatch supplies app identity, without depending on a bundle callback. */
++export const hostedToolAccess =
++  (sql: SqlClient.SqlClient) =>
++  (input: {
++    readonly app: AppId;
++    readonly tool: string;
++    readonly kind?: "query" | "mutation" | undefined;
++  }) =>
++    Effect.gen(function* () {
++      const ahead = yield* ToolAvailabilityReadAhead;
++      if (
++        ahead !== undefined &&
++        ahead.app === input.app &&
++        ahead.tool === input.tool &&
++        !consumedAvailability.has(ahead)
++      ) {
++        consumedAvailability.add(ahead);
++        return toolEnabled(yield* snapshotAvailability(ahead), {
++          name: input.tool,
++          readOnly: input.kind === "query",
++        });
++      }
++      const rows =
++        yield* sql`select definition from hosted_tool_availability where app_id = ${input.app}`;
++      const decoded = yield* Schema.decodeUnknownEffect(
++        Schema.Array(Schema.Struct({ definition: ToolAvailability })),
++      )(rows);
++      const state = decoded[0]?.definition ?? defaultAvailability;
++      return toolEnabled(state, { name: input.tool, readOnly: input.kind === "query" });
++    }).pipe(Effect.mapError(() => new StorageError()));
+diff --git a/apps/hosted/server/src/implementation/tool-availability.ts b/apps/hosted/server/src/implementation/tool-availability.ts
+new file mode 100644
+index 0000000..96c44aa
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/tool-availability.ts
+@@ -0,0 +1,118 @@
++import { StorageError, type AppId, type ToolName } from "@executor-js/sdk/core";
++import { discoversTool, permitsRouter } from "@executor-js/authorization";
++import { Effect } from "effect";
++import { HostedExecutor } from "../contracts/executor.ts";
++import { OrganizationForbidden } from "../contracts/organization.ts";
++import {
++  ToolAvailabilityConflict,
++  ToolAvailabilityInvalid,
++  type ToolAvailability,
++  type ToolAvailabilityChange,
++} from "../contracts/tool-availability.ts";
++import { authorizeApp } from "./authorization.ts";
++import { currentOwner, selectedActiveVersion } from "./access.ts";
++import {
++  applicationAccess,
++  currentResourceAuthority,
++  lockCurrentActor,
++  policyDatabase,
++} from "./resource-policy.ts";
++import {
++  defaultAvailability,
++  currentAvailability,
++  readAvailability,
++  availabilityFilter,
++  toolGroups,
++} from "./tool-availability-store.ts";
++
++const managerCatalog = (app: AppId) =>
++  Effect.gen(function* () {
++    const actor = yield* currentResourceAuthority;
++    if (!(yield* applicationAccess(app, actor)).canManage)
++      return yield* new OrganizationForbidden();
++    const policy = yield* authorizeApp(app);
++    const executor = yield* Effect.flatten(HostedExecutor);
++    const selected = yield* selectedActiveVersion(executor, yield* currentOwner, { app });
++    const catalog = yield* executor.tools.index({ app, ...selected });
++    const items = catalog.items.filter((tool) => discoversTool(policy, { app, tool }));
++    return {
++      catalog: {
++        ...catalog,
++        items,
++        routers: catalog.routers.filter((router) =>
++          permitsRouter(policy, { app, path: router.path }, items),
++        ),
++      },
++      executor,
++      selected,
++      policy,
++    };
++  });
++export const listToolAvailability = (app: AppId) =>
++  Effect.gen(function* () {
++    const { catalog } = yield* managerCatalog(app);
++    const state = yield* currentAvailability(app);
++    return {
++      ...state,
++      catalog,
++      enabledTools: catalog.items.filter(availabilityFilter(state)).map((tool) => tool.name),
++      groups: toolGroups(catalog.items),
++    };
++  });
++export const getAvailabilityTool = (app: AppId, tool: ToolName) =>
++  Effect.gen(function* () {
++    const { executor, selected, policy } = yield* managerCatalog(app);
++    const described = yield* executor.tools.get({ app, tool, ...selected });
++    if (!discoversTool(policy, { app, tool: described })) return yield* new OrganizationForbidden();
++    return described;
++  });
++export const updateToolAvailability = (
++  app: AppId,
++  input: { readonly revision: number; readonly changes: readonly ToolAvailabilityChange[] },
++) =>
++  Effect.gen(function* () {
++    const { catalog } = yield* managerCatalog(app);
++    const sql = yield* policyDatabase;
++    return yield* sql.withTransaction(
++      Effect.gen(function* () {
++        const actor = yield* lockCurrentActor;
++        // The app row serializes first writes too, when the availability row does not exist yet.
++        yield* sql`select id from hosted_app_access where organization_id = ${actor.organization} and id = ${app} for update`;
++        if (!(yield* applicationAccess(app, actor)).canManage)
++          return yield* new OrganizationForbidden();
++        const state =
++          (yield* readAvailability(sql, actor.organization, [app])).get(app) ?? defaultAvailability;
++        if (state.revision !== input.revision) return yield* new ToolAvailabilityConflict();
++        let defaultMode = state.defaultMode;
++        const overrides = new Map(state.overrides.map((item) => [item.tool, item.enabled]));
++        const names = new Set(catalog.items.map((tool) => tool.name));
++        const groups = toolGroups(catalog.items);
++        for (const change of input.changes) {
++          if (change.kind === "default") defaultMode = change.defaultMode;
++          else if (change.kind === "tool") {
++            if (!names.has(change.tool)) return yield* new ToolAvailabilityInvalid();
++            overrides.set(change.tool, change.enabled);
++          } else if (change.kind === "group") {
++            const group = groups.find((group) => group.path === change.path);
++            if (group === undefined) return yield* new ToolAvailabilityInvalid();
++            for (const name of group.tools) overrides.set(name, change.enabled);
++          } else {
++            defaultMode = change.enabled ? "all" : "read-only";
++            for (const tool of catalog.items)
++              if (tool.readOnly !== true) overrides.set(tool.name, change.enabled);
++          }
++        }
++        const saved: ToolAvailability = {
++          revision: state.revision + 1,
++          defaultMode,
++          overrides: [...overrides]
++            .sort(([a], [b]) => a.localeCompare(b))
++            .map(([tool, enabled]) => ({ tool, enabled })),
++        };
++        yield* sql`insert into hosted_tool_availability (organization_id, app_id, definition)
++      values (${actor.organization}, ${app}, ${JSON.stringify(saved)}::jsonb)
++      on conflict (organization_id, app_id) do update set definition = excluded.definition`;
++        return saved;
++      }),
++    );
++  }).pipe(Effect.catchTag("SqlError", () => new StorageError()));
+diff --git a/apps/hosted/server/src/implementation/tool-policy-evaluation.ts b/apps/hosted/server/src/implementation/tool-policy-evaluation.ts
+index 9f511c0..32c433e 100644
+--- a/apps/hosted/server/src/implementation/tool-policy-evaluation.ts
++++ b/apps/hosted/server/src/implementation/tool-policy-evaluation.ts
+@@ -1,3 +1,4 @@
++import { readAvailability, defaultAvailability, toolEnabled } from "./tool-availability-store.ts";
+ import { Effect, Schema } from "effect";
+ import type { SqlClient } from "effect/sql";
+ import {
+@@ -43,6 +44,11 @@ export const hostedToolPolicy =
+       const organization = yield* Schema.decodeUnknownEffect(OrganizationId)(
+         event.owner.slice("organization:".length),
+       );
++      const availability =
++        (yield* readAvailability(sql, organization, [event.app])).get(event.app) ??
++        defaultAvailability;
++      if (!toolEnabled(availability, { name: event.tool, readOnly: event.kind === "query" }))
++        return { matched: true, decision: "denied" as const };
+       const rows = (yield* readToolPolicies(sql, organization)).filter((rule) =>
+         matches(rule, event),
+       );
+diff --git a/apps/hosted/server/src/implementation/tools.ts b/apps/hosted/server/src/implementation/tools.ts
+index 4133e88..800a4ca 100644
+--- a/apps/hosted/server/src/implementation/tools.ts
++++ b/apps/hosted/server/src/implementation/tools.ts
+@@ -1,3 +1,12 @@
++import {
++  currentAvailability,
++  currentAvailabilities,
++  toolEnabled,
++  availabilityFilter,
++  availabilityNeedsMetadata,
++  availabilityScope,
++  defaultAvailability,
++} from "./tool-availability-store.ts";
+ import { authorizeApp, authorizeSavedTool, authorizeTool } from "./authorization.ts";
+ import {
+   discoverableTools,
+@@ -49,7 +58,18 @@ export const listTools = (
+     const owner = yield* currentOwner;
+     const executor = yield* Effect.flatten(HostedExecutor);
+     const { version, accounts } = yield* selectedActiveVersion(executor, owner, input);
+-    const page = yield* executor.tools.list({ ...input, version, accounts, limit: 2000 }, options);
++    const availability = yield* currentAvailability(input.app);
++    const enabled = availabilityFilter(availability);
++    const page = yield* executor.tools.list(
++      { ...input, version, accounts, limit: 2000 },
++      {
++        ...options,
++        filter: (tool) =>
++          enabled(tool) &&
++          discoversTool(policy, { app: input.app, tool }) &&
++          (options?.filter?.(tool) ?? true),
++      },
++    );
+     return {
+       ...page,
+       items: page.items.filter((tool) => discoversTool(policy, { app: input.app, tool })),
+@@ -85,13 +105,21 @@ export const searchTools = (input: Parameters<Executor["tools"]["search"]>[0]) =
+   Effect.gen(function* () {
+     const policy = yield* CurrentAuthorization;
+     const executor = yield* Effect.flatten(HostedExecutor);
++    const availability = yield* currentAvailabilities(input.targets.map((target) => target.app));
+     const page = yield* executor.tools.search({
+       ...input,
+       targets: input.targets.map((target) => {
+         const scope = permitsApp(policy, target.app)
+           ? discoverableTools(policy, target.app)
+           : { readOnly: false, names: [] };
+-        return scope === undefined ? target : { ...target, scopes: [...target.scopes, scope] };
++        return {
++          ...target,
++          scopes: [
++            ...target.scopes,
++            ...(scope === undefined ? [] : [scope]),
++            availabilityScope(availability.get(target.app) ?? defaultAvailability),
++          ],
++        };
+       }),
+     });
+     return {
+@@ -114,11 +142,16 @@ export const indexTools = (input: Parameters<Executor["tools"]["index"]>[0]) =>
+     const executor = yield* Effect.flatten(HostedExecutor);
+     const { version, accounts } = yield* selectedActiveVersion(executor, owner, input);
+     const index = yield* executor.tools.index({ ...input, version, accounts });
++    const availability = yield* currentAvailability(input.app);
++    const enabled = availabilityFilter(availability);
++    const items = index.items.filter(
++      (tool) => enabled(tool) && discoversTool(policy, { app: input.app, tool }),
++    );
+     return {
+       ...index,
+-      items: index.items.filter((tool) => discoversTool(policy, { app: input.app, tool })),
++      items,
+       routers: index.routers.filter((router) =>
+-        permitsRouter(policy, { app: input.app, path: router.path }, index.items),
++        permitsRouter(policy, { app: input.app, path: router.path }, items),
+       ),
+     };
+   });
+@@ -129,6 +162,12 @@ export const getTool = (input: Parameters<Executor["tools"]["get"]>[0]) =>
+     const owner = yield* currentOwner;
+     const executor = yield* Effect.flatten(HostedExecutor);
+     const { version, accounts } = yield* selectedActiveVersion(executor, owner, input);
++    const availability = yield* currentAvailability(input.app);
++    if (
++      !availabilityNeedsMetadata(availability, input.tool) &&
++      !toolEnabled(availability, { name: input.tool })
++    )
++      return yield* new ToolNotFound({ app: input.app, version, tool: input.tool });
+     // When names decide, check before evaluating, so a hidden tool's source failure is not
+     // reported either. A read-only rule needs the catalog's flag, so it is checked after.
+     if (
+@@ -137,7 +176,7 @@ export const getTool = (input: Parameters<Executor["tools"]["get"]>[0]) =>
+     )
+       return yield* new ToolNotFound({ app: input.app, version, tool: input.tool });
+     const tool = yield* executor.tools.get({ ...input, version, accounts });
+-    if (!discoversTool(policy, { app: input.app, tool }))
++    if (!toolEnabled(availability, tool) || !discoversTool(policy, { app: input.app, tool }))
+       return yield* new ToolNotFound({
+         app: tool.app,
+         version: tool.version,
+diff --git a/apps/hosted/web/src/contracts/app-discovery.ts b/apps/hosted/web/src/contracts/app-discovery.ts
+index 222a716..4261529 100644
+--- a/apps/hosted/web/src/contracts/app-discovery.ts
++++ b/apps/hosted/web/src/contracts/app-discovery.ts
+@@ -10,6 +10,7 @@ import { toolsAtom } from "./apps.ts";
+ import { refreshSkillDiscovery } from "./app-browser.ts";
+ import { refreshResourceDiscovery } from "./resources.ts";
+ import { refreshScheduleDiscovery } from "./schedules.ts";
++import { refreshToolAvailabilityDiscovery } from "./tool-availability.ts";
+ 
+ /** The app and version whose discovery a page shows. */
+ export interface DiscoveryTarget {
+@@ -30,6 +31,11 @@ export const discoveryTarget = (
+ export const refreshAppDiscovery = (get: Atom.FnContext, target: DiscoveryTarget) => {
+   const version = target.version ?? undefined;
+   get.refresh(toolsAtom({ organization: target.organization, app: target.app, version }));
++  refreshToolAvailabilityDiscovery(get, {
++    organization: target.organization,
++    app: target.app,
++    version,
++  });
+   refreshSkillDiscovery(get, target);
+   refreshResourceDiscovery(get, {
+     organization: target.organization,
+diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
+index 813dd16..98e8a94 100644
+--- a/apps/hosted/web/src/contracts/errors.ts
++++ b/apps/hosted/web/src/contracts/errors.ts
+@@ -19,6 +19,11 @@ const errorMessage = Match.type<HostedError>().pipe(
+     AccountExecutionUnavailable: ({ message }) => message,
+     ToolPolicyConflict: ({ message }) => message,
+     ToolPolicyInvalid: ({ message }) => message,
++    ToolSwitchedOff: () => "This tool is switched off. An app manager can turn it back on.",
++    ToolAvailabilityConflict: () =>
++      "Someone else changed which tools are on. Your change wasn't saved. Reload to see the current settings.",
++    ToolAvailabilityInvalid: () =>
++      "A tool or group in this change is no longer in the app. Nothing was saved. Reload and try again.",
+     AppConnectionConflict: ({ message }) => message,
+     AppConnectionRefused: ({ message }) => message,
+     AccountProvisioned: ({ message }) => message,
+diff --git a/apps/hosted/web/src/contracts/tool-availability.ts b/apps/hosted/web/src/contracts/tool-availability.ts
+new file mode 100644
+index 0000000..5662a4c
+--- /dev/null
++++ b/apps/hosted/web/src/contracts/tool-availability.ts
+@@ -0,0 +1,147 @@
++/**
++ * An app instance's tool availability, read and changed by its managers. The list includes
++ * switched-off tools, which only this manager read reveals; agents' discovery stays filtered.
++ */
++import { hydrated } from "@executor-js/ui/contracts/http";
++import { revalidated } from "@executor-js/ui/contracts/refresh";
++import { acknowledge, invalidate } from "@executor-js/ui/contracts/mutations";
++import type { Query, ToolCatalog } from "@executor-js/ui/contracts/dashboard";
++import {
++  enabledToolNames,
++  type ToolAvailability,
++  type ToolAvailabilityUpdate,
++} from "@executor-js/ui/contracts/tool-availability";
++import { ToolName, type AppId, type VersionId } from "@executor-js/sdk";
++import type { OrganizationReference } from "@executor-js/hosted-server/organization";
++import { AsyncResult, Atom } from "effect/reactivity";
++import { Cause, Data, Effect, Option } from "effect";
++import { HostedClient } from "./api.ts";
++import { protectedQuery } from "./protected-query.ts";
++import { toolsAtom } from "./apps.ts";
++import type { HostedError } from "./errors.ts";
++
++/** The version names the catalog the setting is shown against, so an upgrade reads it again. */
++class AvailabilityKey extends Data.Class<{
++  readonly organization: OrganizationReference;
++  readonly app: AppId;
++  readonly version?: VersionId | undefined;
++}> {}
++
++const lists = Atom.family((key: AvailabilityKey) =>
++  HostedClient.query(
++    "toolAvailability",
++    "list",
++    hydrated({ params: { organization: key.organization, app: key.app } }),
++  ).pipe(revalidated, protectedQuery),
++);
++
++const catalogs = Atom.family((key: AvailabilityKey) =>
++  Atom.map(
++    lists(key),
++    AsyncResult.map((list): ToolCatalog => ({
++      tools: list.catalog.items,
++      routers: list.catalog.routers,
++    })),
++  ),
++);
++/** Account changes invalidate the manager's catalog as well as ordinary discovery. */
++export const refreshToolAvailabilityDiscovery = (
++  get: Atom.FnContext,
++  key: ConstructorParameters<typeof AvailabilityKey>[0],
++) => invalidate(get, lists(new AvailabilityKey(key)));
++
++/** Every tool of the app, switched off or not, for a manager's browser. */
++export const toolAvailabilityCatalogAtom = (
++  key: ConstructorParameters<typeof AvailabilityKey>[0],
++) => catalogs(new AvailabilityKey(key));
++
++const settings = Atom.family((key: AvailabilityKey) =>
++  Atom.map(
++    lists(key),
++    AsyncResult.map((list): ToolAvailability => ({
++      revision: list.revision,
++      defaultMode: list.defaultMode,
++      overrides: list.overrides,
++      enabledTools: list.enabledTools,
++      groups: list.groups,
++    })),
++  ),
++);
++/** Typed with the whole hosted error union so the setting and its save share one failure view. */
++export const toolAvailabilityAtom = (
++  key: ConstructorParameters<typeof AvailabilityKey>[0],
++): Query<ToolAvailability, HostedError> => settings(new AvailabilityKey(key));
++
++class DetailKey extends Data.Class<
++  ConstructorParameters<typeof AvailabilityKey>[0] & { readonly tool: ToolName }
++> {}
++const detailQueries = Atom.family((key: DetailKey) =>
++  HostedClient.query(
++    "toolAvailability",
++    "get",
++    hydrated({ params: { organization: key.organization, app: key.app, tool: key.tool } }),
++  ).pipe(revalidated),
++);
++const details = Atom.family((key: DetailKey) =>
++  HostedClient.runtime.atom((get) =>
++    get
++      .result(detailQueries(key))
++      // A tool that left the catalog since the list was read is not a failure.
++      .pipe(Effect.catchTag("ToolNotFound", () => Effect.succeed(undefined))),
++  ),
++);
++/** One tool's schemas, including a switched-off tool's, for its manager. */
++export const toolAvailabilityDetailAtom = (key: ConstructorParameters<typeof DetailKey>[0]) =>
++  details(new DetailKey(key));
++
++const updates = Atom.family((key: AvailabilityKey) =>
++  HostedClient.runtime.fn((input: ToolAvailabilityUpdate, get) =>
++    Effect.flatMap(HostedClient, (client) =>
++      client.toolAvailability.update({
++        params: { organization: key.organization, app: key.app },
++        payload: {
++          ...input,
++          changes: input.changes.map((change) =>
++            change.kind === "tool" ? { ...change, tool: ToolName.make(change.tool) } : change,
++          ),
++        },
++      }),
++    ).pipe(
++      Effect.tap((saved) =>
++        Effect.sync(() => {
++          // Show the confirmed save at once; the read that follows replaces it with the host's.
++          acknowledge(get, lists(key), (current) => ({
++            ...current,
++            revision: saved.revision,
++            defaultMode: saved.defaultMode,
++            overrides: saved.overrides,
++            enabledTools: enabledToolNames(
++              current.catalog.items,
++              saved.defaultMode,
++              saved.overrides,
++            ).map((name) => ToolName.make(name)),
++          }));
++          // Ordinary discovery, on this page and in connection pickers, lists only enabled tools.
++          get.refresh(toolsAtom(key));
++          get.refresh(toolsAtom({ organization: key.organization, app: key.app }));
++        }),
++      ),
++    ),
++  ),
++);
++/** Each app owns its save, so a change in one app never cancels another's. */
++export const updateToolAvailabilityAtom = (
++  key: ConstructorParameters<typeof AvailabilityKey>[0],
++): Atom.AtomResultFn<ToolAvailabilityUpdate, { readonly revision: number }, HostedError> =>
++  updates(new AvailabilityKey(key));
++
++/**
++ * Another manager saved first, or the catalog lost a tool or group the change named. Resending
++ * the same change cannot succeed, so the view reloads the current setting instead.
++ */
++export const toolAvailabilityConflict = (cause: Cause.Cause<HostedError>) =>
++  Option.exists(
++    Cause.findErrorOption(cause),
++    (error) =>
++      error._tag === "ToolAvailabilityConflict" || error._tag === "ToolAvailabilityInvalid",
++  );
+diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+index d021b5b..109215a 100644
+--- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+@@ -469,7 +469,14 @@ export function AppDetailPage({
+                 />,
+               );
+             if (selectedView === "tools")
+-              return gate(<AppTools app={current} requirements={requirements} selected={tool} />);
++              return gate(
++                <AppTools
++                  app={current}
++                  requirements={requirements}
++                  selected={tool}
++                  canManage={canManage}
++                />,
++              );
+             if (selectedView === "workflows")
+               return gate(
+                 <AppResources app={current} view="workflows" canReadSource={canManage} />,
+diff --git a/apps/hosted/web/src/implementation/pages/app-tools.tsx b/apps/hosted/web/src/implementation/pages/app-tools.tsx
+index 8203193..e945b96 100644
+--- a/apps/hosted/web/src/implementation/pages/app-tools.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-tools.tsx
+@@ -1,4 +1,4 @@
+-import { AppProviderFailed, type App } from "@executor-js/sdk";
++import { AppProviderFailed, type App, type ToolSummary } from "@executor-js/sdk";
+ import { ProviderErrorNotice } from "@executor-js/ui/dashboard/provider-error-notice";
+ import { Cause, Option, Schema } from "effect";
+ import type { UserFacingError } from "@executor-js/utils/user-facing-error";
+@@ -24,17 +24,29 @@ import {
+   toolRunApprovalAtoms,
+ } from "../../contracts/apps.ts";
+ import type { HostedError } from "../../contracts/errors.ts";
++import {
++  toolAvailabilityAtom,
++  toolAvailabilityCatalogAtom,
++  toolAvailabilityConflict,
++  toolAvailabilityDetailAtom,
++  updateToolAvailabilityAtom,
++} from "../../contracts/tool-availability.ts";
+ import { useOrganizationRoute } from "../components/organization.tsx";
+ 
+-/** Discover and run tools with the accounts linked to the app. */
++/**
++ * Discover and run tools with the accounts linked to the app. Managers also see switched-off tools
++ * and choose which ones agents can find and use; everyone else browses the enabled tools.
++ */
+ export function AppTools({
+   app,
+   requirements,
+   selected,
++  canManage,
+ }: {
+   readonly app: App;
+   readonly requirements: readonly RequirementAccounts<AccountSummary>[];
+   readonly selected: string | undefined;
++  readonly canManage: boolean;
+ }) {
+   const { organization, slug: organizationSlug } = useOrganizationRoute();
+   const navigate = useNavigate();
+@@ -61,44 +73,60 @@ export function AppTools({
+         Review the linked accounts in {accountsLink} to load tools.
+       </p>
+     );
+-  return (
++  const browser = {
++    Failure: ToolsFailure,
++    selected,
++    empty:
++      emptyManyRequirements(requirements).length > 0 ? (
++        <Empty title="No accounts linked">
++          This app lists tools for each linked account. Link one in {accountsLink}.
++        </Empty>
++      ) : undefined,
++    onSelect: (tool: string) => {
++      void navigate({
++        to: "/org/$organizationSlug/apps/$appId",
++        params: { organizationSlug, appId: app.id },
++        search: { view: "tools", tool },
++      });
++    },
++    renderAction: (tool: ToolSummary) => (
++      <ToolRunner
++        key={tool.name}
++        tool={tool.name}
++        call={callToolAtom({
++          organization,
++          app: app.id,
++          version: app.activeVersion ?? undefined,
++          tool: tool.name,
++          kind: tool.readOnly === true ? "query" : "mutation",
++        })}
++        approval={(requestId) => toolRunApprovalAtoms({ organization, app: app.id, requestId })}
++        detail={toolDetailAtom({ ...catalog, tool: tool.name })}
++        Failure={ToolCallFailure}
++        accounts={runningAs(requirements)}
++      />
++    ),
++  };
++  // Managers read the catalog with switched-off tools; everyone else, only what agents can use.
++  return canManage ? (
++    <ToolBrowser
++      key={`${app.id}:${app.activeVersion}:manage`}
++      {...browser}
++      query={toolAvailabilityCatalogAtom(catalog)}
++      detail={(tool) => toolAvailabilityDetailAtom({ ...catalog, tool: tool.name })}
++      availability={{
++        query: toolAvailabilityAtom(catalog),
++        update: updateToolAvailabilityAtom(catalog),
++        Failure: AvailabilityFailure,
++        conflict: toolAvailabilityConflict,
++      }}
++    />
++  ) : (
+     <ToolBrowser
+       key={`${app.id}:${app.activeVersion}`}
++      {...browser}
+       query={toolCatalogAtom(catalog)}
+       detail={(tool) => toolDetailAtom({ ...catalog, tool: tool.name })}
+-      Failure={ToolsFailure}
+-      selected={selected}
+-      empty={
+-        emptyManyRequirements(requirements).length > 0 ? (
+-          <Empty title="No accounts linked">
+-            This app lists tools for each linked account. Link one in {accountsLink}.
+-          </Empty>
+-        ) : undefined
+-      }
+-      onSelect={(tool) => {
+-        void navigate({
+-          to: "/org/$organizationSlug/apps/$appId",
+-          params: { organizationSlug, appId: app.id },
+-          search: { view: "tools", tool },
+-        });
+-      }}
+-      renderAction={(tool) => (
+-        <ToolRunner
+-          key={tool.name}
+-          tool={tool.name}
+-          call={callToolAtom({
+-            organization,
+-            app: app.id,
+-            version: app.activeVersion ?? undefined,
+-            tool: tool.name,
+-            kind: tool.readOnly === true ? "query" : "mutation",
+-          })}
+-          approval={(requestId) => toolRunApprovalAtoms({ organization, app: app.id, requestId })}
+-          detail={toolDetailAtom({ ...catalog, tool: tool.name })}
+-          Failure={ToolCallFailure}
+-          accounts={runningAs(requirements)}
+-        />
+-      )}
+     />
+   );
+ }
+@@ -131,6 +159,10 @@ function ToolsFailure<E extends UserFacingError>({ cause, retry, retrying }: Fai
+     </div>
+   );
+ }
++/** A failed availability save, in the hosted API's safe copy; the browser adds Retry or Reload. */
++function AvailabilityFailure({ cause }: FailureProps<HostedError>) {
++  return <p className="text-destructive">{appError(cause)}</p>;
++}
+ /** Tool failures keep the hosted API's safe copy; provider failures are shared by the runner. */
+ function ToolCallFailure({ cause }: FailureProps<HostedError>) {
+   return (
+diff --git a/e2e/support/app-package.ts b/e2e/support/app-package.ts
+index af78e46..ebbfbac 100644
+--- a/e2e/support/app-package.ts
++++ b/e2e/support/app-package.ts
+@@ -7,7 +7,7 @@ import { lockedArchive } from "./npm-registry.ts";
+ /**
+  * Published apps versions, pinned with their npm integrity in e2e/npm-packages.json. beta.0 and
+  * beta.1 speak host protocol 1, beta.4 protocol 2, beta.5 protocol 3, beta.9 and beta.14 protocol 5,
+- * beta.22 protocol 7, beta.33 protocol 8 and beta.59 protocol 11.
++ * beta.22 protocol 7, beta.33 protocol 8, beta.59 protocol 11 and beta.84 protocol 12.
+  */
+ const releases = [
+   "0.0.1-beta.0",
+@@ -19,6 +19,7 @@ const releases = [
+   "0.0.1-beta.22",
+   "0.0.1-beta.33",
+   "0.0.1-beta.59",
++  "0.0.1-beta.84",
+ ] as const;
+ /** A published `apps` release this suite serves. */
+ export type Release = (typeof releases)[number];
+diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+index 2446132..2475481 100644
+--- a/e2e/support/profile-removal-rollback.ts
++++ b/e2e/support/profile-removal-rollback.ts
+@@ -24,6 +24,8 @@ export const beforeAccountIdentities = () =>
+ /** Remove the latest hosted objects and journal together so earlier migrations can replay. */
+ export const beforeHostedAccountRechecks = () =>
+   [
++    { sql: "DROP TABLE hosted_tool_availability" },
++    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 18" },
+     { sql: "DROP TABLE hosted_account_rechecks, hosted_account_recheck_families" },
+     { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 17" },
+   ] as const;
+diff --git a/e2e/support/tool-availability-fixture.ts b/e2e/support/tool-availability-fixture.ts
+new file mode 100644
+index 0000000..514ee84
+--- /dev/null
++++ b/e2e/support/tool-availability-fixture.ts
+@@ -0,0 +1,106 @@
++import { expect } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Api, body } from "./api.ts";
++import { Actors } from "./actors.ts";
++import { App } from "./contracts.ts";
++import { appsManifest } from "./apps-release.ts";
++import { McpClient } from "./mcp-client.ts";
++
++export const Availability = Schema.Struct({
++  revision: Schema.Int,
++  defaultMode: Schema.Literals(["all", "read-only"]),
++  overrides: Schema.Array(Schema.Struct({ tool: Schema.String, enabled: Schema.Boolean })),
++});
++export const AvailabilityCatalog = Schema.Struct({
++  ...Availability.fields,
++  enabledTools: Schema.Array(Schema.String),
++  catalog: Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) }),
++  groups: Schema.Array(Schema.Struct({ path: Schema.String, tools: Schema.Array(Schema.String) })),
++});
++export const Pending = Schema.Struct({
++  status: Schema.Literal("approval-required"),
++  requestId: Schema.String,
++});
++export const completed = <S extends Schema.Top>(value: S) =>
++  Schema.Struct({
++    status: Schema.Literal("completed"),
++    execution: Schema.Struct({ ok: Schema.Literal(true), value }),
++  });
++export const outcome = <S extends Schema.Top>(value: S) =>
++  completed(Schema.Struct({ ok: Schema.Literal(true), value }));
++export type McpConnection = Effect.Success<ReturnType<Effect.Success<typeof McpClient>["connect"]>>;
++
++export const mcpTool = (
++  client: McpConnection,
++  label: string,
++  name: string,
++  input: Record<string, unknown>,
++) =>
++  client
++    .use(label, (client, signal) =>
++      client.callTool({ name, arguments: input }, undefined, { signal }),
++    )
++    .pipe(Effect.map((result) => result.structuredContent));
++
++export const availabilityFixture = Effect.gen(function* () {
++  const api = yield* Api,
++    actors = yield* Actors;
++  const prefix = `/api/organizations/${actors.organization.id}`;
++  const key = yield* body(
++    Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
++    yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
++      name: "Tool availability",
++    }),
++  );
++  yield* Effect.addFinalizer(() =>
++    api
++      .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: key.id })
++      .pipe(Effect.orDie),
++  );
++  const source = `import { defineApp, mutation, query, object, router } from "apps";
++import { always } from "apps/operations/approval";
++const write = mutation({ input: object({}) }, async ctx => {
++  ctx.sql.exec("INSERT INTO calls (value) VALUES (1)");
++  return { wrote: true };
++});
++const review = mutation({ input: object({}), approval: always() }, async ctx => {
++  ctx.sql.exec("INSERT INTO calls (value) VALUES (1)");
++  return { wrote: true };
++});
++const count = query({ input: object({}) }, async ctx => ctx.sql.exec("SELECT count(*) AS total FROM calls").one());
++export default defineApp({}, { tools: router({ records: router({ write, review }), counter: router({ count }) }) });`;
++  const apps = [];
++  for (const name of ["Availability target", "Availability independent"]) {
++    const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++      name,
++      files: [
++        { path: "index.ts", content: source },
++        appsManifest,
++        {
++          path: "migrations/0001_calls.sql",
++          content: "CREATE TABLE calls (value INTEGER NOT NULL);",
++        },
++      ],
++    });
++    expect(response.status, JSON.stringify(response.body)).toBe(200);
++    const app = yield* body(App, response);
++    apps.push(app);
++    yield* Effect.addFinalizer(() =>
++      api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
++    );
++  }
++  const app = apps[0]!,
++    other = apps[1]!;
++  const path = `${prefix}/apps/${app.id}`;
++  const access = yield* body(
++    Schema.Struct({ revision: Schema.String }),
++    yield* api.request(actors.owner, "GET", `${path}/access`),
++  );
++  expect(
++    (yield* api.request(actors.owner, "PATCH", `${path}/access`, {
++      revision: access.revision,
++      audience: { kind: "everyone" },
++    })).status,
++  ).toBe(200);
++  return { app, other, path, prefix, key };
++});
+diff --git a/e2e/support/tool-availability-pages.ts b/e2e/support/tool-availability-pages.ts
+new file mode 100644
+index 0000000..1b11af1
+--- /dev/null
++++ b/e2e/support/tool-availability-pages.ts
+@@ -0,0 +1,66 @@
++import { expect } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Api, body } from "./api.ts";
++import { Actors } from "./actors.ts";
++import { appsManifest } from "./apps-release.ts";
++import { App } from "./contracts.ts";
++import { type McpConnection, mcpTool } from "./tool-availability-fixture.ts";
++
++const Page = Schema.Struct({
++  items: Schema.Array(Schema.Struct({ name: Schema.String })),
++  next: Schema.optionalKey(Schema.String),
++});
++const Search = Schema.Struct({
++  items: Schema.Array(Schema.Struct({ path: Schema.String })),
++  remaining: Schema.Number,
++});
++
++export const verifyAvailabilityPages = (client: McpConnection) =>
++  Effect.gen(function* () {
++    const api = yield* Api,
++      actors = yield* Actors;
++    const prefix = `/api/organizations/${actors.organization.id}/apps`;
++    const deployed = yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
++      name: "Availability pages",
++      files: [
++        appsManifest,
++        {
++          path: "index.ts",
++          content: `import { defineApp, query, object, router } from "apps";
++const tools = Object.fromEntries(Array.from({length: 2001}, (_, i) => ["tool" + String(i).padStart(4, "0"), query({input: object({})}, async () => ({}))]));
++export default defineApp({}, {tools: router({bulk: router(tools), visible: query({input: object({})}, async () => ({}))})});`,
++        },
++      ],
++    });
++    expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++    const app = yield* body(App, deployed),
++      path = `${prefix}/${app.id}`;
++    yield* Effect.addFinalizer(() => api.request(actors.owner, "DELETE", path).pipe(Effect.orDie));
++    const page = () =>
++      api
++        .request(actors.owner, "GET", `${path}/tools`)
++        .pipe(Effect.flatMap((response) => body(Page, response)));
++    const search = () =>
++      mcpTool(client, "Count enabled tools across pages", "search", {
++        namespace: app.slug,
++        limit: 1,
++      }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Search)));
++    const before = yield* page();
++    expect(before.next).toBeDefined();
++    expect(before.items.length).toBeLessThan(2002);
++    const beforeSearch = yield* search();
++    expect(beforeSearch.items.length + beforeSearch.remaining).toBe(2002);
++    const hidden = yield* api.request(actors.owner, "PATCH", `${path}/tool-availability`, {
++      revision: 0,
++      changes: [{ kind: "group", path: "bulk", enabled: false }],
++    });
++    expect(hidden.status).toBe(200);
++    const after = yield* page();
++    expect(after.items.map((tool) => tool.name)).toEqual(["visible"]);
++    expect(after.next).toBeUndefined();
++    const afterSearch = yield* search();
++    expect(afterSearch.items.map((tool) => tool.path)).toEqual([
++      `tools[${JSON.stringify(app.slug)}].visible`,
++    ]);
++    expect(afterSearch.remaining).toBe(0);
++  });
+diff --git a/e2e/support/tool-availability-recovery.ts b/e2e/support/tool-availability-recovery.ts
+new file mode 100644
+index 0000000..4b67015
+--- /dev/null
++++ b/e2e/support/tool-availability-recovery.ts
+@@ -0,0 +1,84 @@
++import { expect } from "@effect/vitest";
++import { Effect } from "effect";
++import { Api, body } from "./api.ts";
++import { Actors } from "./actors.ts";
++import { Browser } from "./browser.ts";
++import { holdQuery } from "./query-transition.ts";
++import { AvailabilityCatalog } from "./tool-availability-fixture.ts";
++import { restoreAvailabilityTool } from "./tool-availability-ui.ts";
++
++export const verifyAvailabilitySaveRecovery = (path: string) =>
++  Effect.gen(function* () {
++    const browser = yield* Browser,
++      api = yield* Api,
++      actors = yield* Actors;
++    const current = () =>
++      api
++        .request(actors.owner, "GET", `${path}/tool-availability`)
++        .pipe(Effect.flatMap((response) => body(AvailabilityCatalog, response)));
++    const saved = yield* current();
++    const hold = yield* holdQuery(/\/tool-availability$/, "undeclared", { method: "PATCH" });
++    yield* browser.use("Attempt a save while the server is unavailable", (page) =>
++      page.getByRole("switch", { name: "Enable records.write", exact: true }).first().click(),
++    );
++    yield* hold.requested;
++    yield* hold.release;
++    yield* browser.use("Wait for the save retry", (page) =>
++      page.getByRole("button", { name: "Retry", exact: true }).waitFor(),
++    );
++    expect((yield* current()).revision).toBe(saved.revision);
++    const stillEnabled = yield* browser.use("Keep the confirmed switch after failure", (page) =>
++      page
++        .getByRole("switch", { name: "Enable records.write", exact: true })
++        .first()
++        .getAttribute("aria-checked"),
++    );
++    expect(stillEnabled).toBe("true");
++    yield* browser.use("Retry the failed save", (page) =>
++      page.getByRole("button", { name: "Retry", exact: true }).click(),
++    );
++    yield* browser.use("Wait for the retried tool to hide", (page) =>
++      page.getByRole("button", { name: "records.write", exact: true }).waitFor({ state: "hidden" }),
++    );
++    yield* restoreAvailabilityTool;
++    const beforeConflict = yield* current();
++    const changed = yield* api.request(actors.owner, "PATCH", `${path}/tool-availability`, {
++      revision: beforeConflict.revision,
++      changes: [{ kind: "tool", tool: "records.review", enabled: false }],
++    });
++    expect(changed.status).toBe(200);
++    yield* browser.use("Save against the screen's older revision", (page) =>
++      page.getByRole("switch", { name: "Enable records.write", exact: true }).first().click(),
++    );
++    yield* browser.use("Wait for conflict recovery", (page) =>
++      page.getByRole("button", { name: "Reload", exact: true }).waitFor(),
++    );
++    const conflictState = yield* current();
++    expect(conflictState.revision).toBe(beforeConflict.revision + 1);
++    expect(conflictState.enabledTools).toContain("records.write");
++    expect(conflictState.enabledTools).not.toContain("records.review");
++    yield* browser.use("Reload the teammate's saved state", (page) =>
++      page.getByRole("button", { name: "Reload", exact: true }).click(),
++    );
++    yield* browser.use("Observe the teammate's hidden tool", (page) =>
++      page
++        .getByRole("button", { name: "records.review", exact: true })
++        .waitFor({ state: "hidden" }),
++    );
++    yield* browser.use("Reveal the teammate's hidden tool", (page) =>
++      page.getByRole("checkbox", { name: /Show hidden tools/ }).check(),
++    );
++    yield* browser.use("Restore the hidden tool after reloading", (page) =>
++      page.getByRole("switch", { name: "Enable records.review", exact: true }).first().click(),
++    );
++    yield* browser.use("Wait for the saved restoration", (page) =>
++      page
++        .getByRole("switch", { name: "Enable records.review", exact: true })
++        .first()
++        .and(page.locator('[aria-checked="true"]'))
++        .waitFor(),
++    );
++    yield* browser.use("Return to enabled rows", (page) =>
++      page.getByRole("checkbox", { name: /Show hidden tools/ }).uncheck(),
++    );
++  });
+diff --git a/e2e/support/tool-availability-retained.ts b/e2e/support/tool-availability-retained.ts
+new file mode 100644
+index 0000000..6751a25
+--- /dev/null
++++ b/e2e/support/tool-availability-retained.ts
+@@ -0,0 +1,118 @@
++import { expect } from "@effect/vitest";
++import { Effect, Schedule, Schema } from "effect";
++import { Api, body } from "./api.ts";
++import { Actors } from "./actors.ts";
++import { publishedRelease } from "./app-package.ts";
++import { saveAndDeploy } from "./app-authoring.ts";
++import { Resource } from "./contracts.ts";
++
++const Run = Schema.Struct({ status: Schema.String, output: Schema.optionalKey(Schema.Json) });
++
++/** A real published protocol-12 framework has workflows but no native tool-policy callback. */
++const retainedApp = Effect.gen(function* () {
++  const api = yield* Api,
++    actors = yield* Actors;
++  const archive = yield* publishedRelease("0.0.1-beta.84");
++  const prefix = `/api/organizations/${actors.organization.id}`;
++  const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++    name: "Retained availability workflow",
++    files: [
++      { path: "package.json", content: JSON.stringify({ dependencies: { apps: archive.url } }) },
++      {
++        path: "index.ts",
++        content: `import { defineApp, query, workflow, object, router } from "apps";
++const guarded = query({ input: object({}) }, async () => ({ executed: true }));
++const probe = workflow({ input: object({}) }, async context => {
++  try { return await context.step.runQuery("guarded", guarded, {}, { retries: { limit: 0, delay: 0 } }); }
++  catch { return { blocked: true }; }
++});
++export default defineApp({ accounts: {} }, { tools: router({ guarded }), workflows: { probe } });`,
++      },
++    ],
++  });
++  expect(response.status, JSON.stringify(response.body)).toBe(200);
++  const app = yield* body(Resource, response);
++  const path = `${prefix}/apps/${app.id}`;
++  yield* Effect.addFinalizer(() => api.request(actors.owner, "DELETE", path).pipe(Effect.orDie));
++  return { api, actors, archive, path };
++});
++
++export const verifyRetainedToolAvailability = Effect.gen(function* () {
++  const { api, actors, path } = yield* retainedApp;
++  const run = () =>
++    Effect.gen(function* () {
++      const started = yield* api.request(actors.owner, "POST", `${path}/workflow-runs`, {
++        workflow: "probe",
++        input: {},
++      });
++      expect(started.status, JSON.stringify(started.body)).toBe(200);
++      const run = yield* body(Resource, started);
++      const finished = yield* api
++        .request(actors.owner, "GET", `${path}/workflow-runs/${run.id}`)
++        .pipe(
++          Effect.flatMap((response) => body(Run, response)),
++          Effect.repeat({
++            while: (run) => run.status === "queued" || run.status === "running",
++            schedule: Schedule.spaced("100 millis"),
++          }),
++          Effect.timeout("30 seconds"),
++        );
++      expect(finished.status, JSON.stringify(finished)).toBe("complete");
++      return finished.output;
++    });
++  expect(yield* run()).toEqual({ executed: true });
++  const hide = yield* api.request(actors.owner, "PATCH", `${path}/tool-availability`, {
++    revision: 0,
++    changes: [{ kind: "tool", tool: "guarded", enabled: false }],
++  });
++  expect(hide.status, JSON.stringify(hide.body)).toBe(200);
++  expect(
++    (yield* api.request(actors.owner, "POST", `${path}/tools/call`, { tool: "guarded", input: {} }))
++      .status,
++  ).toBe(403);
++  expect(yield* run()).toEqual({ blocked: true });
++  const restore = yield* api.request(actors.owner, "PATCH", `${path}/tool-availability`, {
++    revision: 1,
++    changes: [{ kind: "tool", tool: "guarded", enabled: true }],
++  });
++  expect(restore.status, JSON.stringify(restore.body)).toBe(200);
++  expect(yield* run()).toEqual({ executed: true });
++});
++
++export const verifyAvailabilityUpgrade = Effect.gen(function* () {
++  const { api, actors, archive, path } = yield* retainedApp;
++  const writesOff = yield* api.request(actors.owner, "PATCH", `${path}/tool-availability`, {
++    revision: 0,
++    changes: [{ kind: "writes", enabled: false }],
++  });
++  expect(writesOff.status).toBe(200);
++  const files = [
++    { path: "package.json", content: JSON.stringify({ dependencies: { apps: archive.url } }) },
++    {
++      path: "index.ts",
++      content: `import { defineApp, query, mutation, object, router } from "apps";
++const guarded = query({ input: object({}) }, async () => ({ executed: true }));
++const added = mutation({ input: object({}) }, async () => ({ wrote: true }));
++export default defineApp({ accounts: {} }, { tools: router({ guarded, added }) });`,
++    },
++  ];
++  const upgraded = yield* saveAndDeploy(actors.owner, path, { files });
++  expect(upgraded.status, JSON.stringify(upgraded.body)).toBe(200);
++  expect(
++    (yield* api.request(actors.owner, "POST", `${path}/tools/call`, { tool: "added", input: {} }))
++      .status,
++  ).toBe(403);
++  expect(
++    (yield* api.request(actors.owner, "POST", `${path}/tools/call`, { tool: "guarded", input: {} }))
++      .body,
++  ).toEqual({ executed: true });
++  const enabled = yield* api.request(actors.owner, "PATCH", `${path}/tool-availability`, {
++    revision: 1,
++    changes: [{ kind: "tool", tool: "added", enabled: true }],
++  });
++  expect(enabled.status).toBe(200);
++  expect(
++    (yield* api.request(actors.owner, "POST", `${path}/tools/call`, { tool: "added", input: {} }))
++      .body,
++  ).toEqual({ wrote: true });
++});
+diff --git a/e2e/support/tool-availability-ui.ts b/e2e/support/tool-availability-ui.ts
+new file mode 100644
+index 0000000..3cb7493
+--- /dev/null
++++ b/e2e/support/tool-availability-ui.ts
+@@ -0,0 +1,193 @@
++import { expect } from "@effect/vitest";
++import { Effect } from "effect";
++import { Browser } from "./browser.ts";
++
++export const openAvailabilityTools = (organization: string, app: string) =>
++  Effect.gen(function* () {
++    const browser = yield* Browser;
++    yield* browser.use("Use desktop viewport", (page) =>
++      page.setViewportSize({ width: 1280, height: 900 }),
++    );
++    yield* browser.use("Open the current Tools tab", (page) =>
++      page.goto(`/org/${organization}/apps/${app}?view=tools`),
++    );
++    yield* browser.use("Wait for the tool catalog", (page) =>
++      page.getByRole("button", { name: "records.write", exact: true }).waitFor(),
++    );
++  });
++
++export const hideAvailabilityTool = Effect.gen(function* () {
++  const browser = yield* Browser;
++  const count = yield* browser.use("Find the tool switch", (page) =>
++    page.getByRole("switch", { name: "Enable records.write", exact: true }).first().count(),
++  );
++  expect(count).toBe(1);
++  yield* browser.use("Hide a tool with its switch", (page) =>
++    page.getByRole("switch", { name: "Enable records.write", exact: true }).first().click(),
++  );
++  yield* browser.use("Wait for the hidden row to leave", (page) =>
++    page.getByRole("button", { name: "records.write", exact: true }).waitFor({ state: "hidden" }),
++  );
++});
++
++export const restoreAvailabilityTool = Effect.gen(function* () {
++  const browser = yield* Browser;
++  yield* browser.use("Show hidden tools", (page) =>
++    page.getByRole("checkbox", { name: /Show hidden tools/ }).check(),
++  );
++  yield* browser.use("Find the hidden row", (page) =>
++    page.getByRole("button", { name: "records.write", exact: true }).waitFor(),
++  );
++  const enabled = yield* browser.use("Read the saved hidden state", (page) =>
++    page
++      .getByRole("switch", { name: "Enable records.write", exact: true })
++      .first()
++      .getAttribute("aria-checked"),
++  );
++  expect(enabled).toBe("false");
++  yield* browser.use("Enable the hidden tool", (page) =>
++    page.getByRole("switch", { name: "Enable records.write", exact: true }).first().click(),
++  );
++  yield* browser.use("Wait for the confirmed enabled switch", (page) =>
++    page
++      .getByRole("switch", { name: "Enable records.write", exact: true })
++      .first()
++      .and(page.locator('[aria-checked="true"]:not(:disabled)'))
++      .waitFor(),
++  );
++  yield* browser.use("Wait for the restored switch to finish moving", (page) =>
++    page
++      .getByRole("switch", { name: "Enable records.write", exact: true })
++      .first()
++      .evaluate((element) =>
++        Promise.allSettled(
++          element.getAnimations({ subtree: true }).map((animation) => animation.finished),
++        ),
++      ),
++  );
++  yield* browser.use("Return to enabled tools", (page) =>
++    page.getByRole("checkbox", { name: /Show hidden tools/ }).uncheck(),
++  );
++  yield* browser.use("Wait for the restored tool", (page) =>
++    page.getByRole("button", { name: "records.write", exact: true }).waitFor(),
++  );
++});
++
++export const hideAvailabilityToolOnPhone = Effect.gen(function* () {
++  const browser = yield* Browser;
++  yield* browser.use("Use phone viewport", (page) =>
++    page.setViewportSize({ width: 390, height: 844 }),
++  );
++  const closed = yield* browser.use("Find phone tools opener", (page) =>
++    page.getByRole("button", { name: /Show all .* tools/ }).isVisible(),
++  );
++  if (closed)
++    yield* browser.use("Open phone tools list", (page) =>
++      page.getByRole("button", { name: /Show all .* tools/ }).click(),
++    );
++  yield* browser.use("Wait for the phone switch", (page) =>
++    page.getByRole("switch", { name: "Enable records.write", exact: true }).first().waitFor(),
++  );
++  yield* browser.use("Wait for the phone list to finish opening", (page) =>
++    page.waitForFunction(() => {
++      const panel = document.getElementById("tools-list-panel");
++      return panel !== null && getComputedStyle(panel).opacity === "1";
++    }),
++  );
++  const box = yield* browser.use("Measure phone switch hit target", (page) =>
++    page.getByRole("switch", { name: "Enable records.write", exact: true }).first().boundingBox(),
++  );
++  expect(box?.height).toBeGreaterThanOrEqual(44);
++  const fits = yield* browser.use("Check phone document width", (page) =>
++    page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
++  );
++  expect(fits).toBe(true);
++  yield* hideAvailabilityTool;
++  yield* browser.use("Show hidden tools on phone", (page) =>
++    page.getByRole("checkbox", { name: /Show hidden tools/ }).check(),
++  );
++  yield* browser.use("Wait for hidden tool on phone", (page) =>
++    page.getByRole("button", { name: "records.write", exact: true }).waitFor(),
++  );
++});
++
++export const verifyAvailabilityBulkControls = Effect.gen(function* () {
++  const browser = yield* Browser;
++  yield* browser.use("Select a tool before hiding it", (page) =>
++    page.getByRole("button", { name: "records.write", exact: true }).click(),
++  );
++  yield* browser.use("Hide the selected tool in its inspector", (page) =>
++    page.getByRole("switch", { name: "Available to agents", exact: true }).click(),
++  );
++  yield* browser.use("Keep the hidden tool in its inspector", (page) =>
++    page.getByText("Hidden from agents", { exact: true }).waitFor(),
++  );
++  const runs = yield* browser.use("No run action for the hidden tool", (page) =>
++    page.getByRole("button", { name: "Run tool", exact: true }).count(),
++  );
++  expect(runs).toBe(0);
++  yield* browser.use("Restore the selected tool in its inspector", (page) =>
++    page.getByRole("switch", { name: "Available to agents", exact: true }).click(),
++  );
++  yield* browser.use("Wait for restored inspector", (page) =>
++    page.getByText("On for agents", { exact: true }).waitFor(),
++  );
++  yield* browser.use("Turn off a whole group", (page) =>
++    page.getByRole("checkbox", { name: "Enable all tools in Records", exact: true }).click(),
++  );
++  yield* browser.use("Wait for the group's hidden rows", (page) =>
++    page.getByRole("button", { name: "records.review", exact: true }).waitFor({ state: "hidden" }),
++  );
++  yield* browser.use("Reveal the disabled group", (page) =>
++    page.getByRole("checkbox", { name: /Show hidden tools/ }).check(),
++  );
++  yield* browser.use("Restore the whole group", (page) =>
++    page.getByRole("checkbox", { name: "Enable all tools in Records", exact: true }).click(),
++  );
++  yield* browser.use("Wait for group restore", (page) =>
++    page
++      .getByRole("switch", { name: "Enable records.review", exact: true })
++      .and(page.locator('[aria-checked="true"]'))
++      .waitFor(),
++  );
++  yield* browser.use("Hide disabled rows again", (page) =>
++    page.getByRole("checkbox", { name: /Show hidden tools/ }).uncheck(),
++  );
++  yield* browser.use("Open the write controls", (page) =>
++    page.getByRole("button", { name: "Writes on", exact: true }).click(),
++  );
++  yield* browser.use("Disable every write", (page) =>
++    page.getByRole("menuitem", { name: "Turn off all writes", exact: true }).click(),
++  );
++  yield* browser.use("Wait for the read-only default", (page) =>
++    page.getByRole("button", { name: "Writes off", exact: true }).waitFor(),
++  );
++  const read = yield* browser.use("Read tool stays visible", (page) =>
++    page.getByRole("button", { name: "counter.count", exact: true }).count(),
++  );
++  expect(read).toBe(1);
++  yield* browser.use("Turn off the last visible group", (page) =>
++    page.getByRole("checkbox", { name: "Enable all tools in Counter", exact: true }).click(),
++  );
++  yield* browser.use("Show the all-hidden recovery", (page) =>
++    page.getByText("Every tool is hidden", { exact: true }).waitFor(),
++  );
++  yield* browser.use("Reveal all hidden tools with recovery action", (page) =>
++    page.getByRole("button", { name: "Show hidden tools", exact: true }).click(),
++  );
++  yield* browser.use("Restore read tools", (page) =>
++    page.getByRole("checkbox", { name: "Enable all tools in Counter", exact: true }).click(),
++  );
++  yield* browser.use("Open disabled writes menu", (page) =>
++    page.getByRole("button", { name: "Writes off", exact: true }).click(),
++  );
++  yield* browser.use("Restore every write", (page) =>
++    page.getByRole("menuitem", { name: "Turn on all writes", exact: true }).click(),
++  );
++  yield* browser.use("Wait for all write tools restored", (page) =>
++    page.getByRole("button", { name: "Writes on", exact: true }).waitFor(),
++  );
++  yield* browser.use("Return to enabled tools after bulk recovery", (page) =>
++    page.getByRole("checkbox", { name: /Show hidden tools/ }).uncheck(),
++  );
++});
+diff --git a/e2e/tests/grouped-accounts.spec.ts b/e2e/tests/grouped-accounts.spec.ts
+index afeece5..3ce4d23 100644
+--- a/e2e/tests/grouped-accounts.spec.ts
++++ b/e2e/tests/grouped-accounts.spec.ts
+@@ -189,7 +189,7 @@ layer(HostedLive, { excludeTestServices: true })("Grouped accounts", (it) => {
+         const workLink = `/apps/${app.id}/accounts/user/service/${work}`;
+         const held = yield* holdQuery(
+           [actors.organization.id, actors.organization.slug].map(
+-            (id) => `/api/organizations/${id}/apps/${app.id}/tools/index`,
++            (id) => `/api/organizations/${id}/apps/${app.id}/tool-availability`,
+           ),
+           "undeclared",
+         );
+diff --git a/e2e/tests/import-approvals.spec.ts b/e2e/tests/import-approvals.spec.ts
+index ffd47c4..d65f1e9 100644
+--- a/e2e/tests/import-approvals.spec.ts
++++ b/e2e/tests/import-approvals.spec.ts
+@@ -255,6 +255,37 @@ export default defineApp({}, async ({ signal }) => ({
+             }
+           }),
+         );
++        yield* evidence.step(
++          "Availability treats an imported tool without read-only metadata as a write",
++          Effect.gen(function* () {
++            expect(approvalMcpTools.unhinted).toBeUndefined();
++            const disabled = yield* api.request(
++              actors.owner,
++              "PATCH",
++              `${imported.path}/tool-availability`,
++              {
++                revision: 0,
++                changes: [{ kind: "writes", enabled: false }],
++              },
++            );
++            expect(disabled.status).toBe(200);
++            const before = yield* upstream.calls;
++            expect((yield* call(imported.path, "unhinted", "mutation")).status).toBe(403);
++            expect(yield* upstream.calls).toEqual(before);
++            expect((yield* call(imported.path, "read", "query")).status).toBe(200);
++            const restored = yield* api.request(
++              actors.owner,
++              "PATCH",
++              `${imported.path}/tool-availability`,
++              {
++                revision: 1,
++                changes: [{ kind: "tool", tool: "unhinted", enabled: true }],
++              },
++            );
++            expect(restored.status).toBe(200);
++            expect((yield* call(imported.path, "unhinted", "mutation")).status).toBe(200);
++          }),
++        );
+       }).pipe(Effect.provide(McpClient.layer)),
+     ),
+   );
+diff --git a/e2e/tests/provider-errors.spec.ts b/e2e/tests/provider-errors.spec.ts
+index 911549a..0e7be80 100644
+--- a/e2e/tests/provider-errors.spec.ts
++++ b/e2e/tests/provider-errors.spec.ts
+@@ -364,7 +364,7 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
+       ),
+     ).toBe(0);
+     const held = yield* holdQuery(
+-      new RegExp(`/api/organizations/[^/]+/apps/${app.id}/tools/index$`),
++      new RegExp(`/api/organizations/[^/]+/apps/${app.id}/tool-availability$`),
+       "continue",
+     );
+     yield* browser.use("Retry discovery", (page) =>
+diff --git a/e2e/tests/tool-availability-ui.spec.ts b/e2e/tests/tool-availability-ui.spec.ts
+new file mode 100644
+index 0000000..90704ae
+--- /dev/null
++++ b/e2e/tests/tool-availability-ui.spec.ts
+@@ -0,0 +1,52 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Api, body } from "../support/api.ts";
++import { Actors } from "../support/actors.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { availabilityFixture } from "../support/tool-availability-fixture.ts";
++import { verifyAvailabilitySaveRecovery } from "../support/tool-availability-recovery.ts";
++import {
++  openAvailabilityTools,
++  hideAvailabilityTool,
++  restoreAvailabilityTool,
++  hideAvailabilityToolOnPhone,
++  verifyAvailabilityBulkControls,
++} from "../support/tool-availability-ui.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Tool availability UI", (it) => {
++  it.effect(scenarios.toolAvailabilityUi.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          browser = yield* Browser;
++        const { app, path } = yield* availabilityFixture;
++        yield* browser.login(actors.owner);
++        yield* openAvailabilityTools(actors.organization.slug, app.id);
++        yield* browser.checkpoint("tools-1280-before-change");
++        yield* hideAvailabilityTool;
++        const listed = yield* body(
++          Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) }),
++          yield* api.request(actors.owner, "GET", `${path}/tools/index`),
++        );
++        expect(listed.items.map((tool) => tool.name)).not.toContain("records.write");
++        yield* restoreAvailabilityTool;
++        const restored = yield* body(
++          Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) }),
++          yield* api.request(actors.owner, "GET", `${path}/tools/index`),
++        );
++        expect(restored.items.map((tool) => tool.name)).toContain("records.write");
++        yield* verifyAvailabilitySaveRecovery(path);
++        yield* verifyAvailabilityBulkControls;
++        yield* browser.checkpoint("tools-1280-restored");
++        yield* hideAvailabilityToolOnPhone;
++        yield* browser.checkpoint("tools-390-hidden");
++        yield* restoreAvailabilityTool;
++        yield* browser.checkpoint("tools-390-restored");
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/tool-availability.spec.ts b/e2e/tests/tool-availability.spec.ts
+new file mode 100644
+index 0000000..01f8d63
+--- /dev/null
++++ b/e2e/tests/tool-availability.spec.ts
+@@ -0,0 +1,282 @@
++import {
++  verifyAvailabilityUpgrade,
++  verifyRetainedToolAvailability,
++} from "../support/tool-availability-retained.ts";
++import { verifyAvailabilityPages } from "../support/tool-availability-pages.ts";
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Api, body } from "../support/api.ts";
++import { Actors } from "../support/actors.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { McpClient } from "../support/mcp-client.ts";
++import { managementApp } from "../support/management-app.ts";
++import {
++  Availability,
++  AvailabilityCatalog,
++  Pending,
++  availabilityFixture,
++  completed,
++  mcpTool,
++  outcome,
++} from "../support/tool-availability-fixture.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Search = Schema.Struct({
++  items: Schema.Array(Schema.Struct({ path: Schema.String })),
++  remaining: Schema.Number,
++});
++const Describe = Schema.Struct({
++  items: Schema.Array(Schema.Struct({ path: Schema.String })),
++  missing: Schema.Array(
++    Schema.Struct({ path: Schema.String, matches: Schema.Array(Schema.String) }),
++  ),
++});
++
++layer(HostedLive, { excludeTestServices: true })("App tool availability", (it) => {
++  it.effect(scenarios.toolAvailabilityUpgrade.title, (context) =>
++    withHostedCase(context, verifyAvailabilityUpgrade),
++  );
++  it.effect(scenarios.toolAvailabilityAgent.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          mcp = yield* McpClient;
++        const { app, other, path, key } = yield* availabilityFixture;
++        const management = yield* managementApp(actors.owner);
++        const client = yield* mcp.connect(key.key, "availability-agent", {
++          organization: actors.organization.id,
++        });
++        const target = `tools[${JSON.stringify(app.slug)}]`;
++        const manager = `tools[${JSON.stringify(management.app.slug)}].toolAvailability`;
++        const write = `${target}.records.write`,
++          review = `${target}.records.review`;
++        const call = (label: string, name: string, input: Record<string, unknown>) =>
++          mcpTool(client, label, name, input);
++        const inventory = () =>
++          call("Read availability through the management app", "call", {
++            calls: { path: `${manager}.list`, input: { path: { app: app.id } } },
++          }).pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(outcome(AvailabilityCatalog))),
++            Effect.map((r) => r.execution.value.value),
++          );
++        const change = (revision: number, changes: readonly unknown[]) =>
++          call("Ask to change tool availability", "call", {
++            calls: {
++              path: `${manager}.update`,
++              input: { path: { app: app.id }, body: { revision, changes } },
++            },
++          });
++        const accept = (requestId: string) =>
++          call("Approve availability change", "resume", {
++            requestId,
++            response: { action: "accept" },
++          }).pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(outcome(Availability))),
++            Effect.map((r) => r.execution.value.value),
++          );
++        const search = () =>
++          call("Search the app's current tools", "search", {
++            namespace: app.slug,
++            limit: 100,
++          }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Search)));
++        const listNames = (suffix = "") =>
++          api.request(actors.owner, "GET", `${path}/tools${suffix}`).pipe(
++            Effect.flatMap((r) =>
++              body(
++                Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) }),
++                r,
++              ),
++            ),
++            Effect.map((r) => r.items.map((t) => t.name)),
++          );
++        const count = () =>
++          api
++            .request(actors.owner, "POST", `${path}/tools/call`, {
++              tool: "counter.count",
++              input: {},
++            })
++            .pipe(
++              Effect.flatMap((r) => body(Schema.Struct({ total: Schema.Number }), r)),
++              Effect.map((r) => r.total),
++            );
++
++        const initial = yield* inventory();
++        expect(initial.revision).toBe(0);
++        expect(initial.enabledTools).toContain("records.write");
++        expect(initial.groups.find((g) => g.path === "records")?.tools).toContain("records.write");
++        expect((yield* search()).items.map((t) => t.path)).toContain(write);
++        expect(yield* listNames()).toContain("records.write");
++        const describedBefore = yield* Schema.decodeUnknownEffect(Describe)(
++          yield* call("Describe enabled write", "describe", { paths: [write] }),
++        );
++        expect(describedBefore.items.map((t) => t.path)).toEqual([write]);
++        yield* Schema.decodeUnknownEffect(outcome(Schema.Struct({ wrote: Schema.Literal(true) })))(
++          yield* call("Run enabled write", "call", { calls: { path: write, input: {} } }),
++        );
++        expect(yield* count()).toBe(1);
++        const pendingCall = yield* Schema.decodeUnknownEffect(Pending)(
++          yield* call("Park a write approval", "call", { calls: { path: review, input: {} } }),
++        );
++
++        const pending = yield* Schema.decodeUnknownEffect(Pending)(
++          yield* change(initial.revision, [{ kind: "group", path: "records", enabled: false }]),
++        );
++        expect((yield* inventory()).enabledTools).toContain("records.write");
++        yield* call("Decline availability change", "resume", {
++          requestId: pending.requestId,
++          response: { action: "decline" },
++        });
++        expect((yield* inventory()).revision).toBe(0);
++        const approved = yield* Schema.decodeUnknownEffect(Pending)(
++          yield* change(initial.revision, [{ kind: "group", path: "records", enabled: false }]),
++        );
++        const hidden = yield* accept(approved.requestId);
++        expect(hidden.revision).toBe(1);
++
++        expect(yield* listNames()).not.toContain("records.write");
++        expect(yield* listNames("/index")).not.toContain("records.write");
++        const hiddenSearch = yield* search();
++        expect(hiddenSearch.items.map((t) => t.path)).not.toContain(write);
++        expect(hiddenSearch.items.map((t) => t.path)).not.toContain(review);
++        const describedHidden = yield* Schema.decodeUnknownEffect(Describe)(
++          yield* call("Describe hidden write", "describe", { paths: [write] }),
++        );
++        expect(describedHidden.items).toEqual([]);
++        expect(describedHidden.missing.flatMap((t) => t.matches)).not.toContain(write);
++        const rawMcp = yield* client.use("List MCP wrappers after hiding", (client) =>
++          client.listTools(),
++        );
++        expect(rawMcp.tools.map((t) => t.name)).not.toContain("records.write");
++        expect(rawMcp.tools.map((t) => t.name)).toContain("search");
++        const direct = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
++          tool: "records.write",
++          input: {},
++        });
++        expect(direct.status).toBe(403);
++        expect(JSON.stringify(direct.body)).toContain("switched off");
++        expect(
++          (yield* api.request(actors.owner, "GET", `${path}/tools/records.write`)).status,
++        ).toBe(404);
++        const refused = yield* call("Refuse a known hidden MCP path", "call", {
++          calls: { path: write, input: {} },
++        });
++        expect(JSON.stringify(refused)).toContain("switched off");
++        const decodedRefusal = yield* Schema.decodeUnknownEffect(
++          completed(Schema.Struct({ ok: Schema.Literal(false) })),
++        )(refused);
++        expect(decodedRefusal.execution.value.ok).toBe(false);
++        const program = yield* call("Refuse hidden write in a program", "execute", {
++          code: `return await ${write}({});`,
++        });
++        expect(JSON.stringify(program)).toContain('"ok":false');
++        expect(JSON.stringify(program)).toContain("switched off");
++        const keys = yield* Schema.decodeUnknownEffect(completed(Schema.Array(Schema.String)))(
++          yield* call("List the executable namespace", "execute", {
++            code: `return Object.keys(${target});`,
++          }),
++        );
++        expect(keys.execution.value).not.toContain("records.write");
++        yield* call("Recheck earlier approval after disable", "resume", {
++          requestId: pendingCall.requestId,
++          response: { action: "accept" },
++        });
++        expect(yield* count()).toBe(1);
++        expect(
++          (yield* api.request(
++            actors.owner,
++            "POST",
++            `${path.replace(app.id, other.id)}/tools/call`,
++            { tool: "records.write", input: {} },
++          )).status,
++        ).toBe(200);
++        expect((yield* api.request(actors.member, "GET", `${path}/tool-availability`)).status).toBe(
++          403,
++        );
++        expect(
++          (yield* api.request(actors.member, "PATCH", `${path}/tool-availability`, {
++            revision: hidden.revision,
++            changes: [{ kind: "tool", tool: "records.write", enabled: true }],
++          })).status,
++        ).toBe(403);
++
++        const restore = yield* Schema.decodeUnknownEffect(Pending)(
++          yield* change(hidden.revision, [{ kind: "group", path: "records", enabled: true }]),
++        );
++        yield* accept(restore.requestId);
++        expect((yield* search()).items.map((t) => t.path)).toContain(write);
++        expect(yield* listNames()).toContain("records.write");
++        const describedAfter = yield* Schema.decodeUnknownEffect(Describe)(
++          yield* call("Describe restored write", "describe", { paths: [write] }),
++        );
++        expect(describedAfter.items.map((t) => t.path)).toEqual([write]);
++        yield* Schema.decodeUnknownEffect(outcome(Schema.Struct({ wrote: Schema.Literal(true) })))(
++          yield* call("Run restored write", "call", { calls: { path: write, input: {} } }),
++        );
++        expect(yield* count()).toBe(2);
++
++        const readState = () =>
++          api
++            .request(actors.owner, "GET", `${path}/tool-availability`)
++            .pipe(Effect.flatMap((r) => body(AvailabilityCatalog, r)));
++        const save = (revision: number, changes: readonly unknown[]) =>
++          api.request(actors.owner, "PATCH", `${path}/tool-availability`, { revision, changes });
++        const restoredState = yield* readState();
++        const writesOff = yield* body(
++          Availability,
++          yield* save(restoredState.revision, [{ kind: "writes", enabled: false }]),
++        );
++        expect(writesOff.defaultMode).toBe("read-only");
++        expect((yield* search()).items.map((t) => t.path)).toEqual([`${target}.counter.count`]);
++        expect(yield* count()).toBe(2);
++        expect(
++          (yield* api.request(actors.owner, "GET", `${path}/tool-availability/tools/records.write`))
++            .status,
++        ).toBe(200);
++        expect(
++          (yield* api.request(
++            actors.member,
++            "GET",
++            `${path}/tool-availability/tools/records.write`,
++          )).status,
++        ).toBe(403);
++        expect(
++          (yield* save(restoredState.revision, [{ kind: "writes", enabled: true }])).status,
++        ).toBe(409);
++        const invalid = yield* save(writesOff.revision, [
++          { kind: "tool", tool: "records.write", enabled: true },
++          { kind: "group", path: "missing-group", enabled: false },
++        ]);
++        expect(invalid.status).toBe(422);
++        expect((yield* readState()).revision).toBe(writesOff.revision);
++        expect((yield* readState()).enabledTools).not.toContain("records.write");
++        const exceptions = yield* body(
++          Availability,
++          yield* save(writesOff.revision, [{ kind: "tool", tool: "records.write", enabled: true }]),
++        );
++        expect(exceptions.defaultMode).toBe("read-only");
++        expect((yield* search()).items.map((t) => t.path)).toContain(write);
++        expect((yield* search()).items.map((t) => t.path)).not.toContain(review);
++        // Concurrent saves of one revision cannot overwrite each other.
++        const concurrent = yield* Effect.all(
++          [
++            save(exceptions.revision, [{ kind: "tool", tool: "records.write", enabled: false }]),
++            save(exceptions.revision, [{ kind: "tool", tool: "records.review", enabled: true }]),
++          ],
++          { concurrency: "unbounded" },
++        );
++        expect(concurrent.map((result) => result.status).sort()).toEqual([200, 409]);
++        const current = yield* readState();
++        const enabled = yield* body(
++          Availability,
++          yield* save(current.revision, [{ kind: "writes", enabled: true }]),
++        );
++        expect(enabled.defaultMode).toBe("all");
++        expect((yield* readState()).enabledTools).toContain("records.review");
++        yield* verifyRetainedToolAvailability;
++        yield* verifyAvailabilityPages(client);
++      }).pipe(Effect.provide(McpClient.layer)),
++    ),
++  );
++});
+diff --git a/e2e/tests/workflow-dependency-tool-policy.spec.ts b/e2e/tests/workflow-dependency-tool-policy.spec.ts
+index b51ac50..9fb347e 100644
+--- a/e2e/tests/workflow-dependency-tool-policy.spec.ts
++++ b/e2e/tests/workflow-dependency-tool-policy.spec.ts
+@@ -123,6 +123,31 @@ export default defineApp({dependencies:{remote:{scope:"user",tools:{open:{kind:"
+         expect(yield* probe("other", "guarded")).toEqual({ blocked: true });
+         expect((yield* ordinary("guarded")).status).not.toBe(200);
+         expect(yield* probe("nested", "guarded")).toEqual({ blocked: true });
++        const hidden = yield* api.request(
++          actors.owner,
++          "PATCH",
++          `${prefix}/apps/${target}/tool-availability`,
++          {
++            revision: 0,
++            changes: [{ kind: "tool", tool: "open", enabled: false }],
++          },
++        );
++        expect(hidden.status).toBe(200);
++        expect((yield* ordinary("open")).status).not.toBe(200);
++        expect(yield* probe("other", "open")).toEqual({ blocked: true });
++        expect(yield* probe("nested", "open")).toEqual({ blocked: true });
++        const restored = yield* api.request(
++          actors.owner,
++          "PATCH",
++          `${prefix}/apps/${target}/tool-availability`,
++          {
++            revision: 1,
++            changes: [{ kind: "tool", tool: "open", enabled: true }],
++          },
++        );
++        expect(restored.status).toBe(200);
++        expect((yield* ordinary("open")).body).toEqual({ message: "same arguments" });
++        expect(yield* probe("other", "open")).toEqual({ result: { message: "same arguments" } });
+         const nested = yield* policy("guarded", "never-ask", "nested");
+         expect(yield* probe("nested", "guarded")).toEqual({
+           result: { message: "same arguments" },
+diff --git a/packages/mcp-auth/src/implementation/backend.ts b/packages/mcp-auth/src/implementation/backend.ts
+index bb5a11a..873b229 100644
+--- a/packages/mcp-auth/src/implementation/backend.ts
++++ b/packages/mcp-auth/src/implementation/backend.ts
+@@ -9,7 +9,7 @@ import {
+   type Cursor,
+   type VersionId,
+   type ToolKind,
+-  type ToolName,
++  ToolName,
+   type ToolListOptions,
+   type ToolPage,
+ } from "@executor-js/sdk/core";
+@@ -207,7 +207,7 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
+       // The invocation names every account it runs with; one entry must permit them and the tool.
+       const request = {
+         app: input.app,
+-        tool: { name: input.tool },
++        tool: { name: ToolName.make(input.tool) },
+         accounts: named(input.accounts),
+       };
+       // A refused tool names its app or accounts instead when the grant excludes those.
+@@ -362,6 +362,18 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
+           }),
+         };
+       }),
++    unavailableToolReason: (input) =>
++      Effect.gen(function* () {
++        const policy = yield* authority;
++        yield* refuse(appRefusal(policy, input.app));
++        // A metadata-dependent grant cannot authorize a hidden definition by name alone.
++        if (
++          requiresToolMetadata(policy.tools, input.app) ||
++          !discoversTool(policy, { app: input.app, tool: { name: ToolName.make(input.tool) } })
++        )
++          return undefined;
++        return yield* backend.unavailableToolReason?.(input) ?? Effect.succeed(undefined);
++      }),
+     callTool: (input, options) =>
+       Effect.gen(function* () {
+         const { version, kind } = yield* check(input);
+diff --git a/packages/mcp/src/contracts/backend.ts b/packages/mcp/src/contracts/backend.ts
+index 66ae131..550e206 100644
+--- a/packages/mcp/src/contracts/backend.ts
++++ b/packages/mcp/src/contracts/backend.ts
+@@ -98,6 +98,11 @@ export interface McpBackend<E extends Error> {
+   readonly searchTools: (
+     input: Parameters<Executor["tools"]["search"]>[0],
+   ) => Effect.Effect<ToolSearchPage, E>;
++  /** Explain a known but hidden path without adding it back to discovery. Hosts recheck access. */
++  readonly unavailableToolReason?: (input: {
++    readonly app: AppId;
++    readonly tool: string;
++  }) => Effect.Effect<string | undefined, E>;
+   /** Check execution permission again; prior discovery does not authorize this call. */
+   readonly callTool: (
+     input: Parameters<Executor["tools"]["call"]>[0],
+diff --git a/packages/mcp/src/implementation/execute.ts b/packages/mcp/src/implementation/execute.ts
+index ec85459..6948240 100644
+--- a/packages/mcp/src/implementation/execute.ts
++++ b/packages/mcp/src/implementation/execute.ts
+@@ -1365,6 +1365,17 @@ function catalog(
+       searchable,
+       lost,
+       unavailableApps,
++      unavailableToolReason: (path: string) => {
++        const app = apps.find((app) => unique(app) && path.startsWith(`${app.slug}.`));
++        return app === undefined || backend.unavailableToolReason === undefined
++          ? Effect.succeed(undefined)
++          : backend
++              .unavailableToolReason({
++                app: app.id,
++                tool: toolName(path.slice(app.slug.length + 1)),
++              })
++              .pipe(Effect.catch(() => Effect.succeed(undefined)));
++      },
+       unknownTool: (error: CodeMode.Diagnostic) => unknownTool(error, loadedFrom, slugs),
+     };
+   });
+@@ -1677,9 +1688,15 @@ function runProgram(
+         yield* Effect.annotateCurrentSpan("executor.unavailable_app.called", true);
+       const unknown =
+         result.ok || unavailable !== undefined ? undefined : prepared.unknownTool(result.error);
++      const hiddenPath = result.ok ? undefined : unknownPath(result.error);
++      const hiddenReason =
++        hiddenPath === undefined ? undefined : yield* prepared.unavailableToolReason(hiddenPath);
+       const execution = executionDiagnostic({
+         ...result,
+-        ...(unknown === undefined || result.ok
++        ...(hiddenReason === undefined
++          ? {}
++          : { error: { kind: "ToolFailure" as const, message: hiddenReason } }),
++        ...(unknown === undefined || result.ok || hiddenReason !== undefined
+           ? {}
+           : { error: { ...result.error, suggestions: [unknown] } }),
+         ...(unavailable === undefined
+@@ -1785,6 +1802,8 @@ export function callTools(input: typeof CallInput.Type): Program {
+               const unavailable = unavailableAt(path, discovered.namespaces);
+               if (unavailable !== undefined)
+                 return callFailure(request.path, "ToolFailure", unavailableMessage(unavailable));
++              const reason = yield* discovered.unavailableToolReason(path);
++              if (reason !== undefined) return callFailure(request.path, "ToolFailure", reason);
+               const closest = nearest(
+                 path,
+                 entries
+diff --git a/packages/mcp/src/implementation/executions.ts b/packages/mcp/src/implementation/executions.ts
+index 51dc896..4ccb301 100644
+--- a/packages/mcp/src/implementation/executions.ts
++++ b/packages/mcp/src/implementation/executions.ts
+@@ -576,6 +576,10 @@ export const makeExecutions = (
+         searchableTools: (input, options) =>
+           exchange((backend) => backend.searchableTools(input, options)),
+         searchTools: (input) => exchange((backend) => backend.searchTools(input)),
++        unavailableToolReason: (input) =>
++          exchange(
++            (backend) => backend.unavailableToolReason?.(input) ?? Effect.succeed(undefined),
++          ),
+         eventDefinitions: (input) => exchange((backend) => backend.eventDefinitions(input)),
+         findEventSubscription: (key) => exchange((backend) => backend.findEventSubscription(key)),
+         subscribeEvent: (input) => exchange((backend) => backend.subscribeEvent(input)),
+diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
+index a132b8f..4596632 100644
+--- a/packages/sdk/src/contracts/executor.ts
++++ b/packages/sdk/src/contracts/executor.ts
+@@ -439,6 +439,12 @@ export interface ExecutorInputs<Database extends ExecutorRuntimeDatabase = Execu
+   readonly hooks?: ResourceLifecycle;
+   readonly appCalls?: import("./app-calls.ts").AppCallHooks;
+   readonly toolPolicy?: import("./tool-policy.ts").ToolPolicyHook;
++  /** Product availability is checked before dispatch, including retained workflow bundles. */
++  readonly toolAccess?: (input: {
++    readonly app: AppId;
++    readonly tool: string;
++    readonly kind?: "query" | "mutation" | undefined;
++  }) => Effect.Effect<boolean, StorageError>;
+   readonly machineAccounts?: MachineAccounts;
+   readonly workflows?: WorkflowRuntime;
+   /** Authenticated product review page for a durable workflow question. */
+diff --git a/packages/sdk/src/contracts/tools.ts b/packages/sdk/src/contracts/tools.ts
+index eb4a1c8..40c64eb 100644
+--- a/packages/sdk/src/contracts/tools.ts
++++ b/packages/sdk/src/contracts/tools.ts
+@@ -91,6 +91,8 @@ export interface ToolInvocationOptions {
+ }
+ /** How an in-process caller with its own wait bound reads a tool listing. Not an HTTP input. */
+ export interface ToolListOptions extends CatalogReadOptions {
++  /** Host-owned visibility is applied before pagination. */
++  readonly filter?: (tool: Tool) => boolean;
+   /**
+    * Report a listing that another request started at least this long ago, and that is still
+    * running, as `ToolListingTimedOut` at once instead of waiting for it. A caller that gives up
+@@ -436,6 +438,8 @@ export interface SearchableTools {
+  * lists. A target's tools must be in every scope it carries; a target with none has every tool.
+  */
+ export interface ToolSearchScope {
++  readonly all?: boolean;
++  readonly excludedNames?: ReadonlyArray<ToolName>;
+   readonly readOnly: boolean;
+   readonly names: ReadonlyArray<ToolName>;
+ }
+diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+index ef168d9..9b00531 100644
+--- a/packages/sdk/src/implementation/create.ts
++++ b/packages/sdk/src/implementation/create.ts
+@@ -1,3 +1,4 @@
++import { HostToolBlocked, HostToolPolicyFailed } from "apps/contracts";
+ import type { AccountHealth } from "../contracts/account.ts";
+ import { appProviderFailure } from "./provider-error.ts";
+ import type { ExecutorRuntimeDatabase } from "./storage-runtime.ts";
+@@ -247,6 +248,18 @@ export const createExecutor = (
+         }),
+       call: (input) =>
+         Effect.gen(function* () {
++          // Retained bundles cannot send policy callbacks, so the host checks before dispatch.
++          if (
++            options.toolAccess !== undefined &&
++            !(yield* options
++              .toolAccess({
++                app: AppId.make(input.app),
++                tool: input.tool,
++                kind: input.kind,
++              })
++              .pipe(Effect.mapError(() => new HostToolPolicyFailed())))
++          )
++            return yield* new HostToolBlocked();
+           const models = yield* modelsForInvocation(db, options.models, {
+             ...input,
+             durableStep: input.replay !== undefined,
+diff --git a/packages/sdk/src/implementation/tool-search-store.ts b/packages/sdk/src/implementation/tool-search-store.ts
+index 5cc5b31..654576b 100644
+--- a/packages/sdk/src/implementation/tool-search-store.ts
++++ b/packages/sdk/src/implementation/tool-search-store.ts
+@@ -102,9 +102,9 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
+     effect.pipe(Effect.mapError(() => new StorageError()));
+   /** A tool is in a scope when it is read-only under a read-only scope or the scope names it. */
+   const inScope = (scope: ToolSearchScope) =>
+-    sql`(${scope.readOnly ? sql`s.read_only` : sql`false`} or ${
++    sql`(${scope.all === true ? sql`true` : sql`false`} or ${scope.readOnly ? sql`s.read_only` : sql`false`} or ${
+       scope.names.length === 0 ? sql`false` : sql`s.name in ${sql.in(scope.names)}`
+-    })`;
++    }) and ${scope.excludedNames === undefined || scope.excludedNames.length === 0 ? sql`true` : sql`s.name not in ${sql.in(scope.excludedNames)}`}`;
+   /**
+    * The targets' rows the scopes permit. Each target's listing must be a row for its app and
+    * account set, so a listing named for another target finds nothing.
+diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
+index d076f29..fbdbf4f 100644
+--- a/packages/sdk/src/implementation/tools.ts
++++ b/packages/sdk/src/implementation/tools.ts
+@@ -1390,9 +1390,24 @@ export const makeTools = (
+     list: (input: Parameters<Executor["tools"]["list"]>[0], options?: ToolListOptions) =>
+       Effect.gen(function* () {
+         const state = yield* listed(input);
+-        const listing = yield* listings
++        const full = yield* listings
+           .read(state, listingOf(state), options)
+           .pipe(observeServed(state));
++        const keep = options?.filter;
++        const positions =
++          keep === undefined
++            ? undefined
++            : full.items.flatMap((tool, index) => (keep(tool) ? [index] : []));
++        const listing =
++          positions === undefined
++            ? full
++            : {
++                ...full,
++                items: positions.map((index) => full.items[index]!),
++                ...(full.itemChars === undefined
++                  ? {}
++                  : { itemChars: positions.map((index) => full.itemChars![index]!) }),
++              };
+         // Pages share the listing's item objects, so a caller can recognise a kept listing.
+         const start = pageStart(listing, input.cursor);
+         const selected = yield* pageTools(
+diff --git a/packages/ui/src/contracts/tool-availability.ts b/packages/ui/src/contracts/tool-availability.ts
+new file mode 100644
+index 0000000..0488400
+--- /dev/null
++++ b/packages/ui/src/contracts/tool-availability.ts
+@@ -0,0 +1,84 @@
++/**
++ * Which of an app instance's tools agents can find and use. Hosts own storage, authority and the
++ * revision check; this is the display shape and the rules a view needs to show a confirmed save.
++ */
++import type { ToolSummary } from "@executor-js/sdk";
++import type { Cause } from "effect";
++import type { Atom } from "effect/reactivity";
++import type { ComponentType } from "react";
++import type { FailureProps, Query } from "./dashboard.ts";
++
++/** `read-only` keeps every tool not positively marked read-only off unless switched on by name. */
++export type ToolDefaultMode = "all" | "read-only";
++
++export interface ToolAvailabilityOverride {
++  readonly tool: string;
++  readonly enabled: boolean;
++}
++
++/** One saved setting and the catalog it was evaluated against. */
++export interface ToolAvailability {
++  readonly revision: number;
++  readonly defaultMode: ToolDefaultMode;
++  readonly overrides: readonly ToolAvailabilityOverride[];
++  readonly enabledTools: readonly string[];
++  /** The host's tool groups with their current exact members. */
++  readonly groups: readonly { readonly path: string; readonly tools: readonly string[] }[];
++}
++
++/** One atomic batch applies every change or none of them. */
++export type ToolAvailabilityChange =
++  | { readonly kind: "tool"; readonly tool: string; readonly enabled: boolean }
++  | { readonly kind: "group"; readonly path: string; readonly enabled: boolean }
++  | { readonly kind: "writes"; readonly enabled: boolean }
++  | { readonly kind: "default"; readonly defaultMode: ToolDefaultMode };
++
++export interface ToolAvailabilityUpdate {
++  /** The revision the change was made against; a newer saved revision refuses it. */
++  readonly revision: number;
++  readonly changes: readonly ToolAvailabilityChange[];
++}
++
++/** A manager's view of the setting. Hosts pass it only to people who can change the app. */
++export interface ToolAvailabilityBinding<E> {
++  readonly query: Query<ToolAvailability, E>;
++  /** Answers with the saved revision, which a change queued behind this one is made against. */
++  readonly update: Atom.AtomResultFn<ToolAvailabilityUpdate, { readonly revision: number }, E>;
++  /** Renders a failed save's message; the view adds Retry or Reload itself. */
++  readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
++  /** The change can't apply to the current setting, such as when someone else saved first. The view offers Reload instead of resending it. */
++  readonly conflict: (cause: Cause.Cause<E>) => boolean;
++}
++
++/** Unknown metadata counts as a write, so a missing hint can never widen a read-only setting. */
++export const isWrite = (tool: Pick<ToolSummary, "readOnly">) => tool.readOnly !== true;
++
++/** Exact overrides win; otherwise the default decides, as the host evaluates it. */
++export const enabledToolNames = (
++  tools: readonly Pick<ToolSummary, "name" | "readOnly">[],
++  defaultMode: ToolDefaultMode,
++  overrides: readonly ToolAvailabilityOverride[],
++): readonly string[] => {
++  const exact = new Map(overrides.map((entry) => [entry.tool, entry.enabled]));
++  return tools
++    .filter((tool) => exact.get(tool.name) ?? (defaultMode === "all" || !isWrite(tool)))
++    .map((tool) => tool.name);
++};
++
++/**
++ * Switch a tree group's tools. A host group with exactly these members is named, so the host
++ * resolves its current members; otherwise the exact tools are listed in the same batch.
++ */
++export const groupChanges = (
++  groups: ToolAvailability["groups"],
++  members: readonly string[],
++  enabled: boolean,
++): readonly ToolAvailabilityChange[] => {
++  const wanted = new Set(members);
++  const group = groups.find(
++    (entry) => entry.tools.length === wanted.size && entry.tools.every((tool) => wanted.has(tool)),
++  );
++  return group !== undefined
++    ? [{ kind: "group", path: group.path, enabled }]
++    : members.map((tool) => ({ kind: "tool", tool, enabled }));
++};
+diff --git a/packages/ui/src/implementation/components/switch.tsx b/packages/ui/src/implementation/components/switch.tsx
+new file mode 100644
+index 0000000..6dbecc4
+--- /dev/null
++++ b/packages/ui/src/implementation/components/switch.tsx
+@@ -0,0 +1,34 @@
++"use client";
++
++import type * as React from "react";
++import { Switch as SwitchPrimitive } from "radix-ui";
++import { cn } from "../lib/utils.ts";
++
++/**
++ * On/off switch for a setting that applies as soon as it changes. The visible track stays compact;
++ * on touch layouts the control itself grows to a 44px target around it, so dense rows stay dense.
++ */
++function Switch({ className, ...props }: React.ComponentProps<typeof SwitchPrimitive.Root>) {
++  return (
++    <SwitchPrimitive.Root
++      data-slot="switch"
++      className={cn(
++        "group/switch inline-flex h-6 shrink-0 cursor-pointer items-center justify-center rounded-full outline-none disabled:cursor-not-allowed disabled:opacity-50 max-[740px]:h-11 max-[740px]:min-w-11",
++        className,
++      )}
++      {...props}
++    >
++      <span
++        aria-hidden
++        className="flex h-4.5 w-8 items-center rounded-full border border-transparent bg-input p-px transition-colors group-focus-visible/switch:ring-[3px] group-focus-visible/switch:ring-ring/50 group-data-[state=checked]/switch:bg-primary dark:bg-input/80"
++      >
++        <SwitchPrimitive.Thumb
++          data-slot="switch-thumb"
++          className="block size-3.5 rounded-full bg-background shadow-xs transition-transform duration-150 ease-out data-[state=checked]:translate-x-3.5 dark:data-[state=unchecked]:bg-foreground/80 dark:data-[state=checked]:bg-primary-foreground"
++        />
++      </span>
++    </SwitchPrimitive.Root>
++  );
++}
++
++export { Switch };
+diff --git a/packages/ui/src/implementation/dashboard/tool-availability.tsx b/packages/ui/src/implementation/dashboard/tool-availability.tsx
+new file mode 100644
+index 0000000..8847ff5
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/tool-availability.tsx
+@@ -0,0 +1,303 @@
++/**
++ * A manager's controls for which tools agents can find and use. Every change saves at once as one
++ * atomic batch against the revision on screen; controls show the confirmed answer, never a guess.
++ */
++import type { ToolSummary } from "@executor-js/sdk";
++import { useAtomSet } from "@effect/atom-react";
++import { HugeiconsIcon } from "@hugeicons/react";
++import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
++import { Exit, Option, type Cause } from "effect";
++import { useId, useRef, useState, type ComponentType } from "react";
++import type { FailureProps } from "../../contracts/dashboard.ts";
++import {
++  isWrite,
++  type ToolAvailability,
++  type ToolAvailabilityBinding,
++  type ToolAvailabilityChange,
++} from "../../contracts/tool-availability.ts";
++import { Button } from "../components/button.tsx";
++import { Checkbox } from "../components/checkbox.tsx";
++import {
++  DropdownMenu,
++  DropdownMenuCheckboxItem,
++  DropdownMenuContent,
++  DropdownMenuItem,
++  DropdownMenuLabel,
++  DropdownMenuSeparator,
++  DropdownMenuTrigger,
++} from "../components/dropdown-menu.tsx";
++import { Switch } from "../components/switch.tsx";
++import { cn } from "../lib/utils.ts";
++import { useQuery } from "./context.tsx";
++
++interface Batch {
++  readonly changes: readonly ToolAvailabilityChange[];
++  /** Tools whose controls wait for this batch's answer. */
++  readonly affected: readonly string[];
++}
++
++/** A later switch of the same tool replaces an earlier one still waiting in the queue. */
++const merge = (first: Batch, second: Batch): Batch => ({
++  changes: [
++    ...first.changes.filter(
++      (change) =>
++        change.kind !== "tool" ||
++        !second.changes.some((next) => next.kind === "tool" && next.tool === change.tool),
++    ),
++    ...second.changes,
++  ],
++  affected: [...first.affected, ...second.affected],
++});
++
++/** The saved setting and the actions a view needs; undefined state until the first read lands. */
++export interface AvailabilityController<E> {
++  readonly state: ToolAvailability | undefined;
++  readonly enabled: ReadonlySet<string>;
++  readonly busy: ReadonlySet<string>;
++  readonly apply: (changes: readonly ToolAvailabilityChange[], affected: readonly string[]) => void;
++  readonly failure:
++    | {
++        readonly cause: Cause.Cause<E>;
++        readonly conflict: boolean;
++        readonly retry: () => void;
++        readonly reload: () => void;
++      }
++    | undefined;
++  readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
++}
++
++/**
++ * Hosts render this only for people who can change the app. A change made while another saves
++ * waits and is sent against the revision that save returned, so no click is dropped and none is
++ * sent against a revision it never saw.
++ */
++export function useToolAvailability<E>(
++  binding: ToolAvailabilityBinding<E>,
++): AvailabilityController<E> {
++  const { data, refresh } = useQuery(binding.query);
++  const run = useAtomSet(binding.update, { mode: "promiseExit" });
++  const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
++  const [failed, setFailed] = useState<{ cause: Cause.Cause<E>; batch: Batch }>();
++  const inFlight = useRef(false);
++  const queued = useRef<Batch | undefined>(undefined);
++  const state = Option.getOrUndefined(data);
++
++  const send = async (batch: Batch, revision: number): Promise<void> => {
++    inFlight.current = true;
++    const exit = await run({ revision, changes: batch.changes });
++    const next = queued.current;
++    queued.current = undefined;
++    if (Exit.isSuccess(exit) && next !== undefined) return send(next, exit.value.revision);
++    inFlight.current = false;
++    setBusy(new Set());
++    if (Exit.isFailure(exit))
++      setFailed({ cause: exit.cause, batch: next === undefined ? batch : merge(batch, next) });
++  };
++  const apply = (changes: readonly ToolAvailabilityChange[], affected: readonly string[]) => {
++    if (state === undefined || changes.length === 0) return;
++    const batch = { changes, affected };
++    setFailed(undefined);
++    setBusy((previous) => new Set([...previous, ...affected]));
++    if (inFlight.current) {
++      queued.current = queued.current === undefined ? batch : merge(queued.current, batch);
++      return;
++    }
++    void send(batch, state.revision);
++  };
++
++  return {
++    state,
++    enabled: new Set(state?.enabledTools ?? []),
++    busy,
++    apply,
++    failure:
++      failed === undefined
++        ? undefined
++        : {
++            cause: failed.cause,
++            conflict: binding.conflict(failed.cause),
++            retry: () => apply(failed.batch.changes, failed.batch.affected),
++            reload: () => {
++              setFailed(undefined);
++              refresh();
++            },
++          },
++    Failure: binding.Failure,
++  };
++}
++
++/** A failed save keeps the previous saved state on screen and says how to recover. */
++export function AvailabilityNotice<E>({
++  controller,
++  className,
++}: {
++  readonly controller: AvailabilityController<E>;
++  readonly className?: string;
++}) {
++  const { failure, Failure } = controller;
++  if (failure === undefined) return null;
++  return (
++    <div
++      role="alert"
++      className={cn("flex items-start gap-2 text-[12.5px] leading-snug", className)}
++    >
++      <div className="min-w-0 flex-1 pt-0.5">
++        <Failure cause={failure.cause} layout="compact" />
++      </div>
++      <Button
++        variant="outline"
++        size="xs"
++        className="shrink-0 max-[740px]:h-11"
++        onClick={failure.conflict ? failure.reload : failure.retry}
++      >
++        {failure.conflict ? "Reload" : "Retry"}
++      </Button>
++    </div>
++  );
++}
++
++/** The list's second row: reveal hidden tools, and the switch for every write at once. */
++export function AvailabilityToolbar<E>({
++  controller,
++  tools,
++  showHidden,
++  onShowHidden,
++}: {
++  readonly controller: AvailabilityController<E>;
++  readonly tools: readonly ToolSummary[];
++  readonly showHidden: boolean;
++  readonly onShowHidden: (show: boolean) => void;
++}) {
++  const id = useId();
++  const hidden = tools.filter((tool) => !controller.enabled.has(tool.name)).length;
++  return (
++    <>
++      <div className="flex min-h-10 shrink-0 items-center gap-1 border-b pr-1.5 pl-3 max-[740px]:min-h-12">
++        <Checkbox
++          id={id}
++          variant="strong"
++          checked={showHidden}
++          onCheckedChange={(checked) => onShowHidden(checked === true)}
++        />
++        <label
++          htmlFor={id}
++          className="flex min-h-8 min-w-0 flex-1 cursor-pointer items-center gap-1.5 pl-2 text-[12.5px] text-muted-foreground select-none max-[740px]:min-h-11"
++        >
++          <span className="truncate">Show hidden tools</span>
++          {hidden > 0 && <span className="tabular-nums">{hidden}</span>}
++        </label>
++        <WritesMenu controller={controller} tools={tools} />
++      </div>
++      <AvailabilityNotice controller={controller} className="border-b bg-destructive/5 px-3 py-2" />
++    </>
++  );
++}
++
++/**
++ * Writes are every tool not positively marked read-only. Turning them off also keeps write tools
++ * that later versions add off; that default is its own reversible choice.
++ */
++function WritesMenu<E>({
++  controller,
++  tools,
++}: {
++  readonly controller: AvailabilityController<E>;
++  readonly tools: readonly ToolSummary[];
++}) {
++  const writes = tools.filter(isWrite).map((tool) => tool.name);
++  const on = writes.filter((tool) => controller.enabled.has(tool)).length;
++  const readOnlyDefault = controller.state?.defaultMode === "read-only";
++  const allOff = readOnlyDefault && on === 0;
++  const allOn = !readOnlyDefault && on === writes.length;
++  const summary = allOff ? "Writes off" : allOn ? "Writes on" : "Some writes";
++  const busy = writes.some((tool) => controller.busy.has(tool));
++  return (
++    <DropdownMenu>
++      <DropdownMenuTrigger asChild>
++        <Button
++          variant="ghost"
++          size="xs"
++          loading={busy}
++          disabled={controller.state === undefined}
++          className="shrink-0 gap-1 text-muted-foreground max-[740px]:h-11"
++        >
++          {summary}
++          <HugeiconsIcon icon={ArrowDown01Icon} size={13} aria-hidden />
++        </Button>
++      </DropdownMenuTrigger>
++      <DropdownMenuContent align="end" className="w-64">
++        <DropdownMenuItem
++          disabled={allOff}
++          onSelect={() => controller.apply([{ kind: "writes", enabled: false }], writes)}
++        >
++          Turn off all writes
++        </DropdownMenuItem>
++        <DropdownMenuItem
++          disabled={allOn}
++          onSelect={() => controller.apply([{ kind: "writes", enabled: true }], writes)}
++        >
++          Turn on all writes
++        </DropdownMenuItem>
++        <DropdownMenuSeparator />
++        <DropdownMenuCheckboxItem
++          checked={readOnlyDefault}
++          onCheckedChange={(checked) =>
++            controller.apply(
++              [{ kind: "default", defaultMode: checked ? "read-only" : "all" }],
++              writes,
++            )
++          }
++        >
++          Keep new write tools off
++        </DropdownMenuCheckboxItem>
++        <DropdownMenuLabel className="text-xs font-normal leading-snug text-muted-foreground">
++          {writes.length === 0
++            ? "This version has no write tools."
++            : `${on} of ${writes.length} write tools on.`}{" "}
++          Applies to everyone using this app. Approval rules still apply.
++        </DropdownMenuLabel>
++      </DropdownMenuContent>
++    </DropdownMenu>
++  );
++}
++
++/** The selected tool's own switch, reachable even after the list stops showing it. */
++export function AvailabilityRow<E>({
++  controller,
++  tool,
++  onChange,
++}: {
++  readonly controller: AvailabilityController<E>;
++  readonly tool: ToolSummary;
++  readonly onChange: (enabled: boolean) => void;
++}) {
++  const id = useId();
++  const on = controller.enabled.has(tool.name);
++  const busy = controller.busy.has(tool.name);
++  return (
++    <div className="mt-6 border-y py-3">
++      <div className="flex items-center gap-4">
++        <div className="min-w-0 flex-1">
++          <div id={`${id}-label`} className="text-sm font-medium">
++            {on ? "On for agents" : "Hidden from agents"}
++          </div>
++          <p id={`${id}-description`} className="text-xs leading-normal text-muted-foreground">
++            {on
++              ? "Agents can find and use this tool. Applies to everyone using this app."
++              : "Agents can't find or call this tool. Turn it on to run it here."}
++          </p>
++        </div>
++        <Switch
++          checked={on}
++          disabled={busy || controller.state === undefined}
++          aria-busy={busy || undefined}
++          aria-label="Available to agents"
++          aria-describedby={`${id}-description`}
++          onCheckedChange={onChange}
++        />
++      </div>
++      {/* The list's notice sits behind the open inspector on phones. */}
++      <AvailabilityNotice controller={controller} className="mt-3 hidden max-[740px]:flex" />
++    </div>
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/tool-tree.tsx b/packages/ui/src/implementation/dashboard/tool-tree.tsx
+new file mode 100644
+index 0000000..98a9dc7
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/tool-tree.tsx
+@@ -0,0 +1,394 @@
++import type { ToolRouter, ToolSummary } from "@executor-js/sdk";
++import { HugeiconsIcon } from "@hugeicons/react";
++import {
++  ArrowRight01Icon,
++  Delete02Icon,
++  PencilEdit01Icon,
++  SourceCodeIcon,
++  ViewIcon,
++} from "@hugeicons/core-free-icons";
++import { Checkbox } from "../components/checkbox.tsx";
++import { Switch } from "../components/switch.tsx";
++import { cn } from "../lib/utils.ts";
++import { humanize } from "./tool-schema.tsx";
++
++export type ToolNode =
++  | {
++      readonly kind: "group";
++      readonly key: string;
++      readonly label: string;
++      readonly description: string | undefined;
++      readonly children: readonly ToolNode[];
++      readonly size: number;
++    }
++  | { readonly kind: "tool"; readonly tool: ToolSummary; readonly label: string };
++
++interface Entry {
++  readonly tool: ToolSummary;
++  readonly segments: readonly string[];
++}
++
++/** Routers by path, which is the dotted prefix their tools' names share. */
++type Routers = ReadonlyMap<string, ToolRouter>;
++
++/**
++ * Group tools by the dotted parts of their names, keeping catalog order. Within a level, a
++ * `prefix_` shared by several tools becomes a group too, e.g. `accounts_connect` and
++ * `accounts_rename` under Accounts. A tool that repeats its group's name as a prefix, like
++ * MCP servers that namespace every tool (`planetscale.planetscale_list_databases`), drops the
++ * repeat instead of nesting a second group with the same name. A dotted group is a router and
++ * takes its metadata.
++ */
++export function buildTree(tools: readonly ToolSummary[], routers: Routers): readonly ToolNode[] {
++  return nest(
++    tools.map((tool) => ({ tool, segments: tool.name.split(".") })),
++    "",
++    "",
++    "",
++    routers,
++  );
++}
++
++/**
++ * The tools that pass `keep`, in the whole catalog's groups. Built from the whole catalog, a
++ * search or a hidden tool never moves the others into a different group.
++ */
++export function pruneTree(
++  nodes: readonly ToolNode[],
++  keep: (tool: ToolSummary) => boolean,
++): readonly ToolNode[] {
++  return nodes.flatMap((node): readonly ToolNode[] => {
++    if (node.kind === "tool") return keep(node.tool) ? [node] : [];
++    const children = pruneTree(node.children, keep);
++    return children.length === 0 ? [] : [{ ...node, children, size: leafCount(children) }];
++  });
++}
++
++const leafCount = (nodes: readonly ToolNode[]): number =>
++  nodes.reduce((total, node) => total + (node.kind === "tool" ? 1 : leafCount(node.children)), 0);
++
++const underscorePrefix = (segment: string) => {
++  const at = segment.indexOf("_");
++  return at > 0 && at < segment.length - 1 ? segment.slice(0, at) : undefined;
++};
++
++/** Removes a leading `name_` that only repeats the enclosing group's name. */
++const withoutGroupPrefix = (entry: Entry, group: string): Entry => {
++  const [only, ...rest] = entry.segments;
++  if (only === undefined || rest.length > 0) return entry;
++  const prefix = underscorePrefix(only);
++  return prefix !== undefined && prefix.toLowerCase() === group.toLowerCase()
++    ? { tool: entry.tool, segments: [only.slice(prefix.length + 1)] }
++    : entry;
++};
++
++/** `path` is the enclosing router's path, or undefined inside a `prefix_` group. */
++function nest(
++  nested: readonly Entry[],
++  parent: string,
++  parentGroup: string,
++  path: string | undefined,
++  routers: Routers,
++): readonly ToolNode[] {
++  const entries =
++    parentGroup === "" ? nested : nested.map((e) => withoutGroupPrefix(e, parentGroup));
++  const shared = new Map<string, number>();
++  for (const entry of entries) {
++    const prefix = entry.segments.length === 1 ? underscorePrefix(entry.segments[0]!) : undefined;
++    if (prefix !== undefined) shared.set(prefix, (shared.get(prefix) ?? 0) + 1);
++  }
++  const order: Array<
++    { readonly group: string; readonly router: boolean } | { readonly entry: Entry }
++  > = [];
++  const groups = new Map<string, Entry[]>();
++  for (const entry of entries) {
++    const [head = "", ...rest] = entry.segments;
++    const prefix = rest.length === 0 ? underscorePrefix(head) : undefined;
++    const split =
++      rest.length > 0
++        ? { group: head, segments: rest, router: true }
++        : prefix !== undefined && (shared.get(prefix) ?? 0) > 1
++          ? { group: prefix, segments: [head.slice(prefix.length + 1)], router: false }
++          : undefined;
++    if (split === undefined) {
++      order.push({ entry });
++      continue;
++    }
++    const members = groups.get(split.group);
++    if (members === undefined) {
++      groups.set(split.group, [{ tool: entry.tool, segments: split.segments }]);
++      order.push({ group: split.group, router: split.router });
++    } else members.push({ tool: entry.tool, segments: split.segments });
++  }
++  return order.map((item): ToolNode => {
++    if ("entry" in item)
++      return { kind: "tool", tool: item.entry.tool, label: humanize(item.entry.segments[0]!) };
++    const members = groups.get(item.group) ?? [];
++    const key = parent === "" ? item.group : `${parent}/${item.group}`;
++    const routerPath =
++      item.router && path !== undefined
++        ? path === ""
++          ? item.group
++          : `${path}.${item.group}`
++        : undefined;
++    const router = routerPath === undefined ? undefined : routers.get(routerPath);
++    return {
++      kind: "group",
++      key,
++      label: router?.title ?? humanize(item.group),
++      description: router?.description,
++      children: nest(members, key, item.group, routerPath, routers),
++      size: members.length,
++    };
++  });
++}
++
++export function groupKeys(nodes: readonly ToolNode[]): readonly string[] {
++  return nodes.flatMap((node) =>
++    node.kind === "group" ? [node.key, ...groupKeys(node.children)] : [],
++  );
++}
++
++/** Each tool's short label, and every group's tools at any depth. */
++export function treeIndex(nodes: readonly ToolNode[]) {
++  const leafLabels = new Map<string, string>();
++  const members = new Map<string, readonly string[]>();
++  const walk = (level: readonly ToolNode[]): readonly string[] =>
++    level.flatMap((node) => {
++      if (node.kind === "tool") {
++        leafLabels.set(node.tool.name, node.label);
++        return [node.tool.name];
++      }
++      const names = walk(node.children);
++      members.set(node.key, names);
++      return names;
++    });
++  walk(nodes);
++  return { leafLabels, members };
++}
++
++/** A manager's switches in the tree. Rows without it are the ordinary browser. */
++export interface TreeAvailability {
++  readonly enabled: ReadonlySet<string>;
++  /** Every tool of each group in the whole catalog, so a group switch covers the hidden ones too. */
++  readonly members: ReadonlyMap<string, readonly string[]>;
++  /** Tools whose change is saving; their controls wait for the confirmed answer. */
++  readonly busy: ReadonlySet<string>;
++  readonly onTool: (tool: string, enabled: boolean) => void;
++  readonly onGroup: (members: readonly string[], enabled: boolean) => void;
++}
++
++export function ToolTree({
++  nodes,
++  depth,
++  current,
++  collapsed,
++  onToggle,
++  onSelect,
++  availability,
++}: {
++  readonly nodes: readonly ToolNode[];
++  readonly depth: number;
++  readonly current: string | undefined;
++  readonly collapsed: ReadonlySet<string>;
++  readonly onToggle: (key: string) => void;
++  readonly onSelect: (tool: string) => void;
++  readonly availability?: TreeAvailability | undefined;
++}) {
++  return (
++    <ul className={cn("space-y-px", depth > 0 && "ml-[15px] border-l pl-1.5")}>
++      {nodes.map((node) =>
++        node.kind === "group" ? (
++          <li key={`group:${node.key}`}>
++            <div className="flex items-center rounded-md transition-colors hover:bg-muted">
++              <button
++                type="button"
++                aria-expanded={!collapsed.has(node.key)}
++                onClick={() => onToggle(node.key)}
++                className="flex min-h-7.5 min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 text-left text-[13px] font-medium text-foreground focus-visible:outline-ring max-[740px]:min-h-11"
++              >
++                <HugeiconsIcon
++                  icon={ArrowRight01Icon}
++                  size={14}
++                  className={cn(
++                    "shrink-0 text-muted-foreground transition-transform",
++                    !collapsed.has(node.key) && "rotate-90",
++                  )}
++                  aria-hidden
++                />
++                <span className="min-w-0 flex-1 truncate">{node.label}</span>
++                <GroupCount node={node} availability={availability} />
++              </button>
++              {availability !== undefined && (
++                <GroupSwitch node={node} availability={availability} />
++              )}
++            </div>
++            {node.description !== undefined && !collapsed.has(node.key) && (
++              <p
++                title={node.description}
++                className="mb-1 ml-[22px] line-clamp-2 pr-2 text-xs leading-normal text-muted-foreground"
++              >
++                {node.description}
++              </p>
++            )}
++            {!collapsed.has(node.key) && (
++              <ToolTree
++                nodes={node.children}
++                depth={depth + 1}
++                current={current}
++                collapsed={collapsed}
++                onToggle={onToggle}
++                onSelect={onSelect}
++                availability={availability}
++              />
++            )}
++          </li>
++        ) : (
++          <li key={`tool:${node.tool.name}`}>
++            <ToolRow
++              node={node}
++              current={current === node.tool.name}
++              onSelect={onSelect}
++              availability={availability}
++            />
++          </li>
++        ),
++      )}
++    </ul>
++  );
++}
++
++function GroupCount({
++  node,
++  availability,
++}: {
++  readonly node: Extract<ToolNode, { kind: "group" }>;
++  readonly availability: TreeAvailability | undefined;
++}) {
++  const members = availability?.members.get(node.key);
++  if (availability === undefined || members === undefined)
++    return (
++      <span className="text-[11px] font-normal tabular-nums text-muted-foreground">
++        {node.size}
++      </span>
++    );
++  const on = members.filter((tool) => availability.enabled.has(tool)).length;
++  return (
++    <span className="text-[11px] font-normal tabular-nums text-muted-foreground">
++      {on}/{members.length}
++      <span className="sr-only"> on</span>
++    </span>
++  );
++}
++
++/** Separate from the collapse button: switching a group never opens or closes it. */
++function GroupSwitch({
++  node,
++  availability,
++}: {
++  readonly node: Extract<ToolNode, { kind: "group" }>;
++  readonly availability: TreeAvailability;
++}) {
++  const members = availability.members.get(node.key) ?? [];
++  const on = members.filter((tool) => availability.enabled.has(tool)).length;
++  const checked = on === members.length ? true : on === 0 ? false : "indeterminate";
++  const busy = members.some((tool) => availability.busy.has(tool));
++  return (
++    <span className="flex w-9 shrink-0 justify-center max-[740px]:w-11">
++      <Checkbox
++        variant="strong"
++        checked={checked}
++        aria-label={`Enable all tools in ${node.label}`}
++        aria-busy={busy || undefined}
++        disabled={busy}
++        // A mixed or empty group turns every tool on; a full one turns them all off.
++        onCheckedChange={() => availability.onGroup(members, checked !== true)}
++        className="relative after:absolute after:-inset-2 after:content-[''] max-[740px]:after:-inset-3.5"
++      />
++    </span>
++  );
++}
++
++function ToolRow({
++  node,
++  current,
++  onSelect,
++  availability,
++}: {
++  readonly node: Extract<ToolNode, { kind: "tool" }>;
++  readonly current: boolean;
++  readonly onSelect: (tool: string) => void;
++  readonly availability: TreeAvailability | undefined;
++}) {
++  const name = node.tool.name;
++  const on = availability === undefined || availability.enabled.has(name);
++  return (
++    <div
++      className={cn(
++        "flex items-center rounded-md transition-colors hover:bg-muted",
++        current && "bg-muted",
++      )}
++    >
++      <button
++        type="button"
++        title={name}
++        aria-label={name}
++        aria-pressed={current}
++        onClick={() => onSelect(name)}
++        className={cn(
++          "flex min-h-7.5 min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-left text-[13px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-ring max-[740px]:min-h-11",
++          current && "font-medium text-foreground",
++          !on && "text-muted-foreground/70",
++        )}
++      >
++        <HugeiconsIcon
++          icon={effectIcon(toolEffect(node.tool))}
++          size={14}
++          strokeWidth={1.7}
++          className={cn("shrink-0 opacity-70", !on && "opacity-40")}
++          aria-hidden
++        />
++        <span className="min-w-0 truncate">{node.label}</span>
++        {!on && (
++          <span className="ml-auto shrink-0 text-[11px] font-normal text-muted-foreground">
++            Hidden
++          </span>
++        )}
++      </button>
++      {availability !== undefined && (
++        <Switch
++          checked={on}
++          aria-label={`Enable ${name}`}
++          aria-busy={availability.busy.has(name) || undefined}
++          disabled={availability.busy.has(name)}
++          onCheckedChange={(enabled) => availability.onTool(name, enabled)}
++          className="w-9 max-[740px]:w-11"
++        />
++      )}
++    </div>
++  );
++}
++
++type Effect = "read" | "change" | "delete" | "unknown";
++
++/** What running the tool does, from its own read-only and destructive hints. */
++export function toolEffect(tool: ToolSummary): Effect {
++  const readOnly = tool.readOnly ?? tool.annotations?.readOnlyHint;
++  if (readOnly === true) return "read";
++  if (tool.annotations?.destructiveHint === true) return "delete";
++  return readOnly === false ? "change" : "unknown";
++}
++
++/** Read at render: a module-level table can capture icons before their chunk initializes on the server. */
++export const effectIcon = (effect: Effect) => {
++  switch (effect) {
++    case "read":
++      return ViewIcon;
++    case "change":
++      return PencilEdit01Icon;
++    case "delete":
++      return Delete02Icon;
++    case "unknown":
++      return SourceCodeIcon;
++  }
++};
+diff --git a/packages/ui/src/implementation/dashboard/tools.tsx b/packages/ui/src/implementation/dashboard/tools.tsx
+index 3336d81..a7de103 100644
+--- a/packages/ui/src/implementation/dashboard/tools.tsx
++++ b/packages/ui/src/implementation/dashboard/tools.tsx
+@@ -1,18 +1,12 @@
+ import { EmptyState } from "./empty-state.tsx";
+ import { AppSectionHeader, AppSectionTitle } from "./app-section-header.tsx";
+ import { useState, type ReactNode } from "react";
+-import type { Tool, ToolRouter, ToolSummary } from "@executor-js/sdk";
++import type { Tool, ToolSummary } from "@executor-js/sdk";
+ import { Option } from "effect";
+ import { HugeiconsIcon } from "@hugeicons/react";
+-import {
+-  ArrowRight01Icon,
+-  Delete02Icon,
+-  PencilEdit01Icon,
+-  SidebarLeft01Icon,
+-  SourceCodeIcon,
+-  ViewIcon,
+-} from "@hugeicons/core-free-icons";
++import { SidebarLeft01Icon } from "@hugeicons/core-free-icons";
+ import type { Query, QueryProps, ToolCatalog } from "../../contracts/dashboard.ts";
++import { groupChanges, type ToolAvailabilityBinding } from "../../contracts/tool-availability.ts";
+ import { QueryResult, useQuery } from "./context.tsx";
+ import { CopyButton } from "./code.tsx";
+ import { humanize, SchemaSection } from "./tool-schema.tsx";
+@@ -21,14 +15,61 @@ import { Button } from "../components/button.tsx";
+ import { Empty, SearchInput } from "./common.tsx";
+ import { Skeleton } from "../components/skeleton.tsx";
+ import { cn } from "../lib/utils.ts";
++import {
++  buildTree,
++  effectIcon,
++  groupKeys,
++  pruneTree,
++  toolEffect,
++  ToolTree,
++  treeIndex,
++} from "./tool-tree.tsx";
++import {
++  AvailabilityRow,
++  useToolAvailability,
++  AvailabilityToolbar,
++  type AvailabilityController,
++} from "./tool-availability.tsx";
++
++type ToolBrowserProps<E> = QueryProps<ToolCatalog, E> & {
++  /** Undefined when the tool left the catalog after the list was read. */
++  readonly detail: (tool: ToolSummary) => Query<Tool | undefined, E>;
++  readonly selected: string | undefined;
++  readonly onSelect: (tool: string) => void;
++  readonly renderAction?: (tool: ToolSummary) => ReactNode;
++  /** Replaces the empty catalog message when the host knows why the app listed nothing. */
++  readonly empty?: ReactNode;
++};
+ 
+ /**
+  * Stable list/inspector layout. Hosts choose navigation and any tool execution controls.
+  * The list carries no schemas; the selected tool's schemas are read through detail.
+  * A group that is a router, such as one MCP server, shows the router's title and description.
+  * On phones the inspector fills the section and the list opens as a panel over it.
++ *
++ * With `availability`, the host's catalog includes switched-off tools and the browser adds a
++ * manager's switches. Hosts pass it only to people who can change the app.
+  */
+-export function ToolBrowser<E>({
++export function ToolBrowser<E, F = E>({
++  availability,
++  ...props
++}: ToolBrowserProps<E> & { readonly availability?: ToolAvailabilityBinding<F> | undefined }) {
++  return availability === undefined ? (
++    <Browser<E, F> {...props} />
++  ) : (
++    <ManagedToolBrowser {...props} binding={availability} />
++  );
++}
++
++function ManagedToolBrowser<E, F>({
++  binding,
++  ...props
++}: ToolBrowserProps<E> & { readonly binding: ToolAvailabilityBinding<F> }) {
++  const controller = useToolAvailability(binding);
++  return <Browser {...props} availability={controller} />;
++}
++
++function Browser<E, F>({
+   query,
+   detail,
+   Failure,
+@@ -36,33 +77,42 @@ export function ToolBrowser<E>({
+   onSelect,
+   renderAction,
+   empty,
+-}: QueryProps<ToolCatalog, E> & {
+-  /** Undefined when the tool left the catalog after the list was read. */
+-  readonly detail: (tool: ToolSummary) => Query<Tool | undefined, E>;
+-  readonly selected: string | undefined;
+-  readonly onSelect: (tool: string) => void;
+-  readonly renderAction?: (tool: ToolSummary) => ReactNode;
+-  /** Replaces the empty catalog message when the host knows why the app listed nothing. */
+-  readonly empty?: ReactNode;
+-}) {
++  availability,
++}: ToolBrowserProps<E> & { readonly availability?: AvailabilityController<F> | undefined }) {
+   const { result, data, refresh } = useQuery(query);
+   const [search, setSearch] = useState("");
+   const [listOpen, setListOpen] = useState(false);
++  const [showHidden, setShowHidden] = useState(false);
+   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
+   const tools = Option.isSome(data) ? data.value.tools : [];
+   const routers = new Map(
+     (Option.isSome(data) ? data.value.routers : []).map((router) => [router.path, router]),
+   );
+-  const filtered = tools.filter((tool) =>
+-    `${tool.name} ${tool.description}`.toLowerCase().includes(search.toLowerCase()),
+-  );
++  // Until the setting is read, a manager sees the ordinary browser rather than guessed switches.
++  const state = availability?.state;
++  const manage = state === undefined ? undefined : availability;
++  const shown = (tool: ToolSummary) =>
++    manage === undefined || showHidden || manage.enabled.has(tool.name);
++  const matches = (tool: ToolSummary) =>
++    `${tool.name} ${tool.description}`.toLowerCase().includes(search.toLowerCase());
++  const visible = tools.filter(shown);
++  const filtered = visible.filter(matches);
+   const current = tools.find((tool) => tool.name === selected) ?? filtered[0];
++  const enabledCount = manage
++    ? tools.filter((tool) => manage.enabled.has(tool.name)).length
++    : tools.length;
++  const setTool = (name: string, enabled: boolean) => {
++    if (manage === undefined) return;
++    // The inspector keeps a tool it shows after the list hides it, so the way back stays in reach.
++    if (!enabled && selected === undefined && current?.name === name) onSelect(name);
++    manage.apply([{ kind: "tool", tool: name, enabled }], [name]);
++  };
+   const listToggle = (
+     <Button
+       variant="ghost"
+       size="icon"
+       className="-ml-2 hidden shrink-0 text-muted-foreground max-[740px]:inline-flex"
+-      aria-label={listOpen ? "Hide tools list" : `Show all ${tools.length} tools`}
++      aria-label={listOpen ? "Hide tools list" : `Show all ${visible.length} tools`}
+       aria-expanded={listOpen}
+       aria-controls="tools-list-panel"
+       onClick={() => setListOpen((open) => !open)}
+@@ -70,9 +120,10 @@ export function ToolBrowser<E>({
+       <HugeiconsIcon icon={SidebarLeft01Icon} size={18} aria-hidden />
+     </Button>
+   );
+-  const tree = buildTree(filtered, routers);
+-  // Labels come from the whole catalog so searching does not change a tool's title.
+-  const { leafLabels } = treeIndex(buildTree(tools, routers));
++  // Groups and labels come from the whole catalog, so searching or hiding a tool moves no other.
++  const whole = buildTree(tools, routers);
++  const { leafLabels, members } = treeIndex(whole);
++  const tree = pruneTree(whole, (tool) => shown(tool) && matches(tool));
+   const groups = groupKeys(tree);
+   const allCollapsed = groups.length > 0 && groups.every((key) => collapsed.has(key));
+   const list = (toggle?: ReactNode) => (
+@@ -81,8 +132,11 @@ export function ToolBrowser<E>({
+         {toggle}
+         <AppSectionTitle className="flex-1">Tools</AppSectionTitle>
+         <span className="font-normal tabular-nums text-muted-foreground">
+-          {filtered.length}
+-          {search ? ` / ${tools.length}` : ""}
++          {search
++            ? `${filtered.length} / ${visible.length}`
++            : manage
++              ? `${enabledCount} of ${tools.length} on`
++              : filtered.length}
+         </span>
+         {groups.length > 0 && !search && (
+           <Button
+@@ -98,11 +152,36 @@ export function ToolBrowser<E>({
+       <div className="shrink-0 border-b p-2 [&_.search-field]:w-full">
+         <SearchInput value={search} onChange={setSearch} placeholder="Search tools…" />
+       </div>
++      {manage && (
++        <AvailabilityToolbar
++          controller={manage}
++          tools={tools}
++          showHidden={showHidden}
++          onShowHidden={setShowHidden}
++        />
++      )}
+       <nav aria-label="App tools" className="min-h-0 flex-1 overflow-auto p-2">
+         {filtered.length === 0 ? (
+-          <EmptyState size="compact" icon={null} title="No matching tools">
+-            Try another name.
+-          </EmptyState>
++          manage && !showHidden && visible.length === 0 ? (
++            <EmptyState
++              size="compact"
++              icon={null}
++              title="Every tool is hidden"
++              action={
++                <Button variant="outline" size="sm" onClick={() => setShowHidden(true)}>
++                  Show hidden tools
++                </Button>
++              }
++            >
++              Agents can't find or use any of this app's tools. Show them to turn some back on.
++            </EmptyState>
++          ) : (
++            <EmptyState size="compact" icon={null} title="No matching tools">
++              {manage && !showHidden
++                ? "Try another name, or show hidden tools."
++                : "Try another name."}
++            </EmptyState>
++          )
+         ) : (
+           <ToolTree
+             nodes={tree}
+@@ -121,6 +200,16 @@ export function ToolBrowser<E>({
+               setListOpen(false);
+               onSelect(name);
+             }}
++            availability={
++              manage && {
++                enabled: manage.enabled,
++                members,
++                busy: manage.busy,
++                onTool: setTool,
++                onGroup: (names, enabled) =>
++                  manage.apply(groupChanges(manage.state?.groups ?? [], names, enabled), names),
++              }
++            }
+           />
+         )}
+       </nav>
+@@ -201,8 +290,17 @@ export function ToolBrowser<E>({
+                           current.description,
+                           toolTitle(current, leafLabels.get(current.name)),
+                         ) && <ToolDescription description={current.description} />}
++                        {manage && (
++                          <AvailabilityRow
++                            controller={manage}
++                            tool={current}
++                            onChange={(enabled) => setTool(current.name, enabled)}
++                          />
++                        )}
+                         <ToolSchemas query={detail(current)} Failure={Failure} />
+-                        {renderAction?.(current)}
++                        {/* A hidden tool cannot run; its switch above is the way back. */}
++                        {(manage === undefined || manage.enabled.has(current.name)) &&
++                          renderAction?.(current)}
+                       </div>
+                     </div>
+                   </>
+@@ -378,249 +476,7 @@ function ToolDescription({ description }: { readonly description: string }) {
+   );
+ }
+ 
+-type ToolNode =
+-  | {
+-      readonly kind: "group";
+-      readonly key: string;
+-      readonly label: string;
+-      readonly description: string | undefined;
+-      readonly children: readonly ToolNode[];
+-      readonly size: number;
+-    }
+-  | { readonly kind: "tool"; readonly tool: ToolSummary; readonly label: string };
+-
+-interface Entry {
+-  readonly tool: ToolSummary;
+-  readonly segments: readonly string[];
+-}
+-
+-/** Routers by path, which is the dotted prefix their tools' names share. */
+-type Routers = ReadonlyMap<string, ToolRouter>;
+-
+-/**
+- * Group tools by the dotted parts of their names, keeping catalog order. Within a level, a
+- * `prefix_` shared by several tools becomes a group too, e.g. `accounts_connect` and
+- * `accounts_rename` under Accounts. A tool that repeats its group's name as a prefix, like
+- * MCP servers that namespace every tool (`planetscale.planetscale_list_databases`), drops the
+- * repeat instead of nesting a second group with the same name. A dotted group is a router and
+- * takes its metadata.
+- */
+-function buildTree(tools: readonly ToolSummary[], routers: Routers): readonly ToolNode[] {
+-  return nest(
+-    tools.map((tool) => ({ tool, segments: tool.name.split(".") })),
+-    "",
+-    "",
+-    "",
+-    routers,
+-  );
+-}
+-
+-const underscorePrefix = (segment: string) => {
+-  const at = segment.indexOf("_");
+-  return at > 0 && at < segment.length - 1 ? segment.slice(0, at) : undefined;
+-};
+-
+-/** Removes a leading `name_` that only repeats the enclosing group's name. */
+-const withoutGroupPrefix = (entry: Entry, group: string): Entry => {
+-  const [only, ...rest] = entry.segments;
+-  if (only === undefined || rest.length > 0) return entry;
+-  const prefix = underscorePrefix(only);
+-  return prefix !== undefined && prefix.toLowerCase() === group.toLowerCase()
+-    ? { tool: entry.tool, segments: [only.slice(prefix.length + 1)] }
+-    : entry;
+-};
+-
+-/** `path` is the enclosing router's path, or undefined inside a `prefix_` group. */
+-function nest(
+-  nested: readonly Entry[],
+-  parent: string,
+-  parentGroup: string,
+-  path: string | undefined,
+-  routers: Routers,
+-): readonly ToolNode[] {
+-  const entries =
+-    parentGroup === "" ? nested : nested.map((e) => withoutGroupPrefix(e, parentGroup));
+-  const shared = new Map<string, number>();
+-  for (const entry of entries) {
+-    const prefix = entry.segments.length === 1 ? underscorePrefix(entry.segments[0]!) : undefined;
+-    if (prefix !== undefined) shared.set(prefix, (shared.get(prefix) ?? 0) + 1);
+-  }
+-  const order: Array<
+-    { readonly group: string; readonly router: boolean } | { readonly entry: Entry }
+-  > = [];
+-  const groups = new Map<string, Entry[]>();
+-  for (const entry of entries) {
+-    const [head = "", ...rest] = entry.segments;
+-    const prefix = rest.length === 0 ? underscorePrefix(head) : undefined;
+-    const split =
+-      rest.length > 0
+-        ? { group: head, segments: rest, router: true }
+-        : prefix !== undefined && (shared.get(prefix) ?? 0) > 1
+-          ? { group: prefix, segments: [head.slice(prefix.length + 1)], router: false }
+-          : undefined;
+-    if (split === undefined) {
+-      order.push({ entry });
+-      continue;
+-    }
+-    const members = groups.get(split.group);
+-    if (members === undefined) {
+-      groups.set(split.group, [{ tool: entry.tool, segments: split.segments }]);
+-      order.push({ group: split.group, router: split.router });
+-    } else members.push({ tool: entry.tool, segments: split.segments });
+-  }
+-  return order.map((item): ToolNode => {
+-    if ("entry" in item)
+-      return { kind: "tool", tool: item.entry.tool, label: humanize(item.entry.segments[0]!) };
+-    const members = groups.get(item.group) ?? [];
+-    const key = parent === "" ? item.group : `${parent}/${item.group}`;
+-    const routerPath =
+-      item.router && path !== undefined
+-        ? path === ""
+-          ? item.group
+-          : `${path}.${item.group}`
+-        : undefined;
+-    const router = routerPath === undefined ? undefined : routers.get(routerPath);
+-    return {
+-      kind: "group",
+-      key,
+-      label: router?.title ?? humanize(item.group),
+-      description: router?.description,
+-      children: nest(members, key, item.group, routerPath, routers),
+-      size: members.length,
+-    };
+-  });
+-}
+-
+-function groupKeys(nodes: readonly ToolNode[]): readonly string[] {
+-  return nodes.flatMap((node) =>
+-    node.kind === "group" ? [node.key, ...groupKeys(node.children)] : [],
+-  );
+-}
+-
+-/** Each tool's short label in the tree. */
+-function treeIndex(nodes: readonly ToolNode[]) {
+-  const leafLabels = new Map<string, string>();
+-  const walk = (level: readonly ToolNode[]) => {
+-    for (const node of level) {
+-      if (node.kind === "group") walk(node.children);
+-      else leafLabels.set(node.tool.name, node.label);
+-    }
+-  };
+-  walk(nodes);
+-  return { leafLabels };
+-}
+-
+-function ToolTree({
+-  nodes,
+-  depth,
+-  current,
+-  collapsed,
+-  onToggle,
+-  onSelect,
+-}: {
+-  readonly nodes: readonly ToolNode[];
+-  readonly depth: number;
+-  readonly current: string | undefined;
+-  readonly collapsed: ReadonlySet<string>;
+-  readonly onToggle: (key: string) => void;
+-  readonly onSelect: (tool: string) => void;
+-}) {
+-  return (
+-    <ul className={cn("space-y-px", depth > 0 && "ml-[15px] border-l pl-1.5")}>
+-      {nodes.map((node) =>
+-        node.kind === "group" ? (
+-          <li key={`group:${node.key}`}>
+-            <button
+-              type="button"
+-              aria-expanded={!collapsed.has(node.key)}
+-              onClick={() => onToggle(node.key)}
+-              className="flex min-h-7.5 w-full items-center gap-1.5 rounded-md px-2 text-left text-[13px] font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-ring max-[740px]:min-h-11"
+-            >
+-              <HugeiconsIcon
+-                icon={ArrowRight01Icon}
+-                size={14}
+-                className={cn(
+-                  "shrink-0 text-muted-foreground transition-transform",
+-                  !collapsed.has(node.key) && "rotate-90",
+-                )}
+-                aria-hidden
+-              />
+-              <span className="min-w-0 flex-1 truncate">{node.label}</span>
+-              <span className="text-[11px] font-normal tabular-nums text-muted-foreground">
+-                {node.size}
+-              </span>
+-            </button>
+-            {node.description !== undefined && !collapsed.has(node.key) && (
+-              <p
+-                title={node.description}
+-                className="mb-1 ml-[22px] line-clamp-2 pr-2 text-xs leading-normal text-muted-foreground"
+-              >
+-                {node.description}
+-              </p>
+-            )}
+-            {!collapsed.has(node.key) && (
+-              <ToolTree
+-                nodes={node.children}
+-                depth={depth + 1}
+-                current={current}
+-                collapsed={collapsed}
+-                onToggle={onToggle}
+-                onSelect={onSelect}
+-              />
+-            )}
+-          </li>
+-        ) : (
+-          <li key={`tool:${node.tool.name}`}>
+-            <button
+-              type="button"
+-              title={node.tool.name}
+-              aria-label={node.tool.name}
+-              aria-pressed={current === node.tool.name}
+-              onClick={() => onSelect(node.tool.name)}
+-              className={cn(
+-                "flex min-h-7.5 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-ring max-[740px]:min-h-11",
+-                current === node.tool.name && "bg-muted font-medium text-foreground",
+-              )}
+-            >
+-              <HugeiconsIcon
+-                icon={effectIcon(toolEffect(node.tool))}
+-                size={14}
+-                strokeWidth={1.7}
+-                className="shrink-0 opacity-70"
+-                aria-hidden
+-              />
+-              <span className="truncate">{node.label}</span>
+-            </button>
+-          </li>
+-        ),
+-      )}
+-    </ul>
+-  );
+-}
+-
+-type Effect = "read" | "change" | "delete" | "unknown";
+-
+-/** What running the tool does, from its own read-only and destructive hints. */
+-function toolEffect(tool: ToolSummary): Effect {
+-  const readOnly = tool.readOnly ?? tool.annotations?.readOnlyHint;
+-  if (readOnly === true) return "read";
+-  if (tool.annotations?.destructiveHint === true) return "delete";
+-  return readOnly === false ? "change" : "unknown";
+-}
+-
+-/** Read at render: a module-level table can capture icons before their chunk initializes on the server. */
+-const effectIcon = (effect: Effect) => {
+-  switch (effect) {
+-    case "read":
+-      return ViewIcon;
+-    case "change":
+-      return PencilEdit01Icon;
+-    case "delete":
+-      return Delete02Icon;
+-    case "unknown":
+-      return SourceCodeIcon;
+-  }
+-};
++type Effect = ReturnType<typeof toolEffect>;
+ 
+ const effects: Record<Effect, { readonly label?: string; readonly badge?: string }> = {
+   read: { label: "Only reads data", badge: "bg-sky-500/10 text-sky-700 dark:text-sky-300" },

@@ -158,7 +158,7 @@
     {
       "entry": "alphavantage",
       "package": "@executor.sh/alphavantage",
-      "sourceSha256": "bbf58098cbccd3cba4ec7208b9d47d6ffd536b64024f13e9b29d595da583b412",
+      "sourceSha256": "532189ee8de11d44c637eefe336960199a121a4e3c2022082216f8f9c181b198",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -281,7 +281,7 @@
     {
       "entry": "atlassian",
       "package": "atlassian",
-      "sourceSha256": "c5deea1766554ae34b180d52df9b17797f7a46fddc67faa271edf90193a980c9",
+      "sourceSha256": "f3826cd7f33506c91387084d4a901b489729a578260bf0e82cc4949603f231ad",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -367,7 +367,7 @@
     {
       "entry": "aws",
       "package": "aws",
-      "sourceSha256": "b27e3e1a7362613d3fa020b33c315897c58125747cba5bb7e11079224e26c60d",
+      "sourceSha256": "a68f84472af0bb7abaf2835cabdbbb8651ebd9752aeb59a352bbe00b298dfbe6",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -884,6 +884,19 @@
         "oauth": {
           "kind": "deferred",
           "message": "Signalbox has not verified one-click sign-in for Clay yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "clerk",
+      "package": "@executor.sh/clerk",
+      "sourceSha256": "a9a523cf3c07ebb23e3b32c1fd10c821ec6693fde9ea5b2cca71fe13f556cd59",
+      "methods": {
+        "oauth": {
+          "kind": "automatic",
+          "protocol": "cimd",
+          "metadata": "https://clerk.clerk.com/.well-known/oauth-authorization-server",
+          "metadataSha256": "158ac5428a3f49d85e6c3ab790e0bba4c2d4b813f163c583477a3e954994f9d9"
         }
       }
     },
@@ -1490,7 +1503,7 @@
     {
       "entry": "elevenlabs",
       "package": "@executor.sh/elevenlabs",
-      "sourceSha256": "57b561d6caa30a24f2f422f53c5bf731cedcbcffc089f52fe6bceb0b46b352ba",
+      "sourceSha256": "ae7cc56353c8f7f4fdcc785cc195d29f1b37c32351c896f0bc330500fb503f39",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -1891,7 +1904,7 @@
     {
       "entry": "github",
       "package": "@executor.sh/github",
-      "sourceSha256": "6864e26ed64ffb57950e64e47643b1747b09d53ee9f3853c8bf19d05fb802fa6",
+      "sourceSha256": "7eeb3b8cab180e78d7b3efbcc309faa6953c8ffc6a837e1d3b4918bec4a526c2",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -1903,23 +1916,16 @@
     {
       "entry": "gitlab",
       "package": "@executor.sh/gitlab",
-      "sourceSha256": "ccbfbffe129a19f863dfd13735ac69842ad8ab28b9d383c2270d1c563ef24ef1",
+      "sourceSha256": "830382671af0ae82ceac76f437274162530181a66b4ed64e05923b5771ef8294",
       "methods": {
+        "mcp": {
+          "kind": "deferred",
+          "message": "This GitLab instance doesn't offer automatic app registration for sign-in. Use your own GitLab app with the mcp scope, or connect the full REST API with a personal access token."
+        },
         "oauth": {
           "kind": "hosted",
           "client": "gitlab",
           "message": "GitLab.com sign-in is not configured on this host. For a self-managed GitLab site, use an OAuth app registered on that site."
-        }
-      }
-    },
-    {
-      "entry": "gitlab-mcp",
-      "package": "@signalbox/gitlab-mcp",
-      "sourceSha256": "80c6497f49cc448522162cb7dba909d1a099d1186c7bb7a961643659326b5d4f",
-      "methods": {
-        "oauth": {
-          "kind": "deferred",
-          "message": "GitLab MCP uses an OAuth app registered on your selected instance with the mcp scope. Automatic client registration is not configured for this app. You can connect with your own OAuth app or a fine-grained personal token."
         }
       }
     },
@@ -1956,7 +1962,7 @@
     {
       "entry": "gmail",
       "package": "@executor.sh/gmail",
-      "sourceSha256": "ef8826b33d0fdd73849bd894fbe86035b0e2f2da4dd65b0f5fc8a23ce6e00085",
+      "sourceSha256": "f723510e1c49559e0a6c1e728c64e335b7853f65e1d6979871a13af39b75edfd",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -1988,7 +1994,7 @@
     {
       "entry": "google",
       "package": "@executor.sh/google",
-      "sourceSha256": "ef8145515f605649c1135f2850f71026c36148de117a464a59540ac6d5295297",
+      "sourceSha256": "b3a462929a6f78ab095662c5bbf6676cd46ccf8d9fd5e11c9f29ec54b1436463",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -2000,7 +2006,7 @@
     {
       "entry": "google-admin",
       "package": "@executor.sh/google-admin",
-      "sourceSha256": "c69c4392a5c94d05fa89c600fc34c81e2f96a7ecfaacbe0b698c935967b8e405",
+      "sourceSha256": "e14bac0430c80284ef95c14a91d97d9584de541ccac3bcf955b304e893b1a1ff",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -2052,7 +2058,7 @@
     {
       "entry": "google-calendar",
       "package": "@executor.sh/google-calendar",
-      "sourceSha256": "b621baf3e6efcd8f29d68892121b8346e32fa1640bfbee8c1c2716e970ecaf97",
+      "sourceSha256": "d705c88e37874b190ad423997d55b4d8485caba582e20893c069275c21bf99bf",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -2094,7 +2100,7 @@
     {
       "entry": "google-contacts",
       "package": "@executor.sh/google-contacts",
-      "sourceSha256": "73c1016d6b42beec55e2f9ab397bba2f54bb5d9995b3aaa629de416c9765e7f0",
+      "sourceSha256": "87a2cd827a9f1dfdee2be0fd31b6c126126755db694729914c8fc033a9dd2182",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -2116,7 +2122,7 @@
     {
       "entry": "google-docs",
       "package": "@executor.sh/google-docs",
-      "sourceSha256": "03cb318a733dcf05db3f8ab218ddb7ebd60c4df70f241b712d290e3e35c066b0",
+      "sourceSha256": "6eed3745160c298578d7dfcebcfd97333860938e66003a16bd2e42c70bf06d3b",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -2128,7 +2134,7 @@
     {
       "entry": "google-drive",
       "package": "@executor.sh/google-drive",
-      "sourceSha256": "f6d7a104ca616fc98b6e877266d7b47d3fb366bc98eae502f67f832b9e24e6bd",
+      "sourceSha256": "c936255772535829e9fb09c8b6360bf10c7f9e7d1c7bc6e72f3ded55b00301ba",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -2140,7 +2146,7 @@
     {
       "entry": "google-forms",
       "package": "@executor.sh/google-forms",
-      "sourceSha256": "a2040be38ba7219e7305fa9a561360e56bc38556e3bacbf771a14b2f2ab8aaa4",
+      "sourceSha256": "e72aad16d8c910d640955809f9725f2d33b40761d38f73baa133e569bd9ad85e",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -2152,7 +2158,7 @@
     {
       "entry": "google-meet",
       "package": "@executor.sh/google-meet",
-      "sourceSha256": "91b4ff211c634c6081b6898063b0ea2bbd1f15a9cec28dd8c82bdb15f91ce174",
+      "sourceSha256": "001bc1b454af7b7e78a2a7b6a783280e8815959b638ca12ab01af35c82357fc7",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -2164,7 +2170,7 @@
     {
       "entry": "google-photos",
       "package": "@executor.sh/google-photos",
-      "sourceSha256": "40873b965eb3aea217147809a04d8f46cfacf3d5f907183a9ca27c6781b0aec8",
+      "sourceSha256": "8d08ac3c56ac60538f757eea4a89946fbef43137b6a03a10b7db7a0307f53c2e",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -2186,7 +2192,7 @@
     {
       "entry": "google-sheets",
       "package": "@executor.sh/google-sheets",
-      "sourceSha256": "03039f5cbd0290a2fcf368af24e5e301deba39cee297b599e278cf33a6bb2e34",
+      "sourceSha256": "51ef5ff8287c9eddd18960f69a142a2616d9ee668c7a84a42456e462e6277666",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -2198,7 +2204,7 @@
     {
       "entry": "google-slides",
       "package": "@executor.sh/google-slides",
-      "sourceSha256": "9df3aac6e381b4a17ba4adf6791c97cf00bef81a79692f2fcd6e95794e7bee4d",
+      "sourceSha256": "19f7cbf36e288263f76e8b590f6254bd85d2787e53a69be7b4213d772676c40c",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -2210,7 +2216,7 @@
     {
       "entry": "google-tasks",
       "package": "@executor.sh/google-tasks",
-      "sourceSha256": "4c3b30691536689dca85f54cf030fa52146d6ec87fdf428f866b720a38a38636",
+      "sourceSha256": "a7a0c9ac8a208ad6849aaf5f7b51d5dfa674dc45a5578f3909445141057a8eb5",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -3056,7 +3062,7 @@
     {
       "entry": "miro",
       "package": "@executor.sh/miro",
-      "sourceSha256": "d393cdec7c5d2bd2a1d8746aa364daffa870abc03cbbcd759e85ab9b7fd4d7f0",
+      "sourceSha256": "36bfa1b7f8c9ed67992149eca06fc7190ea70d6383a8703540aec2b50fd5d463",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -3258,7 +3264,7 @@
     {
       "entry": "notion",
       "package": "@executor.sh/notion",
-      "sourceSha256": "e330863303904ff418b445306446c5592215df29c94aebcd88f3b8f6e06b3da0",
+      "sourceSha256": "380b05b3215b11deec3d0c6e2691caa1c37c48ed2663314727ac873084ed5ce4",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -4290,7 +4296,7 @@
     {
       "entry": "slack",
       "package": "@executor.sh/slack",
-      "sourceSha256": "224c8729a362214f53383020183916fa24cf5ad0a33f775239d3bda1574dfccd",
+      "sourceSha256": "77ba6196d6040f1235395b02e95d20fd93ae8c1493090e56d724056fb02ccea9",
       "methods": {
         "user": {
           "kind": "hosted",
@@ -4646,7 +4652,7 @@
     {
       "entry": "todoist",
       "package": "@executor.sh/todoist",
-      "sourceSha256": "876782a027fca1d9a43ca57ae7258c51242d00ac8383e9bfee7613a3889e6d1e",
+      "sourceSha256": "b078bc951966c70cd221e0d8c55f011a116f1571701feb2d0e471679b6af9ac6",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -4692,7 +4698,7 @@
     {
       "entry": "trello",
       "package": "@executor.sh/trello",
-      "sourceSha256": "4ce370efc98e1b03e93fcdf4e0e11e9cb5552b77cbaa73ee6b2374caafc67c34",
+      "sourceSha256": "21b00c71ae0a1616bd9883c03c0c0a22535d8bf6d5297acd6af99b5cc1439eec",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -4848,7 +4854,7 @@
     {
       "entry": "vercel",
       "package": "@executor.sh/vercel",
-      "sourceSha256": "387afa28b40ba7a3935aebe5adbe59230ee3e087dfbf8a46cf737d9cfd5f87b4",
+      "sourceSha256": "a74507d282e1859fa60e6e48cefac5f9df666b4b1bdd4dcb63833bba544a1bf3",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -5107,6 +5113,19 @@
       }
     },
     {
+      "entry": "workos",
+      "package": "@executor.sh/workos",
+      "sourceSha256": "7a7d8597bb63cc5db82fc72aa79bf479dbdb510effc4b879820cfc579365b731",
+      "methods": {
+        "oauth": {
+          "kind": "automatic",
+          "protocol": "cimd",
+          "metadata": "https://signin.workos.com/.well-known/oauth-authorization-server",
+          "metadataSha256": "45804d0840493f0d4694fd4fd63410ea9f264f8834ff6688b6c35230dacd195b"
+        }
+      }
+    },
+    {
       "entry": "wrike",
       "package": "@executor.sh/wrike",
       "methods": {
@@ -5233,7 +5252,7 @@
     {
       "entry": "zoho",
       "package": "@executor.sh/zoho",
-      "sourceSha256": "8e837af088e515b6316a67c69514c59949e0c1ca40d11d695d77349c389a5b6d",
+      "sourceSha256": "2eb87473838e15fa2f0c5012b812dd1d3dded36eb87d47373b59cfb01eab3f43",
       "methods": {
         "oauthUs": {
           "kind": "hosted",
@@ -5274,6 +5293,32 @@
           "kind": "hosted",
           "client": "zoho-cn",
           "message": "Shared sign-in for Zoho CRM is not configured on this host. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "zoho-people",
+      "package": "@signalbox/zoho-people",
+      "sourceSha256": "ab2586074a89f1e156ba236011dc8c890260554d28bc7ae78618d09305db0d22",
+      "methods": {
+        "oauthEu": {
+          "kind": "hosted",
+          "client": "zoho-people-eu",
+          "message": "Connect your own Zoho People account using the hosted client, or enter a server-based client you own if hosted sign-in is unavailable."
+        },
+        "oauthUs": {
+          "kind": "hosted",
+          "client": "zoho-people-us",
+          "message": "Connect your own Zoho People account using the hosted client, or enter a server-based client you own if hosted sign-in is unavailable."
+        },
+        "oauthIn": {
+          "kind": "hosted",
+          "client": "zoho-people-in",
+          "message": "Connect your own Zoho People account using the hosted client, or enter a server-based client you own if hosted sign-in is unavailable."
+        },
+        "mcp": {
+          "kind": "account-endpoint",
+          "message": "Paste your own enabled Zoho MCP server URL. OAuth discovery and client setup depend on that server; no shared REST client is used."
         }
       }
     },

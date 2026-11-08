@@ -743,3 +743,28 @@ test("provider startup refusal never repeats the complete release or rollback", 
     restore("GITHUB_REF", oldRef);
   }
 });
+
+test("release dependencies dispose temporary receipts on success and failure", async () => {
+  const oldEvent = process.env.GITHUB_EVENT_NAME;
+  const oldRef = process.env.GITHUB_REF;
+  process.env.GITHUB_EVENT_NAME = "push";
+  process.env.GITHUB_REF = "refs/heads/main";
+  try {
+    for (const failing of [false, true]) {
+      let disposed = false;
+      const deps = dependencies({
+        dispose: () => {
+          disposed = true;
+        },
+        deploy: async () => ({ started: true, exitCode: failing ? 1 : 0 }),
+      });
+      const run = executeRelease(report(), "automatic", deps);
+      if (failing) await assert.rejects(run);
+      else await run;
+      assert.equal(disposed, true);
+    }
+  } finally {
+    restore("GITHUB_EVENT_NAME", oldEvent);
+    restore("GITHUB_REF", oldRef);
+  }
+});

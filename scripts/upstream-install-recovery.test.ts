@@ -17,6 +17,7 @@ import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { fixturePhases } from "./upstream-fixture-phases.ts";
 import { fixtureInventory } from "./upstream-fixture-inventory.ts";
+import { fixtureGate } from "./upstream-fixture-gate.ts";
 
 function output(child: ReturnType<typeof spawn>) {
   const messages: Record<string, unknown>[] = [];
@@ -43,6 +44,7 @@ test(
     const phase = fixturePhases(t, "upstream-install-recovery");
     const directory = mkdtempSync(join(tmpdir(), "basalt-orphan-install-"));
     const inventory = fixtureInventory(t, directory);
+    const gate = await fixtureGate(t);
     const processes: number[] = [];
     t.after(() => {
       for (const pid of processes) {
@@ -68,8 +70,9 @@ test(
     writeFileSync(
       installer,
       `#!/usr/bin/env node
-import { mkdirSync, writeFileSync, symlinkSync, existsSync, watch, chmodSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { mkdirSync, writeFileSync, symlinkSync, existsSync, chmodSync } from "node:fs";
+import { join } from "node:path";
+import { waitForFixtureRelease } from ${JSON.stringify(new URL("./upstream-fixture-gate.ts", import.meta.url).href)};
 import { spawnSync } from "node:child_process";
 if (process.argv[2]?.endsWith("process-owner-darwin.mjs")) {
   const result = spawnSync(process.env.FIXTURE_REAL_BUN, process.argv.slice(2), {stdio:"inherit"});
@@ -79,12 +82,7 @@ if (process.argv[2] === "--version") { console.log("1.4.2"); process.exit(0); }
 const directory = process.cwd();
 const name = process.env.FIXTURE_INSTALLER;
 let released;
-if (name === "orphan") released = new Promise(resolve => {
-  const gate = process.env.FIXTURE_GATE;
-  const watcher = watch(dirname(gate), () => {
-    if (existsSync(gate)) { watcher.close(); resolve(); }
-  });
-});
+if (name === "orphan") released = waitForFixtureRelease(process.env.FIXTURE_GATE_PORT);
 console.log(JSON.stringify({type:"install-started",pid:process.pid,directory,name}));
 if (released) await released;
 const packages = join(directory, "node_modules/.bun/fixture-package@1/node_modules/fixture-package");
@@ -126,7 +124,7 @@ console.log(JSON.stringify({type:"install-finished",name}));
             PATH: `${bin}:${process.env.PATH}`,
             BASALT_UPSTREAM_CACHE: join(directory, "cache"),
             FIXTURE_INSTALLER: name,
-            FIXTURE_GATE: join(directory, "release-orphan"),
+            FIXTURE_GATE_PORT: gate.port,
             FIXTURE_REAL_BUN: realBun,
           },
           stdio: ["ignore", "pipe", "inherit"],
@@ -175,7 +173,7 @@ console.log(JSON.stringify({type:"install-finished",name}));
     phase.waiting("replacement-exit");
     await secondExit;
     phase.reached("replacement-exit");
-    writeFileSync(join(directory, "release-orphan"), "release");
+    await gate.release();
     phase.waiting("install-finished");
     await first.next("install-finished");
     phase.reached("install-finished");

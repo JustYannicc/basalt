@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-tool-availability",
+  "file": "0405-tool-availability.patch",
+  "content_sha256": "2dec4dae3f34ecf34fb064f7db122a8745c92c6044e338a81c2622186df02b31",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": true
+}

@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   cpSync,
@@ -17,7 +16,8 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { digest, upstreamCache, withCacheLock } from "./upstream-cache.ts";
-import { touchPreparedKey } from "./upstream-cache-gc.ts";
+import { dependencyIdentity } from "./upstream-inputs.ts";
+import { omitReleaseLifecycles } from "./ci/dependency-lifecycles.ts";
 import {
   abandonInstallAttempt,
   atomicStoreJson,
@@ -27,23 +27,6 @@ import {
   rememberDependencyConsumer,
   withDependencyStoreLock,
 } from "./upstream-store.ts";
-
-function inputs(root: string) {
-  const files = new Set(["bun.lock", "bunfig.toml", "package.json"]);
-  const visit = (directory: string) => {
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      if (["node_modules", ".git", ".local", ".alchemy", ".generated", "dist"].includes(entry.name))
-        continue;
-      const path = join(directory, entry.name);
-      if (entry.isDirectory()) visit(path);
-      else if (entry.isFile() && entry.name === "package.json") files.add(relative(root, path));
-    }
-  };
-  visit(root);
-  const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  for (const patch of Object.values(manifest.patchedDependencies ?? {})) files.add(String(patch));
-  return [...files].filter((file) => existsSync(join(root, file))).sort();
-}
 
 function moduleTrees(root: string, directory = root): string[] {
   const found: string[] = [];
@@ -108,21 +91,9 @@ function readonlyTree(path: string) {
   chmodSync(path, 0o555);
 }
 
-async function prepareDependencyGeneration(root: string, pin: string) {
-  const files = inputs(root);
-  const bun = spawnSync("bun", ["--version"], { encoding: "utf8" });
-  if (bun.status !== 0) throw new Error("Bun is required to prepare dependencies");
-  const key = digest(
-    JSON.stringify({
-      format: 3,
-      backend: "copyfile",
-      pin,
-      bun: bun.stdout.trim(),
-      platform: process.platform,
-      arch: process.arch,
-      inputs: files.map((path) => [path, digest(readFileSync(join(root, path), "utf8"))]),
-    }),
-  );
+async function prepareDependencyGeneration(root: string, pin: string, cacheHitOnly: boolean) {
+  const omitReleaseDownloads = process.env.BASALT_CI_OMIT_RELEASE_DOWNLOADS === "true";
+  const { files, key } = dependencyIdentity(root, pin, omitReleaseDownloads);
   const entry = join(upstreamCache(), "prepared", pin, key);
   const prepared = await withCacheLock(`${entry}.lock`, async () => {
     let generation = await withDependencyStoreLock(() => {
@@ -133,11 +104,19 @@ async function prepareDependencyGeneration(root: string, pin: string) {
     let attempt: string | undefined;
     try {
       if (generation === undefined) {
+        if (cacheHitOnly) throw new Error(`Refusing a new dependency generation for key ${key}`);
         const id = randomUUID();
         attempt = await createInstallAttempt(entry);
         for (const file of files) {
           mkdirSync(dirname(join(attempt, file)), { recursive: true });
           cpSync(join(root, file), join(attempt, file));
+        }
+        // Check uses system Git; only upstream release packaging needs these bundled runtimes.
+        if (omitReleaseDownloads) {
+          omitReleaseLifecycles(attempt);
+          console.log(
+            "Check dependency cache miss: release-only lifecycles omitted; GitHub release hosts blocked",
+          );
         }
         await installPrivateAttempt(attempt);
         const trees = moduleTrees(attempt);
@@ -203,7 +182,6 @@ async function prepareDependencyGeneration(root: string, pin: string) {
         }
         atomicStoreJson(join(root, ".basalt-dependencies.json"), { key, store });
         rememberDependencyConsumer(root, store, false);
-        touchPreparedKey(entry);
         collectDependencyStore(pin);
         return selected;
       });
@@ -215,10 +193,10 @@ async function prepareDependencyGeneration(root: string, pin: string) {
   return { key, store: prepared.store };
 }
 
-export function installUpstreamDependencies(root: string, pin: string) {
+export function installUpstreamDependencies(root: string, pin: string, cacheHitOnly = false) {
   root = realpathSync(root);
   // Two different dependency keys must not replace one checkout's references concurrently.
   return withCacheLock(join(upstreamCache(), "consumers", `${digest(root)}.lock`), () =>
-    prepareDependencyGeneration(root, pin),
+    prepareDependencyGeneration(root, pin, cacheHitOnly),
   );
 }

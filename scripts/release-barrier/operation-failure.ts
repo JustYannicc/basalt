@@ -1,5 +1,5 @@
 import { Cause, Effect } from "effect";
-import { BarrierRefusal } from "./manifest.ts";
+import { BarrierRefusal } from "./refusal.ts";
 
 export type ReleaseOperation =
   | "plan-stack"

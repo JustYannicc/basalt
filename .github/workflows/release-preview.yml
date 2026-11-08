@@ -42,7 +42,7 @@ jobs:
           CANDIDATE_HEAD: ${{ github.event.pull_request.head.sha }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.4
+          bun-version: 1.4.2
       - name: Verify the patch set and prepare the pinned build
         run: |
           npm run prepare:upstream

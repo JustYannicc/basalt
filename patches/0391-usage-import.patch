@@ -1,0 +1,290 @@
+diff --git a/apps/hosted/web/src/implementation/pages/pool-usage.tsx b/apps/hosted/web/src/implementation/pages/pool-usage.tsx
+--- a/apps/hosted/web/src/implementation/pages/pool-usage.tsx
++++ b/apps/hosted/web/src/implementation/pages/pool-usage.tsx
+@@ -15,6 +15,7 @@
+ import { editDraft, noEdits, savingAny, settleSave } from "./pool-usage-cap.tsx";
+ import { dayRange, formats, type Formats, type Metric } from "./pool-usage-format.ts";
+ import { PoolMemberRow, rowColumns } from "./pool-usage-row.tsx";
++import { PoolImportUsage } from "./pool-import-usage.tsx";
+
+ /** A page is its cursor and how many people came before it, in the backend's order. */
+ interface PageEntry {
+@@ -116,6 +117,11 @@
+         at current official USD API prices; unpriced requests lack a known official price or usable
+         token counts. A weekly cap stops a person&apos;s requests through this pool until it resets.
+       </p>
++      {page !== undefined && (
++        <div className="mt-3">
++          <PoolImportUsage app={app} canUse={canUse} />
++        </div>
++      )}
+       {!canUse &&
+         page !== undefined &&
+         !page.members.some((member) => member.member === viewer) && (
+diff --git a/apps/hosted/web/src/implementation/pages/pool-import-usage.tsx b/apps/hosted/web/src/implementation/pages/pool-import-usage.tsx
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/pool-import-usage.tsx
+@@ -0,0 +1,59 @@
++import type { App, AppId } from "@executor-js/sdk";
++import { Button } from "@executor-js/ui/components/button";
++import { useQuery } from "@executor-js/ui/dashboard/context";
++import { Option } from "effect";
++import { AsyncResult } from "effect/reactivity";
++import { liveAppAtom } from "../../contracts/apps.ts";
++import { appUiError } from "../../contracts/app-ui.ts";
++import { useOrganizationRoute } from "../components/organization.tsx";
++import { useAppUiLocation } from "./app-screen.tsx";
++
++/** Settings and the pool screen open the same authenticated import flow. */
++export function PoolImportUsage({
++  app,
++  canUse,
++}: {
++  readonly app: AppId;
++  readonly canUse: boolean;
++}) {
++  const { organization } = useOrganizationRoute();
++  const query = useQuery(liveAppAtom({ organization, app }));
++  const current = Option.getOrUndefined(query.data);
++  if (!canUse)
++    return (
++      <div className="grid gap-1">
++        <p className="text-sm font-medium">Import usage</p>
++        <p role="status" className="text-sm text-muted-foreground">
++          To import usage, you need permission to use this pool. Ask a pool manager to grant you use
++          access. Managing the pool does not include use access.
++        </p>
++      </div>
++    );
++  if (current === undefined || current.activeVersion === null) return null;
++  return <ImportLink app={current} />;
++}
++
++function ImportLink({ app }: { readonly app: App }) {
++  const { result, refresh } = useAppUiLocation(app);
++  if (AsyncResult.isFailure(result))
++    return (
++      <div className="flex flex-wrap items-center gap-2">
++        <span role="status" className="text-sm text-muted-foreground">
++          {appUiError(result.cause)}
++        </span>
++        <Button variant="outline" size="sm" onClick={refresh}>
++          Check import link
++        </Button>
++      </div>
++    );
++  if (!AsyncResult.isSuccess(result) || result.value.status !== "ready") return null;
++  const href = new URL(result.value.url);
++  href.hash = "usage-import";
++  return (
++    <Button variant="outline" size="sm" asChild>
++      <a href={href.href} target="_blank" rel="noopener noreferrer">
++        Import usage
++      </a>
++    </Button>
++  );
++}
+diff --git a/packages/sdk/src/implementation/worker-browser-build.ts b/packages/sdk/src/implementation/worker-browser-build.ts
+--- a/packages/sdk/src/implementation/worker-browser-build.ts
++++ b/packages/sdk/src/implementation/worker-browser-build.ts
+@@ -7,6 +7,7 @@
+ import { Effect, Option, Path, Schema } from "effect";
+ import type { Plugin } from "esbuild";
+ import { compileUiTailwind } from "./ui-tailwind.ts";
++import { browserExport } from "./worker-browser-exports.ts";
+
+ const Package = Schema.Struct({
+   dependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+@@ -15,7 +16,7 @@
+ const namespace = "executor-browser";
+ const assetUrl = "executor-asset-url";
+ const scriptImports = new Set(["import-statement", "dynamic-import", "require-call"]);
+-const browserAsset = /\.(?:svg|woff2)$/;
++const browserAsset = /\.(?:svg|woff2|wasm)$/;
+ /** Metafile inputs carry their plugin namespace, as in `virtual:node_modules/react/index.js`. */
+ const packageInput = (input: string) =>
+   input.slice(input.indexOf(":") + 1).startsWith("node_modules/");
+@@ -64,6 +65,7 @@
+           // authored source text or tree-shaken values to every app viewer.
+           sourcesContent: false,
+         });
++        build.onResolve({ filter: /^[^./]/ }, (args) => browserExport(filesystem, args.path));
+         // A file-loader URL is relative to the asset root, which is not the page's URL. Script
+         // imports receive it resolved against their own module instead; CSS urls already are.
+         // Package specifiers are classified by the file they resolve to. `require` receives the
+@@ -79,7 +81,7 @@
+               }
+             : { path: args.path, namespace: wrapped.value.namespace };
+         });
+-        build.onResolve({ filter: /^[^./]|\.(?:svg|woff2)$/ }, async (args) => {
++        build.onResolve({ filter: /^[^./]|\.(?:svg|woff2|wasm)$/ }, async (args) => {
+           if (
+             args.pluginData === assetUrl ||
+             args.namespace === namespace ||
+@@ -158,7 +160,9 @@
+           if (isServerUiImport(args.path))
+             return { errors: [{ text: "Server app modules cannot be imported by the UI." }] };
+           if (browserAsset.test(args.path)) {
+-            const contents = filesystem.read(args.path);
++            const contents = args.path.endsWith(".wasm")
++              ? filesystem.readBinary(args.path)
++              : filesystem.read(args.path);
+             return contents === null
+               ? { errors: [{ text: "Browser asset missing." }] }
+               : { contents, loader: "file" };
+diff --git a/packages/sdk/src/implementation/worker-browser-exports.ts b/packages/sdk/src/implementation/worker-browser-exports.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/worker-browser-exports.ts
+@@ -0,0 +1,51 @@
++import type { InMemoryFileSystem } from "@cloudflare/worker-bundler";
++
++const object = (value: unknown): value is Record<string, unknown> =>
++  value !== null && typeof value === "object" && !Array.isArray(value);
++
++function target(value: unknown): string | null | undefined {
++  if (value === null) return null;
++  if (typeof value === "string") return value;
++  if (Array.isArray(value)) {
++    for (const entry of value) {
++      const found = target(entry);
++      if (found !== undefined) return found;
++    }
++  } else if (object(value)) {
++    for (const [condition, entry] of Object.entries(value)) {
++      if (!["browser", "import", "default"].includes(condition)) continue;
++      const found = target(entry);
++      if (found !== undefined) return found;
++    }
++  }
++}
++
++/** The pinned bundler also enables node; honor an explicit browser export without that condition. */
++export function browserExport(files: InMemoryFileSystem, specifier: string) {
++  const parts = specifier.split("/");
++  const count = specifier.startsWith("@") ? 2 : 1;
++  const name = parts.slice(0, count).join("/");
++  const root = `node_modules/${name}/`;
++  const manifest = files.read(`${root}package.json`);
++  if (manifest === null) return undefined;
++  let parsed: unknown;
++  try {
++    parsed = JSON.parse(manifest);
++  } catch {
++    return undefined;
++  }
++  if (!object(parsed) || !object(parsed.exports)) return undefined;
++  const subpath = parts.length === count ? "." : `./${parts.slice(count).join("/")}`;
++  const entry = parsed.exports[subpath] ?? (subpath === "." ? parsed.exports : undefined);
++  if (!object(entry) || !Object.hasOwn(entry, "browser")) return undefined;
++  const selected = target(entry);
++  if (
++    selected === undefined ||
++    selected === null ||
++    !selected.startsWith("./") ||
++    selected.split("/").includes("..") ||
++    files.read(`${root}${selected.slice(2)}`) === null
++  )
++    return { errors: [{ text: `The browser export for "${specifier}" is unavailable.` }] };
++  return { path: `${root}${selected.slice(2)}`, namespace: "virtual" };
++}
+diff --git a/packages/sdk/src/implementation/worker-build.ts b/packages/sdk/src/implementation/worker-build.ts
+--- a/packages/sdk/src/implementation/worker-build.ts
++++ b/packages/sdk/src/implementation/worker-build.ts
+@@ -12,6 +12,7 @@
+ import type { Plugin } from "esbuild";
+ import { PublishedAppFramework, WorkerBundle } from "../contracts/worker-build.ts";
+ import { appProtocol } from "./app-protocols.ts";
++import { binaryFilePaths } from "./worker-binary-files.ts";
+ import { browserBuild } from "./worker-browser-build.ts";
+ import { sourceImports } from "./worker-source-imports.ts";
+ import { serverSourceMap, sourceLocation } from "./worker-source-map.ts";
+@@ -200,7 +201,7 @@
+       try: (signal) =>
+         createApp({
+           signal,
+-          files: filesystem,
++          files: binaryFilePaths(filesystem),
+           installDependencies: false,
+           server: entry,
+           externals: frameworkExports,
+diff --git a/packages/sdk/src/implementation/worker-binary-files.ts b/packages/sdk/src/implementation/worker-binary-files.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/worker-binary-files.ts
+@@ -0,0 +1,14 @@
++import type { FileSystem, InMemoryFileSystem } from "@cloudflare/worker-bundler";
++
++/**
++ * worker-bundler probes package-export existence through its text-only read method.
++ * Binary files need an existence marker there; the WASM and browser asset loaders
++ * read their bytes from the original filesystem, never from this resolver view.
++ */
++export const binaryFilePaths = (filesystem: InMemoryFileSystem): FileSystem => ({
++  read: (path) => filesystem.read(path) ?? (filesystem.readBinary(path) === null ? null : ""),
++  write: (path, content) => filesystem.write(path, content),
++  delete: (path) => filesystem.delete(path),
++  list: (prefix) => filesystem.list(prefix),
++  flush: () => filesystem.flush(),
++});
+diff --git a/packages/apps/src/contracts/approval.ts b/packages/apps/src/contracts/approval.ts
+--- a/packages/apps/src/contracts/approval.ts
++++ b/packages/apps/src/contracts/approval.ts
+@@ -8,6 +8,8 @@
+
+ /** Context for one tool's policy. toolInput is the same decoded value passed to run. */
+ export interface ApprovalContext<Input = unknown> {
++  /** Host protocol operation; never supplied through the tool's decoded input. */
++  readonly hostOperation?: "call" | "query" | "mutate";
+   readonly toolName: string;
+   readonly toolInput: Input;
+   readonly signal: AbortSignal;
+diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
+--- a/packages/apps/src/implementation/host.ts
++++ b/packages/apps/src/implementation/host.ts
+@@ -1045,7 +1045,12 @@
+             ? ("approved" as const)
+             : yield* safe(
+                 () =>
+-                  approval({ toolName, toolInput: input, signal: invocationSignal }).pipe(
++                  approval({
++                    toolName,
++                    toolInput: input,
++                    signal: invocationSignal,
++                    hostOperation: request.operation,
++                  }).pipe(
+                     Effect.withSpan("app.tool.approval", {
+                       attributes: { "executor.tool.name": toolName },
+                     }),
+diff --git a/package.json b/package.json
+--- a/package.json
++++ b/package.json
+@@ -132,6 +132,7 @@
+     "mcp:apps": "bun scripts/build-mcp-apps.ts"
+   },
+   "devDependencies": {
++    "@sqlite.org/sqlite-wasm": "3.54.1-build1",
+     "@alchemy.run/cloudflare-runtime": "2.0.0-beta.80",
+     "@changesets/cli": "2.31.1",
+     "@effect/platform-node": "4.0.1",
+diff --git a/bun.lock b/bun.lock
+--- a/bun.lock
++++ b/bun.lock
+@@ -5,6 +5,7 @@
+     "": {
+       "name": "executor-next",
+       "devDependencies": {
++        "@sqlite.org/sqlite-wasm": "3.54.1-build1",
+         "@alchemy.run/cloudflare-runtime": "2.0.0-beta.80",
+         "@changesets/cli": "2.31.1",
+         "@effect/platform-node": "4.0.1",
+@@ -885,6 +886,8 @@
+     "effect": "4.0.1",
+   },
+   "packages": {
++    "@sqlite.org/sqlite-wasm": ["@sqlite.org/sqlite-wasm@3.54.1-build1", "", {}, "sha512-foW427VBLJ3G87bsnvQTZCc9zYe0Fq1wH0pz1I6BlKLKXcArIAyTkHtq0iT2llmhcMQt9T/p6l5PpQQh+6O8uQ=="],
++
+     "@ai-sdk/gateway": ["@ai-sdk/gateway@4.0.87", "", { "dependencies": { "@ai-sdk/provider": "4.0.17", "@ai-sdk/provider-utils": "5.0.45", "@vercel/oidc": "3.2.0" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-6wJmX/D5OO7tvDJbtFdXdBuRt8AkCnW+FLK+W35UHe/tHgolAa4hclXtJcMSYnlTDy/t5DNRgdesVaoMXtwzow=="],
+
+     "@ai-sdk/provider": ["@ai-sdk/provider@4.0.17", "", { "dependencies": { "json-schema": "^0.4.0" } }, "sha512-VYMBxIQdcHqbIf1j+YZlI9Ati6LZ4wJe0GGd4z4a5H/KxTggjeOiyaVYTnfF7LHZK5jMQ+rofmzz4QPqf++NUw=="],

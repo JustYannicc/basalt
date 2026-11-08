@@ -1,7 +1,10 @@
 import type * as Workers from "@distilled.cloud/cloudflare/workers";
 import type { PreparedWorkerUpload } from "alchemy/Cloudflare/Workers/WorkerUploadHook";
 import { havePropsChanged } from "alchemy/Diff";
+import { assertScriptSettings, settingsRefusal } from "./script-settings.ts";
+import type { ActiveWorkerPlacement } from "./script-placement.ts";
 import { BarrierRefusal, canonical, digest, type FrozenWorker } from "./manifest.ts";
+import { repairComparisonSettings, type PendingPlacementRepair } from "./pending-placement.ts";
 
 const globalProps = [
   "observability",
@@ -37,42 +40,13 @@ const allowedMetadata = new Set([
 const refusal = (reason: string, upload: PreparedWorkerUpload) => {
   throw new BarrierRefusal(reason, upload.fqn);
 };
-const sorted = (items: readonly string[]) => [...new Set(items)].sort();
-const localClasses = (
-  bindings: readonly { type: string; className?: string | null; scriptName?: string | null }[],
-  name: string,
-) =>
-  sorted(
-    bindings.flatMap((binding) =>
-      binding.type === "durable_object_namespace" &&
-      binding.className &&
-      (!binding.scriptName || binding.scriptName === name)
-        ? [binding.className]
-        : [],
-    ),
-  );
-
-const matchesSpecified = (desired: unknown, observed: unknown): boolean => {
-  if (Array.isArray(desired))
-    return (
-      Array.isArray(observed) &&
-      desired.length === observed.length &&
-      desired.every((value, index) => matchesSpecified(value, observed[index]))
-    );
-  if (desired !== null && typeof desired === "object")
-    return (
-      observed !== null &&
-      typeof observed === "object" &&
-      Object.entries(desired).every(
-        ([key, value]) =>
-          value === undefined || matchesSpecified(value, Reflect.get(observed, key)),
-      )
-    );
-  return Object.is(desired, observed);
-};
-
 /** Versions cannot carry migrations or change script-level settings. Refuse rather than silently omit an intended change. */
-export function versionMetadata(upload: PreparedWorkerUpload): Workers.PutScriptMetadata {
+export function versionMetadata(
+  upload: PreparedWorkerUpload,
+  versions: readonly ActiveWorkerPlacement[] = [],
+  baseline: readonly { versionId: string }[] = [],
+  repair?: PendingPlacementRepair,
+): Workers.PutScriptMetadata {
   const { metadata, scriptName } = upload.request;
   const observed = upload.previousSettings;
   if (!observed || !upload.previousProps) refusal("missing-existing-settings", upload);
@@ -96,36 +70,31 @@ export function versionMetadata(upload: PreparedWorkerUpload): Workers.PutScript
     )
       refusal("durable-object-migration", upload);
   }
-  if (
-    canonical(localClasses(metadata.bindings ?? [], scriptName)) !==
-    canonical(localClasses(observed!.bindings ?? [], scriptName))
-  )
-    refusal("durable-object-class-drift", upload);
-  for (const key of globalProps) {
-    if (havePropsChanged({ value: upload.previousProps![key] }, { value: upload.props[key] }))
-      refusal("script-settings-change", upload);
-  }
-  const tags = (values: readonly string[]) =>
-    sorted(values.filter((tag) => !tag.startsWith("alchemy:migration-tag:")));
-  if (canonical(tags(metadata.tags ?? [])) !== canonical(tags(observed!.tags ?? [])))
-    refusal("script-tags-drift", upload);
-  if ((metadata.streamingTailConsumers?.length ?? 0) > 0)
-    refusal("unobservable-streaming-tail-settings", upload);
-  for (const key of ["limits", "placement", "observability"] as const) {
-    if (metadata[key] != null && !matchesSpecified(metadata[key], observed![key]))
-      refusal("script-settings-drift", upload);
-  }
-  if (
-    (metadata.logpush ?? false) !== (observed!.logpush ?? false) ||
-    havePropsChanged(
-      { value: metadata.tailConsumers ?? [] },
-      { value: observed!.tailConsumers ?? [] },
-    )
-  )
-    refusal("script-settings-drift", upload);
+  const changed = globalProps.filter((key) =>
+    havePropsChanged({ value: upload.previousProps![key] }, { value: upload.props[key] }),
+  );
+  if (changed.length)
+    throw settingsRefusal(
+      "script-settings-change",
+      upload.fqn,
+      Object.fromEntries(changed.map((key) => [key, upload.previousProps![key]])),
+      Object.fromEntries(changed.map((key) => [key, upload.props[key]])),
+    );
+  assertScriptSettings(
+    upload.fqn,
+    scriptName,
+    metadata,
+    repair ? repairComparisonSettings(observed!, repair) : observed!,
+    versions,
+    baseline,
+  );
   if (metadata.bindings?.some((binding) => binding.name === "BASALT_RELEASE_ATTEMPT"))
     refusal("attempt-value-in-worker", upload);
   return {
+    // Placement is version-scoped even when declarations are unchanged.
+    placement: metadata.placement,
+    limits: metadata.limits,
+    observability: metadata.observability,
     annotations: metadata.annotations,
     mainModule: metadata.mainModule,
     bindings: metadata.bindings,
@@ -142,10 +111,18 @@ export function versionMetadata(upload: PreparedWorkerUpload): Workers.PutScript
 export async function freezeUpload(
   upload: PreparedWorkerUpload,
   baseline: FrozenWorker["baseline"],
+  versions: readonly ActiveWorkerPlacement[] = [],
+  repair?: PendingPlacementRepair,
 ): Promise<FrozenWorker> {
   const raw = upload.request.files;
   const files = raw === undefined ? [] : Array.isArray(raw) ? raw : [raw];
-  const metadata = versionMetadata(upload);
+  const metadata = versionMetadata(upload, versions, baseline, repair);
+  const baselineBinding =
+    upload.fqn === "PoolWorker"
+      ? upload.previousSettings?.bindings?.find(
+          (binding) => binding.name === "POOL_IMAGE_HASH" && binding.type === "plain_text",
+        )
+      : undefined;
   return {
     id: upload.fqn,
     accountId: upload.request.accountId,
@@ -163,6 +140,10 @@ export async function freezeUpload(
       }),
     ),
     baseline,
+    ...(baselineBinding?.type === "plain_text" && baselineBinding.text
+      ? { baselineImageHash: baselineBinding.text }
+      : {}),
+    ...(repair ? { pendingPlacementRepair: repair } : {}),
   };
 }
 

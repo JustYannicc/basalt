@@ -1,0 +1,44 @@
+diff --git a/e2e/npm-packages.json b/e2e/npm-packages.json
+--- a/e2e/npm-packages.json
++++ b/e2e/npm-packages.json
+@@ -38,6 +38,11 @@
+     {
+       "name": "brotli-wasm",
+       "range": "3.0.1",
++      "transitive": true
++    },
++    {
++      "name": "@sqlite.org/sqlite-wasm",
++      "range": "3.54.1-build1",
+       "transitive": true
+     },
+     {
+@@ -178,6 +183,17 @@
+             "express-rate-limit": "^8.2.1",
+             "zod-to-json-schema": "^3.25.1"
+           }
++        }
++      }
++    },
++    "@sqlite.org/sqlite-wasm": {
++      "distTags": {
++        "latest": "3.54.1-build1"
++      },
++      "versions": {
++        "3.54.1-build1": {
++          "tarball": "https://registry.npmjs.org/@sqlite.org/sqlite-wasm/-/sqlite-wasm-3.54.1-build1.tgz",
++          "integrity": "sha512-foW427VBLJ3G87bsnvQTZCc9zYe0Fq1wH0pz1I6BlKLKXcArIAyTkHtq0iT2llmhcMQt9T/p6l5PpQQh+6O8uQ=="
+         }
+       }
+     },
+diff --git a/scripts/e2e-npm-packages.ts b/scripts/e2e-npm-packages.ts
+--- a/scripts/e2e-npm-packages.ts
++++ b/scripts/e2e-npm-packages.ts
+@@ -48,6 +48,7 @@
+   dependency("graphql", "16.11.0"),
+   // Workflow fixture apps (support/workflow-app.ts).
+   dependency("brotli-wasm", "3.0.1"),
++  dependency("@sqlite.org/sqlite-wasm", "3.54.1-build1"),
+   dependency("is-number", "7.0.0"),
+   // cloud-compiler.spec.ts installs an exact zod release.
+   dependency("zod", "3.25.76"),

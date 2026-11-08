@@ -1,8 +1,10 @@
+diff --git a/README.md b/README.md
+index a494a6f8729a85ead28c0138818cf540a392f16c..7e78703dde2adf2f434ffc37c554d952541db1c1 100644
 --- a/README.md
 +++ b/README.md
-@@ -7,8 +7,10 @@
+@@ -7,8 +7,10 @@ Pages, data sources, databases, blocks, comments, users and search in Notion wor
  **REST interface:** OpenAPI. The document is Notion's own, published by Notion in the `makenotion/notion-mcp-server` repository: https://raw.githubusercontent.com/makenotion/notion-mcp-server/main/scripts/notion-openapi.json, pinned to commit `9a8a94cd` (it targets API version `2025-09-03`, which is not the newest: Notion's docs list `2026-03-11` with its own upgrade guide). The package sends `Notion-Version: 2025-09-03` on every request to api.notion.com through a fetch wrapper, because the document declares that header on only two operations. Nango and Corsair pin the older `2022-06-28`; this package deliberately uses the version the document describes, which is required for data source endpoints. Search and data source query are POSTs but read-only, so they are marked as queries and do not need approval. Notion does not publish an OpenAPI document on its developer site; this one is maintained by Notion for its MCP server. The document requires `bearerAuth` at its top level but marks 23 of its 24 operations `security: []` (Notion's MCP server sends its token on every request regardless), so `openapi.ts` adds the bearer requirement back to the operations listed in `empty-security.json`; without it Executor sends no token and Notion answers 401. Regenerate the list with `node scripts/empty-security.ts <document url>` when moving the pin.
-
+ 
  **Auth**
 -- OAuth (`oauth`, first): the MCP server's own authorization server, discovered from its protected-resource metadata. It supports dynamic client registration and Client ID Metadata Documents, so no public integration has to be created. Its tokens only work on the MCP server, so these accounts get the `mcp` tools. Health check: an MCP initialize and tool listing.
 -- Internal integration secret (`token`): create an internal integration at https://www.notion.so/profile/integrations, copy its secret, and share the pages or databases it should reach with the integration. The hosted MCP server does not take it, so these accounts get the `api` tools. Health check: `GET /v1/users/me`.
@@ -10,67 +12,12 @@
 +- Internal integration secret (`token`): create an internal integration at https://www.notion.so/profile/integrations, copy its secret, and share the pages or databases it should reach with the integration. The hosted MCP server does not take it, so these accounts get the `api` tools. Health check: `GET /v1/users/me` reports the bot ID and `bot.workspace_name` as the account display name.
 +
 +Both methods omit absent, null, blank or non-string workspace names. Names are trimmed and limited to 255 characters.
-
+ 
  The earlier OAuth method on api.notion.com's own endpoints is gone: it needed a user-created public integration.
-
---- a/index.ts
-+++ b/index.ts
-@@ -1,6 +1,5 @@
- import {
-   accountRouter,
--  decodeJson,
-   defineApp,
-   defineProvider,
-   oauth2,
-@@ -14,6 +13,7 @@
- import { mcpHealth, mcpRouter } from "apps/mcp";
- import { always } from "apps/operations/approval";
- import { liveOpenapiRouter } from "apps/openapi";
-+import { botAccountInfo, readMcpSelf } from "./health.js";
- import { icons } from "./icon.js";
- import { options } from "./openapi.js";
- import { notionVersion, withNotionVersion } from "./version.js";
-@@ -35,17 +35,21 @@
-     }),
-   },
-   async health(check) {
--    if (check.account.method === "oauth")
--      return mcpHealth(check, {
--        url: mcpUrl,
--        headers: { Authorization: `Bearer ${check.account.fields.access_token}` },
--      });
-+    if (check.account.method === "oauth") {
-+      const headers = { Authorization: `Bearer ${check.account.fields.access_token}` };
-+      await mcpHealth(check, { url: mcpUrl, headers });
-+      const accountInfo = await readMcpSelf(check, mcpUrl, headers);
-+      check.signal.throwIfAborted();
-+      return accountInfo ? { accountInfo } : {};
-+    }
-     const response = await check.fetch("https://api.notion.com/v1/users/me", {
-       signal: check.signal,
--      headers: { Authorization: `Bearer ${check.account.fields.token}`, "Notion-Version": notionVersion },
-+      headers: {
-+        Authorization: `Bearer ${check.account.fields.token}`,
-+        "Notion-Version": notionVersion,
-+      },
-     });
--    const me = await decodeJson(response, object({ id: string() }));
--    return { accountInfo: { externalId: me.id } };
-+    return { accountInfo: await botAccountInfo(response) };
-   },
- });
-
---- a/package.json
-+++ b/package.json
-@@ -7,7 +7,7 @@
-     "title": "Notion"
-   },
-   "dependencies": {
--    "apps": "0.0.1-beta.100",
-+    "apps": "0.0.1-beta.104-basalt.10",
-     "@modelcontextprotocol/sdk": "1.32.1"
-   }
- }
+ 
+diff --git a/health.ts b/health.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..ebe063a63c4058c837f6a08e354d117110574670
 --- /dev/null
 +++ b/health.ts
 @@ -0,0 +1,184 @@
@@ -258,3 +205,65 @@
 +  }
 +  check.signal.throwIfAborted();
 +}
+diff --git a/index.ts b/index.ts
+index aeffe6b23f7af1860426a238ebde07e2d8508e2f..2cc77b1ecef0e0b459ac9a9e778cfd4d28671fd2 100644
+--- a/index.ts
++++ b/index.ts
+@@ -1,6 +1,5 @@
+ import {
+   accountRouter,
+-  decodeJson,
+   defineApp,
+   defineProvider,
+   oauth2,
+@@ -14,6 +13,7 @@ import {
+ import { mcpHealth, mcpRouter } from "apps/mcp";
+ import { always } from "apps/operations/approval";
+ import { liveOpenapiRouter } from "apps/openapi";
++import { botAccountInfo, readMcpSelf } from "./health.js";
+ import { icons } from "./icon.js";
+ import { options } from "./openapi.js";
+ import { notionVersion, withNotionVersion } from "./version.js";
+@@ -35,17 +35,21 @@ const notion = defineProvider({
+     }),
+   },
+   async health(check) {
+-    if (check.account.method === "oauth")
+-      return mcpHealth(check, {
+-        url: mcpUrl,
+-        headers: { Authorization: `Bearer ${check.account.fields.access_token}` },
+-      });
++    if (check.account.method === "oauth") {
++      const headers = { Authorization: `Bearer ${check.account.fields.access_token}` };
++      await mcpHealth(check, { url: mcpUrl, headers });
++      const accountInfo = await readMcpSelf(check, mcpUrl, headers);
++      check.signal.throwIfAborted();
++      return accountInfo ? { accountInfo } : {};
++    }
+     const response = await check.fetch("https://api.notion.com/v1/users/me", {
+       signal: check.signal,
+-      headers: { Authorization: `Bearer ${check.account.fields.token}`, "Notion-Version": notionVersion },
++      headers: {
++        Authorization: `Bearer ${check.account.fields.token}`,
++        "Notion-Version": notionVersion,
++      },
+     });
+-    const me = await decodeJson(response, object({ id: string() }));
+-    return { accountInfo: { externalId: me.id } };
++    return { accountInfo: await botAccountInfo(response) };
+   },
+ });
+ 
+diff --git a/package.json b/package.json
+index f4eafa5361825444a6e2a981c6c4f38dfd3f5f49..47dba16481656a4361f4dee62dc5704eb5ba8fa6 100644
+--- a/package.json
++++ b/package.json
+@@ -7,7 +7,7 @@
+     "title": "Notion"
+   },
+   "dependencies": {
+-    "apps": "0.0.1-beta.100",
++    "apps": "0.0.1-beta.104-basalt.11",
+     "@modelcontextprotocol/sdk": "1.32.1"
+   }
+ }

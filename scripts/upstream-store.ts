@@ -6,6 +6,7 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  readlinkSync,
   readdirSync,
   renameSync,
   rmSync,
@@ -80,11 +81,16 @@ export function rememberDependencyConsumer(root: string, store: string, pending:
     if (Array.isArray(previous?.stores))
       for (const prior of previous.stores) if (typeof prior === "string") stores.add(prior);
   }
-  atomicStoreJson(file, { root, stores: [...stores], pending });
+  atomicStoreJson(file, {
+    root,
+    stores: [...stores],
+    pending,
+    ...(pending ? { owner: currentProcessOwner() } : {}),
+  });
 }
 
 /** Call only while holding collection.lock, including publication and consumer transitions. */
-export function collectDependencyStore(pin?: string) {
+export function collectDependencyStore(_pin?: string) {
   const cache = realpathSync(upstreamCache());
   const entries = directories(join(cache, "prepared"))
     .flatMap((pin) => directories(pin))
@@ -107,13 +113,13 @@ export function collectDependencyStore(pin?: string) {
       state: processOwnerAlive(lease.parent) ? "live" : installerGroupState(lease.installer),
     }));
   } catch {
-    return;
+    return false;
   }
   const groups = attempts.flatMap(({ installer, state }) =>
     state === "unknown" && typeof installer?.group === "number" ? [installer.group] : [],
   );
   const live = processSnapshot(groups);
-  if (!live.complete) return;
+  if (!live.complete) return false;
   const protectedStores = new Set<string>();
   const consumers = join(cache, "consumers");
   const abandonedConsumers: string[] = [];
@@ -129,10 +135,22 @@ export function collectDependencyStore(pin?: string) {
         continue;
       }
       const installed = record(join(consumer.root, ".basalt-dependencies.json"));
-      const stores =
-        consumer.pending === false && typeof installed?.store === "string"
+      let pendingAlive = false;
+      if (consumer.pending === true) {
+        if (consumer.owner !== undefined) pendingAlive = processOwnerAlive(consumer.owner);
+        else {
+          try {
+            pendingAlive = processOwnerAlive(JSON.parse(readlinkSync(file.slice(0, -5) + ".lock")));
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          }
+        }
+      }
+      const stores = pendingAlive
+        ? consumer.stores
+        : typeof installed?.store === "string"
           ? [installed.store]
-          : consumer.stores;
+          : [];
       for (const store of stores) if (typeof store === "string") protectedStores.add(store);
     }
   let abandoned: string[];
@@ -145,14 +163,13 @@ export function collectDependencyStore(pin?: string) {
       .map(({ path }) => path);
   } catch {
     // Unknown ownership must not authorize even a partial collection pass.
-    return;
+    return false;
   }
   const collection = preparedCacheCollection(
-    pin,
     protectedStores,
     attempts.filter(({ path }) => !abandoned.includes(path)).map(({ path }) => path),
   );
-  if (!collection) return;
+  if (!collection) return false;
   const retired = entries
     .flatMap((entry) => directories(join(entry, "generations")))
     .filter(
@@ -164,6 +181,7 @@ export function collectDependencyStore(pin?: string) {
   for (const file of abandonedConsumers) rmSync(file);
   for (const path of [...abandoned, ...retired]) if (!collection.owns(path)) removeDirectory(path);
   collection.finish();
+  return true;
 }
 
 export const collectUpstreamDependencies = (pin?: string) =>

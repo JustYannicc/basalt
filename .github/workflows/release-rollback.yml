@@ -191,7 +191,7 @@ jobs:
           node-version: 24.18.0
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.4
+          bun-version: 1.4.2
       - name: Recreate the exact selected-release and previous-source worktrees
         run: |
           if [[ "$RELEASE_SHA" != "$EXPECTED_RELEASE_SHA" || ! "$BASELINE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
