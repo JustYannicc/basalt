@@ -8,13 +8,13 @@
  
 -**Interface:** PlanetScale's official OpenAPI document, https://planetscale.com/docs/openapi.yaml (API base `https://api.planetscale.com/v1`). 304 tools, 150 of them mutations (each requires approval), none skipped. PlanetScale also hosts MCP servers (`https://mcp.pscale.dev/mcp/planetscale`, OAuth); they are not mounted because the REST API is a superset.
 +**Interface:** PlanetScale's official OpenAPI document, https://planetscale.com/docs/openapi.yaml (API base `https://api.planetscale.com/v1`). The current audit names 291 operations. Every mutation requires approval. PlanetScale also hosts MCP servers (`https://mcp.pscale.dev/mcp/planetscale`, OAuth); they are not mounted because the REST API is a superset.
-+
+ 
 +**Tools**
 +
 +- Existing root names stay unchanged. The current OpenAPI names resolve under the same namespace and leaf, such as `databases.listDatabases`.
 +- A sign-in account lists only operations covered by its reported grant after the connection succeeds. If the hosted client grants fewer than the requested scopes, or does not report them, the host must refuse the connection before saving an account and show requested, granted and missing permissions. DCR requests no scopes; if its response omits the grant, capabilities remain unknown and the old tool listing behavior stays in place. PlanetScale decides whether each request is authorized.
 +- `serviceToken` contains new aliases for the 34 operations PlanetScale documents as service-token-only. Existing service-token accounts also keep the original root names.
- 
++
  **Auth**
  
 -- Service token (`token`): create one under Organization settings > Service tokens in the PlanetScale dashboard, grant it the database/organization permissions you need, then paste `SERVICE_TOKEN_ID:SERVICE_TOKEN` as a single value. It is sent verbatim as the `Authorization` header, as PlanetScale requires.
@@ -51,10 +51,9 @@
  import { liveOpenapiRouter } from "apps/openapi";
  import { icons } from "./icon.js";
  import { options } from "./openapi.js";
--
--
 +import { operationNamespaces, operationScopes, scopeAliases, serviceTokenOnly } from "./scopes.js";
-+
+ 
+-
 +// Keep this provider declaration unchanged so saved accounts keep their provider identity,
 +// response projection, requested scopes and saved OAuth grants.
  const planetscale = defineProvider({
@@ -254,7 +253,7 @@
    },
    "dependencies": {
 -    "apps": "0.0.1-beta.100"
-+    "apps": "0.0.1-beta.104-basalt.11"
++    "apps": "0.0.1-beta.104-basalt.13"
    }
  }
 --- /dev/null

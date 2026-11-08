@@ -19,7 +19,7 @@
     },
     {
       "path": "package.json",
-      "content": "{\n  \"name\": \"@executor.sh/sentry\",\n  \"description\": \"Issue and event search, traces and Seer analysis through Sentry's MCP server, plus the Sentry REST API for auth tokens.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"executor\": {\n    \"title\": \"Sentry\"\n  },\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.100\",\n    \"@modelcontextprotocol/sdk\": \"1.32.1\"\n  }\n}\n"
+      "content": "{\n  \"name\": \"@executor.sh/sentry\",\n  \"description\": \"Issue and event search, traces and Seer analysis through Sentry's MCP server, plus the Sentry REST API for auth tokens.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"executor\": {\n    \"title\": \"Sentry\"\n  },\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.13\",\n    \"@modelcontextprotocol/sdk\": \"1.32.1\"\n  }\n}\n"
     }
   ]
 }

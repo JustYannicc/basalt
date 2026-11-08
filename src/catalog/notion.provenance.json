@@ -3,7 +3,7 @@
   "publishedUrl": "https://catalog.executor.sh/apps/notion.json",
   "publishedSha256": "032f541c7d3f65eab78e8037accfe63eca5ebed6367f000b158236a3c18d5d42",
   "carriedSha256": "8aef880b54ec127915c1348a9925166dfd1b3eb5cf8286163c7bf3c6f7e5a2a8",
-  "patchSha256": "349fc07c0ba40ae989d7d39b2e7f512424f16234aeba4c749857d0b3412ea1b0",
+  "patchSha256": "510d0992d809297e948db0cb4bbdf1e0e5516c4100d872b6e76e0b0e1f2b5111",
   "appsVersion": "0.0.1-beta.104-basalt.13",
   "license": "Not declared in the published package",
   "contribution": {

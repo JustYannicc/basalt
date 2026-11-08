@@ -1,4 +1,3 @@
-diff --git a/README.md b/README.md
 --- a/README.md
 +++ b/README.md
 @@ -1,20 +1,20 @@
@@ -27,7 +26,6 @@ diff --git a/README.md b/README.md
 +- The MCP tool list and annotations are discovered live. Service availability and the token's permissions still bound each call.
  - The OpenAPI document covers the documented public API, not every internal endpoint. Event ingestion (DSN) is not included.
  - All POST, PUT, PATCH and DELETE operations are writes and ask for approval.
-diff --git a/index.ts b/index.ts
 --- a/index.ts
 +++ b/index.ts
 @@ -40,8 +40,7 @@
@@ -69,3 +67,14 @@ diff --git a/index.ts b/index.ts
            icons,
          },
        ),
+--- a/package.json
++++ b/package.json
+@@ -7,7 +7,7 @@
+     "title": "Sentry"
+   },
+   "dependencies": {
+-    "apps": "0.0.1-beta.100",
++    "apps": "0.0.1-beta.104-basalt.13",
+     "@modelcontextprotocol/sdk": "1.32.1"
+   }
+ }

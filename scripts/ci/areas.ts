@@ -130,6 +130,10 @@ export const areas = [
     ],
     jobs: ["planetscale-sign-in"],
   },
+  {
+    paths: ["clients/obsidian/**", "src/drive/**", "apps/obsidian/**", "e2e/obsidian/**"],
+    jobs: ["production-build"],
+  },
   { paths: ["clients/**"], jobs: ["client-mobile", "client-desktop", "client-native-product"] },
   {
     paths: ["src/tunnel/**", "e2e/native-*", ".upstream/**/{client-grants,device-authorization}*"],

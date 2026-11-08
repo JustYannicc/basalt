@@ -61,6 +61,7 @@ if (process.env.BASALT_CI_OMIT_RELEASE_DOWNLOADS === "true" && process.env.GITHU
   for (const [key, value] of Object.entries(checkRuntimeEnvironment(upstream)))
     appendFileSync(process.env.GITHUB_ENV, `${key}=${value}\n`);
 }
+run("node", ["scripts/prepare-drive.ts"], root);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "src/setup")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/pool-tests/sdk")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "clients")]);
