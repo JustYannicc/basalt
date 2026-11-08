@@ -1,0 +1,33 @@
+{
+  "scenarios": {
+    "cloudPoolAccountRepairContention": {
+      "fixtures": "actors",
+      "managementApps": ["owner"],
+      "title": "Cloud pool account reads survive concurrent repair and preserve edited source",
+      "targets": {
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The Cloud host owns automatic pool setup."
+        },
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The Cloud host owns automatic pool setup."
+        }
+      }
+    }
+  },
+  "runs": {
+    "cloudPoolAccountRepairContention": ["declared:cloud"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/implementation/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/organization-access-lock.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-defaults.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-membership-hook.ts"
+  ],
+  "fixture": "pool-setup"
+}

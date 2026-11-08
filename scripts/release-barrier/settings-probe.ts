@@ -7,7 +7,11 @@ import {
 import { Cause, Effect, Exit } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { brand } from "../../brand.ts";
-import { baselineInventory, type BaselineProbeRow } from "./baseline-probe.ts";
+import {
+  BaselineInventoryError,
+  baselineInventory,
+  type BaselineProbeRow,
+} from "./baseline-probe.ts";
 import {
   candidateScriptSettings,
   candidateSettingsWithRetirements,
@@ -24,6 +28,8 @@ import { BarrierRefusal } from "./manifest.ts";
 import { safeProviderFailure } from "./operation-failure.ts";
 import { assertScriptSettings, scriptSettingFields } from "./script-settings.ts";
 import type { PropChange } from "./prop-diff.ts";
+import { verifyRepairBaseline } from "./repair-baseline.ts";
+import { CandidateSettingsReadFailure } from "./candidate-failure.ts";
 
 interface ReadMetrics {
   status: number | null;
@@ -55,6 +61,7 @@ export async function probeWorkerSettings(
   environment: NodeJS.ProcessEnv,
   apiBaseUrl = DEFAULT_API_BASE_URL,
   candidate?: CandidateReader,
+  retirementReader = candidateSettingsWithRetirements,
 ) {
   const base = new URL(apiBaseUrl);
   const prefix = base.pathname.replace(/\/$/, "");
@@ -108,7 +115,15 @@ export async function probeWorkerSettings(
   };
   const program = Effect.gen(function* () {
     const inventory = yield* Workers.listScripts({ accountId });
-    const workers = baselineInventory(inventory.result);
+    let workers;
+    let inventoryRefusals: BaselineInventoryError["refusals"] = [];
+    try {
+      workers = baselineInventory(inventory.result);
+    } catch (error) {
+      if (!(error instanceof BaselineInventoryError)) throw error;
+      workers = error.workers;
+      inventoryRefusals = error.refusals;
+    }
     for (const worker of workers) {
       const path = `${listPath}/${encodeURIComponent(worker.scriptName)}`;
       allow(`${path}/deployments`);
@@ -141,7 +156,7 @@ export async function probeWorkerSettings(
       throw new BarrierRefusal("candidate-worker-coverage");
     let retirements: ReturnType<typeof candidateSettingsWithRetirements> | undefined;
     const context = yield* Effect.context<Credentials | HttpClient.HttpClient>();
-    return yield* Effect.promise(() =>
+    const rows = yield* Effect.promise(() =>
       Promise.all(
         workers.map(async (worker): Promise<SettingsProbeRow> => {
           const path = `${listPath}/${encodeURIComponent(worker.scriptName)}`;
@@ -149,8 +164,14 @@ export async function probeWorkerSettings(
           let failure: unknown;
           let compared = false;
           let repair: PendingPlacementRepair | undefined;
-          const run = <A, E>(effect: Effect.Effect<A, E, Credentials | HttpClient.HttpClient>) =>
-            Effect.runPromise(effect.pipe(Effect.provideContext(context)));
+          let readStage = "settings";
+          const run = async <A, E>(
+            effect: Effect.Effect<A, E, Credentials | HttpClient.HttpClient>,
+          ) => {
+            const exit = await Effect.runPromiseExit(effect.pipe(Effect.provideContext(context)));
+            if (Exit.isFailure(exit)) throw Cause.squash(exit.cause);
+            return exit.value;
+          };
           try {
             const input = {
               accountId,
@@ -175,6 +196,7 @@ export async function probeWorkerSettings(
               allow(versionPath);
               versionPaths.push(versionPath);
             }
+            readStage = "serving-version";
             const versions = await run(readActivePlacements(input, baseline));
             const declaration = expected.find((item) => item.role === worker.role)!;
             const target = placementRepairTargets.find(
@@ -184,26 +206,30 @@ export async function probeWorkerSettings(
               const priorPath = `${path}/versions/${target.prior}`;
               allow(priorPath);
               versionPaths.push(priorPath);
+              readStage = "retirement";
               const retired =
                 declaration.retiredPlacement ??
-                (
-                  await (retirements ??= candidateSettingsWithRetirements(
-                    workers,
-                    environment,
-                    nativeFetch,
-                  ))
-                ).find((row) => row.role === worker.role)?.retiredPlacement;
+                (await (retirements ??= retirementReader(workers, environment, nativeFetch))).find(
+                  (row) => row.role === worker.role,
+                )?.retiredPlacement;
+              readStage = "prior-version";
+              const prior = await run(
+                readVersionPlacement(accountId, worker.scriptName, target.prior),
+              );
+              readStage = "classification";
               repair = pendingPlacementRepair({
                 role: worker.role,
                 scriptName: worker.scriptName,
                 deploymentId: baselineRead.value.id,
                 baseline,
                 active: versions[0]!,
-                prior: await run(readVersionPlacement(accountId, worker.scriptName, target.prior)),
+                prior,
                 metadata: declaration.metadata,
                 settings,
                 retired: retired === true,
               });
+              readStage = "pre-activation-baseline";
+              await run(verifyRepairBaseline({ ...input, baseline }, declaration.metadata, repair));
             } else
               assertScriptSettings(
                 worker.role,
@@ -232,11 +258,18 @@ export async function probeWorkerSettings(
             ok: compared,
             ...(failure
               ? {
-                  type: failure instanceof BarrierRefusal ? "BarrierRefusal" : provider!.type,
+                  type:
+                    failure instanceof CandidateSettingsReadFailure
+                      ? failure._tag
+                      : failure instanceof BarrierRefusal
+                        ? "BarrierRefusal"
+                        : provider!.type,
                   reason:
-                    failure instanceof BarrierRefusal
-                      ? failure.reason
-                      : (provider!.reason ?? "settings-read-failed"),
+                    failure instanceof CandidateSettingsReadFailure
+                      ? `${readStage}: ${failure.message}`
+                      : failure instanceof BarrierRefusal
+                        ? failure.reason
+                        : (provider!.reason ?? `${readStage}-read-failed`),
                 }
               : {}),
             ...metrics.get(`${path}/deployments`)!,
@@ -249,6 +282,19 @@ export async function probeWorkerSettings(
         }),
       ),
     );
+    return [
+      ...rows,
+      ...inventoryRefusals.map((refusal): SettingsProbeRow => ({
+        ...refusal,
+        ok: false,
+        type: "BaselineInventoryError",
+        ...empty(),
+        settings: empty(),
+        placements: empty(),
+        compared: [],
+        differences: [],
+      })),
+    ].sort((a, b) => a.role.localeCompare(b.role));
   });
   const result = await Effect.runPromiseExit(
     program.pipe(

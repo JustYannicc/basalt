@@ -69,10 +69,10 @@ test("freezes Api placement from the live numeric settings shape and exact activ
   );
 });
 
-test("all 19 real declarations project settings without planning, applying or accessing native state", () => {
+test("all 20 real declarations project settings without planning, applying or accessing native state", () => {
   const declarations = discoverScriptSettings(process.cwd());
   assert.ok(Array.isArray(declarations));
-  assert.equal(declarations.length, 19);
+  assert.equal(declarations.length, 20);
   for (const row of declarations) {
     assert.equal(typeof row.role, "string");
     assert.ok(row.metadata.tags.includes(`alchemy:id:${row.role}`));

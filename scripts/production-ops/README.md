@@ -26,6 +26,12 @@ Dispatch `production-ops.yml` on `main` with `action=inventory`, the public key 
   sign-in providers and email verification.
 - `accounts`, `pools`, `app-links`, `retired-tokens`, `departures`, `workflows`,
   `schedules`, `reporters` or `receipts`.
+- `pool-bindings`: saved app-scope selections in registered pools, acquisition
+  driver and revision, generation and identity comparisons, removal state and
+  mirror readiness. Home references appear as a presence flag.
+- `pool-locks`: holders and waiters for this organization's access advisory lock,
+  with backend PID, lock mode, blockers and wait state. Use it to distinguish a
+  blocked read from a membership refresh that completes but stays dirty.
 - `connections`: the organization's account connections as metadata only: ID,
   provider, target app and requirement, stored status, whether it has expired,
   whether it produced an account (new, reconnected or reused), and its created

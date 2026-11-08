@@ -1,0 +1,793 @@
+diff --git a/apps/hosted/web/src/implementation/pages/account-actions.tsx b/apps/hosted/web/src/implementation/pages/account-actions.tsx
+index 674befface99254cb243a5833a29303a783ba7d4..bf914bb47fcef57374a884b32b3d40efaa35fffa 100644
+--- a/apps/hosted/web/src/implementation/pages/account-actions.tsx
++++ b/apps/hosted/web/src/implementation/pages/account-actions.tsx
+@@ -4,7 +4,10 @@ import { AccountUsageSettings } from "./account-observations.tsx";
+ import { DetailSkeleton } from "@executor-js/ui/dashboard/loading";
+ import type { AccountDetail, AccountSummary } from "@executor-js/ui/contracts/dashboard";
+ import { useAtomSet } from "@effect/atom-react";
+-import type { AccountId } from "@executor-js/sdk";
++import type { AccountId, App } from "@executor-js/sdk";
++import { Link } from "@tanstack/react-router";
++import { appDisplayName } from "@executor-js/ui/contracts/product-brand";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ import { useState, type ReactNode } from "react";
+ import { Option } from "effect";
+ import { AsyncResult } from "effect/reactivity";
+@@ -46,7 +49,8 @@ export interface ListedRow {
+ 
+ /**
+  * Row actions replace the account page: name, health, access and deletion, in place. Credentials
+- * are replaced from an app that uses the account, which knows the hosts they are sent to.
++ * are replaced from an app that uses the account, which knows the hosts they are sent to, so
++ * `reconnect` opens that app's accounts, where the account keeps its ID, links and access.
+  */
+ export function HostedAccountActions({
+   account,
+@@ -54,6 +58,7 @@ export function HostedAccountActions({
+   access,
+   open,
+   binding = false,
++  reconnect,
+ }: {
+   readonly account: AccountSummary;
+   /** What the menu's button announces, as the list names this account. */
+@@ -62,9 +67,24 @@ export function HostedAccountActions({
+   readonly open: (dialog: AccountDialogKind) => void;
+   /** One sign-in of a grouped identity row; removing it leaves the row's other sign-ins. */
+   readonly binding?: boolean | undefined;
++  /** The app whose current check says signing in again can help, where the caller may reconnect. */
++  readonly reconnect?: App | undefined;
+ }) {
++  const brand = useProductBrand();
++  const { slug: organizationSlug } = useOrganizationRoute();
+   return (
+     <AccountActionsMenu account={account} name={name}>
++      {reconnect !== undefined && (
++        <DropdownMenuItem asChild>
++          <Link
++            to="/org/$organizationSlug/apps/$appId"
++            params={{ organizationSlug, appId: reconnect.id }}
++            search={{ view: "accounts" }}
++          >
++            Reconnect in {appDisplayName(reconnect, brand)}
++          </Link>
++        </DropdownMenuItem>
++      )}
+       <DropdownMenuItem onSelect={() => open("edit")}>Edit details</DropdownMenuItem>
+       <DropdownMenuItem onSelect={() => open("health")}>Check health</DropdownMenuItem>
+       {access?.ownership.kind === "shared" && (
+diff --git a/apps/hosted/web/src/implementation/pages/accounts-client.tsx b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
+index d86c38f9efffd2f45cda722fe82bd01dad8c0a04..a675fadd4c42a1b7999efa044365d04d65088ee1 100644
+--- a/apps/hosted/web/src/implementation/pages/accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
+@@ -26,6 +26,8 @@ import { HostedAccountObservations, HostedAccountPlan } from "./account-observat
+ import { inventoryAtom } from "../../contracts/organization.ts";
+ import { savedAccountRowsAtom } from "../../contracts/account-projection.ts";
+ import { accountRowFromSaved } from "@executor-js/ui/dashboard/account-row";
++import { bindingApps } from "@executor-js/ui/contracts/account-identities";
++import { reconnectApp } from "@executor-js/ui/contracts/account-check-recovery";
+ import { useAccountTraffic } from "./account-traffic.tsx";
+ 
+ import { resourceDirectoryAtom, resourceInventoryAtom } from "../../contracts/resource-access.ts";
+@@ -63,7 +65,10 @@ export function AccountsPage({
+     binding: boolean;
+     listed: ListedRow;
+   }>();
+-  /** Whether this page may offer Reconnect for `account` in `app`, from a current rejection. */
++  /**
++   * Whether this page may offer Reconnect for `account` in `app`, once a current check says signing
++   * in again can help. Host-managed, provisioned and interactive methods never reconnect here.
++   */
+   const canReconnect = (account: AccountSummary) => (app: App) => {
+     if (
+       account.hostManaged === true ||
+@@ -168,6 +173,15 @@ export function AccountsPage({
+               name={name}
+               access={entry?.access}
+               binding={binding}
++              reconnect={
++                Option.isSome(inventory.data)
++                  ? reconnectApp(
++                      account,
++                      bindingApps(inventory.data.value, [account]),
++                      canReconnect(account),
++                    )
++                  : undefined
++              }
+               open={(kind) =>
+                 setDialog({
+                   account: account.id,
+diff --git a/packages/sdk/src/contracts/account-check-failure.ts b/packages/sdk/src/contracts/account-check-failure.ts
+index 3126abd71966782d63104ba4365f14ef5fb41928..0e96517a0e6651c36cf7308df093922d8fadec75 100644
+--- a/packages/sdk/src/contracts/account-check-failure.ts
++++ b/packages/sdk/src/contracts/account-check-failure.ts
+@@ -1,8 +1,28 @@
+ import { Schema } from "effect";
++import {
++  OAuthFailureCause,
++  OAuthProviderErrorCode,
++  OAuthResponseField,
++  OAuthRenewalReason,
++} from "./oauth-failure-evidence.ts";
++
++export const OAuthCheckEvidence = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    reason: Schema.optionalKey(OAuthRenewalReason),
++    cause: Schema.optionalKey(
++      Schema.Struct({
++        stage: OAuthFailureCause.fields.stage,
++        status: Schema.optionalKey(Schema.Int),
++        providerError: Schema.optionalKey(OAuthProviderErrorCode),
++        field: Schema.optionalKey(OAuthResponseField),
++      }),
++    ),
++  }))();
+ 
+ /** Closed host diagnostics; app text and vendor responses never enter this record. */
+ export const AccountCheckFailure = /* @__PURE__ */ (() =>
+   Schema.Struct({
++    oauthRenewal: Schema.optionalKey(OAuthCheckEvidence),
+     phase: Schema.Literals(["invoke", "app-threw", "timeout", "decode", "vendor"]),
+     tag: Schema.Literals([
+       "RuntimeBuildUnavailable",
+diff --git a/packages/sdk/src/contracts/oauth-failure-evidence.ts b/packages/sdk/src/contracts/oauth-failure-evidence.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..1bd28e3e3b10876edf2ac9a43ddb1b34848861c1
+--- /dev/null
++++ b/packages/sdk/src/contracts/oauth-failure-evidence.ts
+@@ -0,0 +1,65 @@
++import { Schema } from "effect";
++
++/** Provider error codes that Executor may record. Other provider values are dropped. */
++export const OAuthProviderErrorCode = /* @__PURE__ */ (() =>
++  Schema.Literals([
++    "invalid_grant",
++    "invalid_client",
++    "invalid_request",
++    "invalid_scope",
++    "unauthorized_client",
++    "unsupported_grant_type",
++    "invalid_redirect_uri",
++    "invalid_client_metadata",
++    "access_denied",
++    "unsupported_response_type",
++    "server_error",
++    "temporarily_unavailable",
++  ]))();
++/** Response fields named by protocol validation. Values are never recorded. */
++export const OAuthResponseField = /* @__PURE__ */ (() =>
++  Schema.Literals([
++    "client_id",
++    "client_secret",
++    "client_secret_expires_at",
++    "access_token",
++    "token_type",
++    "expires_in",
++    "refresh_token",
++    "id_token",
++    "issuer",
++    "authorization_endpoint",
++    "token_endpoint",
++    "code_challenge_methods_supported",
++    "jwt_alg",
++    "scope",
++  ]))();
++/**
++ * Safe protocol evidence for diagnosis. Fixed vocabularies only; never a body, message, or URL.
++ * Connections store it in recorded failures. Removing a value needs no data step: failures
++ * recorded with it are left out when read (notes/oauth.md, "Failure reasons").
++ */
++export const OAuthFailureCause = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    stage: Schema.Literals([
++      "discover",
++      "register",
++      "authorize",
++      "exchange",
++      "clientCredentials",
++      "refresh",
++    ]),
++    status: Schema.optional(Schema.Int),
++    providerError: Schema.optional(OAuthProviderErrorCode),
++    field: Schema.optional(OAuthResponseField),
++  }))();
++export type OAuthFailureCause = typeof OAuthFailureCause.Type;
++
++export const OAuthRenewalReason = /* @__PURE__ */ (() =>
++  Schema.Literals([
++    "service_unavailable",
++    "rate_limited",
++    "incompatible_response",
++    "client_rejected",
++    "renewal_rejected",
++  ]))();
+diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
+index 76e8cf2f436da4822e11d825789a1fb3645e1466..67a2622bed025ce6d2d17c14399360fc52a69a18 100644
+--- a/packages/sdk/src/contracts/oauth.ts
++++ b/packages/sdk/src/contracts/oauth.ts
+@@ -127,60 +127,12 @@ export const OAuthClientUnavailable = /* @__PURE__ */ (() =>
+   }))();
+ export type OAuthClientUnavailable = typeof OAuthClientUnavailable.Type;
+ 
+-/** Provider error codes that Executor may record. Other provider values are dropped. */
+-export const OAuthProviderErrorCode = /* @__PURE__ */ (() =>
+-  Schema.Literals([
+-    "invalid_grant",
+-    "invalid_client",
+-    "invalid_request",
+-    "invalid_scope",
+-    "unauthorized_client",
+-    "unsupported_grant_type",
+-    "invalid_redirect_uri",
+-    "invalid_client_metadata",
+-    "access_denied",
+-    "unsupported_response_type",
+-    "server_error",
+-    "temporarily_unavailable",
+-  ]))();
+-/** Response fields named by protocol validation. Values are never recorded. */
+-export const OAuthResponseField = /* @__PURE__ */ (() =>
+-  Schema.Literals([
+-    "client_id",
+-    "client_secret",
+-    "client_secret_expires_at",
+-    "access_token",
+-    "token_type",
+-    "expires_in",
+-    "refresh_token",
+-    "id_token",
+-    "issuer",
+-    "authorization_endpoint",
+-    "token_endpoint",
+-    "code_challenge_methods_supported",
+-    "jwt_alg",
+-    "scope",
+-  ]))();
+-/**
+- * Safe protocol evidence for diagnosis. Fixed vocabularies only; never a body, message, or URL.
+- * Connections store it in recorded failures. Removing a value needs no data step: failures
+- * recorded with it are left out when read (notes/oauth.md, "Failure reasons").
+- */
+-export const OAuthFailureCause = /* @__PURE__ */ (() =>
+-  Schema.Struct({
+-    stage: Schema.Literals([
+-      "discover",
+-      "register",
+-      "authorize",
+-      "exchange",
+-      "clientCredentials",
+-      "refresh",
+-    ]),
+-    status: Schema.optional(Schema.Int),
+-    providerError: Schema.optional(OAuthProviderErrorCode),
+-    field: Schema.optional(OAuthResponseField),
+-  }))();
+-export type OAuthFailureCause = typeof OAuthFailureCause.Type;
++import { OAuthFailureCause, OAuthRenewalReason } from "./oauth-failure-evidence.ts";
++export {
++  OAuthProviderErrorCode,
++  OAuthResponseField,
++  OAuthFailureCause,
++} from "./oauth-failure-evidence.ts";
+ 
+ /** The protocol evidence of a failure: closed stages, codes and fields, and the HTTP status. */
+ const causeEvidence = (cause: OAuthFailureCause) =>
+@@ -1309,13 +1261,7 @@ export const OAuthRenewalFailed = /* @__PURE__ */ (() =>
+        * this account's grant. `renewal_rejected`: any other OAuth error, including codes outside
+        * RFC 6749, which also does not say the grant has ended.
+        */
+-      reason: Schema.Literals([
+-        "service_unavailable",
+-        "rate_limited",
+-        "incompatible_response",
+-        "client_rejected",
+-        "renewal_rejected",
+-      ]),
++      reason: OAuthRenewalReason,
+       cause: Schema.optional(OAuthFailureCause),
+       retryAfter: RetryAfter,
+     },
+diff --git a/packages/sdk/src/implementation/account-check-failure.ts b/packages/sdk/src/implementation/account-check-failure.ts
+index 54647b357dfb5dc7e555e08a5a66f17fe88cf06b..aeadac1f37f6e7f5caa458b98dc8189b48d3280a 100644
+--- a/packages/sdk/src/implementation/account-check-failure.ts
++++ b/packages/sdk/src/implementation/account-check-failure.ts
+@@ -1,5 +1,5 @@
+ import { Cause, Effect, Option, Schema } from "effect";
+-import { AccountCheckFailure } from "../contracts/account-check-failure.ts";
++import { AccountCheckFailure, OAuthCheckEvidence } from "../contracts/account-check-failure.ts";
+ import { HostOperationFailed } from "apps/contracts";
+ import { RuntimeProtocolFailed } from "../contracts/runtime.ts";
+ 
+@@ -40,9 +40,28 @@ export const accountCheckFailure = (error: unknown): AccountCheckFailure => {
+         tag,
+       };
+     case "ProviderError":
+-    case "OAuthReconnectRequired":
+-    case "OAuthRenewalFailed":
+       return { phase: "vendor", tag };
++    case "OAuthReconnectRequired":
++    case "OAuthRenewalFailed": {
++      const reason =
++        tag === "OAuthRenewalFailed"
++          ? Schema.decodeUnknownOption(Schema.Struct({ reason: OAuthCheckEvidence.fields.reason }))(
++              error,
++            )
++          : Option.none();
++      const cause = Schema.decodeUnknownOption(
++        Schema.Struct({ cause: OAuthCheckEvidence.fields.cause }),
++      )(error);
++      const evidence = {
++        ...(Option.isSome(reason) ? reason.value : {}),
++        ...(Option.isSome(cause) ? cause.value : {}),
++      };
++      return {
++        phase: "vendor",
++        tag,
++        ...(Object.keys(evidence).length === 0 ? {} : { oauthRenewal: evidence }),
++      };
++    }
+     case "TimeoutError":
+       return { phase: "timeout", tag };
+     default:
+@@ -50,18 +69,34 @@ export const accountCheckFailure = (error: unknown): AccountCheckFailure => {
+   }
+ };
+ 
+-/** Console logs and exported spans carry the same two bounded values as stored health. */
+-export const recordAccountCheckFailure = (failure: AccountCheckFailure) =>
+-  Effect.annotateCurrentSpan({
++/** Console logs and exported spans carry the same bounded evidence as stored health. */
++export const recordAccountCheckFailure = (failure: AccountCheckFailure) => {
++  const evidence = {
++    ...(failure.oauthRenewal?.reason === undefined
++      ? {}
++      : { "executor.account.check.failure.renewal.reason": failure.oauthRenewal.reason }),
++    ...(failure.oauthRenewal?.cause === undefined
++      ? {}
++      : Object.fromEntries(
++          Object.entries(failure.oauthRenewal.cause).map(([key, value]) => [
++            `executor.account.check.failure.renewal.${key}`,
++            value,
++          ]),
++        )),
++  };
++  return Effect.annotateCurrentSpan({
++    ...evidence,
+     "executor.account.check.failure.phase": failure.phase,
+     "executor.account.check.failure.tag": failure.tag,
+   }).pipe(
+     Effect.andThen(
+       Effect.logWarning("Account health check failed").pipe(
+         Effect.annotateLogs({
++          ...evidence,
+           "executor.account.check.failure.phase": failure.phase,
+           "executor.account.check.failure.tag": failure.tag,
+         }),
+       ),
+     ),
+   );
++};
+diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
+index 6399a06b92459d720e3beba47faa241cd6cc101e..eda80749a6f16c6f9564c43c4bb6e13f5bbe891b 100644
+--- a/packages/sdk/src/implementation/account-health.ts
++++ b/packages/sdk/src/implementation/account-health.ts
+@@ -158,6 +158,22 @@ const statusOf = (error: unknown): AccountCheckStatus =>
+  * tells. Unclassified failures get a fixed retry message without exposing their causes.
+  */
+ const messageOf = (error: unknown, late: boolean): string | undefined => {
++  if (Schema.is(OAuthReconnectRequired)(error))
++    return "This sign-in can no longer renew access. Reconnect to sign in again.";
++  if (Schema.is(OAuthRenewalFailed)(error))
++    return {
++      service_unavailable:
++        "The sign-in service is unavailable. The saved sign-in is kept; try again shortly.",
++      rate_limited:
++        "The service is limiting renewals. The saved sign-in is kept; try again shortly.",
++      incompatible_response:
++        "The service's renewal response could not be used. The saved sign-in is kept.",
++      client_rejected:
++        "The service refused the OAuth client. Someone who manages OAuth clients needs to check it.",
++      renewal_rejected:
++        "The service refused to renew the sign-in without saying it ended. Try again or reconnect.",
++    }[error.reason];
++
+   if (Schema.is(HostOperationFailed)(error) && error.message !== undefined && error.message !== "")
+     return error.message;
+   if (Schema.is(ProviderError)(error) && error.reason === "rejected") {
+diff --git a/packages/ui/src/contracts/account-check-recovery.ts b/packages/ui/src/contracts/account-check-recovery.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..d2006cd79bbc5e1a3e51ec0604b9643c92431cc7
+--- /dev/null
++++ b/packages/ui/src/contracts/account-check-recovery.ts
+@@ -0,0 +1,99 @@
++/**
++ * What a failed account check means for the person reading it, and whether signing in again can
++ * fix it. Renewal reasons and causes are the host's closed vocabularies; vendor text never enters.
++ */
++import type { AccountAppHealth, App, AppId } from "@executor-js/sdk";
++import type { AccountSummary } from "./dashboard.ts";
++
++type Check = NonNullable<AccountAppHealth["check"]>;
++type Failure = NonNullable<Check["failure"]>;
++type Renewal = NonNullable<Failure["oauthRenewal"]>;
++
++/**
++ * The renewal evidence of a check that failed renewing a saved OAuth sign-in. A failure recorded
++ * before reasons were kept has neither field, which says nothing about why.
++ */
++export const renewalFailure = (check: Pick<Check, "failure">): Renewal | undefined =>
++  check.failure?.tag === "OAuthRenewalFailed" ? (check.failure.oauthRenewal ?? {}) : undefined;
++
++/**
++ * Renewals that signing in again can plausibly fix: an unexplained failure, or a refusal that did
++ * not say the grant ended. An outage, a rate limit, an unusable response or a refused OAuth client
++ * keeps the saved sign-in, and a new one would meet the same problem.
++ */
++const reconnectable = new Set<Renewal["reason"]>([undefined, "renewal_rejected"]);
++
++/** A current check whose recovery is Reconnect: a rejected sign-in or a renewal it can fix. */
++export const checkOffersReconnect = (check: Pick<Check, "current" | "status" | "failure">) => {
++  if (!check.current) return false;
++  if (check.status === "credentials_rejected") return true;
++  const renewal = renewalFailure(check);
++  return renewal !== undefined && reconnectable.has(renewal.reason);
++};
++
++/** The label of a failed renewal, everywhere a check's status label would show. */
++export const renewalLabel = "Could not renew sign-in";
++
++const renewalReasons = {
++  service_unavailable:
++    "The sign-in service didn't answer. The saved sign-in is kept; check again shortly.",
++  rate_limited: "The service is limiting renewals. The saved sign-in is kept; check again shortly.",
++  incompatible_response:
++    "The service's renewal response couldn't be used. The saved sign-in is kept; this isn't a problem with the account.",
++  client_rejected:
++    "The service refused the OAuth client used to sign in, not this account. Someone who manages OAuth clients needs to check it.",
++  renewal_rejected:
++    "The service refused to renew the sign-in without saying it ended. Reconnect to sign in again.",
++} satisfies Record<NonNullable<Renewal["reason"]>, string>;
++
++/** Why a renewal failed, from its recorded reason only. An old failure has none and says so. */
++export const renewalReason = (renewal: Renewal) =>
++  renewal.reason === undefined
++    ? "No reason was recorded for this failure. Check again, or reconnect to sign in again."
++    : renewalReasons[renewal.reason];
++
++/** The protocol evidence of a renewal: closed stages, codes and fields, and the HTTP status. */
++export const renewalEvidence = ({ cause }: Renewal) =>
++  cause === undefined
++    ? undefined
++    : [
++        `OAuth ${cause.stage}`,
++        cause.status === undefined ? undefined : `HTTP ${cause.status}`,
++        cause.providerError,
++        cause.field === undefined ? undefined : `field ${cause.field}`,
++      ]
++        .filter((part) => part !== undefined)
++        .join(" · ");
++
++/**
++ * Why a check failed: the host's message, else a failed renewal's recorded reason, with the
++ * renewal's protocol evidence when it was kept.
++ */
++export const checkExplanation = (check: Pick<Check, "failure" | "message">) => {
++  const renewal = renewalFailure(check);
++  return {
++    message: check.message ?? (renewal === undefined ? undefined : renewalReason(renewal)),
++    evidence:
++      check.failure?.oauthRenewal === undefined
++        ? undefined
++        : renewalEvidence(check.failure.oauthRenewal),
++  };
++};
++
++/**
++ * The first app whose current check of `account` offers Reconnect and where the page supports it,
++ * so a row's one Reconnect opens the app that reported the problem.
++ */
++export const reconnectApp = (
++  account: AccountSummary,
++  apps: readonly App[],
++  canReconnect: ((app: App) => boolean) | undefined,
++): App | undefined => {
++  if (canReconnect === undefined) return undefined;
++  const offering = new Set<AppId>(
++    (account.health?.apps ?? []).flatMap((entry) =>
++      entry.check !== null && checkOffersReconnect(entry.check) ? [entry.app] : [],
++    ),
++  );
++  return apps.find((app) => offering.has(app.id) && canReconnect(app));
++};
+diff --git a/packages/ui/src/implementation/dashboard/account-health-line.tsx b/packages/ui/src/implementation/dashboard/account-health-line.tsx
+index 2acc20765c4e18bf2a5d37b43893c5a059381e2b..da0e8636fdfa9d900f4e6f570112b06c25502979 100644
+--- a/packages/ui/src/implementation/dashboard/account-health-line.tsx
++++ b/packages/ui/src/implementation/dashboard/account-health-line.tsx
+@@ -7,7 +7,12 @@ import { Button, buttonVariants } from "../components/button.tsx";
+ import { LocalTime, shortMoment } from "../components/local-time.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { cn } from "../lib/utils.ts";
+-import { describeAccountCheck, driverCanCheck } from "./account-health.tsx";
++import {
++  checkExplanation,
++  checkOffersReconnect,
++  renewalFailure,
++} from "../../contracts/account-check-recovery.ts";
++import { describeAccountCheck, describeCheckResult, driverCanCheck } from "./account-health.tsx";
+ import { useDashboard } from "./context.tsx";
+ 
+ const severity: readonly AccountCheckStatus[] = [
+@@ -34,9 +39,10 @@ const states = {
+ /**
+  * The latest check of each app and of the account's sign-in driver, one line per result, worst
+  * first. The driver's result stands on its own line and is never attributed to an app. Only a
+- * current rejection in an app offers Reconnect, in the app that reported it; a failed or timed-out
+- * check makes no claim about the sign-in. Without `check`, the line has no Check now of its own,
+- * as in a grouped row whose sign-ins are checked together.
++ * current rejection in an app, or a failed renewal that signing in again can fix, offers Reconnect,
++ * in the app that reported it; a failed or timed-out check makes no claim about the sign-in.
++ * Without `check`, the line has no Check now of its own, as in a grouped row whose sign-ins are
++ * checked together.
+  */
+ export function AccountHealthLine<E>({
+   account,
+@@ -106,10 +112,11 @@ export function AccountHealthLine<E>({
+       Check now
+     </Button>
+   );
+-  const rejected = groups.find(
+-    (group) => group.source === "app" && group.current && group.status === "credentials_rejected",
+-  );
+-  const reconnect = rejected?.matching
++  // Worst first, so a rejection's app wins over a renewal's.
++  const reconnect = groups
++    .filter((group) => group.source === "app")
++    .flatMap((group) => group.matching)
++    .filter((entry) => checkOffersReconnect(entry.check))
+     .map((entry) => apps.find((app) => "app" in entry && app.id === entry.app))
+     .find((app) => app !== undefined && canReconnect?.(app) === true);
+   if (!showStatus)
+@@ -128,13 +135,18 @@ export function AccountHealthLine<E>({
+         </div>
+       )}
+       {groups.map((group, index) => {
+-        const { label, tone } = describeAccountCheck(group.status);
++        // A group of failed renewals names itself; a mixed group keeps its status's label.
++        const { label, tone } = group.matching.every(
++          (entry) => renewalFailure(entry.check) !== undefined,
++        )
++          ? describeCheckResult(group.first.check)
++          : describeAccountCheck(group.status);
+         const latest = group.matching
+           .map((entry) => entry.check.checkedAt)
+           .reduce((a, b) => (a > b ? a : b), group.first.check.checkedAt);
+-        const message = group.matching
+-          .map((entry) => entry.check.message)
+-          .find((value) => value !== undefined);
++        const explained = group.matching
++          .map((entry) => checkExplanation(entry.check))
++          .find((value) => value.message !== undefined);
+         return (
+           <div
+             key={`${group.source}:${group.status}:${group.current}`}
+@@ -180,9 +192,14 @@ export function AccountHealthLine<E>({
+                 </AppLink>
+               )}
+             </div>
+-            {message !== undefined && (
++            {explained?.message !== undefined && (
+               <span className="wrap-anywhere text-foreground/80" data-check-message>
+-                {message}
++                {explained.message}
++              </span>
++            )}
++            {explained?.evidence !== undefined && (
++              <span className="wrap-anywhere" data-check-evidence>
++                {explained.evidence}
+               </span>
+             )}
+           </div>
+diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packages/ui/src/implementation/dashboard/account-health.tsx
+index 03414f2fa3491500a900b309d916758d4ff46b17..0f263b8473c362127f2e895ceba75e845a52f183 100644
+--- a/packages/ui/src/implementation/dashboard/account-health.tsx
++++ b/packages/ui/src/implementation/dashboard/account-health.tsx
+@@ -15,6 +15,11 @@ import { LocalTime, shortMoment } from "../components/local-time.tsx";
+ import { formatMoment, useDisplayFormat } from "../hooks/display-format.ts";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
++import {
++  checkExplanation,
++  renewalFailure,
++  renewalLabel,
++} from "../../contracts/account-check-recovery.ts";
+ 
+ import { AccountDisplayStatus } from "./account-status.tsx";
+ import { ProviderIcon } from "./common.tsx";
+@@ -37,6 +42,14 @@ export const describeAccountCheck = (status: AccountCheckStatus) =>
+     Match.exhaustive,
+   );
+ 
++/** One result's label: a failed renewal names itself rather than the outage its status reports. */
++export const describeCheckResult = (
++  check: Pick<NonNullable<AccountAppHealth["check"]>, "status" | "failure">,
++) => {
++  const described = describeAccountCheck(check.status);
++  return renewalFailure(check) === undefined ? described : { ...described, label: renewalLabel };
++};
++
+ /** Capability comes from the retained driver, independently of its last result. */
+ export const driverCanCheck = (driver: AccountDriverHealth | undefined) =>
+   driver?.checkable === true;
+@@ -67,8 +80,9 @@ export function AccountCheckDot({ health }: { readonly health: AccountAppHealth
+       />
+     );
+ 
+-  const { label, tone } = describeAccountCheck(check.status);
+-  const text = `${check.current ? label : `${label} (outdated)`}${check.message === undefined ? "" : `: ${check.message}`}`;
++  const { label, tone } = describeCheckResult(check);
++  const { message } = checkExplanation(check);
++  const text = `${check.current ? label : `${label} (outdated)`}${message === undefined ? "" : `: ${message}`}`;
+   return (
+     <span
+       className={`size-1.5 shrink-0 rounded-full ${check.current ? tones[tone] : tones.muted}`}
+@@ -292,7 +306,8 @@ export function AccountCheckResult({
+   if (health.check === null)
+     return <span className="text-[12px] text-muted-foreground">Not checked</span>;
+   const displayStatus = "displayStatus" in health.check ? health.check.displayStatus : undefined;
+-  const { label, tone } = describeAccountCheck(health.check.status);
++  const { label, tone } = describeCheckResult(health.check);
++  const { message, evidence } = checkExplanation(health.check);
+   const badge = (
+     <span
+       className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${health.check.current ? pills[tone] : pills.muted}`}
+@@ -311,9 +326,14 @@ export function AccountCheckResult({
+           part="details"
+         />
+       )}
+-      {health.check.message !== undefined && (
++      {message !== undefined && (
+         <span className="w-full wrap-anywhere" data-check-message>
+-          {health.check.message}
++          {message}
++        </span>
++      )}
++      {evidence !== undefined && (
++        <span className="w-full wrap-anywhere text-muted-foreground" data-check-evidence>
++          {evidence}
+         </span>
+       )}
+     </>
+@@ -335,7 +355,7 @@ export function AccountCheckResult({
+   if (part === "details")
+     return <span className="flex w-full min-w-0 flex-col gap-1">{details}</span>;
+   if (part === "notes")
+-    return displayStatus === undefined && health.check.message === undefined ? null : (
++    return displayStatus === undefined && message === undefined ? null : (
+       <span className="flex w-full min-w-0 flex-col gap-1">
+         {displayStatus !== undefined && (
+           <AccountDisplayStatus
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-details.tsx b/packages/ui/src/implementation/dashboard/account-observation-details.tsx
+index 75c998ffa43fa8ed6043f931f53da54b0b90815d..56e16531de31e18c835aaf5a935f870ad3291222 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-details.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observation-details.tsx
+@@ -5,7 +5,8 @@ import type { DisplayFormat } from "../../contracts/display.ts";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import type { AccountSignIn } from "./account-sign-in-checks.tsx";
+-import { describeAccountCheck } from "./account-health.tsx";
++import { checkExplanation } from "../../contracts/account-check-recovery.ts";
++import { describeCheckResult } from "./account-health.tsx";
+ import {
+   age,
+   attemptReasons,
+@@ -110,19 +111,28 @@ export function ObservationDetails({
+     const check = entry?.check ?? null;
+     const result =
+       check === null ? (entry?.checkable === true ? "Not checked" : "No check") : undefined;
+-    const { label } = check === null ? { label: "" } : describeAccountCheck(check.status);
++    const { label } = check === null ? { label: "" } : describeCheckResult(check);
++    const explained = check === null ? undefined : checkExplanation(check);
+     return [
+       appDisplayName(app, brand),
+       result ?? (check?.current === false ? `${label} · outdated` : label),
+       check === null ? "—" : moment(check.checkedAt.toISOString(), now, format),
+-      check?.message ??
+-        (check?.reason === undefined ? (
+-          <span key="reason" className="text-muted-foreground">
+-            None
+-          </span>
+-        ) : (
+-          checkReasons[check.reason]
+-        )),
++      explained?.message !== undefined ? (
++        <span key="reason" className="grid gap-0.5">
++          {explained.message}
++          {explained.evidence !== undefined && (
++            <span className="text-muted-foreground" data-check-evidence>
++              {explained.evidence}
++            </span>
++          )}
++        </span>
++      ) : check?.reason === undefined ? (
++        <span key="reason" className="text-muted-foreground">
++          None
++        </span>
++      ) : (
++        checkReasons[check.reason]
++      ),
+     ];
+   };
+   const read = (value: string, stale: boolean) => (
+diff --git a/packages/ui/src/implementation/dashboard/account-row-health.tsx b/packages/ui/src/implementation/dashboard/account-row-health.tsx
+index 7ae8a941330ea27b3fcb354dc5b43a8558ed66be..6dfa69f5814f5301fc827022f41ca2bb59d2cb39 100644
+--- a/packages/ui/src/implementation/dashboard/account-row-health.tsx
++++ b/packages/ui/src/implementation/dashboard/account-row-health.tsx
+@@ -7,7 +7,8 @@ import { accountNeedsSignIn, type AccountSummary } from "../../contracts/dashboa
+ import { shortMoment } from "../components/local-time.tsx";
+ import { formatMoment, useDisplayFormat } from "../hooks/display-format.ts";
+ import { cn } from "../lib/utils.ts";
+-import { describeAccountCheck } from "./account-health.tsx";
++import { checkExplanation, checkOffersReconnect } from "../../contracts/account-check-recovery.ts";
++import { describeCheckResult } from "./account-health.tsx";
+ import type { AccountRowBinding, AccountRowInput } from "./account-row.tsx";
+ import { TrafficHealth, type AccountRowTraffic } from "./account-traffic.tsx";
+ import { observationClock } from "./account-observation-format.ts";
+@@ -180,8 +181,9 @@ const texts = {
+ /**
+  * The account's health in a few words. A current rejection is the row's one inline recovery:
+  * `recover` where the page has one, or with `link` a "Needs re-auth ↗" link to the first rejecting
+- * member's app. With `traffic` that has requests, its ticks and success share replace the word,
+- * except where a grant problem, a current rejection or an outdated check says more.
++ * member's app. A failed renewal that signing in again can fix offers `recover` too. With
++ * `traffic` that has requests, its ticks and success share replace the word, except where a grant
++ * problem, a current rejection or an outdated check says more.
+  */
+ export function AccountHealthCell({
+   health,
+@@ -243,7 +245,8 @@ export function AccountHealthCell({
+       </span>
+     );
+   const { check, sources, grouped } = health;
+-  const { label, tone } = describeAccountCheck(check.status);
++  const { label, tone } = describeCheckResult(check);
++  const { message } = checkExplanation(check);
+   const where = sources
+     .map((source) => {
+       const by = source.app === undefined ? "sign-in check" : appName(source.app);
+@@ -252,7 +255,7 @@ export function AccountHealthCell({
+     .join(", ");
+   const when = formatMoment(new Date(check.checkedAt), format, shortMoment);
+   const title = check.current
+-    ? `${label} by ${where} · checked ${when}${check.message === undefined ? "" : `\n${check.message}`}`
++    ? `${label} by ${where} · checked ${when}${message === undefined ? "" : `\n${message}`}`
+     : `Last check ${when} by ${where}, before the credentials or app changed`;
+   const state = check.current ? check.status : "not-rechecked";
+   // The same attributes as the check badges this cell replaced.
+@@ -272,6 +275,8 @@ export function AccountHealthCell({
+       </span>
+     );
+   const rejected = check.status === "credentials_rejected";
++  // A renewal that signing in again can fix offers the page's Reconnect too, never the re-auth link.
++  const recoverable = checkOffersReconnect(check);
+   // Traffic stands in only for a healthy check; a current failure keeps its label.
+   if (busy !== undefined && check.status === "healthy")
+     return <TrafficHealth traffic={busy} check={title} now={now} format={format} />;
+@@ -319,7 +324,7 @@ export function AccountHealthCell({
+     );
+   return (
+     <span
+-      className={cn(cell, rejected && recover !== undefined && "flex-wrap")}
++      className={cn(cell, recoverable && recover !== undefined && "flex-wrap")}
+       title={title}
+       data-account-health-cell
+       data-health-state={state}
+@@ -327,7 +332,7 @@ export function AccountHealthCell({
+       suppressHydrationWarning
+     >
+       {content}
+-      {rejected && recover}
++      {recoverable && recover}
+     </span>
+   );
+ }

@@ -12,6 +12,7 @@ const workflow = parse(
 
 const scripts = baselineRoles.map((role) => ({
   id: `basalt-${role.toLowerCase()}-production-fixture`,
+  tags: ["alchemy:stack:basalt", "alchemy:stage:production", `alchemy:id:${role}`],
 }));
 
 test("selected baseline probe must pass the aggregate Check and unselected probes must skip", () => {
@@ -39,13 +40,39 @@ test("baseline inventory covers all live roles and refuses missing, duplicate an
     baselineRoles,
   );
   assert.ok(baselineInventory(scripts).some((worker) => worker.role === "AppOutbound"));
+  const truncated = scripts.map((script) =>
+    script.tags.includes("alchemy:id:ArtifactsCredentials")
+      ? { ...script, id: `basalt-artifactscredentials-pr${"a".repeat(24)}` }
+      : script,
+  );
+  assert.equal(
+    baselineInventory(truncated).find((worker) => worker.role === "ArtifactsCredentials")!
+      .scriptName,
+    `basalt-artifactscredentials-pr${"a".repeat(24)}`,
+  );
+  for (const tag of ["alchemy:id:Other", "alchemy:stage:preview", "alchemy:stack:Other"])
+    assert.throws(
+      () =>
+        baselineInventory([
+          { ...scripts[0]!, tags: [...scripts[0]!.tags, tag] },
+          ...scripts.slice(1),
+        ]),
+      /Api/,
+    );
   assert.throws(
     () => baselineInventory(scripts.filter((script) => !script.id.includes("publicsite"))),
     /PublicSite/,
   );
   assert.throws(() => baselineInventory([...scripts, scripts[0]!]), /Api/);
   assert.throws(
-    () => baselineInventory([...scripts, { id: "basalt-future-worker-production-fixture" }]),
+    () =>
+      baselineInventory([
+        ...scripts,
+        {
+          id: "basalt-future-worker-production-fixture",
+          tags: ["alchemy:stack:basalt", "alchemy:stage:production", "alchemy:id:Future"],
+        },
+      ]),
     /unexpected/,
   );
 });

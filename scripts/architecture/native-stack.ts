@@ -47,7 +47,12 @@ function evaluate(
   options: {
     manualCron?: true;
     settingsProof?: true;
-    candidateProof?: "ready" | "missing-attempt" | "entry-ready" | "entry-missing-attempt";
+    candidateProof?:
+      | "ready"
+      | "missing-attempt"
+      | "entry-ready"
+      | "entry-missing-attempt"
+      | "entry-inventory-refusals";
     releaseProof?: true;
     connectionProof?: true;
     previewConnectionProof?: true;
@@ -264,7 +269,12 @@ export function discoverScriptSettings(root: string): unknown {
 
 export function discoverCandidateSettings(
   root: string,
-  candidateProof: "ready" | "missing-attempt" | "entry-ready" | "entry-missing-attempt",
+  candidateProof:
+    | "ready"
+    | "missing-attempt"
+    | "entry-ready"
+    | "entry-missing-attempt"
+    | "entry-inventory-refusals",
 ): unknown {
   return evaluate(root, { candidateProof });
 }

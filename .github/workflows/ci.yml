@@ -884,6 +884,9 @@ jobs:
       - name: Verify discarded rotated refresh revocation after account deletion
         timeout-minutes: 5
         run: node scripts/oauth-discard-tests/prove.ts
+      - name: Verify renewal diagnostics and reconnect through the dashboard
+        timeout-minutes: 5
+        run: bun e2e/oauth-renewal-recovery.mjs .generated/oauth-renewal-recovery/ci
       - name: Keep OAuth naming independent of account reads and health
         timeout-minutes: 5
         working-directory: .upstream
@@ -901,6 +904,10 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
+            .generated/oauth-renewal-recovery/ci/report.json
+            .generated/oauth-renewal-recovery/ci/outcomes.json
+            .generated/oauth-renewal-recovery/ci/*-health.json
+            .generated/oauth-renewal-recovery/ci/*-390.png
           if-no-files-found: warn
   pool-account-recovery:
     needs: select

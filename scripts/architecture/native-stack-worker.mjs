@@ -146,10 +146,7 @@ try {
         settingsProof.settingsFromDeclarations(
           stack,
           Object.values(stack.resources)
-            .filter(
-              (resource) =>
-                resource.Type === "Cloudflare.Worker" && resource.FQN !== "ArtifactsCredentials",
-            )
+            .filter((resource) => resource.Type === "Cloudflare.Worker")
             .map((resource) => ({
               role: resource.FQN,
               scriptName: `basalt-${resource.FQN.toLowerCase()}-production-fixture`,
