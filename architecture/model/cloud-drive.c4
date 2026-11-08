@@ -1,0 +1,32 @@
+model {
+  extend basalt.toolsGateway {
+    cloudDrive = part "App cloud drives" {
+      description "Each app has an isolated cloud drive. Its storage engine is a vendored source snapshot, built with the pinned compiler and separate dependencies. Git writer branches preserve conflicting edits and operation receipts distinguish saved branches from landed main. record storage retains the complete record; bounded object and tree caches can be deleted and rebuilt. An account ledger admits logical bytes, physical storage and I/O before work. Initial imports declare bounded manifest pages and reserve a separate counted cost allowance; serialized operation scopes prevent other writes borrowing it. Content-addressed attachment parts survive unknown replies and accepted bytes never expire. Exhaustion names the exact resource and never prunes accepted history. Agent writes use native approval and active workflow authority. Protocol 38 carries bounded batches and quota failures across the installed framework transport."
+      metadata {
+        code "src/drive|apps/obsidian"
+        libraries "effect|apps|buffer|isomorphic-git|sha.js"
+      }
+    }
+    obsidianSync = part "Obsidian Sync" {
+      description "A thin plugin connects through a browser-created app-scoped connection and device authorization. Credentials stay in Obsidian's secure storage. Local queues and exact receipts resume initial imports and offline edits. The Mac mirrors all content with bounded desktop file reads. Phones fetch note attachments on opening or pinning and evict only verified local copies. Journaled publication preserves changed local bytes and conflicting branches remain reviewable. The browser bundle contains no Node imports; the optional desktop reader is a separate guarded asset. Actual iPhone resource-range and file publication behavior still need device proof."
+      metadata {
+        code "clients/obsidian"
+        libraries "obsidian"
+      }
+    }
+  }
+  extend basalt.build {
+    cloudDriveProof = part "Cloud drive verification" {
+      description "Synthetic installed-app proofs use the ordinary HTTP, MCP, native approval and workflow paths. Seeded large-vault proofs use real local workerd, SQLite and record storage, verify complete cold coverage and retained history, enforce disk bounds and delete their own bulk data after exporting hashes. Local proofs do not establish hosted adoption or device compatibility."
+      metadata {
+        code "e2e/obsidian"
+        libraries "effect|apps|@effect/platform-node|fumadb-effect|esbuild|miniflare|@modelcontextprotocol/sdk"
+        endpointHosts "127.0.0.1|fixture.invalid|volume.invalid"
+      }
+    }
+  }
+  basalt.build.cloudDriveProof -> basalt.toolsGateway.cloudDrive "Verifies cloud storage and recovery"
+  basalt.build.cloudDriveProof -> basalt.toolsGateway "Verifies installed app transports"
+  basalt.build.cloudDriveProof -> basalt.toolsGateway.obsidianSync "Verifies the public plugin transport"
+  basalt.toolsGateway.obsidianSync -> basalt.toolsGateway.cloudDrive "Syncs manifest entries and pinned revisions"
+}

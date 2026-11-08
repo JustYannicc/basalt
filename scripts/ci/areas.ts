@@ -119,6 +119,10 @@ export const areas = [
   },
   { paths: ["e2e/clerk-sign-in.mjs", "e2e/clerk-signin/**"], jobs: ["clerk-sign-in"] },
   { paths: ["e2e/gitlab-sign-in.mjs", "e2e/gitlab-signin/**"], jobs: ["gitlab-sign-in"] },
+  {
+    paths: ["clients/obsidian/**", "src/drive/**", "apps/obsidian/**", "e2e/obsidian/**"],
+    jobs: ["production-build"],
+  },
   { paths: ["clients/**"], jobs: ["client-mobile", "client-desktop", "client-native-product"] },
   {
     paths: ["src/tunnel/**", "e2e/native-*", ".upstream/**/{client-grants,device-authorization}*"],

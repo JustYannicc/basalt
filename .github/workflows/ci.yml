@@ -2147,6 +2147,13 @@ jobs:
       - run: npm run check:build
       - name: Check every Worker's startup CPU and size against Cloudflare's limits
         run: npm run check:startup
+      - name: Verify installed cloud Obsidian and native attachment import
+        run: node --test e2e/obsidian/installed.test.ts
+      - name: Build and typecheck the Obsidian plugin against its public API
+        run: |
+          bun install --cwd clients/obsidian --frozen-lockfile
+          node .upstream/node_modules/typescript/bin/tsc -p clients/obsidian/tsconfig.json
+          node clients/obsidian/build.mjs
       - name: Generate the architecture model for typechecking
         run: npm run architecture:model
       - run: npm run typecheck
