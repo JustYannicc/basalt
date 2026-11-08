@@ -35,6 +35,8 @@ runs:
     - name: Populate release assets without the GitHub release CDN
       if: inputs.warm == 'true' && steps.cache.outputs.cache-hit != 'true'
       shell: bash
+      env:
+        NODE_OPTIONS: --require "${{ github.workspace }}/scripts/ci/deny-release-downloads.cjs"
       run: |
         bun install --cwd clients --frozen-lockfile
         bun install --cwd clients/desktop --frozen-lockfile
