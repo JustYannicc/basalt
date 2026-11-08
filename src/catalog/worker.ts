@@ -142,17 +142,19 @@ export async function handleCatalog(
     if (!response.ok || response.status !== 200) return unavailable();
     let body: string;
     if (relative === "index.json") {
-      const upstream = withPlanetScaleAccess(withClerkSignIn(
-        withWorkOSSignIn(
-          withElevenLabsSignIn(
-            withVercelSignIn(
-              withMiroCapabilities(
-                withSlackUserAuth(withGitLabInstances((await response.json()) as Feed)),
+      const upstream = withPlanetScaleAccess(
+        withClerkSignIn(
+          withWorkOSSignIn(
+            withElevenLabsSignIn(
+              withVercelSignIn(
+                withMiroCapabilities(
+                  withSlackUserAuth(withGitLabInstances((await response.json()) as Feed)),
+                ),
               ),
             ),
           ),
         ),
-      ));
+      );
       const feed = {
         ...upstream,
         apps: upstream.apps.filter(
