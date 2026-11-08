@@ -1,6 +1,7 @@
 import { assertJournaledBaselineInput, type ForwardInputProof } from "./forward-worker-input.ts";
 import { State } from "alchemy/State/State";
 import { beginForwardJournal } from "./forward-journal.ts";
+import { verifyRepairBaseline } from "./repair-baseline.ts";
 import { operationFailure, withOperation } from "./operation-failure.ts";
 import * as Apply from "alchemy/Apply";
 import * as Plan from "alchemy/Plan";
@@ -22,7 +23,6 @@ import {
   placementRepairTargets,
   assertRepairedPlacement,
   assertRepairedVersionPlacement,
-  assertRepairBaseline,
 } from "./pending-placement.ts";
 import { retiredPlacements, retirePlacement } from "./placement-retirement.ts";
 import { needsPlacementProof } from "./script-placement.ts";
@@ -208,13 +208,12 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
                   version,
                   worker.pendingPlacementRepair,
                 );
-                const settings = await run(readScriptSettings(worker));
-                assertRepairBaseline(
-                  worker.id,
-                  worker.scriptName,
-                  upload.request.metadata,
-                  settings,
-                  worker.pendingPlacementRepair,
+                await run(
+                  verifyRepairBaseline(
+                    worker,
+                    upload.request.metadata,
+                    worker.pendingPlacementRepair,
+                  ),
                 );
               }
               activated.set(worker.id, await run(upload.activate(versionId)));

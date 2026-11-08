@@ -12,6 +12,10 @@ import { resumeForwardRelease } from "./forward-resume.ts";
 import { readOnlyProbeFetch } from "./probe-network.ts";
 import { BarrierRefusal } from "./manifest.ts";
 import { safeProviderFailure } from "./operation-failure.ts";
+import {
+  readForwardStateObservation,
+  type ForwardStateObservation,
+} from "./forward-state-observation.ts";
 
 if (process.env.GITHUB_ACTIONS !== "true")
   throw new Error("Forward reconciliation probe runs only in Actions");
@@ -20,6 +24,7 @@ const nativeFetch = globalThis.fetch;
 const guarded = readOnlyProbeFetch(process.env.CLOUDFLARE_ACCOUNT_ID ?? "", nativeFetch);
 let report: unknown;
 let table: string;
+let nativeState: ForwardStateObservation | undefined;
 try {
   const environment = deployEnvironment();
   globalThis.fetch = guarded;
@@ -42,14 +47,15 @@ try {
                 deleteStack: deny,
                 setOutput: deny,
               };
-              const nativeSchemaVersion = yield* actual.getVersion();
+              nativeState = yield* readForwardStateObservation(actual, compiled);
               const reconciliation = yield* resumeForwardRelease(compiled, {
                 dryRun: true,
                 directory,
               }).pipe(Effect.provideService(State, Effect.succeed(readOnly)));
               return {
                 schemaVersion: 1,
-                nativeSchemaVersion,
+                nativeSchemaVersion: nativeState.nativeSchemaVersion,
+                nativeState,
                 readOnly: true,
                 reconciliation: reconciliation ?? { disposition: "completed-journal" },
               };
@@ -82,6 +88,7 @@ try {
     schemaVersion: exit.value.schemaVersion,
     nativeSchemaVersion: exit.value.nativeSchemaVersion,
     readOnly: true,
+    nativeState: exit.value.nativeState,
     ...exit.value.reconciliation,
   };
   table = `| Field | Observed / proposed |\n| --- | --- |\n${Object.entries(fields)
@@ -92,7 +99,7 @@ try {
   const detail = await evidence.failure(error);
   await reportRefusal(detail, process.env.GITHUB_STEP_SUMMARY);
   const failure = safeProviderFailure(error);
-  report = { ...detail, readOnly: true, ok: false, ...failure };
+  report = { ...detail, readOnly: true, ok: false, nativeState, ...failure };
   table = refusalTable(detail);
   process.exitCode = 1;
 } finally {

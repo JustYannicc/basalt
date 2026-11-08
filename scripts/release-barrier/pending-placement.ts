@@ -4,6 +4,10 @@ import { BarrierRefusal, canonical } from "./manifest.ts";
 import { assertScriptSettings, settingsRefusal } from "./script-settings.ts";
 import { normalizePlacement, type ActiveWorkerPlacement } from "./script-placement.ts";
 
+type RepairSettings = Omit<Workers.GetScriptScriptAndVersionSettingResponse, "placement"> & {
+  placement?: unknown;
+};
+
 export const placementRepairTargets = [
   {
     role: "Api",
@@ -37,7 +41,7 @@ export function pendingPlacementRepair(input: {
   active: ActiveWorkerPlacement;
   prior: ActiveWorkerPlacement;
   metadata: Workers.PutScriptMetadata;
-  settings: Workers.GetScriptScriptAndVersionSettingResponse;
+  settings: RepairSettings;
   retired: boolean;
 }) {
   const target = placementRepairTargets.find(
@@ -52,7 +56,6 @@ export function pendingPlacementRepair(input: {
     input.active.placement != null ||
     input.prior.id !== target.prior ||
     canonical(input.prior.placement) !== canonical(expectedPrior) ||
-    canonical(input.settings.placement ?? {}) !== "{}" ||
     canonical(normalizePlacement(input.metadata.placement)) !==
       canonical(normalizePlacement(expectedPrior))
   )
@@ -64,7 +67,6 @@ export function pendingPlacementRepair(input: {
       ["prior-version", subrequests(input.prior.limits), 50000],
       ["declaration", input.metadata.limits?.subrequests, 50000],
       ["active-version", subrequests(input.active.limits), null],
-      ["script-settings", input.settings.limits?.subrequests, null],
     ] as const)
       if ((actual ?? null) !== expected)
         throw settingsRefusal(
@@ -74,6 +76,7 @@ export function pendingPlacementRepair(input: {
           { limits: { subrequests: expected } },
         );
   }
+  assertRepairSettingsView(input.role, input.settings, { limits });
   // Only the authorized fields are virtualized; every other setting uses the ordinary comparison.
   assertScriptSettings(
     input.role,
@@ -150,7 +153,7 @@ export function assertRepairedVersionPlacement(
 }
 
 export function repairComparisonSettings(
-  settings: Workers.GetScriptScriptAndVersionSettingResponse,
+  settings: RepairSettings,
   repair: Pick<PendingPlacementRepair, "limits">,
 ) {
   return {
@@ -164,17 +167,50 @@ export function assertRepairBaseline(
   role: string,
   scriptName: string,
   metadata: Workers.PutScriptMetadata,
-  settings: Workers.GetScriptScriptAndVersionSettingResponse,
+  settings: RepairSettings,
   repair: PendingPlacementRepair,
+  active: ActiveWorkerPlacement,
 ) {
-  if (canonical(settings.placement ?? {}) !== "{}")
-    throw new BarrierRefusal("placement-repair-baseline-drift", role);
-  if (repair.limits && settings.limits?.subrequests != null)
+  if (active.id !== repair.activeVersion || active.placement != null)
+    throw settingsRefusal(
+      "placement-repair-baseline-drift",
+      role,
+      { activeVersion: repair.activeVersion, placement: null },
+      { activeVersion: active.id, placement: active.placement ?? null },
+    );
+  if (repair.limits && subrequests(active.limits) != null)
     throw settingsRefusal(
       "limits-repair-baseline-drift",
       role,
       { limits: { subrequests: null } },
-      { limits: { subrequests: settings.limits.subrequests } },
+      { limits: { subrequests: subrequests(active.limits) } },
     );
+  assertRepairSettingsView(role, settings, repair);
   assertScriptSettings(role, scriptName, metadata, repairComparisonSettings(settings, repair));
+}
+
+/** /settings follows the latest upload; only exact serving-version reads prove the repair baseline. */
+function assertRepairSettingsView(
+  role: string,
+  settings: RepairSettings,
+  repair: Pick<PendingPlacementRepair, "limits">,
+) {
+  const placement = settings.placement ?? {};
+  if (
+    canonical(placement) !== "{}" &&
+    canonical(placement) !== canonical({ mode: "targeted", target: [39] })
+  )
+    throw settingsRefusal(
+      "placement-repair-settings-view-drift",
+      role,
+      { placement: { mode: "targeted", target: [39] } },
+      { placement },
+    );
+  if (repair.limits && ![null, 50000].includes(settings.limits?.subrequests ?? null))
+    throw settingsRefusal(
+      "limits-repair-settings-view-drift",
+      role,
+      { limits: { subrequests: 50000 } },
+      { limits: { subrequests: settings.limits?.subrequests ?? null } },
+    );
 }
