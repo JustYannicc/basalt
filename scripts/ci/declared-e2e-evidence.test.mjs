@@ -80,3 +80,31 @@ test("declared jobs upload reports retained after a forced failure prunes the or
     }
   }
 });
+
+test("renewal proof uploads public evidence without fixture sessions or raw reports", async () => {
+  const { parse } = createRequire(new URL("../architecture/package.json", import.meta.url))("yaml");
+  const workflow = parse(
+    await readFile(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"),
+  );
+  const upload = workflow.jobs["oauth-account-regressions"].steps.find((step) =>
+    step.uses?.startsWith("actions/upload-artifact@"),
+  );
+  const patterns = upload.with.path.split("\n").filter(Boolean);
+  const base = ".generated/oauth-renewal-recovery/ci/";
+  const included = (file) => patterns.some((pattern) => matchesGlob(base + file, pattern));
+  for (const file of [
+    "report.json",
+    "outcomes.json",
+    "invalid-grant-health.json",
+    "invalid-request-details-390.png",
+  ])
+    assert.equal(included(file), true, file);
+  for (const file of [
+    "test-accounts/owner.json",
+    "test-accounts/admin.json",
+    "test-accounts/member.json",
+    "report/evidence/session/requests.json",
+    "server.log",
+  ])
+    assert.equal(included(file), false, file);
+});
