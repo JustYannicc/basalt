@@ -2,7 +2,7 @@ import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { downloadVerified } from "./verified-download.mjs";
+import { archiveTar, downloadVerified } from "./verified-download.mjs";
 
 const pins = JSON.parse(readFileSync(new URL("./node-assets.json", import.meta.url), "utf8"));
 
@@ -24,7 +24,7 @@ export function installNode(version, root) {
   downloadVerified(asset.url, asset.integrity, archive);
   const distribution = join(root, "distribution");
   mkdirSync(distribution, { recursive: true });
-  execFileSync("tar", ["-xf", archive, "--strip-components=1", "-C", distribution]);
+  execFileSync(archiveTar(), ["-xf", archive, "--strip-components=1", "-C", distribution]);
   const bin = process.platform === "win32" ? distribution : join(distribution, "bin");
   const actual = execFileSync(
     join(bin, process.platform === "win32" ? "node.exe" : "node"),

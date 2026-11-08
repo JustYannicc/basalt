@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, win32 } from "node:path";
 
 export function verifyArchive(path, integrity) {
   const [algorithm, expected] = integrity.split("-");
@@ -46,4 +46,11 @@ export function downloadVerified(url, integrity, path) {
   } finally {
     rmSync(temporary, { force: true });
   }
+}
+
+export function archiveTar(platform = process.platform) {
+  // PATH may select GNU tar, which treats drive-letter paths as remote hosts.
+  return platform === "win32"
+    ? win32.join(process.env.SystemRoot ?? String.raw`C:\Windows`, "System32", "tar.exe")
+    : "tar";
 }
