@@ -63,3 +63,14 @@ test("reconnect-required checks retain invalid_grant evidence", () => {
     oauthRenewal: { cause },
   });
 });
+
+test("an unusable cause does not erase a valid renewal reason", () => {
+  assert.deepEqual(
+    accountCheckFailure({
+      _tag: "OAuthRenewalFailed",
+      reason: "service_unavailable",
+      cause: { stage: "refresh", providerError: "vendor_specific_private_value" },
+    }),
+    { phase: "vendor", tag: "OAuthRenewalFailed", oauthRenewal: { reason: "service_unavailable" } },
+  );
+});

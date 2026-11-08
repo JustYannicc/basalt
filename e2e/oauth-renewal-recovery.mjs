@@ -113,6 +113,17 @@ const program = Effect.gen(function* () {
         return links.map((link) => [link.requirement, link.account.id]).sort();
       }),
     );
+  const accessSnapshot = () =>
+    request("GET", `${prefix}/resources`).pipe(
+      Effect.map((directory) => {
+        const entry = directory.accounts.find((entry) => entry.account.id === account.id);
+        assert.ok(entry, "Saved account missing from access directory");
+        assert.equal(typeof entry.access.canManage, "boolean");
+        assert.equal(typeof entry.access.canUse, "boolean");
+        return { owner: entry.account.owner, access: entry.access };
+      }),
+    );
+  const access = yield* accessSnapshot();
   const links = yield* linkSnapshot();
   assert.ok(links.some(([requirement, id]) => requirement === "service" && id === account.id));
 
@@ -196,6 +207,11 @@ const program = Effect.gen(function* () {
         "Public GET must retain the exact health failure",
       );
       assert.deepEqual(yield* linkSnapshot(), links, "Failed renewal must preserve app links");
+      assert.deepEqual(
+        yield* accessSnapshot(),
+        access,
+        "Failed renewal changed ownership or access",
+      );
       yield* Effect.promise(() =>
         save(`${scenario.name}-health.json`, {
           accountId: account.id,
@@ -209,6 +225,7 @@ const program = Effect.gen(function* () {
       if (scenario.reconnect) {
         assert.equal(ui.accountId, account.id, "Reconnect replaced the existing account ID");
         assert.deepEqual(yield* linkSnapshot(), links, "Reconnect changed the existing app links");
+        assert.deepEqual(yield* accessSnapshot(), access, "Reconnect changed ownership or access");
         yield* settleLinks();
         const recovered = yield* request("POST", healthPath);
         assertPrivate(recovered);
@@ -219,6 +236,7 @@ const program = Effect.gen(function* () {
         passed: true,
         accountId: account.id,
         linksPreserved: true,
+        accessPreserved: true,
         ...ui,
       });
       yield* Effect.promise(() => save("outcomes.json", outcomes));

@@ -1,7 +1,4 @@
-import { createRequire } from "node:module";
-
-// Resolve the same Effect instance as the pinned e2e SDK, rather than root tooling's copy.
-const require = createRequire(new URL("../../.upstream/package.json", import.meta.url));
-export const { Context, Effect, Layer, Redacted } = await import(require.resolve("effect"));
-export const NodeServices = await import(require.resolve("@effect/platform-node/NodeServices"));
-export const { FetchHttpClient, HttpClient } = await import(require.resolve("effect/http"));
+/** Use the prepared workspace's shared Effect modules for the real SDK test services. */
+export { Context, Effect, Layer, Redacted } from "effect";
+export * as NodeServices from "@effect/platform-node/NodeServices";
+export { FetchHttpClient, HttpClient } from "effect/http";

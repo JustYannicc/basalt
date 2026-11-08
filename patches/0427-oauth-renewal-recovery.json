@@ -1,7 +1,7 @@
 {
   "identity": "oauth-renewal-recovery",
   "file": "0427-oauth-renewal-recovery.patch",
-  "content_sha256": "3c430db650988d5c952073f12ad4c25d113e59649d6e28e6926f97e4478581eb",
+  "content_sha256": "2f81601e91fcbaa10be65f31cb1c5a29f1fa9989ba8cdc7a26b00dac3d002010",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

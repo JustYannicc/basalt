@@ -46,6 +46,11 @@ export const proveRecoveryUi = ({
       await page.getByRole("menuitem", { name: "Details", exact: true }).click();
       const detail = row(page).locator("[data-account-details]");
       await detail.waitFor({ state: "visible" });
+      assert.equal(
+        await detail.getByRole("link", { name: /^Reconnect in / }).count(),
+        reconnect ? 1 : 0,
+        "Details must offer only the supported recovery",
+      );
       const message = detail.locator("[data-check-message]");
       await message.first().waitFor({ state: "visible" });
       assert.match(await message.allTextContents().then((parts) => parts.join(" ")), reason);

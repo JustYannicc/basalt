@@ -1,9 +1,5 @@
 model {
   extend basalt.toolsGateway {
-    renewalRecovery = part "Account renewal recovery" {
-      description "Closed OAuth evidence survives account health checks and informs supported reconnection without changing grant classification."
-      metadata { code ".upstream/packages/sdk/src/contracts/oauth-failure-evidence.ts|.upstream/packages/ui/src/contracts/account-check-recovery.ts" }
-    }
     metadata {
       constraint "Account health retains the renewal reason and only closed protocol evidence, never vendor response text or credentials. Recognized invalid_grant remains reconnect-required; outages, rate limits and client refusal keep their existing grant semantics. Old failures remain readable without inventing a cause. Supported reconnect actions use the existing app connection path and preserve saved account identity, links and access."
     }

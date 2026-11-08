@@ -304,7 +304,7 @@ index 14a6d53..0c9bf5f 100644
      retryAfter: RetryAfter,
    },
 diff --git a/packages/sdk/src/implementation/account-check-failure.ts b/packages/sdk/src/implementation/account-check-failure.ts
-index 54647b3..9a83bb9 100644
+index 54647b3..aeadac1 100644
 --- a/packages/sdk/src/implementation/account-check-failure.ts
 +++ b/packages/sdk/src/implementation/account-check-failure.ts
 @@ -1,5 +1,5 @@
@@ -314,7 +314,7 @@ index 54647b3..9a83bb9 100644
  import { HostOperationFailed } from "apps/contracts";
  import { RuntimeProtocolFailed } from "../contracts/runtime.ts";
  
-@@ -40,9 +40,21 @@ export const accountCheckFailure = (error: unknown): AccountCheckFailure => {
+@@ -40,9 +40,28 @@ export const accountCheckFailure = (error: unknown): AccountCheckFailure => {
          tag,
        };
      case "ProviderError":
@@ -323,22 +323,29 @@ index 54647b3..9a83bb9 100644
        return { phase: "vendor", tag };
 +    case "OAuthReconnectRequired":
 +    case "OAuthRenewalFailed": {
-+      const evidence =
++      const reason =
 +        tag === "OAuthRenewalFailed"
-+          ? Schema.decodeUnknownOption(OAuthCheckEvidence)(error)
-+          : Schema.decodeUnknownOption(Schema.Struct({ cause: OAuthCheckEvidence.fields.cause }))(
++          ? Schema.decodeUnknownOption(Schema.Struct({ reason: OAuthCheckEvidence.fields.reason }))(
 +              error,
-+            );
++            )
++          : Option.none();
++      const cause = Schema.decodeUnknownOption(
++        Schema.Struct({ cause: OAuthCheckEvidence.fields.cause }),
++      )(error);
++      const evidence = {
++        ...(Option.isSome(reason) ? reason.value : {}),
++        ...(Option.isSome(cause) ? cause.value : {}),
++      };
 +      return {
 +        phase: "vendor",
 +        tag,
-+        ...(Option.isSome(evidence) ? { oauthRenewal: evidence.value } : {}),
++        ...(Object.keys(evidence).length === 0 ? {} : { oauthRenewal: evidence }),
 +      };
 +    }
      case "TimeoutError":
        return { phase: "timeout", tag };
      default:
-@@ -50,18 +62,34 @@ export const accountCheckFailure = (error: unknown): AccountCheckFailure => {
+@@ -50,18 +69,34 @@ export const accountCheckFailure = (error: unknown): AccountCheckFailure => {
    }
  };
  

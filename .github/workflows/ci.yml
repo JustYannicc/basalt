@@ -777,7 +777,10 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
-            .generated/oauth-renewal-recovery/ci/**
+            .generated/oauth-renewal-recovery/ci/report.json
+            .generated/oauth-renewal-recovery/ci/outcomes.json
+            .generated/oauth-renewal-recovery/ci/*-health.json
+            .generated/oauth-renewal-recovery/ci/*-390.png
           if-no-files-found: warn
   pool-account-recovery:
     needs: select
