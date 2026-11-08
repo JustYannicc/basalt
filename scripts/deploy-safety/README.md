@@ -4,7 +4,7 @@ These scripts run inside the production GitHub Actions workflow. They read the l
 
 ## Workflow contract
 
-A read-only baseline probe runs in Check for same-repository release changes and before production backup or deployment work. It discovers the live Worker inventory and calls the release's baseline reader concurrently through native fetch with the same retry policy. Its summary and JSON receipt contain only logical Worker names, success or closed failure types, HTTP status, total response bytes across attempts, duration and attempt count. A missing, duplicate or unexpected production Worker refuses the probe; it performs no uploads, version creation or deployment. Credentials stay in the existing Actions secret path.
+A read-only baseline probe runs in Check for same-repository release changes and before production backup or deployment work. It discovers the live Worker inventory and calls the release's baseline reader concurrently through native fetch with the same retry policy. Its summary and JSON receipt contain only logical Worker names, success or closed failure types, HTTP status, total response bytes across attempts, duration and attempt count. Missing, duplicate and unexpected production Workers are reported together in the job errors, summary and receipt. Unexpected targets are identified by SHA-256 without publishing their physical names. The probe refuses redirects and performs no uploads, version creation or deployment. Credentials stay in the existing Actions secret path.
 
 Run candidate preparation, checks and builds before the protected production deployment job. For a manual candidate, check out its exact PR commit into a separate directory under `RUNNER_TEMP`. Keep the workflow files and this safety runner on trusted `main`.
 

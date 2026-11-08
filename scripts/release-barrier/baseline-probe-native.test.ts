@@ -4,6 +4,35 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import { baselineProbeTable, baselineRoles, probeBaselines } from "./baseline-probe.ts";
 
+test("native probe refuses redirected inventory without reading its destination", async (context) => {
+  let contentReads = 0;
+  const server = createServer((request, response) => {
+    if (request.url === "/accounts/fixture/workers/scripts") {
+      response.writeHead(302, { location: "/content" });
+      response.end();
+    } else {
+      contentReads++;
+      response.setHeader("content-type", "application/json");
+      response.end("{}");
+    }
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  context.after(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+        server.closeAllConnections();
+      }),
+  );
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  await assert.rejects(
+    probeBaselines("fixture", "private-fixture", `http://127.0.0.1:${address.port}`),
+  );
+  assert.equal(contentReads, 0);
+});
+
 test(
   "native probe reads all 19 baselines concurrently and retains only safe per-Worker metrics",
   { timeout: 5_000 },

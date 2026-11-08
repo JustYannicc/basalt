@@ -229,11 +229,11 @@ test("Manual release of main releases a dispatched candidate main contains, and 
   assert.ok(backup.indexOf("id: live") > backup.indexOf("id: candidate"));
   // Nothing after the guard runs once production has the candidate: no worktree, report, backup or artifact.
   const steps = guarded.split(/\n      - /).slice(1);
-  assert.equal(steps.length, 7);
+  assert.equal(steps.length, 8);
   for (const step of steps)
     assert.match(
       step,
-      /^(?:name: [^\n]+\n        )?if: steps\.live\.outputs\.already_live == 'false'\n/,
+      /^(?:name: [^\n]+\n        )?if: (?:always\(\) && )?steps\.live\.outputs\.already_live == 'false'\n/,
       step,
     );
   assert.ok(backup.indexOf("baseline-probe-entry.ts") < backup.indexOf("release.ts backup-only"));

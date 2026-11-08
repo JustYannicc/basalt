@@ -96,6 +96,14 @@ jobs:
         run: node scripts/deploy-safety/release.ts backup-only --candidate "$RELEASE_HEAD" --candidate-root "$RUNNER_TEMP/candidate" --report .local/production-report.json
         env:
           RELEASE_HEAD: ${{ steps.candidate.outputs.head }}
+      - name: Retain the read-only baseline probe
+        if: always() && steps.live.outputs.already_live == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-probe
+          path: ${{ runner.temp }}/candidate/.local/baseline-probe.json
+          include-hidden-files: true
+          if-no-files-found: ignore
       - if: steps.live.outputs.already_live == 'false'
         uses: actions/upload-artifact@v4
         with:

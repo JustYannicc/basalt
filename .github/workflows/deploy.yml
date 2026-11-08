@@ -181,6 +181,7 @@ jobs:
           include-hidden-files: true
           path: |
             .local/release-barrier/*.json
+            .local/baseline-probe.json
             ${{ runner.temp }}/candidate/.local/release-barrier/*.json
             ${{ runner.temp }}/rollback-source/.local/release-barrier/*.json
           if-no-files-found: ignore

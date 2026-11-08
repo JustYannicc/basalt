@@ -1979,6 +1979,7 @@ jobs:
         select,
         fast,
         cpa-pipeline,
+        baseline-probe,
         client-connection,
         client-mobile,
         client-desktop,
@@ -2038,6 +2039,7 @@ jobs:
         env:
           CI_NEEDS: ${{ toJSON(needs) }}
           CI_FULL_SUITE: ${{ needs.select.outputs.full_suite }}
+          CI_BASELINE_PROBE: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.select.outputs.baseline_probe == 'true' }}
           CI_JOBS: ${{ needs.select.outputs.jobs }}
           CI_BOAT_JOBS: ${{ needs.select.outputs.boat_jobs }}
         run: node scripts/ci/gate.ts

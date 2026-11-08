@@ -2,10 +2,31 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { baselineInventory, baselineRoles } from "./baseline-probe.ts";
+import { gateErrors, fastJobs, bundleJobs } from "../ci/gate.ts";
+import { heavyJobs } from "../ci/areas.ts";
 
 const scripts = baselineRoles.map((role) => ({
   id: `basalt-${role.toLowerCase()}-production-fixture`,
 }));
+
+test("selected baseline probe must pass the aggregate Check and unselected probes must skip", () => {
+  const needs = Object.fromEntries(
+    [...fastJobs, ...heavyJobs, ...bundleJobs].map((job) => [
+      job,
+      { result: fastJobs.includes(job) ? "success" : "skipped" },
+    ]),
+  );
+  needs["baseline-probe"] = { result: "success" };
+  assert.deepEqual(gateErrors(needs, [], [], false, true), []);
+  for (const result of ["failure", "cancelled", "skipped"])
+    assert.ok(
+      gateErrors({ ...needs, "baseline-probe": { result } }, [], [], false, true).some((error) =>
+        error.startsWith("baseline-probe:"),
+      ),
+    );
+  needs["baseline-probe"] = { result: "skipped" };
+  assert.deepEqual(gateErrors(needs, [], [], false, false), []);
+});
 
 test("baseline inventory covers all live roles and refuses missing, duplicate and unexpected Workers", () => {
   assert.deepEqual(

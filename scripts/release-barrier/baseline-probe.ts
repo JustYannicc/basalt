@@ -8,6 +8,7 @@ import { Cause, Effect, Exit } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { readBaseline } from "./cloudflare.ts";
 import { safeProviderFailure } from "./operation-failure.ts";
+import { digest } from "./manifest.ts";
 
 export const baselineRoles = [
   "Api",
@@ -43,12 +44,10 @@ export interface BaselineProbeRow {
 }
 
 export class BaselineInventoryError extends Error {
-  readonly role: (typeof baselineRoles)[number] | "(inventory)";
-  readonly reason: "missing-worker" | "duplicate-worker" | "unexpected-worker";
-  constructor(role: BaselineInventoryError["role"], reason: BaselineInventoryError["reason"]) {
-    super(`Baseline inventory refused: ${role}; ${reason}`);
-    this.role = role;
-    this.reason = reason;
+  readonly refusals: readonly { role: string; reason: string }[];
+  constructor(refusals: BaselineInventoryError["refusals"]) {
+    super(refusals.map((item) => `${item.role}: ${item.reason}`).join("; "));
+    this.refusals = refusals;
   }
 }
 
@@ -58,19 +57,31 @@ export function baselineInventory(scripts: readonly { id?: string | null }[]) {
       ? [{ id: script.id }]
       : [],
   );
-  const workers = baselineRoles.map((role) => {
+  const refusals: { role: string; reason: string }[] = [];
+  const workers = baselineRoles.flatMap((role) => {
     const matches = production.filter((script) =>
       script.id.startsWith(`basalt-${role.toLowerCase()}-production-`),
     );
-    if (matches.length !== 1)
-      throw new BaselineInventoryError(
+    if (matches.length !== 1) {
+      refusals.push({
         role,
-        matches.length ? "duplicate-worker" : "missing-worker",
-      );
-    return { role, scriptName: matches[0]!.id };
+        reason: `${matches.length ? "duplicate-worker" : "missing-worker"}; expected 1, observed ${matches.length}`,
+      });
+      return [];
+    }
+    return [{ role, scriptName: matches[0]!.id }];
   });
-  if (production.length !== workers.length)
-    throw new BaselineInventoryError("(inventory)", "unexpected-worker");
+  for (const script of production.filter(
+    (script) =>
+      !baselineRoles.some((role) =>
+        script.id.startsWith(`basalt-${role.toLowerCase()}-production-`),
+      ),
+  ))
+    refusals.push({
+      role: "(inventory)",
+      reason: `unexpected-worker; expected 0, observed 1; target sha256:${digest(script.id)}`,
+    });
+  if (refusals.length) throw new BaselineInventoryError(refusals);
   return workers;
 }
 
@@ -98,7 +109,7 @@ export async function probeBaselines(
     )
       throw new Error("Baseline probe refused a request outside its read-only inventory");
     if (metric) metric.attempts++;
-    const response = await nativeFetch(input, init);
+    const response = await nativeFetch(input, { ...init, redirect: "error" });
     if (metric) {
       metric.status = response.status;
       metric.bytes += (await response.clone().arrayBuffer()).byteLength;
