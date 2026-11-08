@@ -1,3 +1,4 @@
+import type { ProviderFailure } from "./provider-failure.ts";
 import { bindingDifferences, differences, refuseChanges, type Change } from "./refusal.ts";
 import { object, string, type Cloudflare } from "./cloudflare.ts";
 import {
@@ -7,7 +8,6 @@ import {
   digest,
   makePlan,
   targetVersion,
-  uploadMetadata,
   UpgradeRefusal,
   workerId,
   type Candidate,
@@ -31,6 +31,7 @@ export interface Receipt {
     expected: string | number | null;
     observed: string | number | null;
     changes?: Change[];
+    provider?: ProviderFailure;
   };
 }
 export async function operate(options: {
@@ -76,7 +77,7 @@ export async function operate(options: {
     const form = new FormData();
     form.append(
       "metadata",
-      new Blob([JSON.stringify(uploadMetadata(before, options.candidate))], {
+      new Blob([JSON.stringify(plan.upload.metadata)], {
         type: "application/json",
       }),
     );
@@ -175,6 +176,7 @@ export async function operate(options: {
             expected: error.expected,
             observed: error.observed,
             changes: error.changes,
+            ...(error.provider ? { provider: error.provider } : {}),
           }
         : {
             resource: workerId,

@@ -13,6 +13,10 @@ only GET requests. Its receipt and step summary name the Worker, serving
 deployment, immutable Worker version, Store namespace, version 7 to 8 change,
 every unchanged binding and the candidate code hashes. Binding values remain
 private; their hashes commit the plan to the exact observed values.
+The plan includes the exact outbound version metadata and its byte checksum.
+Script-level observability, placement and limits stay on the existing script.
+The provider-managed `workers/triggered_by` annotation is omitted from uploads
+and comparisons; writable annotations and every other setting remain checked.
 
 Review that receipt alongside the encrypted prior Worker code and recorded
 settings/bindings. Keep the recorded prior Worker version available for rollback.
@@ -47,6 +51,8 @@ run apply again. Keep the receipt and inspect deployment/version metadata first.
 A refusal after upload can leave an unserved version; it activates nothing.
 An activation failure can still have taken effect. Reconcile the exact IDs in
 the receipt before deciding the next operation.
+Provider refusals retain bounded, sanitized Cloudflare codes and messages in the
+receipt and summary. Credentials, headers and raw response bodies stay out.
 
 If the new code fails, restore the recorded previous Worker version through a
 separately approved deployment. Preserve every setting, secret binding and the

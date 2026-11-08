@@ -66,9 +66,6 @@ test("apply uploads inherited bindings once, activates once and verifies all ide
     bindings: f.initial.bindings.map(({ name }) => ({ name, type: "inherit" })),
     compatibility_date: "2026-08-31",
     compatibility_flags: ["new_module_registry"],
-    placement: { mode: "off" },
-    observability: { enabled: true },
-    annotations: {},
   });
   assert.deepEqual(
     f.receipts.map((receipt) => receipt.phase),
@@ -203,10 +200,8 @@ test("immutable runtime limits survive when the settings endpoint omits them", a
   f.state.runtimeSettings = structuredClone(f.initial.runtimeSettings);
   f.expected.planSha256 = digest(makePlan(f.initial, candidate));
   await f.run();
-  assert.deepEqual(
-    (f.writes()[0]!.body as Record<string, unknown>).limits,
-    f.initial.runtimeSettings.limits,
-  );
+  assert.equal((f.writes()[0]!.body as Record<string, unknown>).limits, undefined);
+  assert.deepEqual(f.state.runtimeSettings.limits, f.initial.runtimeSettings.limits);
   assert.equal(f.state.settings.limits, undefined);
 });
 

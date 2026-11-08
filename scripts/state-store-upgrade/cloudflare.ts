@@ -1,3 +1,4 @@
+import { envelopeFailure, responseFailure } from "./provider-failure.ts";
 import { UpgradeRefusal, workerId, digest, type Binding, type Observation } from "./plan.ts";
 import { normalizePlacement } from "../release-barrier/script-placement.ts";
 
@@ -36,12 +37,25 @@ export function cloudflare(accountId: string, token: string, fetcher: typeof fet
       signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok) {
-      await response.body?.cancel();
-      throw new UpgradeRefusal(workerId, "provider-http-status", "2xx", response.status);
+      throw new UpgradeRefusal(
+        workerId,
+        "provider-http-status",
+        "2xx",
+        response.status,
+        undefined,
+        await responseFailure(response, token),
+      );
     }
     const envelope = object(await response.json());
     if (envelope.success !== true)
-      throw new UpgradeRefusal(workerId, "provider-success", "true", "false-or-missing");
+      throw new UpgradeRefusal(
+        workerId,
+        "provider-success",
+        "true",
+        "false-or-missing",
+        undefined,
+        envelopeFailure(envelope, token),
+      );
     return envelope.result;
   }
   async function list(path: string) {
