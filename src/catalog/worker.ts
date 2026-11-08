@@ -11,6 +11,7 @@ import { gitlabSource, withGitLabInstances } from "./gitlab.ts";
 import { slackSource, withSlackUserAuth } from "./slack.ts";
 import { miroSource, withMiroCapabilities } from "./miro.ts";
 import { elevenlabsSource, withElevenLabsSignIn } from "./elevenlabs.ts";
+import { sentrySource, withSentryConnections } from "./sentry.ts";
 import { vercelSource, withVercelSignIn } from "./vercel.ts";
 import { notionSource } from "./notion.ts";
 import { spotifySource } from "./spotify.ts";
@@ -88,6 +89,11 @@ export async function handleCatalog(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(elevenlabsSource)),
       { headers },
     );
+  if (relative === "apps/sentry.json")
+    return new Response(
+      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(sentrySource)),
+      { headers },
+    );
   if (relative === "apps/vercel.json")
     return new Response(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(vercelSource)),
@@ -142,12 +148,14 @@ export async function handleCatalog(
     if (!response.ok || response.status !== 200) return unavailable();
     let body: string;
     if (relative === "index.json") {
-      const upstream = withClerkSignIn(
-        withWorkOSSignIn(
-          withElevenLabsSignIn(
-            withVercelSignIn(
-              withMiroCapabilities(
-                withSlackUserAuth(withGitLabInstances((await response.json()) as Feed)),
+      const upstream = withSentryConnections(
+        withClerkSignIn(
+          withWorkOSSignIn(
+            withElevenLabsSignIn(
+              withVercelSignIn(
+                withMiroCapabilities(
+                  withSlackUserAuth(withGitLabInstances((await response.json()) as Feed)),
+                ),
               ),
             ),
           ),

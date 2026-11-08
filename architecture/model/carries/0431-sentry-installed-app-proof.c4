@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Installed error-tracking app scenarios use the shipped catalog source and normal account flow against controlled MCP, OAuth and regional REST peers. Only network destinations and the host framework version change in the fixture. The proof checks credential schemes, method coverage, approvals, retained OAuth selections across a source upgrade and the missing-section reverse path."
+    }
+  }
+}

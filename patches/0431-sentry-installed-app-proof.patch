@@ -1,0 +1,941 @@
+diff --git a/e2e/support/sentry-account.ts b/e2e/support/sentry-account.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/sentry-account.ts
+@@ -0,0 +1,28 @@
++import { expect } from "@effect/vitest";
++import { Effect } from "effect";
++import { Api, body, type Session } from "./api.ts";
++import { connectionsPath } from "./app-accounts.ts";
++import { Resource } from "./contracts.ts";
++
++/** Complete the ordinary hosted connection so saving and account selection both commit. */
++export const connectSentryToken = (
++  actor: Session,
++  prefix: string,
++  appPath: string,
++  fields: { token: string; region: string },
++) =>
++  Effect.gen(function* () {
++    const api = yield* Api;
++    const connection = yield* body(
++      Resource,
++      yield* api.request(actor, "POST", connectionsPath(appPath, "user", "sentry"), {}),
++    );
++    const completed = yield* api.request(
++      actor,
++      "POST",
++      `${prefix}/connections/${connection.id}/submit`,
++      { method: "authToken", fields },
++    );
++    expect(completed.status, JSON.stringify(completed.body)).toBe(200);
++    return yield* body(Resource, completed);
++  });
+diff --git a/e2e/support/sentry-catalog.ts b/e2e/support/sentry-catalog.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/sentry-catalog.ts
+@@ -0,0 +1,266 @@
++/** The shipped Sentry source, with only network destinations replaced by controlled peers. */
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import { Effect, FileSystem, Layer, Path, Schema } from "effect";
++import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
++import { createServer } from "node:http";
++import { appsVersion } from "./apps-release.ts";
++
++const Source = Schema.Struct({
++  package: Schema.String,
++  files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
++});
++const Message = Schema.Struct({
++  id: Schema.optional(Schema.Union([Schema.Number, Schema.String])),
++  method: Schema.String,
++  params: Schema.optional(Schema.Struct({ name: Schema.optional(Schema.String) })),
++});
++const json = HttpServerResponse.jsonUnsafe;
++const listen = <E, R>(routes: Layer.Layer<never, E, R>) =>
++  Effect.gen(function* () {
++    const listener = createServer();
++    const services = yield* Layer.build(
++      HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
++        Layer.provideMerge(NodeHttpServer.layer(() => listener, { host: "127.0.0.1", port: 0 })),
++      ),
++    );
++    yield* Effect.addFinalizer(() => Effect.sync(() => listener.closeAllConnections()));
++    const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
++    if (!("port" in server.address)) return yield* Effect.die("Peer needs a TCP listener");
++    return `http://127.0.0.1:${server.address.port}`;
++  });
++
++export const sentryCatalog = (issuer: string, published = false) =>
++  Effect.gen(function* () {
++    const fs = yield* FileSystem.FileSystem,
++      path = yield* Path.Path;
++    const source = yield* fs
++      .readFileString(path.resolve("..", "src/catalog/sentry.json"))
++      .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Source))));
++    const original = yield* fs
++      .readFileString(path.resolve("..", "src/catalog/sentry.published.json"))
++      .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Source))));
++    const connections = yield* fs
++      .readFileString(path.resolve("..", "src/catalog/sentry.connections.json"))
++      .pipe(
++        Effect.flatMap(
++          Schema.decodeUnknownEffect(
++            Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json)),
++          ),
++        ),
++      );
++    const calls: {
++      transport: "mcp" | "api";
++      method: string;
++      region?: string;
++      scheme: string;
++      token: "personal" | "oauth" | "none";
++    }[] = [];
++    let failMcp = false;
++    const classify = (authorization: string | undefined) => ({
++      scheme: authorization?.split(" ")[0] ?? "none",
++      token: authorization?.split(" ")[1]?.startsWith("synthetic-sentry-")
++        ? ("personal" as const)
++        : authorization
++          ? ("oauth" as const)
++          : ("none" as const),
++    });
++    const rest = (region: string) =>
++      listen(
++        HttpRouter.add(
++          "*",
++          "/*",
++          Effect.gen(function* () {
++            const request = yield* HttpServerRequest.HttpServerRequest;
++            const auth = classify(request.headers.authorization);
++            calls.push({ transport: "api", method: request.method, region, ...auth });
++            if (request.headers.authorization?.endsWith("synthetic-sentry-rejected"))
++              return json({ detail: "Invalid token" }, { status: 401 });
++            if (
++              request.headers.authorization?.endsWith("synthetic-sentry-scope") &&
++              request.url.startsWith("/read")
++            )
++              return json(
++                { detail: "Missing event:read" },
++                {
++                  status: 403,
++                  headers: {
++                    "www-authenticate": 'Bearer error="insufficient_scope", scope="event:read"',
++                  },
++                },
++              );
++            if (request.headers.authorization?.endsWith("synthetic-sentry-denied"))
++              return json({ detail: "Access denied" }, { status: 403 });
++            if (auth.scheme !== "Bearer" || auth.token !== "personal")
++              return json({ detail: "Invalid token" }, { status: 401 });
++            if (request.url.startsWith("/api/0/organizations/"))
++              return json([
++                { id: `org-${region}`, slug: `fixture-${region}`, name: `Fixture ${region}` },
++              ]);
++            if (request.url.startsWith("/read")) return json({ transport: "api", region });
++            return json({ wrote: true, region });
++          }),
++        ),
++      );
++    const us = yield* rest("us"),
++      de = yield* rest("de");
++    let mcp = "";
++    mcp = yield* listen(
++      Layer.mergeAll(
++        HttpRouter.add(
++          "GET",
++          "/.well-known/oauth-protected-resource/mcp",
++          Effect.sync(() => json({ resource: `${mcp}/mcp`, authorization_servers: [issuer] })),
++        ),
++        HttpRouter.add(
++          "GET",
++          "/openapi.json",
++          Effect.sync(() =>
++            json({
++              openapi: "3.0.3",
++              info: { title: "Sentry controlled API peer", version: "1" },
++              servers: [{ url: us }],
++              paths: Object.fromEntries(
++                ["read", "write"].map((name) => [
++                  `/${name}`,
++                  {
++                    [name === "read" ? "get" : "post"]: {
++                      operationId: name,
++                      responses: {
++                        "200": {
++                          description: "OK",
++                          content: { "application/json": { schema: { type: "object" } } },
++                        },
++                      },
++                    },
++                  },
++                ]),
++              ),
++            }),
++          ),
++        ),
++        HttpRouter.add(
++          "GET",
++          "/mcp",
++          Effect.sync(() =>
++            HttpServerResponse.empty({
++              status: 401,
++              headers: {
++                "www-authenticate": `Bearer resource_metadata="${mcp}/.well-known/oauth-protected-resource/mcp"`,
++              },
++            }),
++          ),
++        ),
++        HttpRouter.add(
++          "POST",
++          "/mcp",
++          Effect.gen(function* () {
++            const request = yield* HttpServerRequest.HttpServerRequest;
++            if (failMcp) return HttpServerResponse.empty({ status: 503 });
++            const auth = classify(request.headers.authorization);
++            if (
++              !(
++                (auth.scheme === "Sentry-Bearer" && auth.token === "personal") ||
++                (auth.scheme === "Bearer" && auth.token === "oauth")
++              )
++            )
++              return HttpServerResponse.empty({
++                status: 401,
++                headers: {
++                  "www-authenticate": `Bearer resource_metadata="${mcp}/.well-known/oauth-protected-resource/mcp"`,
++                },
++              });
++            const message = yield* request.json.pipe(
++              Effect.flatMap(Schema.decodeUnknownEffect(Message)),
++            );
++            calls.push({ transport: "mcp", method: message.method, ...auth });
++            if (message.id === undefined) return HttpServerResponse.empty({ status: 202 });
++            const result =
++              message.method === "initialize"
++                ? {
++                    protocolVersion: "2025-11-25",
++                    capabilities: { tools: {} },
++                    serverInfo: { name: "sentry-peer", version: "1" },
++                  }
++                : message.method === "tools/list"
++                  ? {
++                      tools: ["read", "write"].map((name) => ({
++                        name,
++                        description: `${name} through Sentry MCP`,
++                        inputSchema: { type: "object", properties: {} },
++                        ...(name === "read" ? { annotations: { readOnlyHint: true } } : {}),
++                      })),
++                    }
++                  : { content: [{ type: "text", text: `${message.params?.name} through MCP` }] };
++            return json({ jsonrpc: "2.0", id: message.id, result });
++          }),
++        ),
++      ),
++    );
++    const replacements = new Map([
++      ["https://mcp.sentry.dev", mcp],
++      ["https://us.sentry.io", us],
++      ["https://de.sentry.io", de],
++      [
++        "https://raw.githubusercontent.com/getsentry/sentry-api-schema/main/openapi-derefed.json",
++        `${mcp}/openapi.json`,
++      ],
++    ]);
++    const localFiles = (source: typeof original) =>
++      source.files.map((file) => {
++        if (file.path === "package.json") {
++          const manifest = Schema.decodeUnknownSync(
++            Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json)),
++          )(file.content);
++          const dependencies = Schema.decodeUnknownSync(
++            Schema.Record(Schema.String, Schema.String),
++          )(manifest.dependencies);
++          return {
++            ...file,
++            content: JSON.stringify({
++              ...manifest,
++              dependencies: { ...dependencies, apps: appsVersion },
++            }),
++          };
++        }
++        if (!["index.ts", "openapi.ts"].includes(file.path)) return file;
++        let content = file.content;
++        for (const [from, to] of replacements) content = content.replaceAll(from, to);
++        if (file.path === "index.ts")
++          content = content.replace(
++            'hosts: ["mcp.sentry.dev", "us.sentry.io", "de.sentry.io"]',
++            `hosts: ${JSON.stringify([mcp, us, de].map((origin) => new URL(origin).host))}`,
++          );
++        return { ...file, content };
++      });
++    const entry = {
++      id: "sentry",
++      package: source.package,
++      name: "Sentry",
++      description: "Error tracking with MCP and REST tools.",
++      icons: [],
++      auth: [
++        { method: "oauth", kind: "oauth2" },
++        { method: "authToken", kind: "secrets" },
++      ],
++      source: "apps/sentry.json",
++      ...connections,
++    };
++    const origin = yield* listen(
++      Layer.mergeAll(
++        HttpRouter.add("GET", "/index.json", json({ version: 1, apps: [entry] })),
++        HttpRouter.add(
++          "GET",
++          "/apps/sentry.json",
++          json({ ...source, files: localFiles(published ? original : source) }),
++        ),
++      ),
++    );
++    return {
++      url: `${origin}/index.json`,
++      carriedFiles: localFiles(source),
++      calls,
++      failMcp: () => {
++        failMcp = true;
++      },
++    };
++  });
+diff --git a/e2e/tests/sentry-both.spec.ts b/e2e/tests/sentry-both.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/sentry-both.spec.ts
+@@ -0,0 +1,332 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { FetchHttpClient, HttpClient } from "effect/http";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { connectionsPath } from "../support/app-accounts.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { Evidence } from "../support/evidence.ts";
++import { nameConnectedAccount } from "../support/name-account.ts";
++import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
++import { serverControl } from "../support/server-control.ts";
++import { sentryCatalog } from "../support/sentry-catalog.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Redirect = Schema.Struct({ authorizationUrl: Schema.String, redirectUri: Schema.String });
++const Tools = Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) });
++
++layer(HostedLive, { excludeTestServices: true })("Sentry MCP and API", (it) => {
++  for (const [scenario, width] of [
++    [scenarios.sentryBothDesktop, 1280],
++    [scenarios.sentryBothPhone, 390],
++  ] as const)
++    it.effect(scenario.title, (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const api = yield* Api,
++            actors = yield* Actors,
++            browser = yield* Browser,
++            evidence = yield* Evidence,
++            http = yield* HttpClient.HttpClient,
++            issuer = yield* oauthSetupIssuer;
++          const catalog = yield* sentryCatalog(issuer.origin);
++          yield* serverControl("stop");
++          yield* serverControl("environment", 200, { EXECUTOR_CATALOG_URL: catalog.url });
++          yield* serverControl("start");
++          const prefix = `/api/organizations/${actors.organization.id}`;
++          const installed = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++            entry: "sentry",
++            name: `Sentry ${width}`,
++          });
++          expect(installed.status, JSON.stringify(installed.body)).toBe(200);
++          const app = yield* body(Resource, installed),
++            path = `${prefix}/apps/${app.id}`;
++          const accounts: string[] = [];
++          yield* Effect.addFinalizer(() =>
++            Effect.gen(function* () {
++              expect((yield* api.request(actors.owner, "DELETE", path)).status).toBe(200);
++              for (const account of accounts)
++                expect(
++                  (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`))
++                    .status,
++                ).toBe(200);
++            }).pipe(Effect.orDie),
++          );
++          const connection = yield* body(
++            Resource,
++            yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "sentry"), {}),
++          );
++          const started = yield* api.request(
++            actors.owner,
++            "POST",
++            `${prefix}/connections/${connection.id}/oauth/start`,
++            { method: "oauth" },
++          );
++          expect(started.status, JSON.stringify(started.body)).toBe(200);
++          const redirect = yield* body(Redirect, started);
++          expect((yield* issuer.metrics).registrations).toBeGreaterThan(0);
++          const callbackUrl = yield* Effect.scoped(
++            Effect.gen(function* () {
++              const consent = yield* HttpClient.withScope(http).get(redirect.authorizationUrl);
++              expect(consent.status).toBe(302);
++              if (consent.headers.location === undefined)
++                return yield* Effect.die("Missing callback");
++              return consent.headers.location;
++            }),
++          ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
++          const completed = yield* api.request(
++            actors.owner,
++            "POST",
++            `${prefix}/connections/${connection.id}/oauth/complete`,
++            { callbackUrl },
++          );
++          expect(completed.status, JSON.stringify(completed.body)).toBe(200);
++          accounts.push((yield* body(Resource, completed)).id);
++          const before = yield* body(
++            Tools,
++            yield* api.request(actors.owner, "GET", `${path}/tools/index`),
++          );
++          expect(before.items.map((tool) => tool.name)).toEqual(["mcp.read", "mcp.write"]);
++          yield* browser.login(actors.owner);
++          yield* browser.use("Open OAuth-only tools", (page) =>
++            page
++              .setViewportSize({ width, height: 900 })
++              .then(() => page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=tools`))
++              .then(() => page.getByRole("button", { name: "Add token", exact: true }).waitFor()),
++          );
++          yield* browser.use("Wait for the missing-section action to be ready", (page) =>
++            page.getByRole("button", { name: "Add token", exact: true }).click({ trial: true }),
++          );
++          yield* browser.checkpoint(`OAuth-only tool sections ${width}`);
++          expect(
++            yield* browser.use("Missing API section remains visible", (page) =>
++              page.getByRole("region", { name: "Sentry API", exact: true }).count(),
++            ),
++          ).toBe(1);
++          yield* browser.use("One click opens the token method", (page) =>
++            page.getByRole("button", { name: "Add token", exact: true }).click(),
++          );
++          const dialog = yield* browser.use(
++            "Normal account form opens with token selected",
++            (page) => {
++              const dialog = page.getByRole("dialog", {
++                name: "Connect Sentry",
++                exact: true,
++              });
++              return dialog
++                .getByLabel("Personal token", { exact: true })
++                .waitFor()
++                .then(() => dialog);
++            },
++          );
++          expect(
++            yield* browser.use("Shared token steps are visible", () => dialog.innerText()),
++          ).toContain(
++            "In Sentry, open User settings > Personal Tokens and choose Create New Token.",
++          );
++          expect(
++            yield* browser.use("Shared scope guidance is visible", () => dialog.innerText()),
++          ).toContain("org:read, project:write, team:write, event:write, and alerts:write");
++          expect(
++            yield* browser.use("Shared token guidance links to Sentry", () =>
++              dialog
++                .getByRole("link", {
++                  name: "Open Sentry Personal Tokens",
++                  exact: true,
++                })
++                .getAttribute("href"),
++            ),
++          ).toBe("https://sentry.io/settings/account/api/auth-tokens/");
++          expect(
++            yield* browser.use("Token guidance fits the phone and desktop", (page) =>
++              page.evaluate(() => {
++                const dialog = document.querySelector('[role="dialog"]');
++                return (
++                  document.documentElement.scrollWidth <= window.innerWidth &&
++                  dialog !== null &&
++                  dialog.scrollWidth <= dialog.clientWidth
++                );
++              }),
++            ),
++          ).toBe(true);
++          expect(
++            yield* browser.use("Token coverage is stated in the normal form", () =>
++              dialog.innerText(),
++            ),
++          ).toContain("A personal token provides Sentry MCP and Sentry API tools.");
++          yield* browser.use("Choose sign-in for MCP tools without starting authorization", () =>
++            dialog
++              .getByRole("button", { name: "Sign in for MCP tools", exact: true })
++              .click()
++              .then(() =>
++                dialog
++                  .getByText(
++                    "Sentry MCP tools through Sentry sign-in. The REST API needs a personal token.",
++                    { exact: true },
++                  )
++                  .waitFor(),
++              ),
++          );
++          expect(
++            yield* browser.use("OAuth coverage is stated before sign-in", () => dialog.innerText()),
++          ).toContain(
++            "Sentry MCP tools through Sentry sign-in. The REST API needs a personal token.",
++          );
++          yield* browser.checkpoint(`Sentry sign-in coverage ${width}`);
++          yield* browser.use("Choose a personal token for both tool sections", () =>
++            dialog
++              .getByRole("button", { name: "Use a personal token for MCP and API", exact: true })
++              .click()
++              .then(() => dialog.getByLabel("Personal token", { exact: true }).waitFor()),
++          );
++          yield* browser.use("Set Sentry region", () =>
++            dialog.getByLabel("Region", { exact: true }).fill("us"),
++          );
++          yield* browser.checkpoint(`Missing-section connection form ${width}`);
++          yield* browser.use("Cancel preserves the OAuth account", (page) =>
++            page.keyboard.press("Escape").then(() => dialog.waitFor({ state: "hidden" })),
++          );
++          expect(
++            yield* browser.use("Cancel restores focus to Add token", (page) =>
++              page
++                .waitForFunction(() => document.activeElement?.textContent === "Add token")
++                .then(() => page.evaluate(() => document.activeElement?.textContent)),
++            ),
++          ).toBe("Add token");
++          expect(
++            (yield* body(Tools, yield* api.request(actors.owner, "GET", `${path}/tools/index`)))
++              .items,
++          ).toEqual(before.items);
++          yield* browser.use("Open token form again", (page) =>
++            page.getByRole("button", { name: "Add token", exact: true }).click(),
++          );
++          yield* browser.use("Set the token region", () =>
++            dialog.getByLabel("Region", { exact: true }).fill("us"),
++          );
++          yield* browser.use("Validate a synthetic personal token", () =>
++            dialog
++              .getByLabel("Personal token", { exact: true })
++              .fill("synthetic-sentry-personal")
++              .then(() =>
++                dialog.getByRole("button", { name: "Validate Auth token", exact: true }).click(),
++              )
++              .then(() => dialog.getByRole("button", { name: "Continue", exact: true }).waitFor()),
++          );
++          yield* browser.use("Connect a synthetic personal token", (page) =>
++            dialog
++              .getByLabel("Personal token", { exact: true })
++              .fill("synthetic-sentry-personal")
++              .then(() =>
++                Promise.all([
++                  page.waitForResponse(
++                    (response) =>
++                      response.request().method() === "POST" &&
++                      new URL(response.url()).pathname === `${path}/accounts/user/sentry`,
++                  ),
++                  dialog.getByRole("button", { name: "Continue", exact: true }).click(),
++                ])
++                  .then(([response]) => response.json())
++                  .then((value) => {
++                    accounts.push(Schema.decodeUnknownSync(Resource)(value).id);
++                  }),
++              ),
++          );
++          yield* browser.use("Name the saved token", (page) =>
++            nameConnectedAccount(page, "API token"),
++          );
++          yield* browser.use("Token connection refreshes both sections", (page) =>
++            page
++              .getByRole("region", { name: "Sentry API", exact: true })
++              .waitFor({ state: "hidden" }),
++          );
++          const after = yield* body(
++            Tools,
++            yield* api.request(actors.owner, "GET", `${path}/tools/index`),
++          );
++          expect(after.items.map((tool) => tool.name).sort()).toEqual([
++            "api.read.getRead",
++            "api.write.postWrite",
++            "mcp.read",
++            "mcp.write",
++          ]);
++          for (const tool of after.items.filter((tool) =>
++            ["mcp.read", "api.read.getRead"].includes(tool.name),
++          )) {
++            const called = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
++              tool: tool.name,
++              kind: "query",
++              input: { accountId: accounts[1], input: {} },
++            });
++            expect(called.status, JSON.stringify(called.body)).toBe(200);
++            expect(JSON.stringify(called.body)).toContain(
++              tool.name === "api.read.getRead" ? '"region":"us"' : "read through MCP",
++            );
++          }
++          expect(
++            catalog.calls.some(
++              (call) =>
++                call.transport === "mcp" &&
++                call.method === "tools/call" &&
++                call.scheme === "Sentry-Bearer" &&
++                call.token === "personal",
++            ),
++          ).toBe(true);
++          expect(
++            catalog.calls.some(
++              (call) =>
++                call.transport === "mcp" && call.scheme === "Bearer" && call.token === "oauth",
++            ),
++          ).toBe(true);
++          expect(
++            catalog.calls
++              .filter((call) => call.transport === "api")
++              .every((call) => call.scheme === "Bearer" && call.token === "personal"),
++          ).toBe(true);
++          for (const tool of ["mcp.write", "api.write.postWrite"]) {
++            const callsBefore = catalog.calls.filter(
++              (call) => call.method === "tools/call" || call.method === "POST",
++            ).length;
++            const paused = yield* api.request(actors.owner, "POST", `${path}/tools/run`, {
++              tool,
++              kind: "mutation",
++              input: { accountId: accounts[1], input: {} },
++            });
++            expect(paused.status, JSON.stringify(paused.body)).toBe(200);
++            expect(paused.body).toMatchObject({ status: "approval-required" });
++            expect(
++              catalog.calls.filter((call) => call.method === "tools/call" || call.method === "POST")
++                .length,
++            ).toBe(callsBefore);
++          }
++          yield* evidence.json(`sentry-peer-calls-${width}.json`, catalog.calls);
++          yield* browser.checkpoint(`Both tool sections ${width}`);
++          expect(
++            yield* browser.use("No page overflow", (page) =>
++              page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
++            ),
++          ).toBe(false);
++          expect(
++            (yield* api.request(
++              actors.owner,
++              "DELETE",
++              `${path}/accounts/user/sentry/${accounts[1]}`,
++            )).status,
++          ).toBe(200);
++          yield* browser.use("Return after token unlink", (page) =>
++            page
++              .reload()
++              .then(() => page.getByRole("button", { name: "Add token", exact: true }).waitFor()),
++          );
++          const remaining = yield* body(
++            Tools,
++            yield* api.request(actors.owner, "GET", `${path}/tools/index`),
++          );
++          expect(remaining.items.map((tool) => tool.name)).toEqual(["mcp.read", "mcp.write"]);
++          yield* browser.checkpoint(`Unlink restores API guidance ${width}`);
++        }),
++      ),
++    );
++});
+diff --git a/e2e/tests/sentry-regional.spec.ts b/e2e/tests/sentry-regional.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/sentry-regional.spec.ts
+@@ -0,0 +1,147 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
++import { serverControl } from "../support/server-control.ts";
++import { Evidence } from "../support/evidence.ts";
++import { connectSentryToken } from "../support/sentry-account.ts";
++import { sentryCatalog } from "../support/sentry-catalog.ts";
++import { scenarios } from "../test-plan.ts";
++
++const App = Schema.Struct({
++  id: Schema.String,
++  requirements: Schema.Struct({
++    accounts: Schema.Record(Schema.String, Schema.Struct({ provider: Schema.String })),
++  }),
++});
++const Tools = Schema.Struct({
++  items: Schema.Array(Schema.Struct({ name: Schema.String })),
++  routers: Schema.Array(
++    Schema.Struct({
++      path: Schema.String,
++      error: Schema.optional(Schema.Struct({ accountId: Schema.String, status: Schema.Number })),
++    }),
++  ),
++});
++
++layer(HostedLive, { excludeTestServices: true })("Sentry regional recovery", (it) => {
++  it.effect(scenarios.sentryRegionalRecovery.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          browser = yield* Browser,
++          evidence = yield* Evidence,
++          issuer = yield* oauthSetupIssuer;
++        const catalog = yield* sentryCatalog(issuer.origin);
++        catalog.failMcp();
++        yield* serverControl("stop");
++        yield* serverControl("environment", 200, { EXECUTOR_CATALOG_URL: catalog.url });
++        yield* serverControl("start");
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const installed = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++          entry: "sentry",
++          name: "Regional Sentry",
++        });
++        expect(installed.status, JSON.stringify(installed.body)).toBe(200);
++        const app = yield* body(App, installed),
++          path = `${prefix}/apps/${app.id}`;
++        const accounts: string[] = [];
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            expect((yield* api.request(actors.owner, "DELETE", path)).status).toBe(200);
++            for (const account of accounts)
++              expect(
++                (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`))
++                  .status,
++              ).toBe(200);
++          }).pipe(Effect.orDie),
++        );
++        const provider = app.requirements.accounts.sentry?.provider;
++        expect(provider).toBeDefined();
++        for (const [token, status] of [
++          ["synthetic-sentry-rejected", "credentials_rejected"],
++          ["synthetic-sentry-denied", "check_failed"],
++        ] as const) {
++          const checked = yield* api.request(actors.owner, "POST", `${path}/credential-checks`, {
++            provider,
++            method: "authToken",
++            fields: { token, region: "us" },
++          });
++          expect(checked.status, JSON.stringify(checked.body)).toBe(200);
++          expect(checked.body).toMatchObject({ status });
++          expect(JSON.stringify(checked.body)).not.toContain(token);
++        }
++        for (const region of ["us", "de"]) {
++          const account = yield* connectSentryToken(actors.owner, prefix, path, {
++            token: "synthetic-sentry-personal",
++            region,
++          });
++          accounts.push(account.id);
++          const index = yield* body(
++            Tools,
++            yield* api.request(actors.owner, "GET", `${path}/tools/index`),
++          );
++          const failures = index.routers
++            .filter((router) => router.path === "mcp" || router.path.startsWith("mcp."))
++            .flatMap((router) => (router.error === undefined ? [] : [router.error]));
++          expect(failures).toHaveLength(accounts.length);
++          for (const id of accounts)
++            expect(failures).toContainEqual({ accountId: id, status: 503 });
++          expect(index.items.map((tool) => tool.name).sort()).toEqual([
++            "api.read.getRead",
++            "api.write.postWrite",
++          ]);
++          const read = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
++            tool: "api.read.getRead",
++            kind: "query",
++            input: { accountId: account.id, input: {} },
++          });
++          expect(read.status, JSON.stringify(read.body)).toBe(200);
++          expect(read.body).toEqual({ transport: "api", region });
++        }
++        const limitedId = (yield* connectSentryToken(actors.owner, prefix, path, {
++          token: "synthetic-sentry-scope",
++          region: "us",
++        })).id;
++        accounts.push(limitedId);
++        const denied = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
++          tool: "api.read.getRead",
++          kind: "query",
++          input: { accountId: limitedId, input: {} },
++        });
++        expect(denied.status, JSON.stringify(denied.body)).toBe(502);
++        expect(denied.body).toMatchObject({
++          _tag: "AppProviderFailed",
++          reason: "forbidden",
++          status: 403,
++          phase: "call",
++          upstream: { code: "insufficient_scope" },
++        });
++        expect(JSON.stringify(denied.body)).not.toContain("synthetic-sentry-scope");
++        expect(
++          catalog.calls
++            .filter((call) => call.transport === "api")
++            .every((call) => call.scheme === "Bearer" && call.token === "personal"),
++        ).toBe(true);
++        yield* browser.login(actors.owner);
++        yield* browser.use("Working REST remains visible during an MCP outage", (page) =>
++          page
++            .goto(`/org/${actors.organization.slug}/apps/${app.id}?view=tools`)
++            .then(() => page.getByRole("heading", { name: "Get read", exact: true }).waitFor()),
++        );
++        expect(
++          yield* browser.use("Provider failures do not invent a missing token", (page) =>
++            page.getByRole("button", { name: "Add token", exact: true }).count(),
++          ),
++        ).toBe(0);
++        yield* browser.checkpoint("MCP failure preserves regional REST tools");
++        yield* evidence.json("sentry-regional-peer-calls.json", catalog.calls);
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/sentry-upgrade.spec.ts b/e2e/tests/sentry-upgrade.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/sentry-upgrade.spec.ts
+@@ -0,0 +1,143 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { FetchHttpClient, HttpClient } from "effect/http";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { accountLinks, connectionsPath } from "../support/app-accounts.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { Evidence } from "../support/evidence.ts";
++import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
++import { serverControl } from "../support/server-control.ts";
++import { connectSentryToken } from "../support/sentry-account.ts";
++import { sentryCatalog } from "../support/sentry-catalog.ts";
++import { scenarios } from "../test-plan.ts";
++
++const App = Schema.Struct({
++  id: Schema.String,
++  requirements: Schema.Struct({
++    accounts: Schema.Record(Schema.String, Schema.Struct({ provider: Schema.String })),
++  }),
++});
++const Redirect = Schema.Struct({ authorizationUrl: Schema.String, redirectUri: Schema.String });
++
++layer(HostedLive, { excludeTestServices: true })("Sentry retained accounts", (it) => {
++  it.effect(scenarios.sentryRetainedUpgrade.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          http = yield* HttpClient.HttpClient,
++          issuer = yield* oauthSetupIssuer,
++          evidence = yield* Evidence;
++        const catalog = yield* sentryCatalog(issuer.origin, true);
++        yield* serverControl("stop");
++        yield* serverControl("environment", 200, { EXECUTOR_CATALOG_URL: catalog.url });
++        yield* serverControl("start");
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const installed = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++          entry: "sentry",
++          name: "Retained Sentry",
++        });
++        expect(installed.status, JSON.stringify(installed.body)).toBe(200);
++        const before = yield* body(App, installed),
++          path = `${prefix}/apps/${before.id}`;
++        const accounts: string[] = [];
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            expect((yield* api.request(actors.owner, "DELETE", path)).status).toBe(200);
++            for (const account of accounts)
++              expect(
++                (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`))
++                  .status,
++              ).toBe(200);
++          }).pipe(Effect.orDie),
++        );
++        for (const index of [0, 1]) {
++          const connection = yield* body(
++            Resource,
++            yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "sentry"), {}),
++          );
++          const client = {
++            clientId: `sentry-retained-${index}`,
++            clientSecret: `synthetic-secret-${index}`,
++          };
++          const started = yield* api.request(
++            actors.owner,
++            "POST",
++            `${prefix}/connections/${connection.id}/oauth/start`,
++            { method: "oauth", client },
++          );
++          expect(started.status, JSON.stringify(started.body)).toBe(200);
++          const redirect = yield* body(Redirect, started);
++          yield* issuer.allowClient({ ...client, redirect: redirect.redirectUri });
++          const callbackUrl = yield* Effect.scoped(
++            Effect.gen(function* () {
++              const consent = yield* HttpClient.withScope(http).get(redirect.authorizationUrl);
++              expect(consent.status).toBe(302);
++              if (consent.headers.location === undefined)
++                return yield* Effect.die("Missing OAuth callback");
++              return consent.headers.location;
++            }),
++          ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
++          const completed = yield* api.request(
++            actors.owner,
++            "POST",
++            `${prefix}/connections/${connection.id}/oauth/complete`,
++            { callbackUrl },
++          );
++          expect(completed.status, JSON.stringify(completed.body)).toBe(200);
++          accounts.push((yield* body(Resource, completed)).id);
++        }
++        const links = yield* accountLinks(actors.owner, path);
++        expect(links.map(([, account]) => account).sort()).toEqual([...accounts].sort());
++        const read = (accountId: string) =>
++          api.request(actors.owner, "POST", `${path}/tools/call`, {
++            tool: "mcp.read",
++            kind: "query",
++            input: { accountId, input: {} },
++          });
++        for (const account of accounts) expect((yield* read(account)).status).toBe(200);
++        const upgraded = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
++          files: catalog.carriedFiles,
++        });
++        expect(upgraded.status, JSON.stringify(upgraded.body)).toBe(200);
++        const after = yield* body(App, yield* api.request(actors.owner, "GET", path));
++        expect(after.requirements.accounts.sentry?.provider).toBe(
++          before.requirements.accounts.sentry?.provider,
++        );
++        expect(yield* accountLinks(actors.owner, path)).toEqual(links);
++        for (const account of accounts) {
++          const called = yield* read(account);
++          expect(called.status, JSON.stringify(called.body)).toBe(200);
++          expect(JSON.stringify(called.body)).toContain("read through MCP");
++        }
++        const token = (yield* connectSentryToken(actors.owner, prefix, path, {
++          token: "synthetic-sentry-personal",
++          region: "us",
++        })).id;
++        accounts.push(token);
++        for (const tool of ["mcp.read", "api.read.getRead"]) {
++          const called = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
++            tool,
++            kind: "query",
++            input: { accountId: token, input: {} },
++          });
++          expect(called.status, JSON.stringify(called.body)).toBe(200);
++        }
++        expect(
++          (yield* accountLinks(actors.owner, path)).map(([, account]) => account).sort(),
++        ).toEqual([...accounts].sort());
++        yield* evidence.json("retained-sentry-upgrade.json", {
++          sameProvider:
++            after.requirements.accounts.sentry?.provider ===
++            before.requirements.accounts.sentry?.provider,
++          retainedOAuthSelections: 2,
++          retainedOAuthCalls: 2,
++          newTokenTransports: 2,
++        });
++      }),
++    ),
++  );
++});

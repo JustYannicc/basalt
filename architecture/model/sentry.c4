@@ -1,0 +1,7 @@
+model {
+  extend basalt.catalog {
+    metadata {
+      constraint "The observability adapter keeps its provider and method identities. A personal token supplies MCP and regional REST through their documented, distinct authorization schemes. OAuth wrapper tokens supply MCP only. Lazy MCP discovery fails within its router, leaving REST available. Catalog metadata explains each method and opens the normal account form for a missing section; it never grants credential use."
+    }
+  }
+}
