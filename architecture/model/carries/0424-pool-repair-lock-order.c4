@@ -1,7 +1,7 @@
 model {
   extend basalt.modelGateway {
     metadata {
-      constraint "Pool reconciliation takes the organization access lock first in the same SQL transaction, before organization metadata, member and app locks. Public account reads and repair follow this order while link invalidation remains transactional and compilation stays outside the locks. Contending reads return the repaired account without replacing an edited deployment."
+      constraint "Pool reconciliation takes the organization access lock first in the same SQL transaction, before organization metadata, member and app locks. Public account reads and repair follow this order while link invalidation remains transactional and compilation stays outside the locks. A contending account read succeeds, and a fresh read after repair returns the repaired account without replacing an edited deployment."
     }
   }
 }
