@@ -1,6 +1,8 @@
 model {
   extend basalt {
     build = module "Build" {
+      // Connector TLS fixtures forward over fresh upstream connections; each viewport releases
+      // its new account links on failure so a transport error cannot contaminate the next viewport.
       // Release configuration rejects documented OAuth secret prefixes in client IDs before
       // forwarding any hosted credentials; configuration errors retain no credential values.
       // Scope-aware connector proofs retain every legacy tool name and saved grant across upgrade and renewal.

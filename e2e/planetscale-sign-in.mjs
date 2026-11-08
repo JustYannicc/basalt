@@ -198,6 +198,13 @@ const program = Effect.gen(function* () {
   const apiCalls = (operation) =>
     service.calls.filter((entry) => entry.phase === "api" && entry.operation === operation);
   for (const width of widths) {
+    const accountsBefore = yield* links();
+    const cleanup = Effect.gen(function* () {
+      for (const { requirement, account } of added(accountsBefore, yield* links())) {
+        yield* request("DELETE", `${path}/accounts/user/${requirement}/${account.id}`);
+        yield* request("DELETE", `${prefix}/accounts/${account.id}`);
+      }
+    });
     const result = yield* Effect.exit(
       (retained
         ? replaceHostedClient(oldClient).pipe(
@@ -254,6 +261,7 @@ const program = Effect.gen(function* () {
         Effect.provide(RecordingFocus.layer),
         Effect.provide(BrowserDriver.layer),
         Effect.provideService(Target, target),
+        Effect.ensuring(cleanup),
       ),
     );
     outcomes.push({

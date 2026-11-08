@@ -3943,3 +3943,15 @@ index 7e79e23cb1b5baf22d57b4563bc91779f3bf0a3d..da320d7e6b0fffdd4ecd7dfe229d968d
      ...(account.site === null ? {} : { site: account.site }),
    };
    if (credential.firstParty === undefined) {
+diff --git a/e2e/support/app-origin-tls.ts b/e2e/support/app-origin-tls.ts
+--- a/e2e/support/app-origin-tls.ts
++++ b/e2e/support/app-origin-tls.ts
+@@ -46,6 +46,8 @@
+         }
+         const forwarded = request(
+           {
++            // Independent fixture requests must not inherit a stale upstream connection.
++            agent: false,
+             hostname: "127.0.0.1",
+             port: upstream.port,
+             path: incoming.url,
