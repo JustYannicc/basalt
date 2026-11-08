@@ -1,9 +1,9 @@
+import { bindingDifferences, differences, refuseChanges, type Change } from "./refusal.ts";
 import { object, string, type Cloudflare } from "./cloudflare.ts";
 import {
   assertBaseline,
   assertExpected,
   assertUnchanged,
-  bindingDigest,
   digest,
   makePlan,
   targetVersion,
@@ -28,8 +28,9 @@ export interface Receipt {
   error?: {
     resource: string;
     property: string;
-    expected: string | number;
-    observed: string | number;
+    expected: string | number | null;
+    observed: string | number | null;
+    changes?: Change[];
   };
 }
 export async function operate(options: {
@@ -103,20 +104,14 @@ export async function operate(options: {
         typeof uploaded.startup_time_ms === "number" ? uploaded.startup_time_ms : "missing",
       );
     const uploadedVersion = await options.api.version(receipt.uploadedVersionId);
-    if (bindingDigest(uploadedVersion.bindings) !== plan.bindingsSha256)
-      throw new UpgradeRefusal(
-        workerId,
-        "uploaded-bindings-sha256",
-        plan.bindingsSha256,
-        bindingDigest(uploadedVersion.bindings),
-      );
-    if (digest(uploadedVersion.runtimeSettings) !== plan.runtimeSettingsSha256)
-      throw new UpgradeRefusal(
-        workerId,
-        "uploaded-runtime-settings-sha256",
-        plan.runtimeSettingsSha256,
-        digest(uploadedVersion.runtimeSettings),
-      );
+    refuseChanges([
+      ...bindingDifferences(before.bindings, uploadedVersion.bindings),
+      ...differences(
+        `${workerId} uploaded runtime`,
+        before.runtimeSettings,
+        uploadedVersion.runtimeSettings,
+      ),
+    ]);
     const prepared = await options.api.observe();
     assertUnchanged(before, prepared, 7);
     if (prepared.deploymentId !== before.deploymentId || prepared.versionId !== before.versionId)
@@ -179,6 +174,7 @@ export async function operate(options: {
             property: error.property,
             expected: error.expected,
             observed: error.observed,
+            changes: error.changes,
           }
         : {
             resource: workerId,

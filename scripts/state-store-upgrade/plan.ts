@@ -1,3 +1,4 @@
+import { UpgradeRefusal, differences, bindingDifferences, refuseChanges } from "./refusal.ts";
 import { createHash } from "node:crypto";
 
 export const workerId = "alchemy-state-store";
@@ -13,6 +14,7 @@ export interface Observation {
   settings: Record<string, unknown>;
   runtimeSettings: Record<string, unknown>;
   bindings: Binding[];
+  servingBindings: Binding[];
   namespace: { id: string; class: string; script: string; use_sqlite: boolean };
   encryptionKey: Record<string, unknown>;
 }
@@ -29,24 +31,7 @@ export interface Expected {
   planSha256: string;
 }
 
-export class UpgradeRefusal extends Error {
-  readonly resource: string;
-  readonly property: string;
-  readonly expected: string | number;
-  readonly observed: string | number;
-  constructor(
-    resource: string,
-    property: string,
-    expected: string | number,
-    observed: string | number,
-  ) {
-    super(`${resource}: ${property} expected ${expected}, observed ${observed}`);
-    this.resource = resource;
-    this.property = property;
-    this.expected = expected;
-    this.observed = observed;
-  }
-}
+export { UpgradeRefusal } from "./refusal.ts";
 export function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (value !== null && typeof value === "object")
@@ -104,6 +89,7 @@ export function assertBaseline(observed: Observation, protocol = 7) {
 
 export function makePlan(observed: Observation, candidate: Candidate) {
   assertBaseline(observed);
+  refuseChanges(bindingDifferences(observed.servingBindings, observed.bindings));
   same(
     workerId,
     "immutable-compatibility-date",
@@ -202,23 +188,21 @@ export function assertExpected(observed: Observation, plan: Plan, expected: Expe
 }
 
 export function assertUnchanged(before: Observation, after: Observation, version: number) {
-  same(workerId, "state-store-version", version, after.protocol);
-  same(workerId, "worker-id", before.workerId, after.workerId);
-  same("Store", "namespace-identity-sha256", digest(before.namespace), digest(after.namespace));
-  same(
-    "StateStoreEncryptionKey",
-    "identity-sha256",
-    digest(before.encryptionKey),
-    digest(after.encryptionKey),
-  );
-  same(workerId, "settings-sha256", digest(before.settings), digest(after.settings));
-  same(
-    workerId,
-    "runtime-settings-sha256",
-    digest(before.runtimeSettings),
-    digest(after.runtimeSettings),
-  );
-  same(workerId, "bindings-sha256", bindingDigest(before.bindings), bindingDigest(after.bindings));
+  const { bindings: _beforeBindings, ...beforeSettings } = before.settings;
+  const { bindings: _afterBindings, ...afterSettings } = after.settings;
+  refuseChanges([
+    ...differences(
+      workerId,
+      { protocol: version, workerId: before.workerId },
+      { protocol: after.protocol, workerId: after.workerId },
+    ),
+    ...differences("Store", before.namespace, after.namespace),
+    ...differences("StateStoreEncryptionKey", before.encryptionKey, after.encryptionKey),
+    ...differences(workerId, beforeSettings, afterSettings),
+    ...differences(`${workerId} runtime`, before.runtimeSettings, after.runtimeSettings),
+    ...bindingDifferences(before.bindings, after.bindings),
+    ...bindingDifferences(before.servingBindings, after.servingBindings),
+  ]);
 }
 
 /** Strict inheritance copies existing bindings without sending secrets or assigning a namespace. */

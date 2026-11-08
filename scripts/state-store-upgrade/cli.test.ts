@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { workerId } from "./plan.ts";
 
-function run(mode?: string, expected = false) {
+function run(mode?: string, expected = false, drift = false) {
   const root = process.cwd();
   const directory = mkdtempSync(join(tmpdir(), "state-upgrade-cli-"));
   const bundle = join(directory, "bundle");
@@ -27,7 +27,9 @@ function run(mode?: string, expected = false) {
     `
 import { fixture } from ${JSON.stringify(pathToFileURL(join(root, "scripts/state-store-upgrade/fixture.ts")).href)};
 import { writeFileSync } from 'node:fs';
-const f=fixture();globalThis.fetch=f.fetcher;
+const f=fixture();
+${drift ? `f.state.settings.observability={enabled:false};f.state.bindings[1].text="changed-private-binding";` : ""}
+globalThis.fetch=f.fetcher;
 process.on('exit',()=>writeFileSync(${JSON.stringify(join(directory, "requests.json"))},JSON.stringify(f.requests)));
 `,
   );
@@ -98,4 +100,15 @@ test("a malformed mode makes no provider request and still leaves a failure rece
   assert.equal(result.receipt.phase, "preflight");
   assert.equal(result.receipt.error.property, "mode");
   assert.deepEqual(result.requests, []);
+});
+
+test("CLI error and summary both name all binding differences without exposing contents", () => {
+  const result = run(undefined, false, true);
+  assert.equal(result.status, 1);
+  for (const text of [result.stderr, result.summary]) {
+    assert.match(text, /PRIVATE_VALUE: text expected sha256:[a-f0-9]+, observed sha256:[a-f0-9]+/);
+    assert.ok(!text.includes("changed-private-binding"));
+    assert.ok(!text.includes("never-print-this-binding-value"));
+  }
+  assert.ok(result.requests.every((request) => request.method === "GET"));
 });

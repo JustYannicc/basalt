@@ -99,6 +99,7 @@ try {
               property: error.property,
               expected: error.expected,
               observed: error.observed,
+              changes: error.changes,
             }
           : {
               resource: workerId,

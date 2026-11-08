@@ -1,11 +1,4 @@
-import {
-  UpgradeRefusal,
-  workerId,
-  bindingDigest,
-  digest,
-  type Binding,
-  type Observation,
-} from "./plan.ts";
+import { UpgradeRefusal, workerId, digest, type Binding, type Observation } from "./plan.ts";
 import { normalizePlacement } from "../release-barrier/script-placement.ts";
 
 export const object = (value: unknown): Record<string, unknown> => {
@@ -160,16 +153,6 @@ export function cloudflare(accountId: string, token: string, fetcher: typeof fet
     const latest = versions.sort((a, b) => Number(b.number) - Number(a.number))[0];
     if (!latest) throw new UpgradeRefusal(workerId, "latest-version", "present", "missing");
     const serving = await version(first.versionId);
-    if (
-      first.versionId === latest.id &&
-      bindingDigest(serving.bindings) !== bindingDigest(observedBindings)
-    )
-      throw new UpgradeRefusal(
-        workerId,
-        "serving-bindings-sha256",
-        bindingDigest(serving.bindings),
-        bindingDigest(observedBindings),
-      );
     const store = observedBindings.find((binding) => binding.name === "Store");
     const namespaceId = string(store?.namespace_id, "Store-namespace-id");
     const namespaces = await list("/workers/durable_objects/namespaces");
@@ -204,6 +187,7 @@ export function cloudflare(accountId: string, token: string, fetcher: typeof fet
       settings,
       runtimeSettings: serving.runtimeSettings,
       bindings: observedBindings,
+      servingBindings: serving.bindings,
       namespace: {
         id: namespaceId,
         class: string(namespace.class, "namespace-class"),

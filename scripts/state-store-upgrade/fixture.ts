@@ -50,6 +50,7 @@ export function fixture() {
         secret_name: "AlchemyStateStoreEncryptionKey",
       },
     ],
+    servingBindings: [],
     settings: {},
     runtimeSettings: {
       compatibility_date: "2026-08-31",
@@ -64,6 +65,7 @@ export function fixture() {
     created_on: "2026-10-15T00:00:00Z",
     modified_on: "2026-10-15T00:00:00Z",
   };
+  initial.servingBindings = structuredClone(initial.bindings);
   initial.settings = {
     bindings: initial.bindings,
     compatibility_date: candidate.compatibility.date,
