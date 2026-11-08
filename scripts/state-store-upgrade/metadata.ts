@@ -15,7 +15,9 @@ export function comparableSettings(settings: Record<string, unknown>) {
   const { annotations, ...rest } = settings;
   if (annotations === null || typeof annotations !== "object" || Array.isArray(annotations))
     return settings;
-  const { "workers/triggered_by": _trigger, ...writable } = annotations;
+  const writable = Object.fromEntries(
+    Object.entries(annotations).filter(([key]) => key !== "workers/triggered_by"),
+  );
   return { ...rest, annotations: writable };
 }
 /** Version uploads leave script-level placement, limits and observability on the existing script. */

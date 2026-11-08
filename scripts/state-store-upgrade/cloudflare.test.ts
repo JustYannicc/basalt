@@ -25,7 +25,8 @@ for (const phase of ["inventory", "upload", "activate"] as const) {
             errors: [
               {
                 code: 10057,
-                message: "Binding Store cannot be inherited; metadata.bindings[7].type is invalid.",
+                message:
+                  'Binding Store cannot be inherited; metadata.bindings[7].type is invalid. {"password":"tiny-pass"} Cookie: session=tiny; "token":"short"',
               },
             ],
             messages: [{ code: 20001, message: "Use a compatible binding declaration." }],
@@ -49,6 +50,8 @@ for (const phase of ["inventory", "upload", "activate"] as const) {
         assert.ok(error instanceof UpgradeRefusal);
         assert.match(error.message, /10057.*Binding Store cannot be inherited/);
         assert.match(error.message, /20001.*compatible binding declaration/);
+        for (const secret of ["tiny-pass", "session=tiny", '"token":"short"'])
+          assert.ok(!error.message.includes(secret));
         return true;
       },
     );
@@ -56,6 +59,8 @@ for (const phase of ["inventory", "upload", "activate"] as const) {
     assert.match(stored, /10057/);
     assert.match(stored, /Binding Store cannot be inherited/);
     assert.ok(!stored.includes("never-log-provider-token"));
+    for (const secret of ["tiny-pass", "session=tiny", '"token":"short"'])
+      assert.ok(!stored.includes(secret));
     assert.equal(rejected, 1);
   });
 }

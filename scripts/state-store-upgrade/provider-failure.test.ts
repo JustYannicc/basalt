@@ -50,6 +50,25 @@ test("diagnostics bound each message and entry count", () => {
   assert.ok(result.errors.every((row) => row.message.length <= 512));
 });
 
+test("quoted credential fields and cookie header forms do not enter diagnostics", () => {
+  const result = envelopeFailure(
+    {
+      errors: [
+        {
+          code: 10021,
+          message:
+            'Invalid metadata. {"password":"short-value"} "token":"short-token" Cookie: session=tiny; another=other-tiny',
+        },
+      ],
+    },
+    "",
+  );
+  const text = JSON.stringify(result);
+  assert.match(text, /Invalid metadata/);
+  for (const value of ["short-value", "session=", "other-tiny", "short-token", "Cookie:"])
+    assert.ok(!text.includes(value));
+});
+
 test("non-JSON, oversized and failed body streams have explicit safe diagnoses", async () => {
   assert.equal(
     (await responseFailure(new Response("<html>private text</html>"), "")).body,

@@ -47,7 +47,7 @@ if (${JSON.stringify(drift)}) {
   })) process.env["STATE_UPGRADE_EXPECTED_" + name] = value;
 }
 globalThis.fetch=${JSON.stringify(providerFailure)}
-  ? async () => Response.json({ success: false, errors: [{code: 10021, message: "Invalid metadata field observability. Bearer never-log-provider-token"}], messages: [{message: "Use version metadata only."}] }, {status: 400})
+  ? async () => Response.json({ success: false, errors: [{code: 10021, message: 'Invalid metadata field observability. Bearer never-log-provider-token {"password":"short-value"} Cookie: session=tiny'}], messages: [{message: "Use version metadata only."}] }, {status: 400})
   : f.fetcher;
 process.on('exit',()=>writeFileSync(${JSON.stringify(join(directory, "requests.json"))},JSON.stringify(f.requests)));
 `,
@@ -155,5 +155,7 @@ test("CLI receipt, error and summary retain sanitized provider causes", () => {
     assert.match(text, /Invalid metadata field observability/);
     assert.match(text, /Use version metadata only/);
     assert.ok(!text.includes("never-log-provider-token"));
+    assert.ok(!text.includes("short-value"));
+    assert.ok(!text.includes("session=tiny"));
   }
 });
