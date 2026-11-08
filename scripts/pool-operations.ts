@@ -1,3 +1,4 @@
+import { nodePoolOperations } from "./pool-operations-node.ts";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -15,6 +16,10 @@ export interface PoolOperationsTarget {
 
 /** A scoped local bridge can reach only the named private operations entrypoint. */
 export async function openPoolOperations(options: PoolOperationsTarget) {
+  if (!options.connect && process.versions.bun) {
+    const platform = await nodePoolOperations(options.accountId, options.worker);
+    return { service: platform.env.POOL_OPERATIONS, close: () => platform.dispose() };
+  }
   const directory = await mkdtemp(join(tmpdir(), "database-budget-ready-"));
   let platform: PoolOperationsPlatform | undefined;
   const close = async () => {

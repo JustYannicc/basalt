@@ -20,3 +20,18 @@ export function callbackOrigin(signInUrl: string): string | null {
     return null;
   }
 }
+
+/** xAI displays a code; its state stays in the server-owned acquisition attempt. */
+export function xaiSignInCode(value: string, state: string): string | null {
+  const pasted = value.trim();
+  if (!pasted || /\s/.test(pasted)) return null;
+  try {
+    const url = new URL(pasted);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    const suppliedState = url.searchParams.get("state");
+    if (suppliedState !== null && suppliedState !== state) return null;
+    return url.searchParams.get("code")?.trim() || null;
+  } catch {
+    return pasted.includes("#") ? null : pasted;
+  }
+}

@@ -53,6 +53,12 @@ try {
     POSTHOG_PROJECT_KEY: "fixture_posthog_project_key",
     POSTHOG_HOST: "https://us.i.posthog.com",
   });
+  const candidateProof = process.env.NATIVE_STACK_CANDIDATE_PROOF;
+  if (candidateProof) {
+    delete synthetic.BASALT_RELEASE_ATTEMPT;
+    delete synthetic.BASALT_POOL_IMAGE_RECEIPT;
+    delete synthetic.GITHUB_SHA;
+  }
   const settings = previewConnection
     ? {
         ...previewEnvironment(1, {
@@ -71,6 +77,38 @@ try {
   if (settings.BASALT_RELEASE_ATTEMPT)
     process.env.BASALT_RELEASE_ATTEMPT = settings.BASALT_RELEASE_ATTEMPT;
   settings.EXECUTOR_E2E_MANUAL_CRON = process.env.NATIVE_STACK_MANUAL_CRON ?? "false";
+  if (candidateProof) {
+    if (candidateProof === "ready" || candidateProof.startsWith("entry-")) {
+      const { randomUUID } = await import("node:crypto");
+      process.env.BASALT_RELEASE_ATTEMPT = randomUUID();
+    }
+    if (candidateProof.startsWith("entry-")) {
+      const { candidateProbeProof } =
+        await import("../release-barrier/test/candidate-probe-proof.mjs");
+      emit(JSON.stringify(await candidateProbeProof(settings, candidateProof, http, synthetic)));
+      process.exit(0);
+    }
+    const { baselineRoles } = await load("scripts/release-barrier/baseline-probe.ts");
+    const { candidateScriptSettings } = await load("scripts/release-barrier/candidate-settings.ts");
+    const { CandidateSettingsReadFailure, candidateFailureDetails } = await load(
+      "scripts/release-barrier/candidate-failure.ts",
+    );
+    try {
+      const rows = await candidateScriptSettings(
+        baselineRoles.map((role) => ({
+          role,
+          scriptName: `basalt-${role.toLowerCase()}-production-fixture`,
+        })),
+        settings,
+      );
+      http.assertAllowed();
+      emit(JSON.stringify({ ok: true, roles: rows.map((row) => row.role) }));
+    } catch (error) {
+      if (!(error instanceof CandidateSettingsReadFailure)) throw error;
+      emit(JSON.stringify({ ok: false, failure: candidateFailureDetails(error) }));
+    }
+    process.exit(0);
+  }
   phase = "import";
   const [
     { default: actualRoot },
@@ -99,39 +137,55 @@ try {
   const containerProof = process.env.NATIVE_STACK_CONTAINER_PROOF
     ? await import("../release-barrier/test/container-stack-proof.mjs")
     : undefined;
-  const inspect = containerProof
+  const settingsProof =
+    process.env.NATIVE_STACK_SETTINGS_PROOF === "true"
+      ? await load("scripts/release-barrier/candidate-settings.ts")
+      : undefined;
+  const inspect = settingsProof
     ? (stack) =>
-        containerProof.proveContainerStack(
+        settingsProof.settingsFromDeclarations(
           stack,
-          (inspectNext) => {
-            process.env.BASALT_RELEASE_ATTEMPT = "00000000-0000-4000-8000-000000000002";
-            return evalStack(actualRoot, inspectNext, { stage: settings.ALCHEMY_STAGE });
-          },
-          process.env.NATIVE_STACK_CONTAINER_PROOF,
+          Object.values(stack.resources)
+            .filter((resource) => resource.Type === "Cloudflare.Worker")
+            .map((resource) => ({
+              role: resource.FQN,
+              scriptName: `basalt-${resource.FQN.toLowerCase()}-production-fixture`,
+            })),
         )
-    : previewConnection
-      ? (await import("../release-barrier/preview-connection-proof.mjs")).provePreviewConnection
-      : connectionProof
-        ? (stack) =>
-            connectionProof.proveConnectionPlan(
-              stack,
-              (inspectNext) => {
-                process.env.BASALT_RELEASE_ATTEMPT = "00000000-0000-4000-8000-000000000002";
-                return evalStack(actualRoot, inspectNext, { stage: settings.ALCHEMY_STAGE });
-              },
-              process.env.NATIVE_STACK_CONNECTION_CHANGE,
-              process.env.NATIVE_STACK_CONNECTION_TARGET,
-            )
-        : process.env.NATIVE_STACK_RELEASE_PROOF === "true"
-          ? (await import("../release-phases/proof.mjs")).proveReleasePhases
-          : (stack) =>
-              Effect.sync(() =>
-                inventoryDeclarations(
-                  Object.values(stack.resources),
-                  stack.bindings,
-                  Output.isOutput,
-                ),
-              );
+    : containerProof
+      ? (stack) =>
+          containerProof.proveContainerStack(
+            stack,
+            (inspectNext) => {
+              const previous = Number(process.env.BASALT_RELEASE_ATTEMPT?.slice(-12) ?? 1);
+              process.env.BASALT_RELEASE_ATTEMPT = `00000000-0000-4000-8000-${String(previous + 1).padStart(12, "0")}`;
+              return evalStack(actualRoot, inspectNext, { stage: settings.ALCHEMY_STAGE });
+            },
+            process.env.NATIVE_STACK_CONTAINER_PROOF,
+          )
+      : previewConnection
+        ? (await import("../release-barrier/preview-connection-proof.mjs")).provePreviewConnection
+        : connectionProof
+          ? (stack) =>
+              connectionProof.proveConnectionPlan(
+                stack,
+                (inspectNext) => {
+                  process.env.BASALT_RELEASE_ATTEMPT = "00000000-0000-4000-8000-000000000002";
+                  return evalStack(actualRoot, inspectNext, { stage: settings.ALCHEMY_STAGE });
+                },
+                process.env.NATIVE_STACK_CONNECTION_CHANGE,
+                process.env.NATIVE_STACK_CONNECTION_TARGET,
+              )
+          : process.env.NATIVE_STACK_RELEASE_PROOF === "true"
+            ? (await import("../release-phases/proof.mjs")).proveReleasePhases
+            : (stack) =>
+                Effect.sync(() =>
+                  inventoryDeclarations(
+                    Object.values(stack.resources),
+                    stack.bindings,
+                    Output.isOutput,
+                  ),
+                );
   const program = evalStack(
     actualRoot,
     (stack) =>

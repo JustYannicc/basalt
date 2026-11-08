@@ -4,6 +4,7 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
+    "gc:upstream": "node scripts/upstream-gc.ts",
     "prepare:upstream": "node scripts/prepare-upstream.ts",
     "batch-preflight": "node scripts/batch-preflight.ts",
     "ci:fast": "node scripts/ci/fast-local.ts",

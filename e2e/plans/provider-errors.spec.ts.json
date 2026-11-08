@@ -70,18 +70,10 @@
     }
   },
   "runs": {
-    "providerErrorsGraphql": [
-      "declared:self-host"
-    ],
-    "providerErrorsMcp": [
-      "declared:self-host"
-    ],
-    "providerErrorsOpenapi": [
-      "declared:self-host"
-    ],
-    "providerErrorsCustom": [
-      "declared:self-host"
-    ]
+    "providerErrorsGraphql": ["declared:self-host"],
+    "providerErrorsMcp": ["declared:self-host"],
+    "providerErrorsOpenapi": ["declared:self-host"],
+    "providerErrorsCustom": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/contracts/auth.ts",
@@ -121,6 +113,9 @@
     ".upstream/packages/ui/src/contracts/account-title.ts",
     ".upstream/packages/ui/src/implementation/dashboard/account-row-health.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/accounts-client.tsx",
-    ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx"
+    ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx",
+    ".upstream/apps/hosted/web/src/contracts/app-discovery.ts",
+    ".upstream/apps/hosted/web/src/contracts/tool-availability.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-tools.tsx"
   ]
 }

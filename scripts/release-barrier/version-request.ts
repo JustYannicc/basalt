@@ -2,7 +2,10 @@ import type * as Workers from "@distilled.cloud/cloudflare/workers";
 import type { PreparedWorkerUpload } from "alchemy/Cloudflare/Workers/WorkerUploadHook";
 import { declaredMismatch } from "./declared-refusal.ts";
 import { havePropsChanged } from "alchemy/Diff";
+import { assertScriptSettings, settingsRefusal } from "./script-settings.ts";
+import type { ActiveWorkerPlacement } from "./script-placement.ts";
 import { canonical, digest, type FrozenWorker } from "./manifest.ts";
+import { repairComparisonSettings, type PendingPlacementRepair } from "./pending-placement.ts";
 
 const globalProps = [
   "observability",
@@ -43,42 +46,13 @@ const refusal = (
 ) => {
   throw declaredMismatch(reason, upload.fqn, expected, observed, "Cloudflare.Worker");
 };
-const sorted = (items: readonly string[]) => [...new Set(items)].sort();
-const localClasses = (
-  bindings: readonly { type: string; className?: string | null; scriptName?: string | null }[],
-  name: string,
-) =>
-  sorted(
-    bindings.flatMap((binding) =>
-      binding.type === "durable_object_namespace" &&
-      binding.className &&
-      (!binding.scriptName || binding.scriptName === name)
-        ? [binding.className]
-        : [],
-    ),
-  );
-
-const matchesSpecified = (desired: unknown, observed: unknown): boolean => {
-  if (Array.isArray(desired))
-    return (
-      Array.isArray(observed) &&
-      desired.length === observed.length &&
-      desired.every((value, index) => matchesSpecified(value, observed[index]))
-    );
-  if (desired !== null && typeof desired === "object")
-    return (
-      observed !== null &&
-      typeof observed === "object" &&
-      Object.entries(desired).every(
-        ([key, value]) =>
-          value === undefined || matchesSpecified(value, Reflect.get(observed, key)),
-      )
-    );
-  return Object.is(desired, observed);
-};
-
 /** Versions cannot carry migrations or change script-level settings. Refuse rather than silently omit an intended change. */
-export function versionMetadata(upload: PreparedWorkerUpload): Workers.PutScriptMetadata {
+export function versionMetadata(
+  upload: PreparedWorkerUpload,
+  versions: readonly ActiveWorkerPlacement[] = [],
+  baseline: readonly { versionId: string }[] = [],
+  repair?: PendingPlacementRepair,
+): Workers.PutScriptMetadata {
   const { metadata, scriptName } = upload.request;
   const observed = upload.previousSettings;
   if (!observed || !upload.previousProps)
@@ -139,58 +113,24 @@ export function versionMetadata(upload: PreparedWorkerUpload): Workers.PutScript
         },
       );
   }
-  if (
-    canonical(localClasses(metadata.bindings ?? [], scriptName)) !==
-    canonical(localClasses(observed!.bindings ?? [], scriptName))
-  )
-    refusal(
-      "durable-object-class-drift",
-      upload,
-      { localClassSetHash: digest(canonical(localClasses(observed!.bindings ?? [], scriptName))) },
-      { localClassSetHash: digest(canonical(localClasses(metadata.bindings ?? [], scriptName))) },
+  const changed = globalProps.filter((key) =>
+    havePropsChanged({ value: upload.previousProps![key] }, { value: upload.props[key] }),
+  );
+  if (changed.length)
+    throw settingsRefusal(
+      "script-settings-change",
+      upload.fqn,
+      Object.fromEntries(changed.map((key) => [key, upload.previousProps![key]])),
+      Object.fromEntries(changed.map((key) => [key, upload.props[key]])),
     );
-  for (const key of globalProps) {
-    if (havePropsChanged({ value: upload.previousProps![key] }, { value: upload.props[key] }))
-      refusal(
-        "script-settings-change",
-        upload,
-        { [key]: upload.previousProps![key] },
-        { [key]: upload.props[key] },
-      );
-  }
-  const tags = (values: readonly string[]) =>
-    sorted(values.filter((tag) => !tag.startsWith("alchemy:migration-tag:")));
-  if (canonical(tags(metadata.tags ?? [])) !== canonical(tags(observed!.tags ?? [])))
-    refusal(
-      "script-tags-drift",
-      upload,
-      { tags: tags(observed!.tags ?? []) },
-      { tags: tags(metadata.tags ?? []) },
-    );
-  if ((metadata.streamingTailConsumers?.length ?? 0) > 0)
-    refusal(
-      "unobservable-streaming-tail-settings",
-      upload,
-      { streamingTailConsumers: [] },
-      { streamingTailConsumers: metadata.streamingTailConsumers },
-    );
-  for (const key of ["limits", "placement", "observability"] as const) {
-    if (metadata[key] != null && !matchesSpecified(metadata[key], observed![key]))
-      refusal("script-settings-drift", upload, { [key]: observed![key] }, { [key]: metadata[key] });
-  }
-  if (
-    (metadata.logpush ?? false) !== (observed!.logpush ?? false) ||
-    havePropsChanged(
-      { value: metadata.tailConsumers ?? [] },
-      { value: observed!.tailConsumers ?? [] },
-    )
-  )
-    refusal(
-      "script-settings-drift",
-      upload,
-      { logpush: observed!.logpush ?? false, tailConsumers: observed!.tailConsumers ?? [] },
-      { logpush: metadata.logpush ?? false, tailConsumers: metadata.tailConsumers ?? [] },
-    );
+  assertScriptSettings(
+    upload.fqn,
+    scriptName,
+    metadata,
+    repair ? repairComparisonSettings(observed!, repair) : observed!,
+    versions,
+    baseline,
+  );
   if (metadata.bindings?.some((binding) => binding.name === "BASALT_RELEASE_ATTEMPT"))
     refusal(
       "attempt-value-in-worker",
@@ -205,6 +145,10 @@ export function versionMetadata(upload: PreparedWorkerUpload): Workers.PutScript
       },
     );
   return {
+    // Placement is version-scoped even when declarations are unchanged.
+    placement: metadata.placement,
+    limits: metadata.limits,
+    observability: metadata.observability,
     annotations: metadata.annotations,
     mainModule: metadata.mainModule,
     bindings: metadata.bindings,
@@ -221,10 +165,18 @@ export function versionMetadata(upload: PreparedWorkerUpload): Workers.PutScript
 export async function freezeUpload(
   upload: PreparedWorkerUpload,
   baseline: FrozenWorker["baseline"],
+  versions: readonly ActiveWorkerPlacement[] = [],
+  repair?: PendingPlacementRepair,
 ): Promise<FrozenWorker> {
   const raw = upload.request.files;
   const files = raw === undefined ? [] : Array.isArray(raw) ? raw : [raw];
-  const metadata = versionMetadata(upload);
+  const metadata = versionMetadata(upload, versions, baseline, repair);
+  const baselineBinding =
+    upload.fqn === "PoolWorker"
+      ? upload.previousSettings?.bindings?.find(
+          (binding) => binding.name === "POOL_IMAGE_HASH" && binding.type === "plain_text",
+        )
+      : undefined;
   return {
     id: upload.fqn,
     accountId: upload.request.accountId,
@@ -248,6 +200,10 @@ export async function freezeUpload(
       }),
     ),
     baseline,
+    ...(baselineBinding?.type === "plain_text" && baselineBinding.text
+      ? { baselineImageHash: baselineBinding.text }
+      : {}),
+    ...(repair ? { pendingPlacementRepair: repair } : {}),
   };
 }
 

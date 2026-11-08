@@ -10,10 +10,16 @@ const upstream = fileURLToPath(new URL("../../.upstream/", import.meta.url));
 const load = (path: string) => import(pathToFileURL(resolve(upstream, path)).href);
 const implementation = "packages/sdk/src/implementation/";
 const { identifyProvider } = await load(`${implementation}provider.ts`);
-const { chooseProviderIds, previousRequirements } = await load(`${implementation}apps.ts`);
+const { previousRequirements } = await load(`${implementation}apps.ts`);
+const { chooseProviderIds, storeProviders } = await load(`${implementation}provider-continuity.ts`);
 
 type Definition = { name: string; auth: Record<string, Record<string, unknown>>; hosts?: string[] };
-type Identified = { identity: string; legacy: string };
+type Identified = {
+  identity: string;
+  legacy: string;
+  definition: Definition;
+  shared: Omit<Definition, "hosts">;
+};
 
 const crypto = Crypto.make({
   randomBytes: (size) => new Uint8Array(size),
@@ -31,7 +37,11 @@ const fields = (token: Record<string, unknown> = { type: "string" }) => ({
 const slack = (options: { label?: string; token?: Record<string, unknown> } = {}): Definition => ({
   name: "Slack",
   auth: {
-    token: { type: "secrets", label: options.label ?? "Bot or user token (xoxb-/xoxp-)", fields: fields(options.token) },
+    token: {
+      type: "secrets",
+      label: options.label ?? "Bot or user token (xoxb-/xoxp-)",
+      fields: fields(options.token),
+    },
     oauth: {
       type: "oauth2",
       authorizationUrl: "https://slack.com/oauth/v2/authorize",
@@ -46,7 +56,9 @@ test("rewording a label or a field's title and description keeps the identity", 
   const base = await identify(slack());
   assert.equal((await identify(slack({ label: "Paste a token" }))).identity, base.identity);
   const described = await identify(
-    slack({ token: { type: "string", title: "Token", description: "From your Slack app settings" } }),
+    slack({
+      token: { type: "string", title: "Token", description: "From your Slack app settings" },
+    }),
   );
   assert.equal(described.identity, base.identity);
   // The ID earlier versions derived still covers the label, so stored rows keep theirs.
@@ -99,7 +111,9 @@ test("a field named title or description is part of the identity", async () => {
     name: "Notes",
     auth: { key: { type: "secrets", label: "Key", fields: { type: "object", properties } } },
   });
-  const both = await identify(named({ title: { type: "string" }, description: { type: "string" } }));
+  const both = await identify(
+    named({ title: { type: "string" }, description: { type: "string" } }),
+  );
   const one = await identify(named({ title: { type: "string" } }));
   const other = await identify(named({ heading: { type: "string" } }));
   assert.notEqual(both.identity, one.identity);
@@ -198,13 +212,20 @@ test("a build for an app keeps the IDs of that app's active version", async () =
     findFirst: (table: string) => Effect.succeed(present ? (rows[table] ?? null) : null),
   });
   const input = { app: "app_example", owner: "organization:example" };
-  const previous = (await Effect.runPromise(previousRequirements(db(true), input))) as
-    Record<string, { provider: string }>;
+  const previous = (await Effect.runPromise(previousRequirements(db(true), input))) as Record<
+    string,
+    { provider: string }
+  >;
   assert.equal(previous.slack!.provider, "prv_stored");
   // Those requirements are what keeps the ID through a reword.
   const reworded = await identify(slack({ label: "Paste a token" }));
   const chosen = await Effect.runPromise(
-    chooseProviderIds({ findMany: () => Effect.succeed([]) }, crypto, [{ slot: "slack", provider: reworded }], previous),
+    chooseProviderIds(
+      { findMany: () => Effect.succeed([]) },
+      crypto,
+      [{ slot: "slack", provider: reworded }],
+      previous,
+    ),
   );
   assert.equal((chosen as { provider: { id: string } }[])[0]!.provider.id, "prv_stored");
   // An app that is gone keeps none, as a new app's deploy would.
@@ -213,13 +234,61 @@ test("a build for an app keeps the IDs of that app's active version", async () =
 
 test("deploys and catalog checks choose IDs the same way", () => {
   const apps = readFileSync(resolve(upstream, `${implementation}apps.ts`), "utf8");
-  assert.match(apps, /const entries = yield\* chooseProviderIds\(db, crypto, identified, options\.previous\)/);
+  assert.match(
+    apps,
+    /const entries = yield\* chooseProviderIds\(db, crypto, identified, options\.previous\)/,
+  );
   assert.match(apps, /previous === undefined \? \{\} : \{ previous: previous\.accounts \}/);
-  assert.match(apps, /yield\* previousRequirements\(db, \{ app: input\.app, owner: input\.owner \}\)/);
-  assert.match(apps, /create: \{ id: provider\.id, definition \}/);
+  assert.match(
+    apps,
+    /yield\* previousRequirements\(db, \{ app: input\.app, owner: input\.owner \}\)/,
+  );
   const catalog = readFileSync(
     resolve(upstream, "apps/hosted/server/src/implementation/catalog-app-defaults.ts"),
     "utf8",
   );
-  assert.match(catalog, /executor\.apps\.build\(\{ owner, name: app\.name, files, app: app\.id \}\)/);
+  assert.match(
+    catalog,
+    /executor\.apps\.build\(\{ owner, name: app\.name, files, app: app\.id \}\)/,
+  );
+});
+
+test("redeploying an older app keeps its provider ref and another app's added methods", async () => {
+  const definition = slack();
+  const added = { ...definition, auth: { ...definition.auth, alternate: definition.auth.token! } };
+  const stored = new Map<string, Definition>([["prv_saved", added]]);
+  type Options = {
+    where: (condition: (field: string, op: string, id: string) => string) => string;
+  };
+  const db = {
+    findFirst: (_table: string, options: Options) => {
+      const id = options.where((_field, _op, value) => value);
+      const definition = stored.get(id);
+      return Effect.succeed(definition === undefined ? null : { id, definition });
+    },
+    upsert: (
+      _table: string,
+      options: Options & {
+        create: { id: string; definition: Definition };
+        update: { definition?: Definition };
+      },
+    ) => {
+      const id = options.where((_field, _op, value) => value);
+      const definition = stored.has(id) ? options.update.definition : options.create.definition;
+      if (definition !== undefined) stored.set(id, definition);
+      return Effect.void;
+    },
+    lockProvider: () => Effect.void,
+  };
+  const identified = await identify(definition);
+  const chosen = await Effect.runPromise(
+    chooseProviderIds(db, crypto, [{ slot: "slack", provider: identified }], {
+      slack: { provider: "prv_saved", definition },
+    }),
+  );
+  const persisted = (await Effect.runPromise(storeProviders(db, crypto, chosen))) as {
+    provider: { id: string };
+  }[];
+  assert.equal(persisted[0]!.provider.id, "prv_saved");
+  assert.deepEqual(stored.get("prv_saved"), added);
 });

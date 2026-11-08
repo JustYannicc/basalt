@@ -1,0 +1,15 @@
+diff --git a/packages/sdk/src/implementation/account-targets.ts b/packages/sdk/src/implementation/account-targets.ts
+index cabfe09..592cd70 100644
+--- a/packages/sdk/src/implementation/account-targets.ts
++++ b/packages/sdk/src/implementation/account-targets.ts
+@@ -229,8 +229,8 @@ export const makeAccountTargets = (db: Query, host: MachineAccounts | undefined)
+       if (local.length === 0) return undefined;
+       yield* input.authorize;
+       for (const binding of local) {
+-        const result = yield* executionFor(binding);
+-        if (result === undefined || !result.allowed)
++        const result = (yield* executionFor(binding))!;
++        if (!result.allowed)
+           return yield* new AccountExecutionUnavailable({
+             account: binding.account,
+             reason: "host_unavailable",

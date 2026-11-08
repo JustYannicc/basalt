@@ -3,8 +3,8 @@
   "publishedUrl": "https://catalog.executor.sh/apps/gitlab.json",
   "snapshotCaptured": "2026-10-30",
   "publishedSha256": "ce0d3cbcd957fa628db8b664959ed3d7fbf6fd6a55d3313e50c58670d2f2eb0e",
-  "carriedSha256": "235f54b9b3b07e45061ffefc7edd2fe96dd99e606f062ffaee418d037a5d77ad",
-  "patchSha256": "28a9984fa45f362aece67dd34dbe40d6dfa2dde8b5a2b59d1c158130efc6d55b",
+  "carriedSha256": "cf86e83dd4fe0be825862e8f9c583c0541622404b76f62ce11b8f7c9161580f3",
+  "patchSha256": "5c0e8d41276f677a9a99450a9859fe91fae05fb4cf02c202150c86bd2b7973ab",
   "publishedFileSha256": {
     "README.md": "1d71a6b392c94589298761e65c027e32cfd4f2744f480ca06de629b9610524ab",
     "icon.ts": "3616da179930ca6520afadd61f0788b6762757c628a1efc2653527a38311a9de",
@@ -13,13 +13,14 @@
     "package.json": "798d3ab35fc4db71eeda23e403aab32047a88a4a11f53c7ccd4d625e28f4b3e9"
   },
   "carriedFileSha256": {
-    "README.md": "508b214c54328509fc3577aa45da1a1f12b982338ec6f60b17e08bfe00e0fa58",
+    "README.md": "624302c7e4a9072b8d9db4ba65fbfd45e051e2300c62f4305124dfb27241a341",
     "icon.ts": "3616da179930ca6520afadd61f0788b6762757c628a1efc2653527a38311a9de",
-    "index.ts": "8a74353b55f1ed4934224eff42ec63662a35fc90e766b531c736e1f28dfb9784",
+    "index.ts": "3f6ae208637034942df8f975d94a2c0d58dc385a10d8d423891610c32af0032a",
     "openapi.ts": "dd31bb58d7708cca94717c9ff52ab17258afefb49f0ce903833ce21561de223d",
-    "package.json": "85800c79b4d190d19e1eb0ca392be041e3765c0ec2b636f5fcba27175a8b1ad8"
+    "package.json": "66e2ec5907de15b1868b6645828baf897a15b3ade6d5f9ebf2781135da2787ab",
+    "mcp.ts": "0ce2e5b9c50e7cfe369b1bb641f9e224bd1ea77182bc6a430cdbdee05c55770b"
   },
-  "appsVersion": "0.0.1-beta.104-basalt.10",
+  "appsVersion": "0.0.1-beta.104-basalt.11",
   "license": "Not declared in the published package",
   "siteConfiguration": {
     "kind": "native-account-origin",

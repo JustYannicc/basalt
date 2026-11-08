@@ -7,11 +7,11 @@
     },
     {
       "path": "README.md",
-      "content": "# GitLab MCP\n\nConnect the tools exposed by a GitLab MCP server. Enter your instance\u2019s HTTPS origin. The server must enable GitLab\u2019s MCP feature and support HTTP transport, introduced in GitLab 18.6.\n\nFor OAuth, register a confidential application on that instance with the callback shown by the connection form and the `mcp` scope. Enter its client credentials when connecting. The shared GitLab REST client is not eligible for this scope.\n\nAlternatively use a fine-grained personal access token with MCP tool Execute permission. Legacy personal, project and group tokens are not supported by GitLab\u2019s MCP server. Every tool call requires approval because server tool annotations are not an authorization boundary.\n\nThe REST GitLab app remains available independently. This app does not enable the server feature or change instance settings.\n"
+      "content": "# GitLab MCP\n\nConnect the tools exposed by a GitLab MCP server. Enter your instance’s HTTPS origin. The server must enable GitLab’s MCP feature and support HTTP transport, introduced in GitLab 18.6.\n\nFor OAuth, register a confidential application on that instance with the callback shown by the connection form and the `mcp` scope. Enter its client credentials when connecting. The shared GitLab REST client is not eligible for this scope.\n\nAlternatively use a fine-grained personal access token with MCP tool Execute permission. Legacy personal, project and group tokens are not supported by GitLab’s MCP server. Every tool call requires approval because server tool annotations are not an authorization boundary.\n\nThe REST GitLab app remains available independently. This app does not enable the server feature or change instance settings.\n"
     },
     {
       "path": "package.json",
-      "content": "{\n  \"name\": \"@signalbox/gitlab-mcp\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.10\",\n    \"@modelcontextprotocol/sdk\": \"1.32.1\"\n  }\n}\n"
+      "content": "{\n  \"name\": \"@signalbox/gitlab-mcp\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.11\",\n    \"@modelcontextprotocol/sdk\": \"1.32.1\"\n  }\n}\n"
     },
     {
       "path": "icon.ts",

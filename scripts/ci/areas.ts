@@ -19,6 +19,9 @@ const accounts = [
   "pool-inventory",
   "slack-health",
   "gitlab-connectors",
+  "workos-sign-in",
+  "gitlab-sign-in",
+  "clerk-sign-in",
   "vercel-sign-in",
   "elevenlabs-sign-in",
   "mcp-apps",
@@ -57,6 +60,9 @@ export const heavyJobs = [
   "dashboard-batch",
   "aws-connectors",
   "gitlab-connectors",
+  "workos-sign-in",
+  "gitlab-sign-in",
+  "clerk-sign-in",
   "vercel-sign-in",
   "elevenlabs-sign-in",
   "mcp-apps",
@@ -107,6 +113,12 @@ export const sharedInputs = [
 ];
 
 export const areas = [
+  {
+    paths: ["e2e/workos-sign-in.mjs", "e2e/management-signin/**"],
+    jobs: ["workos-sign-in", "clerk-sign-in"],
+  },
+  { paths: ["e2e/clerk-sign-in.mjs", "e2e/clerk-signin/**"], jobs: ["clerk-sign-in"] },
+  { paths: ["e2e/gitlab-sign-in.mjs", "e2e/gitlab-signin/**"], jobs: ["gitlab-sign-in"] },
   { paths: ["clients/**"], jobs: ["client-mobile", "client-desktop", "client-native-product"] },
   {
     paths: ["src/tunnel/**", "e2e/native-*", ".upstream/**/{client-grants,device-authorization}*"],
@@ -127,8 +139,21 @@ export const areas = [
     jobs: accounts,
   },
   {
+    paths: ["e2e/zoho-people*.mjs"],
+    jobs: ["catalog-compat"],
+  },
+  {
     paths: ["src/catalog/slack.json", "e2e/slack*/**", "e2e/slack*.mjs", ".upstream/**/slack*/**"],
     jobs: ["slack-health"],
+  },
+  {
+    paths: [
+      "e2e/oauth-renewal-recovery.mjs",
+      "e2e/oauth-renewal-recovery/**",
+      ".upstream/packages/sdk/src/contracts/oauth-failure-evidence.ts",
+      ".upstream/packages/ui/src/contracts/account-check-recovery.ts",
+    ],
+    jobs: ["oauth-account-regressions"],
   },
   {
     paths: [

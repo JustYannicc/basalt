@@ -6,10 +6,10 @@
  **Auth**
 -- OAuth (`oauth`, first): the MCP server's own authorization server, discovered from its protected-resource metadata. It supports dynamic client registration and Client ID Metadata Documents, so no public integration has to be created. Its tokens only work on the MCP server, so these accounts get the `mcp` tools. Health check: an MCP initialize and tool listing.
 -- Internal integration secret (`token`): create an internal integration at https://www.notion.so/profile/integrations, copy its secret, and share the pages or databases it should reach with the integration. The hosted MCP server does not take it, so these accounts get the `api` tools. Health check: `GET /v1/users/me`.
-+- OAuth (`oauth`, first): the MCP server's own authorization server, discovered from its protected-resource metadata. It supports dynamic client registration and Client ID Metadata Documents, so no public integration has to be created. Its tokens only work on the MCP server, so these accounts get the `mcp` tools. Health check: MCP initialization and tool listing verify the credentials, then a best-effort read-only `notion-get-self` lookup reports `bot.workspace_name` as the account display name. A failed lookup leaves the verified account healthy; OAuth tokens never go to REST.
++- OAuth (`oauth`, first): the MCP server's own authorization server, discovered from its protected-resource metadata. It supports dynamic client registration and Client ID Metadata Documents, so no public integration has to be created. Its tokens only work on the MCP server, so these accounts get the `mcp` tools. Health check: MCP initialization and tool listing verify the credentials, then a best-effort read-only `notion-get-self` lookup reports the connected workspace's name as the account display name, or the person's email when the workspace has no name. A failed lookup leaves the verified account healthy; OAuth tokens never go to REST.
 +- Internal integration secret (`token`): create an internal integration at https://www.notion.so/profile/integrations, copy its secret, and share the pages or databases it should reach with the integration. The hosted MCP server does not take it, so these accounts get the `api` tools. Health check: `GET /v1/users/me` reports the bot ID and `bot.workspace_name` as the account display name.
 +
-+Both methods omit absent, null, blank or non-string workspace names. Names are trimmed and limited to 255 characters.
++Both methods omit absent, null, blank or non-string workspace names. Names are trimmed and limited to 255 characters; a longer email is omitted rather than cut.
 
  The earlier OAuth method on api.notion.com's own endpoints is gone: it needed a user-created public integration.
 
@@ -67,13 +67,13 @@
    },
    "dependencies": {
 -    "apps": "0.0.1-beta.100",
-+    "apps": "0.0.1-beta.104-basalt.10",
++    "apps": "0.0.1-beta.104-basalt.11",
      "@modelcontextprotocol/sdk": "1.32.1"
    }
  }
 --- /dev/null
 +++ b/health.ts
-@@ -0,0 +1,184 @@
+@@ -0,0 +1,214 @@
 +import { decodeJson, json, object, string, type AccountCheckContext, type AuthMethods } from "apps";
 +
 +const botUser = object({
@@ -81,16 +81,46 @@
 +  bot: json().optional(),
 +});
 +
-+/** Both Notion account methods report the workspace rather than the bot's name. */
++/** `notion-get-self`'s answer: the connected workspace and the person who connected it. */
++const connection = object({
++  workspace: json().optional(),
++  user: object({ id: string(), email: json().optional() }),
++});
++
++/** A field of a JSON object, trimmed; undefined when blank, not text, or not an object's. */
++function text(value: unknown, key: string) {
++  const field =
++    value !== null && typeof value === "object" && !Array.isArray(value)
++      ? Object.entries(value).find(([name]) => name === key)?.[1]
++      : undefined;
++  return typeof field === "string" && field.trim() ? field.trim() : undefined;
++}
++
++/** An internal integration names its workspace on its bot user, from REST `users/me`. */
 +export async function botAccountInfo(response: Response) {
 +  const me = await decodeJson(response, botUser);
-+  const bot = me.bot;
-+  const name =
-+    bot !== null && typeof bot === "object" && !Array.isArray(bot) && "workspace_name" in bot
-+      ? bot.workspace_name
-+      : undefined;
-+  const displayName = typeof name === "string" ? name.trim().slice(0, 255) : undefined;
++  const displayName = text(me.bot, "workspace_name")?.slice(0, 255);
 +  return { externalId: me.id, ...(displayName ? { displayName } : {}) };
++}
++
++/**
++ * A signed-in account is the person in a workspace: the workspace names it, else the person's
++ * email, and never an id. A cut email would name someone else, so a longer one is left out, as is
++ * an id the host would reject, so an unusual answer never fails a verified account.
++ */
++async function selfAccountInfo(value: unknown) {
++  const self = await decodeJson(Response.json(value), connection);
++  const displayName = text(self.workspace, "name")?.slice(0, 255);
++  const email = text(self.user, "email");
++  const id = self.user.id;
++  return {
++    ...(id.length > 0 && id.length <= 255 ? { externalId: id } : {}),
++    ...(displayName
++      ? { displayName }
++      : email !== undefined && email.length <= 255
++        ? { email }
++        : {}),
++  };
 +}
 +
 +type Check = {
@@ -233,7 +263,7 @@
 +    ];
 +    for (const value of values) {
 +      try {
-+        return await botAccountInfo(Response.json(value));
++        return await selfAccountInfo(value);
 +      } catch {
 +        /* Try the next text block. */
 +      }

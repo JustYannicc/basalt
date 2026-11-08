@@ -1,3 +1,4 @@
+import { ServingFailure } from "./serving-failure.ts";
 import { operationFailure, ReleaseOperationFailure } from "./operation-failure.ts";
 import { appendFile, chmod, mkdir, rename, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -139,6 +140,7 @@ export function releaseEvidence(directory: string, candidate: string, encryption
         ...(latest?.containers ? { containers: latest.containers } : {}),
         ...(latest?.pendingContainer ? { pendingContainer: latest.pendingContainer } : {}),
         reason: refusal.reason,
+        ...(refusal instanceof ServingFailure ? { serving: refusal.serving } : {}),
         ...(refusal instanceof ReleaseOperationFailure
           ? { operation: refusal.operation, provider: refusal.provider }
           : {}),

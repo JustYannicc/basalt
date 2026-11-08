@@ -24,11 +24,12 @@ import {
 import AppPages from "./.upstream/apps/hosted/cloud/src/app-ui.ts";
 import { Api } from "./.upstream/apps/hosted/cloud/src/infrastructure/api-worker.ts";
 import { stackState } from "./.upstream/apps/hosted/cloud/src/infrastructure/state.ts";
+import { releaseStackState } from "./scripts/release-barrier/read-only-state.ts";
 import { previewDatabase } from "./.upstream/apps/hosted/cloud/src/infrastructure/preview-database.ts";
 
 export default Alchemy.Stack(
   "basalt",
-  { providers: cloudProviders, state: stackState },
+  { providers: cloudProviders, state: releaseStackState(stackState) },
   Effect.gen(function* () {
     const { accountId } = yield* yield* Cloudflare.CloudflareEnvironment;
     const stage = yield* Stage;

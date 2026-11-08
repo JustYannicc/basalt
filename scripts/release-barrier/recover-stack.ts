@@ -236,7 +236,8 @@ export const recoverStack = (
                               connect: containerRecovery.connect,
                             },
                             deployment === "baseline"
-                              ? container.baselineInputHash
+                              ? (parsed.workers.find((worker) => worker.id === "PoolWorker")
+                                  ?.baselineImageHash ?? container.baselineInputHash)
                               : container.inputHash,
                           ),
                         );

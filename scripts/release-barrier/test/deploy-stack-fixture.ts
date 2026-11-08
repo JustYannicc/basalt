@@ -1,3 +1,5 @@
+import { placementRepairFixture } from "./placement-repair-fixture.ts";
+import { uploadVersion } from "../cloudflare.ts";
 import { CloudflareHttpError } from "@distilled.cloud/cloudflare/Errors";
 import assert from "node:assert/strict";
 import { Stack, evalStack } from "alchemy/Stack";
@@ -27,6 +29,11 @@ const FixtureWorker = Resource<FixtureWorker>("Cloudflare.Worker");
 
 export const fixture = (
   options: {
+    placementRepair?: boolean;
+    latestSettings?: boolean;
+    previousUpload?: boolean;
+    settingsDrift?: boolean;
+    deploymentDrift?: boolean;
     baselineError?: CloudflareHttpError;
     baseline?: typeof import("../cloudflare.ts").readBaseline;
     extraWorkers?: readonly string[];
@@ -44,6 +51,7 @@ export const fixture = (
 ) => {
   const events: string[] = [],
     receipts: BarrierReceipt[] = [];
+  const repair = options.placementRepair ? placementRepairFixture(events, options) : undefined;
   let writes = 0;
   let failOrdinary = false;
   let seededStatus: string | undefined;
@@ -60,7 +68,10 @@ export const fixture = (
         if (Option.isSome(hook)) {
           if (options.preparationError && input.id === "Api")
             return yield* Effect.fail(options.preparationError);
-          const upload = preparedUpload(input.id);
+          const initialUpload = preparedUpload(input.id);
+          const upload = repair
+            ? yield* repair.prepare(initialUpload).pipe(Effect.provide(repair.services))
+            : initialUpload;
           if (options.freezeError && input.id === "Api") {
             const file = new File(["fixture"], "main.js");
             file.arrayBuffer = async () => {
@@ -74,6 +85,7 @@ export const fixture = (
             proposed: result,
             activate: (version) =>
               Effect.sync(() => {
+                repair?.activate(input.id);
                 events.push(`activate:${input.id}:${version}`);
                 return result;
               }),
@@ -116,7 +128,7 @@ export const fixture = (
   );
   const stack = Stack(
     "fixture",
-    { providers: Layer.mergeAll(workers, commands), state },
+    { providers: Layer.mergeAll(workers, commands, repair?.services ?? Layer.empty), state },
     Effect.gen(function* () {
       const namespace = options.namespace
         ? yield* Command.Exec("AppSourceNamespace", {
@@ -209,12 +221,18 @@ export const fixture = (
               ((worker) =>
                 options.baselineError && worker.scriptName === "Api"
                   ? Effect.fail(options.baselineError)
-                  : Effect.succeed([{ versionId: "previous", percentage: 100 }])),
+                  : Effect.succeed(
+                      repair?.baseline(worker.scriptName) ?? [
+                        { versionId: "previous", percentage: 100 },
+                      ],
+                    )),
             upload: (worker) =>
-              Effect.sync(() => {
+              Effect.gen(function* () {
                 events.push(`validate:${worker.id}`);
                 if (options.reject && worker.id === "Router")
                   throw new Error("provider refuses Router");
+                if (repair && options.latestSettings && worker.id === "Api")
+                  return yield* uploadVersion(worker);
                 return { versionId: `accepted-${worker.id}`, startupTimeMs: 100 };
               }),
           },

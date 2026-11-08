@@ -1,0 +1,7 @@
+model {
+  extend basalt.deployment {
+    metadata {
+      constraint "Alchemy state-store version 8 preserves deployment access and adds independently revocable reader grants, enforced on each GET for one exact stack and stage. The direct reader checks the deployed version and never enters state-store bootstrap or credential refresh. Release planning uses Plan.make and the shared admission policy without shadow apply, publication, upload or Command execution. Production reader installation precedes required batch/main CI activation; older bootstrapping clients must not downgrade the server."
+    }
+  }
+}

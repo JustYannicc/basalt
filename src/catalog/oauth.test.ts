@@ -18,14 +18,16 @@ test("reviewed carried sources match the packages the catalog serves", async () 
   const reviews = oauthReviews(reviewData);
   for (const id of [
     "atlassian",
+    "clerk",
     "aws",
     "elevenlabs",
     "gitlab",
-    "gitlab-mcp",
     "miro",
     "notion",
     "slack",
     "vercel",
+    "workos",
+    "zoho-people",
   ]) {
     const response = await handleCatalog(
       new Request(`https://${brand.host}/catalog/apps/${id}.json`),
@@ -316,14 +318,44 @@ test("the public catalog keeps Vercel sign-in beside exact-method connection gui
   assert.equal(feed.apps.find((app) => app.id === "spotify")?.oauthDeferrals?.[0]?.method, "oauth");
 });
 
-test("GitLab MCP declares manual client setup while keeping its OAuth method available", async () => {
-  const review = oauthReviews(reviewData).find((item) => item.entry === "gitlab-mcp");
-  assert.ok(review);
-  assert.equal(review.methods.oauth?.kind, "deferred");
-  assert.ok(review.sourceSha256);
-  const response = await handleCatalog(
-    new Request(`https://${brand.host}/catalog/apps/gitlab-mcp.json`),
+test("GitLab sign-in falls back to an own app only where the instance offers no registration", () => {
+  const reviews = oauthReviews(reviewData);
+  const review = reviews.find((item) => item.entry === "gitlab");
+  assert.equal(review?.methods.mcp?.kind, "deferred");
+  assert.equal(review?.methods.oauth?.kind, "hosted");
+  assert.equal(
+    reviews.some((item) => item.entry === "gitlab-mcp"),
+    false,
   );
-  assert.equal(response.status, 200);
-  assert.equal(catalogDocumentSha256(await response.json()), review.sourceSha256);
+});
+
+test("account endpoint reviews bind source without inventing fixed OAuth metadata", () => {
+  const app = entry("private-endpoint");
+  const input = {
+    version: 1,
+    entries: [
+      {
+        entry: app.id,
+        package: app.package,
+        sourceSha256: sha,
+        methods: { oauth: { kind: "account-endpoint", message: "Enter your private server URL." } },
+      },
+    ],
+  };
+  const classified = oauthReviews(input);
+  const data = {
+    sources: new Map([[app.id, sha]]),
+    hostedClients: new Set<string>(),
+    metadata: new Map(),
+  };
+  assert.deepEqual(oauthFitness({ version: 1, apps: [app] }, classified, data), []);
+  assert.deepEqual(withOAuthDeferrals({ version: 1, apps: [app] }, classified).apps, [app]);
+  assert.match(
+    oauthFitness({ version: 1, apps: [app] }, classified, { ...data, sources: new Map() }).join(),
+    /published source changed/,
+  );
+  assert.throws(
+    () => oauthReviews({ version: 1, entries: [{ ...input.entries[0], sourceSha256: undefined }] }),
+    /reviewed source digest/,
+  );
 });

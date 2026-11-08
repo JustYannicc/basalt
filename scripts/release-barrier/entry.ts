@@ -1,3 +1,6 @@
+import { loadDeclaredChanges } from "./declared-file.ts";
+import { undoForwardAdoption } from "./forward-undo.ts";
+import { resumeForwardRelease } from "./forward-resume.ts";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
@@ -13,7 +16,6 @@ import { openRecovery } from "./recovery-envelope.ts";
 import { canonical, digest, BarrierRefusal } from "./manifest.ts";
 import { reportRefusal } from "./refusal-report.ts";
 import { readRecoveryProgress } from "./recovery-manifest.ts";
-import { loadDeclaredChanges } from "./declared-file.ts";
 
 if (
   process.env.GITHUB_ACTIONS !== "true" ||
@@ -23,15 +25,17 @@ if (
 if (process.env.ALCHEMY_STAGE !== "production")
   throw new Error("Release barrier requires the production stage");
 const args = process.argv.slice(2);
-if (args.length && (args.length !== 3 || args[0] !== "--recover"))
+const undoPath = args[0] === "--undo-forward" && args.length === 2 ? resolve(args[1]!) : undefined;
+if (args.length && !undoPath && (args.length !== 3 || args[0] !== "--recover"))
   throw new Error("Use --recover <manifest.json> <receipt.json>");
-const recoveryDirectory = args.length ? dirname(resolve(args[1]!)) : undefined;
-const recovery = args.length
-  ? {
-      manifest: JSON.parse(await readFile(resolve(args[1]!), "utf8")),
-      receipt: JSON.parse(await readFile(resolve(args[2]!), "utf8")),
-    }
-  : undefined;
+const recoveryDirectory = args[0] === "--recover" ? dirname(resolve(args[1]!)) : undefined;
+const recovery =
+  args[0] === "--recover"
+    ? {
+        manifest: JSON.parse(await readFile(resolve(args[1]!), "utf8")),
+        receipt: JSON.parse(await readFile(resolve(args[2]!), "utf8")),
+      }
+    : undefined;
 const containerRecovery =
   recovery && "containers" in readRecoveryManifest(recovery.manifest)
     ? {
@@ -72,46 +76,56 @@ await evidence.desired(
   ),
 );
 const result = await Effect.runPromiseExit(
-  Effect.gen(function* () {
-    const stack = yield* Effect.promise(
+  Effect.suspend(() =>
+    Effect.promise(
       async () => (await import(new URL("../../alchemy.run.ts", import.meta.url).href)).default,
-    );
-    const declarations = recovery
-      ? undefined
-      : yield* Effect.tryPromise({
-          try: () => loadDeclaredChanges(fileURLToPath(new URL("../../", import.meta.url))),
-          catch: (error) => error,
-        });
-    return yield* evalStack(
-      stack,
-      (compiled) =>
-        (recovery
-          ? recoverStack(
-              compiled,
-              recovery.manifest,
-              recovery.receipt,
-              (value) => evidence.recovery(value),
-              containerRecovery,
-            )
-          : deployStack(compiled, {
-              candidate: process.env.BASALT_RELEASE_CANDIDATE!,
-              declarations,
-              declared: evidence.declared,
-              declaredReadiness: evidence.declaredReadiness,
-              expansion: evidence.expansion,
-              record: evidence.record,
-              publication: evidence.publication,
-              admission: evidence.admission,
-              serving: evidence.serving,
-              manifest: evidence.manifest,
-            })
-        ).pipe(
-          Effect.provideContext(compiled.services),
-          Effect.provideService(State, Context.get(compiled.services, State)),
-        ),
-      { stage: "production" },
-    );
-  }).pipe(withReleaseRuntime),
+    ),
+  ).pipe(
+    Effect.flatMap((stack) =>
+      evalStack(
+        stack,
+        (compiled) =>
+          (undoPath
+            ? undoForwardAdoption(compiled, undoPath)
+            : recovery
+              ? recoverStack(
+                  compiled,
+                  recovery.manifest,
+                  recovery.receipt,
+                  (value) => evidence.recovery(value),
+                  containerRecovery,
+                )
+              : Effect.gen(function* () {
+                  const declarations = yield* Effect.tryPromise({
+                    try: () =>
+                      loadDeclaredChanges(fileURLToPath(new URL("../../", import.meta.url))),
+                    catch: (error) => error,
+                  });
+                  const forward = yield* resumeForwardRelease(compiled, { directory });
+                  return yield* deployStack(compiled, {
+                    candidate: process.env.BASALT_RELEASE_CANDIDATE!,
+                    declarations,
+                    declared: evidence.declared,
+                    declaredReadiness: evidence.declaredReadiness,
+                    expansion: evidence.expansion,
+                    forwardInput: forward?.continuation,
+                    forwardEncryptionKey: process.env.EXECUTOR_ENCRYPTION_KEY,
+                    record: evidence.record,
+                    publication: evidence.publication,
+                    admission: evidence.admission,
+                    serving: evidence.serving,
+                    manifest: evidence.manifest,
+                  });
+                })
+          ).pipe(
+            Effect.provideContext(compiled.services),
+            Effect.provideService(State, Context.get(compiled.services, State)),
+          ),
+        { stage: "production" },
+      ),
+    ),
+    withReleaseRuntime,
+  ),
 );
 if (Exit.isFailure(result)) {
   const error = Cause.squash(result.cause);
@@ -119,8 +133,3 @@ if (Exit.isFailure(result)) {
   await reportRefusal(failure, process.env.GITHUB_STEP_SUMMARY);
   process.exitCode = 1;
 }
-
-await evidence.summary(
-  process.env.GITHUB_STEP_SUMMARY,
-  Exit.isFailure(result) ? "failed" : "complete",
-);

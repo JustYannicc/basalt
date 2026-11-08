@@ -1,17 +1,23 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { baselineInventory, baselineRoles } from "./baseline-probe.ts";
-import { gateErrors, fastJobs, bundleJobs } from "../ci/gate.ts";
-import { heavyJobs } from "../ci/areas.ts";
+import { gateErrors, fastJobs } from "../ci/gate.ts";
+
+const { parse } = createRequire(new URL("../architecture/package.json", import.meta.url))("yaml");
+const workflow = parse(
+  readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"),
+);
 
 const scripts = baselineRoles.map((role) => ({
   id: `basalt-${role.toLowerCase()}-production-fixture`,
+  tags: ["alchemy:stack:basalt", "alchemy:stage:production", `alchemy:id:${role}`],
 }));
 
 test("selected baseline probe must pass the aggregate Check and unselected probes must skip", () => {
   const needs = Object.fromEntries(
-    [...fastJobs, ...heavyJobs, ...bundleJobs].map((job) => [
+    workflow.jobs.check.needs.map((job: string) => [
       job,
       { result: fastJobs.includes(job) ? "success" : "skipped" },
     ]),
@@ -34,13 +40,39 @@ test("baseline inventory covers all live roles and refuses missing, duplicate an
     baselineRoles,
   );
   assert.ok(baselineInventory(scripts).some((worker) => worker.role === "AppOutbound"));
+  const truncated = scripts.map((script) =>
+    script.tags.includes("alchemy:id:ArtifactsCredentials")
+      ? { ...script, id: `basalt-artifactscredentials-pr${"a".repeat(24)}` }
+      : script,
+  );
+  assert.equal(
+    baselineInventory(truncated).find((worker) => worker.role === "ArtifactsCredentials")!
+      .scriptName,
+    `basalt-artifactscredentials-pr${"a".repeat(24)}`,
+  );
+  for (const tag of ["alchemy:id:Other", "alchemy:stage:preview", "alchemy:stack:Other"])
+    assert.throws(
+      () =>
+        baselineInventory([
+          { ...scripts[0]!, tags: [...scripts[0]!.tags, tag] },
+          ...scripts.slice(1),
+        ]),
+      /Api/,
+    );
   assert.throws(
     () => baselineInventory(scripts.filter((script) => !script.id.includes("publicsite"))),
     /PublicSite/,
   );
   assert.throws(() => baselineInventory([...scripts, scripts[0]!]), /Api/);
   assert.throws(
-    () => baselineInventory([...scripts, { id: "basalt-future-worker-production-fixture" }]),
+    () =>
+      baselineInventory([
+        ...scripts,
+        {
+          id: "basalt-future-worker-production-fixture",
+          tags: ["alchemy:stack:basalt", "alchemy:stage:production", "alchemy:id:Future"],
+        },
+      ]),
     /unexpected/,
   );
 });
@@ -55,11 +87,18 @@ test("live probe runs only on internal PRs and precedes automatic and manual rel
   assert.match(job, /needs\.select\.outputs\.baseline_probe == 'true'/);
   assert.doesNotMatch(job, /environment:|pull_request_target/);
   assert.match(job, /CLOUDFLARE_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/);
-  assert.match(job, /bun-version: 1\.4\.4/);
+  assert.match(job, /bun-version: \$\{\{ env\.E2E_BUN_VERSION \}\}/);
+  assert.match(ci, /E2E_BUN_VERSION: 1\.4\.2/);
   for (const name of ["release-main", "release-manual"]) {
     const text = workflow(name);
     const probe = text.indexOf("baseline-probe-entry.ts");
     assert.ok(probe > 0 && probe < text.indexOf("release.ts backup-only"), name);
+  }
+  for (const name of ["ci", "deploy", "release-main", "release-manual"]) {
+    assert.match(
+      workflow(name),
+      /BASALT_RELEASE_ATTEMPT="\$\(node -e '[^\n]+randomUUID\(\)[^\n]+'\)" \\\n\s+bun scripts\/release-barrier\/baseline-probe-entry\.ts/,
+    );
   }
   const deploy = workflow("deploy");
   assert.ok(deploy.indexOf("baseline-probe-entry.ts") < deploy.indexOf("release.ts deploy "));
