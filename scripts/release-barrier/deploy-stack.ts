@@ -1,4 +1,3 @@
-import type { D1Provider, D1Progress, PreparedD1 } from "./declared-d1-types.ts";
 import {
   d1Account,
   preflightDeclaredD1,
@@ -7,6 +6,7 @@ import {
   readDeclaredD1,
 } from "./d1-cloudflare.ts";
 import { createDeclaredDatabases } from "./declared-d1.ts";
+import type { D1Provider, D1Progress } from "./declared-d1-types.ts";
 import { assertJournaledBaselineInput, type ForwardInputProof } from "./forward-worker-input.ts";
 import { State } from "alchemy/State/State";
 import { beginForwardJournal } from "./forward-journal.ts";
@@ -18,23 +18,16 @@ import type { CompiledStack } from "alchemy/Stack";
 import type { Worker } from "alchemy/Cloudflare";
 import { Effect } from "effect";
 import { verificationAdmissions, type VerificationAdmission } from "./plan-admission.ts";
-import { preparePlan, finishPlan } from "./alchemy-plan.ts";
+import { finishPlan } from "./alchemy-plan.ts";
 import {
   readActivePlacements,
   readBaseline,
-  readCurrentDeployment,
   readScriptSettings,
   uploadVersion,
 } from "./cloudflare.ts";
+import { assertRepairedPlacement, assertRepairedVersionPlacement } from "./pending-placement.ts";
 import { readVersionPlacement } from "./active-placement-read.ts";
-import {
-  pendingPlacementRepair,
-  placementRepairTargets,
-  assertRepairedPlacement,
-  assertRepairedVersionPlacement,
-} from "./pending-placement.ts";
-import { retiredPlacements, retirePlacement } from "./placement-retirement.ts";
-import { needsPlacementProof } from "./script-placement.ts";
+import { retirePlacement } from "./placement-retirement.ts";
 import { releaseWorkers, type BarrierReceipt } from "./barrier.ts";
 import { BarrierRefusal, type ReleaseManifest } from "./manifest.ts";
 import { cloudflareArtifactsApi } from "../ensure-artifacts.ts";
@@ -49,7 +42,6 @@ import {
   createDeclaredBuckets,
   type BucketProvider,
   type BucketProgress,
-  type PreparedBucket,
 } from "./declared-buckets.ts";
 import {
   bucketAccount,
@@ -59,8 +51,20 @@ import {
 } from "./bucket-cloudflare.ts";
 import { assertSupportedPlan } from "./plan-admission.ts";
 import { declaredMismatch } from "./declared-refusal.ts";
-import { prepareDeclaredStorage } from "./declared-bucket-plan.ts";
 import { preserveDeclarationHistory } from "./declared-history.ts";
+import { preserveClassHistory } from "./class-history.ts";
+import { prepareDeclaredRelease } from "./prepare-declared.ts";
+import {
+  readDeclaredClass,
+  readClassContent,
+  deployClassExpansion,
+  stageClassClone,
+  readClassClone,
+  deleteClassClone,
+} from "./class-cloudflare.ts";
+import type { ClassProvider, ClassProgress } from "./declared-class-contract.ts";
+import { declaredChecks } from "./declared-checks.ts";
+import { observeClassReadiness } from "./class-readiness.ts";
 import { inspectContainer, type ContainerAttributes } from "./container.ts";
 import {
   observeContainer,
@@ -73,6 +77,7 @@ export interface DeployStackOptions {
   declarations?: DeclaredChanges;
   declared?(progress: BucketProgress | D1Progress): Promise<void>;
   declaredReadiness?(value: DeclaredReadiness): Promise<void>;
+  expansion?(value: ClassProgress): Promise<void>;
   forwardInput?: ForwardInputProof;
   forwardEncryptionKey?: string;
   record(receipt: BarrierReceipt): Promise<void>;
@@ -83,6 +88,7 @@ export interface DeployStackOptions {
   io?: {
     buckets?: BucketProvider;
     d1?: D1Provider;
+    classes?: ClassProvider;
     baseline: typeof readBaseline;
     upload: typeof uploadVersion;
     placements?: typeof readActivePlacements;
@@ -132,61 +138,48 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
           readinessEvidence: options.declaredReadiness ? "configured" : null,
         },
       );
-    const {
-      plan,
-      buckets: declaredBuckets,
-      databases: declaredDatabases,
-    } = yield* prepareDeclaredStorage(
-      evaluatedPlan,
-      options.declarations,
-      scope,
-      buckets,
-      options.declaredReadiness,
-      d1,
-    );
+    const classes =
+      options.io?.classes ??
+      ({
+        read: (target) => run(readDeclaredClass(target)),
+        content: (target, version) => run(readClassContent(target, version)),
+        deploy: (request) => run(deployClassExpansion(request)),
+        stageClone: (request) => run(stageClassClone(request)),
+        clone: (target, version) => run(readClassClone(target, version)),
+        removeClone: (target, version) => run(deleteClassClone(target, version)),
+      } satisfies ClassProvider);
+    const { plan, prepared, declaredBuckets, declaredDatabases, declaredStorage, workerBaselines } =
+      yield* prepareDeclaredRelease(stack, evaluatedPlan, options, buckets, classes, d1);
     const prerequisites = (phase: DeclaredReadiness["phase"]) =>
-      recordDeclaredReadiness(
-        plan,
-        options.declarations,
-        scope,
-        buckets,
-        phase,
-        options.declaredReadiness,
-        d1,
-      );
-    for (const bucket of declaredBuckets.values())
-      yield* Effect.promise(() =>
-        options.declared!({
-          bucket,
-          lifecycle: bucket.resume ? "creating" : "planned",
-          outcome: bucket.resume ? "acknowledged" : "not-started",
-        }),
-      );
-    for (const database of declaredDatabases.values())
-      yield* Effect.promise(() =>
-        options.declared!({
-          database,
-          lifecycle: database.resume ? "creating" : "planned",
-          outcome: database.resume ? "acknowledged" : "not-started",
-        }),
-      );
-    const declaredStorage = new Map<string, PreparedBucket | PreparedD1>([
-      ...declaredBuckets.entries(),
-      ...declaredDatabases.entries(),
-    ]);
-    const prepared = yield* preparePlan(
-      stack,
-      plan,
-      options.io?.namespace,
-      options.io?.container,
-      options.publication,
-      options.declarations,
-      declaredStorage,
-    );
+      declaredChecks([
+        {
+          fqn: "(declared storage)",
+          check: recordDeclaredReadiness(
+            plan,
+            options.declarations,
+            scope,
+            buckets,
+            phase,
+            options.declaredReadiness,
+            d1,
+          ).pipe(Effect.asVoid),
+        },
+        {
+          fqn: "(declared classes)",
+          type: "Cloudflare.Worker",
+          check: observeClassReadiness(
+            plan,
+            options.declarations,
+            scope,
+            classes,
+            phase,
+            options.expansion,
+          ),
+        },
+      ]);
     const recordAdmission = options.admission;
     if (recordAdmission) yield* Effect.promise(() => recordAdmission(verificationAdmissions(plan)));
     const state = yield* yield* State;
-    const retired = yield* retiredPlacements(state, stack);
     const io = options.io ?? { baseline: readBaseline, upload: uploadVersion };
     const manifest: ReleaseManifest = {
       candidate: options.candidate,
@@ -205,40 +198,9 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
           [...prepared.captured.values()]
             .sort((a, b) => a.fqn.localeCompare(b.fqn))
             .map(async (upload) => {
-              const baseline = await run(
-                io.baseline(upload.request).pipe(withOperation(upload.fqn, "read-worker-baseline")),
-              );
               try {
-                const repairTarget = placementRepairTargets.find(
-                  (target) =>
-                    target.role === upload.fqn &&
-                    target.scriptName === upload.request.scriptName &&
-                    baseline.some((version) => version.versionId === target.version),
-                );
-                const versions =
-                  repairTarget || needsPlacementProof(upload.previousSettings?.placement)
-                    ? await run((io.placements ?? readActivePlacements)(upload.request, baseline))
-                    : [];
-                const repair = repairTarget
-                  ? pendingPlacementRepair({
-                      role: upload.fqn,
-                      scriptName: upload.request.scriptName,
-                      deploymentId: (await run(readCurrentDeployment(upload.request))).id,
-                      baseline,
-                      active: versions[0]!,
-                      prior: await run(
-                        readVersionPlacement(
-                          upload.request.accountId,
-                          upload.request.scriptName,
-                          repairTarget.prior,
-                        ),
-                      ),
-                      metadata: upload.request.metadata,
-                      settings: upload.previousSettings!,
-                      retired: retired.includes(upload.fqn),
-                    })
-                  : undefined;
-                return await freezeUpload(upload, baseline, versions, repair);
+                const proof = workerBaselines.get(upload.fqn)!;
+                return await freezeUpload(upload, proof.baseline, proof.versions, proof.repair);
               } catch (error) {
                 throw operationFailure(error, upload.fqn, "freeze-worker-upload");
               }
@@ -279,7 +241,7 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
       yield* createDeclaredDatabases(
         plan,
         declaredDatabases,
-        { stack: stack.name, stage: stack.stage },
+        scope,
         d1,
         options.candidate,
         options.declared!,
@@ -418,9 +380,12 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
       catch: (error) =>
         error instanceof BarrierRefusal ? error : new BarrierRefusal("release-operation-failed"),
     });
-    const finalizing = preserveDeclarationHistory(
-      finishPlan(prepared, activated, databaseFqns, activatedContainers),
-      { stack: stack.name, stage: stack.stage },
+    const finalizing = preserveClassHistory(
+      preserveDeclarationHistory(
+        finishPlan(prepared, activated, databaseFqns, activatedContainers),
+        scope,
+      ),
+      scope,
     );
     const finished = yield* journal
       ? finalizing.pipe(Effect.provideService(State, Effect.succeed(journal.finalizingState)))

@@ -13,6 +13,9 @@ const enums = new Set([
   "creationEvidence",
   "readinessEvidence",
   "providerMode",
+  "previousSettings",
+  "previousProps",
+  "usageModel",
 ]);
 const values = new Set([
   "eu",
@@ -37,6 +40,9 @@ const values = new Set([
   "null",
   "live",
   "local",
+  "standard",
+  "bundled",
+  "unbound",
 ]);
 const numbers = new Set([
   "providerVersion",

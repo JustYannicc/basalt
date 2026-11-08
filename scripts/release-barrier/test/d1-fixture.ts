@@ -1,3 +1,4 @@
+import { publicSiteWaitlist, provisionPublicSiteWaitlist } from "../public-site-waitlist.ts";
 import assert from "node:assert/strict";
 import * as Apply from "alchemy/Apply";
 import * as Plan from "alchemy/Plan";
@@ -10,7 +11,7 @@ import { State } from "alchemy/State/State";
 import { InMemoryService } from "alchemy/State/InMemoryState";
 import { WorkerUploadHook } from "alchemy/Cloudflare/Workers/WorkerUploadHook";
 import { nativeD1Provider } from "./native-d1-provider.ts";
-import { Database } from "alchemy/Cloudflare/D1";
+import type { Database } from "alchemy/Cloudflare/D1";
 import type { Worker } from "alchemy/Cloudflare";
 import { Context, Effect, Layer, Option } from "effect";
 import { decodeDeclaredChanges } from "../declared-change-schema.ts";
@@ -152,10 +153,7 @@ export function provisioningD1(
     Effect.gen(function* () {
       yield* Command.Exec("PoolDatabase", { command: "node ensure-pool-database.ts", memo: false });
       const database = options.nativeD1
-        ? yield* Database("PublicSiteWaitlist", {
-            name: "public-site-waitlist",
-            jurisdiction: "eu",
-          }).pipe(RemovalPolicy.retain())
+        ? yield* provisionPublicSiteWaitlist
         : yield* FixtureDatabase("PublicSiteWaitlist", {
             name: "public-site-waitlist",
             jurisdiction: "eu",
@@ -290,7 +288,7 @@ export function provisioningD1(
           const worker = compiled.resources.PublicSite!;
           compiled.resources.PublicSite = {
             ...worker,
-            Props: { ...worker.Props, database: databaseResource.databaseId },
+            Props: { ...worker.Props, database: (yield* publicSiteWaitlist).databaseId },
           };
           yield* deploy();
         }

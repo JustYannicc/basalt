@@ -21,6 +21,7 @@ export const prepareDeclaredBuckets = (
   stack: string,
   stage: string,
   provider: BucketProvider,
+  frozen: ReadonlyMap<string, PreparedBucket> = new Map(),
 ) =>
   Effect.gen(function* () {
     const prepared = new Map<string, PreparedBucket>();
@@ -105,9 +106,12 @@ export const prepareDeclaredBuckets = (
                 ],
               });
             const accountId = yield* Effect.promise(provider.accountId);
-            const instanceId = row?.instanceId ?? (yield* generateInstanceId());
+            const previous = frozen.get(fqn);
+            const instanceId =
+              row?.instanceId ?? previous?.native.instanceId ?? (yield* generateInstanceId());
             const bucketName =
               saved?.target.bucketName ??
+              previous?.target.bucketName ??
               (yield* createPhysicalName({
                 id: node.resource.LogicalId,
                 instanceId,
@@ -155,7 +159,7 @@ export const prepareDeclaredBuckets = (
                   logicalId: row.logicalId,
                 },
               );
-            prepared.set(fqn, {
+            const next: PreparedBucket = {
               fqn,
               declaration: digest(canonical(declarations)),
               entry,
@@ -179,7 +183,10 @@ export const prepareDeclaredBuckets = (
                       removalPolicy: "retain",
                       providerMode: node.mode,
                     },
-            });
+            };
+            if (previous && canonical(previous) !== canonical(next))
+              throw declaredMismatch("declared-replan-intent-drift", fqn, previous, next);
+            prepared.set(fqn, next);
           }),
         })),
     );
@@ -187,15 +194,21 @@ export const prepareDeclaredBuckets = (
   });
 
 /** Plan hydration is an observation; only the persisted acknowledged checkpoint owns an interrupted create. */
+export interface DeclaredStorage {
+  buckets: ReadonlyMap<string, PreparedBucket>;
+  databases: ReadonlyMap<string, PreparedD1>;
+}
+
 export const prepareDeclaredStorage = (
   evaluatedPlan: Plan.Plan,
   declarations: DeclaredChanges | undefined,
   scope: { stack: string; stage: string },
   provider: BucketProvider,
   record?: (value: DeclaredReadiness) => Promise<void>,
-  d1?: D1Provider,
+  options: { d1?: D1Provider; frozen?: DeclaredStorage } = {},
 ) =>
   Effect.gen(function* () {
+    const { d1, frozen } = options;
     let buckets = new Map<string, PreparedBucket>();
     let databases = new Map<string, PreparedD1>();
     yield* declaredChecks([
@@ -204,7 +217,13 @@ export const prepareDeclaredStorage = (
             {
               fqn: "(declared D1)",
               type: "Cloudflare.D1Database" as const,
-              check: prepareDeclaredD1(evaluatedPlan, declarations, scope, d1).pipe(
+              check: prepareDeclaredD1(
+                evaluatedPlan,
+                declarations,
+                scope,
+                d1,
+                frozen?.databases,
+              ).pipe(
                 Effect.tap((value) =>
                   Effect.sync(() => {
                     databases = value;
@@ -223,6 +242,7 @@ export const prepareDeclaredStorage = (
           scope.stack,
           scope.stage,
           provider,
+          frozen?.buckets,
         ).pipe(
           Effect.tap((value) =>
             Effect.sync(() => {

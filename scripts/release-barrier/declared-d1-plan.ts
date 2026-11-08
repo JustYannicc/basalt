@@ -15,6 +15,7 @@ export const prepareDeclaredD1 = (
   declarations: DeclaredChanges | undefined,
   scope: { stack: string; stage: string },
   provider: D1Provider,
+  frozen: ReadonlyMap<string, PreparedD1> = new Map(),
 ) =>
   Effect.gen(function* () {
     const state = yield* yield* State;
@@ -125,8 +126,10 @@ export const prepareDeclaredD1 = (
                   logicalId: row.logicalId,
                 },
               );
-            const instanceId = row?.instanceId ?? (yield* generateInstanceId());
-            prepared.set(fqn, {
+            const previous = frozen.get(fqn);
+            const instanceId =
+              row?.instanceId ?? previous?.native.instanceId ?? (yield* generateInstanceId());
+            const next: PreparedD1 = {
               fqn,
               declaration: digest(canonical(declarations)),
               entry: entryDigest,
@@ -151,7 +154,10 @@ export const prepareDeclaredD1 = (
                       removalPolicy: "retain",
                       providerMode: node.mode,
                     },
-            });
+            };
+            if (previous && canonical(previous) !== canonical(next))
+              throw d1Mismatch("declared-replan-intent-drift", fqn, previous, next);
+            prepared.set(fqn, next);
           }),
         })),
     );
