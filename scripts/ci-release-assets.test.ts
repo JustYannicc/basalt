@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
   cpSync,
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -19,6 +21,46 @@ import {
   releaseOnlyDependencies,
 } from "./ci/dependency-lifecycles.ts";
 import { desktopAssetKey } from "./ci/desktop-release-assets.ts";
+import { installUpstreamDependencies } from "./upstream-dependencies.ts";
+
+test("Check and release preparations reuse only their own dependency generations", async () => {
+  const fixture = mkdtempSync(join(tmpdir(), "basalt-release-policy-"));
+  const names = ["BASALT_UPSTREAM_CACHE", "BASALT_CI_OMIT_RELEASE_DOWNLOADS"];
+  const previous = names.map((name) => process.env[name]);
+  try {
+    const root = join(fixture, "consumer");
+    mkdirSync(root);
+    writeFileSync(join(root, "bunfig.toml"), '[install]\nlinker = "isolated"\n');
+    writeFileSync(
+      join(root, "package.json"),
+      JSON.stringify({ name: "policy-fixture", dependencies: { "is-number": "7.0.0" } }),
+    );
+    execFileSync("bun", ["install", "--ignore-scripts"], { cwd: root, stdio: "pipe" });
+    process.env.BASALT_UPSTREAM_CACHE = join(fixture, "cache");
+    const prepare = async (omit: boolean) => {
+      process.env.BASALT_CI_OMIT_RELEASE_DOWNLOADS = String(omit);
+      return installUpstreamDependencies(root, "fixture-pin");
+    };
+    const release = await prepare(false),
+      check = await prepare(true);
+    assert.notEqual(check.key, release.key);
+    assert.notEqual(check.store, release.store);
+    assert.deepEqual(await prepare(false), release);
+    assert.deepEqual(await prepare(true), check);
+  } finally {
+    for (const [index, name] of names.entries()) {
+      if (previous[index] === undefined) delete process.env[name];
+      else process.env[name] = previous[index];
+    }
+    const writable = (directory: string) => {
+      chmodSync(directory, 0o755);
+      for (const child of readdirSync(directory, { withFileTypes: true }))
+        if (child.isDirectory()) writable(join(directory, child.name));
+    };
+    writable(fixture);
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
 
 test("cold Check installs omit only unused release lifecycles with a frozen lockfile", async () => {
   const fixture = mkdtempSync(join(tmpdir(), "basalt-release-lifecycles-"));
