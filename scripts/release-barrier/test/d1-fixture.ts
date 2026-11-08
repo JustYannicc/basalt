@@ -52,6 +52,8 @@ export function provisioningD1(
   options: {
     nativeD1?: boolean;
     recoveredForeign?: boolean;
+    plannedName?: string;
+    plannedJurisdiction?: "us" | "default";
     undeclared?: boolean;
     missingPermission?: boolean;
     rejectedUpload?: boolean;
@@ -155,8 +157,8 @@ export function provisioningD1(
       const database = options.nativeD1
         ? yield* provisionPublicSiteWaitlist
         : yield* FixtureDatabase("PublicSiteWaitlist", {
-            name: "public-site-waitlist",
-            jurisdiction: "eu",
+            name: options.plannedName ?? "public-site-waitlist",
+            jurisdiction: options.plannedJurisdiction ?? "eu",
           }).pipe(RemovalPolicy.retain());
       databaseResource = database;
       if (options.multiple)

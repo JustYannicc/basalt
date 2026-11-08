@@ -7,7 +7,7 @@ import type {
   DeclaredChanges,
 } from "./declared-change-schema.ts";
 import { classPlanMatches, classPlanChanges } from "./declared-class-contract.ts";
-import { changedProps } from "./prop-diff.ts";
+import { declaredPropChanges } from "./declared-refusal.ts";
 import type { PlanRefusal } from "./manifest.ts";
 
 export function declarationRefusals(plan: Plan.Plan, declarations?: DeclaredChanges) {
@@ -45,7 +45,7 @@ type Declaration = DeclaredChanges["changes"][number];
 
 export function declaredIntentChanges(node: Plan.Apply, entry: Declaration) {
   if (entry.action === "add-sqlite-class") return classPlanChanges(node, entry);
-  return changedProps(
+  return declaredPropChanges(
     { ...entry.props, type: entry.type, fqn: entry.fqn, removalPolicy: entry.removalPolicy },
     {
       ...node.resource.Props,

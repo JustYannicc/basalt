@@ -1,3 +1,8 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { BarrierRefusal } from "./manifest.ts";
+import { reportRefusal } from "./refusal-report.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Effect } from "effect";
@@ -111,3 +116,33 @@ test("one refusal mapper aggregates correctly typed failures for all declaration
     },
   );
 });
+
+for (const jurisdiction of ["us", "default"] as const)
+  test(`declared D1 ${jurisdiction} intent drift keeps exact safe values in both public outputs`, async (context) => {
+    const privateName = "synthetic-private-token";
+    const proof = provisioningD1({ plannedJurisdiction: jurisdiction, plannedName: privateName });
+    let failure: unknown;
+    try {
+      await Effect.runPromise(proof.effect);
+    } catch (error) {
+      failure = error;
+    }
+    assert.ok(failure instanceof BarrierRefusal);
+    assert.equal(failure.reason, "declaration-does-not-match-plan");
+    assert.deepEqual(
+      failure.delta?.changed.find((change) => change.path === "jurisdiction"),
+      { path: "jurisdiction", old: "eu", new: jurisdiction },
+    );
+    const directory = await mkdtemp(join(tmpdir(), "d1-intent-refusal-"));
+    context.after(() => rm(directory, { recursive: true, force: true }));
+    const summary = join(directory, "summary.md");
+    const errors: string[] = [];
+    await reportRefusal(failure, summary, (message) => errors.push(message));
+    for (const output of [errors.join("\n"), await readFile(summary, "utf8")]) {
+      assert.ok(
+        output.includes(`| PublicSiteWaitlist | jurisdiction | "eu" → "${jurisdiction}" |`),
+      );
+      assert.ok(!output.includes(privateName));
+    }
+    assert.deepEqual(proof.events, []);
+  });

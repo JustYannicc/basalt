@@ -230,3 +230,16 @@ test("class declaration refusal identifies resource type, action and native stat
     },
   );
 });
+
+test("generic storage intent mapping preserves closed bucket jurisdiction values", async () => {
+  const { plan, effects } = await bucketPlan({ jurisdiction: "default" });
+  assert.throws(
+    () => assertSupportedPlan(plan, new Map(), declaration()),
+    (error) => {
+      assert.ok(error instanceof BarrierRefusal);
+      assert.deepEqual(error.delta?.changed, [{ path: "jurisdiction", old: "eu", new: "default" }]);
+      return true;
+    },
+  );
+  assert.deepEqual(effects, []);
+});

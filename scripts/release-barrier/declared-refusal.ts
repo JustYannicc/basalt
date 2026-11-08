@@ -77,6 +77,14 @@ function publicValue(value: unknown, path: string): string | number | null | und
 }
 
 /** Closed lifecycle values and digests are public; arbitrary native properties keep the shared redaction policy. */
+export const declaredPropChanges = (expected: unknown, observed: unknown) =>
+  changedProps(expected, observed).map((change) => {
+    if ("old" in change || change.path.includes(".")) return change;
+    const old = publicValue(field(expected, change.path), change.path);
+    const next = publicValue(field(observed, change.path), change.path);
+    return old !== undefined && next !== undefined ? { path: change.path, old, new: next } : change;
+  });
+
 export const declaredMismatch = (
   reason: string,
   fqn: string,
@@ -84,15 +92,4 @@ export const declaredMismatch = (
   observed: unknown,
   type = "Cloudflare.R2.Bucket",
 ) =>
-  new BarrierRefusal(reason, fqn, {
-    fqn,
-    type,
-    changed: changedProps(expected, observed).map((change) => {
-      if ("old" in change || change.path.includes(".")) return change;
-      const old = publicValue(field(expected, change.path), change.path);
-      const next = publicValue(field(observed, change.path), change.path);
-      return old !== undefined && next !== undefined
-        ? { path: change.path, old, new: next }
-        : change;
-    }),
-  });
+  new BarrierRefusal(reason, fqn, { fqn, type, changed: declaredPropChanges(expected, observed) });

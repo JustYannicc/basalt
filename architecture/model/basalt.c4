@@ -113,7 +113,7 @@ model {
 
     siteWaitlist = store "Waiting list" {
       #basalt #v1
-      description "Retained EU database provisioned by reviewed release intent before the site Worker adds its binding. Creation acknowledgement, native ownership, fresh readiness and binding activation are separate receipts. A lost create response never permits retry or adoption. Consumer Workers bind through a native reference to this single declaration. Class expansion replans preserve frozen database ownership."
+      description "Retained EU database provisioned by reviewed release intent before the site Worker adds its binding. Creation acknowledgement, native ownership, fresh readiness and binding activation are separate receipts. A lost create response never permits retry or adoption. Consumers bind through a native reference to this single declaration. Class expansion replans preserve frozen database ownership."
     }
 
     catalog = module "Connector catalog" {
