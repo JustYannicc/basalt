@@ -281,10 +281,18 @@ index 2040914..b110555 100644
  `;
  
 diff --git a/apps/hosted/server/src/implementation/mcp-http.ts b/apps/hosted/server/src/implementation/mcp-http.ts
-index 707a9cb..143b826 100644
+index 707a9cb..9403300 100644
 --- a/apps/hosted/server/src/implementation/mcp-http.ts
 +++ b/apps/hosted/server/src/implementation/mcp-http.ts
-@@ -129,6 +129,11 @@ const requestBackend: McpBackend<RequestError> = {
+@@ -51,6 +51,7 @@ import {
+   type CallState,
+ } from "../contracts/executor.ts";
+ import { FoldReadAhead, readSelection, SelectionReadAhead } from "./access.ts";
++import { ToolAvailabilityReadAhead } from "./tool-availability-read.ts";
+ import { callerAccounts } from "./app-accounts.ts";
+ import { resourceAuthorityForLinks } from "./resource-policy.ts";
+ import { BearerHashes } from "./bearer-access.ts";
+@@ -129,6 +130,11 @@ const requestBackend: McpBackend<RequestError> = {
    searchableTools: (input, options) =>
      Effect.flatMap(RequestBackend, (backend) => backend.searchableTools(input, options)),
    searchTools: (input) => Effect.flatMap(RequestBackend, (backend) => backend.searchTools(input)),
@@ -296,7 +304,25 @@ index 707a9cb..143b826 100644
    callTool: (input, options) =>
      Effect.flatMap(RequestBackend, (backend) => backend.callTool(input, options)),
    resumeInvocation: (request, response, options) =>
-@@ -395,6 +400,12 @@ export const dispatchHostedMcp = <E, R>(
+@@ -370,6 +376,17 @@ export const dispatchHostedMcp = <E, R>(
+             current: read.app,
+           }),
+           Effect.provideService(FoldReadAhead, fold),
++          Effect.provideService(
++            ToolAvailabilityReadAhead,
++            fold !== undefined && Exit.isSuccess(fold.result)
++              ? {
++                  organization,
++                  app: input.app,
++                  tool: input.tool,
++                  definition: fold.result.value.toolAvailability,
++                }
++              : undefined,
++          ),
+           Effect.provideService(InvocationPrefetch, read.invocation),
+         );
+       });
+@@ -395,6 +412,12 @@ export const dispatchHostedMcp = <E, R>(
        listSkills: (input, options) =>
          current.pipe(Effect.flatMap((fresh) => fresh.listSkills(input, options))),
        readSkill: (input) => current.pipe(Effect.flatMap((fresh) => fresh.readSkill(input))),
@@ -382,6 +408,37 @@ index 9f34380..46d72b7 100644
      /** Let the hooks reach the executor they were created for. */
      attach: (instance: Executor) =>
        Effect.sync(() => {
+diff --git a/apps/hosted/server/src/implementation/resource-policy.ts b/apps/hosted/server/src/implementation/resource-policy.ts
+index 939caef..4cd5df6 100644
+--- a/apps/hosted/server/src/implementation/resource-policy.ts
++++ b/apps/hosted/server/src/implementation/resource-policy.ts
+@@ -251,6 +251,7 @@ export type AppAccountReads = typeof AppAccountReads.Type;
+ 
+ const MemberLinksPolicy = Schema.Struct({
+   ...MemberAppPolicy.fields,
++  toolAvailability: Schema.NullOr(Schema.String),
+   userLinks: Schema.String,
+   appLinks: Schema.String,
+ });
+@@ -277,7 +278,9 @@ export const resourceAuthorityForLinks = (
+     (select coalesce(json_agg(${sql.literal(linkedAccountJson)} order by l.created_at, a.id),
+       '[]'::json)::text from ${usableLinks(sql, { subject: user, apps: [app] })}) as "userLinks",
+     (select coalesce(json_agg(${sql.literal(linkedAccountJson)} order by l.created_at, a.id),
+-      '[]'::json)::text from ${yield* usableAppLinks(sql, [app])}) as "appLinks"
++      '[]'::json)::text from ${yield* usableAppLinks(sql, [app])}) as "appLinks",
++    (select availability.definition::text from hosted_tool_availability availability
++      where availability.app_id = p.id and availability.organization_id = p.organization_id) as "toolAvailability"
+     from member m
+     left join hosted_app_access p on p.id = ${app} and p.organization_id = m."organizationId"
+     where m."organizationId" = ${organization} and m."userId" = ${user}`;
+@@ -300,6 +303,7 @@ export const resourceAuthorityForLinks = (
+         },
+         actor,
+       ),
++      toolAvailability: row.toolAvailability,
+       accounts: Effect.all({
+         user: Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(LinkedAccount)))(
+           row.userLinks,
 diff --git a/apps/hosted/server/src/implementation/tool-availability-handlers.ts b/apps/hosted/server/src/implementation/tool-availability-handlers.ts
 new file mode 100644
 index 0000000..d55ee0f
@@ -405,12 +462,32 @@ index 0000000..d55ee0f
 +      .handle("get", ({ params }) => getAvailabilityTool(params.app, params.tool))
 +      .handle("update", ({ params, payload }) => updateToolAvailability(params.app, payload)),
 +);
+diff --git a/apps/hosted/server/src/implementation/tool-availability-read.ts b/apps/hosted/server/src/implementation/tool-availability-read.ts
+new file mode 100644
+index 0000000..cdc0beb
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/tool-availability-read.ts
+@@ -0,0 +1,14 @@
++import type { AppId } from "@executor-js/sdk/core";
++import { Context } from "effect";
++import type { OrganizationId } from "../contracts/organization.ts";
++
++/** One MCP call's availability from its access snapshot, never retained in the session cache. */
++export const ToolAvailabilityReadAhead = Context.Reference<
++  | {
++      readonly organization: OrganizationId;
++      readonly app: AppId;
++      readonly tool: string;
++      readonly definition: string | null;
++    }
++  | undefined
++>("hosted/ToolAvailabilityReadAhead", { defaultValue: () => undefined });
 diff --git a/apps/hosted/server/src/implementation/tool-availability-store.ts b/apps/hosted/server/src/implementation/tool-availability-store.ts
 new file mode 100644
-index 0000000..7a80612
+index 0000000..396f582
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/tool-availability-store.ts
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,137 @@
 +import { AppId, StorageError, type ToolName } from "@executor-js/sdk/core";
 +import { Effect, Schema } from "effect";
 +import { SqlClient } from "effect/sql";
@@ -418,6 +495,7 @@ index 0000000..7a80612
 +import type { OrganizationId } from "../contracts/organization.ts";
 +import { policyDatabase } from "./resource-policy.ts";
 +import { CurrentOrganization } from "../contracts/organization.ts";
++import { ToolAvailabilityReadAhead } from "./tool-availability-read.ts";
 +
 +export const migrateToolAvailability = Effect.gen(function* () {
 +  const sql = yield* SqlClient.SqlClient;
@@ -434,6 +512,18 @@ index 0000000..7a80612
 +  defaultMode: "all",
 +  overrides: [],
 +};
++const snapshotAvailability = (
++  read: NonNullable<Effect.Success<typeof ToolAvailabilityReadAhead>>,
++) =>
++  read.definition === null
++    ? Effect.succeed(defaultAvailability)
++    : Schema.decodeUnknownEffect(Schema.fromJsonString(ToolAvailability))(read.definition).pipe(
++        Effect.mapError(() => new StorageError()),
++      );
++
++// A nested or later runtime invocation must read again, even if it inherited the call's context.
++const consumedAvailability = new WeakSet<object>();
++
 +export const availabilityFilter = (state: ToolAvailability) => {
 +  const overrides = new Map<string, boolean>(
 +    state.overrides.map((item) => [item.tool, item.enabled]),
@@ -462,6 +552,14 @@ index 0000000..7a80612
 +) =>
 +  Effect.gen(function* () {
 +    if (apps.length === 0) return new Map<AppId, ToolAvailability>();
++    const ahead = yield* ToolAvailabilityReadAhead;
++    if (
++      ahead !== undefined &&
++      ahead.organization === organization &&
++      apps.length === 1 &&
++      apps[0] === ahead.app
++    )
++      return new Map([[ahead.app, yield* snapshotAvailability(ahead)]]);
 +    const rows = yield* sql`select app_id as app, definition from hosted_tool_availability
 +      where organization_id = ${organization} and ${sql.in("app_id", apps)}`;
 +    const decoded = yield* Schema.decodeUnknownEffect(
@@ -506,6 +604,19 @@ index 0000000..7a80612
 +    readonly kind?: "query" | "mutation" | undefined;
 +  }) =>
 +    Effect.gen(function* () {
++      const ahead = yield* ToolAvailabilityReadAhead;
++      if (
++        ahead !== undefined &&
++        ahead.app === input.app &&
++        ahead.tool === input.tool &&
++        !consumedAvailability.has(ahead)
++      ) {
++        consumedAvailability.add(ahead);
++        return toolEnabled(yield* snapshotAvailability(ahead), {
++          name: input.tool,
++          readOnly: input.kind === "query",
++        });
++      }
 +      const rows =
 +        yield* sql`select definition from hosted_tool_availability where app_id = ${input.app}`;
 +      const decoded = yield* Schema.decodeUnknownEffect(
@@ -760,6 +871,30 @@ index 4133e88..800a4ca 100644
        return yield* new ToolNotFound({
          app: tool.app,
          version: tool.version,
+diff --git a/apps/hosted/web/src/contracts/app-discovery.ts b/apps/hosted/web/src/contracts/app-discovery.ts
+index 222a716..4261529 100644
+--- a/apps/hosted/web/src/contracts/app-discovery.ts
++++ b/apps/hosted/web/src/contracts/app-discovery.ts
+@@ -10,6 +10,7 @@ import { toolsAtom } from "./apps.ts";
+ import { refreshSkillDiscovery } from "./app-browser.ts";
+ import { refreshResourceDiscovery } from "./resources.ts";
+ import { refreshScheduleDiscovery } from "./schedules.ts";
++import { refreshToolAvailabilityDiscovery } from "./tool-availability.ts";
+ 
+ /** The app and version whose discovery a page shows. */
+ export interface DiscoveryTarget {
+@@ -30,6 +31,11 @@ export const discoveryTarget = (
+ export const refreshAppDiscovery = (get: Atom.FnContext, target: DiscoveryTarget) => {
+   const version = target.version ?? undefined;
+   get.refresh(toolsAtom({ organization: target.organization, app: target.app, version }));
++  refreshToolAvailabilityDiscovery(get, {
++    organization: target.organization,
++    app: target.app,
++    version,
++  });
+   refreshSkillDiscovery(get, target);
+   refreshResourceDiscovery(get, {
+     organization: target.organization,
 diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
 index 813dd16..98e8a94 100644
 --- a/apps/hosted/web/src/contracts/errors.ts
@@ -778,17 +913,17 @@ index 813dd16..98e8a94 100644
      AccountProvisioned: ({ message }) => message,
 diff --git a/apps/hosted/web/src/contracts/tool-availability.ts b/apps/hosted/web/src/contracts/tool-availability.ts
 new file mode 100644
-index 0000000..99f28f7
+index 0000000..5662a4c
 --- /dev/null
 +++ b/apps/hosted/web/src/contracts/tool-availability.ts
-@@ -0,0 +1,141 @@
+@@ -0,0 +1,147 @@
 +/**
 + * An app instance's tool availability, read and changed by its managers. The list includes
 + * switched-off tools, which only this manager read reveals; agents' discovery stays filtered.
 + */
 +import { hydrated } from "@executor-js/ui/contracts/http";
 +import { revalidated } from "@executor-js/ui/contracts/refresh";
-+import { acknowledge } from "@executor-js/ui/contracts/mutations";
++import { acknowledge, invalidate } from "@executor-js/ui/contracts/mutations";
 +import type { Query, ToolCatalog } from "@executor-js/ui/contracts/dashboard";
 +import {
 +  enabledToolNames,
@@ -828,6 +963,12 @@ index 0000000..99f28f7
 +    })),
 +  ),
 +);
++/** Account changes invalidate the manager's catalog as well as ordinary discovery. */
++export const refreshToolAvailabilityDiscovery = (
++  get: Atom.FnContext,
++  key: ConstructorParameters<typeof AvailabilityKey>[0],
++) => invalidate(get, lists(new AvailabilityKey(key)));
++
 +/** Every tool of the app, switched off or not, for a manager's browser. */
 +export const toolAvailabilityCatalogAtom = (
 +  key: ConstructorParameters<typeof AvailabilityKey>[0],
@@ -1111,6 +1252,19 @@ index af78e46..ebbfbac 100644
  ] as const;
  /** A published `apps` release this suite serves. */
  export type Release = (typeof releases)[number];
+diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+index 2446132..2475481 100644
+--- a/e2e/support/profile-removal-rollback.ts
++++ b/e2e/support/profile-removal-rollback.ts
+@@ -24,6 +24,8 @@ export const beforeAccountIdentities = () =>
+ /** Remove the latest hosted objects and journal together so earlier migrations can replay. */
+ export const beforeHostedAccountRechecks = () =>
+   [
++    { sql: "DROP TABLE hosted_tool_availability" },
++    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 18" },
+     { sql: "DROP TABLE hosted_account_rechecks, hosted_account_recheck_families" },
+     { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 17" },
+   ] as const;
 diff --git a/e2e/support/tool-availability-fixture.ts b/e2e/support/tool-availability-fixture.ts
 new file mode 100644
 index 0000000..514ee84
@@ -1708,6 +1862,19 @@ index 0000000..3cb7493
 +    page.getByRole("checkbox", { name: /Show hidden tools/ }).uncheck(),
 +  );
 +});
+diff --git a/e2e/tests/grouped-accounts.spec.ts b/e2e/tests/grouped-accounts.spec.ts
+index afeece5..3ce4d23 100644
+--- a/e2e/tests/grouped-accounts.spec.ts
++++ b/e2e/tests/grouped-accounts.spec.ts
+@@ -189,7 +189,7 @@ layer(HostedLive, { excludeTestServices: true })("Grouped accounts", (it) => {
+         const workLink = `/apps/${app.id}/accounts/user/service/${work}`;
+         const held = yield* holdQuery(
+           [actors.organization.id, actors.organization.slug].map(
+-            (id) => `/api/organizations/${id}/apps/${app.id}/tools/index`,
++            (id) => `/api/organizations/${id}/apps/${app.id}/tool-availability`,
+           ),
+           "undeclared",
+         );
 diff --git a/e2e/tests/import-approvals.spec.ts b/e2e/tests/import-approvals.spec.ts
 index ffd47c4..d65f1e9 100644
 --- a/e2e/tests/import-approvals.spec.ts
@@ -1750,6 +1917,19 @@ index ffd47c4..d65f1e9 100644
        }).pipe(Effect.provide(McpClient.layer)),
      ),
    );
+diff --git a/e2e/tests/provider-errors.spec.ts b/e2e/tests/provider-errors.spec.ts
+index 911549a..0e7be80 100644
+--- a/e2e/tests/provider-errors.spec.ts
++++ b/e2e/tests/provider-errors.spec.ts
+@@ -364,7 +364,7 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
+       ),
+     ).toBe(0);
+     const held = yield* holdQuery(
+-      new RegExp(`/api/organizations/[^/]+/apps/${app.id}/tools/index$`),
++      new RegExp(`/api/organizations/[^/]+/apps/${app.id}/tool-availability$`),
+       "continue",
+     );
+     yield* browser.use("Retry discovery", (page) =>
 diff --git a/e2e/tests/tool-availability-ui.spec.ts b/e2e/tests/tool-availability-ui.spec.ts
 new file mode 100644
 index 0000000..90704ae

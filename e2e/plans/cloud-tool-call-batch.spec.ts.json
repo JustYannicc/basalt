@@ -41,6 +41,11 @@
     ".upstream/packages/sdk/src/implementation/account-tool-traffic.ts",
     ".upstream/packages/sdk/src/implementation/selection-account-store.ts",
     ".upstream/packages/sdk/src/implementation/storage-runtime.ts",
-    ".upstream/packages/sdk/src/implementation/database.ts"
+    ".upstream/packages/sdk/src/implementation/database.ts",
+    ".upstream/apps/hosted/server/src/implementation/authorization.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-policy.ts",
+    ".upstream/apps/hosted/server/src/implementation/mcp-http.ts",
+    ".upstream/apps/hosted/server/src/implementation/tool-availability-read.ts",
+    ".upstream/apps/hosted/server/src/implementation/tool-availability-store.ts"
   ]
 }
