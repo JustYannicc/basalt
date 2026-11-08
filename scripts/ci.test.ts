@@ -491,3 +491,26 @@ test("hidden section reads select their browser guards", () => {
   ])
     assert.ok(selectPaths([path]).jobs.includes("human-in-the-loop"), path);
 });
+
+test("a selected image requires successful workerd warming and an unselected image skips it", () => {
+  const selected = ["upstream-image"];
+  const needs = Object.fromEntries(
+    [...fastJobs, ...heavyJobs, ...bundleJobs, ...conditionalJobs].map((job) => [
+      job,
+      {
+        result:
+          fastJobs.includes(job) || selected.includes(job) || job === "workerd-assets"
+            ? "success"
+            : "skipped",
+      },
+    ]),
+  );
+  assert.deepEqual(gateErrors(needs, selected), []);
+  for (const result of ["failure", "cancelled", "skipped"])
+    assert.ok(
+      gateErrors({ ...needs, "workerd-assets": { result } }, selected).some((error) =>
+        error.startsWith("workerd-assets:"),
+      ),
+    );
+  assert.ok(gateErrors(needs, []).some((error) => error.startsWith("workerd-assets:")));
+});
