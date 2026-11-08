@@ -1,6 +1,8 @@
 model {
   extend basalt {
     build = module "Build" {
+      // Release configuration rejects documented OAuth secret prefixes in client IDs before
+      // forwarding any hosted credentials; configuration errors retain no credential values.
       // Capacity refusals remain typed across every deploy transport and both web error maps.
       // A timed-out compile replies after its stalled work phase, release and error records;
       // diagnostics wait for that correlated terminal reply before checking the complete trail.

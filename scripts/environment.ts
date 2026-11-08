@@ -10,6 +10,7 @@ import { isSigningKey } from "../src/pool/token.ts";
 import { feedbackEndpoints } from "../src/feedback/ui.ts";
 import { validSentryDsn } from "../src/telemetry/sentry-target.ts";
 import { derivePreviewSecrets, previewKey } from "./release-preview/keys.ts";
+import { assertOAuthClientId } from "./oauth-client-config.ts";
 
 export const requiredSecrets = [
   "CLOUDFLARE_ACCOUNT_ID",
@@ -204,6 +205,11 @@ export function deployEnvironment(
   source = process.env,
   checkout = fileURLToPath(new URL("..", import.meta.url)),
 ): NodeJS.ProcessEnv {
+  assertOAuthClientId("Google", source.GOOGLE_CLIENT_ID);
+  assertOAuthClientId("GitHub", source.AUTH_GITHUB_CLIENT_ID);
+  for (const client of optionalConnectorClients) {
+    assertOAuthClientId(client.name, source[client.id]);
+  }
   for (const name of [
     "EXECUTOR_EMULATORS",
     "TEST_STAGE_DATABASE_PROVIDER",
