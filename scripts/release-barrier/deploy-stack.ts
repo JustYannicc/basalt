@@ -1,3 +1,12 @@
+import type { D1Provider, D1Progress, PreparedD1 } from "./declared-d1-types.ts";
+import {
+  d1Account,
+  preflightDeclaredD1,
+  declaredD1Exists,
+  createDeclaredD1,
+  readDeclaredD1,
+} from "./d1-cloudflare.ts";
+import { createDeclaredDatabases } from "./declared-d1.ts";
 import { assertJournaledBaselineInput, type ForwardInputProof } from "./forward-worker-input.ts";
 import { State } from "alchemy/State/State";
 import { beginForwardJournal } from "./forward-journal.ts";
@@ -40,6 +49,7 @@ import {
   createDeclaredBuckets,
   type BucketProvider,
   type BucketProgress,
+  type PreparedBucket,
 } from "./declared-buckets.ts";
 import {
   bucketAccount,
@@ -61,7 +71,7 @@ import {
 export interface DeployStackOptions {
   candidate: string;
   declarations?: DeclaredChanges;
-  declared?(progress: BucketProgress): Promise<void>;
+  declared?(progress: BucketProgress | D1Progress): Promise<void>;
   declaredReadiness?(value: DeclaredReadiness): Promise<void>;
   forwardInput?: ForwardInputProof;
   forwardEncryptionKey?: string;
@@ -72,6 +82,7 @@ export interface DeployStackOptions {
   serving?(container: ServingContainer): Promise<void>;
   io?: {
     buckets?: BucketProvider;
+    d1?: D1Provider;
     baseline: typeof readBaseline;
     upload: typeof uploadVersion;
     placements?: typeof readActivePlacements;
@@ -101,6 +112,15 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
         create: (target) => run(createDeclaredBucket(target)),
         configure: (target) => run(configureDeclaredBucket(target)),
       } satisfies BucketProvider);
+    const d1 =
+      options.io?.d1 ??
+      ({
+        accountId: () => run(d1Account),
+        preflight: (accountId) => run(preflightDeclaredD1(accountId)),
+        exists: (target) => run(declaredD1Exists(target)),
+        create: (target) => run(createDeclaredD1(target)),
+        read: (target, id, fqn) => run(readDeclaredD1(target, id, fqn)),
+      } satisfies D1Provider);
     const scope = { stack: stack.name, stage: stack.stage };
     if (options.declarations && (!options.declared || !options.declaredReadiness))
       throw declaredMismatch(
@@ -112,12 +132,17 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
           readinessEvidence: options.declaredReadiness ? "configured" : null,
         },
       );
-    const { plan, buckets: declaredBuckets } = yield* prepareDeclaredStorage(
+    const {
+      plan,
+      buckets: declaredBuckets,
+      databases: declaredDatabases,
+    } = yield* prepareDeclaredStorage(
       evaluatedPlan,
       options.declarations,
       scope,
       buckets,
       options.declaredReadiness,
+      d1,
     );
     const prerequisites = (phase: DeclaredReadiness["phase"]) =>
       recordDeclaredReadiness(
@@ -127,6 +152,7 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
         buckets,
         phase,
         options.declaredReadiness,
+        d1,
       );
     for (const bucket of declaredBuckets.values())
       yield* Effect.promise(() =>
@@ -136,6 +162,18 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
           outcome: bucket.resume ? "acknowledged" : "not-started",
         }),
       );
+    for (const database of declaredDatabases.values())
+      yield* Effect.promise(() =>
+        options.declared!({
+          database,
+          lifecycle: database.resume ? "creating" : "planned",
+          outcome: database.resume ? "acknowledged" : "not-started",
+        }),
+      );
+    const declaredStorage = new Map<string, PreparedBucket | PreparedD1>([
+      ...declaredBuckets.entries(),
+      ...declaredDatabases.entries(),
+    ]);
     const prepared = yield* preparePlan(
       stack,
       plan,
@@ -143,7 +181,7 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
       options.io?.container,
       options.publication,
       options.declarations,
-      declaredBuckets,
+      declaredStorage,
     );
     const recordAdmission = options.admission;
     if (recordAdmission) yield* Effect.promise(() => recordAdmission(verificationAdmissions(plan)));
@@ -238,7 +276,15 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
         options.candidate,
         options.declared!,
       );
-      for (const fqn of declaredBuckets.keys()) {
+      yield* createDeclaredDatabases(
+        plan,
+        declaredDatabases,
+        { stack: stack.name, stage: stack.stage },
+        d1,
+        options.candidate,
+        options.declared!,
+      );
+      for (const fqn of declaredStorage.keys()) {
         databaseFqns.add(fqn);
         databaseChanges.add(fqn);
       }

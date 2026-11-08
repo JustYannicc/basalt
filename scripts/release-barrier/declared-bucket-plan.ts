@@ -1,3 +1,5 @@
+import { prepareDeclaredD1 } from "./declared-d1-plan.ts";
+import type { D1Provider, PreparedD1 } from "./declared-d1-types.ts";
 import type * as Plan from "alchemy/Plan";
 import { generateInstanceId } from "alchemy/InstanceId";
 import { createPhysicalName } from "alchemy/PhysicalName";
@@ -36,6 +38,7 @@ export const prepareDeclaredBuckets = (
         .filter(([, node]) => declaredBucketCreate(node, declarations))
         .map(([fqn, node]) => ({
           fqn,
+          type: "Cloudflare.D1Database" as const,
           check: Effect.gen(function* () {
             const saved = history.buckets[fqn];
             const row = node.state;
@@ -190,10 +193,28 @@ export const prepareDeclaredStorage = (
   scope: { stack: string; stage: string },
   provider: BucketProvider,
   record?: (value: DeclaredReadiness) => Promise<void>,
+  d1?: D1Provider,
 ) =>
   Effect.gen(function* () {
     let buckets = new Map<string, PreparedBucket>();
+    let databases = new Map<string, PreparedD1>();
     yield* declaredChecks([
+      ...(d1
+        ? [
+            {
+              fqn: "(declared D1)",
+              type: "Cloudflare.D1Database" as const,
+              check: prepareDeclaredD1(evaluatedPlan, declarations, scope, d1).pipe(
+                Effect.tap((value) =>
+                  Effect.sync(() => {
+                    databases = value;
+                  }),
+                ),
+                Effect.asVoid,
+              ),
+            },
+          ]
+        : []),
       {
         fqn: "(declared storage)",
         check: prepareDeclaredBuckets(
@@ -220,19 +241,21 @@ export const prepareDeclaredStorage = (
           provider,
           "before-upload",
           record,
+          d1,
         ).pipe(Effect.asVoid),
       },
     ]);
+    const storage = new Map<string, PreparedBucket | PreparedD1>([...buckets, ...databases]);
     const plan = {
       ...evaluatedPlan,
       resources: Object.fromEntries(
         Object.entries(evaluatedPlan.resources).map(([fqn, node]) => [
           fqn,
-          buckets.get(fqn)?.resume && node.action === "create"
-            ? { ...node, state: buckets.get(fqn)!.native }
+          storage.get(fqn)?.resume && node.action === "create"
+            ? { ...node, state: storage.get(fqn)!.native }
             : node,
         ]),
       ),
     };
-    return { plan, buckets };
+    return { plan, buckets, databases };
   });

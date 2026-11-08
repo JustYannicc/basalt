@@ -3,6 +3,10 @@ import { BarrierRefusal } from "./manifest.ts";
 import type { PropChange } from "./prop-diff.ts";
 
 export type BucketOperation =
+  | "prepare-d1"
+  | "read-d1"
+  | "create-d1"
+  | "preflight-d1"
   | "prepare-bucket"
   | "read-bucket"
   | "create-bucket"
@@ -16,6 +20,7 @@ export function bucketFailure(
   fqn: string,
   operation: BucketOperation,
   reason = "declared-bucket-provider-failed",
+  type = "Cloudflare.R2.Bucket",
 ) {
   if (error instanceof BarrierRefusal) return error;
   const changed: PropChange[] = [{ path: "$operation", old: null, new: operation }];
@@ -27,7 +32,7 @@ export function bucketFailure(
     changed.push({ path: "$provider.status", old: null, new: provider.status });
   for (const [index, code] of (provider.codes ?? []).entries())
     changed.push({ path: `$provider.codes.${index}`, old: null, new: code });
-  return new BarrierRefusal(reason, fqn, { fqn, type: "Cloudflare.R2.Bucket", changed });
+  return new BarrierRefusal(reason, fqn, { fqn, type, changed });
 }
 
 export async function bucketRead<A>(fqn: string, read: () => Promise<A>): Promise<A> {

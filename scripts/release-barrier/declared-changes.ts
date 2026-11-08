@@ -1,7 +1,11 @@
 import type * as Plan from "alchemy/Plan";
 import { isResolved } from "alchemy/Diff";
 import { canonical } from "./manifest.ts";
-import type { BucketDeclaration, DeclaredChanges } from "./declared-change-schema.ts";
+import type {
+  BucketDeclaration,
+  D1Declaration,
+  DeclaredChanges,
+} from "./declared-change-schema.ts";
 import { changedProps } from "./prop-diff.ts";
 import type { PlanRefusal } from "./manifest.ts";
 
@@ -9,14 +13,14 @@ export function declarationRefusals(plan: Plan.Plan, declarations?: DeclaredChan
   const refusals: PlanRefusal[] = [];
   for (const entry of declarations?.changes ?? []) {
     const node = plan.resources[entry.fqn];
-    if (entry.action !== "create-bucket")
+    if (entry.action !== "create-bucket" && entry.action !== "create-d1-database")
       refusals.push({
         reason: "unsupported-declared-operation",
         fqn: entry.fqn,
         type: entry.type,
         changed: [{ path: "$declaration.action", old: null, new: entry.action }],
       });
-    else if (node && !bucketIntentMatches(node, entry))
+    else if (node && !declaredIntentMatches(node, entry))
       refusals.push({
         reason: "declaration-does-not-match-plan",
         fqn: entry.fqn,
@@ -72,12 +76,29 @@ export function declaredBucketCreate(node: Plan.Apply, declarations?: DeclaredCh
   return canonical(node.resource.Props) === canonical(entry.props);
 }
 
-export function bucketIntentMatches(node: Plan.Apply, entry: BucketDeclaration) {
+export function declaredIntentMatches(node: Plan.Apply, entry: BucketDeclaration | D1Declaration) {
   return (
     node.resource.Type === entry.type &&
     node.resource.FQN === entry.fqn &&
     node.resource.RemovalPolicy === entry.removalPolicy &&
     isResolved(node.resource.Props) &&
     canonical(node.resource.Props) === canonical(entry.props)
+  );
+}
+
+export function declaredD1Create(node: Plan.Apply, declarations?: DeclaredChanges) {
+  const entry = declarations?.changes.find((change) => change.fqn === node.resource.FQN);
+  return (
+    !!entry &&
+    entry.action === "create-d1-database" &&
+    declaredIntentMatches(node, entry) &&
+    node.action === "create" &&
+    !node.renamedFrom?.length &&
+    (!node.state ||
+      (node.state.status === "creating" &&
+        node.state.fqn === entry.fqn &&
+        node.state.resourceType === entry.type &&
+        node.state.removalPolicy === "retain" &&
+        canonical(node.state.props) === canonical(entry.props)))
   );
 }

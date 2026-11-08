@@ -7,7 +7,7 @@ import { firstVerificationCommand, supportedCommand } from "./commands.ts";
 
 import { plannedReasons } from "./plan-reasons.ts";
 import type { DeclaredChanges } from "./declared-change-schema.ts";
-import { declarationRefusals, declaredBucketCreate } from "./declared-changes.ts";
+import { declarationRefusals, declaredBucketCreate, declaredD1Create } from "./declared-changes.ts";
 
 const readinessId = "PoolBackendBudgetRuntimeReady";
 const deploymentEnvironment = new Set([
@@ -109,7 +109,8 @@ export function assertSupportedPlan(
         changed: [{ path: "$action", old, new: next }],
       });
   for (const [fqn, node] of Object.entries(plan.resources)) {
-    const declaredCreate = declaredBucketCreate(node, declarations);
+    const declaredCreate =
+      declaredBucketCreate(node, declarations) || declaredD1Create(node, declarations);
     const refuseNode = (reason: string) => {
       let changed = changedProps(recordedProps(node), node.resource.Props);
       if (node.resource.LogicalId === readinessId && node.resource.Type === "Command.Exec")

@@ -26,6 +26,18 @@ export const BucketDeclaration = Schema.Struct({
   retention: retained,
 });
 
+export const D1Declaration = Schema.Struct({
+  action: Schema.Literal("create-d1-database"),
+  type: Schema.Literal("Cloudflare.D1Database"),
+  fqn: logicalName,
+  props: Schema.Struct({
+    name: Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/u)),
+    jurisdiction: Schema.Literal("eu"),
+  }),
+  removalPolicy: Schema.Literal("retain"),
+  retention: retained,
+});
+
 export const SqliteClassDeclaration = Schema.Struct({
   action: Schema.Literal("add-sqlite-class"),
   type: Schema.Literal("Cloudflare.Worker"),
@@ -47,7 +59,9 @@ export const DeclaredChanges = Schema.Struct({
   schemaVersion: Schema.Literal(1),
   stack: logicalName,
   retentionOwner: Schema.NonEmptyString,
-  changes: Schema.NonEmptyArray(Schema.Union([BucketDeclaration, SqliteClassDeclaration])),
+  changes: Schema.NonEmptyArray(
+    Schema.Union([BucketDeclaration, D1Declaration, SqliteClassDeclaration]),
+  ),
 });
 
 export type DeclaredChanges = typeof DeclaredChanges.Type;
@@ -58,3 +72,5 @@ export const decodeDeclaredChanges = Schema.decodeUnknownSync(DeclaredChanges, {
   onExcessProperty: "error",
   errors: "all",
 });
+
+export type D1Declaration = typeof D1Declaration.Type;

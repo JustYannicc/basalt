@@ -1,3 +1,5 @@
+import { observeD1Prerequisites } from "./declared-d1-prerequisites.ts";
+import type { D1Provider } from "./declared-d1-types.ts";
 import type * as Plan from "alchemy/Plan";
 import { State, isResourceState } from "alchemy/State/State";
 import { Cause, Effect } from "effect";
@@ -7,12 +9,12 @@ import { bucketRead } from "./bucket-failure.ts";
 import { declarationHistory } from "./declared-history.ts";
 import { assertBucketObservation, type BucketProvider } from "./declared-buckets.ts";
 import { changedProps } from "./prop-diff.ts";
-import { bucketIntentMatches } from "./declared-changes.ts";
+import { declaredIntentMatches } from "./declared-changes.ts";
 import { BarrierRefusal, canonical, digest } from "./manifest.ts";
 
 export interface DeclaredPrerequisite {
   fqn: string;
-  type: "Cloudflare.R2.Bucket";
+  type: "Cloudflare.R2.Bucket" | "Cloudflare.D1Database";
   entry: string;
   ready: boolean;
   lifecycle: "absent" | "creating" | "created" | "updated" | "unknown";
@@ -34,6 +36,7 @@ export const observeDeclaredPrerequisites = (
   scope: { stack: string; stage: string },
   provider: BucketProvider,
   phase: DeclaredReadiness["phase"],
+  d1?: D1Provider,
 ) =>
   Effect.gen(function* () {
     const state = yield* yield* State;
@@ -101,7 +104,7 @@ export const observeDeclaredPrerequisites = (
           !saved ||
           !["created", "acknowledged"].includes(saved.status) ||
           saved.entry !== entryDigest ||
-          !bucketIntentMatches(node, entry) ||
+          !declaredIntentMatches(node, entry) ||
           canonical(row.props) !== canonical(entry.props) ||
           row.instanceId !== saved.instanceId ||
           row.fqn !== entry.fqn ||
@@ -185,6 +188,22 @@ export const observeDeclaredPrerequisites = (
         });
       });
     yield* declaredChecks([
+      ...(d1
+        ? [
+            {
+              fqn: "(declared D1)",
+              type: "Cloudflare.D1Database" as const,
+              check: observeD1Prerequisites(plan, declarations, scope, d1, phase).pipe(
+                Effect.tap((value) =>
+                  Effect.sync(() => {
+                    resources.push(...value);
+                  }),
+                ),
+                Effect.asVoid,
+              ),
+            },
+          ]
+        : []),
       ...missing,
       ...(declarations?.changes ?? []).flatMap((entry) =>
         entry.action === "create-bucket" ? [{ fqn: entry.fqn, check: check(entry) }] : [],
@@ -205,8 +224,9 @@ export const recordDeclaredReadiness = (
   provider: BucketProvider,
   phase: DeclaredReadiness["phase"],
   record?: (value: DeclaredReadiness) => Promise<void>,
+  d1?: D1Provider,
 ) =>
-  observeDeclaredPrerequisites(plan, declarations, scope, provider, phase).pipe(
+  observeDeclaredPrerequisites(plan, declarations, scope, provider, phase, d1).pipe(
     Effect.catchCause((cause) =>
       Effect.gen(function* () {
         if (record) {
@@ -216,7 +236,7 @@ export const recordDeclaredReadiness = (
               declaration: digest(canonical(declarations ?? null)),
               phase,
               resources: (declarations?.changes ?? []).flatMap((entry) =>
-                entry.action === "create-bucket"
+                entry.action === "create-bucket" || entry.action === "create-d1-database"
                   ? [
                       {
                         fqn: entry.fqn,

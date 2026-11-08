@@ -9,9 +9,25 @@ const issuePaths = SchemaIssue.makeFormatterStandardSchemaV1({
   leafHook: () => "invalid",
   checkHook: () => "invalid",
 });
-const key = "$basaltDeclaredChanges";
+export const declarationHistoryKey = "$basaltDeclaredChanges";
+const key = declarationHistoryKey;
 const hash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
+const databaseHistory = Schema.Struct({
+  entry: hash,
+  declaration: hash,
+  candidate: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/u)),
+  instanceId: Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/u)),
+  target: Schema.Struct({
+    accountId: Schema.NonEmptyString,
+    databaseName: Schema.NonEmptyString,
+    jurisdiction: Schema.Literal("eu"),
+  }),
+  databaseId: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[a-f0-9-]{36}$/u))),
+  status: Schema.Literals(["pending", "acknowledged", "created"]),
+  providerVersion: Schema.Number,
+});
 const history = Schema.Struct({
+  databases: Schema.optionalKey(Schema.Record(Schema.String, databaseHistory)),
   schemaVersion: Schema.Literal(1),
   buckets: Schema.Record(
     Schema.String,
@@ -36,9 +52,10 @@ const object = (value: unknown): value is Record<string, unknown> =>
 
 export function declarationHistory(output: unknown) {
   if (!object(output) || !Object.hasOwn(output, key))
-    return { schemaVersion: 1 as const, buckets: {} } satisfies typeof history.Type;
+    return { schemaVersion: 1 as const, buckets: {}, databases: {} } satisfies typeof history.Type;
   try {
-    return Schema.decodeUnknownSync(history, { onExcessProperty: "error" })(output[key]);
+    const saved = Schema.decodeUnknownSync(history, { onExcessProperty: "error" })(output[key]);
+    return { ...saved, databases: saved.databases ?? {} };
   } catch (error) {
     throw new BarrierRefusal("declared-history-invalid", "$basaltDeclaredChanges", {
       fqn: "$basaltDeclaredChanges",
@@ -101,6 +118,7 @@ export const recordBucketHistory = (
       value: {
         ...output,
         [key]: {
+          ...previous,
           schemaVersion: 1,
           buckets: {
             ...previous.buckets,

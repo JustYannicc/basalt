@@ -2,6 +2,8 @@ import { BarrierRefusal } from "./manifest.ts";
 import { changedProps } from "./prop-diff.ts";
 
 const enums = new Set([
+  "jurisdiction",
+  "readReplication",
   "status",
   "outcome",
   "resource",
@@ -13,6 +15,12 @@ const enums = new Set([
   "providerMode",
 ]);
 const values = new Set([
+  "eu",
+  "us",
+  "default",
+  "fedramp",
+  "auto",
+  "disabled",
   "creating",
   "created",
   "updated",
@@ -68,10 +76,11 @@ export const declaredMismatch = (
   fqn: string,
   expected: unknown,
   observed: unknown,
+  type = "Cloudflare.R2.Bucket",
 ) =>
   new BarrierRefusal(reason, fqn, {
     fqn,
-    type: "Cloudflare.R2.Bucket",
+    type,
     changed: changedProps(expected, observed).map((change) => {
       if ("old" in change || change.path.includes(".")) return change;
       const old = publicValue(field(expected, change.path), change.path);

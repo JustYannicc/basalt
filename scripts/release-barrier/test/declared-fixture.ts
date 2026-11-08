@@ -211,7 +211,7 @@ export function provisioning(
               })
             : declarations,
           declared: async (value) => {
-            progress.push(structuredClone(value));
+            if ("bucket" in value) progress.push(structuredClone(value));
             if (options.recordFails && value.outcome === "pending")
               throw Object.assign(new Error("private-evidence-error"), { status: 500, code: 9001 });
           },

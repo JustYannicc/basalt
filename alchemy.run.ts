@@ -176,7 +176,12 @@ export default Alchemy.Stack(
     });
     // The public home and legal pages at the zone's apex. Previews share the zone, so only
     // production owns its apex.
-    if (preview === undefined)
+    if (preview === undefined) {
+      // Provision separately from the waiting-list Worker binding so admission precedes creation.
+      yield* Cloudflare.D1.Database("PublicSiteWaitlist", {
+        name: "public-site-waitlist",
+        jurisdiction: "eu",
+      }).pipe(retain());
       // Upstream's Command.Build already owns "Site". Alchemy reuses logical IDs across resource types.
       yield* Cloudflare.Worker("PublicSite", {
         main: fileURLToPath(new URL("./src/site/worker.ts", import.meta.url)),
@@ -191,6 +196,7 @@ export default Alchemy.Stack(
         compatibility: { date: "2026-09-08" },
         observability: workerObservability,
       });
+    }
     const router = yield* Cloudflare.Worker("Router", {
       main: new URL("./src/router.ts", import.meta.url).pathname,
       // The brand's logo and favicon; every other path reaches the router code.
