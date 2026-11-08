@@ -13,7 +13,7 @@ const record = (value: unknown): value is Record<string, unknown> =>
 const sanitize = (value: string, token: string) => {
   // Redact fields before substitutions can change escapes inside their quoted values.
   const credentials = value.replace(
-    /["']?\b(?:authorization|(?:set-)?cookie|api[_-]?key|token|secret|password)["']?\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n]+)/gi,
+    /["']?\b[a-z0-9_-]*(?:authorization|cookie|api[_-]?key|token|secret|password)["']?\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n]+)/gi,
     "[CREDENTIAL]",
   );
   const text = token ? credentials.replaceAll(token, "[REDACTED]") : credentials;

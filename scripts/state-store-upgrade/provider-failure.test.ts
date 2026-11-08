@@ -84,6 +84,30 @@ test("escaped quotes cannot end credential redaction early", () => {
   }
 });
 
+test("compound credential fields never enter provider diagnostics", () => {
+  for (const key of [
+    "access_token",
+    "refresh_token",
+    "client_secret",
+    "accessToken",
+    "clientSecret",
+    "service-api-key",
+  ]) {
+    const value = "synthetic-short";
+    const result = envelopeFailure(
+      {
+        errors: [{ code: 10021, message: "Invalid metadata. " + JSON.stringify({ [key]: value }) }],
+        messages: [`Rejected ${key}='${value}'`],
+      },
+      "different-request-token",
+    );
+    assert.equal(result.errors[0]?.code, 10021);
+    assert.match(result.errors[0]!.message, /Invalid metadata/);
+    assert.match(result.messages[0]!.message, /Rejected/);
+    assert.ok(!JSON.stringify(result).includes(value), `${key} must be redacted`);
+  }
+});
+
 test("non-JSON, oversized and failed body streams have explicit safe diagnoses", async () => {
   assert.equal(
     (await responseFailure(new Response("<html>private text</html>"), "")).body,
