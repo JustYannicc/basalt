@@ -197,3 +197,17 @@ test("native D1 recovery cannot replace the acknowledged UUID with a same-name d
   await assert.rejects(Effect.runPromise(proof.effect), /declared-prerequisite-identity-mismatch/);
   assert.equal(proof.events.filter((item) => item === "create-d1").length, 1);
 });
+
+test("D1 collisions name every blocked declaration before any create", async () => {
+  const proof = provisioningD1({ multiple: true, collision: true });
+  await assert.rejects(Effect.runPromise(proof.effect), (error) => {
+    assert.ok(error instanceof Error && "refusals" in error && Array.isArray(error.refusals));
+    assert.deepEqual(error.refusals.map((item) => item.fqn).sort(), [
+      "ArchiveWaitlist",
+      "PublicSiteWaitlist",
+    ]);
+    assert.ok(error.refusals.every((item) => item.reason === "declared-d1-name-collision"));
+    return true;
+  });
+  assert.ok(!proof.events.includes("create-d1"));
+});

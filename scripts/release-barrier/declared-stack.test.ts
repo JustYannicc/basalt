@@ -207,3 +207,17 @@ test("preflight aggregates a new missing dependency with a separate removed decl
   });
   assert.deepEqual(proof.events, []);
 });
+
+test("an untyped R2 account failure keeps the bucket type and operation", async () => {
+  const proof = provisioning({ accountError: true });
+  await assert.rejects(Effect.runPromise(proof.effect), (error) => {
+    assert.ok(error instanceof Error && "delta" in error && "reason" in error);
+    assert.equal(error.reason, "declared-bucket-provider-failed");
+    assert.ok(error.delta && typeof error.delta === "object" && "type" in error.delta);
+    assert.equal(error.delta.type, "Cloudflare.R2.Bucket");
+    assert.match(JSON.stringify(error.delta), /prepare-bucket/);
+    assert.doesNotMatch(JSON.stringify(error), /private-account-failure/);
+    return true;
+  });
+  assert.deepEqual(proof.events, []);
+});

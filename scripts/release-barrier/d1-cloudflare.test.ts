@@ -161,3 +161,16 @@ test("a missing acknowledged D1 is observed without adoption or writes", async (
   assert.equal(await proof.run(readDeclaredD1(target, id)), undefined);
   assert.deepEqual(proof.calls, [`GET /client/v4/accounts/synthetic-account/d1/database/${id}`]);
 });
+
+test("D1 replication drift names the database and exact closed old/new modes", async () => {
+  const proof = sdk({ replication: "auto" });
+  await assert.rejects(proof.run(readDeclaredD1(target, id, "PublicSiteWaitlist")), (error) => {
+    assert.ok(error instanceof Error && "delta" in error);
+    assert.deepEqual(error.delta, {
+      fqn: "PublicSiteWaitlist",
+      type: "Cloudflare.D1Database",
+      changed: [{ path: "readReplication", old: "disabled", new: "auto" }],
+    });
+    return true;
+  });
+});

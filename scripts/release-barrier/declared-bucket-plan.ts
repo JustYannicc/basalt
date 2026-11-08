@@ -38,7 +38,7 @@ export const prepareDeclaredBuckets = (
         .filter(([, node]) => declaredBucketCreate(node, declarations))
         .map(([fqn, node]) => ({
           fqn,
-          type: "Cloudflare.D1Database" as const,
+          type: "Cloudflare.R2.Bucket" as const,
           check: Effect.gen(function* () {
             const saved = history.buckets[fqn];
             const row = node.state;

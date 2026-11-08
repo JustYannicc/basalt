@@ -71,6 +71,7 @@ export function provisioning(
     collision?: boolean;
     featureBinding?: boolean;
     providerError?: boolean;
+    accountError?: boolean;
     nativeBucket?: boolean;
     multipleMissing?: boolean;
     recoveredForeign?: boolean;
@@ -232,7 +233,10 @@ export function provisioning(
                 return { versionId: "accepted", startupTimeMs: 100 };
               }),
             buckets: {
-              accountId: async () => "fixture",
+              accountId: async () => {
+                if (options.accountError) throw new Error("private-account-failure");
+                return "fixture";
+              },
               read: async (target) => {
                 if (options.providerError)
                   throw Object.assign(new Error("private-provider-detail"), {

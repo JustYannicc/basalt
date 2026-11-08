@@ -16,6 +16,7 @@ import {
   type PreparedD1,
   type D1Progress,
 } from "./declared-d1-types.ts";
+import { declaredChecks } from "./declared-checks.ts";
 import type { BucketOperation } from "./bucket-failure.ts";
 
 export const createDeclaredDatabases = (
@@ -28,6 +29,23 @@ export const createDeclaredDatabases = (
 ) =>
   Effect.gen(function* () {
     const state = yield* yield* State;
+    yield* declaredChecks(
+      [...databases]
+        .filter(([, database]) => !database.resume)
+        .map(([fqn, database]) => ({
+          fqn,
+          type: "Cloudflare.D1Database" as const,
+          check: Effect.gen(function* () {
+            if (yield* Effect.promise(() => d1Read(fqn, () => provider.exists(database.target))))
+              throw d1Mismatch(
+                "declared-d1-name-collision",
+                fqn,
+                { resource: null },
+                { resource: "exists" },
+              );
+          }),
+        })),
+    );
     for (const [fqn, initial] of databases) {
       let database = initial;
       const current = yield* state.get({ ...scope, fqn });

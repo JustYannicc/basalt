@@ -68,13 +68,13 @@ export const readDeclaredD1 = (target: D1Target, databaseId: string, fqn = "decl
             databaseId,
             name: target.databaseName,
             jurisdiction: "eu",
-            readReplication: { mode: "disabled" },
+            readReplication: "disabled",
           },
           {
             databaseId: row.uuid,
             name: row.name,
             jurisdiction: row.jurisdiction,
-            readReplication: row.readReplication ?? { mode: "disabled" },
+            readReplication: row.readReplication?.mode ?? "disabled",
           },
         );
       return {
