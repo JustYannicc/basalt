@@ -35,6 +35,8 @@ export function classCheckFailure(error: unknown, fqn: string) {
   ];
   if (provider) {
     changed.push({ path: "$provider.type", old: null, new: provider.type });
+    if (provider.reason !== undefined)
+      changed.push({ path: "$provider.reason", old: null, new: provider.reason });
     if (provider.status !== undefined)
       changed.push({ path: "$provider.status", old: null, new: provider.status });
     for (const [index, code] of (provider.codes ?? []).entries())

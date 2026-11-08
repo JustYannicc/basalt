@@ -35,11 +35,21 @@ const knownTypes = new Set([
   "ConfigError",
   "RequestError",
   "ResponseError",
+  "HttpClientError",
   "SchemaError",
   "TypeError",
   "RangeError",
   "SyntaxError",
   "Error",
+]);
+
+const httpReasons = new Set([
+  "TransportError",
+  "EncodeError",
+  "InvalidUrlError",
+  "StatusCodeError",
+  "DecodeError",
+  "EmptyBodyError",
 ]);
 
 const field = (value: unknown, key: string): unknown =>
@@ -51,7 +61,9 @@ const integer = (value: unknown, minimum: number, maximum: number): value is num
 export function safeProviderFailure(error: unknown) {
   const tag = field(error, "_tag") ?? field(error, "name");
   const type = typeof tag === "string" && knownTypes.has(tag) ? tag : "unknown";
-  const status = field(error, "status");
+  const httpReason = type === "HttpClientError" ? field(error, "reason") : undefined;
+  const reason = field(httpReason, "_tag");
+  const status = field(error, "status") ?? field(field(httpReason, "response"), "status");
   const entries = field(error, "errors");
   const codes = [
     ...new Set(
@@ -63,6 +75,7 @@ export function safeProviderFailure(error: unknown) {
   ].sort((a, b) => a - b);
   return {
     type,
+    ...(typeof reason === "string" && httpReasons.has(reason) ? { reason } : {}),
     ...(integer(status, 100, 599) ? { status } : {}),
     ...(codes.length ? { codes } : {}),
   };

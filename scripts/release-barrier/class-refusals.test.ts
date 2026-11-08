@@ -1,7 +1,7 @@
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { Effect } from "effect";
+import { Cause, Effect, Exit, Redacted } from "effect";
 import { classProvisioning } from "./test/declared-class-fixture.ts";
 import { reportRefusal } from "./refusal-report.ts";
 import assert from "node:assert/strict";
@@ -9,6 +9,15 @@ import { test } from "node:test";
 import { assertClassRequests } from "./class-refusals.ts";
 import { preparedUpload } from "./fixture.ts";
 import { BarrierRefusal } from "./manifest.ts";
+import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientError from "effect/http/HttpClientError";
+import * as HttpResponse from "effect/http/HttpClientResponse";
+import { Credentials } from "@distilled.cloud/cloudflare/Credentials";
+import { readDeclaredClass } from "./class-cloudflare.ts";
+import { declaredChecks } from "./declared-checks.ts";
+import { classCheckFailure } from "./class-refusal.ts";
+import { withOperation } from "./operation-failure.ts";
+import { releaseEvidence } from "./evidence.ts";
 
 test("all independent concrete request refusals name their logical Worker before any live expansion", () => {
   const uploads = ["First", "Second"].map((fqn) => {
@@ -115,3 +124,96 @@ test("request and live-baseline refusals are collected together before any mutat
   assert.equal(proof.cloneState().staged, 0);
   assert.deepEqual(proof.events, []);
 });
+
+for (const reason of ["TransportError", "DecodeError"] as const)
+  test(`declared class ${reason} reaches retained evidence and both public outputs safely`, async (context) => {
+    const root = await mkdtemp(join(tmpdir(), "class-http-refusal-"));
+    context.after(() => rm(root, { recursive: true, force: true }));
+    const directory = join(root, "release-barrier");
+    const secret = "synthetic-private-credential";
+    let reads = 0;
+    const client = HttpClient.make((request, url) => {
+      assert.equal(request.method, "GET");
+      reads++;
+      if (url.pathname.endsWith("/deployments"))
+        return Effect.succeed(
+          HttpResponse.fromWeb(
+            request,
+            Response.json({
+              success: true,
+              errors: [],
+              messages: [],
+              result: {
+                deployments: [
+                  {
+                    id: "deployment",
+                    created_on: "2026-01-01T00:00:00Z",
+                    source: "api",
+                    strategy: "percentage",
+                    versions: [{ version_id: "active", percentage: 100 }],
+                  },
+                ],
+              },
+            }),
+          ),
+        );
+      const cause = new Error(secret);
+      return Effect.fail(
+        new HttpClientError.HttpClientError({
+          reason:
+            reason === "TransportError"
+              ? new HttpClientError.TransportError({ request, cause })
+              : new HttpClientError.DecodeError({
+                  request,
+                  cause,
+                  response: HttpResponse.fromWeb(request, new Response(secret, { status: 503 })),
+                }),
+        }),
+      );
+    });
+    const check = readDeclaredClass(
+      { accountId: "synthetic-account", scriptName: "private-physical-name" },
+      async () => {
+        throw new Error("Unexpected settings read");
+      },
+    ).pipe(
+      withOperation("AppData", "read-class-expansion"),
+      Effect.provideService(HttpClient.HttpClient, client),
+      Effect.provideService(
+        Credentials,
+        Effect.succeed({
+          type: "apiToken",
+          apiToken: Redacted.make(secret),
+          apiBaseUrl: "https://private-provider.invalid",
+        }),
+      ),
+    );
+    const exit = await Effect.runPromiseExit(
+      declaredChecks([{ fqn: "AppData", check }], classCheckFailure),
+    );
+    assert.ok(Exit.isFailure(exit));
+    assert.equal(reads, 2);
+    const failure = await releaseEvidence(directory, "a".repeat(40)).failure(
+      Cause.squash(exit.cause),
+    );
+    const errors: string[] = [];
+    const summary = join(root, "summary.md");
+    await reportRefusal(failure, summary, (message) => errors.push(message));
+    for (const output of [
+      await readFile(join(directory, "failure.json"), "utf8"),
+      await readFile(summary, "utf8"),
+      errors.join("\n"),
+    ]) {
+      for (const expected of [
+        "AppData",
+        "read-class-expansion",
+        "$provider.reason",
+        "HttpClientError",
+        reason,
+      ])
+        assert.ok(output.includes(expected), `missing ${expected}`);
+      if (reason === "DecodeError") assert.ok(output.includes("503"));
+      for (const privateValue of [secret, "private-provider.invalid", "private-physical-name"])
+        assert.ok(!output.includes(privateValue));
+    }
+  });
