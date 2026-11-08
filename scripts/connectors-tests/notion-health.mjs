@@ -4,7 +4,11 @@ import { resolve, join } from "node:path";
 import { Effect } from "effect";
 import source from "../../src/catalog/notion.json" with { type: "json" };
 
-let value = { id: "bot-synthetic", bot: { workspace_name: "Design workspace" } };
+// REST `users/me` answers with the integration's bot user; MCP `notion-get-self` answers with the
+// connected workspace and person, as Notion documents it ("Build an MCP client").
+let rest = { id: "bot-synthetic", bot: { workspace_name: "Design workspace" } };
+const person = { type: "person", id: "user-synthetic", name: "Ada", email: "ada@example.test" };
+let self = { workspace: { id: "ws-synthetic", name: "Design workspace" }, user: person };
 let mode = "structured";
 let calls = [];
 const opened = new Set();
@@ -25,7 +29,7 @@ const peer = Bun.serve({
     });
     if (request.headers.get("authorization") !== "Bearer synthetic-good")
       return new Response("Unauthorized", { status: 401 });
-    if (path === "/v1/users/me") return Response.json(value);
+    if (path === "/v1/users/me") return Response.json(rest);
     if (request.method === "DELETE") {
       const session = request.headers.get("mcp-session-id");
       assert.ok(opened.has(session), "DELETE refers to an opened session");
@@ -81,14 +85,14 @@ const peer = Bun.serve({
       result =
         mode === "text" || mode === "fallback"
           ? {
-              content: [{ type: "text", text: JSON.stringify(value) }],
+              content: [{ type: "text", text: JSON.stringify(self) }],
               ...(mode === "fallback" ? { structuredContent: { unexpected: true } } : {}),
             }
           : mode === "empty"
             ? { content: [] }
             : mode === "tool-error"
               ? { isError: true, content: [] }
-              : { content: [], structuredContent: value };
+              : { content: [], structuredContent: self };
     }
     const message = { jsonrpc: "2.0", id: body.id, result };
     // Streamable HTTP servers may answer a request as a server-sent event stream instead of JSON.
@@ -163,51 +167,88 @@ try {
         ...extra,
       }),
     );
-  for (const method of ["token", "oauth"]) {
-    calls = [];
-    for (const name of [
-      "Design workspace",
-      "  Design workspace  ",
-      "   ",
-      undefined,
-      null,
-      42,
-      "x".repeat(300),
-    ]) {
-      value = { id: "bot-synthetic", bot: name === undefined ? {} : { workspace_name: name } };
-      for (const representation of method === "oauth"
-        ? ["structured", "text", "fallback", "stream", "held"]
-        : ["structured"]) {
-        mode = representation;
-        const result = await check(method);
-        assert.deepEqual(result.accountInfo, {
-          externalId: value.id,
-          ...(typeof name === "string" && name.trim()
-            ? { displayName: name.trim().slice(0, 255) }
-            : {}),
-        });
-      }
-    }
-    for (const bot of [undefined, null, 42, "unexpected", []]) {
-      value = { id: "bot-synthetic", ...(bot === undefined ? {} : { bot }) };
-      mode = "structured";
-      assert.deepEqual((await check(method)).accountInfo, { externalId: value.id });
-    }
-    await assert.rejects(check(method, "synthetic-rejected"));
-    assert.ok(
-      calls.every((call) =>
-        method === "oauth" ? call.path === "/mcp" : call.path === "/v1/users/me",
-      ),
-    );
+  const names = [
+    "Design workspace",
+    "  Design workspace  ",
+    "   ",
+    "",
+    undefined,
+    null,
+    42,
+    "x".repeat(300),
+  ];
+  const named = (name) =>
+    typeof name === "string" && name.trim()
+      ? { displayName: name.trim().slice(0, 255) }
+      : undefined;
+  calls = [];
+  for (const name of names) {
+    rest = { id: "bot-synthetic", bot: name === undefined ? {} : { workspace_name: name } };
+    mode = "structured";
+    assert.deepEqual((await check("token")).accountInfo, {
+      externalId: rest.id,
+      ...named(name),
+    });
   }
+  for (const bot of [undefined, null, 42, "unexpected", []]) {
+    rest = { id: "bot-synthetic", ...(bot === undefined ? {} : { bot }) };
+    assert.deepEqual((await check("token")).accountInfo, { externalId: rest.id });
+  }
+  await assert.rejects(check("token", "synthetic-rejected"));
+  assert.ok(calls.every((call) => call.path === "/v1/users/me"));
+  calls = [];
+  for (const name of names)
+    for (const user of [person, { type: "bot", id: "bot-user" }]) {
+      self = {
+        workspace: name === undefined ? { id: "ws-synthetic" } : { id: "ws-synthetic", name },
+        user,
+      };
+      for (mode of ["structured", "text", "fallback", "stream", "held"])
+        assert.deepEqual(
+          (await check("oauth")).accountInfo,
+          {
+            externalId: user.id,
+            // A workspace without a name falls back to the person's email, never to an id.
+            ...(named(name) ?? (user.email === undefined ? {} : { email: user.email })),
+          },
+          `${mode} ${JSON.stringify(self)}`,
+        );
+    }
+  for (const workspace of [undefined, null, 42, "unexpected", []]) {
+    self = { ...(workspace === undefined ? {} : { workspace }), user: person };
+    mode = "text";
+    assert.deepEqual((await check("oauth")).accountInfo, {
+      externalId: person.id,
+      email: person.email,
+    });
+  }
+  // A cut email would name someone else, so one past the host's 255 characters is left out.
+  self = {
+    workspace: { id: "ws-synthetic", name: "" },
+    user: { ...person, email: `${"x".repeat(250)}@example.test` },
+  };
+  assert.deepEqual((await check("oauth")).accountInfo, { externalId: person.id });
+  // An id the host would reject is left out rather than failing the verified account.
+  for (const user of [
+    { ...person, id: "" },
+    { ...person, id: "u".repeat(256) },
+  ]) {
+    self = { workspace: { id: "ws-synthetic", name: "Design workspace" }, user };
+    assert.deepEqual((await check("oauth")).accountInfo, { displayName: "Design workspace" });
+  }
+  // The REST shape is not what the MCP tool answers; it names nothing there.
+  self = { id: "bot-synthetic", bot: { workspace_name: "Design workspace" } };
+  assert.deepEqual(await check("oauth"), {});
+  await assert.rejects(check("oauth", "synthetic-rejected"));
+  assert.ok(calls.every((call) => call.path === "/mcp"));
   for (mode of ["failure", "empty", "tool-error"]) assert.deepEqual(await check("oauth"), {});
-  value = { unexpected: true };
+  self = { unexpected: true };
   mode = "structured";
   assert.deepEqual(await check("oauth"), {});
   const controller = new AbortController();
   controller.abort();
   await assert.rejects(check("oauth", "synthetic-good", { signal: controller.signal }));
-  value = { id: "bot-synthetic", bot: { workspace_name: "Design workspace" } };
+  self = { workspace: { id: "ws-synthetic", name: "Design workspace" }, user: person };
   mode = "hang";
   const start = performance.now();
   const deadline = Date.now() + 10_000;

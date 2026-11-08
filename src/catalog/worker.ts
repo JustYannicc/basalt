@@ -13,6 +13,7 @@ import { miroSource, withMiroCapabilities } from "./miro.ts";
 import { elevenlabsSource, withElevenLabsSignIn } from "./elevenlabs.ts";
 import { vercelSource, withVercelSignIn } from "./vercel.ts";
 import { notionSource } from "./notion.ts";
+import { spotifySource } from "./spotify.ts";
 import { recipeAdditions } from "./recipes/index.ts";
 import { providerApps } from "./provider-apps/index.ts";
 import { aws } from "./aws/index.ts";
@@ -105,6 +106,11 @@ export async function handleCatalog(
   if (relative === "apps/clerk.json")
     return new Response(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(clerkSource)),
+      { headers },
+    );
+  if (relative === "apps/spotify.json")
+    return new Response(
+      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(spotifySource)),
       { headers },
     );
   const added = [...additions, ...retiredSources].find(
