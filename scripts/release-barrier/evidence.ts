@@ -19,6 +19,7 @@ import type { ServingContainer } from "./container-serving.ts";
 import type { VerificationAdmission } from "./plan-admission.ts";
 import { sealRecovery } from "./recovery-envelope.ts";
 import { declaredEvidence } from "./declared-evidence.ts";
+import { classEvidence } from "./class-evidence.ts";
 
 const write = async (directory: string, name: string, value: unknown) => {
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -37,10 +38,16 @@ export function releaseEvidence(directory: string, candidate: string, encryption
     candidate,
     encryptionKey ?? "",
   );
+  const classes = classEvidence(
+    (name, value) => write(directory, name, value),
+    candidate,
+    encryptionKey ?? "",
+  );
   return {
     ...declared,
+    expansion: classes.expansion,
     async summary(path: string | undefined, disposition: "complete" | "failed") {
-      const text = declared.summary(disposition, latest?.activated ?? []);
+      const text = classes.summary() + declared.summary(disposition, latest?.activated ?? []);
       if (path && text) await appendFile(path, text);
     },
     async desired(value: unknown) {

@@ -1,3 +1,4 @@
+import { provisionPublicSiteWaitlist } from "./scripts/release-barrier/public-site-waitlist.ts";
 import { productionOpsRelease } from "./.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -178,11 +179,8 @@ export default Alchemy.Stack(
     // production owns its apex.
     if (preview === undefined) {
       // Provision separately from the waiting-list Worker binding so admission precedes creation.
-      // PublicSite binds this one declaration by reference; it is never declared twice.
-      const waitlist = yield* Cloudflare.D1.Database("PublicSiteWaitlist", {
-        name: "public-site-waitlist",
-        jurisdiction: "eu",
-      }).pipe(retain());
+      // PublicSite binds the resource this single declaration yields; nothing declares it twice.
+      const waitlist = yield* provisionPublicSiteWaitlist;
       // Upstream's Command.Build already owns "Site". Alchemy reuses logical IDs across resource types.
       yield* Cloudflare.Worker("PublicSite", {
         main: fileURLToPath(new URL("./src/site/worker.ts", import.meta.url)),

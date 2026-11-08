@@ -22,6 +22,7 @@ import {
   verifyRestoredContainer,
   waitForContainerVersion,
 } from "./container-cloudflare.ts";
+import { verifyClassRollback } from "./class-rollback.ts";
 
 const recoverDeployment = (
   target: { accountId: string; scriptName: string },
@@ -111,6 +112,7 @@ export const recoverStack = (
       if (!value) throw new BarrierRefusal("unknown-recovery-worker", worker.id);
       return value;
     };
+    yield* verifyClassRollback({ stack: stack.name, stage: stack.stage }, parsed, targets);
     let commitContainer:
       | ((container: FrozenContainer, observed: ContainerAttributes) => Promise<void>)
       | undefined;
