@@ -156,9 +156,7 @@ test("Api limit exception requires its exact prior limit and excludes AppPages",
       }),
     (error: unknown) => {
       assert.ok(error instanceof BarrierRefusal);
-      assert.deepEqual(error.delta?.changed, [
-        { path: "placement.target.0", old: 39, new: 40 },
-      ]);
+      assert.deepEqual(error.delta?.changed, [{ path: "placement.target.0", old: 39, new: 40 }]);
       assert.match(refusalTable(error), /Api \| placement.target.0 \| 39 → 40/);
       return true;
     },
