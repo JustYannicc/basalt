@@ -3,6 +3,7 @@ import { canonical } from "./manifest.ts";
 export interface ActiveWorkerPlacement {
   id: string;
   placement: unknown;
+  limits?: unknown;
 }
 
 const record = (value: unknown): value is Record<string, unknown> =>

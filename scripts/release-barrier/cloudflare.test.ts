@@ -6,6 +6,7 @@ import * as HttpResponse from "effect/http/HttpClientResponse";
 import { Credentials } from "@distilled.cloud/cloudflare/Credentials";
 import { readBaseline, uploadVersion } from "./cloudflare.ts";
 import { freezeUpload } from "./version-request.ts";
+import { pendingPlacementRepair, placementRepairTargets } from "./pending-placement.ts";
 import { preparedUpload } from "./fixture.ts";
 import * as HttpClientError from "effect/http/HttpClientError";
 
@@ -81,7 +82,7 @@ test("version upload never retries a transient transport failure", async () => {
   assert.equal(attempts, 1);
 });
 
-test("the real version multipart preserves declared limits, placement and observability", async () => {
+test("the real version multipart repairs the exact damaged Api baseline and protects all setting groups", async () => {
   const input = preparedUpload();
   Object.assign(input.request.metadata, {
     limits: { subrequests: 50000 },
@@ -92,11 +93,13 @@ test("the real version multipart preserves declared limits, placement and observ
     tags: ["fixture-tag"],
     bindings: [{ type: "durable_object_namespace", name: "Store", className: "Store" }],
   });
+  const target = placementRepairTargets[0];
+  input.request.scriptName = target.scriptName;
   const complete = {
     ...input,
     previousSettings: {
-      limits: { subrequests: 50000 },
-      placement: { region: "aws:eu-central-1" },
+      limits: undefined,
+      placement: undefined,
       observability: { enabled: true, logs: { enabled: true, invocationLogs: true } },
       logpush: true,
       tailConsumers: [{ service: "fixture-tail" }],
@@ -104,7 +107,29 @@ test("the real version multipart preserves declared limits, placement and observ
       bindings: [{ type: "durable_object_namespace" as const, name: "Store", className: "Store" }],
     },
   };
-  const worker = await freezeUpload(complete, [{ versionId: "old", percentage: 100 }]);
+  const baseline = [{ versionId: target.version, percentage: 100 }];
+  const active = { id: target.version, placement: undefined };
+  const prior = {
+    id: target.prior,
+    placement: {
+      mode: "targeted",
+      target: [{ id: 39, region: "aws:eu-central-1", type: "region" }],
+    },
+    limits: { subrequests: 50000 },
+  };
+  const repair = pendingPlacementRepair({
+    role: target.role,
+    scriptName: target.scriptName,
+    deploymentId: target.deployment,
+    baseline,
+    active,
+    prior,
+    metadata: input.request.metadata,
+    settings: complete.previousSettings,
+    retired: false,
+  });
+  const worker = await freezeUpload(complete, baseline, [active], repair);
+  assert.equal(worker.pendingPlacementRepair?.limits?.subrequests.after, 50000);
   let metadata: Record<string, unknown> | undefined;
   const sdk = HttpClient.make((request) =>
     Effect.promise(async () => {

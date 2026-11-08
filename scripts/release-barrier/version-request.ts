@@ -4,7 +4,7 @@ import { havePropsChanged } from "alchemy/Diff";
 import { assertScriptSettings, settingsRefusal } from "./script-settings.ts";
 import type { ActiveWorkerPlacement } from "./script-placement.ts";
 import { BarrierRefusal, canonical, digest, type FrozenWorker } from "./manifest.ts";
-import type { PendingPlacementRepair } from "./pending-placement.ts";
+import { repairComparisonSettings, type PendingPlacementRepair } from "./pending-placement.ts";
 
 const globalProps = [
   "observability",
@@ -84,7 +84,7 @@ export function versionMetadata(
     upload.fqn,
     scriptName,
     metadata,
-    repair ? { ...observed!, placement: metadata.placement } : observed!,
+    repair ? repairComparisonSettings(observed!, repair) : observed!,
     versions,
     baseline,
   );

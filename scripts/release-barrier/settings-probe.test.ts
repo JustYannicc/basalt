@@ -46,7 +46,10 @@ for (const mode of ["same", "drift", "repair"] as const) {
         result = {
           placement: target ? undefined : { mode: "targeted", target: [39] },
           logpush: drift && path.includes("publicsite"),
-          limits: { subrequests: drift && path.includes("api-production") ? 100 : 50_000 },
+          limits:
+            target?.role === "Api"
+              ? undefined
+              : { subrequests: drift && path.includes("api-production") ? 100 : 50_000 },
           observability: { enabled: true, head_sampling_rate: 1 },
           tags: [],
           bindings: [],
@@ -56,6 +59,10 @@ for (const mode of ["same", "drift", "repair"] as const) {
         result = {
           id: path.split("/").at(-1),
           resources: {
+            script_runtime:
+              target?.role === "Api" && path.endsWith(target.prior)
+                ? { limits: { subrequests: 50000 } }
+                : {},
             script: {
               placement:
                 target && path.endsWith(target.version)

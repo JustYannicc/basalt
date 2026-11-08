@@ -22,8 +22,8 @@ import {
   placementRepairTargets,
   assertRepairedPlacement,
   assertRepairedVersionPlacement,
+  assertRepairBaseline,
 } from "./pending-placement.ts";
-import { assertScriptSettings } from "./script-settings.ts";
 import { retiredPlacements, retirePlacement } from "./placement-retirement.ts";
 import { needsPlacementProof } from "./script-placement.ts";
 import { releaseWorkers, type BarrierReceipt } from "./barrier.ts";
@@ -202,14 +202,20 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
                 const version = await run(
                   readVersionPlacement(worker.accountId, worker.scriptName, versionId),
                 );
-                assertRepairedVersionPlacement(worker.id, versionId, version);
+                assertRepairedVersionPlacement(
+                  worker.id,
+                  versionId,
+                  version,
+                  worker.pendingPlacementRepair,
+                );
                 const settings = await run(readScriptSettings(worker));
-                if (JSON.stringify(settings.placement ?? {}) !== "{}")
-                  throw new BarrierRefusal("placement-repair-baseline-drift", worker.id);
-                assertScriptSettings(worker.id, worker.scriptName, worker.metadata, {
-                  ...settings,
-                  placement: worker.metadata.placement,
-                });
+                assertRepairBaseline(
+                  worker.id,
+                  worker.scriptName,
+                  worker.metadata,
+                  settings,
+                  worker.pendingPlacementRepair,
+                );
               }
               activated.set(worker.id, await run(upload.activate(versionId)));
               if (worker.pendingPlacementRepair) {
@@ -217,7 +223,13 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
                   readVersionPlacement(worker.accountId, worker.scriptName, versionId),
                 );
                 const settings = await run(readScriptSettings(worker));
-                assertRepairedPlacement(worker.id, versionId, version, settings);
+                assertRepairedPlacement(
+                  worker.id,
+                  versionId,
+                  version,
+                  settings,
+                  worker.pendingPlacementRepair,
+                );
                 await run(retirePlacement(state, stack, worker.id));
               }
             },

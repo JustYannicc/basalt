@@ -1,7 +1,7 @@
 import { Schema } from "effect";
 import type * as Workers from "@distilled.cloud/cloudflare/workers";
 import { BarrierRefusal, canonical } from "./manifest.ts";
-import { assertScriptSettings } from "./script-settings.ts";
+import { assertScriptSettings, settingsRefusal } from "./script-settings.ts";
 import { normalizePlacement, type ActiveWorkerPlacement } from "./script-placement.ts";
 
 export const placementRepairTargets = [
@@ -24,6 +24,9 @@ const expectedPrior = {
   mode: "targeted" as const,
   target: [{ id: 39, region: "aws:eu-central-1", type: "region" as const }],
 };
+
+const subrequests = (limits: unknown): unknown =>
+  limits !== null && typeof limits === "object" ? Reflect.get(limits, "subrequests") : undefined;
 
 /** This exception describes two known damaged deployments. It never normalizes arbitrary missing placement. */
 export function pendingPlacementRepair(input: {
@@ -54,11 +57,23 @@ export function pendingPlacementRepair(input: {
       canonical(normalizePlacement(expectedPrior))
   )
     throw new BarrierRefusal("pending-placement-repair-not-admitted", input.role);
-  // Other differences still go through the ordinary complete settings comparison.
-  assertScriptSettings(input.role, input.scriptName, input.metadata, {
-    ...input.settings,
-    placement: expectedPrior,
-  });
+  const limits =
+    target.role === "Api" ? { subrequests: { before: null, after: 50000 as const } } : undefined;
+  if (
+    limits &&
+    (subrequests(input.prior.limits) !== 50000 ||
+      input.metadata.limits?.subrequests !== 50000 ||
+      subrequests(input.active.limits) != null ||
+      input.settings.limits?.subrequests != null)
+  )
+    throw new BarrierRefusal("pending-limits-repair-not-admitted", input.role);
+  // Only the authorized fields are virtualized; every other setting uses the ordinary comparison.
+  assertScriptSettings(
+    input.role,
+    input.scriptName,
+    input.metadata,
+    repairComparisonSettings(input.settings, { limits }),
+  );
   return {
     role: target.role,
     scriptName: target.scriptName,
@@ -69,6 +84,7 @@ export function pendingPlacementRepair(input: {
     after: { mode: "targeted" as const, target: [39] },
     region: "aws:eu-central-1" as const,
     disposition: "pending-placement-repair" as const,
+    ...(limits ? { limits } : {}),
   };
 }
 
@@ -78,6 +94,11 @@ export const placementRepairReceipt = Schema.Struct({
   deploymentId: Schema.String,
   activeVersion: Schema.String,
   priorVersion: Schema.String,
+  limits: Schema.optional(
+    Schema.Struct({
+      subrequests: Schema.Struct({ before: Schema.Null, after: Schema.Literal(50000) }),
+    }),
+  ),
   before: Schema.Struct({}),
   after: Schema.Struct({ mode: Schema.Literal("targeted"), target: Schema.Array(Schema.Number) }),
   region: Schema.Literal("aws:eu-central-1"),
@@ -89,18 +110,64 @@ export function assertRepairedPlacement(
   role: string,
   versionId: string,
   version: ActiveWorkerPlacement,
-  settings: { readonly placement?: unknown },
+  settings: { readonly placement?: unknown; readonly limits?: unknown },
+  repair?: Pick<PendingPlacementRepair, "limits">,
 ) {
-  assertRepairedVersionPlacement(role, versionId, version);
+  assertRepairedVersionPlacement(role, versionId, version, repair);
   if (canonical(settings.placement ?? null) !== canonical({ mode: "targeted", target: [39] }))
     throw new BarrierRefusal("placement-repair-readback-drift", role);
+  if (repair?.limits && subrequests(settings.limits) !== 50000)
+    throw settingsRefusal(
+      "limits-repair-readback-drift",
+      role,
+      { limits: { subrequests: subrequests(settings.limits) ?? null } },
+      { limits: { subrequests: 50000 } },
+    );
 }
 
 export function assertRepairedVersionPlacement(
   role: string,
   versionId: string,
   version: ActiveWorkerPlacement,
+  repair?: Pick<PendingPlacementRepair, "limits">,
 ) {
   if (version.id !== versionId || canonical(version.placement ?? null) !== canonical(expectedPrior))
     throw new BarrierRefusal("placement-repair-version-drift", role);
+  if (repair?.limits && subrequests(version.limits) !== 50000)
+    throw settingsRefusal(
+      "limits-repair-version-drift",
+      role,
+      { limits: { subrequests: subrequests(version.limits) ?? null } },
+      { limits: { subrequests: 50000 } },
+    );
+}
+
+export function repairComparisonSettings(
+  settings: Workers.GetScriptScriptAndVersionSettingResponse,
+  repair: Pick<PendingPlacementRepair, "limits">,
+) {
+  return {
+    ...settings,
+    placement: expectedPrior,
+    ...(repair.limits ? { limits: { ...settings.limits, subrequests: 50000 } } : {}),
+  };
+}
+
+export function assertRepairBaseline(
+  role: string,
+  scriptName: string,
+  metadata: Workers.PutScriptMetadata,
+  settings: Workers.GetScriptScriptAndVersionSettingResponse,
+  repair: PendingPlacementRepair,
+) {
+  if (canonical(settings.placement ?? {}) !== "{}")
+    throw new BarrierRefusal("placement-repair-baseline-drift", role);
+  if (repair.limits && settings.limits?.subrequests != null)
+    throw settingsRefusal(
+      "limits-repair-baseline-drift",
+      role,
+      { limits: { subrequests: null } },
+      { limits: { subrequests: settings.limits.subrequests } },
+    );
+  assertScriptSettings(role, scriptName, metadata, repairComparisonSettings(settings, repair));
 }
