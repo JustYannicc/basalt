@@ -62,18 +62,6 @@
          icons,
        },
      ),
---- a/package.json
-+++ b/package.json
-@@ -4,7 +4,8 @@
-   "private": true,
-   "type": "module",
-   "dependencies": {
--    "apps": "0.0.1-beta.104-basalt.9"
-+    "apps": "0.0.1-beta.104-basalt.11",
-+    "@modelcontextprotocol/sdk": "1.32.1"
-   },
-   "executor": {
-     "title": "WorkOS"
 --- /dev/null
 +++ b/mcp.ts
 @@ -0,0 +1,24 @@
@@ -101,3 +89,15 @@
 +  await mcpRouter({ url, account, headers: headers(account), ...context }),
 +  (tool) => tool.kind === "mutation" ? always() : undefined,
 +);
+--- a/package.json
++++ b/package.json
+@@ -4,7 +4,8 @@
+   "private": true,
+   "type": "module",
+   "dependencies": {
+-    "apps": "0.0.1-beta.104-basalt.9"
++    "apps": "0.0.1-beta.104-basalt.13",
++    "@modelcontextprotocol/sdk": "1.32.1"
+   },
+   "executor": {
+     "title": "WorkOS"

@@ -343,3 +343,42 @@ test("both MCP budget scenarios are selected and lose coverage when their real r
     );
   }
 });
+
+test("Obsidian helpers retain coverage only while their production proof runs", () => {
+  const native = "e2e/obsidian/native-client.ts";
+  const volume = [
+    "e2e/obsidian/disk-store.ts",
+    "e2e/obsidian/large-corpus.ts",
+    "e2e/obsidian/large-vault.ts",
+    "e2e/obsidian/runtime/index.ts",
+    "e2e/obsidian/volume-backend.ts",
+  ];
+  const records = realInventory();
+  for (const source of [native, ...volume])
+    assert.ok(records.find((record) => record.id === source)?.selected, source);
+  for (const [runner, sources] of [
+    ["e2e/obsidian/installed.test.ts", [native]],
+    ["e2e/obsidian/large-vault.ts", volume],
+  ] as const) {
+    const workflow = readWorkflow();
+    const job = workflow.jobs["production-build"]!;
+    job.steps = job.steps!.filter((step) => !step.run?.includes(runner));
+    const remaining = realInventory(workflow);
+    for (const source of sources)
+      assert.equal(remaining.find((record) => record.id === source)?.selected, false, source);
+  }
+});
+
+test("nested runtime dependencies do not hide an ungated owned helper", () =>
+  fixture((root, _workflow, inventory) => {
+    const runtime = join(root, "e2e/runtime");
+    mkdirSync(join(runtime, "node_modules/vendor"), { recursive: true });
+    writeFileSync(join(runtime, "helper.ts"), "export const owned = true;\n");
+    writeFileSync(
+      join(runtime, "node_modules/vendor/index.ts"),
+      "export const dependency = true;\n",
+    );
+    const errors = coverageErrors(inventory(), []);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0]!, /^Ungated E2E: e2e\/runtime\/helper\.ts\./);
+  }));

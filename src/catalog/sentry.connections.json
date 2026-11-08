@@ -1,0 +1,52 @@
+{
+  "toolSections": [
+    {
+      "path": "api",
+      "title": "Sentry API",
+      "requirement": "sentry",
+      "method": "authToken",
+      "description": "Your Sentry sign-in provides MCP tools. Add a personal token to use the REST API too.",
+      "actionLabel": "Add token"
+    }
+  ],
+  "connectionGuidance": [
+    {
+      "requirement": "sentry",
+      "method": "oauth",
+      "signIn": {
+        "description": "Sentry MCP tools through Sentry sign-in. The REST API needs a personal token."
+      },
+      "alternativeLabel": "Sign in for MCP tools"
+    },
+    {
+      "requirement": "sentry",
+      "method": "authToken",
+      "signIn": {
+        "description": "Sentry MCP and Sentry API tools with a personal token."
+      },
+      "credentials": {
+        "steps": [
+          "In Sentry, open User settings > Personal Tokens and choose Create New Token.",
+          "Name it Signalbox. For Sentry's standard MCP tools select org:read, project:write, team:write, event:write, and alerts:write.",
+          "Create the token, paste it into Personal token, and choose your organization's region, us or de."
+        ],
+        "link": {
+          "label": "Open Sentry Personal Tokens",
+          "url": "https://sentry.io/settings/account/api/auth-tokens/"
+        },
+        "note": "A personal token provides Sentry MCP and Sentry API tools. Tools can only use the permissions you grant. Add other REST scopes only for the operations you need.",
+        "fields": {
+          "token": {
+            "label": "Personal token",
+            "expectedFormat": "Paste the token itself, without a Bearer prefix."
+          },
+          "region": {
+            "label": "Region",
+            "expectedFormat": "Use us or de for your organization's region."
+          }
+        }
+      },
+      "alternativeLabel": "Use a personal token for MCP and API"
+    }
+  ]
+}

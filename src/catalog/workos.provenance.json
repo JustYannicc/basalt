@@ -2,9 +2,9 @@
   "package": "@executor.sh/workos",
   "publishedUrl": "https://catalog.executor.sh/apps/workos.json",
   "publishedSha256": "981791c854c75f0fd04359156abd43bf719519738825800d783875e7116f6095",
-  "carriedSha256": "cdf369ce4399088afce8f33c65f4a065f9a7555a6671da93852439bcaf1192a9",
-  "patchSha256": "1ff1615a4f154e4dd08cd63e30d4593e4427c6505a9fa3b98ad93bdbb2230ca5",
-  "appsVersion": "0.0.1-beta.104-basalt.11",
+  "carriedSha256": "1655817dc4e0fd54d51e7943c3cc687a74851164620cc7f013635c6d816c881c",
+  "patchSha256": "dfade5fb8d8373a95d4914d38341cb62a665cf7346d433509d5c274299abed51",
+  "appsVersion": "0.0.1-beta.104-basalt.13",
   "license": "Not declared in the published package",
   "contribution": {
     "state": "Official management MCP sign-in added beside the unchanged API-key provider; publication not claimed"

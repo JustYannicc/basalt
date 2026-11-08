@@ -232,3 +232,26 @@ test("CI collects only the safe AWS diagnostics and existing screenshots", async
   await collect({ artifacts: [artifact.with] }, workspace, {}, destination);
   assert.deepEqual((await readdir(join(destination, "artifacts", proof))).sort(), safe.sort());
 });
+
+test("AWS wire fixtures use strings outside provider credential formats", async () => {
+  const { readFile } = await import("node:fs/promises");
+  for (const name of ["aws-signed-mcp.ts", "aws-identity-fixture.ts"]) {
+    const source = await readFile(
+      new URL(`../../.upstream/e2e/support/${name}`, import.meta.url),
+      "utf8",
+    );
+    const values = [
+      ...source.matchAll(/(?:accessKeyId|secretAccessKey|sessionToken):\s*(["`])([^"`]+)\1/g),
+    ];
+    assert.equal(values.length, 3, `${name} must expose all three fixture values to this check`);
+    for (const [, , expression] of values) {
+      const value = expression.replace("${digest}", "ABCDEF012345");
+      assert.doesNotMatch(
+        value,
+        /(?:AKIA|ASIA|AROA|AIDA|AGPA|AIPA|ANPA|ANVA|ASCA|APKA|ABIA|ACCA)[A-Z0-9]{16}/,
+      );
+      assert.match(value, /^synthetic-[a-z-]+(?:ABCDEF012345)?$/);
+      assert.doesNotMatch(value, /^[A-Za-z0-9/+=]{40,}$/);
+    }
+  }
+});

@@ -2,10 +2,15 @@ import ts from "../architecture/typescript.ts";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, matchesGlob } from "node:path";
 
-export const codeFiles = (directory: string) =>
-  readdirSync(directory, { recursive: true, withFileTypes: true })
-    .filter((entry) => entry.isFile() && /\.[cm]?[jt]sx?$/.test(entry.name))
-    .map((entry) => join(entry.parentPath, entry.name))
+export const codeFiles = (directory: string): string[] =>
+  readdirSync(directory, { withFileTypes: true })
+    .flatMap((entry) => {
+      // Installed dependencies belong to their publishers, not this repository's E2E inventory.
+      if (entry.name === "node_modules") return [];
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) return codeFiles(path);
+      return entry.isFile() && /\.[cm]?[jt]sx?$/.test(entry.name) ? [path] : [];
+    })
     .sort();
 
 export type Plan = { file: string; title: string };

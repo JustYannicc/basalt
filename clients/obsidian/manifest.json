@@ -1,0 +1,9 @@
+{
+  "id": "basalt-sync",
+  "name": "Basalt Sync",
+  "version": "0.1.0",
+  "minAppVersion": "1.12.3",
+  "description": "Keep your vault in Basalt so your agents can read, search and edit notes while your devices are off.",
+  "author": "Basalt",
+  "isDesktopOnly": false
+}

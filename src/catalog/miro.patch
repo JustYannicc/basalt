@@ -1,4 +1,3 @@
-diff --git a/README.md b/README.md
 --- a/README.md
 +++ b/README.md
 @@ -1,20 +1,31 @@
@@ -11,7 +10,7 @@ diff --git a/README.md b/README.md
  
 -OpenAPI, from Miro's official specification for the REST API v2 in [miroapp/api-clients](https://github.com/miroapp/api-clients/blob/39161f97cee3f887f5f67cf4a003ce93b3a6903b/packages/generator/spec.json), pinned to commit `39161f9` (the head of `main` on 2026-10-12) so the tool surface only changes with this package. Bump the SHA in `openapi.ts` to pick up new endpoints. All operations are served from `https://api.miro.com`. Every mutation asks for approval.
 +The tools come from Miro's official [REST API specification](https://github.com/miroapp/api-clients/blob/39161f97cee3f887f5f67cf4a003ce93b3a6903b/packages/generator/spec.json), pinned to commit `39161f9`. The package removes only API paths that need a different credential family, the deprecated OAuth revoke path, and the malformed group-delete path. Every mutation asks for approval.
-+
+ 
 +## OAuth scopes
 +
 +The app and hosted OAuth client request the full set selected in the Miro Developer Hub:
@@ -23,7 +22,7 @@ diff --git a/README.md b/README.md
 +- `auditlogs:read` and `sessions:delete` for Enterprise audit and session administration. Miro marks these scopes Enterprise-only.
 +
 +Enterprise API calls still depend on the team's plan and the caller's Company Admin role. The grant does not change a team's plan or the provider's role checks.
- 
++
  ## Auth
  
 -- **Access token** (`token`): create an app at [miro.com/app/settings/user-profile/apps](https://miro.com/app/settings/user-profile/apps), open it and use "Install app and get OAuth token" to get a token for your own team. Paste it into Executor.
@@ -43,7 +42,6 @@ diff --git a/README.md b/README.md
 +- The pinned spec calls `POST /v1/oauth/revoke` vulnerable and deprecated because it puts the token in the URL. The package keeps the body-based v2 revoke operation.
 +- App metrics use Miro's Developer Hub app-management credential rather than the person's OAuth grant. The package retains the spec's credential-free metrics paths.
 +- This package does not use Miro's Web SDK or hosted MCP server.
-diff --git a/index.ts b/index.ts
 --- a/index.ts
 +++ b/index.ts
 @@ -25,7 +25,7 @@
@@ -74,7 +72,6 @@ diff --git a/index.ts b/index.ts
        ],
      }),
    },
-diff --git a/openapi.ts b/openapi.ts
 --- a/openapi.ts
 +++ b/openapi.ts
 @@ -31,6 +31,8 @@
@@ -86,7 +83,6 @@ diff --git a/openapi.ts b/openapi.ts
      { op: "remove" as const, path: "/paths/~1v1~1oauth~1revoke" },
    ],
  } satisfies OpenapiToolNamesOptions;
-diff --git a/package.json b/package.json
 --- a/package.json
 +++ b/package.json
 @@ -7,6 +7,6 @@
@@ -94,6 +90,6 @@ diff --git a/package.json b/package.json
    },
    "dependencies": {
 -    "apps": "0.0.1-beta.100"
-+    "apps": "0.0.1-beta.104-basalt.11"
++    "apps": "0.0.1-beta.104-basalt.13"
    }
  }

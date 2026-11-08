@@ -1,0 +1,403 @@
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createServer } from "node:http";
+import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import { HttpApiBuilder } from "effect/http-api";
+import { HttpRouter, HttpServer, HttpClient, HttpClientRequest } from "effect/http";
+import { Client, StreamableHTTPClientTransport } from "../../.upstream/e2e/support/mcp-sdk.ts";
+import { mcp, defaultMcpLimits } from "../../.upstream/packages/mcp/src/index.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { Effect, Layer, Deferred, Redacted } from "effect";
+import { FetchHttpClient } from "effect/http";
+import { pgliteLayer } from "fumadb-effect/pglite";
+import { nativeRepositories } from "../../.upstream/packages/app-source/src/node.ts";
+import {
+  createExecutor,
+  makeExecutorStorage,
+  OwnerId,
+  ToolName,
+  CurrentActor,
+  ExecutorApi,
+  executorHandlers,
+  type Executor,
+} from "../../.upstream/packages/sdk/src/core.ts";
+import { filesystemBlobStore, workerdApps } from "../../.upstream/packages/sdk/src/node.ts";
+import { memoryRegistry } from "../../.upstream/packages/sdk/src/testing.ts";
+import { localNpmRegistry } from "../../.upstream/e2e/support/npm-registry.ts";
+import { storageFixture } from "../../src/drive/fixture.ts";
+import { openVault } from "../../src/drive/vault.ts";
+import { createDriveDispatcher } from "../../src/drive/dispatch.ts";
+import { createDriveService } from "../../src/drive/service.ts";
+import { verifyNativeClient } from "../../e2e/obsidian/native-client.ts";
+import appsPackage from "../../.upstream/packages/apps/package.json" with { type: "json" };
+
+const verify = async () => {
+  const directory = await mkdtemp(join(tmpdir(), "obsidian-installed-"));
+  const limitOverrides = new Map<string, number>();
+  const newVault = async (currentBytes = 1024) => {
+    const data = storageFixture(),
+      account = storageFixture();
+    const vault = await openVault({
+      ...data,
+      accountStorage: account.storage,
+      prefix: "installed/",
+      limits: { currentBytes },
+    });
+    return {
+      ...vault,
+      close() {
+        data.close();
+        account.close();
+      },
+    };
+  };
+  const fixtures = new Map<string, Promise<Awaited<ReturnType<typeof newVault>>>>();
+  const fixture = (app: string) => {
+    let pending = fixtures.get(app);
+    if (!pending) {
+      pending = newVault(limitOverrides.get(app));
+      fixtures.set(app, pending);
+    }
+    return pending;
+  };
+  try {
+    return await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* Effect.log("fixture: registry start");
+          const registry = yield* localNpmRegistry;
+          yield* Effect.log("fixture: registry ready");
+          const database = yield* Layer.build(
+            pgliteLayer({ dataDir: join(directory, "postgres") }),
+          );
+          const storage = yield* makeExecutorStorage({ provider: "postgresql" }).pipe(
+            Effect.provideContext(database),
+          );
+          yield* storage.migrate;
+          yield* Effect.log("fixture: database ready");
+          const secret = Redacted.make("b".repeat(64));
+          const blobs = filesystemBlobStore({ directory: join(directory, "blobs") });
+          const ready = yield* Deferred.make<Executor>();
+          const written = yield* Deferred.make<string>();
+          yield* Effect.log("fixture: workerd start");
+          const host = yield* workerdApps({
+            directory: join(directory, "workerd"),
+            blobs,
+            executor: Deferred.await(ready),
+            npmRegistry: registry.url,
+            encryptionKey: secret,
+          });
+          yield* Effect.log("fixture: workerd ready");
+          const executor = yield* createExecutor({
+            database: storage,
+            secret,
+            blobs,
+            git: nativeRepositories(join(directory, "repositories")),
+            runtime: host.runtime,
+            workflows: host.workflows,
+            registry: memoryRegistry(),
+            drives: {
+              request: ({ app, command }) =>
+                Effect.gen(function* () {
+                  const f = yield* Effect.promise(() => fixture(app));
+                  const result = yield* createDriveDispatcher(
+                    f.drive,
+                    f.attachments,
+                    f.changes,
+                    f.root,
+                    f.imports,
+                  )(command);
+                  if (command.method === "write" && command.input.path === "automation.md")
+                    yield* Deferred.succeed(written, app);
+                  return result;
+                }),
+            },
+          });
+          yield* Deferred.succeed(ready, executor);
+          yield* Effect.log("fixture: executor ready");
+          const owner = OwnerId.make("fixture-owner");
+          const manifest = {
+            path: "package.json",
+            content: JSON.stringify({ dependencies: { apps: appsPackage.version } }),
+          };
+          const source = yield* Effect.promise(() =>
+            readFile(new URL("../../apps/obsidian/index.ts", import.meta.url), "utf8"),
+          );
+          yield* Effect.log("fixture: install Obsidian");
+          const app = (yield* executor.apps.deploy({
+            owner,
+            name: "Obsidian",
+            files: [
+              { path: "index.ts", content: source },
+              ...(yield* Effect.promise(() =>
+                Promise.all(
+                  ["attachments.ts", "changes.ts", "imports.ts"].map(async (path) => ({
+                    path,
+                    content: await readFile(
+                      new URL(`../../apps/obsidian/${path}`, import.meta.url),
+                      "utf8",
+                    ),
+                  })),
+                ),
+              )),
+              manifest,
+            ],
+          })).app;
+          const call = (
+            tool: string,
+            kind: "query" | "mutation",
+            input: Parameters<Executor["tools"]["call"]>[0]["input"],
+          ) =>
+            executor.tools
+              .call({ app: app.id, tool: ToolName.make(tool), kind, input })
+              .pipe(Effect.timeout("15 seconds"));
+          yield* Effect.log("fixture: installed; list cloud drive");
+          const listed = yield* call("listNotes", "query", {});
+          assert.equal(listed.status, "completed");
+          const f = yield* Effect.promise(() => fixture(app.id));
+          assert.partialDeepStrictEqual(listed, { value: { at: f.root, entries: [] } });
+          const input = {
+            base: f.root,
+            path: "cloud.md",
+            content: "cloud-only installed note\n",
+            operation: "installed-create",
+          };
+          const pending = yield* call("createNote", "mutation", input);
+          assert.equal(pending.status, "approval-required");
+          assert.equal(
+            yield* Effect.promise(() => createDriveService(f.drive).read({ path: "cloud.md" })),
+            null,
+          );
+          if (pending.status !== "approval-required")
+            throw new Error("Expected native write approval");
+          const accepted = yield* executor.tools.resume({
+            requestId: pending.requestId,
+            response: { action: "accept" },
+          });
+          assert.partialDeepStrictEqual(accepted, {
+            status: "completed",
+            value: { state: "landed" },
+          });
+          assert.partialDeepStrictEqual(yield* call("readNote", "query", { path: "cloud.md" }), {
+            status: "completed",
+            value: { content: input.content },
+          });
+          assert.partialDeepStrictEqual(
+            yield* call("searchNotes", "query", { query: "installed" }),
+            { status: "completed", value: { matches: [{ path: "cloud.md" }] } },
+          );
+          const batchInput = {
+            base: (yield* Effect.promise(() => f.service.list())).at,
+            operation: "installed-batch",
+            edits: [
+              { path: "one.md", content: "one" },
+              { path: "two.md", content: "two" },
+            ],
+          };
+          const batchPending = yield* call("applyNotes", "mutation", batchInput);
+          assert.equal(batchPending.status, "approval-required");
+          assert.equal(yield* Effect.promise(() => f.service.read({ path: "one.md" })), null);
+          if (batchPending.status !== "approval-required")
+            throw new Error("Expected batch approval");
+          assert.partialDeepStrictEqual(
+            yield* executor.tools.resume({
+              requestId: batchPending.requestId,
+              response: { action: "accept" },
+            }),
+            { status: "completed", value: { state: "landed" } },
+          );
+          assert.equal(
+            (yield* Effect.promise(() => f.service.read({ path: "two.md" })))?.content,
+            "two",
+          );
+          const quotaPending = yield* call("createNote", "mutation", {
+            base: (yield* Effect.promise(() => f.service.list())).at,
+            operation: "installed-quota",
+            path: "over.md",
+            content: "x".repeat(2048),
+          });
+          if (quotaPending.status !== "approval-required")
+            throw new Error("Expected quota write approval");
+          const quotaResult = yield* executor.tools.resume({
+            requestId: quotaPending.requestId,
+            response: { action: "accept" },
+          });
+          assert.match(JSON.stringify(quotaResult), /currentBytes/);
+          assert.match(JSON.stringify(quotaResult), /limit 1024/);
+          assert.equal(yield* Effect.promise(() => f.service.read({ path: "over.md" })), null);
+          const routes = Layer.mergeAll(
+            HttpApiBuilder.layer(ExecutorApi).pipe(Layer.provide(executorHandlers(executor))),
+            mcp({
+              name: "Cloud drive fixture",
+              instructions: "Synthetic local proof",
+              limits: defaultMcpLimits,
+              caller: Effect.succeed("fixture-owner"),
+              annotateSkillRead: () => Effect.void,
+              backend: {
+                listApps: (input = {}) => executor.apps.list({ ...input, owner }),
+                listAccounts: () => Effect.succeed({}),
+                listSkills: (input, options) => executor.skills.list(input, options),
+                readSkill: (input) => executor.skills.read(input),
+                authorizeElicitation: () => Effect.void,
+                listTools: (input, options) => executor.tools.list(input, options),
+                searchableTools: (input, options) => executor.tools.searchable(input, options),
+                searchTools: (input) => executor.tools.search(input),
+                callTool: (input, options) => executor.tools.call(input, options),
+                resumeInvocation: (request, response, options) =>
+                  executor.tools.resume({ requestId: request.requestId, response }, options),
+                eventDefinitions: (input) => executor.events.definitions(input),
+                findEventSubscription: (key) =>
+                  executor.events.find({ ...key, principal: "fixture-owner" }),
+                subscribeEvent: ({ key, ...input }) =>
+                  executor.events.subscribe({
+                    ...input,
+                    key: { ...key, principal: "fixture-owner" },
+                    subject: "fixture-owner",
+                  }),
+                unsubscribeEvent: ({ key }) =>
+                  executor.events.unsubscribe({ ...key, principal: "fixture-owner" }),
+              },
+            }),
+          );
+          const served = yield* Layer.build(
+            HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
+              Layer.provideMerge(
+                NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }),
+              ),
+            ),
+          );
+          const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(served));
+          if (!("port" in server.address)) throw new Error("Expected fixture TCP listener");
+          const origin = `http://127.0.0.1:${server.address.port}`;
+          const httpClient = yield* HttpClient.HttpClient;
+          const request = yield* HttpClientRequest.bodyJson({
+            app: app.id,
+            tool: "readNote",
+            kind: "query",
+            input: { path: "cloud.md" },
+          })(HttpClientRequest.post(`${origin}/v1/tools/call`));
+          const http = yield* httpClient.execute(request);
+          assert.equal(http.status, 200);
+          assert.partialDeepStrictEqual(yield* http.json, {
+            status: "completed",
+            value: { content: input.content },
+          });
+          const client = yield* Effect.acquireRelease(
+            Effect.sync(() => new Client({ name: "fixture", version: "1" })),
+            (client) => Effect.promise(() => client.close()),
+          );
+          // The pinned MCP getter allows undefined while its Transport interface omits it.
+          const transport: Omit<StreamableHTTPClientTransport, "sessionId"> =
+            new StreamableHTTPClientTransport(new URL(`${origin}/mcp`));
+          yield* Effect.promise(() => client.connect(transport));
+          const mcpRead = yield* Effect.promise(() =>
+            client.callTool({
+              name: "call",
+              arguments: {
+                calls: { path: `tools.${app.slug}.readNote`, input: { path: "cloud.md" } },
+              },
+            }),
+          );
+          assert.ok(JSON.stringify(mcpRead).includes("cloud-only installed note"));
+          assert.notEqual(mcpRead.isError, true);
+          const largeApp = (yield* executor.apps.deploy({
+            owner,
+            name: "Attachment device fixture",
+            files: [
+              { path: "index.ts", content: source },
+              ...(yield* Effect.promise(() =>
+                Promise.all(
+                  ["attachments.ts", "changes.ts", "imports.ts"].map(async (path) => ({
+                    path,
+                    content: await readFile(
+                      new URL(`../../apps/obsidian/${path}`, import.meta.url),
+                      "utf8",
+                    ),
+                  })),
+                ),
+              )),
+              manifest,
+            ],
+          })).app;
+          limitOverrides.set(largeApp.id, 32 * 1048576);
+          const nativeClient = yield* Effect.promise(() =>
+            verifyNativeClient(origin, largeApp.slug, largeApp.id, async () => {
+              await Effect.runPromise(
+                executor.apps.rename({ app: largeApp.id, owner, name: "Renamed after connecting" }),
+              );
+            }),
+          );
+          assert.equal(nativeClient.acceptedPartReplays, 0);
+          yield* Effect.log(JSON.stringify({ nativeClient }));
+          const automationSource = `import {defineApp,workflow,object} from "apps";
+  const run=workflow({input:object({})},async ctx=>ctx.step.do("cloud-read-and-write",async step=>{
+   const page=await step.drive.list();
+   const found=await step.drive.search({query:"cloud-only"});
+   return step.drive.write({base:page.at,path:"automation.md",content:JSON.stringify(found.matches),operation:step.idempotencyKey,mode:"create"});
+  }));export default defineApp({drive:true},{workflows:{run}});`;
+          const automation = (yield* executor.apps.deploy({
+            owner,
+            name: "Cloud automation",
+            files: [{ path: "index.ts", content: automationSource }, manifest],
+          })).app;
+          const af = yield* Effect.promise(() => fixture(automation.id));
+          yield* Effect.promise(() =>
+            createDriveService(af.drive).write({
+              base: af.root,
+              path: "seed.md",
+              content: "cloud-only",
+              operation: "seed",
+              mode: "create",
+            }),
+          );
+          yield* executor.apps.workflowRuns.start({
+            app: automation.id,
+            workflow: "run",
+            input: {},
+            key: "cloud-proof",
+          });
+          assert.equal(
+            yield* Deferred.await(written).pipe(Effect.timeout("90 seconds")),
+            automation.id,
+          );
+          const result = yield* Effect.promise(() =>
+            createDriveService(af.drive).read({ path: "automation.md" }),
+          );
+          assert.ok(result?.content.includes("seed.md"));
+          assert.equal(
+            yield* Effect.promise(() =>
+              createDriveService(f.drive).read({ path: "automation.md" }),
+            ),
+            null,
+          );
+          return {
+            installedApp: true,
+            publicHttp: true,
+            publicMcp: true,
+            approvalEnforced: true,
+            batchApprovalEnforced: true,
+            quotaResourcePreserved: true,
+            nativePluginImportedAttachment: true,
+            nativeAutomationWrote: true,
+            isolatedAppDrives: true,
+            devices: 0,
+          };
+        }).pipe(
+          Effect.provideService(CurrentActor, "fixture-owner"),
+          Effect.provide(
+            Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, FetchHttpClient.layer),
+          ),
+        ),
+      ),
+      { signal: AbortSignal.timeout(120000) },
+    );
+  } finally {
+    for (const pending of fixtures.values()) (await pending).close();
+    await rm(directory, { recursive: true, force: true });
+  }
+};
+const proof = await verify();
+await writeFile(new URL("./receipt.json", import.meta.url), JSON.stringify(proof));

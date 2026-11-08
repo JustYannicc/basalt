@@ -1,0 +1,9 @@
+{
+  "name": "obsidian-volume-runtime",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "esbuild": "0.28.2",
+    "miniflare": "4.20260730.0"
+  }
+}
