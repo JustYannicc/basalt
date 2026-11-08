@@ -69,6 +69,19 @@ test("quoted credential fields and cookie header forms do not enter diagnostics"
     assert.ok(!text.includes(value));
 });
 
+test("escaped quotes cannot end credential redaction early", () => {
+  for (const key of ["password", "token", "authorization", "cookie"]) {
+    const quoted = JSON.stringify({ [key]: 'prefix"synthetic-tail\\end' });
+    const result = envelopeFailure(
+      { errors: [{ code: 10021, message: "Invalid metadata. " + quoted }] },
+      "",
+    );
+    assert.match(result.errors[0]!.message, /Invalid metadata/);
+    for (const value of ["prefix", "synthetic-tail", "end"])
+      assert.ok(!JSON.stringify(result).includes(value));
+  }
+});
+
 test("non-JSON, oversized and failed body streams have explicit safe diagnoses", async () => {
   assert.equal(
     (await responseFailure(new Response("<html>private text</html>"), "")).body,

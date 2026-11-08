@@ -17,11 +17,11 @@ const sanitize = (value: string, token: string) => {
     .replace(/(?:https?:\/\/|file:\/\/)[^\s"'<>]+/gi, "[URL]")
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[EMAIL]")
     .replace(
-      /["']?\b(?:authorization|(?:set-)?cookie)["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\r\n]+)/gi,
+      /["']?\b(?:authorization|(?:set-)?cookie)["']?\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n]+)/gi,
       "[CREDENTIAL]",
     )
     .replace(
-      /["']?\b(?:api[_-]?key|token|secret|password)["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
+      /["']?\b(?:api[_-]?key|token|secret|password)["']?\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;]+)/gi,
       "[CREDENTIAL]",
     )
     .replace(/\b[A-Za-z0-9_+/-]{24,}={0,2}\b/g, "[REDACTED]")
