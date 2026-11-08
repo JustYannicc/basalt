@@ -3,6 +3,27 @@ import * as Retry from "@distilled.cloud/cloudflare/Retry";
 import { Effect } from "effect";
 import { BarrierRefusal, type FrozenWorker } from "./manifest.ts";
 import { uploadRequest } from "./version-request.ts";
+import type { ActiveWorkerPlacement } from "./script-placement.ts";
+import { readVersionPlacement } from "./active-placement-read.ts";
+
+export const readScriptSettings = (worker: Pick<FrozenWorker, "accountId" | "scriptName">) =>
+  Workers.getScriptScriptAndVersionSetting({
+    accountId: worker.accountId,
+    scriptName: worker.scriptName,
+  }).pipe(Retry.policy(Retry.makeDefault));
+
+export const readActivePlacements = (
+  worker: Pick<FrozenWorker, "accountId" | "scriptName">,
+  baseline: FrozenWorker["baseline"],
+) =>
+  Effect.all(
+    baseline.map(({ versionId }) =>
+      readVersionPlacement(worker.accountId, worker.scriptName, versionId).pipe(
+        Effect.map((version): ActiveWorkerPlacement => version),
+      ),
+    ),
+    { concurrency: "unbounded" },
+  );
 
 export const readBaseline = (worker: Pick<FrozenWorker, "accountId" | "scriptName">) =>
   // The SDK serializes excess properties as a body, including on GET. Callers pass upload and frozen objects.

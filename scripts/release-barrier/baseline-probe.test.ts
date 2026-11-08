@@ -55,11 +55,18 @@ test("live probe runs only on internal PRs and precedes automatic and manual rel
   assert.match(job, /needs\.select\.outputs\.baseline_probe == 'true'/);
   assert.doesNotMatch(job, /environment:|pull_request_target/);
   assert.match(job, /CLOUDFLARE_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/);
-  assert.match(job, /bun-version: 1\.4\.4/);
+  assert.match(job, /bun-version: \$\{\{ env\.E2E_BUN_VERSION \}\}/);
+  assert.match(ci, /E2E_BUN_VERSION: 1\.4\.2/);
   for (const name of ["release-main", "release-manual"]) {
     const text = workflow(name);
     const probe = text.indexOf("baseline-probe-entry.ts");
     assert.ok(probe > 0 && probe < text.indexOf("release.ts backup-only"), name);
+  }
+  for (const name of ["ci", "deploy", "release-main", "release-manual"]) {
+    assert.match(
+      workflow(name),
+      /BASALT_RELEASE_ATTEMPT="\$\(node -e '[^\n]+randomUUID\(\)[^\n]+'\)" \\\n\s+bun scripts\/release-barrier\/baseline-probe-entry\.ts/,
+    );
   }
   const deploy = workflow("deploy");
   assert.ok(deploy.indexOf("baseline-probe-entry.ts") < deploy.indexOf("release.ts deploy "));

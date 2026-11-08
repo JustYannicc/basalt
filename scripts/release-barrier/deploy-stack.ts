@@ -6,7 +6,8 @@ import type { Worker } from "alchemy/Cloudflare";
 import { Effect } from "effect";
 import { verificationAdmissions, type VerificationAdmission } from "./plan-admission.ts";
 import { preparePlan, finishPlan } from "./alchemy-plan.ts";
-import { readBaseline, uploadVersion } from "./cloudflare.ts";
+import { readActivePlacements, readBaseline, uploadVersion } from "./cloudflare.ts";
+import { needsPlacementProof } from "./script-placement.ts";
 import { releaseWorkers, type BarrierReceipt } from "./barrier.ts";
 import { BarrierRefusal, type ReleaseManifest } from "./manifest.ts";
 import { cloudflareArtifactsApi } from "../ensure-artifacts.ts";
@@ -36,6 +37,7 @@ export interface DeployStackOptions {
   io?: {
     baseline: typeof readBaseline;
     upload: typeof uploadVersion;
+    placements?: typeof readActivePlacements;
     namespace?: typeof cloudflareArtifactsApi;
     container?: typeof inspectContainer;
     observeContainer?: typeof observeContainer;
@@ -86,7 +88,10 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
                 io.baseline(upload.request).pipe(withOperation(upload.fqn, "read-worker-baseline")),
               );
               try {
-                return await freezeUpload(upload, baseline);
+                const versions = needsPlacementProof(upload.previousSettings?.placement)
+                  ? await run((io.placements ?? readActivePlacements)(upload.request, baseline))
+                  : [];
+                return await freezeUpload(upload, baseline, versions);
               } catch (error) {
                 throw operationFailure(error, upload.fqn, "freeze-worker-upload");
               }
