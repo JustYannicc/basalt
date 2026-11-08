@@ -182,7 +182,14 @@ test("the aggregate blocks missing, failed, cancelled and unexpectedly skipped w
   const needs = Object.fromEntries(
     [...fastJobs, ...heavyJobs, ...bundleJobs, ...conditionalJobs].map((job) => [
       job,
-      { result: fastJobs.includes(job) || selected.includes(job) ? "success" : "skipped" },
+      {
+        result:
+          fastJobs.includes(job) ||
+          selected.includes(job) ||
+          (job === "workerd-assets" && selected.includes("upstream-image"))
+            ? "success"
+            : "skipped",
+      },
     ]),
   );
   assert.deepEqual(gateErrors(needs, selected), []);
@@ -204,7 +211,11 @@ test("every workflow job has a gate dependency and declared selection policy", (
   assert.deepEqual(Object.keys(jobs).sort(), [...expected, "check"].sort());
   assert.deepEqual([...jobs.check.needs].sort(), [...expected].sort());
   for (const job of heavyJobs) {
-    assert.equal(jobs[job].needs, "select", job);
+    assert.deepEqual(
+      jobs[job].needs,
+      job === "upstream-image" ? ["select", "workerd-assets"] : "select",
+      job,
+    );
     assert.equal(
       jobs[job].if,
       `contains(fromJSON(needs.select.outputs.hosted_jobs), '${job}')`,
@@ -275,7 +286,12 @@ test("fast-only and full gates reject missing work and dishonest lane selections
       [...fastJobs, ...heavyJobs, ...bundleJobs, ...conditionalJobs].map((job) => [
         job,
         {
-          result: fastJobs.includes(job) || selected.includes(job) ? "success" : "skipped",
+          result:
+            fastJobs.includes(job) ||
+            selected.includes(job) ||
+            (job === "workerd-assets" && selected.includes("upstream-image"))
+              ? "success"
+              : "skipped",
         },
       ]),
     );

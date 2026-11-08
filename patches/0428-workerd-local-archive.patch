@@ -1,0 +1,45 @@
+diff --git a/apps/hosted/self-host/scripts/package-runtime.ts b/apps/hosted/self-host/scripts/package-runtime.ts
+--- a/apps/hosted/self-host/scripts/package-runtime.ts
++++ b/apps/hosted/self-host/scripts/package-runtime.ts
+@@ -31,7 +31,7 @@
+ });
+ 
+ /** Downloads the pinned Linux workerd for this machine's architecture and verifies its digest. */
+-const pinnedWorkerd = (pinFile: string) =>
++export const pinnedWorkerd = (pinFile: string) =>
+   Effect.gen(function* () {
+     const pin = Schema.decodeUnknownSync(Schema.fromJsonString(WorkerdPin))(
+       yield* Effect.promise(() => readFile(pinFile, "utf8")),
+@@ -42,12 +42,15 @@
+       return yield* Effect.die(new Error(`No pinned workerd for architecture ${process.arch}`));
+     const asset = pin.assets[architecture];
+     const url = `https://github.com/${pin.repository}/releases/download/${pin.release}/${asset.name}`;
+-    const archive = yield* (yield* HttpClient.HttpClient).get(url).pipe(
+-      Effect.flatMap(HttpClientResponse.filterStatusOk),
+-      Effect.flatMap((response) => response.arrayBuffer),
+-      Effect.map((bytes) => new Uint8Array(bytes)),
+-      Effect.orDie,
+-    );
++    const localArchive = process.env.EXECUTOR_WORKERD_ARCHIVE;
++    const archive = localArchive
++      ? yield* Effect.promise(() => readFile(localArchive))
++      : yield* (yield* HttpClient.HttpClient).get(url).pipe(
++          Effect.flatMap(HttpClientResponse.filterStatusOk),
++          Effect.flatMap((response) => response.arrayBuffer),
++          Effect.map((bytes) => new Uint8Array(bytes)),
++          Effect.orDie,
++        );
+     const digest = createHash("sha256").update(archive).digest("hex");
+     if (digest !== asset.sha256)
+       return yield* Effect.die(
+@@ -416,6 +419,7 @@
+   );
+   yield* Effect.logInfo(`Built workerd runtime at ${output}`);
+ });
+-NodeRuntime.runMain(
+-  Effect.scoped(packageRuntime).pipe(Effect.provide([NodeServices.layer, FetchHttpClient.layer])),
+-);
++if (import.meta.main)
++  NodeRuntime.runMain(
++    Effect.scoped(packageRuntime).pipe(Effect.provide([NodeServices.layer, FetchHttpClient.layer])),
++  );

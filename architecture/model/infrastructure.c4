@@ -188,7 +188,13 @@ model {
     technology "Go module proxy and checksum database"
     metadata { hosts "proxy.golang.org|sum.golang.org" }
   }
-  basalt.build -[sync]-> goModules "build actionlint from checksum-pinned source"
+  basalt.build -[sync]-> goModules "build actionlint with an exact verified Go toolchain and checksum-pinned source"
+  toolchainPackages = adapter "Toolchain packages" {
+    #external
+    technology "Official Bun npm packages and Node distributions"
+    metadata { hosts "registry.npmjs.org|nodejs.org" }
+  }
+  basalt.build -[sync]-> toolchainPackages "restore versioned Bun archives and install Node without release-CDN requests"
   releaseMirror = adapter "Release mirror" {
     #external
     technology "npm mirror"

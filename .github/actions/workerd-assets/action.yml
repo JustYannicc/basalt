@@ -1,0 +1,28 @@
+name: Pinned self-host workerd archive
+description: Only the warming job may fetch the pinned release; consumers require the cache.
+inputs:
+  warm:
+    description: Populate this version's cache if it is absent.
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - id: asset
+      shell: bash
+      run: node scripts/ci/workerd-assets.ts identify
+    - uses: actions/cache/restore@v4
+      id: cache
+      with:
+        path: ${{ steps.asset.outputs.archive }}
+        key: ${{ steps.asset.outputs.key }}
+        fail-on-cache-miss: ${{ inputs.warm != 'true' }}
+    - if: inputs.warm == 'true' && steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: node scripts/ci/workerd-assets.ts warm
+    - shell: bash
+      run: node scripts/ci/workerd-assets.ts verify
+    - uses: actions/cache/save@v4
+      if: inputs.warm == 'true' && steps.cache.outputs.cache-hit != 'true'
+      with:
+        path: ${{ steps.asset.outputs.archive }}
+        key: ${{ steps.asset.outputs.key }}

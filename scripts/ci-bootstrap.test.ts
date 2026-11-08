@@ -44,3 +44,36 @@ test("actionlint cold population uses pinned Go source and fast requires the war
   );
   assert.equal(workflow.jobs.fast.needs, "select");
 });
+
+test("Check toolchain bootstraps use official non-GitHub sources on every runner", async () => {
+  const { bunAsset } = await import("./ci/setup-bun.ts");
+  for (const version of ["1.4.2", "1.4.4"])
+    for (const platform of [
+      "linux-x64",
+      "linux-arm64",
+      "darwin-x64",
+      "darwin-arm64",
+      "win32-x64",
+    ]) {
+      const asset = bunAsset(version, platform);
+      assert.equal(new URL(asset.url).host, "registry.npmjs.org");
+      assert.match(asset.integrity, /^sha512-/);
+      assert.ok(asset.key.includes(version) && asset.key.includes(platform));
+    }
+  assert.throws(() => bunAsset("unlisted"), /No checksum-pinned Bun/);
+  const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
+  const workflow = parse(
+    readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
+  );
+  for (const id of Object.keys(workflow.jobs)) {
+    for (const step of workflow.jobs[id].steps) {
+      assert.ok(!step.uses?.startsWith("oven-sh/setup-bun@"), id);
+      if (step.uses?.startsWith("actions/setup-node@"))
+        assert.equal(step.with?.mirror, "https://nodejs.org/dist", id);
+    }
+  }
+  const versions = workflow.jobs["boat-bundle"].steps
+    .filter((step: { uses?: string }) => step.uses === "./.github/actions/setup-bun")
+    .map((step: { with: Record<string, string> }) => step.with["bun-version"]);
+  assert.deepEqual(versions, ["1.4.4", "1.4.2"]);
+});
