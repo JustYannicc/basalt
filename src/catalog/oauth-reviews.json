@@ -4208,10 +4208,13 @@
       "package": "@executor.sh/sentry",
       "methods": {
         "oauth": {
-          "kind": "deferred",
-          "message": "Signalbox has not verified one-click sign-in for Sentry yet. You can connect with your own OAuth app."
+          "kind": "automatic",
+          "protocol": "dcr",
+          "metadata": "https://mcp.sentry.dev/.well-known/oauth-authorization-server",
+          "metadataSha256": "ac53a310cc0ec4db31c17d29a1f5886bb67f7429593206adf285c210fe298851"
         }
-      }
+      },
+      "sourceSha256": "31920259ba5a66d94ac386af385ffbb90320fbf87ec1f8726fee3bd9ebc68eab"
     },
     {
       "entry": "servicem8",

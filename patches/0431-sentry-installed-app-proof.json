@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-sentry-installed-app-proof",
+  "file": "0431-sentry-installed-app-proof.patch",
+  "content_sha256": "a58745ff01a6a00af7be419567dcfd7b0557e70d8eec4409a419074b54d86cd3",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
