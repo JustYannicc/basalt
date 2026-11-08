@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { brand } from "../../brand.ts";
 import { inline, sitePage } from "./pages.ts";
-import { handleSite } from "./worker.ts";
+import { handleSite, type SiteEnv } from "./worker.ts";
+
+// Page requests never touch the list.
+const env = {} as SiteEnv;
 
 const page = (path: string) => sitePage(path).html;
 const text = (html: string) => html.replace(/<style>[\s\S]*?<\/style>/, "").replace(/<[^>]+>/g, " ");
@@ -12,8 +15,29 @@ test("the home page says what the service does, why it asks for Google access, a
   const home = page("/");
   assert.match(text(home), /connects your agents to Gmail, Calendar and Drive with your own Google sign-in/);
   assert.match(home, /<a href="\/privacy">Privacy<\/a>/);
-  assert.match(home, new RegExp(`<a class="action" href="https://${brand.host}">Sign in</a>`));
-  assert.equal(home.match(/class="action"/g)?.length, 1);
+});
+
+test("no page links to the app, so it stays unlisted until someone knows its address", () => {
+  assert.ok(!page("/").includes(brand.host));
+  assert.ok(!page("/waitlist").includes(brand.host));
+  for (const path of [...paths, "/waitlist", "/pricing"]) {
+    const html = page(path);
+    // The legal pages still name the host they cover, in text; no page links to it.
+    assert.doesNotMatch(html, new RegExp(`href="[^"]*${brand.host.replaceAll(".", "\\.")}`), path);
+    assert.doesNotMatch(html, />\s*Sign in\s*</i, path);
+  }
+});
+
+test("the home page offers the waiting list: one email field, one button, a hidden trap and no script", () => {
+  const home = page("/");
+  assert.equal(home.match(/<form /g)?.length, 1);
+  assert.match(home, /<form class="join" method="post" action="\/waitlist">/);
+  assert.equal(home.match(/<input [^>]*type="email"[^>]*required/g)?.length, 1);
+  assert.equal(home.match(/<button /g)?.length, 1);
+  assert.match(home, /<button type="submit">Join the waiting list<\/button>/);
+  assert.match(home, /<div class="trap" aria-hidden="true">.*<input id="website" name="website" type="text" tabindex="-1" autocomplete="off">/);
+  assert.match(home, /<label class="visually-hidden" for="email">Email address<\/label>/);
+  assert.doesNotMatch(home, /<script/i);
 });
 
 test("every page carries the footer: copyright, legal pages, contact and source", () => {
@@ -42,6 +66,12 @@ test("privacy names the Limited Use commitment, complaint routes and the failed-
   assert.match(privacy, /where EU law applies, your local supervisory authority/);
   assert.match(privacy, /When a request fails, the pool backend currently keeps the provider's error response/);
   assert.match(privacy, /rely on the EU Standard Contractual Clauses/);
+  assert.match(privacy, /join the waiting list on signalbox\.run, we store your email address and when you joined/);
+  assert.match(privacy, /only to invite you when it's your turn, and we don't send you anything else/);
+  assert.match(privacy, /count recent attempts per IP address for a minute; the address itself isn't stored/);
+  assert.match(privacy, /To be removed from the waiting list, write to\s+info@signalbox\.run\s+from that address/);
+  assert.match(privacy, /Waiting list: Cloudflare D1, restricted to the EU\./);
+  assert.match(privacy, /Waiting list: until you're invited or ask to be removed\./);
   assert.match(privacy, /We don't log what your tools read or return\. A tool call waiting for your approval is stored encrypted/);
   assert.match(text(page("/terms")), /governed by Swiss law\. The courts of Zurich/);
 });
@@ -68,16 +98,19 @@ test("inline markup escapes HTML and allows only bold and links", () => {
 });
 
 test("the worker serves pages without scripts and answers anything else with 404 or 405", async () => {
-  const response = handleSite(new Request("https://signalbox.run/privacy/"));
+  const response = await handleSite(new Request("https://signalbox.run/privacy/"), env);
   assert.equal(response.status, 200);
-  assert.match(response.headers.get("content-security-policy") ?? "", /default-src 'none'/);
+  const csp = response.headers.get("content-security-policy") ?? "";
+  assert.match(csp, /default-src 'none'/);
+  assert.match(csp, /form-action 'self'/);
+  assert.doesNotMatch(csp, /script-src/);
   assert.doesNotMatch(await response.text(), /<script/i);
-  const missing = handleSite(new Request("https://signalbox.run/pricing"));
+  const missing = await handleSite(new Request("https://signalbox.run/pricing"), env);
   assert.equal(missing.status, 404);
   assert.equal(missing.headers.get("cache-control"), "no-store");
-  assert.equal(handleSite(new Request("https://signalbox.run/", { method: "POST" })).status, 405);
-  assert.equal(await handleSite(new Request("https://signalbox.run/", { method: "HEAD" })).text(), "");
-  const robots = handleSite(new Request("https://signalbox.run/robots.txt"));
+  assert.equal((await handleSite(new Request("https://signalbox.run/", { method: "POST" }), env)).status, 405);
+  assert.equal(await (await handleSite(new Request("https://signalbox.run/", { method: "HEAD" }), env)).text(), "");
+  const robots = await handleSite(new Request("https://signalbox.run/robots.txt"), env);
   assert.equal(robots.status, 200);
   assert.equal(await robots.text(), "User-agent: *\nAllow: /\n");
 });
