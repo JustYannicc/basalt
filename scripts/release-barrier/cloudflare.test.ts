@@ -6,7 +6,12 @@ import * as HttpResponse from "effect/http/HttpClientResponse";
 import { Credentials } from "@distilled.cloud/cloudflare/Credentials";
 import { readBaseline, uploadVersion } from "./cloudflare.ts";
 import { freezeUpload } from "./version-request.ts";
-import { pendingPlacementRepair, placementRepairTargets } from "./pending-placement.ts";
+import {
+  assertRepairBaseline,
+  assertRepairedPlacement,
+  pendingPlacementRepair,
+  placementRepairTargets,
+} from "./pending-placement.ts";
 import { preparedUpload } from "./fixture.ts";
 import * as HttpClientError from "effect/http/HttpClientError";
 
@@ -156,6 +161,39 @@ test("the real version multipart repairs the exact damaged Api baseline and prot
         }),
       ),
     ),
+  );
+  assertRepairBaseline(
+    worker.id,
+    worker.scriptName,
+    complete.request.metadata,
+    complete.previousSettings,
+    repair,
+  );
+  for (const changed of [
+    { tags: ["different"] },
+    { logpush: false },
+    { tailConsumers: [{ service: "different" }] },
+    { limits: { subrequests: 10000 } },
+  ])
+    assert.throws(() =>
+      assertRepairBaseline(
+        worker.id,
+        worker.scriptName,
+        complete.request.metadata,
+        { ...complete.previousSettings, ...changed },
+        repair,
+      ),
+    );
+  assertRepairedPlacement(
+    worker.id,
+    "new",
+    { ...prior, id: "new" },
+    {
+      ...complete.previousSettings,
+      placement: { mode: "targeted", target: [39] },
+      limits: { subrequests: 50000 },
+    },
+    repair,
   );
   assert.deepEqual(metadata?.limits, { subrequests: 50000 });
   assert.deepEqual(metadata?.placement, { region: "aws:eu-central-1" });

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { refusalTable } from "./refusal-report.ts";
+import { BarrierRefusal } from "./manifest.ts";
 import { pendingPlacementRepair, placementRepairTargets } from "./pending-placement.ts";
 
 for (const target of placementRepairTargets)
@@ -125,6 +127,42 @@ test("Api limit exception requires its exact prior limit and excludes AppPages",
     { metadata: { ...input.metadata, limits: { subrequests: 50000, cpuMs: 100 } } },
   ])
     assert.throws(() => pendingPlacementRepair({ ...input, ...bad }));
+  for (const [source, changed, old, next] of [
+    ["prior-version", { prior: { ...prior, limits: { subrequests: 10000 } } }, 10000, 50000],
+    [
+      "declaration",
+      { metadata: { ...input.metadata, limits: { subrequests: 50001 } } },
+      50001,
+      50000,
+    ],
+    [
+      "active-version",
+      { active: { ...input.active, limits: { subrequests: 10000 } } },
+      10000,
+      null,
+    ],
+    ["script-settings", { settings: { limits: { subrequests: 10000 } } }, 10000, null],
+  ] as const) {
+    assert.throws(
+      () => pendingPlacementRepair({ ...input, ...changed }),
+      (error: unknown) => {
+        assert.ok(error instanceof BarrierRefusal);
+        assert.equal(error.reason, `pending-limits-repair-not-admitted:${source}`);
+        assert.deepEqual(error.delta, {
+          fqn: "Api",
+          type: "Cloudflare.Worker",
+          changed: [{ path: "limits.subrequests", old, new: next }],
+        });
+        const table = refusalTable(error);
+        assert.ok(
+          table.includes(
+            `| Api | limits.subrequests | ${JSON.stringify(old)} → ${JSON.stringify(next)} |`,
+          ),
+        );
+        return true;
+      },
+    );
+  }
   const pages = placementRepairTargets[1];
   assert.throws(
     () =>

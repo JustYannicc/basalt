@@ -212,7 +212,7 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
                 assertRepairBaseline(
                   worker.id,
                   worker.scriptName,
-                  worker.metadata,
+                  upload.request.metadata,
                   settings,
                   worker.pendingPlacementRepair,
                 );

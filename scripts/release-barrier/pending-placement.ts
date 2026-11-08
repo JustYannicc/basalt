@@ -59,14 +59,21 @@ export function pendingPlacementRepair(input: {
     throw new BarrierRefusal("pending-placement-repair-not-admitted", input.role);
   const limits =
     target.role === "Api" ? { subrequests: { before: null, after: 50000 as const } } : undefined;
-  if (
-    limits &&
-    (subrequests(input.prior.limits) !== 50000 ||
-      input.metadata.limits?.subrequests !== 50000 ||
-      subrequests(input.active.limits) != null ||
-      input.settings.limits?.subrequests != null)
-  )
-    throw new BarrierRefusal("pending-limits-repair-not-admitted", input.role);
+  if (limits) {
+    for (const [source, actual, expected] of [
+      ["prior-version", subrequests(input.prior.limits), 50000],
+      ["declaration", input.metadata.limits?.subrequests, 50000],
+      ["active-version", subrequests(input.active.limits), null],
+      ["script-settings", input.settings.limits?.subrequests, null],
+    ] as const)
+      if ((actual ?? null) !== expected)
+        throw settingsRefusal(
+          `pending-limits-repair-not-admitted:${source}`,
+          input.role,
+          { limits: { subrequests: actual ?? null } },
+          { limits: { subrequests: expected } },
+        );
+  }
   // Only the authorized fields are virtualized; every other setting uses the ordinary comparison.
   assertScriptSettings(
     input.role,
