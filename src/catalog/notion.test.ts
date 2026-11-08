@@ -89,3 +89,8 @@ test("Notion account checks use synthetic REST and MCP peers", () => {
     /health checks passed/,
   );
 });
+
+test("Notion's served code reaches its MCP server through the host's fetch, not the MCP client library", () => {
+  for (const file of notionSource.files.filter((file) => file.path.endsWith(".ts")))
+    assert.doesNotMatch(file.content, /["']@modelcontextprotocol\/sdk/, file.path);
+});

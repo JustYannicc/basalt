@@ -1,9 +1,12 @@
 import { appendFile } from "node:fs/promises";
+import type { ReleaseOperationFailure } from "./operation-failure.ts";
 import type { PlanRefusal } from "./manifest.ts";
 import type { ResourceDelta } from "./prop-diff.ts";
 
 interface Failure {
   reason: string;
+  operation?: ReleaseOperationFailure["operation"];
+  provider?: ReleaseOperationFailure["provider"];
   worker?: string;
   delta?: ResourceDelta;
   refusals?: readonly PlanRefusal[];
@@ -35,6 +38,19 @@ export function refusalTable(failure: Failure) {
       details.push([resource, "$plan", refusal.why.join("; ")]);
     return details.length ? details : [[resource, "$plan", refusal.reason]];
   });
+  if (failure.operation)
+    rows.push([
+      failure.worker ?? "(plan)",
+      "$operation",
+      [
+        failure.operation,
+        failure.provider?.type,
+        failure.provider?.status === undefined ? undefined : `status=${failure.provider.status}`,
+        failure.provider?.codes?.length ? `codes=${failure.provider.codes.join(",")}` : undefined,
+      ]
+        .filter((value) => value !== undefined)
+        .join("; "),
+    ]);
   return [
     "| Resource | Property | Old → new |",
     "| --- | --- | --- |",

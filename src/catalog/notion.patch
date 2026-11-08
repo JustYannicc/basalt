@@ -73,11 +73,8 @@
  }
 --- /dev/null
 +++ b/health.ts
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,184 @@
 +import { decodeJson, json, object, string, type AccountCheckContext, type AuthMethods } from "apps";
-+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-+import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
-+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 +
 +const botUser = object({
 +  id: string(),
@@ -96,45 +93,137 @@
 +  return { externalId: me.id, ...(displayName ? { displayName } : {}) };
 +}
 +
-+/** The optional identity read shares the check's cancellation and remaining deadline. */
-+export async function readMcpSelf(
-+  check: {
-+    fetch: AccountCheckContext<AuthMethods>["fetch"];
-+    signal: AbortSignal;
-+    deadline?: number;
-+  },
-+  url: string,
-+  headers: Record<string, string>,
-+) {
++type Check = {
++  fetch: AccountCheckContext<AuthMethods>["fetch"];
++  signal: AbortSignal;
++  deadline?: number;
++};
++
++const protocolVersion = "2025-03-26";
++
++/** A JSON-RPC error answer to the lookup; the account stays healthy and unnamed. */
++class LookupFailed extends Error {}
++
++/** The answer when `message` is the response to request `id`, else undefined. */
++function reply(message: unknown, id: number): { readonly result: unknown } | undefined {
++  if (message === null || typeof message !== "object" || !("id" in message) || message.id !== id)
++    return undefined;
++  if ("error" in message) throw new LookupFailed();
++  return { result: "result" in message ? message.result : undefined };
++}
++
++/**
++ * The JSON-RPC answer to request `id`: a JSON body, or the first matching event of a server-sent
++ * event stream, read as it arrives so a stream the server keeps open still answers.
++ */
++async function answer(response: Response, id: number): Promise<unknown> {
++  if (!(response.headers.get("content-type") ?? "").includes("text/event-stream")) {
++    const found = reply(JSON.parse(await response.text()), id);
++    if (found === undefined) throw new LookupFailed();
++    return found.result;
++  }
++  const reader = response.body?.getReader();
++  if (reader === undefined) throw new LookupFailed();
++  const decoder = new TextDecoder();
++  let buffer = "";
++  try {
++    for (;;) {
++      const { value, done } = await reader.read();
++      buffer += decoder.decode(value, { stream: !done });
++      const events = buffer.split(/\r?\n\r?\n/);
++      buffer = done ? "" : (events.pop() ?? "");
++      for (const event of events) {
++        const data = event
++          .split(/\r?\n/)
++          .filter((line) => line.startsWith("data:"))
++          .map((line) => line.slice(5).replace(/^ /, ""))
++          .join("\n");
++        if (data === "") continue;
++        let message: unknown;
++        try {
++          message = JSON.parse(data);
++        } catch {
++          continue;
++        }
++        const found = reply(message, id);
++        if (found !== undefined) return found.result;
++      }
++      if (done) throw new LookupFailed();
++    }
++  } finally {
++    await reader.cancel().catch(() => {});
++  }
++}
++
++/**
++ * The optional identity read: Notion's read-only `notion-get-self` tool over the MCP server's
++ * streamable HTTP endpoint. It shares the check's cancellation and remaining deadline, and a lookup
++ * that fails or names nothing leaves the verified account healthy.
++ */
++export async function readMcpSelf(check: Check, url: string, headers: Record<string, string>) {
 +  check.signal.throwIfAborted();
 +  const remaining = Math.min(5_000, (check.deadline ?? Date.now() + 5_250) - Date.now() - 250);
 +  if (remaining <= 0) return;
 +  const signal = AbortSignal.any([check.signal, AbortSignal.timeout(Math.floor(remaining))]);
-+  const client = new Client({ name: "notion-account-check", version: "1.0.0" });
-+  const transport = new StreamableHTTPClientTransport(new URL(url), {
-+    requestInit: { headers },
-+    fetch: (input, init) =>
-+      check.fetch(input, {
-+        ...init,
-+        signal:
-+          init?.method === "DELETE"
-+            ? AbortSignal.timeout(100)
-+            : AbortSignal.any([signal, ...(init?.signal ? [init.signal] : [])]),
-+      }),
-+  });
++  let session: string | undefined;
++  let version: string | undefined;
++  const post = (body: object) =>
++    check.fetch(url, {
++      method: "POST",
++      signal,
++      headers: {
++        ...headers,
++        "content-type": "application/json",
++        accept: "application/json, text/event-stream",
++        ...(session === undefined ? {} : { "mcp-session-id": session }),
++        ...(version === undefined ? {} : { "mcp-protocol-version": version }),
++      },
++      body: JSON.stringify({ jsonrpc: "2.0", ...body }),
++    });
 +  try {
-+    await client.connect(transport, { signal, timeout: remaining });
-+    const result = CallToolResultSchema.parse(
-+      await client.callTool({ name: "notion-get-self", arguments: {} }, undefined, {
-+        signal,
-+        timeout: remaining,
-+      }),
-+    );
-+    if (result.isError) return;
++    const initialized = await post({
++      id: 1,
++      method: "initialize",
++      params: {
++        protocolVersion,
++        capabilities: {},
++        clientInfo: { name: "notion-account-check", version: "1.0.0" },
++      },
++    });
++    if (!initialized.ok) return void (await initialized.body?.cancel());
++    session = initialized.headers.get("mcp-session-id") ?? undefined;
++    const started = await answer(initialized, 1);
++    version =
++      started !== null &&
++      typeof started === "object" &&
++      "protocolVersion" in started &&
++      typeof started.protocolVersion === "string"
++        ? started.protocolVersion
++        : protocolVersion;
++    const notified = await post({ method: "notifications/initialized" });
++    await notified.body?.cancel();
++    const called = await post({
++      id: 2,
++      method: "tools/call",
++      params: { name: "notion-get-self", arguments: {} },
++    });
++    if (!called.ok) return void (await called.body?.cancel());
++    const result = await answer(called, 2);
++    if (result === null || typeof result !== "object") return;
++    if ("isError" in result && result.isError === true) return;
++    const content = "content" in result && Array.isArray(result.content) ? result.content : [];
 +    const values: unknown[] = [
-+      result.structuredContent,
-+      ...result.content.flatMap((item) => {
-+        if (item.type !== "text") return [];
++      "structuredContent" in result ? result.structuredContent : undefined,
++      ...content.flatMap((item: unknown) => {
++        if (
++          item === null ||
++          typeof item !== "object" ||
++          !("type" in item) ||
++          item.type !== "text" ||
++          !("text" in item) ||
++          typeof item.text !== "string"
++        )
++          return [];
 +        try {
 +          return [JSON.parse(item.text)];
 +        } catch {
@@ -153,8 +242,19 @@
 +    // Credential verification already passed; a naming failure is not an unhealthy account.
 +  } finally {
 +    // DELETE has its own short signal so an expired lookup can still close its session.
-+    await transport.terminateSession().catch(() => {});
-+    await client.close().catch(() => {});
++    if (session !== undefined)
++      await check
++        .fetch(url, {
++          method: "DELETE",
++          signal: AbortSignal.timeout(100),
++          headers: {
++            ...headers,
++            "mcp-session-id": session,
++            "mcp-protocol-version": version ?? protocolVersion,
++          },
++        })
++        .then((response) => response.body?.cancel())
++        .catch(() => {});
 +  }
 +  check.signal.throwIfAborted();
 +}
