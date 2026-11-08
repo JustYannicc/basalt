@@ -95,6 +95,9 @@
     ".upstream/packages/ui/src/implementation/dashboard/skill-workspace.tsx",
     ".upstream/packages/utils/src/connection-failure.ts",
     ".upstream/packages/utils/src/product-brand.ts",
-    ".upstream/packages/utils/src/user-facing-error.ts"
+    ".upstream/packages/utils/src/user-facing-error.ts",
+    ".upstream/apps/hosted/web/src/contracts/app-discovery.ts",
+    ".upstream/apps/hosted/web/src/contracts/tool-availability.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-tools.tsx"
   ]
 }

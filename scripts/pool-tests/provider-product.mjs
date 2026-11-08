@@ -1,10 +1,10 @@
 import { createServer } from "node:http";
 import { onServedFramework } from "../../src/catalog/framework.ts";
 import { once } from "node:events";
-import { mkdtemp, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Effect } from "effect";
+import { temporaryProofDirectory } from "../proof-directory.ts";
 import { recipeHarness, root, runtime, appsManifest } from "../../e2e/recipes/harness.mjs";
 import { providerAccountProduct } from "../../.upstream/e2e/support/provider-account-product.ts";
 import { scenarios } from "../../.upstream/e2e/test-plan.ts";
@@ -106,9 +106,7 @@ export async function withProviderProduct(home, work) {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const directory = yield* Effect.promise(() =>
-            mkdtemp(join(tmpdir(), "basalt-provider-product-")),
-          );
+          const directory = yield* temporaryProofDirectory("basalt-provider-product-");
           const h = yield* recipeHarness(directory, origin, scenarios.poolSelectOnlyUi.title);
           yield* providerAccountProduct(
             origin,

@@ -8,11 +8,22 @@ import { normalizePlacement } from "./script-placement.ts";
 import { assertScriptSettings, scriptSettingFields } from "./script-settings.ts";
 import { BarrierRefusal } from "./manifest.ts";
 import { placementRepairTargets } from "./pending-placement.ts";
+import { CandidateSettingsReadFailure } from "./candidate-failure.ts";
 
-for (const mode of ["same", "drift", "repair"] as const) {
+for (const mode of [
+  "same",
+  "drift",
+  "inventory-refusals",
+  "repair",
+  "repair-latest-upload",
+  "repair-retirement-failure",
+] as const) {
   const drift = mode === "drift";
-  const repair = mode === "repair";
-  test(`full settings probe compares all 19 roles and ${mode}`, async (context) => {
+  const inventoryFailure = mode === "inventory-refusals";
+  const repair = mode.startsWith("repair");
+  const latest = mode === "repair-latest-upload";
+  const retirementFailure = mode === "repair-retirement-failure";
+  test(`full settings probe compares all 20 roles and ${mode}`, async (context) => {
     const requests: { method: string | undefined; path: string; bytes: number }[] = [];
     const server = createServer(async (request, response) => {
       let bytes = 0;
@@ -23,14 +34,30 @@ for (const mode of ["same", "drift", "repair"] as const) {
         ? placementRepairTargets.find((target) => path.includes(target.scriptName))
         : undefined;
       let result: unknown;
-      if (path.endsWith("/scripts"))
-        result = baselineRoles.map((role) => ({
-          id: repair
-            ? (placementRepairTargets.find((target) => target.role === role)?.scriptName ??
-              `basalt-${role.toLowerCase()}-production-fixture`)
-            : `basalt-${role.toLowerCase()}-production-fixture`,
-        }));
-      else if (path.endsWith("/deployments"))
+      if (path.endsWith("/scripts")) {
+        const scripts = baselineRoles
+          .filter((role) => !inventoryFailure || role !== "PublicSite")
+          .map((role) => ({
+            tags: ["alchemy:stack:basalt", "alchemy:stage:production", `alchemy:id:${role}`],
+            id:
+              role === "ArtifactsCredentials"
+                ? `basalt-artifactscredentials-pr${"a".repeat(24)}`
+                : repair
+                  ? (placementRepairTargets.find((target) => target.role === role)?.scriptName ??
+                    `basalt-${role.toLowerCase()}-production-fixture`)
+                  : `basalt-${role.toLowerCase()}-production-fixture`,
+          }));
+        result = inventoryFailure
+          ? [
+              ...scripts,
+              scripts.find((script) => script.tags.includes("alchemy:id:Router"))!,
+              {
+                id: "private-fixture",
+                tags: ["alchemy:stack:basalt", "alchemy:stage:production", "alchemy:id:Private"],
+              },
+            ]
+          : scripts;
+      } else if (path.endsWith("/deployments"))
         result = {
           deployments: [
             {
@@ -44,10 +71,10 @@ for (const mode of ["same", "drift", "repair"] as const) {
         };
       else if (path.endsWith("/settings"))
         result = {
-          placement: target ? undefined : { mode: "targeted", target: [39] },
+          placement: target && !latest ? undefined : { mode: "targeted", target: [39] },
           logpush: drift && path.includes("publicsite"),
           limits:
-            target?.role === "Api"
+            target?.role === "Api" && !latest
               ? undefined
               : { subrequests: drift && path.includes("api-production") ? 100 : 50_000 },
           observability: { enabled: true, head_sampling_rate: 1 },
@@ -102,7 +129,7 @@ for (const mode of ["same", "drift", "repair"] as const) {
       async (workers) =>
         workers.map((worker) => ({
           ...worker,
-          retiredPlacement: false,
+          ...(retirementFailure ? {} : { retiredPlacement: false }),
           metadata: {
             placement: { region: "aws:eu-central-1" },
             limits: { subrequests: 50_000 },
@@ -110,17 +137,59 @@ for (const mode of ["same", "drift", "repair"] as const) {
             tags: [],
           },
         })),
+      async () => {
+        throw new CandidateSettingsReadFailure("projection", "ConfigError");
+      },
     );
-    assert.equal(rows.length, 19);
-    assert.equal(requests.length, repair ? 60 : 58);
+    assert.equal(rows.length, inventoryFailure ? 21 : 20);
+    assert.deepEqual(
+      rows
+        .filter((row) => row.role !== "(inventory)")
+        .map((row) => row.role)
+        .sort(),
+      [...baselineRoles].sort(),
+    );
+    assert.equal(
+      requests.length,
+      inventoryFailure ? 55 : retirementFailure ? 61 : repair ? 69 : 61,
+    );
+    assert.ok(
+      requests.some((request) =>
+        request.path.includes(`basalt-artifactscredentials-pr${"a".repeat(24)}/settings`),
+      ),
+    );
     assert.ok(requests.every((request) => request.method === "GET" && request.bytes === 0));
     for (const row of rows) {
+      if (inventoryFailure && ["PublicSite", "Router", "(inventory)"].includes(row.role)) {
+        assert.equal(row.ok, false);
+        assert.equal(row.type, "BaselineInventoryError");
+        assert.equal(row.attempts + row.settings.attempts + row.placements.attempts, 0);
+        assert.match(
+          row.reason!,
+          row.role === "PublicSite"
+            ? /missing-worker/
+            : row.role === "Router"
+              ? /duplicate-worker/
+              : /unexpected-worker/,
+        );
+        continue;
+      }
+      const retirementFailed = retirementFailure && ["Api", "AppPages"].includes(row.role);
+      if (retirementFailed) {
+        assert.equal(row.ok, false);
+        assert.equal(row.type, "CandidateSettingsReadFailure");
+        assert.equal(row.reason, "retirement: tag=ConfigError; stage=projection");
+        assert.equal(row.placements.attempts, 1);
+        assert.equal(row.placements.status, null);
+        assert.ok(row.placements.bytes > 0);
+        continue;
+      }
       assert.equal(row.ok, !drift || !["Api", "PublicSite"].includes(row.role));
       assert.deepEqual(row.compared, scriptSettingFields);
       assert.equal(row.placements.status, 200);
       assert.equal(
         row.placements.attempts,
-        repair && ["Api", "AppPages"].includes(row.role) ? 2 : 1,
+        repair && ["Api", "AppPages"].includes(row.role) ? 3 : 1,
       );
       assert.equal(
         Boolean(row.pendingPlacementRepair),
@@ -239,6 +308,7 @@ test("declaration metadata reads cannot broaden the probe's account, method or q
         success: true,
         result: baselineRoles.map((role) => ({
           id: `basalt-${role.toLowerCase()}-production-fixture`,
+          tags: ["alchemy:stack:basalt", "alchemy:stage:production", `alchemy:id:${role}`],
         })),
         errors: [],
         messages: [],

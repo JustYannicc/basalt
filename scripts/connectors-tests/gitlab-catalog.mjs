@@ -44,8 +44,8 @@ export async function loadGitLabCatalogSource({ root, catalogOrigin }) {
   assert.equal(published.package, source.package);
   assert.deepEqual(
     source.files.map(({ path }) => path).sort(),
-    published.files.map(({ path }) => path).sort(),
-    "The GitLab carry must keep every published source file",
+    [...published.files.map(({ path }) => path), "mcp.ts"].sort(),
+    "The GitLab carry must keep every published source file and add only its MCP sign-in",
   );
   for (const file of expected.files)
     assert.equal(

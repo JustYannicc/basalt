@@ -54,13 +54,60 @@ const sources = new Set([
   "zendesk-tenant-public.mjs",
   "zendesk-company-guidance.mjs",
   "zendesk-operator-choices.mjs",
+  "workos-sign-in.mjs",
+  "gitlab-sign-in.mjs",
+  "clerk-sign-in.mjs",
   "vercel-sign-in.mjs",
   "elevenlabs-sign-in.mjs",
   "slack-health.mjs",
   "catalog-compat.mjs",
   "elevenlabs-discovery.mjs",
+  "zoho-people.mjs",
 ]);
 const count = (value) => Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000;
+const packageId = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const errorTag = /^(?:[A-Z][A-Za-z0-9]{0,63}|[1-5]\d\d)$/;
+const errorStage = /^[a-z][a-z0-9-]{0,47}$/;
+const packageLimit = 20;
+
+/**
+ * A catalog build report's failed packages, as closed fields only: which package, the error's tag,
+ * stage and kind, whether the publisher's own version built, and the catalog's status for a package
+ * it could not serve. The failure text stays in the run's private report. Regressions come first,
+ * then failures the report did not list as known, so the packages that failed the gate are kept.
+ */
+function failedPackages(report) {
+  const ids = (list) =>
+    new Set(Array.isArray(list) ? list.filter((id) => typeof id === "string") : []);
+  const regressions = ids(report.regressions);
+  const unlisted = ids(report.unlisted);
+  const rank = (result) => (regressions.has(result.id) ? 0 : unlisted.has(result.id) ? 1 : 2);
+  const failed = report.results
+    .filter((result) => result?.built === false || result?.servedFailure !== undefined)
+    .map((result, index) => ({ result, index }))
+    .sort((a, b) => rank(a.result) - rank(b.result) || a.index - b.index)
+    .map(({ result }) => result);
+  if (failed.length === 0) return {};
+  return {
+    packages: failed.slice(0, packageLimit).map((result) => ({
+      id: typeof result.id === "string" && packageId.test(result.id) ? result.id : "invalid",
+      ...(typeof result.failureTag === "string" && errorTag.test(result.failureTag)
+        ? { tag: result.failureTag }
+        : {}),
+      ...(typeof result.failureStage === "string" && errorStage.test(result.failureStage)
+        ? { stage: result.failureStage }
+        : {}),
+      ...(typeof result.failure === "string" ? { kind: kindOf(result.failure) } : {}),
+      ...(typeof result.originalBuilt === "boolean" ? { originalBuilt: result.originalBuilt } : {}),
+      ...(Number.isInteger(result.servedStatus) &&
+      result.servedStatus >= 100 &&
+      result.servedStatus <= 599
+        ? { status: result.servedStatus }
+        : {}),
+    })),
+    ...(failed.length > packageLimit ? { packagesTruncated: true } : {}),
+  };
+}
 
 function kindOf(text) {
   if (/AssertionError|ERR_ASSERTION/.test(text)) return "assertion";
@@ -136,5 +183,6 @@ export function connectorDiagnostic(stage, input, failureFile = false) {
       : {}),
     ...(checks === undefined ? {} : { checks }),
     ...(sources.has(source) && line > 0 ? { location: `${source}:${line}` } : {}),
+    ...(stage === "report" && Array.isArray(value.results) && failed ? failedPackages(value) : {}),
   };
 }

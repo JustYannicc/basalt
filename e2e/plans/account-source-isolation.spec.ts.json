@@ -1,0 +1,92 @@
+{
+  "scenarios": {
+    "accountSource403": {
+      "fixtures": "actors",
+      "title": "A combined account router keeps REST usable and reports an MCP 403",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Shared hosted connection UI is exercised through the complete self-host product."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted account authorization and linking are exercised through the complete self-host product."
+        }
+      }
+    },
+    "accountSource503": {
+      "fixtures": "actors",
+      "title": "A combined account router keeps REST usable and reports an MCP 503",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Shared hosted connection UI is exercised through the complete self-host product."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted account authorization and linking are exercised through the complete self-host product."
+        }
+      }
+    },
+    "accountSourceAllFail": {
+      "fixtures": "actors",
+      "title": "A combined account router reports every failed source when all sources fail",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Shared hosted connection UI is exercised through the complete self-host product."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted account authorization and linking are exercised through the complete self-host product."
+        }
+      }
+    },
+    "accountSourceSingle": {
+      "fixtures": "actors",
+      "title": "Single-source account routers preserve failure and healthy-call behavior",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Shared hosted connection UI is exercised through the complete self-host product."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted account authorization and linking are exercised through the complete self-host product."
+        }
+      }
+    }
+  },
+  "runs": {
+    "accountSource403": ["host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"],
+    "accountSource503": ["host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"],
+    "accountSourceAllFail": [
+      "host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"
+    ],
+    "accountSourceSingle": ["host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"]
+  },
+  "inputs": [
+    ".upstream/packages/apps/src/contracts/router.ts",
+    ".upstream/packages/apps/src/implementation/account-router.ts",
+    ".upstream/packages/apps/src/implementation/router-catalog.ts",
+    ".upstream/packages/apps/src/implementation/router.ts",
+    ".upstream/packages/apps/src/implementation/host.ts",
+    ".upstream/packages/apps/src/implementation/account-router-operations.ts",
+    ".upstream/packages/apps/src/implementation/account-router-dynamic.ts",
+    ".upstream/packages/apps/src/implementation/account-router-mcp-apps.ts",
+    ".upstream/packages/mcp/src/implementation/app-assets.ts",
+    ".upstream/packages/mcp/src/implementation/app-asset-paths.ts"
+  ]
+}

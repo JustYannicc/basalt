@@ -33,18 +33,18 @@ index 1e1b122..be4218b 100644
      p.organization_id, p.creator_id, p.kind, p.revision
      from executor_accounts a
 diff --git a/apps/hosted/server/src/contracts/organization.ts b/apps/hosted/server/src/contracts/organization.ts
-index 70615b4..48d2ddf 100644
+index cbcfc78f..f3b709ef 100644
 --- a/apps/hosted/server/src/contracts/organization.ts
 +++ b/apps/hosted/server/src/contracts/organization.ts
-@@ -191,6 +191,8 @@ export class OrganizationIcons extends Context.Service<
- export const Inventory = Schema.Struct({
-   /** The accounts the caller linked to each listed app and may use. */
-   links: Schema.Array(Schema.Struct({ app: AppId, account: AccountId })),
-+  /** App selections, limited to the apps and accounts visible in this inventory. */
-+  appLinks: Schema.Array(Schema.Struct({ app: AppId, account: AccountId })),
-   apps: Schema.Array(AppScreenRecord),
-   /** Each account's checks by the apps listed here; reading them never runs a check. */
-   accounts: Schema.Array(
+@@ -203,6 +203,8 @@ export const Inventory = /* @__PURE__ */ (() =>
+   Schema.Struct({
+     /** The accounts the caller linked to each listed app and may use. */
+     links: Schema.Array(Schema.Struct({ app: AppId, account: AccountId })),
++    /** App selections, limited to the apps and accounts visible in this inventory. */
++    appLinks: Schema.Array(Schema.Struct({ app: AppId, account: AccountId })),
+     apps: Schema.Array(AppScreenRecord),
+     /** Each account's checks by the apps listed here; reading them never runs a check. */
+     accounts: Schema.Array(
 diff --git a/apps/hosted/server/src/implementation/organization.ts b/apps/hosted/server/src/implementation/organization.ts
 index 98cc908..3a3281f 100644
 --- a/apps/hosted/server/src/implementation/organization.ts

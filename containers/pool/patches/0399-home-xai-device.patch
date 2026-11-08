@@ -1,0 +1,559 @@
+diff --git a/internal/auth/xai/xai.go b/internal/auth/xai/xai.go
+--- a/internal/auth/xai/xai.go
++++ b/internal/auth/xai/xai.go
+@@ -121,21 +121,34 @@
+ 		return nil, oautherror.NewResponseError(resp.StatusCode, body)
+ 	}
+ 	var payload struct {
+-		AuthorizationEndpoint string `json:"authorization_endpoint"`
+-		TokenEndpoint         string `json:"token_endpoint"`
++		DeviceAuthorizationEndpoint string `json:"device_authorization_endpoint"`
++		AuthorizationEndpoint       string `json:"authorization_endpoint"`
++		TokenEndpoint               string `json:"token_endpoint"`
+ 	}
+ 	if errUnmarshal := json.Unmarshal(body, &payload); errUnmarshal != nil {
+ 		return nil, fmt.Errorf("xai discovery: parse response: %w", errUnmarshal)
+ 	}
+-	authorizationEndpoint, errAuthorization := ValidateOAuthEndpoint(payload.AuthorizationEndpoint, "authorization_endpoint")
+-	if errAuthorization != nil {
+-		return nil, errAuthorization
++	authorizationEndpoint := ""
++	if payload.AuthorizationEndpoint != "" {
++		var errAuthorization error
++		authorizationEndpoint, errAuthorization = ValidateOAuthEndpoint(payload.AuthorizationEndpoint, "authorization_endpoint")
++		if errAuthorization != nil {
++			return nil, errAuthorization
++		}
+ 	}
+ 	tokenEndpoint, errToken := ValidateOAuthEndpoint(payload.TokenEndpoint, "token_endpoint")
+ 	if errToken != nil {
+ 		return nil, errToken
+ 	}
+-	return &Discovery{AuthorizationEndpoint: authorizationEndpoint, TokenEndpoint: tokenEndpoint}, nil
++	deviceEndpoint := ""
++	if payload.DeviceAuthorizationEndpoint != "" {
++		var errDevice error
++		deviceEndpoint, errDevice = ValidateOAuthEndpoint(payload.DeviceAuthorizationEndpoint, "device_authorization_endpoint")
++		if errDevice != nil {
++			return nil, errDevice
++		}
++	}
++	return &Discovery{AuthorizationEndpoint: authorizationEndpoint, TokenEndpoint: tokenEndpoint, DeviceAuthorizationEndpoint: deviceEndpoint}, nil
+ }
+ 
+ // ExchangeCodeForTokens exchanges an authorization code for xAI OAuth tokens.
+diff --git a/internal/auth/xai/types.go b/internal/auth/xai/types.go
+--- a/internal/auth/xai/types.go
++++ b/internal/auth/xai/types.go
+@@ -37,8 +37,9 @@
+ 
+ // Discovery contains OAuth endpoints resolved from xAI OIDC discovery.
+ type Discovery struct {
+-	AuthorizationEndpoint string `json:"authorization_endpoint"`
+-	TokenEndpoint         string `json:"token_endpoint"`
++	DeviceAuthorizationEndpoint string `json:"device_authorization_endpoint"`
++	AuthorizationEndpoint       string `json:"authorization_endpoint"`
++	TokenEndpoint               string `json:"token_endpoint"`
+ }
+ 
+ // TokenData holds xAI OAuth token data.
+diff --git a/internal/auth/xai/device.go b/internal/auth/xai/device.go
+new file mode 100644
+--- /dev/null
++++ b/internal/auth/xai/device.go
+@@ -0,0 +1,132 @@
++package xai
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"io"
++	"net/http"
++	"net/url"
++	"strings"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/auth/oautherror"
++)
++
++var ErrDeviceCodeExpired = errors.New("xai device code expired")
++var ErrDeviceAccessDenied = errors.New("xai device authorization declined")
++
++// The device secret stays in Home; only the verification URL and user code leave it.
++type DeviceCodeResponse struct {
++	DeviceCode              string    `json:"device_code"`
++	UserCode                string    `json:"user_code"`
++	VerificationURI         string    `json:"verification_uri"`
++	VerificationURIComplete string    `json:"verification_uri_complete"`
++	ExpiresIn               int       `json:"expires_in"`
++	Interval                int       `json:"interval"`
++	TokenEndpoint           string    `json:"-"`
++	ExpiresAt               time.Time `json:"-"`
++}
++
++// StartDeviceFlow follows the device grant used by current CPA xAI authentication.
++func (a *XAIAuth) StartDeviceFlow(ctx context.Context) (*DeviceCodeResponse, error) {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	discovery, err := a.Discover(ctx)
++	if err != nil {
++		return nil, err
++	}
++	if discovery.DeviceAuthorizationEndpoint == "" {
++		return nil, errors.New("xai device authorization is unavailable")
++	}
++	form := url.Values{"client_id": {ClientID}, "scope": {Scope}}
++	req, err := http.NewRequestWithContext(ctx, "POST", discovery.DeviceAuthorizationEndpoint, strings.NewReader(form.Encode()))
++	if err != nil {
++		return nil, errors.New("xai device request could not be prepared")
++	}
++	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
++	req.Header.Set("Accept", "application/json")
++	response, err := a.httpClient.Do(req)
++	if err != nil {
++		return nil, errors.New("xai device authorization could not be reached")
++	}
++	defer response.Body.Close()
++	if response.StatusCode != http.StatusOK {
++		return nil, fmt.Errorf("xai device authorization returned HTTP %d", response.StatusCode)
++	}
++	body, err := io.ReadAll(response.Body)
++	if err != nil {
++		return nil, errors.New("xai device authorization response could not be read")
++	}
++	var code DeviceCodeResponse
++	if json.Unmarshal(body, &code) != nil || strings.TrimSpace(code.DeviceCode) == "" || strings.TrimSpace(code.UserCode) == "" || code.ExpiresIn <= 0 {
++		return nil, errors.New("xai device authorization response is incomplete")
++	}
++	verification := code.VerificationURIComplete
++	if verification == "" {
++		verification = code.VerificationURI
++	}
++	if _, err := ValidateOAuthEndpoint(verification, "verification_uri"); err != nil {
++		return nil, errors.New("xai device verification address is invalid")
++	}
++	code.TokenEndpoint = discovery.TokenEndpoint
++	code.ExpiresAt = time.Now().Add(time.Duration(code.ExpiresIn) * time.Second)
++	return &code, nil
++}
++
++// WaitForAuthorization handles RFC 8628 pending, slow-down, expiry and cancellation.
++func (a *XAIAuth) WaitForAuthorization(ctx context.Context, code *DeviceCodeResponse) (*AuthBundle, error) {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	if code == nil || code.DeviceCode == "" || code.TokenEndpoint == "" {
++		return nil, errors.New("xai device authorization is incomplete")
++	}
++	ctx, cancel := context.WithDeadline(ctx, code.ExpiresAt)
++	defer cancel()
++	interval := time.Duration(code.Interval) * time.Second
++	if interval < 5*time.Second {
++		interval = 5 * time.Second
++	}
++	form := url.Values{"grant_type": {"urn:ietf:params:oauth:grant-type:device_code"}, "client_id": {ClientID}, "device_code": {code.DeviceCode}}
++	for {
++		if ctx.Err() != nil {
++			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
++				return nil, ErrDeviceCodeExpired
++			}
++			return nil, ctx.Err()
++		}
++		request, finish := context.WithTimeout(ctx, 30*time.Second)
++		token, err := a.postTokenForm(request, code.TokenEndpoint, form)
++		finish()
++		if err == nil {
++			return &AuthBundle{TokenData: *token, LastRefresh: time.Now().UTC().Format(time.RFC3339), BaseURL: DefaultAPIBaseURL, TokenEndpoint: code.TokenEndpoint}, nil
++		}
++		if ctx.Err() != nil {
++			continue
++		}
++		var rejected *oautherror.ResponseError
++		if !errors.As(err, &rejected) {
++			return nil, errors.New("xai device token exchange could not finish")
++		}
++		switch rejected.OAuthError() {
++		case "authorization_pending":
++		case "slow_down":
++			interval += 5 * time.Second
++		case "expired_token":
++			return nil, ErrDeviceCodeExpired
++		case "access_denied":
++			return nil, ErrDeviceAccessDenied
++		default:
++			return nil, errors.New("xai device token exchange was rejected")
++		}
++		timer := time.NewTimer(interval)
++		select {
++		case <-ctx.Done():
++			timer.Stop()
++		case <-timer.C:
++		}
++	}
++}
+diff --git a/internal/auth/xai/device_test.go b/internal/auth/xai/device_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/auth/xai/device_test.go
+@@ -0,0 +1,79 @@
++package xai
++
++import (
++	"context"
++	"errors"
++	"io"
++	"net/http"
++	"strings"
++	"testing"
++	"time"
++)
++
++func TestXAIDeviceErrorsAndCancellation(t *testing.T) {
++	for _, tc := range []struct {
++		code     string
++		expected error
++	}{
++		{"expired_token", ErrDeviceCodeExpired},
++		{"access_denied", ErrDeviceAccessDenied},
++		{"authorization_pending", context.Canceled},
++		{"slow_down", context.Canceled},
++		{"unexpected_error", nil},
++	} {
++		t.Run(tc.code, func(t *testing.T) {
++			calls := 0
++			seen := make(chan struct{}, 1)
++			auth := &XAIAuth{httpClient: &http.Client{Transport: refreshRoundTripperFunc(func(r *http.Request) (*http.Response, error) {
++				calls++
++				seen <- struct{}{}
++				return &http.Response{StatusCode: 400, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":"` + tc.code + `","error_description":"private-provider-sentinel"}`)), Request: r}, nil
++			})}}
++			ctx, cancel := context.WithCancel(t.Context())
++			defer cancel()
++			result := make(chan error, 1)
++			go func() {
++				_, err := auth.WaitForAuthorization(ctx, &DeviceCodeResponse{DeviceCode: "fixture-device", TokenEndpoint: "https://auth.x.ai/token", ExpiresAt: time.Now().Add(time.Minute), Interval: 5})
++				result <- err
++			}()
++			<-seen
++			if errors.Is(tc.expected, context.Canceled) {
++				cancel()
++			}
++			var err error
++			select {
++			case err = <-result:
++			case <-time.After(5 * time.Second):
++				t.Fatal("device cancellation did not finish")
++			}
++			if err == nil || calls != 1 || strings.Contains(err.Error(), "private-provider-sentinel") {
++				t.Fatal("device error was retried immediately or exposed provider response content")
++			}
++			if tc.expected != nil && !errors.Is(err, tc.expected) {
++				t.Fatalf("error = %v, want %v", err, tc.expected)
++			}
++		})
++	}
++	auth := &XAIAuth{httpClient: &http.Client{Transport: refreshRoundTripperFunc(func(r *http.Request) (*http.Response, error) {
++		t.Fatal("an expired code reached the token endpoint")
++		return nil, nil
++	})}}
++	_, err := auth.WaitForAuthorization(t.Context(), &DeviceCodeResponse{DeviceCode: "expired", TokenEndpoint: "https://auth.x.ai/token", ExpiresAt: time.Now().Add(-time.Second)})
++	if !errors.Is(err, ErrDeviceCodeExpired) {
++		t.Fatal("expired device code did not fail before exchange")
++	}
++}
++
++func TestXAIDeviceDiscoveryDoesNotRequireABrowserRedirect(t *testing.T) {
++	auth := &XAIAuth{httpClient: &http.Client{Transport: refreshRoundTripperFunc(func(r *http.Request) (*http.Response, error) {
++		body := `{"device_authorization_endpoint":"https://auth.x.ai/device/code","token_endpoint":"https://auth.x.ai/token"}`
++		if r.Method == "POST" {
++			body = `{"device_code":"private-device","user_code":"USER-CODE","verification_uri":"https://accounts.x.ai/oauth2/device","expires_in":1800,"interval":5}`
++		}
++		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
++	})}}
++	code, err := auth.StartDeviceFlow(t.Context())
++	if err != nil || code.UserCode != "USER-CODE" || code.DeviceCode != "private-device" || code.TokenEndpoint != "https://auth.x.ai/token" || code.ExpiresAt.IsZero() {
++		t.Fatal("device discovery still depends on the removed browser callback")
++	}
++}
+diff --git a/internal/cluster/management/oauth_login.go b/internal/cluster/management/oauth_login.go
+--- a/internal/cluster/management/oauth_login.go
++++ b/internal/cluster/management/oauth_login.go
+@@ -183,68 +183,6 @@
+ 	}
+ 
+ 	go h.waitForKimiAuthorization(state, kimiAuth, deviceFlow)
+-
+-	c.JSON(http.StatusOK, gin.H{"status": "ok", "url": authURL, "state": state})
+-}
+-
+-// RequestXAIToken handles request xAI token.
+-func (h *Handler) RequestXAIToken(c *gin.Context) {
+-	// Resolve credential context before calling upstream OAuth services.
+-	ctx, cancel := context.WithTimeout(requestContextOrBackground(c), 30*time.Second)
+-	defer cancel()
+-
+-	pkceCodes, errPKCE := xaiauth.GeneratePKCECodes()
+-	if errPKCE != nil {
+-		log.Errorf("cluster oauth: failed to generate xai PKCE codes: %v", errPKCE)
+-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate PKCE codes"})
+-		return
+-	}
+-	state, errState := generateOAuthState("xai")
+-	if errState != nil {
+-		log.Errorf("cluster oauth: failed to generate xai state: %v", errState)
+-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
+-		return
+-	}
+-	nonce, errNonce := randomURLSafe(24)
+-	if errNonce != nil {
+-		log.Errorf("cluster oauth: failed to generate xai nonce: %v", errNonce)
+-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate nonce parameter"})
+-		return
+-	}
+-
+-	authSvc := xaiauth.NewXAIAuth(h.oauthConfig())
+-	discovery, errDiscover := authSvc.Discover(ctx)
+-	if errDiscover != nil {
+-		log.Errorf("cluster oauth: failed to discover xai OAuth endpoints: %v", errDiscover)
+-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to discover oauth endpoints"})
+-		return
+-	}
+-
+-	redirectURI := fmt.Sprintf("http://%s:%d%s", xaiauth.RedirectHost, xaiauth.CallbackPort, xaiauth.RedirectPath)
+-	authURL, errAuthURL := xaiauth.BuildAuthorizeURL(xaiauth.AuthorizeURLParams{
+-		AuthorizationEndpoint: discovery.AuthorizationEndpoint,
+-		RedirectURI:           redirectURI,
+-		CodeChallenge:         pkceCodes.CodeChallenge,
+-		State:                 state,
+-		Nonce:                 nonce,
+-	})
+-	if errAuthURL != nil {
+-		log.Errorf("cluster oauth: failed to generate xai authorization URL: %v", errAuthURL)
+-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
+-		return
+-	}
+-
+-	if errRegister := h.registerOAuthSession(c, "xai", state, map[string]any{
+-		"code_verifier":          pkceCodes.CodeVerifier,
+-		"code_challenge":         pkceCodes.CodeChallenge,
+-		"nonce":                  nonce,
+-		"redirect_uri":           redirectURI,
+-		"authorization_endpoint": discovery.AuthorizationEndpoint,
+-		"token_endpoint":         discovery.TokenEndpoint,
+-	}); errRegister != nil {
+-		respondError(c, http.StatusInternalServerError, "oauth_session_failed", errRegister)
+-		return
+-	}
+ 
+ 	c.JSON(http.StatusOK, gin.H{"status": "ok", "url": authURL, "state": state})
+ }
+@@ -902,6 +840,10 @@
+ 		return fmt.Errorf("token exchange returned empty access token")
+ 	}
+ 
++	return h.storeXAIBundle(ctx, bundle)
++}
++
++func (h *Handler) storeXAIBundle(ctx context.Context, bundle *xaiauth.AuthBundle) error {
+ 	tokenData := bundle.TokenData
+ 	metadata := map[string]any{
+ 		"type":           "xai",
+diff --git a/internal/cluster/management/oauth_xai_device.go b/internal/cluster/management/oauth_xai_device.go
+new file mode 100644
+--- /dev/null
++++ b/internal/cluster/management/oauth_xai_device.go
+@@ -0,0 +1,73 @@
++package management
++
++import (
++	"context"
++	"errors"
++	"net/http"
++	"time"
++
++	"github.com/gin-gonic/gin"
++	xaiauth "github.com/router-for-me/CLIProxyAPIHome/internal/auth/xai"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++)
++
++// RequestXAIToken uses device authorization because xAI no longer redirects the old CLI flow.
++func (h *Handler) RequestXAIToken(c *gin.Context) {
++	ctx, cancel := context.WithTimeout(requestContextOrBackground(c), 30*time.Second)
++	defer cancel()
++	auth := xaiauth.NewXAIAuth(h.oauthConfig())
++	code, err := auth.StartDeviceFlow(ctx)
++	if err != nil {
++		c.JSON(http.StatusBadGateway, gin.H{"error": "xai_device_authorization_unavailable"})
++		return
++	}
++	state, err := generateOAuthState("xai")
++	if err != nil {
++		c.JSON(http.StatusInternalServerError, gin.H{"error": "oauth_state_failed"})
++		return
++	}
++	record, err := cluster.NewOAuthSessionRecord("xai", state, map[string]any{
++		"device_code": code.DeviceCode, "user_code": code.UserCode,
++		"token_endpoint": code.TokenEndpoint, "flow": "device",
++	}, time.Now().UTC())
++	if err == nil {
++		if code.ExpiresAt.Before(record.ExpiresAt) {
++			record.ExpiresAt = code.ExpiresAt
++		} else {
++			code.ExpiresAt = record.ExpiresAt
++			code.ExpiresIn = int(cluster.OAuthSessionTTL / time.Second)
++		}
++		err = h.repo.UpsertOAuthSession(ctx, record)
++	}
++	if err != nil {
++		c.JSON(http.StatusInternalServerError, gin.H{"error": "oauth_session_failed"})
++		return
++	}
++	verification := code.VerificationURIComplete
++	if verification == "" {
++		verification = code.VerificationURI
++	}
++	go h.waitForXAIAuthorization(state, auth, code)
++	c.JSON(http.StatusOK, gin.H{"status": "ok", "state": state, "flow": "device", "url": verification, "user_code": code.UserCode, "expires_in": code.ExpiresIn})
++}
++
++func (h *Handler) waitForXAIAuthorization(state string, auth *xaiauth.XAIAuth, code *xaiauth.DeviceCodeResponse) {
++	ctx, cancel := h.oauthSessionContext(context.Background(), state, time.Until(code.ExpiresAt))
++	defer cancel()
++	bundle, err := auth.WaitForAuthorization(ctx, code)
++	if err == nil {
++		err = h.storeXAIBundle(ctx, bundle)
++	}
++	if err == nil || errors.Is(ctx.Err(), context.Canceled) {
++		return
++	}
++	message := "xAI sign-in could not finish. Start again."
++	if errors.Is(err, xaiauth.ErrDeviceCodeExpired) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
++		message = "xAI sign-in expired. Start again to get a new code."
++	} else if errors.Is(err, xaiauth.ErrDeviceAccessDenied) {
++		message = "xAI sign-in was declined. Start again to try another code."
++	}
++	saved, finish := context.WithTimeout(context.Background(), 30*time.Second)
++	defer finish()
++	_ = h.repo.SetOAuthSessionError(saved, state, message)
++}
+diff --git a/internal/cluster/management/oauth_xai_device_test.go b/internal/cluster/management/oauth_xai_device_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/cluster/management/oauth_xai_device_test.go
+@@ -0,0 +1,113 @@
++package management
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"net/url"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/config"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/home"
++)
++
++type xaiDeviceTransport func(*http.Request) (*http.Response, error)
++
++func (f xaiDeviceTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
++
++func TestXAIStartUsesDeviceFlowAndReturnsExactCredential(t *testing.T) {
++	previous := http.DefaultTransport
++	defer func() { http.DefaultTransport = previous }()
++	http.DefaultTransport = xaiDeviceTransport(func(r *http.Request) (*http.Response, error) {
++		if r.URL.Host != "auth.x.ai" {
++			return nil, fmt.Errorf("unexpected fixture host")
++		}
++		var body string
++		switch r.URL.Path {
++		case "/.well-known/openid-configuration":
++			body = `{"authorization_endpoint":"https://auth.x.ai/oauth2/authorize","device_authorization_endpoint":"https://auth.x.ai/oauth2/device/code","token_endpoint":"https://auth.x.ai/oauth2/token"}`
++		case "/oauth2/device/code":
++			if err := r.ParseForm(); err != nil {
++				return nil, err
++			}
++			if r.Method != "POST" || r.Form.Get("client_id") == "" || r.Form.Get("scope") == "" {
++				return nil, fmt.Errorf("invalid device request")
++			}
++			body = `{"device_code":"private-device-fixture","user_code":"USER-CODE","verification_uri":"https://auth.x.ai/activate","expires_in":600,"interval":5}`
++		case "/oauth2/token":
++			if err := r.ParseForm(); err != nil {
++				return nil, err
++			}
++			if r.Form.Get("grant_type") != "urn:ietf:params:oauth:grant-type:device_code" || r.Form.Get("device_code") != "private-device-fixture" || r.Form.Get("code_verifier") != "" {
++				return nil, fmt.Errorf("login did not use the device grant")
++			}
++			body = `{"access_token":"fixture-access","refresh_token":"fixture-refresh","token_type":"Bearer","expires_in":3600}`
++		default:
++			return nil, fmt.Errorf("unexpected fixture path")
++		}
++		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
++	})
++	runtime, err := home.NewRuntime(&config.Config{AuthDir: t.TempDir()})
++	if err != nil {
++		t.Fatal(err)
++	}
++	db, cleanup := openManagementLogTestDB(t)
++	defer cleanup()
++	repo := cluster.NewRepository(db)
++	h := NewHandler(repo, runtime, "127.0.0.1", 0)
++	router := gin.New()
++	router.GET("/oauth/auth-url", h.StartOAuthV8)
++	router.GET("/oauth/status", h.GetAuthStatusV8)
++	started := oauthStatusV8Request(t, router, "/oauth/auth-url?provider=xai")
++	if started["flow"] != "device" || started["user_code"] != "USER-CODE" || started["url"] != "https://auth.x.ai/activate" || started["expires_in"] != float64(600) {
++		t.Fatalf("xAI must offer device authorization, not a callback URL: %#v", started)
++	}
++	state, ok := started["state"].(string)
++	if !ok || state == "" {
++		t.Fatal("missing sign-in state")
++	}
++	raw, _ := json.Marshal(started)
++	if strings.Contains(string(raw), "private-device-fixture") {
++		t.Fatal("device secret reached the public response")
++	}
++	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
++	defer cancel()
++	for {
++		response := httptest.NewRecorder()
++		router.ServeHTTP(response, httptest.NewRequest("GET", "/oauth/status?state="+url.QueryEscape(state), nil).WithContext(ctx))
++		var result map[string]any
++		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
++			t.Fatal(err)
++		}
++		if result["status"] == "ok" {
++			files, err := repo.ListAuths(ctx)
++			if err != nil || len(files) != 1 || result["auth_id"] != files[0].ID {
++				t.Fatal("device login did not return its exact saved credential")
++			}
++			credential, _, err := repo.GetAuth(ctx, files[0].ID)
++			if err != nil || credential.Metadata["access_token"] != "fixture-access" || credential.Metadata["token_endpoint"] != "https://auth.x.ai/oauth2/token" {
++				t.Fatal("device login changed the saved token format")
++			}
++			session, err := repo.GetOAuthSession(ctx, state)
++			if err != nil || session == nil || strings.Contains(string(session.Data), "private-device-fixture") {
++				t.Fatal("completed session retained its device secret")
++			}
++			break
++		}
++		if result["status"] != "wait" {
++			t.Fatalf("device login failed: %#v", result)
++		}
++		select {
++		case <-ctx.Done():
++			t.Fatal("device login never completed")
++		default:
++		}
++	}
++}

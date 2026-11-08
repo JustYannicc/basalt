@@ -18,6 +18,9 @@
       "./.upstream/playground/demo-apps/live-inbox/node_modules/@types"
     ],
     "paths": {
+      "@sqlite.org/sqlite-wasm": [
+        "./.upstream/node_modules/@sqlite.org/sqlite-wasm/dist/index.d.mts"
+      ],
       "apps": [
         "./.upstream/packages/apps/dist/types/apps/src/index.d.ts"
       ],

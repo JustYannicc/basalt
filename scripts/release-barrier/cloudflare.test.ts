@@ -168,6 +168,7 @@ test("the real version multipart repairs the exact damaged Api baseline and prot
     complete.request.metadata,
     complete.previousSettings,
     repair,
+    active,
   );
   for (const changed of [
     { tags: ["different"] },
@@ -182,6 +183,7 @@ test("the real version multipart repairs the exact damaged Api baseline and prot
         complete.request.metadata,
         { ...complete.previousSettings, ...changed },
         repair,
+        active,
       ),
     );
   assertRepairedPlacement(

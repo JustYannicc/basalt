@@ -34,7 +34,7 @@ test("native probe refuses redirected inventory without reading its destination"
 });
 
 test(
-  "native probe reads all 19 baselines concurrently and retains only safe per-Worker metrics",
+  "native probe reads all 20 baselines concurrently and retains only safe per-Worker metrics",
   { timeout: 5_000 },
   async (context) => {
     const requests: { method: string | undefined; bytes: number }[] = [];
@@ -77,6 +77,7 @@ test(
             messages: [],
             result: baselineRoles.map((role) => ({
               id: `basalt-${role.toLowerCase()}-production-fixture`,
+              tags: ["alchemy:stack:basalt", "alchemy:stage:production", `alchemy:id:${role}`],
             })),
           }),
         );
@@ -86,7 +87,7 @@ test(
         request.url ?? "",
         /^\/accounts\/fixture\/workers\/scripts\/basalt-[a-z]+-production-fixture\/deployments$/,
       );
-      if (++baselines === 19) allArrived.resolve();
+      if (++baselines === baselineRoles.length) allArrived.resolve();
       await allArrived.promise;
       const failed = request.url!.includes("publicsite");
       response.statusCode = failed ? 403 : 200;
@@ -108,12 +109,12 @@ test(
       "private-fixture",
       `http://127.0.0.1:${address.port}`,
     );
-    assert.equal(baselines, 19);
+    assert.equal(baselines, baselineRoles.length);
     assert.deepEqual(
       requests,
-      Array.from({ length: 20 }, () => ({ method: "GET", bytes: 0 })),
+      Array.from({ length: baselineRoles.length + 1 }, () => ({ method: "GET", bytes: 0 })),
     );
-    assert.equal(rows.length, 19);
+    assert.equal(rows.length, baselineRoles.length);
     for (const row of rows) {
       const failed = row.role === "PublicSite";
       assert.equal(row.ok, !failed);

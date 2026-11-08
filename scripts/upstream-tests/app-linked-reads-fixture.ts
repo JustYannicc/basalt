@@ -158,22 +158,13 @@ export const fixture = <A, E>(
       }));
       const executor = {
         [sdk.AccountReadHost]: {
-          listIds: ({
-            owner: requestedOwner,
-            ids,
-          }: {
-            owner: string;
-            ids?: readonly AccountId[];
-          }) =>
+          listIds: ({ owner: requestedOwner, ids }: { owner: string; ids: readonly AccountId[] }) =>
             Effect.suspend(() => {
               assert.equal(requestedOwner, owner);
               return options.storageFailure
                 ? Effect.fail(new sdk.StorageError())
                 : Effect.sync(() => {
-                    const selected =
-                      ids === undefined
-                        ? saved
-                        : saved.filter((account) => ids.includes(account.id));
+                    const selected = saved.filter((account) => ids.includes(account.id));
                     count("accountList");
                     count("accountRows", selected.length);
                     return selected;

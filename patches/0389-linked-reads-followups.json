@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-linked-reads-followups",
+  "file": "0389-linked-reads-followups.patch",
+  "content_sha256": "7ebd867fae15a69f88e3c4a13104640df12bbe68b6661b48b60e3eccb2946357",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

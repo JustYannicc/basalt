@@ -28,25 +28,31 @@ test("Check and release preparations reuse only their own dependency generations
   const names = ["BASALT_UPSTREAM_CACHE", "BASALT_CI_OMIT_RELEASE_DOWNLOADS"];
   const previous = names.map((name) => process.env[name]);
   try {
-    const root = join(fixture, "consumer");
-    mkdirSync(root);
-    writeFileSync(join(root, "bunfig.toml"), '[install]\nlinker = "isolated"\n');
+    const releaseRoot = join(fixture, "release"),
+      checkRoot = join(fixture, "check");
+    mkdirSync(releaseRoot);
+    mkdirSync(checkRoot);
+    writeFileSync(join(releaseRoot, "bunfig.toml"), '[install]\nlinker = "isolated"\n');
     writeFileSync(
-      join(root, "package.json"),
+      join(releaseRoot, "package.json"),
       JSON.stringify({ name: "policy-fixture", dependencies: { "is-number": "7.0.0" } }),
     );
-    execFileSync("bun", ["install", "--ignore-scripts"], { cwd: root, stdio: "pipe" });
+    execFileSync("bun", ["install", "--ignore-scripts"], { cwd: releaseRoot, stdio: "pipe" });
+    for (const file of ["bunfig.toml", "package.json", "bun.lock"])
+      cpSync(join(releaseRoot, file), join(checkRoot, file));
     process.env.BASALT_UPSTREAM_CACHE = join(fixture, "cache");
-    const prepare = async (omit: boolean) => {
+    const prepare = async (root: string, omit: boolean, cacheHitOnly = false) => {
       process.env.BASALT_CI_OMIT_RELEASE_DOWNLOADS = String(omit);
-      return installUpstreamDependencies(root, "fixture-pin");
+      return installUpstreamDependencies(root, "fixture-pin", cacheHitOnly);
     };
-    const release = await prepare(false),
-      check = await prepare(true);
+    const release = await prepare(releaseRoot, false),
+      check = await prepare(checkRoot, true);
     assert.notEqual(check.key, release.key);
     assert.notEqual(check.store, release.store);
-    assert.deepEqual(await prepare(false), release);
-    assert.deepEqual(await prepare(true), check);
+    assert.equal(existsSync(release.store), true);
+    assert.equal(existsSync(check.store), true);
+    assert.deepEqual(await prepare(releaseRoot, false, true), release);
+    assert.deepEqual(await prepare(checkRoot, true, true), check);
   } finally {
     for (const [index, name] of names.entries()) {
       if (previous[index] === undefined) delete process.env[name];

@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountPresentation {
+    metadata {
+      constraint "Account plan labels use the service's human tier names consistently across rows, app and pool account selection, and details; unfamiliar identifiers remain readable."
+    }
+  }
+}
