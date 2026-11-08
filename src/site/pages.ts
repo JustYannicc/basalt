@@ -12,15 +12,18 @@ const escapeHtml = (value: string) =>
 
 /** Escapes the text, then expands `**bold**` and `[label](href)`; no other markup gets through. */
 export function inline(text: string): string {
-  return escapeHtml(text)
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    // Only web, mail and same-site links; anything else stays as written.
-    .replace(/\[([^\]]+)\]\(((?:https?:|mailto:|\/)[^)\s]*)\)/g, '<a href="$2">$1</a>');
+  return (
+    escapeHtml(text)
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+      // Only web, mail and same-site links; anything else stays as written.
+      .replace(/\[([^\]]+)\]\(((?:https?:|mailto:|\/)[^)\s]*)\)/g, '<a href="$2">$1</a>')
+  );
 }
 
 function block(item: Block): string {
   if ("h2" in item) return `<h2>${inline(item.h2)}</h2>`;
-  if ("ul" in item) return `<ul>${item.ul.map((entry) => `<li>${inline(entry)}</li>`).join("")}</ul>`;
+  if ("ul" in item)
+    return `<ul>${item.ul.map((entry) => `<li>${inline(entry)}</li>`).join("")}</ul>`;
   if ("lines" in item) return `<p>${item.lines.map(inline).join("<br>")}</p>`;
   return `<p>${inline(item.p)}</p>`;
 }
@@ -138,7 +141,8 @@ export type HomeState = "open" | JoinResult;
  */
 function waitlist(state: HomeState): string {
   const { waitlist: copy } = home;
-  if (state === "joined") return `<div class="join"><p class="status" role="status">${inline(copy.joined)}</p></div>`;
+  if (state === "joined")
+    return `<div class="join"><p class="status" role="status">${inline(copy.joined)}</p></div>`;
   const status =
     state === "open" ? "" : `<p class="status" role="alert">${inline(copy[state])}</p>`;
   return `<form class="join" method="post" action="/waitlist"><p>${inline(copy.invite)}</p><div class="row"><label class="visually-hidden" for="email">${escapeHtml(copy.label)}</label><input id="email" name="email" type="email" required maxlength="254" autocomplete="email" inputmode="email" placeholder="you@example.com"${state === "invalid" ? ' aria-invalid="true"' : ""}><button type="submit">${escapeHtml(copy.button)}</button></div><div class="trap" aria-hidden="true"><label for="leave_empty">Leave this empty</label><input id="leave_empty" name="leave_empty" type="text" tabindex="-1" autocomplete="off"></div>${status}</form>`;
@@ -194,7 +198,10 @@ const notFound = () =>
 
 // Every page is built from constants, so each is rendered once when the Worker starts.
 const homes = new Map<HomeState, string>(
-  (["open", "joined", "invalid", "limited", "failed"] as const).map((state) => [state, homePage(state)]),
+  (["open", "joined", "invalid", "limited", "failed"] as const).map((state) => [
+    state,
+    homePage(state),
+  ]),
 );
 export const homeWith = (state: HomeState) => homes.get(state)!;
 

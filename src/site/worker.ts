@@ -63,15 +63,20 @@ async function join(request: Request, env: SiteEnv): Promise<Response> {
     env.WAITLIST,
     env.WAITLIST_LIMIT,
   );
-  if (result === "invalid") return new Response(homeWith(result), { status: 400, headers: uncached });
+  if (result === "invalid")
+    return new Response(homeWith(result), { status: 400, headers: uncached });
   if (result === "limited")
     return new Response(homeWith(result), {
       status: 429,
       headers: { ...uncached, "Retry-After": "60" },
     });
-  if (result === "failed") return new Response(homeWith(result), { status: 503, headers: uncached });
+  if (result === "failed")
+    return new Response(homeWith(result), { status: 503, headers: uncached });
   // See Other turns the POST into a GET, so reloading the result doesn't send the form again.
-  return new Response(null, { status: 303, headers: { Location: "/waitlist", "Cache-Control": "no-store" } });
+  return new Response(null, {
+    status: 303,
+    headers: { Location: "/waitlist", "Cache-Control": "no-store" },
+  });
 }
 
 /** The brand's logo and fonts come from static assets first; every other path lands here. */
@@ -87,7 +92,10 @@ export async function handleSite(request: Request, env: SiteEnv): Promise<Respon
     });
   if (pathname === "/robots.txt")
     return new Response(request.method === "HEAD" ? null : robots, {
-      headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=300" },
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "public, max-age=300",
+      },
     });
   const { status, html } = sitePage(pathname);
   return new Response(request.method === "HEAD" ? null : html, {

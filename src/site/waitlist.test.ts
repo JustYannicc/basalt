@@ -52,7 +52,10 @@ function site(limit?: number) {
   const store = sqlite();
   const limiter = rateLimit(limit);
   const env: SiteEnv = { WAITLIST: store.database, WAITLIST_LIMIT: limiter };
-  const post = (fields: Record<string, string>, init: { ip?: string; origin?: string | null } = {}) =>
+  const post = (
+    fields: Record<string, string>,
+    init: { ip?: string; origin?: string | null } = {},
+  ) =>
     handleSite(
       new Request("https://signalbox.run/waitlist", {
         method: "POST",
@@ -97,7 +100,14 @@ test("signing up again keeps one row and the first time, and answers exactly as 
 
 test("an invalid address is refused with the form and a message, and nothing is stored", async () => {
   const { post, rows } = site(10);
-  for (const email of ["", "ada", "ada@example", "a b@example.com", "ada@@example.com", `${"a".repeat(250)}@x.io`]) {
+  for (const email of [
+    "",
+    "ada",
+    "ada@example",
+    "a b@example.com",
+    "ada@@example.com",
+    `${"a".repeat(250)}@x.io`,
+  ]) {
     const response = await post({ email });
     assert.equal(response.status, 400, email);
     assert.equal(response.headers.get("cache-control"), "no-store");
@@ -125,13 +135,19 @@ test("each IP gets a few tries per period, counted before anything else, and oth
   assert.equal(limited.headers.get("retry-after"), "60");
   assert.match(await limited.text(), /Too many tries from here/);
   assert.equal((await post({ email: "four@example.com" }, { ip: "198.51.100.7" })).status, 303);
-  assert.deepEqual(rows().map((row) => row.email), ["four@example.com", "one@example.com"]);
+  assert.deepEqual(
+    rows().map((row) => row.email),
+    ["four@example.com", "one@example.com"],
+  );
   assert.deepEqual([...limiter.keys.keys()], ["192.0.2.1", "198.51.100.7"]);
 });
 
 test("only same-origin form posts reach the list", async () => {
   const { post, env, rows } = site();
-  assert.equal((await post({ email: "ada@example.com" }, { origin: "https://evil.example" })).status, 403);
+  assert.equal(
+    (await post({ email: "ada@example.com" }, { origin: "https://evil.example" })).status,
+    403,
+  );
   // Browsers may omit Origin on a same-site navigation; the form still works.
   assert.equal((await post({ email: "ada@example.com" }, { origin: null })).status, 303);
   const json = await handleSite(
@@ -145,8 +161,14 @@ test("only same-origin form posts reach the list", async () => {
   assert.equal(json.status, 415);
   const large = await post({ email: "big@example.com", leave_empty: "", pad: "x".repeat(4096) });
   assert.equal(large.status, 413);
-  assert.deepEqual(rows().map((row) => row.email), ["ada@example.com"]);
-  assert.equal((await handleSite(new Request("https://signalbox.run/", { method: "POST" }), env)).status, 405);
+  assert.deepEqual(
+    rows().map((row) => row.email),
+    ["ada@example.com"],
+  );
+  assert.equal(
+    (await handleSite(new Request("https://signalbox.run/", { method: "POST" }), env)).status,
+    405,
+  );
 });
 
 test("a body with no declared length is still capped, and a trailing slash posts the same form", async () => {
@@ -168,9 +190,15 @@ test("a body with no declared length is still capped, and a trailing slash posts
       } as RequestInit),
       env,
     );
-  assert.equal((await chunked("/waitlist", `email=big%40example.com&pad=${"x".repeat(4096)}`)).status, 413);
+  assert.equal(
+    (await chunked("/waitlist", `email=big%40example.com&pad=${"x".repeat(4096)}`)).status,
+    413,
+  );
   assert.equal((await chunked("/waitlist/", "email=ada%40example.com&leave_empty=")).status, 303);
-  assert.deepEqual(rows().map((row) => row.email), ["ada@example.com"]);
+  assert.deepEqual(
+    rows().map((row) => row.email),
+    ["ada@example.com"],
+  );
 });
 
 test("a database failure keeps the form, says to try again, and never echoes the address", async () => {
@@ -208,7 +236,21 @@ test("a database failure keeps the form, says to try again, and never echoes the
 });
 
 test("addresses are trimmed and lowercased, and only plausible ones pass", () => {
-  assert.equal(normalizeEmail(" Ada.Lovelace+list@Example.co.uk "), "ada.lovelace+list@example.co.uk");
-  for (const value of [undefined, null, 42, "ada@", "@example.com", "ada@example.", "ada@exa mple.com", "ada@example..com", "ada@.example.com", "ada\u0000@example.com"])
+  assert.equal(
+    normalizeEmail(" Ada.Lovelace+list@Example.co.uk "),
+    "ada.lovelace+list@example.co.uk",
+  );
+  for (const value of [
+    undefined,
+    null,
+    42,
+    "ada@",
+    "@example.com",
+    "ada@example.",
+    "ada@exa mple.com",
+    "ada@example..com",
+    "ada@.example.com",
+    "ada\u0000@example.com",
+  ])
     assert.equal(normalizeEmail(value), undefined, String(value));
 });

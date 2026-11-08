@@ -25,14 +25,18 @@ export type JoinResult = "joined" | "invalid" | "limited" | "failed";
 const schema =
   "CREATE TABLE IF NOT EXISTS waitlist (email TEXT PRIMARY KEY NOT NULL, created_at TEXT NOT NULL) WITHOUT ROWID";
 // A repeat sign-up keeps the first timestamp and looks the same as a new one.
-const insert = "INSERT INTO waitlist (email, created_at) VALUES (?1, ?2) ON CONFLICT (email) DO NOTHING";
+const insert =
+  "INSERT INTO waitlist (email, created_at) VALUES (?1, ?2) ON CONFLICT (email) DO NOTHING";
 
 /** Lowercased and trimmed, or undefined when it can't be an address. */
 export function normalizeEmail(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const email = value.trim().toLowerCase();
   // RFC 5321 caps a path at 254 characters; one @, a dot in the domain, no spaces or controls.
-  if (email.length > 254 || !/^[^\s@\p{Cc}]{1,64}@(?:[^\s@\p{Cc}.]+\.)+[^\s@\p{Cc}.]+$/u.test(email))
+  if (
+    email.length > 254 ||
+    !/^[^\s@\p{Cc}]{1,64}@(?:[^\s@\p{Cc}.]+\.)+[^\s@\p{Cc}.]+$/u.test(email)
+  )
     return undefined;
   return email;
 }

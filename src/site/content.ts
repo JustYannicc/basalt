@@ -39,7 +39,8 @@ export const home = {
   tagline: "The work comes first.",
   /** The app stays unlisted for now: the home page offers the waiting list instead. */
   waitlist: {
-    invite: "We're letting people in a few at a time. Leave your email and we'll write when it's your turn.",
+    invite:
+      "We're letting people in a few at a time. Leave your email and we'll write when it's your turn.",
     label: "Email address",
     button: "Join the waiting list",
     joined: "You're on the list. We'll write when it's your turn.",
