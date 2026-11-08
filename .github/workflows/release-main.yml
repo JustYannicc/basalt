@@ -87,7 +87,9 @@ jobs:
       - name: Read every Worker baseline before the backup
         if: steps.live.outputs.already_live == 'false'
         working-directory: ${{ runner.temp }}/candidate
-        run: bun scripts/release-barrier/baseline-probe-entry.ts
+        run: |
+          BASALT_RELEASE_ATTEMPT="$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')" \
+            bun scripts/release-barrier/baseline-probe-entry.ts
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

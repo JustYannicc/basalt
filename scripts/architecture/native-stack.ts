@@ -47,6 +47,7 @@ function evaluate(
   options: {
     manualCron?: true;
     settingsProof?: true;
+    candidateProof?: "ready" | "missing-attempt" | "entry-ready" | "entry-missing-attempt";
     releaseProof?: true;
     connectionProof?: true;
     previewConnectionProof?: true;
@@ -69,6 +70,7 @@ function evaluate(
       BUN_INSTALL_CACHE_DIR: join(scratch, "cache"),
       NATIVE_STACK_ROOT: realpathSync(root),
       NATIVE_STACK_SETTINGS_PROOF: String(options.settingsProof ?? false),
+      NATIVE_STACK_CANDIDATE_PROOF: options.candidateProof ?? "",
       NATIVE_STACK_MANUAL_CRON: String(options.manualCron ?? false),
       NATIVE_STACK_RELEASE_PROOF: String(options.releaseProof ?? false),
       NATIVE_STACK_CONNECTION_TARGET: options.connectionTarget ?? "DatabaseConnection",
@@ -258,4 +260,11 @@ export function discoverContainerBarrierProof(root: string, scenario: string) {
 /** Derives the exact script settings from all real declarations in the existing network sandbox. */
 export function discoverScriptSettings(root: string): unknown {
   return evaluate(root, { settingsProof: true });
+}
+
+export function discoverCandidateSettings(
+  root: string,
+  candidateProof: "ready" | "missing-attempt" | "entry-ready" | "entry-missing-attempt",
+): unknown {
+  return evaluate(root, { candidateProof });
 }

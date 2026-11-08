@@ -53,6 +53,12 @@ try {
     POSTHOG_PROJECT_KEY: "fixture_posthog_project_key",
     POSTHOG_HOST: "https://us.i.posthog.com",
   });
+  const candidateProof = process.env.NATIVE_STACK_CANDIDATE_PROOF;
+  if (candidateProof) {
+    delete synthetic.BASALT_RELEASE_ATTEMPT;
+    delete synthetic.BASALT_POOL_IMAGE_RECEIPT;
+    delete synthetic.GITHUB_SHA;
+  }
   const settings = previewConnection
     ? {
         ...previewEnvironment(1, {
@@ -71,6 +77,38 @@ try {
   if (settings.BASALT_RELEASE_ATTEMPT)
     process.env.BASALT_RELEASE_ATTEMPT = settings.BASALT_RELEASE_ATTEMPT;
   settings.EXECUTOR_E2E_MANUAL_CRON = process.env.NATIVE_STACK_MANUAL_CRON ?? "false";
+  if (candidateProof) {
+    if (candidateProof === "ready" || candidateProof.startsWith("entry-")) {
+      const { randomUUID } = await import("node:crypto");
+      process.env.BASALT_RELEASE_ATTEMPT = randomUUID();
+    }
+    if (candidateProof.startsWith("entry-")) {
+      const { candidateProbeProof } =
+        await import("../release-barrier/test/candidate-probe-proof.mjs");
+      emit(JSON.stringify(await candidateProbeProof(settings, candidateProof, http, synthetic)));
+      process.exit(0);
+    }
+    const { baselineRoles } = await load("scripts/release-barrier/baseline-probe.ts");
+    const { candidateScriptSettings } = await load("scripts/release-barrier/candidate-settings.ts");
+    const { CandidateSettingsReadFailure, candidateFailureDetails } = await load(
+      "scripts/release-barrier/candidate-failure.ts",
+    );
+    try {
+      const rows = await candidateScriptSettings(
+        baselineRoles.map((role) => ({
+          role,
+          scriptName: `basalt-${role.toLowerCase()}-production-fixture`,
+        })),
+        settings,
+      );
+      http.assertAllowed();
+      emit(JSON.stringify({ ok: true, roles: rows.map((row) => row.role) }));
+    } catch (error) {
+      if (!(error instanceof CandidateSettingsReadFailure)) throw error;
+      emit(JSON.stringify({ ok: false, failure: candidateFailureDetails(error) }));
+    }
+    process.exit(0);
+  }
   phase = "import";
   const [
     { default: actualRoot },

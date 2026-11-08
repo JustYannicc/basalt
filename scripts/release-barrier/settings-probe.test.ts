@@ -200,3 +200,49 @@ test("refusals name every changed script field without exposing private values",
     },
   );
 });
+
+test("declaration metadata reads cannot broaden the probe's account, method or query boundary", async (context) => {
+  let requests = 0;
+  const server = createServer((_request, response) => {
+    requests++;
+    response.setHeader("content-type", "application/json");
+    response.end(
+      JSON.stringify({
+        success: true,
+        result: baselineRoles.map((role) => ({
+          id: `basalt-${role.toLowerCase()}-production-fixture`,
+        })),
+        errors: [],
+        messages: [],
+      }),
+    );
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  context.after(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+        server.closeAllConnections();
+      }),
+  );
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const base = `http://127.0.0.1:${address.port}`;
+  const path = "/accounts/fixture/workers/durable_objects/namespaces";
+  await assert.rejects(
+    probeWorkerSettings("fixture", "fixture-token", {}, base, async () => {
+      for (const [suffix, method] of [
+        [`${path}?page=1`, "POST"],
+        [path.replace("fixture", "other") + "?page=1", "GET"],
+        [`${path}?page=1&class=private`, "GET"],
+        [`${path}/objects?page=1`, "GET"],
+      ]) {
+        await assert.rejects(fetch(base + suffix, { method }), /outside its read-only inventory/);
+      }
+      throw new Error("boundary-verified");
+    }),
+    /boundary-verified/,
+  );
+  assert.equal(requests, 1);
+});

@@ -5,10 +5,12 @@ import type { Worker } from "alchemy/Cloudflare";
 import { projectWorkerScriptSettings } from "alchemy/Cloudflare/Workers";
 import type { ResourceBinding } from "alchemy/Resource";
 import * as Output from "alchemy/Output";
-import { ConfigProvider, Effect, Logger } from "effect";
+import { Cause, ConfigProvider, Effect, Exit, Logger } from "effect";
+import { FetchHttpClient } from "effect/http";
 import { withReleaseRuntime } from "./runtime.ts";
 import { BarrierRefusal } from "./manifest.ts";
 import { baselineRoles } from "./baseline-probe.ts";
+import { assertCandidateInputs, candidateReadFailure } from "./candidate-failure.ts";
 
 export interface ProbeWorker {
   role: string;
@@ -83,14 +85,26 @@ export async function candidateScriptSettings(
   workers: readonly ProbeWorker[],
   environment: NodeJS.ProcessEnv,
 ) {
+  assertCandidateInputs();
   const program = Effect.promise(
     async () => (await import(new URL("../../alchemy.run.ts", import.meta.url).href)).default,
   ).pipe(
+    Effect.catchCause((cause) => Effect.fail(candidateReadFailure(Cause.squash(cause), "import"))),
     Effect.flatMap((root) =>
-      evalStack(root, (stack) => settingsFromDeclarations(stack, workers), { stage: "production" }),
+      evalStack(
+        root,
+        (stack) =>
+          settingsFromDeclarations(stack, workers).pipe(
+            Effect.catchCause((cause) =>
+              Effect.fail(candidateReadFailure(Cause.squash(cause), "projection")),
+            ),
+          ),
+        { stage: "production" },
+      ),
     ),
     withReleaseRuntime,
     Effect.provide(Logger.layer([])),
+    Effect.provideService(FetchHttpClient.Fetch, globalThis.fetch),
     Effect.provide(
       ConfigProvider.layer(
         ConfigProvider.fromEnv({
@@ -103,5 +117,7 @@ export async function candidateScriptSettings(
       ),
     ),
   );
-  return Effect.runPromise(program);
+  const exit = await Effect.runPromiseExit(program);
+  if (Exit.isFailure(exit)) throw candidateReadFailure(Cause.squash(exit.cause), "evaluate");
+  return exit.value;
 }

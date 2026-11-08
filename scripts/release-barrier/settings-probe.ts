@@ -60,10 +60,18 @@ export async function probeWorkerSettings(
       url.searchParams.get("name") === brand.zone &&
       url.searchParams.getAll("per_page").length === 1 &&
       url.searchParams.get("per_page") === "1";
+    const namespaces =
+      url.pathname ===
+        `${prefix}/accounts/${encodeURIComponent(accountId)}/workers/durable_objects/namespaces` &&
+      [...url.searchParams].length === 1 &&
+      url.searchParams.getAll("page").length === 1 &&
+      /^[1-9][0-9]*$/.test(url.searchParams.get("page") ?? "");
     if (
       url.origin !== base.origin ||
       method !== "GET" ||
-      (!zones && (url.search || (url.pathname !== listPath && !metrics.has(url.pathname)))) ||
+      (!zones &&
+        !namespaces &&
+        (url.search || (url.pathname !== listPath && !metrics.has(url.pathname)))) ||
       init?.body != null ||
       (input instanceof Request && input.body !== null)
     )
