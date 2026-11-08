@@ -42,6 +42,7 @@ jobs:
       - uses: ./.github/actions/desktop-release-assets
         with:
           warm: "true"
+      - uses: ./.github/actions/setup-actionlint
       - name: Resolve the comparison commit
         id: comparison
         env:
@@ -1730,6 +1731,9 @@ jobs:
         run: bun scripts/ci/check-plans.ts
       - name: Reject e2e tests and checks without CI coverage
         run: bun scripts/ci/check-e2e-coverage.ts
+      - uses: ./.github/actions/setup-actionlint
+        with:
+          require-hit: "true"
       - name: Check workflow syntax
         run: node scripts/ci/check-workflows.ts
       - name: Prove failed E2E evidence reaches artifact inputs

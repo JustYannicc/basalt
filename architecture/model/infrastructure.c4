@@ -183,6 +183,12 @@ model {
     technology "GitHub Releases"
     metadata { hosts "github.com|codeload.github.com" }
   }
+  goModules = adapter "Go module source" {
+    #external
+    technology "Go module proxy and checksum database"
+    metadata { hosts "proxy.golang.org|sum.golang.org" }
+  }
+  basalt.build -[sync]-> goModules "build actionlint from checksum-pinned source"
   releaseMirror = adapter "Release mirror" {
     #external
     technology "npm mirror"

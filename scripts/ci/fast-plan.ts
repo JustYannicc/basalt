@@ -70,7 +70,11 @@ export function fastPlan(document: unknown, context: FastContext) {
     if (typeof step.uses === "string") {
       if (step.if !== undefined) throw new Error("Unsupported conditional fast setup action");
       if (step.uses === "actions/checkout@v4") continue;
-      if (step.uses === "./.github/actions/desktop-release-assets") {
+      if (
+        ["./.github/actions/desktop-release-assets", "./.github/actions/setup-actionlint"].includes(
+          step.uses,
+        )
+      ) {
         skipped.push({
           name: "Restore release assets",
           reason: "download cache requires GitHub Actions",
