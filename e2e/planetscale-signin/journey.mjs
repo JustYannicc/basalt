@@ -225,9 +225,19 @@ export const verifyPlanetScaleConnections = ({
       await dialog.getByLabel("Service token", { exact: true }).fill(serviceToken);
       await dialog.locator('button[type="submit"]').click();
       await dialog.getByText(/Signed in as acme/).waitFor();
+      // Naming starts a background identity check. Its API call must finish before the
+      // legacy-resolution baseline, otherwise that unrelated call can land inside the loop.
+      const namingCheck = page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          /\/api\/organizations\/[^/]+\/accounts\/[^/]+\/health$/u.test(response.url()),
+      );
       await dialog.getByRole("button", { name: "Continue", exact: true }).click();
       const naming = page.getByRole("dialog", { name: "Name this account", exact: true });
       await naming.getByLabel("Account name", { exact: true }).fill(`PlanetScale token ${width}`);
+      const checked = await namingCheck;
+      assert.equal(checked.status(), 200, "The token naming health check completes");
+      await checked.finished();
       await naming.getByRole("button", { name: "Save name", exact: true }).click();
       await page
         .getByRole("region", { name: "PlanetScale service-token tools", exact: true })

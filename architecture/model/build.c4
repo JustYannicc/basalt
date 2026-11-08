@@ -1,6 +1,7 @@
 model {
   extend basalt {
     build = module "Build" {
+      // Connector tool-resolution proofs await the naming health response before counting API calls.
       // Connector TLS fixtures forward over fresh upstream connections; each viewport releases
       // its new account links on failure so a transport error cannot contaminate the next viewport.
       // Release configuration rejects documented OAuth secret prefixes in client IDs before
