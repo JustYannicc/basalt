@@ -45,7 +45,7 @@ export function dependencyInputs(root: string) {
   return [...files].filter((file) => existsSync(join(root, file))).sort();
 }
 
-export function dependencyIdentity(root: string, pin: string) {
+export function dependencyIdentity(root: string, pin: string, omitReleaseDownloads = false) {
   const files = dependencyInputs(root);
   const key = digest(
     JSON.stringify({
@@ -56,6 +56,7 @@ export function dependencyIdentity(root: string, pin: string) {
       bun: requirePreparedBun(),
       platform: process.platform,
       arch: process.arch,
+      ...(omitReleaseDownloads ? { releaseDownloads: "omitted-v1" } : {}),
       inputs: files.map((path) => [path, digest(readFileSync(join(root, path), "utf8"))]),
     }),
   );

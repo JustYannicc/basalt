@@ -3,7 +3,7 @@ import { heavyJobs } from "./areas.ts";
 
 export const fastJobs = ["select", "fast", "cpa-pipeline", "client-connection", "boat-check"];
 export const bundleJobs = ["boat-bundle"];
-export const conditionalJobs = ["baseline-probe"];
+export const conditionalJobs = ["baseline-probe", "workerd-assets"];
 
 export function gateErrors(
   needs: Record<string, { result: string }>,
@@ -30,6 +30,7 @@ export function gateErrors(
     const required =
       fastJobs.includes(job) ||
       (job === "baseline-probe" && baselineProbeRequired) ||
+      (job === "workerd-assets" && selected.includes("upstream-image")) ||
       (selected.includes(job) && !boat.includes(job)) ||
       (bundleJobs.includes(job) && boat.length > 0);
     if (needs[job]?.result !== (required ? "success" : "skipped"))

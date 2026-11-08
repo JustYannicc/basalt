@@ -1,0 +1,25 @@
+name: Set up actionlint
+description: Build the pinned Go source without using GitHub's release CDN.
+inputs:
+  require-hit:
+    description: Require selection to have published this cache first.
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - id: tool
+      shell: bash
+      run: node scripts/ci/actionlint.ts identify
+    - uses: actions/cache/restore@v4
+      id: cache
+      with:
+        path: ${{ steps.tool.outputs.path }}
+        key: ${{ steps.tool.outputs.key }}
+        fail-on-cache-miss: ${{ inputs.require-hit == 'true' }}
+    - shell: bash
+      run: node scripts/ci/actionlint.ts install
+    - uses: actions/cache/save@v4
+      if: steps.cache.outputs.cache-hit != 'true'
+      with:
+        path: ${{ steps.tool.outputs.path }}
+        key: ${{ steps.tool.outputs.key }}

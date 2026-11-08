@@ -216,7 +216,10 @@ test("affected selection and aggregate require both account halves", () => {
       [...fastJobs, ...heavyJobs, ...bundleJobs, ...conditionalJobs].map((job) => [
         job,
         {
-          result: bundleJobs.includes(job) || conditionalJobs.includes(job) ? "skipped" : "success",
+          result:
+            bundleJobs.includes(job) || (conditionalJobs.includes(job) && job !== "workerd-assets")
+              ? "skipped"
+              : "success",
         },
       ]),
     );

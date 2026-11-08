@@ -1,7 +1,9 @@
+import type { PendingPlacementRepair } from "./pending-placement.ts";
 import type * as Workers from "@distilled.cloud/cloudflare/workers";
 import { createHash } from "node:crypto";
 import { describeContainer, type FrozenContainer } from "./container.ts";
-import type { ResourceDelta } from "./prop-diff.ts";
+import { BarrierRefusal } from "./refusal.ts";
+export { BarrierRefusal, type PlanRefusal } from "./refusal.ts";
 
 export interface ModulePart {
   readonly name: string;
@@ -11,6 +13,8 @@ export interface ModulePart {
 
 export interface FrozenWorker {
   readonly id: string;
+  readonly baselineImageHash?: string;
+  readonly pendingPlacementRepair?: PendingPlacementRepair;
   readonly accountId: string;
   readonly scriptName: string;
   readonly sourceMetadata?: string;
@@ -26,28 +30,6 @@ export interface ReleaseManifest {
   readonly stage: string;
   readonly workers: readonly FrozenWorker[];
   readonly containers?: readonly FrozenContainer[];
-}
-
-export type PlanRefusal = { reason: string } | ({ reason: string } & ResourceDelta);
-
-export class BarrierRefusal extends Error {
-  readonly reason: string;
-  readonly worker: string | undefined;
-  readonly delta: ResourceDelta | undefined;
-  readonly refusals: readonly PlanRefusal[] | undefined;
-
-  constructor(
-    reason: string,
-    worker?: string,
-    delta?: ResourceDelta,
-    refusals?: readonly PlanRefusal[],
-  ) {
-    super(`Release barrier refused: ${reason}${worker ? ` (${worker})` : ""}`);
-    this.reason = reason;
-    this.worker = worker;
-    this.delta = delta;
-    this.refusals = refusals;
-  }
 }
 
 export function canonical(value: unknown): string {
@@ -71,6 +53,10 @@ export const digest = (value: string | Uint8Array) =>
 export function describeWorker(worker: FrozenWorker) {
   return {
     id: worker.id,
+    ...(worker.baselineImageHash ? { baselineImageHash: worker.baselineImageHash } : {}),
+    ...(worker.pendingPlacementRepair
+      ? { pendingPlacementRepair: worker.pendingPlacementRepair }
+      : {}),
     target: digest(canonical({ accountId: worker.accountId, scriptName: worker.scriptName })),
     sourceMetadata: worker.sourceMetadata,
     metadata: digest(canonical(worker.metadata)),

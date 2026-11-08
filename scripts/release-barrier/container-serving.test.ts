@@ -5,6 +5,7 @@ import { verifyServingContainer } from "./container-serving.ts";
 import { containerPublication } from "./test/container-fixture.ts";
 import { handleDeploymentReadiness } from "../../src/pool/deployment-readiness.ts";
 import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
+import { liveDeadline } from "../database-budget-readiness.ts";
 
 for (const failure of ["none", "runtime", "model-auth"] as const)
   test(`serving verification binds the actual image, private boot and unsigned probes: ${failure}`, async () => {
@@ -19,6 +20,7 @@ for (const failure of ["none", "runtime", "model-auth"] as const)
       imageHash: proof.frozen.inputHash,
     };
     const originalFetch = globalThis.fetch;
+    let now = Date.now();
     const operations = async (request: Request) => {
       const path = new URL(request.url).pathname;
       paths.push(path);
@@ -63,18 +65,29 @@ for (const failure of ["none", "runtime", "model-auth"] as const)
           const result = path.endsWith("/instances-v2")
             ? [
                 {
-                  id: "instance",
+                  id: instanceId,
                   application_id: "pool-app",
                   image: proof.proposed.configuration.image,
+                  started_at: new Date().toISOString(),
                   status: { state: "running" },
                 },
               ]
             : {
                 id: "pool-app",
                 account_id: "fixture",
+                version: proof.frozen.baseline.version,
                 configuration: proof.proposed.configuration,
               };
           return Response.json({ success: true, errors: [], result, result_info: {} });
+        },
+        {
+          clock: {
+            now: () => now,
+            sleep: async (milliseconds) => {
+              now += milliseconds;
+            },
+            deadline: liveDeadline,
+          },
         },
       ).pipe(
         Effect.provide(

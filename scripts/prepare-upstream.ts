@@ -5,6 +5,7 @@ import {
   symlinkSync,
   lstatSync,
   writeFileSync,
+  appendFileSync,
 } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
@@ -18,6 +19,7 @@ import { writePoolWorkerRevision } from "./pool-worker-revision.ts";
 import { prepareTestPlans } from "./ci/declarations.ts";
 import { prepareE2e } from "./ci/prepare-e2e.ts";
 import { requirePreparedBun } from "./upstream-inputs.ts";
+import { checkRuntimeEnvironment } from "./ci/dependency-lifecycles.ts";
 
 requirePreparedBun();
 
@@ -55,6 +57,10 @@ writeFileSync(
 // The pool Worker imports the release above, so its revision is computed after it is written.
 writePoolWorkerRevision(root, upstream);
 await installUpstreamDependencies(upstream, pin.commit, process.argv.includes("--cache-hit-only"));
+if (process.env.BASALT_CI_OMIT_RELEASE_DOWNLOADS === "true" && process.env.GITHUB_ENV) {
+  for (const [key, value] of Object.entries(checkRuntimeEnvironment(upstream)))
+    appendFileSync(process.env.GITHUB_ENV, `${key}=${value}\n`);
+}
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "src/setup")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/pool-tests/sdk")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "clients")]);

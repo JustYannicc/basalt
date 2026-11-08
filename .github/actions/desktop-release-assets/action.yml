@@ -1,0 +1,48 @@
+name: Desktop release assets
+description: Reuse Electron and packaging tools across dependency changes.
+inputs:
+  warm:
+    description: Populate the Linux cache before Check fans out.
+    default: "false"
+  require-hit:
+    description: Refuse downloads when select has already warmed this platform.
+    default: "false"
+outputs:
+  key:
+    description: Exact release asset cache key.
+    value: ${{ steps.versions.outputs.key }}
+runs:
+  using: composite
+  steps:
+    - name: Identify the desktop release asset versions
+      id: versions
+      shell: bash
+      run: node scripts/ci/desktop-release-assets.ts key
+    - uses: actions/cache/restore@v4
+      id: cache
+      with:
+        path: ${{ runner.temp }}/basalt-desktop-release-assets
+        key: ${{ steps.versions.outputs.key }}
+        fail-on-cache-miss: ${{ inputs.require-hit == 'true' }}
+    - name: Configure the desktop download caches
+      shell: bash
+      run: |
+        mkdir -p "$RUNNER_TEMP/basalt-desktop-release-assets/electron" "$RUNNER_TEMP/basalt-desktop-release-assets/builder"
+        echo "ELECTRON_CACHE=$RUNNER_TEMP/basalt-desktop-release-assets/electron" >> "$GITHUB_ENV"
+        echo "ELECTRON_BUILDER_CACHE=$RUNNER_TEMP/basalt-desktop-release-assets/builder" >> "$GITHUB_ENV"
+        echo "ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/" >> "$GITHUB_ENV"
+        echo "ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/" >> "$GITHUB_ENV"
+    - name: Populate release assets without the GitHub release CDN
+      if: inputs.warm == 'true' && steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        NODE_OPTIONS: --require "${{ github.workspace }}/scripts/ci/deny-release-downloads.cjs"
+      run: |
+        bun install --cwd clients --frozen-lockfile
+        bun install --cwd clients/desktop --frozen-lockfile
+        node --require ./scripts/ci/deny-release-downloads.cjs scripts/ci/desktop-release-assets.ts warm
+    - uses: actions/cache/save@v4
+      if: inputs.warm == 'true' && steps.cache.outputs.cache-hit != 'true'
+      with:
+        path: ${{ runner.temp }}/basalt-desktop-release-assets
+        key: ${{ steps.versions.outputs.key }}

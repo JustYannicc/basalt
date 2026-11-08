@@ -135,3 +135,15 @@ for (const [field, operation] of [
     assert.equal(proof.writes(), 0);
   });
 }
+
+test("the exact damaged Api repair preserves non-default script settings through real activation readback", async () => {
+  const proof = fixture({ placementRepair: true });
+  await Effect.runPromise(proof.effect);
+  const before = proof.events.indexOf("repair-settings:before");
+  const activated = proof.events.indexOf("activate:Api:accepted-Api");
+  const after = proof.events.indexOf("repair-settings:after");
+  assert.ok(before >= 0 && before < activated && after > activated);
+  assert.ok(proof.events.includes("repair-version:accepted-Api:before"));
+  assert.ok(proof.events.includes("repair-version:accepted-Api:after"));
+  assert.equal(proof.receipts.at(-1)?.phase, "complete");
+});

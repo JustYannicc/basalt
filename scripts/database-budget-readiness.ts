@@ -7,6 +7,15 @@ import {
 import { openPoolOperations, type PoolOperationsPlatform } from "./pool-operations.ts";
 import { signEnvelope } from "../src/pool/token.ts";
 
+class ReadinessResponseError extends Error {
+  override readonly name = "ResponseError";
+  readonly status: number;
+  constructor(status: number) {
+    super("Deployment runtime readiness failed");
+    this.status = status;
+  }
+}
+
 export async function openDeploymentReadiness(options: {
   worker: string;
   accountId: string;
@@ -35,7 +44,10 @@ export async function openDeploymentReadiness(options: {
         ),
         signal,
       );
-      if (!response.ok) throw new Error("Deployment runtime readiness failed");
+      if (!response.ok) {
+        await bounded(response.body?.cancel() ?? Promise.resolve(), signal);
+        throw new ReadinessResponseError(response.status);
+      }
       return decodeRuntimeReady(await bounded(response.json(), signal), options.target);
     },
   };

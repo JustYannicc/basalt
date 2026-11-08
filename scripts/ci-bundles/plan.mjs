@@ -83,12 +83,25 @@ export function suitePlan(workflow, ids) {
         : (job.strategy?.matrix?.include ?? [{}]);
     return rows.map((matrix) => {
       const key = matrix.scope ? `${id}-${matrix.scope}` : id;
-      const setup = job.steps.find((step) => step.uses?.startsWith("oven-sh/setup-bun@"));
+      const setup = job.steps.find(
+        (step) =>
+          step.uses === "./.github/actions/setup-bun" ||
+          step.uses?.startsWith("oven-sh/setup-bun@"),
+      );
       assert.ok(setup, `${id}: missing pinned Bun setup`);
       const bun = interpolate(setup.with["bun-version"], { env: workflow.env, matrix });
       assert.ok(["1.4.2", "1.4.4"].includes(bun), `${id}: unsupported Bun version ${bun}`);
       for (const step of job.steps) {
-        if (step.uses && step.uses !== "./.github/actions/setup-browser")
+        if (
+          step.uses &&
+          ![
+            "./.github/actions/setup-browser",
+            "./.github/actions/setup-bun",
+            "./.github/actions/setup-node",
+            "./.github/actions/desktop-release-assets",
+            "actions/cache/save@v4",
+          ].includes(step.uses)
+        )
           assert.match(
             step.uses,
             /^(actions\/(checkout|setup-node|upload-artifact)|oven-sh\/setup-bun)@/,
