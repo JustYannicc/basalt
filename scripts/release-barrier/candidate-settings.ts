@@ -11,6 +11,9 @@ import { withReleaseRuntime } from "./runtime.ts";
 import { BarrierRefusal } from "./manifest.ts";
 import { baselineRoles } from "./baseline-probe.ts";
 import { assertCandidateInputs, candidateReadFailure } from "./candidate-failure.ts";
+import { State } from "alchemy/State/State";
+import { retiredPlacements } from "./placement-retirement.ts";
+import { readOnlyProbeFetch } from "./probe-network.ts";
 
 export interface ProbeWorker {
   role: string;
@@ -80,10 +83,11 @@ export const settingsFromDeclarations = (stack: CompiledStack, workers: readonly
     );
   });
 
-/** The same production configuration and root declarations, without Plan, Apply or State operations. */
+/** Project production declarations; the optional retirement read never runs Plan or Apply. */
 export async function candidateScriptSettings(
   workers: readonly ProbeWorker[],
   environment: NodeJS.ProcessEnv,
+  retirementFetch?: typeof fetch,
 ) {
   assertCandidateInputs();
   const program = Effect.promise(
@@ -94,7 +98,22 @@ export async function candidateScriptSettings(
       evalStack(
         root,
         (stack) =>
-          settingsFromDeclarations(stack, workers).pipe(
+          Effect.gen(function* () {
+            const rows = yield* settingsFromDeclarations(stack, workers);
+            const retired = retirementFetch
+              ? yield* Effect.gen(function* () {
+                  const state = yield* yield* State;
+                  return yield* retiredPlacements(state, stack);
+                }).pipe(
+                  Effect.provideContext(stack.services),
+                  Effect.provideService(FetchHttpClient.Fetch, retirementFetch),
+                )
+              : [];
+            return rows.map((row) => ({
+              ...row,
+              ...(retirementFetch ? { retiredPlacement: retired.includes(row.role) } : {}),
+            }));
+          }).pipe(
             Effect.catchCause((cause) =>
               Effect.fail(candidateReadFailure(Cause.squash(cause), "projection")),
             ),
@@ -120,4 +139,19 @@ export async function candidateScriptSettings(
   const exit = await Effect.runPromiseExit(program);
   if (Exit.isFailure(exit)) throw candidateReadFailure(Cause.squash(exit.cause), "evaluate");
   return exit.value;
+}
+
+export async function candidateSettingsWithRetirements(
+  workers: readonly ProbeWorker[],
+  environment: NodeJS.ProcessEnv,
+  nativeFetch: typeof fetch,
+) {
+  const previous = globalThis.fetch;
+  const guarded = readOnlyProbeFetch(environment.CLOUDFLARE_ACCOUNT_ID ?? "", nativeFetch);
+  globalThis.fetch = guarded;
+  try {
+    return await candidateScriptSettings(workers, environment, guarded);
+  } finally {
+    globalThis.fetch = previous;
+  }
 }

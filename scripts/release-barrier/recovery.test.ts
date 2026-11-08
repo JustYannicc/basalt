@@ -1,3 +1,4 @@
+import { placementRepairTargets } from "./pending-placement.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { recoverWorkers, type RecoveryReceipt, type RecoveryWorker } from "./recovery.ts";
@@ -125,3 +126,34 @@ test("a changed frozen manifest cannot authorize rollback", async () => {
   );
   assert.deepEqual(proof.calls, []);
 });
+
+for (const target of placementRepairTargets)
+  test(`recovery refuses the known damaged ${target.role} version before any restore`, async () => {
+    const f = fixture();
+    f.workers[0]!.id = target.role;
+    f.workers[0]!.baseline = [{ versionId: target.version, percentage: 100 }];
+    f.receipt.manifest = digest(canonical(f.manifest));
+    let reads = 0,
+      containerWrites = 0;
+    await assert.rejects(
+      recoverWorkers(
+        f.manifest,
+        f.receipt,
+        {
+          ...f.provider,
+          read: async (worker) => {
+            reads++;
+            return f.provider.read(worker);
+          },
+        },
+        f.record,
+        async () => {
+          containerWrites++;
+        },
+      ),
+      /damaged-placement-version-rollback-refused/,
+    );
+    assert.equal(reads, 0);
+    assert.equal(containerWrites, 0);
+    assert.deepEqual(f.calls, []);
+  });

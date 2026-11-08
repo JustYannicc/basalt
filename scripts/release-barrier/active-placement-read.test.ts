@@ -30,6 +30,7 @@ for (const status of [429, 503, 403])
             result: {
               id: "active",
               resources: {
+                script_runtime: { limits: { subrequests: 50000 } },
                 script: {
                   placement: {
                     mode: "targeted",
@@ -74,5 +75,6 @@ for (const status of [429, 503, 403])
       assert.ok(Exit.isSuccess(result));
       assert.equal(attempts, 2);
       assert.equal(result.value.id, "active");
+      assert.deepEqual(result.value.limits, { subrequests: 50000 });
     }
   });

@@ -1,0 +1,28 @@
+name: Set up pinned Bun
+description: Verify and install the official npm binary without GitHub release downloads.
+inputs:
+  bun-version:
+    description: Exact Bun version present in the archive pins.
+    required: true
+runs:
+  using: composite
+  steps:
+    - id: binary
+      shell: bash
+      env:
+        BUN_VERSION: ${{ inputs.bun-version }}
+      run: node scripts/ci/setup-bun.ts identify "$BUN_VERSION"
+    - uses: actions/cache/restore@v4
+      id: cache
+      with:
+        path: ${{ steps.binary.outputs.archive }}
+        key: ${{ steps.binary.outputs.key }}
+    - shell: bash
+      env:
+        BUN_VERSION: ${{ inputs.bun-version }}
+      run: node scripts/ci/setup-bun.ts install "$BUN_VERSION"
+    - uses: actions/cache/save@v4
+      if: steps.cache.outputs.cache-hit != 'true'
+      with:
+        path: ${{ steps.binary.outputs.archive }}
+        key: ${{ steps.binary.outputs.key }}

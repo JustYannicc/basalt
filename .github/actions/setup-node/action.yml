@@ -1,0 +1,28 @@
+name: Set up pinned Node
+description: Install an official checksum-pinned distribution without a GitHub manifest.
+inputs:
+  node-version:
+    description: Exact Node version present in the archive pins.
+    required: true
+runs:
+  using: composite
+  steps:
+    - id: binary
+      shell: bash
+      env:
+        NODE_VERSION: ${{ inputs.node-version }}
+      run: node scripts/ci/setup-node.mjs identify "$NODE_VERSION"
+    - uses: actions/cache/restore@v4
+      id: cache
+      with:
+        path: ${{ steps.binary.outputs.archive }}
+        key: ${{ steps.binary.outputs.key }}
+    - shell: bash
+      env:
+        NODE_VERSION: ${{ inputs.node-version }}
+      run: node scripts/ci/setup-node.mjs install "$NODE_VERSION"
+    - uses: actions/cache/save@v4
+      if: steps.cache.outputs.cache-hit != 'true'
+      with:
+        path: ${{ steps.binary.outputs.archive }}
+        key: ${{ steps.binary.outputs.key }}

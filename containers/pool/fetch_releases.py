@@ -27,15 +27,20 @@ def download_verified(
     name = asset["name"]
     expected = asset["sha256"].lower()
     url = f"https://github.com/{repository}/releases/download/{tag}/{name}"
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    archive_directory = os.environ.get("BASALT_POOL_RELEASE_ARCHIVE_DIR")
+    cached = pathlib.Path(archive_directory) / f"{expected}.tar.gz" if archive_directory else None
+    if cached is not None and not cached.is_file():
+        raise FileNotFoundError(f"Missing cached pool archive {repository} {tag}/{name}; SHA-256 {expected}")
     digest = hashlib.sha256()
 
     output.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(prefix=".release-", dir=output.parent)
     temporary = pathlib.Path(temporary_name)
     try:
-        with os.fdopen(fd, "wb") as destination, urllib.request.urlopen(
-            request, timeout=120
+        with os.fdopen(fd, "wb") as destination, (
+            cached.open("rb") if cached is not None else urllib.request.urlopen(
+                urllib.request.Request(url, headers={"User-Agent": USER_AGENT}), timeout=120
+            )
         ) as response:
             while chunk := response.read(1024 * 1024):
                 digest.update(chunk)
