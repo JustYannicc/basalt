@@ -158,7 +158,7 @@ test("level repair removes a late stale attach on every pass and after controlle
   assert.equal((await memberships.authority("a"))?.dirty, false);
 });
 
-test("a reserve during an old read prevents that read from re-enabling use", async () => {
+test("a reserve during an old read repairs the newest selection before re-enabling use", async () => {
   const f = fixture(),
     memberships = new NativeMemberships(f.deps);
   await memberships.reserve(await f.request());
@@ -175,12 +175,12 @@ test("a reserve during an old read prevents that read from re-enabling use", asy
   await memberships.reserve(await f.request());
   const reserved = f.installed.get("a")!;
   f.native.set("a", []);
-  finish.resolve(await read("a", "org"));
-  await old;
-  assert.equal(f.installed.get("a"), reserved);
+  assert.equal(reserved.dirty, true);
   await assert.rejects(memberships.authority("a"), /refreshing/);
   f.deps.read = read;
-  await memberships.tick();
+  finish.resolve(await read("a", "org"));
+  await old;
+  assert.notEqual(f.installed.get("a"), reserved);
   assert.deepEqual((await memberships.authority("a"))?.accounts, []);
   assert.deepEqual(f.home.get("a"), []);
 });
