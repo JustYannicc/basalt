@@ -78,9 +78,19 @@ try {
     process.env.BASALT_RELEASE_ATTEMPT = settings.BASALT_RELEASE_ATTEMPT;
   settings.EXECUTOR_E2E_MANUAL_CRON = process.env.NATIVE_STACK_MANUAL_CRON ?? "false";
   if (candidateProof) {
-    if (candidateProof === "ready" || candidateProof.startsWith("entry-")) {
+    if (
+      candidateProof === "ready" ||
+      candidateProof.startsWith("retirement-") ||
+      candidateProof.startsWith("release-state-") ||
+      candidateProof.startsWith("entry-")
+    ) {
       const { randomUUID } = await import("node:crypto");
       process.env.BASALT_RELEASE_ATTEMPT = randomUUID();
+    }
+    if (candidateProof.startsWith("release-state-")) {
+      const { releaseStateProof } = await import("../release-barrier/test/release-state-proof.mjs");
+      emit(JSON.stringify(await releaseStateProof(settings, http, candidateProof)));
+      process.exit(0);
     }
     if (candidateProof.startsWith("entry-")) {
       const { candidateProbeProof } =
@@ -88,6 +98,15 @@ try {
       emit(JSON.stringify(await candidateProbeProof(settings, candidateProof, http, synthetic)));
       process.exit(0);
     }
+    const retirement = candidateProof.startsWith("retirement-")
+      ? await (
+          await import("../release-barrier/test/candidate-retirement-fixture.mjs")
+        ).retirementFixture(
+          http,
+          candidateProof === "retirement-v8" ? 8 : candidateProof === "retirement-future" ? 9 : 7,
+        )
+      : undefined;
+    if (retirement) globalThis.fetch = retirement.fetch;
     const { baselineRoles } = await load("scripts/release-barrier/baseline-probe.ts");
     const { candidateScriptSettings } = await load("scripts/release-barrier/candidate-settings.ts");
     const { CandidateSettingsReadFailure, candidateFailureDetails } = await load(
@@ -100,12 +119,31 @@ try {
           scriptName: `basalt-${role.toLowerCase()}-production-fixture`,
         })),
         settings,
+        retirement?.fetch,
       );
       http.assertAllowed();
-      emit(JSON.stringify({ ok: true, roles: rows.map((row) => row.role) }));
+      emit(
+        JSON.stringify({
+          ok: true,
+          roles: rows.map((row) => row.role),
+          ...(retirement
+            ? {
+                retirementRows: rows.filter((row) => typeof row.retiredPlacement === "boolean")
+                  .length,
+                stateRequests: retirement.requests,
+              }
+            : {}),
+        }),
+      );
     } catch (error) {
       if (!(error instanceof CandidateSettingsReadFailure)) throw error;
-      emit(JSON.stringify({ ok: false, failure: candidateFailureDetails(error) }));
+      emit(
+        JSON.stringify({
+          ok: false,
+          failure: candidateFailureDetails(error),
+          ...(retirement ? { stateRequests: retirement.requests } : {}),
+        }),
+      );
     }
     process.exit(0);
   }

@@ -14,6 +14,22 @@ import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { validateInventory, type WorkerMetadata } from "./native-stack-fixtures.ts";
 
+type CandidateProof =
+  | "ready"
+  | "missing-attempt"
+  | "entry-ready"
+  | "entry-missing-attempt"
+  | "entry-inventory-refusals"
+  | "release-state-v7"
+  | "release-state-v8"
+  | "retirement-ready"
+  | "retirement-v8"
+  | "retirement-future"
+  | "entry-retirement-v7"
+  | "entry-retirement-v8"
+  | "entry-retirement-unauthorized"
+  | "entry-retirement-malformed";
+
 export interface StackResource {
   id: string;
   kind: string;
@@ -47,12 +63,7 @@ function evaluate(
   options: {
     manualCron?: true;
     settingsProof?: true;
-    candidateProof?:
-      | "ready"
-      | "missing-attempt"
-      | "entry-ready"
-      | "entry-missing-attempt"
-      | "entry-inventory-refusals";
+    candidateProof?: CandidateProof;
     releaseProof?: true;
     connectionProof?: true;
     previewConnectionProof?: true;
@@ -267,14 +278,6 @@ export function discoverScriptSettings(root: string): unknown {
   return evaluate(root, { settingsProof: true });
 }
 
-export function discoverCandidateSettings(
-  root: string,
-  candidateProof:
-    | "ready"
-    | "missing-attempt"
-    | "entry-ready"
-    | "entry-missing-attempt"
-    | "entry-inventory-refusals",
-): unknown {
+export function discoverCandidateSettings(root: string, candidateProof: CandidateProof): unknown {
   return evaluate(root, { candidateProof });
 }
