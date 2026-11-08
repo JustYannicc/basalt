@@ -38,6 +38,7 @@ export const verifyServingContainer = (
     const key = yield* Config.Redacted("POOL_DEPLOYMENT_KEY");
     return yield* Effect.tryPromise({
       try: async () => {
+        const unsignedOrigin = `https://${brand.host}`;
         const clock = options.clock ?? servingClock;
         const began = clock.now();
         const allocation = clock.deadline(containerAllocationMs);
@@ -192,7 +193,7 @@ export const verifyServingContainer = (
                 ] as const) {
                   await check(stage, async () => {
                     const response = await bounded(
-                      fetcher(`https://${brand.host}${path}`, {
+                      fetcher(new URL(path, unsignedOrigin), {
                         method: "GET",
                         redirect: "manual",
                         signal: AbortSignal.any([runtime!.signal, AbortSignal.timeout(15_000)]),
