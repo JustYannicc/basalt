@@ -1,0 +1,11 @@
+{
+  "identity": "alchemy-script-settings-projection",
+  "file": "0423-alchemy-script-settings-projection.patch",
+  "content_sha256": "e2a00619d50eae17750dcf72a752dc07412034728820a800cbfadbea93de0465",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "alchemy-dependency-upgrade",
+  "requires": "Worker upload and read-only candidate inspection share the exact pure script-settings projection; removal requires both full-settings comparison and ordinary upload regressions."
+}

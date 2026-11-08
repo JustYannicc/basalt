@@ -1,0 +1,7 @@
+model {
+  extend basalt.deployment {
+    metadata {
+      constraint "Candidate declaration inspection and the real Worker upload use one pure script-settings projection. Inspection runs no plan, apply or state operation. The runner probe compares the complete frozen script-settings surface for all 19 production roles before backup, recording only safe read metrics and field deltas. Numeric placement targets resolve only through the exact serving version identities; unknown or conflicting mappings refuse."
+    }
+  }
+}

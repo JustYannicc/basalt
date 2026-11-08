@@ -99,39 +99,57 @@ try {
   const containerProof = process.env.NATIVE_STACK_CONTAINER_PROOF
     ? await import("../release-barrier/test/container-stack-proof.mjs")
     : undefined;
-  const inspect = containerProof
+  const settingsProof =
+    process.env.NATIVE_STACK_SETTINGS_PROOF === "true"
+      ? await load("scripts/release-barrier/candidate-settings.ts")
+      : undefined;
+  const inspect = settingsProof
     ? (stack) =>
-        containerProof.proveContainerStack(
+        settingsProof.settingsFromDeclarations(
           stack,
-          (inspectNext) => {
-            process.env.BASALT_RELEASE_ATTEMPT = "00000000-0000-4000-8000-000000000002";
-            return evalStack(actualRoot, inspectNext, { stage: settings.ALCHEMY_STAGE });
-          },
-          process.env.NATIVE_STACK_CONTAINER_PROOF,
-        )
-    : previewConnection
-      ? (await import("../release-barrier/preview-connection-proof.mjs")).provePreviewConnection
-      : connectionProof
-        ? (stack) =>
-            connectionProof.proveConnectionPlan(
-              stack,
-              (inspectNext) => {
-                process.env.BASALT_RELEASE_ATTEMPT = "00000000-0000-4000-8000-000000000002";
-                return evalStack(actualRoot, inspectNext, { stage: settings.ALCHEMY_STAGE });
-              },
-              process.env.NATIVE_STACK_CONNECTION_CHANGE,
-              process.env.NATIVE_STACK_CONNECTION_TARGET,
+          Object.values(stack.resources)
+            .filter(
+              (resource) =>
+                resource.Type === "Cloudflare.Worker" && resource.FQN !== "ArtifactsCredentials",
             )
-        : process.env.NATIVE_STACK_RELEASE_PROOF === "true"
-          ? (await import("../release-phases/proof.mjs")).proveReleasePhases
-          : (stack) =>
-              Effect.sync(() =>
-                inventoryDeclarations(
-                  Object.values(stack.resources),
-                  stack.bindings,
-                  Output.isOutput,
-                ),
-              );
+            .map((resource) => ({
+              role: resource.FQN,
+              scriptName: `basalt-${resource.FQN.toLowerCase()}-production-fixture`,
+            })),
+        )
+    : containerProof
+      ? (stack) =>
+          containerProof.proveContainerStack(
+            stack,
+            (inspectNext) => {
+              process.env.BASALT_RELEASE_ATTEMPT = "00000000-0000-4000-8000-000000000002";
+              return evalStack(actualRoot, inspectNext, { stage: settings.ALCHEMY_STAGE });
+            },
+            process.env.NATIVE_STACK_CONTAINER_PROOF,
+          )
+      : previewConnection
+        ? (await import("../release-barrier/preview-connection-proof.mjs")).provePreviewConnection
+        : connectionProof
+          ? (stack) =>
+              connectionProof.proveConnectionPlan(
+                stack,
+                (inspectNext) => {
+                  process.env.BASALT_RELEASE_ATTEMPT = "00000000-0000-4000-8000-000000000002";
+                  return evalStack(actualRoot, inspectNext, { stage: settings.ALCHEMY_STAGE });
+                },
+                process.env.NATIVE_STACK_CONNECTION_CHANGE,
+                process.env.NATIVE_STACK_CONNECTION_TARGET,
+              )
+          : process.env.NATIVE_STACK_RELEASE_PROOF === "true"
+            ? (await import("../release-phases/proof.mjs")).proveReleasePhases
+            : (stack) =>
+                Effect.sync(() =>
+                  inventoryDeclarations(
+                    Object.values(stack.resources),
+                    stack.bindings,
+                    Output.isOutput,
+                  ),
+                );
   const program = evalStack(
     actualRoot,
     (stack) =>

@@ -1,5 +1,7 @@
-import { BaselineInventoryError, probeBaselines, type BaselineProbeRow } from "./baseline-probe.ts";
+import { BaselineInventoryError, type BaselineProbeRow } from "./baseline-probe.ts";
 import { reportBaselineProbe } from "./baseline-probe-report.ts";
+import { probeWorkerSettings } from "./settings-probe.ts";
+import { deployEnvironment, requiredSecrets } from "../environment.ts";
 import { safeProviderFailure } from "./operation-failure.ts";
 
 if (process.env.GITHUB_ACTIONS !== "true")
@@ -17,13 +19,25 @@ try {
         reason: `missing-release-credentials; ${[!accountId ? "CLOUDFLARE_ACCOUNT_ID" : "", !apiToken ? "CLOUDFLARE_API_TOKEN" : ""].filter(Boolean).join(", ")}`,
       },
     ]);
-  rows = await probeBaselines(accountId, apiToken);
+  rows = await probeWorkerSettings(accountId, apiToken, deployEnvironment());
 } catch (error) {
   const failure = safeProviderFailure(error);
+  const missing =
+    error instanceof Error
+      ? /^Missing GitHub Actions secret: ([A-Z_]+)$/.exec(error.message)?.[1]
+      : undefined;
   rows = (
     error instanceof BaselineInventoryError
       ? error.refusals
-      : [{ role: "(inventory)", reason: failure.reason ?? "inventory-read-failed" }]
+      : [
+          {
+            role: "(inventory)",
+            reason:
+              missing && requiredSecrets.some((name) => name === missing)
+                ? `missing-release-credentials; ${missing}`
+                : (failure.reason ?? "candidate-settings-read-failed"),
+          },
+        ]
   ).map((item) => ({
     ...item,
     ok: false,
