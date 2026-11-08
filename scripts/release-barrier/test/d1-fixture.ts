@@ -43,7 +43,9 @@ interface FixtureWorker extends Resource<
 const FixtureWorker = Resource<FixtureWorker>("Cloudflare.Worker");
 interface FixtureDatabase extends Resource<
   "Cloudflare.D1Database",
-  Database["Props"],
+  Omit<Database["Props"], "jurisdiction"> & {
+    jurisdiction?: Database["Props"]["jurisdiction"] | "us";
+  },
   Database["Attributes"]
 > {}
 const FixtureDatabase = Resource<FixtureDatabase>("Cloudflare.D1Database");
