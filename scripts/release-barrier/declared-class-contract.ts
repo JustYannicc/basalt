@@ -151,7 +151,7 @@ export function classRequestVerdict(upload: PreparedWorkerUpload, entry: SqliteC
     );
   const before = local(old!.bindings ?? [], upload.request.scriptName);
   const after = local(metadata.bindings ?? [], upload.request.scriptName);
-  const expected = entry.addedBindings.map(({ location, ...binding }) => binding);
+  const expected = entry.addedBindings.map(({ location: _location, ...binding }) => binding);
   const project = (binding: (typeof after)[number]) => ({
     type: binding.type,
     name: binding.name,

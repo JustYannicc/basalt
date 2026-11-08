@@ -139,7 +139,7 @@ export function expansionRequest(
           type: "inherit" as const,
           name: binding.name,
         })),
-        ...entry.addedBindings.map(({ location, ...binding }) => binding),
+        ...entry.addedBindings.map(({ location: _location, ...binding }) => binding),
       ],
       migrations: {
         oldTag: baseline.migrationTag,
