@@ -2,7 +2,7 @@ import type { CompiledStack } from "alchemy/Stack";
 import { evalStack } from "alchemy/Stack";
 import { isWorker } from "alchemy/Cloudflare";
 import type { Worker } from "alchemy/Cloudflare";
-import { projectWorkerScriptSettings } from "alchemy/Cloudflare/Workers/WorkerScriptSettings";
+import { projectWorkerScriptSettings } from "alchemy/Cloudflare/Workers";
 import type { ResourceBinding } from "alchemy/Resource";
 import * as Output from "alchemy/Output";
 import { ConfigProvider, Effect, Logger } from "effect";

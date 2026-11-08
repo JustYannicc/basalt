@@ -1,7 +1,7 @@
 {
   "identity": "alchemy-script-settings-projection",
   "file": "0423-alchemy-script-settings-projection.patch",
-  "content_sha256": "e2a00619d50eae17750dcf72a752dc07412034728820a800cbfadbea93de0465",
+  "content_sha256": "59cc83c35f5680dcd837aa1dd77ef76a8d1730005354a16237a945dd26528fd9",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

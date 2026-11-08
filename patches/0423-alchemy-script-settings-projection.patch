@@ -1,25 +1,10 @@
 diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
 --- a/patches/alchemy@2.0.0-beta.80.patch
 +++ b/patches/alchemy@2.0.0-beta.80.patch
-@@ -6591,6 +6591,246 @@
+@@ -6591,6 +6591,216 @@
  +/** A caller may stage existing applications. Without the service, ordinary reconciliation is unchanged. */
  +export class ContainerPublicationHook extends Context.Service()("alchemy/Cloudflare/Containers/ContainerPublicationHook") {
  +}
-+diff --git a/package.json b/package.json
-+--- a/package.json
-++++ b/package.json
-+@@ -322,6 +322,11 @@
-+       "types": "./lib/Cloudflare/Containers/ContainerPublicationHook.d.ts",
-+       "bun": "./src/Cloudflare/Containers/ContainerPublicationHook.ts",
-+       "default": "./lib/Cloudflare/Containers/ContainerPublicationHook.js"
-++    },
-++    "./Cloudflare/Workers/WorkerScriptSettings": {
-++      "types": "./lib/Cloudflare/Workers/WorkerScriptSettings.d.ts",
-++      "bun": "./src/Cloudflare/Workers/WorkerScriptSettings.ts",
-++      "default": "./lib/Cloudflare/Workers/WorkerScriptSettings.js"
-+     }
-+   },
-+   "publishConfig": {
 +diff --git a/src/Cloudflare/Workers/WorkerProvider.ts b/src/Cloudflare/Workers/WorkerProvider.ts
 +--- a/src/Cloudflare/Workers/WorkerProvider.ts
 ++++ b/src/Cloudflare/Workers/WorkerProvider.ts
@@ -230,21 +215,6 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
 ++  bindings: ReadonlyArray<ResourceBinding<Worker["Binding"]>>,
 ++  identity: { id: string; scriptName: string; stack: string; stage: string; migrationTag?: string },
 ++): { metadata: workers.PutScriptMetadata; alchemyTagCount: number };
-+diff --git a/src/Cloudflare/Workers/WorkerScriptSettings.ts b/src/Cloudflare/Workers/WorkerScriptSettings.ts
-+--- /dev/null
-++++ b/src/Cloudflare/Workers/WorkerScriptSettings.ts
-+@@ -0,0 +1 @@
-++export { projectWorkerScriptSettings } from "./WorkerProvider.ts";
-+diff --git a/lib/Cloudflare/Workers/WorkerScriptSettings.js b/lib/Cloudflare/Workers/WorkerScriptSettings.js
-+--- /dev/null
-++++ b/lib/Cloudflare/Workers/WorkerScriptSettings.js
-+@@ -0,0 +1 @@
-++export { projectWorkerScriptSettings } from "./WorkerProvider.js";
-+diff --git a/lib/Cloudflare/Workers/WorkerScriptSettings.d.ts b/lib/Cloudflare/Workers/WorkerScriptSettings.d.ts
-+--- /dev/null
-++++ b/lib/Cloudflare/Workers/WorkerScriptSettings.d.ts
-+@@ -0,0 +1 @@
-++export { projectWorkerScriptSettings } from "./WorkerProvider.js";
  diff --git a/lib/Cloudflare/Containers/ContainerPublicationHook.d.ts b/lib/Cloudflare/Containers/ContainerPublicationHook.d.ts
  new file mode 100644
  index 000000000..44ed9e172
