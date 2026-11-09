@@ -809,6 +809,39 @@ jobs:
       - name: Keep listed account actions usable through Cloud
         working-directory: .upstream
         run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-cloud:listed-account-actions)" --workers 1
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          include-hidden-files: true
+          name: host-managed-accounts-cloud-e2e
+          path: |
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
+          if-no-files-found: warn
+  host-managed-accounts-runtime:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'host-managed-accounts-runtime')
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build the isolated Cloud test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the scenarios' browser engine
+        uses: ./.github/actions/setup-browser
       - name: Verify shared account families and consumer capability refusals
         working-directory: .upstream
         run: >-
@@ -831,7 +864,7 @@ jobs:
         if: always()
         with:
           include-hidden-files: true
-          name: host-managed-accounts-cloud-e2e
+          name: host-managed-accounts-runtime-e2e
           path: |
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
@@ -2333,6 +2366,7 @@ jobs:
         host-managed-accounts-pool,
         host-managed-accounts-local,
         host-managed-accounts-cloud,
+        host-managed-accounts-runtime,
         google-account-recovery,
         google-account-diagnostics,
         oauth-account-regressions,
