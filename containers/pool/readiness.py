@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import hmac
 import http.server
 import json
@@ -29,7 +30,26 @@ class Readiness:
         self,
         management_key: str,
         monotonic_ns: Callable[[], int] = time.monotonic_ns,
+        *,
+        launch_generation: str | None = None,
+        launch_token: str | None = None,
     ) -> None:
+        self._launch_headers: dict[str, str] = {}
+        if launch_generation is not None or launch_token is not None:
+            if (
+                not isinstance(launch_generation, str)
+                or re.fullmatch(r"[1-9][0-9]{0,15}", launch_generation) is None
+                or int(launch_generation) > (1 << 53) - 1
+                or not isinstance(launch_token, str)
+                or re.fullmatch(r"[a-f0-9]{64}", launch_token) is None
+            ):
+                raise ValueError("Invalid pool launch identity")
+            self._launch_headers = {
+                "X-Signalbox-Launch-Generation": launch_generation,
+                "X-Signalbox-Launch-Token-Sha256": hashlib.sha256(
+                    launch_token.encode("ascii")
+                ).hexdigest(),
+            }
         self.boot_id = str(uuid.uuid4())
         self.started_at = (
             dt.datetime.now(dt.timezone.utc)
@@ -194,6 +214,9 @@ class Readiness:
         supplied = header[len(prefix) :].encode("utf-8")
         return hmac.compare_digest(supplied, self._key)
 
+    def launch_headers(self) -> dict[str, str]:
+        return dict(self._launch_headers)
+
 
 class ReadyHandler(http.server.BaseHTTPRequestHandler):
     readiness: Readiness | None = None
@@ -209,7 +232,11 @@ class ReadyHandler(http.server.BaseHTTPRequestHandler):
             self._send(401, {"error": "unauthorized"})
             return
         ready, payload, lease_ms = readiness.readiness_response()
-        headers = {"X-Signalbox-Policy-Lease-Ms": str(lease_ms)} if ready else None
+        headers = (
+            {"X-Signalbox-Policy-Lease-Ms": str(lease_ms), **readiness.launch_headers()}
+            if ready
+            else None
+        )
         self._send(200 if ready else 503, payload, headers)
 
     def do_POST(self) -> None:

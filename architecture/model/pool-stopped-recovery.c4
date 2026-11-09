@@ -1,0 +1,12 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "Stopped recovery is disabled and unbound from the deployed Worker. The optional lifecycle launch ledger records the exact controller, logical runtime, admitted application/version/image, release epoch, monotonic generation and unpredictable token before every managed start. The start-only action serializes behind all warm and manual restart work, refuses a running process or changed generation/target, validates a fresh exact stopped observation, and consumes the existing global automatic budget and started receipt before starting its bound runtime. A historical boot without a trusted current generation never authorizes a launch. Unknown outcomes remain started and inspection-only. Completion requires a new boot with the matching authenticated launch proof, independent live plugin health and every current native policy acknowledged while holding the membership queue through receipt persistence. Restore and proof adapters must use direct private runtime ports, never join the lifecycle warm promise. No unready destruction, physical placement adapter, rollout mutual exclusion, production binding or activation is included."
+    }
+  }
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "Optional launch generation and token inputs are validated together. Authenticated ready responses expose only the generation and token digest as headers while the existing independent policy-health lease is live. Boot rotation cannot renew or replace the controller-owned launch identity. Neither the raw token nor launch metadata enters logs or the existing readiness body. Legacy startup omits both inputs and retains the same readiness contract."
+    }
+  }
+}

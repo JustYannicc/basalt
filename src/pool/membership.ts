@@ -1,5 +1,6 @@
 import { poolGuard } from "./guard-failure.ts";
 import { poolDependency } from "./dependency-failure.ts";
+import { proveCurrentMemberships } from "./membership-proof.ts";
 import {
   ControlFailure,
   object,
@@ -168,6 +169,13 @@ export class NativeMemberships {
   }
   async configured(): Promise<boolean> {
     return this.run(async (state) => Object.keys(state).length > 0);
+  }
+  /** Completion holds the membership queue so a reservation cannot supersede a checked policy. */
+  async proveAll(
+    check: (policy: NativeMembershipPolicy) => Promise<void>,
+    complete: (assertCurrent: () => void) => Promise<void> = async () => {},
+  ) {
+    return this.run((state) => proveCurrentMemberships(state, () => this.now(), check, complete));
   }
   async inspect(pool: string) {
     const state = await this.deps.storage.get<Record<string, State>>(storageKey);

@@ -241,7 +241,11 @@ def main(stop: threading.Event | None = None) -> int:
         require_tmpfs(pathlib.Path("/dev/shm"))
         ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
         pathlib.Path(ROOT / "tmp").mkdir(mode=0o700, exist_ok=True)
-        readiness = Readiness(management_key)
+        readiness = Readiness(
+            management_key,
+            launch_generation=os.environ.get("POOL_LAUNCH_GENERATION"),
+            launch_token=os.environ.get("POOL_LAUNCH_TOKEN"),
+        )
         ready_server = start_ready_server(readiness)
         policy_monitor = PolicyHealthMonitor(readiness, management_key)
         policy_monitor_thread = threading.Thread(
