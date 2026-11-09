@@ -21,7 +21,9 @@ interface Dependencies {
   driver: SlotDriver;
 }
 const revisions = (snapshot: SlotSnapshot) =>
-  snapshot.policies.map(({ pool, organization, revision }) => ({ pool, organization, revision }));
+  [...snapshot.policies, ...snapshot.denials]
+    .sort((left, right) => left.pool.localeCompare(right.pool))
+    .map(({ pool, organization, revision }) => ({ pool, organization, revision }));
 
 /** One intent's durable receipt and selection commit share the controller transaction. */
 export class SlotPromotion {
