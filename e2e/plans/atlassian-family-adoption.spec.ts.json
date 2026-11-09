@@ -57,10 +57,10 @@
       "production-ops:atlassian-adoption"
     ],
     "cloudAtlassianFamilySourcePreservation": [
-      "production-ops:atlassian-adoption"
+      "production-ops:atlassian-saved-source"
     ],
     "cloudAtlassianFamilyDeployedSource": [
-      "production-ops:atlassian-adoption"
+      "production-ops:atlassian-deployed-source"
     ]
   },
   "inputs": [

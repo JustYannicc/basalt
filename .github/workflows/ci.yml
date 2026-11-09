@@ -1235,9 +1235,15 @@ jobs:
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
         uses: ./.github/actions/setup-browser
-      - name: Verify Atlassian adoption and source preservation through signed operations
+      - name: Verify Atlassian family adoption through signed operations
         timeout-minutes: 5
         run: BASALT_SCOPE_PROOF_PATTERN="$(node scripts/ci/e2e-pattern.ts production-ops:atlassian-adoption)" node scripts/production-ops/prove-scope.ts
+      - name: Verify saved Atlassian source preservation through signed operations
+        timeout-minutes: 5
+        run: BASALT_SCOPE_PROOF_PATTERN="$(node scripts/ci/e2e-pattern.ts production-ops:atlassian-saved-source)" node scripts/production-ops/prove-scope.ts
+      - name: Verify deployed and historical Atlassian source through signed operations
+        timeout-minutes: 5
+        run: BASALT_SCOPE_PROOF_PATTERN="$(node scripts/ci/e2e-pattern.ts production-ops:atlassian-deployed-source)" node scripts/production-ops/prove-scope.ts
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
