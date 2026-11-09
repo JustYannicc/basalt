@@ -1,28 +1,19 @@
 import { Schema } from "effect";
 import type { PoolStatus } from "./lifecycle.ts";
-import { openEnvelope } from "./token.ts";
-
-export const runtimeRecoveryPath = "/runtime-recovery";
-export const runtimeRecoveryPrefix = "sbpr1";
-const operationId = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
-const recoveryFields = {
-  version: Schema.Literal(1),
-  operationId: Schema.String,
-  instanceId: Schema.String,
-  imageHash: Schema.String,
-  at: Schema.Number,
-  expiresAt: Schema.Number,
-};
-const SignedRecovery = Schema.Union([
-  Schema.Struct({ ...recoveryFields, action: Schema.Literal("restart") }),
-  Schema.Struct({
-    ...recoveryFields,
-    action: Schema.Literal("restart-reviewed"),
-    release: Schema.String,
-    bootId: Schema.String,
-  }),
-]);
-export type RecoveryApproval = typeof SignedRecovery.Type;
+import {
+  decodeRecoveryApproval,
+  recoveryOperationId as operationId,
+  RecoveryRefused,
+  type RecoveryApproval,
+  type AutomaticApproval,
+} from "./recovery-approval.ts";
+export {
+  runtimeRecoveryPath,
+  runtimeRecoveryPrefix,
+  RecoveryRefused,
+  type RecoveryApproval,
+  type RecoveryDrift,
+} from "./recovery-approval.ts";
 export interface RecoveryReceipt {
   operationId: string;
   instanceId: string;
@@ -47,19 +38,10 @@ interface RecoveryRuntime {
   status(): Promise<PoolStatus>;
   restart(beforeStop?: () => Promise<void>): Promise<PoolStatus>;
 }
-export interface RecoveryDrift {
-  property: "release" | "instanceId" | "imageHash" | "bootId";
-  expected: string;
-  observed: string;
-}
-export class RecoveryRefused extends Error {
-  readonly status: number;
-  readonly drift?: RecoveryDrift[];
-  constructor(status: number, drift?: RecoveryDrift[]) {
-    super("Pool runtime recovery refused");
-    this.status = status;
-    this.drift = drift;
-  }
+interface AutomaticRecovery {
+  check(approval: AutomaticApproval): Promise<void>;
+  consume(approval: AutomaticApproval): Promise<void>;
+  finish(operationId: string, status: "ready" | "failed"): Promise<void>;
 }
 
 /** A durable started receipt consumes the approval even if the object loses the restart result. */
@@ -68,10 +50,17 @@ export class RuntimeRecovery {
   private runtime: RecoveryRuntime;
   private storage: RecoveryStorage;
   private now: () => number;
-  constructor(runtime: RecoveryRuntime, storage: RecoveryStorage, now = Date.now) {
+  private automatic?: AutomaticRecovery;
+  constructor(
+    runtime: RecoveryRuntime,
+    storage: RecoveryStorage,
+    now = Date.now,
+    automatic?: AutomaticRecovery,
+  ) {
     this.runtime = runtime;
     this.storage = storage;
     this.now = now;
+    this.automatic = automatic;
   }
 
   async inspect(id?: string) {
@@ -85,6 +74,7 @@ export class RuntimeRecovery {
       imageHash: this.runtime.imageHash,
       running,
       ...(this.runtime.release ? { release: this.runtime.release } : {}),
+      ...(this.automatic ? { automaticSupported: true } : {}),
       ready: health !== undefined,
       ...(health ? { bootId: health.boot_id } : {}),
       ...(receipt ? { receipt } : {}),
@@ -106,13 +96,13 @@ export class RuntimeRecovery {
               ? this.runtime[property]
               : "unavailable",
           }));
-        throw new RecoveryRefused(409, approval.action === "restart-reviewed" ? drift : undefined);
+        throw new RecoveryRefused(409, approval.action !== "restart" ? drift : undefined);
       }
       const key = this.key(approval.operationId);
       const previous = await this.storage.get<RecoveryReceipt>(key);
       if (previous) {
         if (
-          approval.action === "restart-reviewed" &&
+          approval.action !== "restart" &&
           (previous.release !== approval.release || previous.previousBootId !== approval.bootId)
         )
           throw new RecoveryRefused(409);
@@ -125,14 +115,18 @@ export class RuntimeRecovery {
         imageHash: approval.imageHash,
         status: "started",
         startedAt: this.now(),
-        ...(approval.action === "restart-reviewed"
+        ...(approval.action !== "restart"
           ? { release: approval.release, previousBootId: approval.bootId }
           : {}),
       };
       let consumed = false;
       const begin = async () => {
         if (approval.expiresAt <= this.now()) throw new RecoveryRefused(401);
-        if (approval.action === "restart-reviewed") {
+        if (approval.action === "restart-automatic") {
+          if (!this.automatic) throw new RecoveryRefused(403);
+          await this.automatic.check(approval);
+        }
+        if (approval.action !== "restart") {
           const health = await this.runtime.status().catch(() => undefined);
           const observed = {
             release: /^[a-f0-9]{40}$/.test(this.runtime.release ?? "")
@@ -155,6 +149,9 @@ export class RuntimeRecovery {
             }));
           if (drift.length) throw new RecoveryRefused(409, drift);
         }
+        if (approval.action === "restart-automatic") {
+          await this.automatic!.consume(approval);
+        }
         if (approval.expiresAt <= this.now()) throw new RecoveryRefused(401);
         await this.storage.put(key, started);
         consumed = true;
@@ -164,11 +161,10 @@ export class RuntimeRecovery {
       try {
         // The lifecycle runs this guard after any pending warm, directly before its stop.
         const status = await this.runtime.restart(
-          approval.action === "restart-reviewed" ? begin : undefined,
+          approval.action !== "restart" ? begin : undefined,
         );
         if (!consumed) throw new RecoveryRefused(503);
-        const unchanged =
-          approval.action === "restart-reviewed" && status.boot_id === approval.bootId;
+        const unchanged = approval.action !== "restart" && status.boot_id === approval.bootId;
         receipt = {
           ...started,
           status: unchanged ? "failed" : "ready",
@@ -186,6 +182,11 @@ export class RuntimeRecovery {
         };
       }
       await this.storage.put(key, receipt);
+      if (approval.action === "restart-automatic")
+        await this.automatic!.finish(
+          approval.operationId,
+          receipt.status === "ready" ? "ready" : "failed",
+        );
       return receipt;
     });
     this.pending = result.catch(() => {});
@@ -221,30 +222,7 @@ export async function handleRuntimeRecovery(
     const body = Schema.decodeUnknownSync(Schema.Struct({ envelope: Schema.String }))(
       JSON.parse(text),
     );
-    const decoded = await openEnvelope(secret, runtimeRecoveryPrefix, body.envelope);
-    if (decoded === undefined) throw new RecoveryRefused(401);
-    const approval = Schema.decodeUnknownSync(SignedRecovery)(decoded);
-    const now = Date.now();
-    if (
-      !operationId.test(approval.operationId) ||
-      !/^[a-f0-9]{64}$/.test(approval.instanceId) ||
-      !approval.imageHash ||
-      approval.imageHash.length > 256 ||
-      !Number.isSafeInteger(approval.at) ||
-      !Number.isSafeInteger(approval.expiresAt) ||
-      approval.at > now + 5_000 ||
-      approval.expiresAt <= now ||
-      approval.expiresAt <= approval.at ||
-      approval.expiresAt > approval.at + 60_000
-    )
-      throw new RecoveryRefused(401);
-    if (
-      approval.action === "restart-reviewed" &&
-      (!/^[a-f0-9]{40}$/.test(approval.release) ||
-        !operationId.test(approval.bootId) ||
-        !/^[a-f0-9]{16,64}$/.test(approval.imageHash))
-    )
-      throw new RecoveryRefused(401);
+    const approval = await decodeRecoveryApproval(secret, body.envelope);
     const receipt = await service.recoverRuntime(approval);
     return Response.json(receipt, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {

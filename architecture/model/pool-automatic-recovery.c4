@@ -1,0 +1,12 @@
+model {
+  extend basalt.deployment {
+    metadata {
+      constraint "Automatic recovery remains disabled without a reviewed exact target and digest in protected workflow variables and the same explicit monitored pool target in the runtime. The scheduled workflow collects three read-only observations one minute apart, rechecks provider and controller release, deployment, resources, instance, image and current boot, then uses the existing private signed recovery route. Only a view transport failure with readable current-boot readiness and acknowledged native policy is eligible. Stopped, unready, policy, signature, data, unknown and drift failures require human authority. Signing credentials reach only the final apply step, never dependency preparation or observation. A workflow rerun inspects its deterministic operation and cannot submit again."
+    }
+  }
+  extend basalt.modelGateway {
+    metadata {
+      constraint "The serialized recovery owner re-observes the eligible failure, checks the exact current boot after queued warming, and durably consumes the automatic budget before its started receipt or destruction. A persistent half-hour per-instance cooldown and rolling three-per-day global budget apply across controller reconstruction and deployment changes. An unresolved started attempt blocks automatic recovery; a confirmed durable receipt can resolve it. Failed audit persistence cannot destroy the runtime. Manual reviewed recovery retains its current-boot fence and separate authority."
+    }
+  }
+}
