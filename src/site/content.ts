@@ -37,7 +37,17 @@ export const home = {
     `${name} does that for work with AI. The work lives in one place, and the people and agents on it gather around it. Agents do the work and come to you only when they need you. We're building one place for everything you do with AI: simple enough to start in a minute, with no ceiling.`,
   ],
   tagline: "The work comes first.",
-  action: { label: "Sign in", href: `https://${brand.host}` },
+  /** The app stays unlisted for now: the home page offers the waiting list instead. */
+  waitlist: {
+    invite:
+      "We're letting people in a few at a time. Leave your email and we'll write when it's your turn.",
+    label: "Email address",
+    button: "Join the waiting list",
+    joined: "You're on the list. We'll write when it's your turn.",
+    invalid: "That doesn't look like an email address. Check it and try again.",
+    limited: "Too many tries from here. Wait a minute and try again.",
+    failed: "We couldn't save that just now. Try again in a moment.",
+  },
   note: `${name} connects your agents to Gmail, Calendar and Drive with your own Google sign-in, so they can work in them for you.`,
 } as const;
 
@@ -48,7 +58,7 @@ const privacy: LegalPage = {
   summary: `What ${name} stores, where, who else receives it, and what you can do about it.`,
   blocks: [
     {
-      p: `${name} (${brand.zone} and ${brand.host}) is operated by ${operator} ("we"). Questions: ${email}.`,
+      p: `${name} (${brand.zone} and the ${name} app) is operated by ${operator} ("we"). Questions: ${email}.`,
     },
     { h2: "What we store" },
     {
@@ -72,6 +82,13 @@ const privacy: LegalPage = {
     {
       p: "We don't log what your tools read or return. A tool call waiting for your approval is stored encrypted until you answer it, and deleted after it expires if you don't. Otherwise tool data is kept only where you or an app save it, such as a workflow's history.",
     },
+    { h2: "Waiting list" },
+    {
+      p: `If you join the waiting list on ${brand.zone}, we store your email address and when you joined. We use it only to invite you when it's your turn, and we don't send you anything else. Joining again changes nothing. To stop sign-ups being automated, we count recent attempts from each IP address for a minute. We don't store the IP address with your email.`,
+    },
+    {
+      p: `To be removed from the waiting list, write to ${email} from that address. We delete it and confirm.`,
+    },
     { h2: "Why we use it" },
     {
       p: `We use your data to provide the service you signed up for, and, for security, error reports and usage counts, for our legitimate interest in running ${name} safely and reliably.`,
@@ -81,6 +98,7 @@ const privacy: LegalPage = {
       ul: [
         "Database: PlanetScale, in the EU (Frankfurt, eu-central).",
         "Files and app data: Cloudflare R2 and Durable Objects, restricted to the EU.",
+        "Waiting list: Cloudflare D1, restricted to the EU.",
         "Pool backend: Cloudflare Containers, restricted to the EU.",
         `${name} runs on Cloudflare's network, which handles requests at the location nearest to you.`,
       ],
@@ -126,6 +144,7 @@ const privacy: LegalPage = {
         "Inactive agent connections: revoked after 30 days.",
         "Pool usage counts: 30 days.",
         "Events apps send each other: 3 days.",
+        "Waiting list: until you ask to be removed.",
       ],
     },
     {
@@ -152,7 +171,7 @@ const terms: LegalPage = {
   summary: `The terms for using ${name}.`,
   blocks: [
     {
-      p: `These terms apply to ${name} at ${brand.zone} and ${brand.host}. ${name} is operated by ${operator} ("we"). By creating an account or using ${name}, you agree to them.`,
+      p: `These terms apply to ${name}: ${brand.zone} and the ${name} app. ${name} is operated by ${operator} ("we"). By creating an account or using ${name}, you agree to them.`,
     },
     { h2: "The service" },
     {
