@@ -32,7 +32,13 @@ const finalStart = milestones[4]!;
 const finalReady = milestones[8]!;
 
 function fixture(
-  mode: "cycling" | "never-ready" | "never-allocated" | "adopting" | "old-runtime" = "cycling",
+  mode:
+    | "cycling"
+    | "never-ready"
+    | "never-allocated"
+    | "adopting"
+    | "old-runtime"
+    | "missing-identity" = "cycling",
   runtimeDelayMs = 0,
 ) {
   let now = epoch;
@@ -73,7 +79,8 @@ function fixture(
         fetch: async (request: Request) => {
           if (new URL(request.url).pathname === "/deployment-readiness") {
             return handleDeploymentReadiness(request, target, key, async (phase) => {
-              if (phase === "adoption")
+              if (phase === "adoption") {
+                if (mode === "missing-identity") throw new TypeError("No such RPC method");
                 return {
                   ...target,
                   candidate:
@@ -82,6 +89,7 @@ function fixture(
                       : candidate,
                   instanceId,
                 };
+              }
               readyRequests++;
               if (mode === "adopting" || mode === "old-runtime") {
                 if (now < epoch + 300_000 + runtimeDelayMs)
@@ -298,4 +306,20 @@ test("never ready retains HTTP status, stage and last state in evidence and the 
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("a deferred adapter without the identity RPC times out with identity unavailable", async () => {
+  const f = fixture("missing-identity");
+  await atClock(f, async () =>
+    assert.rejects(f.run(), (error: unknown) => {
+      assert.ok(error instanceof ServingFailure);
+      assert.equal(error.serving.check, "code-adoption");
+      assert.equal(error.serving.codeIdentity?.observed, null);
+      assert.equal(error.serving.codeIdentity?.expected.candidate, "a".repeat(40));
+      assert.equal(f.now - epoch, containerCodeAdoptionMs);
+      assert.equal(f.startupAt, -1);
+      assert.match(refusalTable(error), /observedIdentity=unavailable/u);
+      return true;
+    }),
+  );
 });
