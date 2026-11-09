@@ -1,10 +1,10 @@
 import { poolGuard } from "./guard-failure.ts";
 import { poolDependency } from "./dependency-failure.ts";
-import { ControlFailure, object, text } from "./json.ts";
+import { ControlFailure } from "./json.ts";
+import { accessGrace } from "./access-contract.ts";
+import { readMembershipReservation } from "./membership-reservation.ts";
 import { homeReferences } from "./home-references.ts";
-import { openEnvelope } from "./token.ts";
 import {
-  membershipPrefix,
   membershipRefreshMs,
   membershipTtlMs,
   type NativeMembershipPolicy,
@@ -16,6 +16,8 @@ interface State extends NativeMembershipPolicy {
   checkedAt: number;
   installedRevision: number;
   installedUntil: number;
+  retiredAt?: number;
+  retired?: { resumeAfter: number };
 }
 interface Storage {
   get<T>(key: string): Promise<T | undefined>;
@@ -51,6 +53,7 @@ export class NativeMemberships {
   private queue: Promise<unknown> = Promise.resolve();
   private running = new Map<string, Promise<void>>();
   private ticking?: Promise<void>;
+  private installations = new Map<string, Set<Promise<void>>>();
   private deps: Dependencies;
   constructor(deps: Dependencies) {
     this.deps = {
@@ -81,43 +84,27 @@ export class NativeMemberships {
   private save(state: Record<string, State>) {
     return poolDependency("storage", this.deps.storage.put(storageKey, state));
   }
-  private async schedule() {
-    await this.deps.schedule(this.now() + membershipRefreshMs);
+  private schedule() {
+    return this.run(async (state) => {
+      if (Object.values(state).some((pool) => !pool.retired))
+        await this.deps.schedule(this.now() + membershipRefreshMs);
+    });
   }
 
-  async reserve(request: Request): Promise<void> {
-    if (request.method !== "POST") throw new Error("Invalid native membership acknowledgement");
-    const raw = await request.text();
-    if (raw.length > 8_192) throw new Error("Invalid native membership acknowledgement");
-    const input: unknown = JSON.parse(raw);
-    const value =
-      object(input) && typeof input.envelope === "string"
-        ? await openEnvelope(
-            this.deps.signingKey,
-            membershipPrefix,
-            input.envelope,
-            this.deps.previousSigningKey,
-          )
-        : undefined;
-    const now = this.now();
-    if (
-      !object(value) ||
-      !text(value.pool) ||
-      !text(value.organization) ||
-      !Number.isSafeInteger(value.at) ||
-      !Number.isSafeInteger(value.expiresAt) ||
-      Number(value.at) > now ||
-      Number(value.expiresAt) <= now ||
-      Number(value.expiresAt) > now + 30_000
-    )
-      throw new Error("Invalid native membership acknowledgement");
-    const pool = String(value.pool),
-      organization = String(value.organization);
+  async reserve(request: Request) {
+    const { pool, organization, at, now } = await readMembershipReservation(
+      request,
+      this.deps.signingKey,
+      this.deps.previousSigningKey,
+      () => this.now(),
+    );
     await this.deps.invalidateView?.(pool);
     const policy = await this.run(async (state) => {
       const previous = state[pool];
-      if (previous && previous.organization !== organization)
+      if (previous?.organization && previous.organization !== organization)
         throw new Error("Native pool organization changed");
+      if (previous?.retiredAt !== undefined && at <= previous.retiredAt)
+        throw new Error("Native pool was retired");
       const next: State = {
         pool,
         organization,
@@ -129,15 +116,93 @@ export class NativeMemberships {
         checkedAt: previous?.checkedAt ?? 0,
         installedRevision: 0,
         installedUntil: 0,
+        retired: previous?.retired,
+        retiredAt: previous?.retiredAt,
       };
       state[pool] = next;
       await this.save(state);
       this.deps.abort(pool);
       return next;
     });
-    await this.schedule();
+    if (!policy.retired) await this.schedule();
     // The local veto refuses old selections before the SQL writer is allowed to commit.
-    await this.deps.install(publicPolicy(policy));
+    await this.install(policy);
+    return policy.retired ? { pool, organization } : undefined;
+  }
+
+  private current(policy: State) {
+    return this.run(async (state) => state[policy.pool]?.revision === policy.revision);
+  }
+  private install(policy: State): Promise<void> {
+    const work = (async () => {
+      // Deletion can arrive before this controller ever learned the organization.
+      if (!policy.organization || !(await this.current(policy))) return;
+      await this.deps.install(
+        publicPolicy(
+          policy.retired ? { ...policy, expiresAt: this.now() + membershipTtlMs } : policy,
+        ),
+      );
+    })();
+    const pending = this.installations.get(policy.pool) ?? new Set<Promise<void>>();
+    pending.add(work);
+    this.installations.set(policy.pool, pending);
+    return work.finally(() => {
+      pending.delete(work);
+      if (!pending.size) this.installations.delete(policy.pool);
+    });
+  }
+  async retire(pool: string, at: number): Promise<void> {
+    await this.run(async (state) => {
+      const previous = state[pool];
+      if (previous?.retiredAt !== undefined && previous.retiredAt >= at) return;
+      const next: State = {
+        pool,
+        organization: previous?.organization ?? "",
+        accounts: [],
+        native: true,
+        revision: (previous?.revision ?? 0) + 1,
+        expiresAt: this.now() + membershipTtlMs,
+        dirty: true,
+        checkedAt: previous?.checkedAt ?? 0,
+        installedRevision: 0,
+        installedUntil: 0,
+        retiredAt: at,
+        retired: { resumeAfter: this.now() + accessGrace },
+      };
+      state[pool] = next;
+      await this.save(state);
+      this.deps.abort(pool);
+    });
+    await this.deps.invalidateView?.(pool);
+    // A host read can be waiting on the removal transaction that awaits this acknowledgement.
+    // Drain older installs, but never wait for the repair's host read here.
+    await Promise.allSettled(this.installations.get(pool) ?? []);
+    const policy = await this.run(async (state) => state[pool]);
+    if (policy?.retired) await this.install(policy);
+  }
+  private async reactivate(pool: string, organization: string): Promise<void> {
+    const previous = await this.run(async (state) => state[pool]);
+    if (!previous?.retired) return;
+    if (previous.organization && previous.organization !== organization)
+      throw new Error("Native pool organization changed");
+    if (this.now() < previous.retired.resumeAfter) throw new Error("Native pool was retired");
+    // Removal notifies before commit. Only a new host read after the refusal window can undo it.
+    const snapshot = await this.deps.read(pool, organization);
+    if (!snapshot.native) throw new Error("Native pool was retired");
+    const resumed = await this.run(async (state) => {
+      const current = state[pool];
+      if (current?.revision !== previous.revision || !current.retired) return false;
+      state[pool] = {
+        ...current,
+        organization,
+        retired: undefined,
+        revision: current.revision + 1,
+      };
+      await this.save(state);
+      this.deps.abort(pool);
+      return true;
+    });
+    if (resumed) await this.schedule();
   }
 
   async authority(pool: string): Promise<NativeMembershipPolicy | undefined> {
@@ -145,6 +210,7 @@ export class NativeMemberships {
       const policy = state[pool];
       if (!policy) return undefined;
       if (
+        policy.retired ||
         policy.dirty ||
         !policy.native ||
         policy.expiresAt <= this.now() ||
@@ -163,6 +229,7 @@ export class NativeMemberships {
     return this.run(async (state) => Object.keys(state).length > 0);
   }
   async ensure(pool: string, organization: string): Promise<void> {
+    await this.reactivate(pool, organization);
     let current = await this.run(async (state) => state[pool]);
     if (!current) {
       // The private reader may reserve this same object while completing the host's SQL handoff.
@@ -190,7 +257,7 @@ export class NativeMemberships {
       });
       if (created) {
         await this.schedule();
-        await this.deps.install(publicPolicy(created));
+        await this.install(created);
       }
       current = await this.run(async (state) => state[pool]);
     }
@@ -218,7 +285,11 @@ export class NativeMemberships {
     return work;
   }
   private async tickOnce(): Promise<void> {
-    const pools = await this.run(async (state) => Object.keys(state));
+    const pools = await this.run(async (state) =>
+      Object.values(state)
+        .filter((pool) => !pool.retired)
+        .map((pool) => pool.pool),
+    );
     if (!pools.length) return;
     await this.schedule();
     try {
@@ -240,7 +311,7 @@ export class NativeMemberships {
     // Callers share this promise, so it must follow the newest revision before resolving.
     while (true) {
       const before = await this.run(async (state) => state[pool]);
-      if (!before) return;
+      if (!before || before.retired) return;
       const snapshot = await this.deps.read(pool, before.organization);
       const accounts = [
         ...new Set(
@@ -252,12 +323,13 @@ export class NativeMemberships {
       const valid =
         snapshot.native && snapshot.accounts.every((account) => account.homeReference !== null);
       // Each pass reads actual state, including a write that arrived after a previous matching read.
+      if (!(await this.current(before))) continue;
       if (valid) await this.deps.reconcile(pool, accounts);
       const actual = valid ? await this.deps.actual(pool) : [];
       const ready = valid && equal(actual, accounts);
       const policy = await this.run(async (state) => {
         const current = state[pool];
-        if (!current || current.revision !== before.revision) return undefined;
+        if (!current || current.retired || current.revision !== before.revision) return undefined;
         const changed = current.dirty !== !ready || !equal(current.accounts, accounts);
         const next: State = {
           ...current,
@@ -273,10 +345,10 @@ export class NativeMemberships {
         return next;
       });
       if (!policy) continue;
-      await this.deps.install(publicPolicy(policy));
+      await this.install(policy);
       const installed = await this.run(async (state) => {
         const current = state[pool];
-        if (!current || current.revision !== policy.revision) return false;
+        if (!current || current.retired || current.revision !== policy.revision) return false;
         state[pool] = {
           ...current,
           installedRevision: policy.revision,

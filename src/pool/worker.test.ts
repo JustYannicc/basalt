@@ -394,6 +394,29 @@ test("signed access changes reach the computer queue before generic pool-token c
     workerEnv,
   );
   assert.equal(denied.status, 401);
+  const deletion = await signEnvelope(signingKey, accessPrefix, {
+    action: "pool-deleted",
+    pool: "fake-pool",
+    at: now,
+    expiresAt: now + accessTtl,
+  });
+  const remove = await poolWorker.fetch(
+    new Request(`https://pool.example${accessPath}`, {
+      method: "POST",
+      body: JSON.stringify({ envelope: deletion }),
+    }),
+    workerEnv,
+  );
+  assert.equal(remove.status, 200, await remove.clone().text());
+  const membership = values.get("native-pool-memberships-v1") as Record<
+    string,
+    {
+      dirty: boolean;
+      retired?: { resumeAfter: number };
+    }
+  >;
+  assert.equal(membership["fake-pool"]?.dirty, true);
+  assert.ok(membership["fake-pool"]?.retired);
 });
 
 test("native pool use is required before control, setup and usage can reach Home", async () => {
@@ -823,136 +846,203 @@ test("an unhealthy warm runtime returns a retryable 503 before another model dis
   }
 });
 
-test("an alarm joining background membership upkeep restores its consumed short deadline", async (t) => {
-  const start = Date.now(),
-    key = "ab".repeat(32);
-  t.mock.timers.enable({ apis: ["Date"], now: start });
-  const values = new Map<string, unknown>(),
-    background: Promise<unknown>[] = [];
-  const entered = Promise.withResolvers<void>(),
-    release = Promise.withResolvers<void>();
-  const installed: NativeMembershipPolicy[] = [];
-  let alarm: number | null = null,
-    reads = 0;
-  const worker = new PoolContainer(
-    {
-      container: {
-        running: true,
-        start() {
-          this.running = true;
-        },
-        async destroy() {
-          this.running = false;
-        },
-        setInactivityTimeout: async () => {},
-        getTcpPort(port: number) {
-          return {
-            fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
-              const request = new Request(input, init),
-                path = new URL(request.url).pathname;
-              if (port === 8318) {
-                if (path === "/native-policy") {
-                  const { projection } = (await request.json()) as { projection: string };
-                  const policy = (await openEnvelope(
-                    key,
-                    "sbm-policy1",
-                    projection,
-                  )) as NativeMembershipPolicy;
-                  assert.ok(policy);
-                  installed.push(policy);
-                  return Response.json({ installed: true, revision: policy.revision });
-                }
-                assert.equal(path, "/ready");
-                return Response.json({ boot_id: "fake-boot", started_at: "2026-11-09T00:00:00Z" });
-              }
-              assert.equal(port, 8327);
-              if (path === "/v8/management/channel-groups")
-                return Response.json({
-                  channel_groups: [{ id: 1, channel_name: "signalbox-pool-a" }],
-                });
-              if (path === "/v8/management/channel-group-details")
-                return Response.json({ channel_group_details: [] });
-              if (path === "/v8/management/models") return Response.json({ models: [] });
-              if (path === "/v8/management/billing/model-prices")
-                return Response.json({ items: [] });
-              if (path === "/v8/management/capabilities")
-                return Response.json({ capabilities: {} });
-              if (path === "/v8/management/usage/records")
-                return Response.json({ items: [], total: 0 });
-              assert.fail(`Unexpected Home request: ${path}`);
+for (const retire of [false, true])
+  test(
+    retire
+      ? "signed deletion stops background upkeep and a confirmed rollback recovers through a fresh reservation"
+      : "an alarm joining background membership upkeep restores its consumed short deadline",
+    async (t) => {
+      const start = Date.now(),
+        key = "ab".repeat(32);
+      t.mock.timers.enable({ apis: ["Date"], now: start });
+      const values = new Map<string, unknown>(),
+        background: Promise<unknown>[] = [];
+      const entered = Promise.withResolvers<void>(),
+        release = Promise.withResolvers<void>();
+      const installed: NativeMembershipPolicy[] = [];
+      let alarm: number | null = null,
+        reads = 0,
+        native = true;
+      const worker = new PoolContainer(
+        {
+          container: {
+            running: true,
+            start() {
+              this.running = true;
             },
-          };
+            async destroy() {
+              this.running = false;
+            },
+            setInactivityTimeout: async () => {},
+            getTcpPort(port: number) {
+              return {
+                fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+                  const request = new Request(input, init),
+                    path = new URL(request.url).pathname;
+                  if (port === 8318) {
+                    if (path === "/native-policy") {
+                      const { projection } = (await request.json()) as { projection: string };
+                      const policy = (await openEnvelope(
+                        key,
+                        "sbm-policy1",
+                        projection,
+                      )) as NativeMembershipPolicy;
+                      assert.ok(policy);
+                      installed.push(policy);
+                      return Response.json({ installed: true, revision: policy.revision });
+                    }
+                    assert.equal(path, "/ready");
+                    return Response.json({
+                      boot_id: "fake-boot",
+                      started_at: "2026-11-09T00:00:00Z",
+                    });
+                  }
+                  assert.equal(port, 8327);
+                  if (path === "/v8/management/channel-groups")
+                    return Response.json({
+                      channel_groups: [{ id: 1, channel_name: "signalbox-pool-a" }],
+                    });
+                  if (path === "/v8/management/channel-group-details")
+                    return Response.json({ channel_group_details: [] });
+                  if (path === "/v8/management/models") return Response.json({ models: [] });
+                  if (path === "/v8/management/billing/model-prices")
+                    return Response.json({ items: [] });
+                  if (path === "/v8/management/capabilities")
+                    return Response.json({ capabilities: {} });
+                  if (path === "/v8/management/usage/records")
+                    return Response.json({ items: [], total: 0 });
+                  assert.fail(`Unexpected Home request: ${path}`);
+                },
+              };
+            },
+          },
+          waitUntil: (work: Promise<unknown>) => {
+            background.push(work);
+          },
+          storage: {
+            get: async (name: string) => structuredClone(values.get(name)),
+            put: async (name: string, value: unknown) => {
+              values.set(name, structuredClone(value));
+            },
+            getAlarm: async () => alarm,
+            setAlarm: async (at: number) => {
+              alarm = at;
+            },
+          },
         },
-      },
-      waitUntil: (work: Promise<unknown>) => {
-        background.push(work);
-      },
-      storage: {
-        get: async (name: string) => structuredClone(values.get(name)),
-        put: async (name: string, value: unknown) => {
-          values.set(name, structuredClone(value));
+        {
+          POOL_DATABASE_URL: "postgres://fixture",
+          POOL_MANAGEMENT_KEY: "fixture",
+          POOL_APP_SIGNING_KEY: key,
+          POOL_IMAGE_HASH: "fixture",
+          TOOLS_SERVICE: {
+            fetch: async (input: string) => {
+              const path = new URL(input).pathname;
+              if (path === "/api/internal/pool-organization")
+                return new Response(null, { status: 204 });
+              if (path === "/api/internal/account-observations/refresh")
+                return new Response(null, { status: 204 });
+              assert.equal(path, "/api/internal/pool-membership");
+              reads++;
+              entered.resolve();
+              await release.promise;
+              return Response.json({ pool: "a", organization: "org", native, accounts: [] });
+            },
+          },
         },
-        getAlarm: async () => alarm,
-        setAlarm: async (at: number) => {
-          alarm = at;
-        },
-      },
-    },
-    {
-      POOL_DATABASE_URL: "postgres://fixture",
-      POOL_MANAGEMENT_KEY: "fixture",
-      POOL_APP_SIGNING_KEY: key,
-      POOL_IMAGE_HASH: "fixture",
-      TOOLS_SERVICE: {
-        fetch: async (input: string) => {
-          const path = new URL(input).pathname;
-          if (path === "/api/internal/pool-organization")
-            return new Response(null, { status: 204 });
-          if (path === "/api/internal/account-observations/refresh")
-            return new Response(null, { status: 204 });
-          assert.equal(path, "/api/internal/pool-membership");
-          reads++;
-          entered.resolve();
-          await release.promise;
-          return Response.json({ pool: "a", organization: "org", native: true, accounts: [] });
-        },
-      },
-    },
-  );
-  const response = await worker.fetch(
-    new Request("https://pool/pool/v1/membership", {
-      method: "POST",
-      body: JSON.stringify({
-        envelope: await signEnvelope(key, membershipPrefix, {
-          pool: "a",
-          organization: "org",
-          at: start,
-          expiresAt: start + 30_000,
+      );
+      const response = await worker.fetch(
+        new Request("https://pool/pool/v1/membership", {
+          method: "POST",
+          body: JSON.stringify({
+            envelope: await signEnvelope(key, membershipPrefix, {
+              pool: "a",
+              organization: "org",
+              at: start,
+              expiresAt: start + 30_000,
+            }),
+          }),
         }),
-      }),
-    }),
+      );
+      assert.equal(response.status, 204);
+      await entered.promise;
+      assert.equal(alarm, start + 5_000);
+      if (retire) {
+        const deletion = await signEnvelope(key, accessPrefix, {
+          action: "pool-deleted",
+          pool: "a",
+          at: Date.now(),
+          expiresAt: Date.now() + accessTtl,
+        });
+        const removed = await worker.fetch(
+          new Request(`https://pool${accessPath}`, {
+            method: "POST",
+            body: JSON.stringify({ envelope: deletion }),
+          }),
+        );
+        assert.equal(removed.status, 200, await removed.clone().text());
+        native = false;
+      }
+      t.mock.timers.tick(5_000);
+      // Cloudflare consumes the stored deadline before invoking the alarm handler.
+      alarm = null;
+      const firing = worker.alarm();
+      t.mock.timers.tick(8_800);
+      release.resolve();
+      await Promise.all([firing, ...background]);
+      assert.equal(reads, 1, "the alarm must join the background repair");
+      if (retire) {
+        assert.equal(installed.at(-1)?.dirty, true);
+        assert.equal(alarm, Date.now() + 300_000, "only runtime upkeep remains after deletion");
+        t.mock.timers.tick(60_000);
+        alarm = null;
+        await worker.alarm();
+        assert.equal(reads, 1, "retired pools must not be read by later alarms");
+        const reserve = async () => {
+          const envelope = await signEnvelope(key, membershipPrefix, {
+            pool: "a",
+            organization: "org",
+            at: Date.now(),
+            expiresAt: Date.now() + 30_000,
+          });
+          const response = await worker.fetch(
+            new Request("https://pool/pool/v1/membership", {
+              method: "POST",
+              body: JSON.stringify({ envelope }),
+            }),
+          );
+          assert.equal(response.status, 204);
+          await Promise.all(background);
+        };
+        await reserve();
+        assert.equal(
+          installed.at(-1)?.dirty,
+          true,
+          "an absent host registration cannot reactivate",
+        );
+        assert.equal(alarm, Date.now() + 300_000);
+        native = true;
+        t.mock.timers.tick(1);
+        await reserve();
+        assert.equal(
+          installed.at(-1)?.dirty,
+          false,
+          "a fresh host confirmation repairs a rollback",
+        );
+        assert.equal(alarm, Date.now() + 5_000);
+        return;
+      }
+      assert.equal(alarm, start + 18_800, "completion must restore the five-second cadence");
+      assert.equal(installed.at(-1)?.dirty, false);
+      const firstExpiry = installed.at(-1)!.expiresAt;
+      t.mock.timers.tick(5_000);
+      alarm = null;
+      await worker.alarm();
+      assert.equal(reads, 2, "the restored alarm must perform a fresh repair");
+      assert.ok(installed.at(-1)!.expiresAt > firstExpiry, "the next pass renews native authority");
+      assert.equal(alarm, Date.now() + 5_000);
+    },
   );
-  assert.equal(response.status, 204);
-  await entered.promise;
-  assert.equal(alarm, start + 5_000);
-  t.mock.timers.tick(5_000);
-  // Cloudflare consumes the stored deadline before invoking the alarm handler.
-  alarm = null;
-  const firing = worker.alarm();
-  t.mock.timers.tick(8_800);
-  release.resolve();
-  await Promise.all([firing, ...background]);
-  assert.equal(reads, 1, "the alarm must join the background repair");
-  assert.equal(alarm, start + 18_800, "completion must restore the five-second cadence");
-  assert.equal(installed.at(-1)?.dirty, false);
-  const firstExpiry = installed.at(-1)!.expiresAt;
-  t.mock.timers.tick(5_000);
-  alarm = null;
-  await worker.alarm();
-  assert.equal(reads, 2, "the restored alarm must perform a fresh repair");
-  assert.ok(installed.at(-1)!.expiresAt > firstExpiry, "the next pass renews native authority");
-  assert.equal(alarm, Date.now() + 5_000);
-});
 
 test("native SQL writes to a running container require the exact policy install acknowledgement", async () => {
   const key = "ab".repeat(32),
