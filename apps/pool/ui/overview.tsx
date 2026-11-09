@@ -1,3 +1,4 @@
+import { overviewAccounts } from "./overview-accounts.ts";
 import type { ReactNode } from "react";
 import type { PoolView, Provider } from "../contract.ts";
 import type { Result } from "../index.ts";
@@ -15,7 +16,12 @@ import { LabMark } from "./lab.tsx";
 import { seriesRead, type Overview, type RangeDays } from "./overview-data.ts";
 import { rows, total } from "./series-model.ts";
 import { Money, WhoUses } from "./usage-groups.tsx";
-import { accountProblems, accountsNeedingSomeone, bankedResetCount } from "./overview-attention.ts";
+import {
+  accountProblems,
+  accountsNeedingSomeone,
+  bankedResetCount,
+  bankedResetText,
+} from "./overview-attention.ts";
 import { currentCapacity } from "./overview-snapshot.ts";
 
 // The manager's App tab: four answers first, each linking down to its evidence. Per-account health,
@@ -71,7 +77,7 @@ export function ManagerOverview({
       <Answers data={current} labs={labs} days={days} name={name} view={view} />
       <CapacitySection
         result={current.capacity?.ok && !providers ? undefined : current.capacity}
-        empty={view?.accounts.length === 0}
+        empty={view !== undefined && overviewAccounts(view).length === 0}
         providers={providers ?? []}
         days={days}
         coherent={data.coherent === true}
@@ -201,11 +207,11 @@ function Answers({
   const learning = labs.find((entry) => entry.verdict.tone === "learn");
   const allLearning = labs.length > 0 && labs.every((entry) => entry.verdict.tone === "learn");
   // "Every lab" means every lab the pool has accounts in, including ones with no readings yet.
-  const unread = [...new Set(view?.accounts.map((account) => account.provider))].filter(
+  const unread = [...new Set(overviewAccounts(view).map((account) => account.provider))].filter(
     (provider) => !labs.some((entry) => entry.lab.provider === provider),
   );
   const enough: { tone: Tone; text: string } =
-    view?.accounts.length === 0
+    view !== undefined && overviewAccounts(view).length === 0
       ? { tone: "learn", text: "No accounts yet" }
       : !data.capacity || (!view && data.capacity.ok)
         ? { tone: "learn", text: "Reading…" }
@@ -469,10 +475,10 @@ function Attention({
               rel="noopener"
               className="underline underline-offset-2"
             >
-              {banked} banked resets available
+              {bankedResetText(banked)}
             </a>
           ) : (
-            `${banked} banked resets available`
+            bankedResetText(banked)
           )}
           . Nothing is spent automatically; forecasts leave them unspent.
         </p>

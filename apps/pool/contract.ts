@@ -116,7 +116,10 @@ export interface PoolView {
     }[];
   };
   readonly providers: readonly Provider[];
+  /** Every selected member, including app API keys and the control account. */
   readonly accounts: readonly Account[];
+  /** Backend-classified subscription members. Optional for older server replies. */
+  readonly subscriptionAccountIds?: readonly string[];
 }
 
 /** One request recorded by Home. No client-key secrets or request contents are exposed. */
