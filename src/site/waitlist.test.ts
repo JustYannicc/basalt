@@ -103,6 +103,7 @@ test("signing up again keeps one row and the first time, and answers exactly as 
   const again = await post({ email: "ADA@example.com" }, { ip: "192.0.2.2" });
   assert.deepEqual(rows(), before);
   assert.equal(again.status, first.status);
+  assert.deepEqual([...again.headers], [...first.headers]);
   assert.equal(await again.text(), await first.text());
 });
 
@@ -129,9 +130,11 @@ test("an invalid address is refused with the form and a message, and nothing is 
 test("a filled trap field looks like success to the bot and stores nothing", async () => {
   const { post, rows } = site();
   const response = await post({ email: "bot@example.com", leave_empty: "https://spam.example" });
-  assert.equal(response.status, 200);
-  assert.match(await response.text(), /You're on the list\./);
   assert.deepEqual(rows(), []);
+  const real = await post({ email: "ada@example.com" }, { ip: "192.0.2.9" });
+  assert.equal(response.status, real.status);
+  assert.deepEqual([...response.headers], [...real.headers]);
+  assert.equal(await response.text(), await real.text());
 });
 
 test("each IP gets a few tries per period, counted before anything else, and others are unaffected", async () => {

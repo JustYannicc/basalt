@@ -178,10 +178,11 @@ export default Alchemy.Stack(
     // The public home and legal pages at the zone's apex. Previews share the zone, so only
     // production owns its apex.
     if (preview === undefined) {
-      // Provision separately from the waiting-list Worker binding so admission precedes creation.
+      // A separate release provisions the database before this binding ships, so admission
+      // precedes creation.
       // Binding the resource this one declaration yields keeps the stack evaluable before the
       // database is recorded, and gives the barrier the edge it needs to refuse create-and-bind.
-      // The exported state reference is for consumers outside this stack.
+      // The exported state reference resolves from recorded state, so it only suits a later binding.
       const waitlist = yield* provisionPublicSiteWaitlist;
       // Upstream's Command.Build already owns "Site". Alchemy reuses logical IDs across resource types.
       yield* Cloudflare.Worker("PublicSite", {

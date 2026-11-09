@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { brand } from "../../brand.ts";
-import { inline, sitePage } from "./pages.ts";
+import { homeWith, inline, sitePage } from "./pages.ts";
 import { handleSite, type SiteEnv } from "./worker.ts";
 
 // Page requests never touch the list.
@@ -22,6 +22,8 @@ test("the home page says what the service does, why it asks for Google access, a
 });
 
 test("no page names or links the app's address, so it stays unlisted until someone knows it", () => {
+  for (const state of ["open", "joined", "invalid", "limited", "failed"] as const)
+    assert.ok(!homeWith(state).includes(brand.host), `the ${state} home names ${brand.host}`);
   for (const path of [...paths, "/waitlist", "/pricing"]) {
     const html = page(path);
     assert.ok(!html.includes(brand.host), `${path} names ${brand.host}`);
