@@ -1,0 +1,1466 @@
+diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+--- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -7,6 +7,7 @@ import {
+   useRef,
+   useState,
+   type ReactNode,
++  type ComponentProps,
+   type ComponentType,
+ } from "react";
+ import { useAtomSet, useAtomValue } from "@effect/atom-react";
+@@ -88,6 +89,15 @@ import {
+ import { cn } from "../lib/utils.ts";
+ import { methodLabels } from "./method-labels.ts";
+ import { requirementTitles } from "./requirement-titles.ts";
++import {
++  serviceGroups,
++  serviceMethods,
++  servicePart,
++  serviceTitle,
++  toolLimits,
++  type ServiceMethod,
++  type ToolSectionLimit,
++} from "./service-groups.ts";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { useToast } from "../components/toast.tsx";
+ import { ProviderDestination } from "./provider-accounts.tsx";
+@@ -563,13 +573,16 @@ export interface LinkEditing<E> {
+   readonly link: (slot: string, account: AccountId) => Atom.AtomResultFn<void, unknown, E>;
+   readonly unlink: (slot: string, account: AccountId) => Atom.AtomResultFn<void, unknown, E>;
+   /**
+-   * Connect a new account for the requirement; saving it links it. `title` is the requirement's
+-   * title on the tab, which the dialog names; absent for a service without a name.
++   * Connect a new account for the requirement; saving it links it. `title` is what the tab calls
++   * it, the requirement's or its service's section, which the dialog names; absent for a service
++   * without a name. `method` is the method picked from a service's connect menu; without it the
++   * host picks.
+    */
+   readonly connect: (
+     slot: string,
+     requirement: AccountRequirement,
+     title: string | undefined,
++    method?: string,
+   ) => void;
+   /**
+    * Import an exported login file as a new account for the requirement, for the methods the host
+@@ -647,6 +660,7 @@ export function AppAccounts<E>({
+   accounts,
+   methods,
+   connections,
++  toolSections,
+   Failure,
+ }: {
+   readonly app: App;
+@@ -664,6 +678,11 @@ export function AppAccounts<E>({
+    * requirement connects here; a requirement that only selects links to its provider apps.
+    */
+   readonly connections?: RequirementConnections | undefined;
++  /**
++   * Tools only one requirement and method can run, from the app's catalog listing. Where one
++   * section holds several requirements of a service, the other accounts say they can't run them.
++   */
++  readonly toolSections?: readonly ToolSectionLimit[] | undefined;
+   readonly Failure: ComponentType<FailureProps<E>>;
+ }) {
+   useRevalidateChecks(
+@@ -714,6 +733,7 @@ export function AppAccounts<E>({
+           accounts={accounts}
+           methods={methods}
+           connections={connections}
++          toolSections={toolSections}
+           showProvisionedProblems={repairs.app}
+           Failure={Failure}
+         />
+@@ -729,6 +749,7 @@ export function AppAccounts<E>({
+           accounts={accounts}
+           methods={methods}
+           connections={connections}
++          toolSections={toolSections}
+           showProvisionedProblems={repairs.user}
+           Failure={Failure}
+         />
+@@ -745,6 +766,7 @@ interface ScopeProps<E> {
+   readonly accounts: readonly AccountSummary[];
+   readonly methods?: RequirementMethods | undefined;
+   readonly connections?: RequirementConnections | undefined;
++  readonly toolSections?: readonly ToolSectionLimit[] | undefined;
+   readonly Failure: ComponentType<FailureProps<E>>;
+ }
+ 
+@@ -778,9 +800,24 @@ function LinkScope<E>({
+       !linkedTo(slot) &&
+       !accounts.some((account) => account.provider === requirement.provider),
+   );
+-  const open = shown.filter((entry) => !closed.includes(entry));
++  // Requirements of one service share a section unless one of them reads differently: set up by
++  // the host, kept from earlier sign-ins, a native API, or connected in a provider's app. A
++  // service's section closes only when every requirement in it is closed.
++  const grouped = serviceGroups(shown, ([slot, requirement]) => {
++    const connection = connectionOf(connections, slot);
++    return (
++      !provisionedOnly(requirement) &&
++      !retained(connection, data, requirement) &&
++      !selectionOnly(connection) &&
++      methods?.native(slot) === undefined
++    );
++  });
++  const groups = grouped.filter((group) => !group.every((entry) => closed.includes(entry)));
++  const unavailable = grouped.filter((group) => !groups.includes(group)).flat();
+   const titles = requirementTitles(shown);
+-  const readOnly = open.every(([, requirement]) => editingFor(data, requirement) === undefined);
++  const readOnly = groups
++    .flat()
++    .every(([, requirement]) => editingFor(data, requirement) === undefined);
+   return (
+     <RowSection.Provider value={title}>
+       <section aria-label={title} data-read-only={readOnly} className="space-y-3">
+@@ -796,7 +833,19 @@ function LinkScope<E>({
+           <p className="text-xs text-muted-foreground">{data.readOnly}</p>
+         )}
+         <div className="space-y-5">
+-          {open.map(([slot, requirement]) => {
++          {groups.map((group) => {
++            if (group.length > 1)
++              return (
++                <ServiceView
++                  key={group.map(([slot]) => slot).join(" ")}
++                  {...props}
++                  group={group}
++                  title={serviceTitle(group)}
++                  titles={titles}
++                  readOnlyNote={readOnly ? undefined : data.readOnly}
++                />
++              );
++            const [slot, requirement] = group[0]!;
+             const shared = sharedServiceTitle(requirement, titles.get(slot));
+             // The same account can be listed under each requirement of a shared service, so its
+             // row ⋯ names the requirement too, such as "in Your accounts · Mail · Sign in".
+@@ -819,10 +868,10 @@ function LinkScope<E>({
+               </RowSection.Provider>
+             );
+           })}
+-          {closed.length > 0 && (
++          {unavailable.length > 0 && (
+             <UnavailableRequirements
+               app={props.app}
+-              requirements={closed}
++              requirements={unavailable}
+               titles={titles}
+               methods={methods}
+             />
+@@ -894,6 +943,67 @@ const requirementNote = (requirement: AccountRequirement, linked: number) =>
+         ? "The app uses this account for everyone."
+         : "The app uses this account when you use it.";
+ 
++/** The methods a section offers, said only where the host reports a limit or a native API. */
++const methodsSummary = (
++  states: readonly { readonly label: string; readonly reason?: string | undefined }[],
++  native?: string,
++) => {
++  const open = [
++    ...new Set(states.flatMap((state) => (state.reason === undefined ? [state.label] : []))),
++  ];
++  const blocked = states.filter((state) => state.reason !== undefined).length;
++  if (blocked === 0 && native === undefined) return undefined;
++  return (
++    [
++      open.join(", "),
++      blocked > 0 ? `${blocked} more not available yet` : "",
++      native !== undefined ? "Not offered in chat model pickers" : "",
++    ]
++      .filter((part) => part !== "")
++      .join(" · ") || undefined
++  );
++};
++
++/** A section's logo, title and the lines under it. */
++function SectionHeader({
++  app,
++  provider,
++  title,
++  tags,
++  note,
++  methodsLine,
++  readOnlyNote,
++}: {
++  readonly app: App;
++  readonly provider: AccountRequirement["definition"];
++  readonly title: string | undefined;
++  readonly tags?: ReactNode;
++  readonly note: string;
++  readonly methodsLine: string | undefined;
++  readonly readOnlyNote: string | undefined;
++}) {
++  return (
++    <div className="flex min-h-8 min-w-0 items-center gap-3 text-sm [&_.provider-icon]:size-14 [&_.provider-icon]:rounded-lg [&_.provider-icon]:border-0 [&_.provider-icon]:bg-muted/40 [&_.provider-icon>img]:size-8 [&_.provider-icon>svg]:size-8">
++      <AppProviderIcon app={app} provider={provider} large />
++      <div className="min-w-0">
++        {title !== undefined && (
++          <p className="flex min-w-0 items-center gap-2 font-medium">
++            <span className="truncate">{title}</span>
++            {tags}
++          </p>
++        )}
++        <p className="text-pretty text-xs leading-4.5 text-muted-foreground">{note}</p>
++        {methodsLine !== undefined && (
++          <p className="text-pretty text-[11px] leading-4.5 text-muted-foreground">{methodsLine}</p>
++        )}
++        {readOnlyNote !== undefined && (
++          <p className="text-pretty text-xs leading-4.5 text-muted-foreground">{readOnlyNote}</p>
++        )}
++      </div>
++    </div>
++  );
++}
++
+ function RequirementView<E>({
+   slot,
+   requirement,
+@@ -919,63 +1029,43 @@ function RequirementView<E>({
+   const managed = provisionedOnly(requirement);
+   const native = props.methods?.native(slot);
+   const kept = retained(connectionOf(props.connections, slot), data, requirement);
+-  const states = methodStates(props.methods, slot, requirement);
+-  const open = states.filter((state) => state.reason === undefined);
+-  const blocked = states.length - open.length;
+-  // Said only where the host reports a limit, so apps it says nothing about read as before.
+-  const methodsLine =
+-    blocked === 0 && native === undefined
+-      ? undefined
+-      : [
+-          open.map((state) => state.label).join(", "),
+-          blocked > 0 ? `${blocked} more not available yet` : "",
+-          native !== undefined ? "Not offered in chat model pickers" : "",
+-        ]
+-          .filter((part) => part !== "")
+-          .join(" · ") || undefined;
++  const methodsLine = methodsSummary(methodStates(props.methods, slot, requirement), native);
+   return (
+     <section
+       {...(title === undefined ? {} : { "aria-label": title })}
+       className={cn("min-w-0 space-y-2.5", edit === undefined && "opacity-60")}
+     >
+-      <div className="flex min-h-8 min-w-0 items-center gap-3 text-sm [&_.provider-icon]:size-14 [&_.provider-icon]:rounded-lg [&_.provider-icon]:border-0 [&_.provider-icon]:bg-muted/40 [&_.provider-icon>img]:size-8 [&_.provider-icon>svg]:size-8">
+-        <AppProviderIcon app={props.app} provider={requirement.definition} large />
+-        <div className="min-w-0">
+-          {title !== undefined && (
+-            <p className="flex min-w-0 items-center gap-2 font-medium">
+-              <span className="truncate">{title}</span>
+-              {kept && (
+-                <span className="shrink-0 rounded-sm border px-1.5 py-px text-[10px] font-normal text-foreground">
+-                  Retained
+-                </span>
+-              )}
+-              {native !== undefined && (
+-                <span
+-                  className="shrink-0 rounded-sm border px-1.5 py-px text-[10px] font-normal text-foreground"
+-                  title="A native API, not chat"
+-                >
+-                  {native}
+-                </span>
+-              )}
+-            </p>
+-          )}
+-          <p className="text-pretty text-xs leading-4.5 text-muted-foreground">
+-            {managed
+-              ? "Set up automatically"
+-              : kept
+-                ? "Kept from earlier sign-ins in this app. They keep working; new accounts are connected in provider apps."
+-                : requirementNote(requirement, linked.length)}
+-          </p>
+-          {!managed && !kept && methodsLine !== undefined && (
+-            <p className="text-pretty text-[11px] leading-4.5 text-muted-foreground">
+-              {methodsLine}
+-            </p>
+-          )}
+-          {edit === undefined && readOnlyNote !== undefined && (
+-            <p className="text-pretty text-xs leading-4.5 text-muted-foreground">{readOnlyNote}</p>
+-          )}
+-        </div>
+-      </div>
++      <SectionHeader
++        app={props.app}
++        provider={requirement.definition}
++        title={title}
++        tags={
++          <>
++            {kept && (
++              <span className="shrink-0 rounded-sm border px-1.5 py-px text-[10px] font-normal text-foreground">
++                Retained
++              </span>
++            )}
++            {native !== undefined && (
++              <span
++                className="shrink-0 rounded-sm border px-1.5 py-px text-[10px] font-normal text-foreground"
++                title="A native API, not chat"
++              >
++                {native}
++              </span>
++            )}
++          </>
++        }
++        note={
++          managed
++            ? "Set up automatically"
++            : kept
++              ? "Kept from earlier sign-ins in this app. They keep working; new accounts are connected in provider apps."
++              : requirementNote(requirement, linked.length)
++        }
++        methodsLine={managed || kept ? undefined : methodsLine}
++        readOnlyNote={edit === undefined ? readOnlyNote : undefined}
++      />
+       <div className="overflow-hidden rounded-lg border">
+         {data.edit !== undefined && managed && linked.length === 0 ? (
+           <MissingHostAccount edit={data.edit} slot={slot} Failure={props.Failure} />
+@@ -1015,6 +1105,231 @@ function RequirementView<E>({
+   );
+ }
+ 
++/**
++ * Several requirements of one service as one section: one header, every account once under the
++ * requirement it belongs to, and one connect control offering every method the service has.
++ */
++function ServiceView<E>({
++  group,
++  title,
++  titles,
++  readOnlyNote,
++  ...props
++}: ScopeProps<E> & {
++  readonly group: readonly RequirementEntry[];
++  readonly title: string;
++  /** Each requirement's own title, which names its login-file import. */
++  readonly titles: ReadonlyMap<string, string>;
++  readonly readOnlyNote?: string | undefined;
++}) {
++  const { data } = props;
++  const [, first] = group[0]!;
++  // Grouping requires the same scope and contribution policy, so one requirement's answer holds.
++  const edit = editingFor(data, first);
++  const linkedTo = (slot: string) =>
++    data.links.flatMap((link) => (link.requirement === slot ? [link.account] : []));
++  const linked = group.reduce((count, [slot]) => count + linkedTo(slot).length, 0);
++  const methodsLine = methodsSummary(
++    group.flatMap(([slot, requirement]) => methodStates(props.methods, slot, requirement)),
++  );
++  const limit = (slot: string) => (method: string) =>
++    [servicePart(group, slot), toolLimits(props.toolSections, group, slot, method)]
++      .filter((part) => part !== undefined)
++      .join(" · ") || undefined;
++  return (
++    <section
++      aria-label={title}
++      className={cn("min-w-0 space-y-2.5", edit === undefined && "opacity-60")}
++    >
++      <SectionHeader
++        app={props.app}
++        provider={first.definition}
++        title={title}
++        note={requirementNote(first, linked)}
++        methodsLine={methodsLine}
++        readOnlyNote={edit === undefined ? readOnlyNote : undefined}
++      />
++      <div
++        role="group"
++        aria-label={`${title} accounts`}
++        className="divide-y divide-border/50 overflow-hidden rounded-lg border"
++      >
++        {edit === undefined ? (
++          linked === 0 ? (
++            <p className="px-3.5 py-2.5 text-[13px] text-muted-foreground">No account linked</p>
++          ) : (
++            group.map(([slot, requirement]) =>
++              linkedTo(slot).length === 0 ? null : (
++                <ReadOnlyChoices
++                  key={slot}
++                  {...props}
++                  data={{
++                    links: data.links,
++                    viewer: data.viewer,
++                    accountRow: data.accountRow,
++                    accountTraffic: data.accountTraffic,
++                  }}
++                  slot={slot}
++                  requirement={requirement}
++                  title={undefined}
++                  linked={linkedTo(slot)}
++                  limit={limit(slot)}
++                />
++              ),
++            )
++          )
++        ) : (
++          <>
++            {group.map(([slot, requirement]) => (
++              <EditableChoices
++                key={slot}
++                {...props}
++                edit={edit}
++                slot={slot}
++                requirement={requirement}
++                title={undefined}
++                shared={undefined}
++                importTitle={titles.get(slot)}
++                linked={linkedTo(slot)}
++                connectControl={false}
++                limit={limit(slot)}
++              />
++            ))}
++            <ServiceConnect {...props} group={group} edit={edit} title={title} />
++          </>
++        )}
++      </div>
++    </section>
++  );
++}
++
++/**
++ * The one "Connect new account" of a service section. With one method it connects at once; with
++ * several it opens a menu of the service's methods, each opening the connect dialog at its own
++ * requirement, so a picked method still links where the app's tools read it.
++ */
++function ServiceConnect<E>({
++  group,
++  edit,
++  title,
++  methods,
++  connections,
++}: ScopeProps<E> & {
++  readonly group: readonly RequirementEntry[];
++  readonly edit: LinkEditing<E>;
++  readonly title: string;
++}) {
++  // While the host's policy loads nothing offers a connection, as in a single requirement.
++  if (group.some(([slot]) => connectionOf(connections, slot) === "pending")) return null;
++  const states = group.flatMap(([slot, requirement]) =>
++    methodStates(methods, slot, requirement).map((state) => ({ ...state, slot, requirement })),
++  );
++  const entries = serviceMethods(
++    states.flatMap((state) =>
++      state.reason === undefined
++        ? [
++            {
++              slot: state.slot,
++              requirement: state.requirement,
++              method: state.name,
++              label: state.label,
++            },
++          ]
++        : [],
++    ),
++  );
++  // With no method the host can connect, the footer says why instead of offering a dead end.
++  if (entries.length === 0)
++    return (
++      <p className="px-3.5 py-2.5 text-[13px] text-muted-foreground" data-connect-unavailable>
++        {[
++          ...new Set(states.flatMap((state) => (state.reason === undefined ? [] : [state.reason]))),
++        ].join(" ")}
++      </p>
++    );
++  const connect = (entry: ServiceMethod) =>
++    edit.connect(entry.slot, entry.requirement, title, entry.method);
++  if (entries.length === 1)
++    return <SingleServiceConnect entry={entries[0]!} edit={edit} onConnect={connect} />;
++  return (
++    <DropdownMenu>
++      <DropdownMenuTrigger asChild>
++        <ConnectNewAccount disabled={edit.connecting === true} menu />
++      </DropdownMenuTrigger>
++      <DropdownMenuContent align="start" className="min-w-56">
++        {entries.map((entry) => (
++          <ServiceMethodItem
++            key={`${entry.slot}:${entry.method}`}
++            entry={entry}
++            edit={edit}
++            onConnect={connect}
++          />
++        ))}
++      </DropdownMenuContent>
++    </DropdownMenu>
++  );
++}
++
++/** The footer button every section ends with; a service's opens its menu of methods. */
++function ConnectNewAccount({
++  menu = false,
++  ...props
++}: ComponentProps<typeof Button> & { readonly menu?: boolean }) {
++  return (
++    <Button
++      variant="ghost"
++      size="sm"
++      className="h-10 w-full justify-start rounded-none px-3.5 text-[13px] text-muted-foreground hover:text-foreground"
++      {...props}
++    >
++      <HugeiconsIcon icon={Add01Icon} size={14} aria-hidden />
++      Connect new account
++      {menu && <HugeiconsIcon icon={ArrowDown01Icon} size={12} strokeWidth={2} aria-hidden />}
++    </Button>
++  );
++}
++
++/** Whether the host lets the caller add accounts to one requirement; refused only once it says so. */
++const useCanAdd = <E,>(edit: LinkEditing<E>, slot: string) => {
++  const { data } = useQuery(edit.choices(slot));
++  return Option.isNone(data) || data.value.canContribute !== false;
++};
++
++function SingleServiceConnect<E>({
++  entry,
++  edit,
++  onConnect,
++}: {
++  readonly entry: ServiceMethod;
++  readonly edit: LinkEditing<E>;
++  readonly onConnect: (entry: ServiceMethod) => void;
++}) {
++  const allowed = useCanAdd(edit, entry.slot);
++  return (
++    <ConnectNewAccount
++      disabled={edit.connecting === true || !allowed}
++      onClick={() => onConnect(entry)}
++    />
++  );
++}
++
++function ServiceMethodItem<E>({
++  entry,
++  edit,
++  onConnect,
++}: {
++  readonly entry: ServiceMethod;
++  readonly edit: LinkEditing<E>;
++  readonly onConnect: (entry: ServiceMethod) => void;
++}) {
++  const allowed = useCanAdd(edit, entry.slot);
++  return (
++    <DropdownMenuItem disabled={!allowed} onSelect={() => onConnect(entry)}>
++      {entry.label}
++    </DropdownMenuItem>
++  );
++}
++
+ // The line is a grid; usage under it starts where the name does: choice, gap, logo, gap.
+ const rowClass = "group/account min-w-0 px-3.5 py-1.5 transition-colors";
+ const lineClass = (requests: boolean) => cn(accountRowGrid(true, requests), "min-h-9 gap-y-1.5");
+@@ -1053,6 +1368,11 @@ function AccountRowIdentity({
+   );
+ }
+ 
++/** Which part of its service a row's account serves, and the tools it can't run. */
++function ToolLimit({ text }: { readonly text?: string | undefined }) {
++  return text === undefined ? null : <p className="text-xs text-muted-foreground">{text}</p>;
++}
++
+ /** Who contributed the link, in the row's last column. */
+ function AddedBy({ credit }: { readonly credit?: string | undefined }) {
+   return (
+@@ -1094,11 +1414,14 @@ function ReadOnlyChoices<E>({
+   title,
+   linked,
+   data,
++  limit,
+ }: ScopeProps<E> & {
+   readonly slot: string;
+   readonly requirement: AccountRequirement;
+   readonly title: string | undefined;
+   readonly linked: readonly AccountSummary[];
++  /** What an account of this method can't run, where its section holds other requirements. */
++  readonly limit?: ((method: string) => string | undefined) | undefined;
+ }) {
+   const section = useContext(RowSection);
+   const plain = requirement.cardinality === "one";
+@@ -1177,6 +1500,7 @@ function ReadOnlyChoices<E>({
+               )}
+             </AccountRowMenu>
+             <div className={bandClass}>
++              <ToolLimit text={limit?.(account.method)} />
+               <AccountStatusNotes app={app} account={account} />
+               {account.description && (
+                 <AccountRowDetails inline={false}>
+@@ -1261,6 +1585,9 @@ function EditableChoices<E>({
+   methods,
+   connections,
+   Failure,
++  connectControl = true,
++  importTitle,
++  limit,
+ }: ScopeProps<E> & {
+   readonly edit: LinkEditing<E>;
+   readonly slot: string;
+@@ -1269,6 +1596,12 @@ function EditableChoices<E>({
+   /** The requirement's title when another requirement in its scope shares its service. */
+   readonly shared: string | undefined;
+   readonly linked: readonly AccountSummary[];
++  /** False inside a service section, whose one connect control offers every requirement. */
++  readonly connectControl?: boolean | undefined;
++  /** The requirement's own title for its login-file import inside a service section. */
++  readonly importTitle?: string | undefined;
++  /** What an account of this method can't run, where its section holds other requirements. */
++  readonly limit?: ((method: string) => string | undefined) | undefined;
+ }) {
+   const brand = useProductBrand();
+   const { result, data: loaded, refresh } = useQuery(edit.choices(slot));
+@@ -1363,6 +1696,7 @@ function EditableChoices<E>({
+       saved={accounts.some((item) => item.id === choice.account.id)}
+       selectionOnly={selectionOnly(connection)}
+       shared={shared}
++      limit={limit?.(choice.account.method)}
+       Failure={Failure}
+     />
+   ));
+@@ -1385,7 +1719,7 @@ function EditableChoices<E>({
+     </ul>
+   );
+   return (
+-    <div className="divide-y divide-border/50">
++    <div className="divide-y divide-border/50 empty:hidden">
+       {AsyncResult.isFailure(result) && (
+         <div className="px-3.5 py-2.5 text-xs">
+           <Failure cause={result.cause} retry={refresh} retrying={result.waiting} />
+@@ -1405,7 +1739,7 @@ function EditableChoices<E>({
+         ) : (
+           list
+         ))}
+-      {provisionedOnly(requirement) ? (
++      {!connectControl ? null : provisionedOnly(requirement) ? (
+         <p className="px-3.5 py-2.5 text-[13px] text-muted-foreground">Set up automatically</p>
+       ) : connection === "pending" ? null : selectionOnly(connection) ? (
+         // Accounts for this requirement are connected and repaired in their provider's app.
+@@ -1425,19 +1759,13 @@ function EditableChoices<E>({
+           {closedReasons.join(" ")}
+         </p>
+       ) : (
+-        <Button
+-          variant="ghost"
+-          size="sm"
+-          className="h-10 w-full justify-start rounded-none px-3.5 text-[13px] text-muted-foreground hover:text-foreground"
++        <ConnectNewAccount
+           disabled={edit.connecting === true || (Option.isSome(loaded) && !allowed)}
+           onClick={() =>
+             bound === undefined ? edit.connect(slot, requirement, title) : setReplacingWithNew(true)
+           }
+           {...(shared === undefined ? {} : { "aria-label": `Connect new account for ${shared}` })}
+-        >
+-          <HugeiconsIcon icon={Add01Icon} size={14} aria-hidden />
+-          Connect new account
+-        </Button>
++        />
+       )}
+       {typeof connection === "object" &&
+         connection.canConnect &&
+@@ -1449,9 +1777,16 @@ function EditableChoices<E>({
+               size="sm"
+               disabled={edit.connecting === true || !allowed}
+               onClick={() =>
+-                edit.importLoginFile?.(slot, requirement, connection.importMethods, shared)
++                edit.importLoginFile?.(
++                  slot,
++                  requirement,
++                  connection.importMethods,
++                  shared ?? importTitle,
++                )
+               }
+-              {...(shared === undefined ? {} : { "aria-label": `Import login file for ${shared}` })}
++              {...(shared === undefined && importTitle === undefined
++                ? {}
++                : { "aria-label": `Import login file for ${shared ?? importTitle}` })}
+             >
+               Import login file
+             </Button>
+@@ -1491,9 +1826,12 @@ function ChoiceRow<E>({
+   selectionOnly: selecting,
+   saved,
+   shared,
++  limit,
+ }: {
+   /** The requirement's title when another requirement in its scope shares its service. */
+   readonly shared: string | undefined;
++  /** What this account can't run, where its section holds other requirements of its service. */
++  readonly limit?: string | undefined;
+   /** The account is one of the caller's own, which stays listed after unlinking. */
+   readonly saved: boolean;
+   /** The host's provenance for this account here, when it reports one. */
+@@ -1655,6 +1993,7 @@ function ChoiceRow<E>({
+                 {blockedReason}
+               </p>
+             )}
++            <ToolLimit text={limit} />
+             <AccountStatusNotes app={app} account={account} />
+             {account.description && (
+               <AccountRowDetails inline={false}>
+diff --git a/packages/ui/src/implementation/dashboard/name-account.tsx b/packages/ui/src/implementation/dashboard/name-account.tsx
+--- a/packages/ui/src/implementation/dashboard/name-account.tsx
++++ b/packages/ui/src/implementation/dashboard/name-account.tsx
+@@ -136,7 +136,11 @@ export function NameAccountForm<E>({
+   const offered = identity?.resolving === false ? identity.name?.slice(0, 120) : undefined;
+   const [suggestion, setSuggestion] = useState<string>();
+   if (suggestion === undefined && offered !== undefined) setSuggestion(offered);
+-  const label = draft ?? authored ?? suggestion ?? offered ?? "";
++  // The name the account gets anyway, such as "Clerk secret key", so the field never starts blank.
++  // A sign-in's check can then report who it signed in as, which replaces it until someone types.
++  const prefilled =
++    provider === undefined ? undefined : providerAccountTitle(account, provider.definition);
++  const label = draft ?? authored ?? suggestion ?? offered ?? prefilled ?? "";
+   const waiting = identity?.resolving && label.trim() === "";
+   const status = identity?.resolving
+     ? "Checking account…"
+@@ -158,8 +162,11 @@ export function NameAccountForm<E>({
+         const next = label.trim();
+         if (pending || waiting) return;
+         const described = accountDescriptionValue(description);
++        // An untouched default stays generated, so a later check can still name the account.
++        const kept =
++          next === "" || next === account.label || (draft === undefined && next === prefilled);
+         const changes = {
+-          ...(next === "" || next === account.label ? {} : { label: next }),
++          ...(kept ? {} : { label: next }),
+           ...(described === null ? {} : { description: described }),
+         };
+         if (Object.keys(changes).length === 0) return onDone();
+diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+--- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+@@ -266,10 +266,13 @@ export function AppAccounts({
+       requirementChoicesAtom({ organization, app: app.id, scope, requirement: slot }),
+     link: (slot, account) => linkAccountAtom({ ...target(scope), requirement: slot, account }),
+     unlink: (slot, account) => unlinkAccountAtom({ ...target(scope), requirement: slot, account }),
+-    connect: (slot, requirement, title) => {
++    connect: (slot, requirement, title, method) => {
+       if (connectionDisabled || !connectsHere(slot)) return;
++      // A method picked from a service's connect menu opens as picked while the host can run it.
+       const preferred = methodsOf(requirement).find(
+-        ([method]) => methods?.unavailable(slot, method) === undefined,
++        ([name]) =>
++          (method === undefined || name === method) &&
++          methods?.unavailable(slot, name) === undefined,
+       );
+       if (preferred !== undefined)
+         setConnection({ scope, slot, requirement, method: preferred[0], title });
+@@ -462,6 +465,7 @@ export function AppAccounts({
+         accounts={accounts}
+         methods={methods}
+         connections={connections}
++        toolSections={catalogEntry?.toolSections}
+         Failure={HostedFailure}
+         appAccounts={scopeAccounts(
+           "app",
+diff --git a/apps/local/web/src/implementation/pages/app-accounts.tsx b/apps/local/web/src/implementation/pages/app-accounts.tsx
+--- a/apps/local/web/src/implementation/pages/app-accounts.tsx
++++ b/apps/local/web/src/implementation/pages/app-accounts.tsx
+@@ -61,7 +61,7 @@ export function AppAccounts({
+   /** Every saved account. */
+   readonly accounts: readonly AccountSummary[];
+ }) {
+-  const { guidance } = useCatalogConnectionMetadata(app.id);
++  const { guidance, toolSections } = useCatalogConnectionMetadata(app.id);
+   const registry = useContext(RegistryContext);
+   const revalidate = (account: AccountId) => {
+     const check = checkAccountAtom(account);
+@@ -79,8 +79,10 @@ export function AppAccounts({
+     readonly scope: AccountScope;
+     readonly slot: string;
+     readonly requirement: AccountRequirement;
+-    /** The requirement's title on the tab, which the dialog names. */
++    /** What the tab calls the requirement or its service's section, which the dialog names. */
+     readonly title: string | undefined;
++    /** The method picked from a service's connect menu; the form's first method otherwise. */
++    readonly method?: string | undefined;
+   }>();
+   const [connecting, setConnecting] = useState(false);
+   // Credentials are replaced here, where the app shows which hosts receive them.
+@@ -113,7 +115,8 @@ export function AppAccounts({
+       link: (slot, account) => linkAccountAtom({ ...target(scope), requirement: slot, account }),
+       unlink: (slot, account) =>
+         unlinkAccountAtom({ ...target(scope), requirement: slot, account }),
+-      connect: (slot, requirement, title) => setConnection({ scope, slot, requirement, title }),
++      connect: (slot, requirement, title, method) =>
++        setConnection({ scope, slot, requirement, title, method }),
+       connecting,
+       onUnlinked: (account) => void unused.check(account),
+     },
+@@ -148,6 +151,7 @@ export function AppAccounts({
+       <SharedAccounts
+         app={app}
+         accounts={accounts}
++        toolSections={toolSections}
+         Failure={Failure}
+         appAccounts={scopeAccounts("app", appLinks)}
+         yourAccounts={scopeAccounts("user", userLinks)}
+@@ -181,6 +185,7 @@ export function AppAccounts({
+                 definition: connection.requirement.definition,
+               }}
+               checkWith={connection.requirement.health === true}
++              initialMethod={connection.method}
+               onPendingChange={setConnecting}
+               onSaved={() => setConnection(undefined)}
+             />
+diff --git a/apps/local/web/src/implementation/pages/catalog-connection-guidance.ts b/apps/local/web/src/implementation/pages/catalog-connection-guidance.ts
+--- a/apps/local/web/src/implementation/pages/catalog-connection-guidance.ts
++++ b/apps/local/web/src/implementation/pages/catalog-connection-guidance.ts
+@@ -11,15 +11,14 @@ export function useCatalogConnectionMetadata(id: AppId) {
+   const catalog = useQuery(catalogAtom);
+   const app = Option.getOrUndefined(overview.data)?.apps.find((entry) => entry.id === id);
+   const copiedFrom = app?.copiedFrom?.name;
+-  const guidance = Option.getOrUndefined(catalog.data)?.find(
+-    (entry) => entry.package === copiedFrom,
+-  )?.connectionGuidance;
++  const entry = Option.getOrUndefined(catalog.data)?.find((entry) => entry.package === copiedFrom);
++  const guidance = entry?.connectionGuidance;
+   const waiting =
+     AsyncResult.isInitial(overview.result) ||
+     overview.result.waiting ||
+     AsyncResult.isInitial(catalog.result) ||
+     catalog.result.waiting;
+-  return { app, guidance, waiting };
++  return { app, guidance, toolSections: entry?.toolSections, waiting };
+ }
+ 
+ export function useCatalogConnectionGuidance(app: AppId, requirement: string) {
+diff --git a/e2e/support/name-account.ts b/e2e/support/name-account.ts
+--- a/e2e/support/name-account.ts
++++ b/e2e/support/name-account.ts
+@@ -8,16 +8,36 @@ import type { Page } from "playwright";
+ export const nameAccountDialog = (page: Page) =>
+   page.getByRole("dialog", { name: "Name this account", exact: true });
+ 
+-/** The dialog's name field, prefilled with the name the server saved. */
++/** The dialog's name field, prefilled with the name the account would get anyway. */
+ export const accountNameField = (page: Page) =>
+   nameAccountDialog(page).getByRole("textbox", { name: "Account name", exact: true });
+ 
++/**
++ * The name the prompt offers once it settles on `expected`. The field starts with the title the
++ * account gets anyway, and a sign-in's check or the provider's details can still fill it in after
++ * the prompt opens. A timeout falls through so the assertion reports the name actually offered.
++ */
++export const offeredAccountName = (page: Page, expected: string) =>
++  accountNameField(page)
++    .elementHandle()
++    .then((field) =>
++      page.waitForFunction(
++        (args) => (args.field as HTMLInputElement | null)?.value === args.expected,
++        { field, expected },
++      ),
++    )
++    .catch((error: unknown) => {
++      if (!(error instanceof Error && error.name === "TimeoutError")) throw error;
++    })
++    .then(() => accountNameField(page).inputValue());
++
+ /** Wait until the prompt has loaded the connected account and offers its saved name. */
+ export const accountNamePrompt = (page: Page) =>
+   accountNameField(page).waitFor({ state: "visible" });
+ 
+ /**
+- * Save a typed or suggested name. Closing an empty prompt keeps the generated saved label.
++ * Save a typed or offered name. Saving the untouched default, like closing an empty prompt, keeps
++ * the generated saved label.
+  */
+ export const nameConnectedAccount = (page: Page, label?: string) =>
+   accountNamePrompt(page)
+diff --git a/e2e/support/name-account-identity.ts b/e2e/support/name-account-identity.ts
+--- a/e2e/support/name-account-identity.ts
++++ b/e2e/support/name-account-identity.ts
+@@ -144,10 +144,12 @@ export const nameAccountIdentityJourney = (width: number) =>
+     yield* waitForEmail;
+     yield* capture("settled");
+     yield* evidence.json("initial-name-states.json", { pending, settled: yield* state });
+-    expect(pending.value, "a generated saved label never prefills the pending name").toBe("");
++    // The pending name offers the title the account gets anyway, never its generated label, and
++    // saving it keeps that label, so it need not wait for the check.
++    expect(pending.value).toBe("OpenAI Subscription");
+     expect(pending.placeholder).toBe("OpenAI Subscription");
+     expect(pending.statuses).toEqual(["Checking account…"]);
+-    expect(pending.disabled).toBe(true);
++    expect(pending.disabled).toBe(false);
+     expect((yield* state).statuses).toEqual([]);
+     yield* dismiss;
+ 
+@@ -161,7 +163,8 @@ export const nameAccountIdentityJourney = (width: number) =>
+     );
+     yield* failure;
+     yield* capture("failed");
+-    expect((yield* state).value).toBe("");
++    // The second subscription connected here is saved as "Default 2", so its title numbers it.
++    expect((yield* state).value).toBe("OpenAI Subscription 2");
+     expect((yield* state).disabled).toBe(false);
+     expect(
+       yield* browser.use("A failed check leaves the name editable", (page) =>
+@@ -175,7 +178,7 @@ export const nameAccountIdentityJourney = (width: number) =>
+     );
+     yield* retry.started;
+     expect((yield* state).statuses).toEqual(["Checking account…"]);
+-    expect((yield* state).value).toBe("");
++    expect((yield* state).value).toBe("OpenAI Subscription 2");
+     yield* retry.release;
+     yield* waitForEmail;
+     yield* capture("retried");
+diff --git a/e2e/support/name-account-no-email.ts b/e2e/support/name-account-no-email.ts
+--- a/e2e/support/name-account-no-email.ts
++++ b/e2e/support/name-account-no-email.ts
+@@ -187,7 +187,7 @@ export const nameAccountNoEmailJourney = (
+       return Promise.all([field.inputValue(), field.getAttribute("placeholder")]);
+     });
+     yield* evidence.json("no-email-name-states.json", { workspace, naming, rename });
+-    expect(naming[0]).toBe(workspace ? "Design workspace" : "");
++    expect(naming[0]).toBe(workspace ? "Design workspace" : "OpenAI Subscription");
+     expect(naming[2]).toEqual([]);
+     expect(naming[3]).toBe(0);
+     expect(naming[4]).toBe(false);
+diff --git a/apps/docs/content/connect-an-account.mdx b/apps/docs/content/connect-an-account.mdx
+--- a/apps/docs/content/connect-an-account.mdx
++++ b/apps/docs/content/connect-an-account.mdx
+@@ -16,7 +16,8 @@ There are two kinds of credential, and the provider decides which it accepts:
+ ## From the dashboard
+ 
+ Every account is connected for an app. Choose **Connect new account** at the end of a provider's list on the app's
+-**Accounts** tab, then choose **Connect** to start browser sign-in. If the provider
++**Accounts** tab. When the service offers several ways to connect, such as signing in or an API key, pick one from
++the menu that opens. Then choose **Connect** to start browser sign-in. If the provider
+ needs credentials, enter them in the same dialog. The connection dialog contains the
+ sign-in methods supported by the provider.
+ 
+diff --git a/e2e/tests/account-connection-query.spec.ts b/e2e/tests/account-connection-query.spec.ts
+--- a/e2e/tests/account-connection-query.spec.ts
++++ b/e2e/tests/account-connection-query.spec.ts
+@@ -10,6 +10,7 @@ import { Evidence } from "../support/evidence.ts";
+ import {
+   accountNameField,
+   accountNamePrompt,
++  offeredAccountName,
+   nameAccountDialog,
+   nameConnectedAccount,
+ } from "../support/name-account.ts";
+@@ -192,10 +193,10 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
+             ),
+         );
+         expect(
+-          yield* browser.use("A generated saved label leaves the naming input empty", (page) =>
+-            accountNameField(page).inputValue(),
++          yield* browser.use("The naming input offers the title the account gets anyway", (page) =>
++            offeredAccountName(page, "Connection fixture account"),
+           ),
+-        ).toBe("");
++        ).toBe("Connection fixture account");
+         // Saving the connection linked the account to the app, once.
+         expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`)).toEqual([
+           account,
+diff --git a/e2e/tests/account-naming.spec.ts b/e2e/tests/account-naming.spec.ts
+--- a/e2e/tests/account-naming.spec.ts
++++ b/e2e/tests/account-naming.spec.ts
+@@ -8,8 +8,8 @@ import { Browser } from "../support/browser.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { App, Resource } from "../support/contracts.ts";
+ import {
+-  accountNameField,
+   accountNamePrompt,
++  offeredAccountName,
+   nameAccountDialog,
+   nameConnectedAccount,
+ } from "../support/name-account.ts";
+@@ -197,10 +197,11 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
+                   })
+                   .waitFor({ state: "visible" }),
+               )
+-              .then(() => accountNameField(page).inputValue())
++              .then(() => offeredAccountName(page, "Naming fixture account"))
+               .then((name) => ({ name, url: new URL(page.url()) })),
+         );
+-        expect(prompt.name).toBe("");
++        // The field starts with the title the account gets anyway, never a generated "Default".
++        expect(prompt.name).toBe("Naming fixture account");
+         expect(prompt.url.pathname).toBe(`/org/${actors.organization.slug}/apps/${app.id}`);
+         expect(prompt.url.searchParams.get("view")).toBe("accounts");
+         expect(prompt.url.searchParams.has("rename")).toBe(false);
+diff --git a/e2e/tests/local-account-naming.spec.ts b/e2e/tests/local-account-naming.spec.ts
+--- a/e2e/tests/local-account-naming.spec.ts
++++ b/e2e/tests/local-account-naming.spec.ts
+@@ -7,8 +7,8 @@ import { Api, body, type Session } from "../support/api.ts";
+ import { Browser } from "../support/browser.ts";
+ import { TestLive, withCase } from "../support/case.ts";
+ import {
+-  accountNameField,
+   accountNamePrompt,
++  offeredAccountName,
+   nameAccountDialog,
+   nameConnectedAccount,
+ } from "../support/name-account.ts";
+@@ -228,10 +228,10 @@ export default defineApp({ user: { accounts: { service: service.many() } } }, as
+             ),
+         );
+         expect(
+-          yield* browser.use("The generated saved label leaves the name empty", (page) =>
+-            accountNameField(page).inputValue(),
++          yield* browser.use("The name offers the title the account gets anyway", (page) =>
++            offeredAccountName(page, "Local naming fixture account 3"),
+           ),
+-        ).toBe("");
++        ).toBe("Local naming fixture account 3");
+         yield* browser.checkpoint("Name the account over the app's accounts");
+         yield* browser.use("Save the dialog account's name", (page) =>
+           nameConnectedAccount(page, "Dialog key"),
+@@ -476,12 +476,14 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
+                 .waitFor({ state: "visible" }),
+             )
+             .then(() =>
+-              accountNameField(page)
+-                .inputValue()
+-                .then((name) => ({ name, url: new URL(page.url()) })),
++              offeredAccountName(page, "Sample service OAuth").then((name) => ({
++                name,
++                url: new URL(page.url()),
++              })),
+             ),
+         );
+-        expect(returned.name).toBe("");
++        // A sign-in without a reported identity offers its kind once its check settles.
++        expect(returned.name).toBe("Sample service OAuth");
+         // The return names only the app's accounts view and carries no other state.
+         expect([...returned.url.searchParams.keys()]).toEqual(["view"]);
+         yield* browser.checkpoint("Name a local OAuth account after sign-in returns");
+diff --git a/e2e/tests/oauth-connect-storyboard.spec.ts b/e2e/tests/oauth-connect-storyboard.spec.ts
+--- a/e2e/tests/oauth-connect-storyboard.spec.ts
++++ b/e2e/tests/oauth-connect-storyboard.spec.ts
+@@ -12,8 +12,8 @@ import { Target } from "../support/platform.ts";
+ import { holdQuery } from "../support/query-transition.ts";
+ import { oauthRecoveryIssuer, recoveryClients } from "../support/oauth-recovery-issuer.ts";
+ import {
+-  accountNameField,
+   accountNamePrompt,
++  offeredAccountName,
+   dismissAccountName,
+   nameAccountDialog,
+   nameConnectedAccount,
+@@ -375,10 +375,11 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+         yield* heading("Name this account");
+         expect(
+           yield* browser.use(
+-            "The connected account asks for a name without showing its generated label",
+-            (page) => accountNamePrompt(page).then(() => accountNameField(page).inputValue()),
++            "The connected account offers its title, never its generated label",
++            (page) =>
++              accountNamePrompt(page).then(() => offeredAccountName(page, "Sample service OAuth")),
+           ),
+-        ).toBe("");
++        ).toBe("Sample service OAuth");
+         yield* capture("Name-connected-account");
+         yield* browser.use("Name the connected account", (page) =>
+           nameConnectedAccount(page, "Work reports"),
+@@ -688,9 +689,9 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
+             expect(search.has("rename")).toBe(false);
+             return account;
+           });
+-        const prefilled = () =>
++        const prefilled = (expected: string) =>
+           browser.use("Read the prefilled account name", (page) =>
+-            accountNameField(page).inputValue(),
++            offeredAccountName(page, expected),
+           );
+         const dismissed = () =>
+           browser.use("The naming dialog leaves the app's accounts in place", (page) =>
+@@ -705,7 +706,8 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
+         );
+ 
+         const first = yield* connect();
+-        expect(yield* prefilled()).toBe("");
++        // The field offers the title a generated label shows, never the label itself.
++        expect(yield* prefilled("Sample service OAuth")).toBe("Sample service OAuth");
+         yield* browser.checkpoint("Name a new OAuth account");
+         yield* browser.use("Close the dialog without saving", (page) => dismissAccountName(page));
+         const afterClose = yield* dismissed();
+@@ -721,7 +723,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
+ 
+         const second = yield* connect();
+         expect(second).not.toBe(first);
+-        expect(yield* prefilled()).toBe("");
++        expect(yield* prefilled("Sample service OAuth 2")).toBe("Sample service OAuth 2");
+         yield* browser.use("Name the second account", (page) =>
+           nameConnectedAccount(page, "Work reports"),
+         );
+diff --git a/e2e/tests/oauth-client-credentials.spec.ts b/e2e/tests/oauth-client-credentials.spec.ts
+--- a/e2e/tests/oauth-client-credentials.spec.ts
++++ b/e2e/tests/oauth-client-credentials.spec.ts
+@@ -13,8 +13,8 @@ import { scenarios } from "../test-plan.ts";
+ import { Browser } from "../support/browser.ts";
+ import { managementApp } from "../support/management-app.ts";
+ import {
+-  accountNameField,
+   accountNamePrompt,
++  offeredAccountName,
+   nameConnectedAccount,
+ } from "../support/name-account.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+@@ -151,12 +151,13 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+             .waitFor({ state: "hidden" })
+             .then(() => accountNamePrompt(page))
+             .then(() =>
+-              accountNameField(page)
+-                .inputValue()
+-                .then((name) => ({ name, url: new URL(page.url()) })),
++              offeredAccountName(page, "Reporting OAuth").then((name) => ({
++                name,
++                url: new URL(page.url()),
++              })),
+             ),
+         );
+-        expect(prompt.name).toBe("");
++        expect(prompt.name).toBe("Reporting OAuth");
+         expect(prompt.url.pathname).toBe(`/org/${actors.organization.slug}/apps/${app.id}`);
+         expect(prompt.url.searchParams.has("rename")).toBe(false);
+         yield* browser.checkpoint("Machine account asks for a name");
+diff --git a/packages/ui/src/implementation/dashboard/service-groups.ts b/packages/ui/src/implementation/dashboard/service-groups.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/service-groups.ts
+@@ -0,0 +1,127 @@
++/**
++ * Which of one scope's account requirements an app's Accounts tab shows as one service. Apps often
++ * declare a service twice, such as a new sign-in beside a legacy token, or "Neon" beside "Neon
++ * MCP", because a provider's declaration is its saved accounts' identity and can't change. A person
++ * connects the service once, so those requirements share one section and one connect menu.
++ */
++import type { AccountRequirement } from "@executor-js/sdk";
++import type { CatalogToolSection } from "@executor-js/catalog/contracts";
++
++type RequirementEntry = readonly [string, AccountRequirement];
++
++/** The service a requirement names: equal names, or one name opening another ("AWS IAM …"). */
++const sameService = (service: string, name: string) =>
++  name === service || name.startsWith(`${service} `);
++
++/**
++ * The scope's requirements in declaration order, each group one service. Only `mergeable`
++ * requirements join others, and only as a group whose requirements all list many accounts from
++ * different providers. Each account then belongs to exactly one requirement, so a row links and
++ * unlinks its own requirement as before and no account is listed twice. Requirements that share a
++ * provider are roles of one service, such as a primary and a backup mailbox, and stay apart, as do
++ * requirements whose links different people may change.
++ */
++export const serviceGroups = (
++  requirements: readonly RequirementEntry[],
++  mergeable: (entry: RequirementEntry) => boolean,
++): readonly (readonly RequirementEntry[])[] => {
++  const name = ([, requirement]: RequirementEntry) => requirement.definition.name.trim();
++  const candidates = requirements.filter((entry) => name(entry) !== "" && mergeable(entry));
++  // The shortest name that opens this one names the service, so "AWS" gathers "AWS IAM …".
++  const serviceOf = (entry: RequirementEntry) =>
++    candidates
++      .map(name)
++      .filter((service) => sameService(service, name(entry)))
++      .reduce((shortest, service) => (service.length < shortest.length ? service : shortest));
++  const byService = new Map<string, RequirementEntry[]>();
++  for (const entry of candidates) {
++    const service = serviceOf(entry);
++    byService.set(service, [...(byService.get(service) ?? []), entry]);
++  }
++  const valid = (group: readonly RequirementEntry[]) =>
++    group.length > 1 &&
++    group.every(
++      ([, requirement]) =>
++        requirement.cardinality === "many" &&
++        requirement.scope === group[0]![1].scope &&
++        requirement.contributed === group[0]![1].contributed,
++    ) &&
++    new Set(group.map(([, requirement]) => requirement.provider)).size === group.length;
++  const groupOf = new Map<RequirementEntry, readonly RequirementEntry[]>();
++  for (const group of byService.values())
++    if (valid(group)) for (const entry of group) groupOf.set(entry, group);
++  const seen = new Set<readonly RequirementEntry[]>();
++  return requirements.flatMap((entry) => {
++    const group = groupOf.get(entry);
++    if (group === undefined) return [[entry]];
++    if (seen.has(group)) return [];
++    seen.add(group);
++    return [group];
++  });
++};
++
++/** A group's title: the service name every requirement in it opens with. */
++export const serviceTitle = (group: readonly RequirementEntry[]) =>
++  group
++    .map(([, requirement]) => requirement.definition.name.trim())
++    .reduce((shortest, name) => (name.length < shortest.length ? name : shortest));
++
++/** One entry of a service's connect menu: the requirement and method a pick opens. */
++export interface ServiceMethod {
++  readonly slot: string;
++  readonly requirement: AccountRequirement;
++  readonly method: string;
++  readonly label: string;
++}
++
++/**
++ * The service's connect menu, from each requirement's open methods in declaration order. A label
++ * another requirement of the same name already offers is left out, since both open the same kind
++ * of sign-in and the earlier requirement is the one the app declares first. Where requirements of
++ * different names offer the same label, each names its requirement, such as "API key · Neon MCP".
++ */
++export const serviceMethods = (methods: readonly ServiceMethod[]): readonly ServiceMethod[] => {
++  const nameOf = (entry: ServiceMethod) => entry.requirement.definition.name.trim();
++  const kept = methods.filter(
++    (entry, index) =>
++      !methods
++        .slice(0, index)
++        .some((earlier) => earlier.label === entry.label && nameOf(earlier) === nameOf(entry)),
++  );
++  return kept.map((entry) =>
++    kept.some((other) => other !== entry && other.label === entry.label)
++      ? { ...entry, label: `${entry.label} · ${nameOf(entry)}` }
++      : entry,
++  );
++};
++
++/** The fields of a catalog tool section that say which requirement and method run its tools. */
++export type ToolSectionLimit = Pick<CatalogToolSection, "requirement" | "method" | "title">;
++
++/**
++ * What an account of one requirement and method can't run beside the rest of its service: each
++ * declared tool section of the group's requirements that needs another requirement or method.
++ */
++export const toolLimits = (
++  sections: readonly ToolSectionLimit[] | undefined,
++  group: readonly RequirementEntry[],
++  slot: string,
++  method: string,
++) => {
++  const titles = (sections ?? []).flatMap((section) =>
++    group.some(([other]) => other === section.requirement) &&
++    !(section.requirement === slot && section.method === method)
++      ? [section.title]
++      : [],
++  );
++  return titles.length === 0 ? undefined : `Can't run ${[...new Set(titles)].join(" or ")}.`;
++};
++
++/**
++ * Which part of its service an account serves, where the section joins requirements of different
++ * names, such as "For GitLab MCP"; nothing for the part the section is named after.
++ */
++export const servicePart = (group: readonly RequirementEntry[], slot: string) => {
++  const name = group.find(([other]) => other === slot)?.[1].definition.name.trim();
++  return name === undefined || name === serviceTitle(group) ? undefined : `For ${name}`;
++};
+diff --git a/e2e/tests/app-service-section.spec.ts b/e2e/tests/app-service-section.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/app-service-section.spec.ts
+@@ -0,0 +1,216 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect } from "effect";
++import type { Page } from "playwright";
++import { randomUUID } from "node:crypto";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { accountLinks, connectionsPath } from "../support/app-accounts.ts";
++import { App, Resource } from "../support/contracts.ts";
++import { scenarios } from "../test-plan.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { choiceName, connectName } from "../support/account-choices.ts";
++import { accountNameField, nameAccountDialog } from "../support/name-account.ts";
++
++layer(HostedLive, { excludeTestServices: true })("App accounts", (it) => {
++  it.effect(scenarios.appServiceSection.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors,
++          api = yield* Api,
++          browser = yield* Browser;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        // One service declared twice, as apps do for a new sign-in beside a legacy one or for an
++        // MCP server beside the REST API, plus two roles of another service on one provider.
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: `Service sections ${randomUUID().slice(0, 8)}`,
++          files: [
++            {
++              path: "index.ts",
++              content: `
++import { defineApp, defineProvider, object, secrets, string, router } from "apps";
++const rest = defineProvider({ name: "Service fixture", auth: { key: secrets({ label: "API key", fields: object({ token: string() }) }) } });
++const mcp = defineProvider({ name: "Service fixture MCP", auth: { token: secrets({ label: "Service token", fields: object({ token: string() }) }) } });
++const mail = defineProvider({ name: "Mail fixture", auth: { key: secrets({ label: "API key", fields: object({ token: string() }) }) } });
++export default defineApp({ user: { accounts: { rest: rest.many(), mcp: mcp.many(), inbox: mail.many(), archive: mail.many() } } }, async () => ({ tools: router({}) }));`,
++            },
++            appsManifest,
++          ],
++        });
++        expect(deployed.status).toBe(200);
++        const app = yield* body(App, deployed);
++        const appPath = `${prefix}/apps/${app.id}`;
++        const accounts: string[] = [];
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* api.request(actors.owner, "DELETE", appPath);
++            for (const account of accounts)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
++          }).pipe(Effect.orDie),
++        );
++        /** Connect a key account for one requirement from the app, which links it there. */
++        const connect = (requirement: string, method: string, label: string) =>
++          Effect.gen(function* () {
++            const connection = yield* body(
++              Resource,
++              yield* api.request(
++                actors.owner,
++                "POST",
++                connectionsPath(appPath, "user", requirement),
++                {},
++              ),
++            );
++            const saved = yield* api.request(
++              actors.owner,
++              "POST",
++              `${prefix}/connections/${connection.id}/submit`,
++              { method, label, fields: { token: "synthetic-token" } },
++            );
++            expect(saved.status).toBe(200);
++            const id = (yield* body(Resource, saved)).id;
++            accounts.push(id);
++            return id;
++          });
++        const restKey = yield* connect("rest", "key", "Rest key");
++        const mcpToken = yield* connect("mcp", "token", "MCP token");
++        const links = Effect.map(accountLinks(actors.owner, appPath), (pairs) =>
++          pairs.map(([requirement, account]) => `${requirement}:${account}`).sort(),
++        );
++        // Each account stays linked to its own requirement, which is what the app's tools read.
++        expect(yield* links).toEqual([`mcp:${mcpToken}`, `rest:${restKey}`].sort());
++
++        yield* browser.login(actors.owner);
++        const url = `/org/${actors.organization.slug}/apps/${app.id}?view=accounts`;
++        const service = (page: Page) =>
++          page.getByRole("region", { name: "Service fixture", exact: true });
++        // The connect control appears once the host's connection policy has loaded.
++        yield* browser.use("Open the app's Accounts tab", (page) =>
++          page
++            .goto(url)
++            .then(() =>
++              service(page).getByRole("button", { name: connectName(), exact: true }).waitFor(),
++            ),
++        );
++
++        // One section for the service: no section per requirement, one connect control, and each
++        // account listed once.
++        const layout = yield* browser.use("Read the service section", (page) => {
++          const row = (label: string) =>
++            service(page).getByRole("checkbox", { name: choiceName(label), exact: true });
++          return Promise.all([
++            page.getByRole("region", { name: "Service fixture MCP", exact: true }).count(),
++            service(page).getByRole("button", { name: connectName(), exact: true }).count(),
++            row("Rest key").count(),
++            row("MCP token").count(),
++            service(page).getByRole("checkbox", { checked: true }).count(),
++            service(page).getByText("For Service fixture MCP", { exact: true }).count(),
++          ]).then(([mcpSections, connectButtons, restRows, mcpRows, linked, mcpNotes]) => ({
++            mcpSections,
++            connectButtons,
++            restRows,
++            mcpRows,
++            linked,
++            mcpNotes,
++          }));
++        });
++        // The MCP account says which part of the service it serves; the REST one needs no note.
++        expect(layout).toEqual({
++          mcpSections: 0,
++          connectButtons: 1,
++          restRows: 1,
++          mcpRows: 1,
++          linked: 2,
++          mcpNotes: 1,
++        });
++
++        // Two roles of one provider are not one service's methods; they keep their own sections.
++        const roles = yield* browser.use("Read the role sections", (page) =>
++          Promise.all(
++            ["Mail fixture · Inbox", "Mail fixture · Archive"].map((name) =>
++              page.getByRole("region", { name, exact: true }).count(),
++            ),
++          ),
++        );
++        expect(roles).toEqual([1, 1]);
++
++        // The one connect control offers every method of the service, by its own label.
++        const offered = yield* browser.use("Open the service's connect menu", (page) =>
++          service(page)
++            .getByRole("button", { name: connectName(), exact: true })
++            .click()
++            .then(() => page.getByRole("menu").waitFor())
++            .then(() => page.getByRole("menuitem").allTextContents()),
++        );
++        expect(offered).toEqual(["API key", "Service token"]);
++
++        // Picking a method opens that method's form; the name prompt then offers the account's title.
++        const prefilled = yield* browser.use("Connect a service token from the menu", (page) =>
++          page
++            .getByRole("menuitem", { name: "Service token", exact: true })
++            .click()
++            .then(() =>
++              page.getByRole("dialog").getByLabel("Token", { exact: true }).fill("synthetic-token"),
++            )
++            .then(() =>
++              page
++                .getByRole("dialog")
++                .getByRole("button", { name: "Connect account", exact: true })
++                .click(),
++            )
++            .then(() => accountNameField(page).waitFor())
++            .then(() => accountNameField(page).inputValue()),
++        );
++        // A key method without a declared kind is titled "<service> account" on every list.
++        expect(prefilled).toBe("Service fixture MCP account");
++        yield* browser.use("Keep the default name", (page) =>
++          nameAccountDialog(page)
++            .getByRole("button", { name: "Save name", exact: true })
++            .click()
++            .then(() => nameAccountDialog(page).waitFor({ state: "hidden" })),
++        );
++        const after = yield* accountLinks(actors.owner, appPath);
++        const added = after.flatMap(([, account]) => (accounts.includes(account) ? [] : [account]));
++        accounts.push(...added);
++        // Saving the untouched default keeps the generated label, so a later check can still name it.
++        expect(added).toHaveLength(1);
++        expect(
++          (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${added[0]}`)).body,
++        ).toMatchObject({ account: { label: expect.stringMatching(/^Default( \d+)?$/) } });
++        // The new account joined the requirement its method belongs to, beside the earlier one.
++        expect(after.filter(([requirement]) => requirement === "mcp")).toHaveLength(2);
++        expect(after.filter(([requirement]) => requirement === "rest")).toHaveLength(1);
++        const shown = yield* browser.use("Read the new row", (page) =>
++          service(page)
++            .getByRole("checkbox", { name: choiceName("Service fixture MCP account"), exact: true })
++            .waitFor()
++            .then(() => service(page).getByRole("checkbox", { checked: true }).count()),
++        );
++        expect(shown).toBe(3);
++
++        // Unticking a row unlinks only its own requirement; ticking it links it there again.
++        // Unticking leaves the account unused, so the tab offers to delete it; keeping it is the undo.
++        yield* browser.use("Untick and tick the REST account", (page) => {
++          const control = (checked: boolean) =>
++            service(page).getByRole("checkbox", {
++              name: choiceName("Rest key"),
++              exact: true,
++              checked,
++            });
++          const unused = page.getByRole("dialog", { name: "Delete unused account?" });
++          return control(true)
++            .click()
++            .then(() => unused.getByRole("button", { name: "Keep account", exact: true }).click())
++            .then(() => unused.waitFor({ state: "hidden" }))
++            .then(() => control(false).waitFor())
++            .then(() => control(false).click())
++            .then(() => control(true).waitFor());
++        });
++        expect((yield* links).filter((link) => link.startsWith("rest:"))).toEqual([
++          `rest:${restKey}`,
++        ]);
++      }),
++    ),
++  );
++});

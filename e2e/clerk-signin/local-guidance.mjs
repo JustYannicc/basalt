@@ -75,9 +75,12 @@ export const verifyLocalGuidance = ({ fixture, directory }) =>
         await page.setViewportSize({ width: 390, height: 844 });
         await page.goto(`/apps/${installed.id}?view=accounts`);
         const region = page.getByRole("region", { name: "Your accounts", exact: true });
+        // Clerk's sign-in and secret-key requirements share one section and one connect menu.
         await region
-          .getByRole("button", { name: "Connect new account for Clerk · Sign in", exact: true })
+          .getByRole("region", { name: "Clerk", exact: true })
+          .getByRole("button", { name: "Connect new account", exact: true })
           .click();
+        await page.getByRole("menuitem", { name: "Sign in with Clerk", exact: true }).click();
         await page
           .getByRole("dialog")
           .getByRole("button", { name: "Sign in with Clerk", exact: true })

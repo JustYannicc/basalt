@@ -141,15 +141,16 @@ const program = Effect.gen(function* () {
             /Geist|sans-serif/i,
           );
           const region = page.getByRole("region", { name: "Your accounts", exact: true });
+          // WorkOS's sign-in and API key requirements share one section and one connect menu.
           await region
-            .getByRole("button", {
-              name:
-                phase === "signin"
-                  ? "Connect new account for WorkOS · Sign in"
-                  : "Connect new account",
+            .getByRole("region", { name: "WorkOS", exact: true })
+            .getByRole("button", { name: "Connect new account", exact: true })
+            .click();
+          await page
+            .getByRole("menuitem", {
+              name: phase === "signin" ? "Sign in with WorkOS" : "API key",
               exact: true,
             })
-            .first()
             .click();
           const dialog = page.getByRole("dialog", { name: /^Connect WorkOS(?: · Sign in)?$/ });
           await dialog.locator("form").waitFor();

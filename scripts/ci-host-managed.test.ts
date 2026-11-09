@@ -65,6 +65,7 @@ test("account and pool jobs retain their owned scenarios, commands and execution
         "accountDisplayStatus",
         "accountHealth",
         "accountToolsHealth",
+        "appServiceSection",
         "catalogOAuthAccounts",
         "catalogOAuthClients",
         "executorAppCardAccount",

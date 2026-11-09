@@ -53,7 +53,7 @@
     },
     "nameAccountUnnamed": {
       "fixtures": "actors",
-      "title": "no-email successful unnamed accounts stay empty and remain renameable",
+      "title": "no-email successful unnamed accounts offer their default title and remain renameable",
       "targets": {
         "self-host": {
           "status": "scheduled"
@@ -223,7 +223,7 @@
     },
     "nameAccountUnnamedPhone": {
       "fixtures": "actors",
-      "title": "no-email successful unnamed accounts stay empty and remain renameable at 390px",
+      "title": "no-email successful unnamed accounts offer their default title and remain renameable at 390px",
       "targets": {
         "self-host": {
           "status": "scheduled"
