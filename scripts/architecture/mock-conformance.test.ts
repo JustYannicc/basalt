@@ -32,7 +32,7 @@ const implementation = `it.effect(scenarios.accountRows.title, context => withHo
 const workflow = `jobs:
   account-rows:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'account-rows')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'account-rows')
     steps:
       - working-directory: .upstream
         run: bun run e2e:self-host --test-name '^Rows retain usable actions on a phone$' --workers 1
@@ -218,7 +218,7 @@ test("removing the selector, target, required dependency or selected job fails",
     workflow.replace("    steps:", "    continue-on-error: true\n    steps:"),
     workflow.replace("      - working-directory", "      - if: false\n        working-directory"),
     workflow.replace(
-      "    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'account-rows')",
+      "    if: contains(fromJSON(needs.select.outputs.jobs), 'account-rows')",
       "    if: false",
     ),
     workflow.replace("--workers 1", "--workers 1 || true"),
