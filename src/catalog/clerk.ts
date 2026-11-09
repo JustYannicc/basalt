@@ -12,8 +12,8 @@ export function withClerkSignIn(feed: Feed): Feed {
       return {
         ...entry,
         auth: [{ method: "oauth", kind: "oauth2", label: "Sign in with Clerk" }, ...entry.auth],
-        // Sign-in reaches Clerk's MCP account tools; a secret key reaches the Backend API tools.
-        requirementTools: { signIn: "Clerk account tools", clerk: "Clerk Backend API tools" },
+        // Sign-in reaches Clerk's MCP server; a secret key reaches the Backend (REST) API.
+        requirementTools: { signIn: "Clerk MCP tools", clerk: "Clerk REST API tools" },
         connectionGuidance: [
           {
             requirement: "signIn",

@@ -18,7 +18,10 @@ export function withElevenLabsSignIn(feed: Feed): Feed {
           ...entry.auth,
         ],
         // Sign-in reaches the MCP server's tools; an API key reaches the full REST API.
-        requirementTools: { signIn: "ElevenLabs MCP tools", elevenlabs: "ElevenLabs API tools" },
+        requirementTools: {
+          signIn: "ElevenLabs MCP tools",
+          elevenlabs: "ElevenLabs REST API tools",
+        },
       };
     }),
   };

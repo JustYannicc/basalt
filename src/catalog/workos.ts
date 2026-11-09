@@ -12,8 +12,8 @@ export function withWorkOSSignIn(feed: Feed): Feed {
       return {
         ...entry,
         auth: [{ method: "oauth", kind: "oauth2", label: "Sign in with WorkOS" }, ...entry.auth],
-        // Sign-in reaches WorkOS's MCP management tools; an API key reaches the WorkOS API tools.
-        requirementTools: { signIn: "WorkOS management tools", workos: "WorkOS API tools" },
+        // Sign-in reaches WorkOS's MCP server; an API key reaches the REST API.
+        requirementTools: { signIn: "WorkOS MCP tools", workos: "WorkOS REST API tools" },
         connectionGuidance: [
           {
             requirement: "signIn",

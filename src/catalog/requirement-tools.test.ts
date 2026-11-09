@@ -39,7 +39,7 @@ const services = [
 test("each requirement's tools are named for exactly the requirements the app declares", () => {
   for (const { id, source, apply } of services) {
     const feed: Feed = { version: 1, apps: [entry(id, source)] };
-    const tools = apply(feed).apps[0]!.requirementTools as Record<string, string> | undefined;
+    const tools = apply(feed).apps[0]!.requirementTools;
     assert.ok(tools, `${id} names its requirements' tools`);
     assert.deepEqual(
       Object.keys(tools).sort(),
