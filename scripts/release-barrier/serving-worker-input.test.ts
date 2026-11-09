@@ -1,3 +1,5 @@
+import { Credentials } from "@distilled.cloud/cloudflare/Credentials";
+import { HttpClient } from "effect/http";
 import { State } from "alchemy/State/State";
 import { InMemoryService } from "alchemy/State/InMemoryState";
 import { Effect } from "effect";
@@ -45,7 +47,14 @@ test("shared class and candidate preparation freezes the serving binding without
           placements: () => Effect.succeed(serving),
           upload: () => Effect.die("Preparation cannot upload"),
         },
-      ).pipe(Effect.provideService(State, Effect.succeed(state)));
+      ).pipe(
+        Effect.provideService(State, Effect.succeed(state)),
+        Effect.provideService(Credentials, Effect.die("Preparation cannot request credentials")),
+        Effect.provideService(
+          HttpClient.HttpClient,
+          HttpClient.make(() => Effect.die("Preparation cannot send HTTP")),
+        ),
+      );
     }),
   );
   const proof = proofs.get("PoolWorker")!;
