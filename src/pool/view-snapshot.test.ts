@@ -189,7 +189,14 @@ test("invalidation expires the saved result after a completed revalidation", asy
 
 test("snapshot and live views apply the same pool filter and current owner flag without exposing raw Home", async () => {
   const cache = new PoolViewSnapshots(new MemoryStorage(), () => {});
-  await cache.view("pool-a", false, async () => data());
+  const retained = data();
+  retained.accounts.push({
+    ...retained.accounts[0]!,
+    id: "app-key",
+    provider: "typesafe",
+    freshness: "never",
+  });
+  await cache.view("pool-a", false, async () => retained);
   const home = new PoolHome(
     new HomeClient(async () => {
       throw Error("held Home");

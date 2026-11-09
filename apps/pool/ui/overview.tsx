@@ -15,7 +15,12 @@ import { LabMark } from "./lab.tsx";
 import { seriesRead, type Overview, type RangeDays } from "./overview-data.ts";
 import { rows, total } from "./series-model.ts";
 import { Money, WhoUses } from "./usage-groups.tsx";
-import { accountProblems, accountsNeedingSomeone, bankedResetCount } from "./overview-attention.ts";
+import {
+  accountProblems,
+  accountsNeedingSomeone,
+  bankedResetCount,
+  bankedResetText,
+} from "./overview-attention.ts";
 import { currentCapacity } from "./overview-snapshot.ts";
 
 // The manager's App tab: four answers first, each linking down to its evidence. Per-account health,
@@ -469,10 +474,10 @@ function Attention({
               rel="noopener"
               className="underline underline-offset-2"
             >
-              {banked} banked resets available
+              {bankedResetText(banked)}
             </a>
           ) : (
-            `${banked} banked resets available`
+            bankedResetText(banked)
           )}
           . Nothing is spent automatically; forecasts leave them unspent.
         </p>
