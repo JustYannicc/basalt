@@ -14,13 +14,34 @@ function unpack(init: RequestInit | undefined) {
   return { type: item.type, payload: JSON.parse(lines[2]!) };
 }
 
-function assertNoPrivateDiagnostics(messages: unknown) {
-  // Durations can contain the sentinel's digits without reporting that status.
-  assert.doesNotMatch(JSON.stringify(messages), /private-|(?<![\w.])10000(?![\w.])/);
+function assertNoPrivateDiagnostics(value: unknown) {
+  if (typeof value === "number") assert.notEqual(value, 10000);
+  else if (typeof value === "string") {
+    assert.doesNotMatch(value, /private-/);
+    // Match numeric tokens, including HTTP status text, without splitting decimals.
+    for (const token of value.matchAll(
+      /(?<![\w.])(?:HTTP)?[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?(?![\w.])/gi,
+    ))
+      assert.notEqual(Number(token[0].replace(/^HTTP/i, "")), 10000);
+  } else if (Array.isArray(value)) {
+    for (const item of value) assertNoPrivateDiagnostics(item);
+  } else if (value !== null && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) {
+      assertNoPrivateDiagnostics(key);
+      assertNoPrivateDiagnostics(item);
+    }
+  }
 }
 
 test("the privacy assertion accepts a duration containing the status sentinel digits", () => {
-  assertNoPrivateDiagnostics([{ payload: { duration: 0.00014304100000001084 } }]);
+  for (const duration of [
+    0.00014304100000001084,
+    "0.00014304100000001084",
+    10000.25,
+    "duration 10000.25s",
+  ]) {
+    assertNoPrivateDiagnostics([{ payload: { duration } }]);
+  }
 });
 
 test("the privacy assertion rejects private values and status sentinels in nested fields", () => {
@@ -29,6 +50,9 @@ test("the privacy assertion rejects private values and status sentinels in neste
     "private-secret",
     10000,
     "HTTP 10000",
+    "HTTP10000",
+    "HTTP 10000.",
+    "10000",
   ]) {
     for (const message of [
       { payload: { message: value } },
