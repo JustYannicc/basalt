@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Interactive setup preserves healthy dependencies while omitting unrelated OAuth failures after full account authority checks. Its own slot and ordinary calls remain strict. Step, boundary and cause diagnostics use closed receipts without private handler values; existing failure presentations and storage authority remain intact."
+    }
+  }
+}

@@ -150,6 +150,7 @@ func controlHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /install", handleInstall)
 	mux.HandleFunc("POST /probe", handleProbe)
+	mux.HandleFunc("POST /check", handleCheck)
 	return mux
 }
 

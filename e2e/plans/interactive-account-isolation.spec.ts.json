@@ -1,0 +1,53 @@
+{
+  "scenarios": {
+    "interactiveAccountIsolation": {
+      "fixtures": "actors",
+      "title": "interactive start reaches its setup form while an unrelated linked OAuth account fails and strict tool calls still reject it",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses controlled loopback OAuth and sign-in backends through the hosted server."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises hosted connection startup and linked account authority."
+        }
+      }
+    },
+    "interactiveAccountStartReceipts": {
+      "fixtures": "actors",
+      "title": "interactive start exposes distinct closed context, handler and output failure receipts without private values",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses controlled loopback OAuth and sign-in backends through the hosted server."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises hosted connection startup and linked account authority."
+        }
+      }
+    }
+  },
+  "runs": {
+    "interactiveAccountIsolation": [
+      "declared:self-host"
+    ],
+    "interactiveAccountStartReceipts": [
+      "declared:self-host"
+    ]
+  },
+  "inputs": [
+    ".upstream/packages/sdk/src/implementation/interactive-runner.ts",
+    ".upstream/packages/sdk/src/implementation/tools.ts",
+    ".upstream/packages/sdk/src/contracts/interactive-accounts.ts",
+    ".upstream/packages/apps/src/implementation/connect.ts",
+    "patches/0441-interactive-start-isolation-receipts.patch"
+  ]
+}

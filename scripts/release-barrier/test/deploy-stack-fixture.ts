@@ -51,6 +51,7 @@ export const fixture = (
     planFailure?: "read" | "diff";
     planError?: unknown;
     finalizeDrift?: "binding" | "uncovered-env" | "props";
+    cyclicImage?: "changed" | "unchanged";
   } = {},
 ) => {
   const events: string[] = [],
@@ -63,6 +64,7 @@ export const fixture = (
   let releasePlanning = false;
   let activated = false;
   const workers = Provider.succeed(FixtureWorker, {
+    precreate: ({ id }) => Effect.succeed(attributes(id)),
     read: (input) =>
       releasePlanning && options.planFailure === "read" && input.id === "Router"
         ? Effect.fail(options.planError)
@@ -76,7 +78,14 @@ export const fixture = (
         const hook = yield* Effect.serviceOption(WorkerUploadHook);
         const result = {
           ...attributes(input.id),
-          hash: { ...attributes(input.id).hash!, input: input.news.revision },
+          ...(options.cyclicImage ? { url: releasePlanning ? "candidate" : "baseline" } : {}),
+          hash: {
+            ...attributes(input.id).hash!,
+            input:
+              options.cyclicImage === "changed" && !releasePlanning
+                ? "baseline"
+                : input.news.revision,
+          },
         };
         if (Option.isSome(hook)) {
           if (options.preparationError && input.id === "Api")
@@ -164,11 +173,12 @@ export const fixture = (
       if (options.orphanedDatabaseCommand)
         yield* Command.Exec("Migrations", { command: "node src/migrate.ts", memo: false });
       const api = yield* FixtureWorker("Api", { revision: "candidate" });
-      yield* Command.Exec("ToolsBackendBudget", {
-        command: "node verify-database-budget.ts",
-        memo: false,
-        env: { READY: api.hash.pipe(Output.map((hash) => hash?.input ?? "")) },
-      });
+      if (!options.cyclicImage)
+        yield* Command.Exec("ToolsBackendBudget", {
+          command: "node verify-database-budget.ts",
+          memo: false,
+          env: { READY: api.hash.pipe(Output.map((hash) => hash?.input ?? "")) },
+        });
       const lateValue = api.hash.pipe(Output.map(() => (activated ? "changed" : "frozen")));
       const router = yield* FixtureWorker("Router", {
         revision: options.finalizeDrift === "props" ? lateValue : "candidate",
@@ -180,6 +190,30 @@ export const fixture = (
         yield* router.bind("image", {
           bindings: [{ name: "POOL_IMAGE_HASH", type: "plain_text", text: lateValue }],
         });
+      if (options.cyclicImage) {
+        yield* router.bind("image", {
+          bindings: [
+            {
+              name: "POOL_IMAGE_HASH",
+              type: "plain_text",
+              text:
+                options.finalizeDrift === "binding"
+                  ? lateValue
+                  : api.hash.pipe(Output.map((hash) => hash?.input ?? "")),
+            },
+          ],
+          containers: [
+            {
+              className: "PoolContainer",
+              hash: api.hash.pipe(Output.map((hash) => hash?.input)),
+              dev: api.url.pipe(Output.map((url) => ({ imageUri: url ?? "fixture", env: {} }))),
+            },
+          ],
+        });
+        yield* api.bind("attachment", {
+          env: { ROUTER_REVISION: router.url.pipe(Output.map((url) => url ?? "")) },
+        });
+      }
       for (const id of options.extraWorkers ?? [])
         yield* FixtureWorker(id, { revision: "candidate" });
       return { api: api.workerName };

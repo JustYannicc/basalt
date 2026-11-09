@@ -27,7 +27,7 @@ export async function installNativePolicy(
     }),
   );
   if (!response.ok) {
-    const reason =
+    const diagnostic =
       response.status === 400 || response.status === 409
         ? await readNativePolicyReason(response, signal)
         : undefined;
@@ -37,7 +37,7 @@ export async function installNativePolicy(
       guard: "native_policy_install",
       failure: "response_status",
       backendStatus: response.status,
-      ...(reason === undefined ? {} : { reason }),
+      ...diagnostic,
     });
   }
   const body = await poolDependency("membership", response.text());
