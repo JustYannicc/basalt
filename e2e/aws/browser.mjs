@@ -109,7 +109,10 @@ export async function proveAwsPasteUi({
     await page.goto(`${target.metadata.origin}${appPath}?view=accounts`);
     const yourAccounts = page.getByRole("region", { name: "Your accounts", exact: true });
     await yourAccounts.waitFor({ state: "visible" });
-    await yourAccounts.getByRole("button", { name: "Connect new account", exact: true }).click();
+    await yourAccounts
+      .getByRole("region", { name: "AWS", exact: true })
+      .getByRole("button", { name: "Connect new account", exact: true })
+      .click();
     const connectDialog = page.getByRole("dialog", { name: "Connect AWS", exact: true });
     await connectDialog.waitFor({ state: "visible" });
 

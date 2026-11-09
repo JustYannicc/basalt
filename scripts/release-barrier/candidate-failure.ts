@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { requiredSecrets } from "../environment.ts";
+import { BarrierRefusal } from "./manifest.ts";
 import { safeProviderFailure } from "./operation-failure.ts";
 
 export type CandidateStage =
@@ -8,6 +9,10 @@ export type CandidateStage =
   | "import"
   | "evaluate"
   | "projection"
+  | "retirement-auth"
+  | "retirement-version"
+  | "retirement-state"
+  | "retirement-output"
   | "inventory";
 const generatedInputs = [
   ".upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts",
@@ -31,16 +36,51 @@ const causeTags = [
   "SyntaxError",
   "RequestError",
   "ResponseError",
+  "BarrierRefusal",
+  "StateStoreError",
+  "AuthError",
+  "TerminalCancelled",
+  "NonInteractiveTerminal",
 ] as const;
+const causeReasons = [
+  "missing-compiled-state",
+  "forward-probe-mutation-refused",
+  "forward-probe-state-write-refused",
+  "retirement-state-version-unavailable",
+  "retirement-state-version-unsupported",
+] as const;
+type CandidateReason = (typeof causeReasons)[number];
 type CandidateInput = (typeof generatedInputs)[number] | (typeof environmentInputs)[number];
+
+interface CandidateDiagnostics {
+  status?: number;
+  expectedVersion?: number;
+  observedVersion?: number;
+}
 
 export class CandidateSettingsReadFailure extends Error {
   readonly _tag = "CandidateSettingsReadFailure";
   readonly stage: CandidateStage;
   readonly tag: (typeof causeTags)[number];
   readonly input: CandidateInput | undefined;
-  constructor(stage: CandidateStage, tag: (typeof causeTags)[number], input?: CandidateInput) {
-    super(`tag=${tag}; stage=${stage}${input ? `; input=${input}` : ""}`);
+  readonly reason: CandidateReason | undefined;
+  readonly diagnostics: CandidateDiagnostics;
+  constructor(
+    stage: CandidateStage,
+    tag: (typeof causeTags)[number],
+    input?: CandidateInput,
+    reason?: CandidateReason,
+    diagnostics: CandidateDiagnostics = {},
+  ) {
+    super(
+      `tag=${tag}; stage=${stage}${input ? `; input=${input}` : ""}${reason ? `; reason=${reason}` : ""}${Object.entries(
+        diagnostics,
+      )
+        .map(([key, value]) => `; ${key}=${value}`)
+        .join("")}`,
+    );
+    this.reason = reason;
+    this.diagnostics = diagnostics;
     this.stage = stage;
     this.tag = tag;
     this.input = input;
@@ -61,9 +101,37 @@ export function candidateReadFailure(error: unknown, stage: CandidateStage) {
   if (error instanceof Error && error.message === "Invalid release Command attempt identity")
     return new CandidateSettingsReadFailure(stage, "InvalidInput", "BASALT_RELEASE_ATTEMPT");
   const provider = safeProviderFailure(error);
+  const name =
+    error !== null && typeof error === "object"
+      ? (Reflect.get(error, "_tag") ?? Reflect.get(error, "name"))
+      : undefined;
+  const field = (value: unknown, key: string): unknown =>
+    value !== null && typeof value === "object" ? Reflect.get(value, key) : undefined;
+  const numeric = (value: unknown): value is number =>
+    typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+  const status = provider.status ?? field(field(error, "http"), "status");
+  const versionMessage =
+    name === "AuthError" && error instanceof Error
+      ? /^Cloudflare State store is out of date \(expected v(\d+), observed v(\d+)\)\./.exec(
+          error.message,
+        )
+      : undefined;
+  const expected =
+    field(error, "expected") ?? (versionMessage ? Number(versionMessage[1]) : undefined);
+  const observed =
+    field(error, "observed") ?? (versionMessage ? Number(versionMessage[2]) : undefined);
   return new CandidateSettingsReadFailure(
     stage,
-    causeTags.find((tag) => tag === provider.type) ?? "UnclassifiedFailure",
+    causeTags.find((tag) => tag === name || tag === provider.type) ?? "UnclassifiedFailure",
+    undefined,
+    error instanceof BarrierRefusal
+      ? causeReasons.find((reason) => reason === error.reason)
+      : undefined,
+    {
+      ...(numeric(status) && status >= 100 && status <= 599 ? { status } : {}),
+      ...(numeric(expected) ? { expectedVersion: expected } : {}),
+      ...(numeric(observed) ? { observedVersion: observed } : {}),
+    },
   );
 }
 
@@ -83,4 +151,6 @@ export const candidateFailureDetails = (error: CandidateSettingsReadFailure) => 
   causeTag: error.tag,
   stage: error.stage,
   ...(error.input ? { input: error.input } : {}),
+  ...(error.reason ? { reason: error.reason } : {}),
+  ...error.diagnostics,
 });

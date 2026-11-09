@@ -10,10 +10,24 @@ const jobs = {
   "workos-sign-in": ["workos-sign-in"],
   "gitlab-sign-in": ["gitlab-sign-in"],
   "clerk-sign-in": ["clerk-sign-in"],
+  "planetscale-sign-in": ["planetscale-sign-in"],
   "vercel-sign-in": ["vercel-sign-in"],
   "elevenlabs-sign-in": ["elevenlabs-sign-in"],
   "catalog-compat": ["catalog-compat", "elevenlabs-discovery", "zoho-people", "zoho-people-mcp"],
 };
+const runDirectories = {
+  "planetscale-sign-in": [
+    "ci/hosted",
+    "ci/dcr",
+    "ci/unknown",
+    "ci/refused",
+    "ci/unreported",
+    "ci/rfc",
+    "ci/retained",
+    "ci/retained-unknown",
+  ],
+};
+
 const files = {
   "upstream-head.json": "source-check",
   "install.json": "install",
@@ -75,7 +89,7 @@ export async function collectConnectorEvidence(root, job) {
       const candidates =
         source === "connectors-proof"
           ? (await readdir(base)).filter((name) => /^run-[A-Za-z0-9]+$/.test(name)).sort()
-          : ["ci"];
+          : (runDirectories[job] ?? ["ci"]);
       truncated ||= candidates.length > 8;
       for (const name of candidates.slice(0, 8)) {
         const run = join(base, name);

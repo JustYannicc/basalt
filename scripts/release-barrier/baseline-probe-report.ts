@@ -26,8 +26,20 @@ export async function reportBaselineProbe(
           ),
         ].join("\n")
       : "");
-  log.log(table);
-  if (summary) await appendFile(summary, table + "\n");
+  const inputs = settings.flatMap((row) =>
+    row.preparation?.containerInput ? [{ role: row.role, ...row.preparation.containerInput }] : [],
+  );
+  const pairing = inputs.length
+    ? "\n\n| Worker | Container baseline input | Latest-upload settings input | Serving input | Serving version prefixes | Latest version prefix | Latest version input | Settings match latest |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n" +
+      inputs
+        .map(
+          (input) =>
+            `| ${input.role} | ${input.baseline} | ${input.settings} | ${input.serving} | ${input.versions.join(", ")} | ${input.latestVersion} | ${input.latestInput} | ${input.settingsMatchLatest} |`,
+        )
+        .join("\n")
+    : "";
+  log.log(table + pairing);
+  if (summary) await appendFile(summary, table + pairing + "\n");
   for (const row of rows.filter((row) => !row.ok))
     log.error(
       `::error::Baseline ${row.role}: ${row.type ?? "unknown"}; ${row.reason ?? "read-failed"}; HTTP ${row.status ?? "none"}; ${row.bytes} bytes; ${row.ms} ms; ${row.attempts} attempts`,

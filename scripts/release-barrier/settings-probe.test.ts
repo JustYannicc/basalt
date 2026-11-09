@@ -6,7 +6,8 @@ import { probeWorkerSettings } from "./settings-probe.ts";
 import { baselineRoles } from "./baseline-probe.ts";
 import { normalizePlacement } from "./script-placement.ts";
 import { assertScriptSettings, scriptSettingFields } from "./script-settings.ts";
-import { BarrierRefusal } from "./manifest.ts";
+import { containerPublication } from "./test/container-fixture.ts";
+import { canonical, digest, BarrierRefusal } from "./manifest.ts";
 import { placementRepairTargets } from "./pending-placement.ts";
 import { CandidateSettingsReadFailure } from "./candidate-failure.ts";
 
@@ -17,7 +18,15 @@ for (const mode of [
   "repair",
   "repair-latest-upload",
   "repair-retirement-failure",
+  "preparation-latest-upload",
+  "preparation-mismatch",
+  "preparation-forward",
+  "preparation-forward-invalid",
 ] as const) {
+  const preparation = mode.startsWith("preparation");
+  const mismatch = mode === "preparation-mismatch";
+  const forward = mode.startsWith("preparation-forward");
+  const invalidForward = mode === "preparation-forward-invalid";
   const drift = mode === "drift";
   const inventoryFailure = mode === "inventory-refusals";
   const repair = mode.startsWith("repair");
@@ -79,13 +88,21 @@ for (const mode of [
               : { subrequests: drift && path.includes("api-production") ? 100 : 50_000 },
           observability: { enabled: true, head_sampling_rate: 1 },
           tags: [],
-          bindings: [],
+          bindings: [{ name: "POOL_IMAGE_HASH", type: "plain_text", text: "b".repeat(16) }],
           tail_consumers: [],
         };
+      else if (path.endsWith("/versions")) result = { items: [{ id: "latest", number: 2 }] };
       else if (path.includes("/versions/"))
         result = {
           id: path.split("/").at(-1),
           resources: {
+            bindings: [
+              {
+                name: "POOL_IMAGE_HASH",
+                type: "plain_text",
+                text: (path.endsWith("/latest") || forward ? "b" : mismatch ? "c" : "a").repeat(16),
+              },
+            ],
             script_runtime:
               target?.role === "Api" && path.endsWith(target.prior)
                 ? { limits: { subrequests: 50000 } }
@@ -140,6 +157,27 @@ for (const mode of [
       async () => {
         throw new CandidateSettingsReadFailure("projection", "ConfigError");
       },
+      preparation
+        ? {
+            ...containerPublication().frozen,
+            ...(forward
+              ? {
+                  forwardInput: {
+                    baseline: digest(canonical(containerPublication().frozen.baseline)),
+                    containerInputHash: "a".repeat(16),
+                    workerInputHash: (invalidForward ? "c" : "b").repeat(16),
+                    workerTarget: digest(
+                      canonical({
+                        accountId: "fixture",
+                        scriptName: "basalt-poolworker-production-fixture",
+                      }),
+                    ),
+                    workerVersions: [{ versionId: "active", percentage: 100 }],
+                  },
+                }
+              : {}),
+          }
+        : undefined,
     );
     assert.equal(rows.length, inventoryFailure ? 21 : 20);
     assert.deepEqual(
@@ -151,7 +189,7 @@ for (const mode of [
     );
     assert.equal(
       requests.length,
-      inventoryFailure ? 55 : retirementFailure ? 61 : repair ? 69 : 61,
+      inventoryFailure ? 55 : retirementFailure ? 61 : repair ? 69 : preparation ? 63 : 61,
     );
     assert.ok(
       requests.some((request) =>
@@ -172,6 +210,21 @@ for (const mode of [
               ? /duplicate-worker/
               : /unexpected-worker/,
         );
+        continue;
+      }
+      if (preparation && row.role === "PoolWorker") {
+        assert.equal(row.ok, !mismatch && !invalidForward);
+        assert.deepEqual(row.preparation?.containerInput, {
+          baseline: "a".repeat(12),
+          settings: "b".repeat(12),
+          serving: (forward ? "b" : mismatch ? "c" : "a").repeat(12),
+          versions: ["active"],
+          latestVersion: "latest",
+          latestInput: "b".repeat(12),
+          settingsMatchLatest: true,
+        });
+        if (mismatch || invalidForward)
+          assert.equal(row.reason, "container-baseline-worker-input-unconfirmed");
         continue;
       }
       const retirementFailed = retirementFailure && ["Api", "AppPages"].includes(row.role);

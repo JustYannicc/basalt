@@ -1,3 +1,4 @@
+import { servingWorkerSettings, workerInputHash } from "./serving-worker-input.ts";
 import type * as Workers from "@distilled.cloud/cloudflare/workers";
 import type { PreparedWorkerUpload } from "alchemy/Cloudflare/Workers/WorkerUploadHook";
 import { declaredMismatch } from "./declared-refusal.ts";
@@ -38,9 +39,13 @@ const allowedMetadata = new Set([
   "streamingTailConsumers",
   "usageModel",
 ]);
+export type WorkerVersionInput = Pick<
+  PreparedWorkerUpload,
+  "fqn" | "request" | "previousSettings" | "previousProps" | "props"
+>;
 const refusal = (
   reason: string,
-  upload: PreparedWorkerUpload,
+  upload: WorkerVersionInput,
   expected: unknown,
   observed: unknown,
 ) => {
@@ -48,7 +53,7 @@ const refusal = (
 };
 /** Versions cannot carry migrations or change script-level settings. Refuse rather than silently omit an intended change. */
 export function versionMetadata(
-  upload: PreparedWorkerUpload,
+  upload: WorkerVersionInput,
   versions: readonly ActiveWorkerPlacement[] = [],
   baseline: readonly { versionId: string }[] = [],
   repair?: PendingPlacementRepair,
@@ -163,7 +168,7 @@ export function versionMetadata(
 }
 
 export async function freezeUpload(
-  upload: PreparedWorkerUpload,
+  upload: WorkerVersionInput,
   baseline: FrozenWorker["baseline"],
   versions: readonly ActiveWorkerPlacement[] = [],
   repair?: PendingPlacementRepair,
@@ -171,11 +176,9 @@ export async function freezeUpload(
   const raw = upload.request.files;
   const files = raw === undefined ? [] : Array.isArray(raw) ? raw : [raw];
   const metadata = versionMetadata(upload, versions, baseline, repair);
-  const baselineBinding =
+  const baselineImageHash =
     upload.fqn === "PoolWorker"
-      ? upload.previousSettings?.bindings?.find(
-          (binding) => binding.name === "POOL_IMAGE_HASH" && binding.type === "plain_text",
-        )
+      ? workerInputHash(servingWorkerSettings(versions, baseline))
       : undefined;
   return {
     id: upload.fqn,
@@ -200,9 +203,7 @@ export async function freezeUpload(
       }),
     ),
     baseline,
-    ...(baselineBinding?.type === "plain_text" && baselineBinding.text
-      ? { baselineImageHash: baselineBinding.text }
-      : {}),
+    ...(baselineImageHash ? { baselineImageHash } : {}),
     ...(repair ? { pendingPlacementRepair: repair } : {}),
   };
 }

@@ -26,7 +26,7 @@
 -      label: "Bot or user token (xoxb-/xoxp-)",
 +      label: "Paste a token",
        fields: object({ token: string({ minLength: 1 }) }),
--    }),
+     }),
 -    // Slack offers no client registration: the connect page asks for a Slack app's client.
 -    oauth: oauth2({
 -      authorizationUrl: "https://slack.com/oauth/v2/authorize",
@@ -65,7 +65,7 @@
 -        "canvases:read",
 -        "canvases:write",
 -      ],
-     }),
+-    }),
    },
    async health({ account, fetch, signal }) {
 -    const token =
@@ -85,26 +85,6 @@
              tool.kind === "mutation" ? always() : never(),
            ),
          { signal },
---- a/openapi.ts
-+++ b/openapi.ts
-@@ -42,7 +42,6 @@
-   methods: {
-     user: [{ scheme: "slackAuth", field: "access_token", part: "value", prefix: "" }],
-     token: [{ scheme: "slackAuth", field: "token", part: "value", prefix: "" }],
--    oauth: [{ scheme: "slackAuth", field: "access_token", part: "value", prefix: "" }],
-   },
-   oauth: [],
-   patches: [
---- a/package.json
-+++ b/package.json
-@@ -7,6 +7,6 @@
-     "title": "Slack"
-   },
-   "dependencies": {
--    "apps": "0.0.1-beta.100"
-+    "apps": "0.0.1-beta.104-basalt.11"
-   }
- }
 --- /dev/null
 +++ b/openapi-auth.ts
 @@ -0,0 +1,69 @@
@@ -177,3 +157,23 @@
 +    forAccount: (account) => slackOpenapiCache(cache.forAccount(account), sourceUrl),
 +  };
 +};
+--- a/openapi.ts
++++ b/openapi.ts
+@@ -42,7 +42,6 @@
+   methods: {
+     user: [{ scheme: "slackAuth", field: "access_token", part: "value", prefix: "" }],
+     token: [{ scheme: "slackAuth", field: "token", part: "value", prefix: "" }],
+-    oauth: [{ scheme: "slackAuth", field: "access_token", part: "value", prefix: "" }],
+   },
+   oauth: [],
+   patches: [
+--- a/package.json
++++ b/package.json
+@@ -7,6 +7,6 @@
+     "title": "Slack"
+   },
+   "dependencies": {
+-    "apps": "0.0.1-beta.100"
++    "apps": "0.0.1-beta.104-basalt.13"
+   }
+ }

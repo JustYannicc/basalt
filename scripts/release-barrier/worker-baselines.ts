@@ -33,7 +33,9 @@ export const observeWorkerBaselines = (
               baseline.some((version) => version.versionId === target.version),
           );
           const versions =
-            repairTarget || needsPlacementProof(upload.previousSettings?.placement)
+            upload.fqn === "PoolWorker" ||
+            repairTarget ||
+            needsPlacementProof(upload.previousSettings?.placement)
               ? yield* (io?.placements ?? readActivePlacements)(upload.request, baseline)
               : [];
           const repair = repairTarget

@@ -1,0 +1,11 @@
+{
+  "name": "basalt-drive-host",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "buffer": "6.0.3",
+    "effect": "4.0.2",
+    "isomorphic-git": "1.44.11",
+    "sha.js": "2.4.12"
+  }
+}

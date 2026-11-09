@@ -1,0 +1,10 @@
+Git object and pack codecs and the pack-storage layout are extracted from
+Signalbox, commit ffe562c5b93cc90785898c4ef3755243c0b2c1cd, under the MIT
+license included in LICENSE. The extracted source paths are:
+
+apps/cloud/src/drive/git/gitObjects.ts
+apps/cloud/src/drive/git/gitPack.ts
+apps/cloud/src/drive/git/gitWrite.ts
+apps/cloud/src/drive/DrivePacks.ts
+
+The composing products retain ownership of identity and authorization policy.

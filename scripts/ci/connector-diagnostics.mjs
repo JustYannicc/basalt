@@ -57,6 +57,7 @@ const sources = new Set([
   "workos-sign-in.mjs",
   "gitlab-sign-in.mjs",
   "clerk-sign-in.mjs",
+  "planetscale-sign-in.mjs",
   "vercel-sign-in.mjs",
   "elevenlabs-sign-in.mjs",
   "slack-health.mjs",

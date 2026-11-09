@@ -140,6 +140,7 @@ export function releaseEvidence(directory: string, candidate: string, encryption
         ...(latest?.containers ? { containers: latest.containers } : {}),
         ...(latest?.pendingContainer ? { pendingContainer: latest.pendingContainer } : {}),
         reason: refusal.reason,
+        ...(refusal.stateStore ? { stateStore: refusal.stateStore } : {}),
         ...(refusal instanceof ServingFailure ? { serving: refusal.serving } : {}),
         ...(refusal instanceof ReleaseOperationFailure
           ? { operation: refusal.operation, provider: refusal.provider }

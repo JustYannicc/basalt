@@ -2,16 +2,21 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { baselineRoles } from "../baseline-probe.ts";
 import { candidateScriptSettings } from "../candidate-settings.ts";
+import { placementRepairTargets } from "../pending-placement.ts";
+import { retirementFixture } from "./candidate-retirement-fixture.mjs";
 import { fixtureAccount } from "../../architecture/native-stack-fixtures.ts";
 
 /** Real entrypoint, synthetic CI inputs and an owned production inventory, inside the OS sandbox. */
 export async function candidateProbeProof(settings, mode, declarationHttp, source) {
+  const retirement = mode.startsWith("entry-retirement-");
   const workers = baselineRoles.map((role) => ({
     role,
     scriptName:
-      role === "ArtifactsCredentials"
-        ? `basalt-artifactscredentials-pr${"a".repeat(24)}`
-        : `basalt-${role.toLowerCase()}-production-fixture`,
+      retirement && placementRepairTargets.some((target) => target.role === role)
+        ? placementRepairTargets.find((target) => target.role === role).scriptName
+        : role === "ArtifactsCredentials"
+          ? `basalt-artifactscredentials-pr${"a".repeat(24)}`
+          : `basalt-${role.toLowerCase()}-production-fixture`,
   }));
   const scripts = workers
     .filter((worker) => mode !== "entry-inventory-refusals" || worker.role !== "PublicSite")
@@ -62,25 +67,53 @@ export async function candidateProbeProof(settings, mode, declarationHttp, sourc
       const worker = declarations.find((item) =>
         url.pathname.startsWith(`${prefix}/workers/scripts/${item.scriptName}/`),
       );
+      const repair =
+        retirement && placementRepairTargets.find((target) => target.role === worker?.role);
       if (worker && !url.search && url.pathname.endsWith("/deployments"))
         result = {
           deployments: [
             {
-              id: "deployment",
+              id: repair ? repair.deployment : "deployment",
               created_on: "2026-11-01T00:00:00Z",
               source: "api",
               strategy: "percentage",
-              versions: [{ version_id: "active", percentage: 100 }],
+              versions: [{ version_id: repair ? repair.version : "active", percentage: 100 }],
             },
           ],
         };
       else if (worker && !url.search && url.pathname.endsWith("/settings")) {
         result = snake(worker.metadata);
         if (worker.metadata.placement) result.placement = { mode: "targeted", target: [39] };
+        if (repair) {
+          delete result.placement;
+          if (repair.role === "Api") delete result.limits;
+        }
+      } else if (
+        repair &&
+        !url.search &&
+        [repair.version, repair.prior].some((id) => url.pathname.endsWith(`/versions/${id}`))
+      ) {
+        const prior = url.pathname.endsWith(`/versions/${repair.prior}`);
+        result = {
+          id: prior ? repair.prior : repair.version,
+          resources: {
+            script: prior
+              ? {
+                  placement: {
+                    mode: "targeted",
+                    target: [{ id: 39, type: "region", region: "aws:eu-central-1" }],
+                  },
+                }
+              : {},
+            script_runtime:
+              prior && repair.role === "Api" ? { limits: { subrequests: 50000 } } : {},
+          },
+        };
       } else if (worker && !url.search && url.pathname.endsWith("/versions/active"))
         result = {
           id: "active",
           resources: {
+            bindings: [{ name: "POOL_IMAGE_HASH", type: "plain_text", text: "a".repeat(16) }],
             script: {
               placement: {
                 mode: "targeted",
@@ -100,7 +133,18 @@ export async function candidateProbeProof(settings, mode, declarationHttp, sourc
       result_info: { page: 1, per_page: 100, count, total_count: count, total_pages: 1 },
     });
   };
-  globalThis.fetch = fixture;
+  const state = retirement
+    ? await retirementFixture(
+        { fetch: fixture },
+        mode.endsWith("v8") ? 8 : 7,
+        mode.endsWith("unauthorized")
+          ? "unauthorized"
+          : mode.endsWith("malformed")
+            ? "malformed"
+            : undefined,
+      )
+    : undefined;
+  globalThis.fetch = state?.fetch ?? fixture;
   declarations = await candidateScriptSettings(workers, settings);
   if (mode === "entry-missing-attempt") delete process.env.BASALT_RELEASE_ATTEMPT;
   Object.assign(process.env, source, {
@@ -118,6 +162,14 @@ export async function candidateProbeProof(settings, mode, declarationHttp, sourc
   return {
     rows,
     summary,
+    ...(state
+      ? {
+          stateRequests: state.requests,
+          priorReads: requests.filter((path) =>
+            placementRepairTargets.some((target) => path.endsWith(`/versions/${target.prior}`)),
+          ).length,
+        }
+      : {}),
     errors,
     requests: requests.filter((path) => path.endsWith("/settings")).length,
     namespaceReads: requests.filter((path) => path.endsWith("/durable_objects/namespaces")).length,

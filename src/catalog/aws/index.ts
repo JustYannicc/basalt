@@ -8,8 +8,11 @@ export const aws: Addition = {
     id: "aws",
     package: source.package,
     name: "AWS",
-    description: "Use AWS services with your own AWS identity and existing permissions.",
-    auth: [{ method: "oauth", kind: "oauth2" }],
+    description: "Use your assigned AWS accounts and roles, with a separate target for each task.",
+    auth: [
+      { method: "identityCenter", kind: "interactive", label: "AWS IAM Identity Center" },
+      { method: "oauth", kind: "oauth2" },
+    ],
     icons: [...awsIcons],
     source: "apps/aws.json",
   },

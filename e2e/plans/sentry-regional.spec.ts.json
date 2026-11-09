@@ -1,0 +1,33 @@
+{
+  "scenarios": {
+    "sentryRegionalRecovery": {
+      "fixtures": "actors",
+      "title": "Sentry regional REST tools remain usable when MCP discovery fails and scope failures stay truthful",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Shared hosted connection UI is exercised through the complete self-host product."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted account authorization and linking are exercised through the complete self-host product."
+        }
+      }
+    }
+  },
+  "runs": {
+    "sentryRegionalRecovery": [
+      "host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"
+    ]
+  },
+  "inputs": [
+    "src/catalog/sentry.ts",
+    "src/catalog/sentry.json",
+    "src/catalog/sentry.connections.json",
+    "src/catalog/sentry.patch",
+    "src/catalog/worker.ts"
+  ]
+}

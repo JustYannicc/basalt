@@ -211,7 +211,16 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
     for (const { frozen } of prepared.containers.values())
       assertJournaledBaselineInput(
         frozen,
-        prepared.captured.get("PoolWorker")?.previousSettings,
+        {
+          bindings: [
+            {
+              name: "POOL_IMAGE_HASH",
+              type: "plain_text",
+              text: manifest.workers.find((worker) => worker.id === "PoolWorker")
+                ?.baselineImageHash,
+            },
+          ],
+        },
         manifest.workers.find((worker) => worker.id === "PoolWorker"),
         options.forwardInput,
       );

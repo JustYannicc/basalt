@@ -213,50 +213,56 @@ export class NativeMemberships {
     return task;
   }
   private async repair(pool: string): Promise<void> {
-    const before = await this.run(async (state) => state[pool]);
-    if (!before) return;
-    const snapshot = await this.deps.read(pool, before.organization);
-    const accounts = [
-      ...new Set(
-        snapshot.accounts.flatMap((account) =>
-          account.homeReference === null ? [] : homeReferences(account.homeReference),
+    // Reservations can supersede either external read or installation while this repair is running.
+    // Callers share this promise, so it must follow the newest revision before resolving.
+    while (true) {
+      const before = await this.run(async (state) => state[pool]);
+      if (!before) return;
+      const snapshot = await this.deps.read(pool, before.organization);
+      const accounts = [
+        ...new Set(
+          snapshot.accounts.flatMap((account) =>
+            account.homeReference === null ? [] : homeReferences(account.homeReference),
+          ),
         ),
-      ),
-    ].sort();
-    const valid =
-      snapshot.native && snapshot.accounts.every((account) => account.homeReference !== null);
-    // Each pass reads actual state, including a write that arrived after a previous matching read.
-    if (valid) await this.deps.reconcile(pool, accounts);
-    const actual = valid ? await this.deps.actual(pool) : [];
-    const ready = valid && equal(actual, accounts);
-    const policy = await this.run(async (state) => {
-      const current = state[pool];
-      if (!current || current.revision !== before.revision) return undefined;
-      const changed = current.dirty !== !ready || !equal(current.accounts, accounts);
-      const next: State = {
-        ...current,
-        native: snapshot.native,
-        accounts,
-        revision: current.revision + (changed ? 1 : 0),
-        dirty: !ready,
-        expiresAt: this.now() + membershipTtlMs,
-        checkedAt: this.now(),
-      };
-      state[pool] = next;
-      await this.save(state);
-      return next;
-    });
-    if (!policy) return;
-    await this.deps.install(publicPolicy(policy));
-    await this.run(async (state) => {
-      const current = state[pool];
-      if (!current || current.revision !== policy.revision) return;
-      state[pool] = {
-        ...current,
-        installedRevision: policy.revision,
-        installedUntil: Math.max(current.installedUntil ?? 0, policy.expiresAt),
-      };
-      await this.save(state);
-    });
+      ].sort();
+      const valid =
+        snapshot.native && snapshot.accounts.every((account) => account.homeReference !== null);
+      // Each pass reads actual state, including a write that arrived after a previous matching read.
+      if (valid) await this.deps.reconcile(pool, accounts);
+      const actual = valid ? await this.deps.actual(pool) : [];
+      const ready = valid && equal(actual, accounts);
+      const policy = await this.run(async (state) => {
+        const current = state[pool];
+        if (!current || current.revision !== before.revision) return undefined;
+        const changed = current.dirty !== !ready || !equal(current.accounts, accounts);
+        const next: State = {
+          ...current,
+          native: snapshot.native,
+          accounts,
+          revision: current.revision + (changed ? 1 : 0),
+          dirty: !ready,
+          expiresAt: this.now() + membershipTtlMs,
+          checkedAt: this.now(),
+        };
+        state[pool] = next;
+        await this.save(state);
+        return next;
+      });
+      if (!policy) continue;
+      await this.deps.install(publicPolicy(policy));
+      const installed = await this.run(async (state) => {
+        const current = state[pool];
+        if (!current || current.revision !== policy.revision) return false;
+        state[pool] = {
+          ...current,
+          installedRevision: policy.revision,
+          installedUntil: Math.max(current.installedUntil ?? 0, policy.expiresAt),
+        };
+        await this.save(state);
+        return true;
+      });
+      if (installed) return;
+    }
   }
 }

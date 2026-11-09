@@ -1,0 +1,80 @@
+--- a/README.md
++++ b/README.md
+@@ -1,20 +1,20 @@
+ # Sentry
+ 
+-Natural-language issue and event search, traces and Seer root-cause analysis through Sentry's official remote MCP server, mounted under `mcp`, for accounts that sign in with Sentry; plus issues, events, projects, releases, alerts, teams, organizations, monitors, replays and the rest of the Sentry REST API (266 tools, 119 of them mutations, which ask for approval), mounted under `api`, for auth-token accounts. One provider serves both, so the app has one account slot.
++Natural-language issue and event search, traces and Seer root-cause analysis through Sentry's official remote MCP server, mounted under `mcp`, for Sentry OAuth and personal-token accounts; plus issues, events, projects, releases, alerts, teams, organizations, monitors, replays and the rest of the Sentry REST API (266 tools, 119 of them mutations, which ask for approval), mounted under `api`, for auth-token accounts. One provider serves both, so the app has one account slot.
+ 
+ **Interface:** MCP at https://mcp.sentry.dev/mcp (Streamable HTTP, docs at https://mcp.sentry.dev/). Tools are listed live; every tool without `readOnlyHint` requires approval. OpenAPI from Sentry's own published API description at https://raw.githubusercontent.com/getsentry/sentry-api-schema/main/openapi-derefed.json (the official getsentry repository, which backs docs.sentry.io/api). The description lists https://{region}.sentry.io with region `us` or `de`; the account's region decides which origin receives credentials.
+ 
+ ## Auth
+ 
+-- **OAuth** (`oauth`, first): the MCP server's own authorization server, discovered from its protected-resource metadata. It supports dynamic client registration and Client ID Metadata Documents with PKCE S256, so no OAuth application has to be created. Advertised scopes: org:read, project:write, team:write, event:write, alerts:write. These tokens only work on the MCP server (Sentry documents the remote server as OAuth only), so these accounts get the `mcp` tools. Health check: an MCP initialize and tool listing.
+-- **Auth token** (`authToken`): create an organization token or personal token in Sentry under Settings > Developer Settings (or User settings > Personal Tokens), choosing the scopes you need. Enter the region (`us` or `de`; check your Sentry URL) and the token. These accounts get the `api` tools. Health check: `GET /api/0/organizations/`.
++- **OAuth** (`oauth`, first): the MCP server's own authorization server, discovered from its protected-resource metadata. It supports dynamic client registration and Client ID Metadata Documents with PKCE S256, so no OAuth application has to be created. Advertised scopes: org:read, project:write, team:write, event:write, alerts:write. These OAuth tokens only work on the MCP server, so these accounts get the `mcp` tools. The REST API needs a personal token. Health check: an MCP initialize and tool listing.
++- **Auth token** (`authToken`): create a personal token in Sentry under User settings > Personal Tokens, choosing the scopes you need. Enter the region (`us` or `de`; check your Sentry URL) and the token. A personal token supplies both `mcp` and `api` tools, using Sentry-Bearer for MCP and Bearer for REST. Existing organization-token accounts retain REST access; MCP availability depends on the token types and permissions Sentry accepts. Health check: `GET /api/0/organizations/`.
+ 
+ The earlier OAuth method on sentry.io's own endpoints, and the separate "Sentry MCP" account, are gone: that OAuth method needed a user-created Sentry OAuth application.
+ 
+ ## Known gaps
+ 
+ - Hosted Sentry only (`us` and `de` regions); self-hosted Sentry is not covered.
+-- OAuth accounts have no REST tools; auth-token accounts have no MCP tools.
+-- Only unauthenticated probing of the MCP server was done (401 with valid OAuth metadata); its tool list and annotations are unverified.
++- OAuth accounts have no REST tools; add a personal token to use both tool sections.
++- The MCP tool list and annotations are discovered live. Service availability and the token's permissions still bound each call.
+ - The OpenAPI document covers the documented public API, not every internal endpoint. Event ingestion (DSN) is not included.
+ - All POST, PUT, PATCH and DELETE operations are writes and ask for approval.
+--- a/index.ts
++++ b/index.ts
+@@ -40,8 +40,7 @@
+   auth: {
+     // First, so the connect page starts with it.
+     oauth: oauth2({ discover: mcpUrl }),
+-    // An auth token from Settings > Developer Settings (organization or personal token). Only the
+-    // REST API takes it.
++    // Personal tokens support both transports; existing organization tokens keep their REST access.
+     authToken: secrets({
+       label: "Auth token",
+       fields: object({
+@@ -74,13 +73,17 @@
+         {
+           mcp: router(
+             await accountRouter(
+-              accounts.flatMap((account) => (account.method === "oauth" ? [account] : [])),
++              accounts,
+               async (account) =>
+                 withApprovals(
+                   await mcpRouter({
+                     url: mcpUrl,
+                     account,
+-                    headers: { Authorization: `Bearer ${account.fields.access_token}` },
++                    headers: {
++                      Authorization: account.method === "authToken"
++                        ? `Sentry-Bearer ${account.fields.token}`
++                        : `Bearer ${account.fields.access_token}`,
++                    },
+                     cache,
+                     signal,
+                   }),
+@@ -118,7 +121,7 @@
+         {
+           title: "Sentry",
+           description:
+-            "Issues, events, traces and Seer root-cause analysis through Sentry's MCP server (mcp) for signed-in accounts, and the Sentry REST API (api) for auth-token accounts.",
++            "Issues, events, traces and Seer root-cause analysis through Sentry's MCP server (mcp) for sign-in and personal-token accounts, and the Sentry REST API (api) for auth-token accounts.",
+           icons,
+         },
+       ),
+--- a/package.json
++++ b/package.json
+@@ -7,7 +7,7 @@
+     "title": "Sentry"
+   },
+   "dependencies": {
+-    "apps": "0.0.1-beta.100",
++    "apps": "0.0.1-beta.104-basalt.13",
+     "@modelcontextprotocol/sdk": "1.32.1"
+   }
+ }

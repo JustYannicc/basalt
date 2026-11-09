@@ -1,5 +1,5 @@
 import { placementRepairFixture } from "./placement-repair-fixture.ts";
-import { uploadVersion } from "../cloudflare.ts";
+import { readActivePlacements, uploadVersion } from "../cloudflare.ts";
 import { CloudflareHttpError } from "@distilled.cloud/cloudflare/Errors";
 import assert from "node:assert/strict";
 import { Stack, evalStack } from "alchemy/Stack";
@@ -216,6 +216,18 @@ export const fixture = (
                       ],
                 });
               }),
+            placements: (worker, baseline) =>
+              worker.scriptName === "PoolWorker"
+                ? Effect.succeed(
+                    baseline.map(({ versionId }) => ({
+                      id: versionId,
+                      placement: undefined,
+                      bindings: [
+                        { name: "POOL_IMAGE_HASH", type: "plain_text", text: "a".repeat(16) },
+                      ],
+                    })),
+                  )
+                : readActivePlacements(worker, baseline),
             baseline:
               options.baseline ??
               ((worker) =>

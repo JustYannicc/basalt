@@ -1,0 +1,53 @@
+{
+  "scenarios": {
+    "sentryBothDesktop": {
+      "fixtures": "actors",
+      "title": "Sentry personal tokens power MCP and REST through the installed app at 1280px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Shared hosted connection UI is exercised through the complete self-host product."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted account authorization and linking are exercised through the complete self-host product."
+        }
+      }
+    },
+    "sentryBothPhone": {
+      "fixtures": "actors",
+      "title": "Sentry personal tokens power MCP and REST through the installed app at 390px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Shared hosted connection UI is exercised through the complete self-host product."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted account authorization and linking are exercised through the complete self-host product."
+        }
+      }
+    }
+  },
+  "runs": {
+    "sentryBothDesktop": [
+      "host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"
+    ],
+    "sentryBothPhone": [
+      "host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"
+    ]
+  },
+  "inputs": [
+    "src/catalog/sentry.ts",
+    "src/catalog/sentry.json",
+    "src/catalog/sentry.connections.json",
+    "src/catalog/sentry.patch",
+    "src/catalog/worker.ts"
+  ]
+}

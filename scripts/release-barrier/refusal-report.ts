@@ -1,11 +1,13 @@
 import type { ServingDiagnostic } from "./serving-failure.ts";
 import { appendFile } from "node:fs/promises";
 import type { ReleaseOperationFailure } from "./operation-failure.ts";
+import type { StateStoreVersionDiagnostic } from "./refusal.ts";
 import type { PlanRefusal } from "./manifest.ts";
 import type { ResourceDelta } from "./prop-diff.ts";
 
 interface Failure {
   reason: string;
+  stateStore?: StateStoreVersionDiagnostic;
   serving?: ServingDiagnostic;
   operation?: ReleaseOperationFailure["operation"];
   provider?: ReleaseOperationFailure["provider"];
@@ -54,6 +56,14 @@ export function refusalTable(failure: Failure) {
         .filter((value) => value !== undefined)
         .join("; "),
     ]);
+  if (failure.stateStore) {
+    const value = failure.stateStore;
+    rows.push([
+      failure.worker ?? "AlchemyStateStore",
+      "$stateStore",
+      `phase=${value.phase}; expected=${value.expected}; observed=${value.observed}`,
+    ]);
+  }
   if (failure.serving) {
     const value = failure.serving;
     rows.push([

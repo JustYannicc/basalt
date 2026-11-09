@@ -12,6 +12,11 @@ import {
   type Workflow,
 } from "./e2e-workflow.ts";
 
+// These runners typecheck and execute template source from a generated directory.
+const executedTemplates: Record<string, readonly string[]> = {
+  "e2e/obsidian/installed.test.ts": ["e2e/obsidian/installed.fixture.ts.txt"],
+};
+
 export function scriptCoverage(root: string, workflow: Workflow) {
   const scripts = codeFiles(join(root, "e2e")).map((file) => relative(root, file));
   const reached = new Set<string>();
@@ -28,7 +33,8 @@ export function scriptCoverage(root: string, workflow: Workflow) {
     if (reached.has(file) || !/^(?:e2e|scripts)\//.test(file) || !existsSync(join(root, file)))
       return;
     reached.add(file);
-    if (!/\.[cm]?[jt]sx?$/.test(file)) return;
+    if (!/\.[cm]?[jt]sx?$/.test(file) && !file.endsWith(".fixture.ts.txt")) return;
+    for (const template of executedTemplates[file] ?? []) visit(template);
     const source = ts.createSourceFile(
       file,
       readFileSync(join(root, file), "utf8"),

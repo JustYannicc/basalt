@@ -1,0 +1,57 @@
+{
+  "scenarios": {
+    "catalogToolSectionsDesktop": {
+      "fixtures": "actors",
+      "title": "Missing catalog tool sections connect their declared account method at 1280px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Shared hosted connection UI is exercised through the complete self-host product."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted account authorization and linking are exercised through the complete self-host product."
+        }
+      }
+    },
+    "catalogToolSectionsPhone": {
+      "fixtures": "actors",
+      "title": "Missing catalog tool sections connect their declared account method at 390px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Shared hosted connection UI is exercised through the complete self-host product."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted account authorization and linking are exercised through the complete self-host product."
+        }
+      }
+    }
+  },
+  "runs": {
+    "catalogToolSectionsDesktop": [
+      "host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"
+    ],
+    "catalogToolSectionsPhone": [
+      "host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"
+    ]
+  },
+  "inputs": [
+    ".upstream/packages/catalog/src/contracts/tool-sections.ts",
+    ".upstream/packages/catalog/src/contracts/catalog.ts",
+    ".upstream/packages/catalog/src/contracts/index.ts",
+    ".upstream/packages/ui/src/contracts/tool-sections.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/missing-tool-sections.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-tool-sections.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-tools.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-detail.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/connection-dialog.tsx"
+  ]
+}

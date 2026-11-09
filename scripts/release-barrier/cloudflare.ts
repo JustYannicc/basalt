@@ -59,3 +59,17 @@ export const uploadVersion = (worker: FrozenWorker) =>
     Effect.map((result) => ({ versionId: result.id, startupTimeMs: result.startupTimeMs })),
     Retry.none,
   );
+
+/** Diagnostic identity only; admission always uses the deployment's immutable serving versions. */
+export const readLatestVersion = (worker: Pick<FrozenWorker, "accountId" | "scriptName">) =>
+  Workers.listScriptVersions({ accountId: worker.accountId, scriptName: worker.scriptName }).pipe(
+    Effect.map((response) => {
+      const latest = [...(response.items ?? [])].sort(
+        (a, b) => (b.number ?? -1) - (a.number ?? -1),
+      )[0];
+      if (!latest?.id || !/^[A-Za-z0-9_-]{1,80}$/.test(latest.id))
+        throw new BarrierRefusal("latest-version-identity-unconfirmed", "PoolWorker");
+      return latest.id;
+    }),
+    Retry.policy(Retry.makeDefault),
+  );

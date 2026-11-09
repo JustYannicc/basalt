@@ -1,0 +1,217 @@
+/* Basalt Sync. Uses Obsidian's theme variables only, so it follows every theme, light or dark. */
+
+.basalt-sync-intro {
+  padding-bottom: var(--size-4-4);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.basalt-sync-intro h2 {
+  margin: 0 0 var(--size-4-1);
+  font-size: var(--font-ui-large);
+}
+.basalt-sync-intro p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  max-width: 52ch;
+}
+
+.basalt-sync-status-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  font-weight: var(--font-semibold);
+}
+.basalt-sync-status-icon {
+  display: inline-flex;
+  color: var(--text-muted);
+}
+.basalt-sync-status-icon svg {
+  width: var(--icon-s);
+  height: var(--icon-s);
+}
+.basalt-sync-status.is-ok .basalt-sync-status-icon {
+  color: var(--text-success);
+}
+.basalt-sync-status.is-warn .basalt-sync-status-icon {
+  color: var(--text-warning);
+}
+.basalt-sync-status.is-error .basalt-sync-status-icon {
+  color: var(--text-error);
+}
+
+.basalt-sync-callout {
+  margin: var(--size-4-3) 0;
+  padding: var(--size-4-3) var(--size-4-4);
+  border-radius: var(--radius-m);
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  font-size: var(--font-ui-small);
+}
+.basalt-sync-callout.is-warn {
+  border-color: rgba(var(--color-orange-rgb), 0.35);
+  background: rgba(var(--color-orange-rgb), 0.07);
+}
+.basalt-sync-callout.is-error {
+  border-color: rgba(var(--color-red-rgb), 0.35);
+  background: rgba(var(--color-red-rgb), 0.07);
+  color: var(--text-error);
+}
+.basalt-sync-callout strong {
+  display: block;
+  color: var(--text-normal);
+}
+.basalt-sync-callout p {
+  margin: var(--size-4-1) 0 var(--size-4-2);
+  color: var(--text-muted);
+}
+.basalt-sync-hidden {
+  display: none;
+}
+
+.basalt-sync-paths {
+  margin: 0;
+  padding-left: var(--size-4-5);
+  color: var(--text-muted);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  overflow-wrap: anywhere;
+}
+.basalt-sync-more {
+  font-family: var(--font-interface);
+  list-style: none;
+}
+
+.basalt-sync-note,
+.basalt-sync-muted {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+.basalt-sync-note {
+  margin: var(--size-4-3) 0;
+  padding: var(--size-4-2) var(--size-4-3);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+}
+
+.basalt-sync-how {
+  margin-top: var(--size-4-6);
+  padding-top: var(--size-4-4);
+  border-top: 1px solid var(--background-modifier-border);
+}
+.basalt-sync-how h3 {
+  margin: 0 0 var(--size-4-3);
+  font-size: var(--font-ui-medium);
+}
+.basalt-sync-how ol {
+  margin: 0;
+  padding-left: var(--size-4-5);
+  display: grid;
+  gap: var(--size-4-2);
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+.basalt-sync-how strong {
+  color: var(--text-normal);
+  font-weight: var(--font-semibold);
+}
+
+.basalt-sync-code {
+  font-family: var(--font-monospace);
+  letter-spacing: 0.06em;
+}
+.basalt-sync-code.is-large {
+  margin: var(--size-4-3) 0;
+  padding: var(--size-4-3);
+  text-align: center;
+  font-size: 1.6em;
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+  user-select: all;
+}
+
+.basalt-sync-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--size-4-2) var(--size-4-4);
+  margin: 0 0 var(--size-4-3);
+  font-size: var(--font-ui-small);
+}
+.basalt-sync-facts dt {
+  color: var(--text-muted);
+}
+.basalt-sync-facts dd {
+  margin: 0;
+  font-weight: var(--font-semibold);
+  overflow-wrap: anywhere;
+}
+
+.modal.basalt-sync-conflicts {
+  width: min(960px, 100vw);
+}
+.basalt-sync-conflict + .basalt-sync-conflict {
+  margin-top: var(--size-4-6);
+  padding-top: var(--size-4-4);
+  border-top: 1px solid var(--background-modifier-border);
+}
+.basalt-sync-file h4 {
+  margin: var(--size-4-3) 0 var(--size-4-2);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-small);
+  overflow-wrap: anywhere;
+}
+.basalt-sync-panes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--size-4-3);
+}
+.basalt-sync-pane {
+  min-width: 0;
+}
+.basalt-sync-pane-label {
+  margin-bottom: var(--size-4-1);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.basalt-sync-pane pre {
+  margin: 0;
+  max-height: 280px;
+  overflow: auto;
+  padding: var(--size-4-2) var(--size-4-3);
+  border-radius: var(--radius-s);
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary-alt);
+  font-size: var(--font-ui-smaller);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.basalt-sync-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-2);
+  margin-top: var(--size-4-3);
+}
+.basalt-sync-combined {
+  width: 100%;
+  margin-top: var(--size-4-2);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+}
+
+.basalt-sync-statusbar.is-warn {
+  color: var(--text-warning);
+}
+.basalt-sync-statusbar {
+  cursor: default;
+}
+
+@media (max-width: 640px) {
+  .basalt-sync-panes {
+    grid-template-columns: 1fr;
+  }
+  .basalt-sync-choices button {
+    flex: 1 1 100%;
+  }
+}
