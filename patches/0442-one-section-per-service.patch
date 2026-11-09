@@ -719,12 +719,13 @@ diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/package
 diff --git a/packages/ui/src/implementation/dashboard/name-account.tsx b/packages/ui/src/implementation/dashboard/name-account.tsx
 --- a/packages/ui/src/implementation/dashboard/name-account.tsx
 +++ b/packages/ui/src/implementation/dashboard/name-account.tsx
-@@ -136,7 +136,11 @@ export function NameAccountForm<E>({
+@@ -136,7 +136,12 @@ export function NameAccountForm<E>({
    const offered = identity?.resolving === false ? identity.name?.slice(0, 120) : undefined;
    const [suggestion, setSuggestion] = useState<string>();
    if (suggestion === undefined && offered !== undefined) setSuggestion(offered);
 -  const label = draft ?? authored ?? suggestion ?? offered ?? "";
-+  // The name the account gets anyway, such as "Clerk secret key", so the field never starts blank.
++  // The name the account gets anyway, such as "Clerk secret key", which the field starts with once
++  // the provider is known.
 +  // A sign-in's check can then report who it signed in as, which replaces it until someone types.
 +  const prefilled =
 +    provider === undefined ? undefined : providerAccountTitle(account, provider.definition);
@@ -732,7 +733,7 @@ diff --git a/packages/ui/src/implementation/dashboard/name-account.tsx b/package
    const waiting = identity?.resolving && label.trim() === "";
    const status = identity?.resolving
      ? "Checking account…"
-@@ -158,8 +162,11 @@ export function NameAccountForm<E>({
+@@ -158,8 +163,11 @@ export function NameAccountForm<E>({
          const next = label.trim();
          if (pending || waiting) return;
          const described = accountDescriptionValue(description);
@@ -832,7 +833,7 @@ diff --git a/apps/local/web/src/implementation/pages/catalog-connection-guidance
 -  const guidance = Option.getOrUndefined(catalog.data)?.find(
 -    (entry) => entry.package === copiedFrom,
 -  )?.connectionGuidance;
-+  const entry = Option.getOrUndefined(catalog.data)?.find((entry) => entry.package === copiedFrom);
++  const entry = Option.getOrUndefined(catalog.data)?.find((item) => item.package === copiedFrom);
 +  const guidance = entry?.connectionGuidance;
    const waiting =
      AsyncResult.isInitial(overview.result) ||
@@ -938,15 +939,27 @@ diff --git a/e2e/support/name-account-no-email.ts b/e2e/support/name-account-no-
 diff --git a/apps/docs/content/connect-an-account.mdx b/apps/docs/content/connect-an-account.mdx
 --- a/apps/docs/content/connect-an-account.mdx
 +++ b/apps/docs/content/connect-an-account.mdx
-@@ -16,7 +16,8 @@ There are two kinds of credential, and the provider decides which it accepts:
+@@ -16,7 +16,9 @@ There are two kinds of credential, and the provider decides which it accepts:
  ## From the dashboard
  
  Every account is connected for an app. Choose **Connect new account** at the end of a provider's list on the app's
 -**Accounts** tab, then choose **Connect** to start browser sign-in. If the provider
-+**Accounts** tab. When the app connects one service in more than one way, such as a sign-in and an API key, a menu
-+opens: pick one. For a sign-in, choose **Connect** to start browser sign-in. If the provider
++**Accounts** tab. When an app lists one service more than once, such as a sign-in beside an older API key, they share
++one section and **Connect new account** opens a menu of their ways to connect: pick one. Otherwise the dialog lists
++the provider's methods. For a sign-in, choose **Connect** to start browser sign-in. If the provider
  needs credentials, enter them in the same dialog. The connection dialog contains the
  sign-in methods supported by the provider.
+ 
+@@ -48,7 +50,9 @@ You name an account after it connects. Executor names each new account
+ `Default`, then `Default 2`, and so on when that name is already in use for the
+ provider. Once the account is saved, or browser sign-in returns, a **Name this
+ account** dialog offers to rename it to something such as “Work” or “Personal.”
+-Closing it keeps the default. Reconnecting keeps the existing name. You can also
++It starts with the name the account shows by default, such as its service and kind
++or the email it signed in as. Saving that unchanged, or closing the dialog, keeps
++the default. Reconnecting keeps the existing name. You can also
+ rename an account later from its menu on the app's **Accounts** tab, or with **Edit
+ details** on the **Accounts** page.
  
 diff --git a/e2e/tests/account-connection-query.spec.ts b/e2e/tests/account-connection-query.spec.ts
 --- a/e2e/tests/account-connection-query.spec.ts
@@ -1272,9 +1285,9 @@ diff --git a/e2e/tests/app-service-section.spec.ts b/e2e/tests/app-service-secti
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/app-service-section.spec.ts
-@@ -0,0 +1,216 @@
+@@ -0,0 +1,218 @@
 +import { expect, layer } from "@effect/vitest";
-+import { Effect } from "effect";
++import { Effect, Schema } from "effect";
 +import type { Page } from "playwright";
 +import { randomUUID } from "node:crypto";
 +import { Actors } from "../support/actors.ts";
@@ -1450,9 +1463,11 @@ new file mode 100644
 +        accounts.push(...added);
 +        // Saving the untouched default keeps the generated label, so a later check can still name it.
 +        expect(added).toHaveLength(1);
-+        expect(
-+          (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${added[0]}`)).body,
-+        ).toMatchObject({ account: { label: expect.stringMatching(/^Default( \d+)?$/) } });
++        const saved = yield* body(
++          Schema.Struct({ account: Schema.Struct({ label: Schema.String }) }),
++          yield* api.request(actors.owner, "GET", `${prefix}/accounts/${added[0]}`),
++        );
++        expect(saved.account.label).toBe("Default");
 +        // The new account joined the requirement its method belongs to, beside the earlier one.
 +        expect(after.filter(([requirement]) => requirement === "mcp")).toHaveLength(2);
 +        expect(after.filter(([requirement]) => requirement === "rest")).toHaveLength(1);
