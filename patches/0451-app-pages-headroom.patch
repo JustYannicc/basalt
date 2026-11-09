@@ -1,14 +1,15 @@
 diff --git a/apps/hosted/cloud/src/infrastructure/app-pages-platform.ts b/apps/hosted/cloud/src/infrastructure/app-pages-platform.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..1357d0684cb16a9da383a66b99df86f3089e17d1
+index 0000000000000000000000000000000000000000..b3e3035fc97d4db211c5b844615beffce18d457c
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/app-pages-platform.ts
-@@ -0,0 +1,5 @@
+@@ -0,0 +1,6 @@
 +/** App pages read remote assets and call bound services; they use no local OS services. */
 +import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
-+import { Layer, Path } from "effect";
++import * as NodePath from "@effect/platform-node/NodePath";
++import { Layer } from "effect";
 +
-+export const layer = Layer.mergeAll(NodeCrypto.layer, Path.layer);
++export const layer = Layer.mergeAll(NodeCrypto.layer, NodePath.layer);
 diff --git a/apps/hosted/cloud/src/infrastructure/worker-build.ts b/apps/hosted/cloud/src/infrastructure/worker-build.ts
 index f536c8449a5153342f9113cb9274a20e2222407e..f816871fedebafb14935802acefe446eddd0048f 100644
 --- a/apps/hosted/cloud/src/infrastructure/worker-build.ts
@@ -67,10 +68,10 @@ index 0000000000000000000000000000000000000000..68d6a306f0bffbff486934096b4b3768
 +};
 diff --git a/packages/apps/src/implementation/ui-document-native.ts b/packages/apps/src/implementation/ui-document-native.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..d07d039a41a6c300e9aa966bdf7796078204ec94
+index 0000000000000000000000000000000000000000..3a7a7b85f6ede3fd826ef001711c97d31ace93fd
 --- /dev/null
 +++ b/packages/apps/src/implementation/ui-document-native.ts
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,57 @@
 +/** Cloud uses workerd's HTML parser instead of uploading another HTML engine. */
 +import type {
 +  HTMLRewriter as NativeHTMLRewriter,
@@ -85,6 +86,7 @@ index 0000000000000000000000000000000000000000..d07d039a41a6c300e9aa966bdf779607
 +export const versionDocument = async (html: string, version: string) => {
 +  const rewrite = documentResources(version);
 +  let css = "";
++  let literal = "";
 +  return new HTMLRewriter()
 +    .on("*", {
 +      element(element) {
@@ -110,6 +112,17 @@ index 0000000000000000000000000000000000000000..d07d039a41a6c300e9aa966bdf779607
 +        if (text.lastInTextNode) {
 +          text.replace(rewrite.css(css), { html: true });
 +          css = "";
++        } else text.remove();
++      },
++    })
++    .on("title,textarea", {
++      text(text) {
++        literal += text.text;
++        if (text.lastInTextNode) {
++          text.replace(literal.replaceAll("<!--executor-ui-->", "&lt;!--executor-ui--&gt;"), {
++            html: true,
++          });
++          literal = "";
 +        } else text.remove();
 +      },
 +    })
@@ -447,10 +460,10 @@ index 8c3659727e38c13bc74e8e54ceb2c86a2469ceec..c294d8f31f847617e2df3f46fda28d3e
    return serialize(document);
  };
 diff --git a/packages/apps/src/implementation/ui-serving.ts b/packages/apps/src/implementation/ui-serving.ts
-index 8a4e39512ff4213c66bfe6381ed4880addf8a1cc..591f8d2f9eea14ccfbdd31f0c27604b54b85e2bb 100644
+index 8a4e39512ff4213c66bfe6381ed4880addf8a1cc..4bed39eb7508881647279a12630787a24705364b 100644
 --- a/packages/apps/src/implementation/ui-serving.ts
 +++ b/packages/apps/src/implementation/ui-serving.ts
-@@ -108,13 +108,13 @@ export const appDocument = <E, R>(options: {
+@@ -108,13 +108,14 @@ export const appDocument = <E, R>(options: {
      // The watcher is inline so a page costs no extra request. An inline module runs after
      // parsing, as the deferred file it replaces did.
      const boot = `${ready}${metadata}${accountsLink}<script type="application/json" id="executor-context">${context}</script>${appFailureBootstrap}${notice === undefined || notice.problems.length === 0 ? "" : accountNoticeBootstrap(notice)}<script type="module">${appWatchSource}</script>`;
@@ -463,6 +476,7 @@ index 8a4e39512ff4213c66bfe6381ed4880addf8a1cc..591f8d2f9eea14ccfbdd31f0c27604b5
 -    );
 +    const rendered = versionDocument(new TextDecoder().decode(document.body), options.version);
 +    const versioned =
++      // oxlint-disable-next-line executor/authored-code-through-adapter -- HTMLRewriter reads retained text, with no authored callback.
 +      typeof rendered === "string" ? rendered : yield* Effect.promise(() => rendered);
 +    return HttpServerResponse.text(versioned.replace("<!--executor-ui-->", boot), {
 +      contentType: "text/html",

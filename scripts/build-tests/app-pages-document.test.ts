@@ -18,7 +18,7 @@ test("native app documents preserve portable resource rewriting across HTML pars
     stdin: {
       contents: `import { versionDocument } from "./ui-document.ts";
         export default { async fetch(request) {
-          return new Response(await versionDocument(await request.text(), "version /one"));
+          return new Response((await versionDocument(await request.text(), "version /one")).replace("<!--executor-ui-->", '<meta name="fixture-bootstrap" content="loaded">'));
         } };`,
       resolveDir: fileURLToPath(
         new URL("../../.upstream/packages/apps/src/implementation/", import.meta.url),
@@ -54,6 +54,8 @@ test("native app documents preserve portable resource rewriting across HTML pars
     `<style>${"/* text chunk */".repeat(12_000)} .a { background: u\\72l(mark.svg); border-image: url("mark.svg"/**/); }</style><style>.b{background:url(second.svg)}</style><div style='background: url(&quot;mark.svg&quot;); color: red'>&copy;&amp;</div>`,
     `<table><tr><td><img src="../mark.svg?x=1#two"></table><img src="/root.svg"><img src="https://example.invalid/mark.svg"><img src="#mark"><img src="?mark"><iframe src="frame"></iframe><object data="mark.svg"></object>`,
     `<img src="&#x2f;root.svg"><img src="caf&eacute;.svg?x=&amp;copy;&amp;y=2"><img src="one.svg" src="two.svg"><script>const html = '<img src="skip.svg">';</script><textarea>&amp;raw</textarea><template><div style="background: url(&quot;with&#32;space.svg&quot;)"></div></template>`,
+    `<html><head><title>&lt;!--executor-ui--&gt;</title></head><body><div title="<!--executor-ui-->"></div><textarea><!--executor-ui--></textarea><!--executor-ui--></body></html>`,
+    `<html><head><title>${"t".repeat(65_530)}<!--executor-ui--></title></head><body><textarea><!--executor-ui--></textarea><!--executor-ui--></body></html>`,
   ];
   try {
     for (const [index, html] of documents.entries()) {
@@ -64,7 +66,14 @@ test("native app documents preserve portable resource rewriting across HTML pars
       assert.equal(response.status, 200);
       const native = await response.text();
       const actual = serialize(parse(native));
-      const expected = await versionDocument(html, "version /one");
+      const expected = serialize(
+        parse(
+          (await versionDocument(html, "version /one")).replace(
+            "<!--executor-ui-->",
+            '<meta name="fixture-bootstrap" content="loaded">',
+          ),
+        ),
+      );
       let mismatch = 0;
       while (mismatch < actual.length && actual[mismatch] === expected[mismatch]) mismatch++;
       assert.ok(
