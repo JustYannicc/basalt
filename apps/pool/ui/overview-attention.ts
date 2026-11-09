@@ -78,3 +78,7 @@ export const bankedResetCount = (view: PoolView) =>
 
 export const bankedResetText = (count: number) =>
   `${count} banked ${count === 1 ? "reset" : "resets"} available`;
+
+/** The total decides the noun: "1 of 1 person", "0 of 3 people". */
+export const peopleOfText = (active: number, total: number) =>
+  `${active} of ${total} ${total === 1 ? "person" : "people"}`;

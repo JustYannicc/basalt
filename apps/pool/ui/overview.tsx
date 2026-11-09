@@ -21,6 +21,7 @@ import {
   accountsNeedingSomeone,
   bankedResetCount,
   bankedResetText,
+  peopleOfText,
 } from "./overview-attention.ts";
 import { currentCapacity } from "./overview-snapshot.ts";
 
@@ -299,9 +300,11 @@ function Answers({
       >
         {sum && (
           <span className="text-[13px] text-muted-foreground tabular-nums">
-            {usage?.directory.activeCount ?? people.length} of{" "}
-            {usage?.directory.totalCount ?? people.length} people active ·{" "}
-            {sum.requests.toLocaleString()} requests in {days} days
+            {peopleOfText(
+              usage?.directory.activeCount ?? people.length,
+              usage?.directory.totalCount ?? people.length,
+            )}{" "}
+            active · {sum.requests.toLocaleString()} requests in {days} days
           </span>
         )}
       </Answer>
