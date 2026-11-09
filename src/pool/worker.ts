@@ -28,7 +28,7 @@ import { requirePoolUse } from "./authorization.ts";
 import { isPoolAcquisitionPath } from "./connection-policy.ts";
 import { requireActivePoolOrganization } from "./organization-access.ts";
 import { failureResponse, unavailable } from "./json.ts";
-import { isPublicModelPath, PoolLifecycle, poolLifecycle, poolPort } from "./lifecycle.ts";
+import { isPublicModelPath, PoolLifecycle, poolPort } from "./lifecycle.ts";
 import { nativeControlPath, nativeModelHeader, nativeSessionPath } from "./native-contract.ts";
 import { nativeResponse, nativeSession } from "./native-response.worker.ts";
 import { hasActiveHomeApiKey, homeApiKeyCandidates, type HomeApiKeyLookup } from "./model-auth.ts";

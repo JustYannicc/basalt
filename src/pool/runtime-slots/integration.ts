@@ -152,7 +152,7 @@ export class RuntimeHandoff {
     });
     this.adopting = barrier;
     try {
-      await Promise.all([...this.preparations]);
+      await Promise.all(this.preparations);
       await this.authority.selection(proof);
       await this.driver.admit(proof.target, envelope);
       await this.slots.adopt(
