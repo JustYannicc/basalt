@@ -384,6 +384,8 @@ test(
     let overviewShape = (value) => value;
     // When set, replaces the overview's people directory counts.
     let directoryResult;
+    let usagePartial = false;
+    let seriesNext = null;
     const answer = (entry) =>
       entry.response.end(
         JSON.stringify(entry.fresh && freshResult !== undefined ? freshResult : viewResult),
@@ -415,6 +417,9 @@ test(
         }
         const value = overviewFixture(JSON.parse(body).input, usageResult.value);
         if (directoryResult) value.directory = directoryResult;
+        value.partial = usagePartial;
+        value.people.next = seriesNext;
+        value.models.next = seriesNext;
         const tokens = usageResult.value.total.tokens.total;
         if (tokens > 0) {
           value.metrics.apiBilled = {
@@ -447,7 +452,7 @@ test(
                   })),
                 },
                 metrics: value.metrics,
-                partial: false,
+                partial: value.partial,
               }
             : overviewShape(value),
         );
@@ -564,12 +569,16 @@ test(
         capacity = capacityFixture,
         overview = (value) => value,
         personal = false,
+        partial = false,
+        next = null,
         people,
       } = {},
     ) => {
       usageResult = usage;
       overviewShape = overview;
       directoryResult = people;
+      usagePartial = partial;
+      seriesNext = next;
       capacityReply = capacity;
       holdCapacity = capacityHeld;
       member = personal;
@@ -753,7 +762,7 @@ test(
               if (!subscriptionsBaseline) {
                 assert.match(
                   text,
-                  new RegExp(`(?<!\\d)1 of 1 ${noun} active · 0 requests in \\d+ days`),
+                  new RegExp(`(?<!\\d)1 of 1 ${noun} active · 0 requests · last \\d+ days`),
                 );
                 assert.match(
                   text,
@@ -840,7 +849,7 @@ test(
                 await frame.getByText("0 of 3 people active").waitFor();
                 await frame.getByText("0 of 3 people with pool access").waitFor();
                 const text = await frame.locator("body").innerText();
-                assert.match(text, /(?<!\d)0 of 3 people active · 0 requests in \d+ days/);
+                assert.match(text, /(?<!\d)0 of 3 people active · 0 requests · last \d+ days/);
                 assert.match(
                   text,
                   /(?<!\d)0 of 3 people with pool access made a request in these \d+ days\./,
@@ -1920,6 +1929,32 @@ test(
           });
         },
       );
+
+    await t.test(
+      "incomplete coverage only names truncated pages when a next cursor remains",
+      async () => {
+        const usage = {
+          ok: true,
+          value: {
+            ...emptyUsage.value,
+            total: { ...emptyUsage.value.total, requests: 1 },
+            models: [{ provider: "codex", model: "Synthetic model" }],
+          },
+        };
+        for (const next of [null, "synthetic-next-page"]) {
+          viewResult = { ok: true, value: { ...empty, providers, isOwner: true } };
+          await session(
+            async ({ frame }) => {
+              const who = frame.locator("#who");
+              await who.getByText(/1 request in 7 days/).waitFor();
+              const note = who.getByText(/Showing the first 10 pages/);
+              assert.equal(await note.count(), next === null ? 0 : 1);
+            },
+            { usage, partial: true, next },
+          );
+        }
+      },
+    );
 
     const retained = () =>
       poolView(Date.now(), {
