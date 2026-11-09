@@ -38,3 +38,14 @@
      oauth: oauth2({ discover: mcpUrl }),
    },
    health: (check) =>
+--- a/package.json
++++ b/package.json
+@@ -7,7 +7,7 @@
+     "title": "Canva"
+   },
+   "dependencies": {
+-    "apps": "0.0.1-beta.100",
++    "apps": "0.0.1-beta.104-basalt.13",
+     "@modelcontextprotocol/sdk": "1.32.1"
+   }
+ }
