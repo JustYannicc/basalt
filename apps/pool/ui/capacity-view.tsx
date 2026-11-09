@@ -258,7 +258,7 @@ function Panel({
                   .map((entry) => ({ id: entry.key, label: optionLabels.get(entry.key)! }))}
                 onChange={onChoose}
               />
-              {press.text && (
+              {press.text && line.key === press.key && (
                 <span className="max-w-[19rem] text-right text-xs text-muted-foreground text-pretty max-[540px]:text-left">
                   {press.text}
                 </span>

@@ -935,15 +935,26 @@ test(
                   const body = await panel.innerText();
                   assert.match(body, /No current reading/);
                   assert.match(body, /When idle, the full allowance starts on next use/);
-                  assert.doesNotMatch(body, /Nominal|100%|80%|out now/);
+                  assert.doesNotMatch(body, /Nominal|100%|80%|out now|showing Weekly/);
                   await panel.getByRole("radio", { name: "Weekly", exact: true }).click();
                   await panel
                     .getByRole("radio", { name: "Weekly", exact: true, checked: true })
                     .waitFor();
                   assert.match(await panel.innerText(), /Nominal/);
                   await panel.getByRole("radio", { name: "5-hour", exact: true }).click();
+                  await panel
+                    .getByRole("radio", { name: "5-hour", exact: true, checked: true })
+                    .waitFor();
                 }
               }
+              await frame.evaluate(async () => {
+                await Promise.all(
+                  document
+                    .getAnimations()
+                    .filter((animation) => animation.effect?.getTiming().iterations !== Infinity)
+                    .map((animation) => animation.finished.catch(() => {})),
+                );
+              });
               assert.ok(
                 await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
               );
