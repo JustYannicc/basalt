@@ -9,6 +9,43 @@ import { handleCatalog } from "./worker.ts";
 import { onServedFramework } from "./framework.ts";
 import { planetscaleSource } from "./planetscale.ts";
 
+/** Independent minimum-request fixture for checking the operation-scope mapping. */
+const hosted = [
+  "read_user",
+  "read_organization",
+  "write_organization",
+  "read_databases",
+  "write_databases",
+  "organization:create_databases",
+  "organization:delete_databases",
+  "organization:read_databases",
+  "organization:write_databases",
+  "organization:read_branches",
+  "organization:write_branches",
+  "organization:delete_branches",
+  "organization:read_deploy_requests",
+  "organization:write_deploy_requests",
+  "organization:approve_deploy_requests",
+  "organization:deploy_deploy_requests",
+  "organization:read_backups",
+  "organization:write_backups",
+  "organization:delete_backups",
+  "organization:restore_backups",
+  "organization:manage_passwords",
+  "organization:manage_read_only_passwords",
+  "organization:read_workflows",
+  "organization:write_workflows",
+  "organization:read_audit_logs",
+  "user:read_organizations",
+  "organization:promote_branches",
+  "database:demote_branches",
+  "organization:write_members",
+  "organization:manage_sso",
+  "organization:read_payment_method",
+  "organization:write_payment_method",
+  "organization:read_invoices",
+];
+
 const file = (path: string) =>
   planetscaleSource.files.find((entry) => entry.path === path)?.content;
 
