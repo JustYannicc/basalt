@@ -53,47 +53,79 @@ test("a bridge ignoring abort still cannot hold verification open", async () => 
   await assert.rejects(work, (error) => error instanceof Error && error.name === "AbortError");
 });
 
-test("readiness body parsing is bounded when response headers arrive but its body stalls", async () => {
-  const abort = new AbortController();
-  let disposed = false,
-    parsed = false;
-  const connection = await openDeploymentReadiness({
-    worker: "fixture-worker",
-    accountId: "d".repeat(32),
-    key,
-    target,
-    connect: async () => ({
-      env: {
-        POOL_OPERATIONS: {
-          async fetch() {
-            const response = new Response();
-            Object.defineProperty(response, "json", {
-              value: () => {
-                parsed = true;
-                abort.abort();
-                return new Promise(() => {});
-              },
-            });
-            return response;
+for (const operation of ["ready", "adoption"] as const)
+  test(`${operation} body parsing is bounded when response headers arrive but its body stalls`, async () => {
+    const abort = new AbortController();
+    let disposed = false,
+      parsed = false;
+    const connection = await openDeploymentReadiness({
+      worker: "fixture-worker",
+      accountId: "d".repeat(32),
+      key,
+      target,
+      connect: async () => ({
+        env: {
+          POOL_OPERATIONS: {
+            async fetch() {
+              const response = new Response();
+              Object.defineProperty(response, "json", {
+                value: () => {
+                  parsed = true;
+                  abort.abort();
+                  return new Promise(() => {});
+                },
+              });
+              return response;
+            },
           },
         },
-      },
-      async dispose() {
-        disposed = true;
-      },
-    }),
+        async dispose() {
+          disposed = true;
+        },
+      }),
+    });
+    try {
+      await assert.rejects(
+        connection[operation](abort.signal),
+        (error) => error instanceof Error && error.name === "AbortError",
+      );
+      assert.equal(parsed, true, "headers must complete before body parsing is aborted");
+    } finally {
+      await connection.close();
+    }
+    assert.equal(disposed, true);
   });
-  try {
-    await assert.rejects(
-      connection.ready(abort.signal),
-      (error) => error instanceof Error && error.name === "AbortError",
-    );
-    assert.equal(parsed, true, "headers must complete before body parsing is aborted");
-  } finally {
-    await connection.close();
-  }
-  assert.equal(disposed, true);
-});
+
+for (const status of [401, 409])
+  test(`code adoption preserves the terminal HTTP ${status} refusal`, async () => {
+    let requests = 0;
+    const connection = await openDeploymentReadiness({
+      worker: "fixture-worker",
+      accountId: "d".repeat(32),
+      key,
+      target,
+      connect: async () => ({
+        env: {
+          POOL_OPERATIONS: {
+            async fetch() {
+              requests++;
+              return new Response(null, { status });
+            },
+          },
+        },
+        dispose: async () => {},
+      }),
+    });
+    try {
+      await assert.rejects(
+        connection.adoption(new AbortController().signal),
+        (error: unknown) => error instanceof Error && "status" in error && error.status === status,
+      );
+      assert.equal(requests, 1);
+    } finally {
+      await connection.close();
+    }
+  });
 
 test("an already-aborted bound still handles a rejection from work that triggered abort", async () => {
   const abort = new AbortController();

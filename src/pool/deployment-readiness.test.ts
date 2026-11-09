@@ -106,3 +106,60 @@ for (const field of ["candidate", "workerInput", "imageHash"] as const)
     assert.equal(response.status, 503);
     assert.deepEqual(await response.json(), { outcome: "readiness-error", stage: "readiness" });
   });
+
+test("signed code adoption reports only release identity without warming the runtime", async () => {
+  const signed = await signEnvelope(key, deploymentReadinessPrefix, {
+    ...target,
+    phase: "adoption",
+    at: now,
+    expiresAt: now + 60_000,
+  });
+  const observed = { ...receipt, candidate: "e".repeat(40), privateField: "never-output" };
+  const response = await handleDeploymentReadiness(
+    request(signed),
+    target,
+    key,
+    async (phase) => {
+      assert.equal(phase, "adoption");
+      return observed;
+    },
+    () => now,
+  );
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), {
+    outcome: "adopting",
+    observed: {
+      candidate: observed.candidate,
+      workerInput: target.workerInput,
+      imageHash: target.imageHash,
+      instanceId: receipt.instanceId,
+    },
+  });
+  const adopted = await handleDeploymentReadiness(
+    request(signed),
+    target,
+    key,
+    async () => receipt,
+    () => now,
+  );
+  assert.equal(adopted.status, 200);
+  assert.deepEqual(await adopted.json(), { ...target, instanceId: receipt.instanceId });
+});
+
+test("code adoption never returns malformed or private identity values", async () => {
+  const signed = await signEnvelope(key, deploymentReadinessPrefix, {
+    ...target,
+    phase: "adoption",
+    at: now,
+    expiresAt: now + 60_000,
+  });
+  const response = await handleDeploymentReadiness(
+    request(signed),
+    target,
+    key,
+    async () => ({ ...receipt, candidate: "private@host.invalid" }),
+    () => now,
+  );
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { outcome: "readiness-error", stage: "readiness" });
+});
