@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.providerAccountMethods {
+    metadata {
+      constraint "Connection destinations use active visible requirements with the exact trusted provider identity, existing scope permissions and an available method for both source and consumer. Registered pools never connect accounts; canonical service provenance still controls provider-app classification and imports."
+    }
+  }
+}
