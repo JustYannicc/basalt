@@ -51,7 +51,12 @@ export async function startNeonFixture() {
   const rest = await listen(async (request, response) => {
     const url = new URL(request.url, "http://localhost");
     if (documents.has(url.pathname)) return json(response, documents.get(url.pathname));
-    calls.push({ transport: "rest", path: url.pathname, credential: credential(request) });
+    calls.push({
+      transport: "rest",
+      method: request.method,
+      path: url.pathname,
+      credential: credential(request),
+    });
     if (!credential(request).startsWith(neonKey("")))
       return json(response, { message: "unauthorized" }, 401);
     if (url.pathname === "/api/v2/users/me") return json(response, { id: "synthetic-neon-user" });
@@ -63,7 +68,7 @@ export async function startNeonFixture() {
     const url = new URL(request.url, "http://localhost");
     if (url.pathname !== "/mcp") return json(response, { error: "Unknown MCP route" }, 404);
     const auth = credential(request);
-    calls.push({ transport: "mcp", credential: auth });
+    calls.push({ transport: "mcp", method: request.method, credential: auth });
     if (!auth.startsWith(neonKey(""))) return json(response, { error: "Unauthorized" }, 401);
     if (request.method !== "POST") {
       response.writeHead(405);

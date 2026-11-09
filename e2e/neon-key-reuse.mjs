@@ -150,6 +150,18 @@ const program = Effect.gen(function* () {
         Effect.promise(() => writeFile(join(directory, name), JSON.stringify(body, null, 2))),
       ),
     );
+  // What the account's row shows: its check and any status badges.
+  const health = (account) =>
+    request("POST", `${prefix}/accounts/${account.id}/health`).pipe(
+      Effect.map((body) => {
+        const check = body.apps.find((entry) => entry.app === app.id)?.check;
+        return { status: check?.status, badges: check?.displayStatus?.badges ?? [] };
+      }),
+    );
+  const reconnect = (tools) => ({
+    status: "healthy",
+    badges: [{ label: `Reconnect to use this key for the ${tools}`, tone: "warning" }],
+  });
   const restTool = "api.fixture.read";
   const mcpTool = "mcp.list_projects";
   const attempt = (tool, account) =>
@@ -239,9 +251,24 @@ const program = Effect.gen(function* () {
     },
   );
 
+  // Each earlier key's row says to reconnect it for the other part, without failing its check.
+  check(
+    "earlier REST key's row says to reconnect for MCP",
+    yield* health(earlierRest),
+    reconnect("MCP tools"),
+  );
+  check(
+    "earlier MCP key's row says to reconnect for REST",
+    yield* health(earlierMcp),
+    reconnect("REST API tools"),
+  );
+
   // Reconnecting an earlier key grants it the hosts listed now.
   yield* saveKey("neon", "Earlier REST key", earlierRest.id);
   yield* saveKey("neonMcp", "Earlier MCP key", earlierMcp.id);
+  const noNote = { status: "healthy", badges: [] };
+  for (const account of [earlierRest, earlierMcp])
+    check(`reconnected ${account.account} row has no note`, yield* health(account), noNote);
   check(
     "reconnected keys leave no unavailable source",
     unavailable(yield* index("reconnected-index.json")),
@@ -275,6 +302,21 @@ const program = Effect.gen(function* () {
     transport: "mcp",
     account: mcpKey.account,
   });
+  // A new key's check asks the other host with the key itself, which the network lets through.
+  const probes = (account) =>
+    Effect.gen(function* () {
+      const from = fixture.calls.length;
+      const result = yield* health(account);
+      return {
+        ...result,
+        asked: fixture.calls
+          .slice(from)
+          .filter((entry) => entry.method === "HEAD" && entry.credential === account.key)
+          .map((entry) => entry.transport),
+      };
+    });
+  check("new REST key's row has no note", yield* probes(restKey), { ...noNote, asked: ["mcp"] });
+  check("new MCP key's row has no note", yield* probes(mcpKey), { ...noNote, asked: ["rest"] });
   return {
     results,
     earlierAccounts: [earlierRest.id, earlierMcp.id],

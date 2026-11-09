@@ -2,8 +2,8 @@
   "package": "@executor.sh/neon",
   "publishedUrl": "https://catalog.executor.sh/apps/neon.json",
   "publishedSha256": "74f9a2831817166b57b9f3e11db523c1d180b426b2b52637adc92716b4e43795",
-  "carriedSha256": "0639362d0ff066c686fce30828c9e902466b1a36caaccc1e955b12fd459982e1",
-  "patchSha256": "2da96ce49090ae9ad70e246184d2f2e4af2bd05dd70d52b8dbc2c345b515aa9b",
+  "carriedSha256": "2c7a046b237551092ebc94cdeffd70c4a1c0f2c0fa05bf8e8c9b3f11b256521e",
+  "patchSha256": "63622b2bde217af624510a979fa242467700b6fc8df20512c46b56f64c88adc3",
   "appsVersion": "0.0.1-beta.104-basalt.14",
   "license": "Not declared in the published package",
   "contribution": {

@@ -5,16 +5,65 @@
  Neon's official remote MCP server at https://mcp.neon.tech/mcp (Streamable HTTP), mounted under `mcp` with its own "Neon MCP" account. It adds what the management API lacks: running SQL and transactions, schema inspection and migrations, branch comparison and query tuning. Tools are listed live (the public listing at https://mcp.neon.tech/api/list-tools returned 114 tools in write mode; the count depends on readonly, projectId and category scoping). Every tool without `readOnlyHint` requires approval; that listing carries no annotations, so which tools skip approval cannot be confirmed without an authenticated session.
  
 -- API key: a personal or organization API key sent as a bearer token (the same kind of key as the `api` account).
-+- API key: a personal or organization API key sent as a bearer token. It is the same kind of key as the `api` account, so one key saved for either account serves both `api` and `mcp`. A key saved before keys covered both servers reaches only the one it was saved for until you reconnect it: a REST key shows as unavailable under `mcp`, and an MCP key's `api` calls fail before they are sent.
++- API key: a personal or organization API key sent as a bearer token. It is the same kind of key as the `api` account, so one key saved for either account serves both `api` and `mcp`. A key saved before keys covered both servers reaches only the one it was saved for until you reconnect it: its row in the app's Accounts tab says so, a REST key shows as unavailable under `mcp`, and an MCP key's `api` calls fail before they are sent.
  - OAuth: the server supports dynamic client registration (RFC 7591) with PKCE S256, discovered from https://mcp.neon.tech/.well-known/oauth-authorization-server; no OAuth app has to be created and the redirect URI is registered automatically. These tokens only work for the MCP server, which is why `api` stays API-key only.
  - Neon recommends the MCP server for development and testing only, not production databases (https://neon.com/docs/ai/neon-mcp-server). If IP Allow is enabled on a project, allow the hosted server's IPs `34.192.103.46` and `23.22.233.166`.
  
 --- a/index.ts
 +++ b/index.ts
-@@ -17,9 +17,11 @@
+@@ -3,6 +3,7 @@
+   decodeJson,
+   defineApp,
+   defineProvider,
++  NetworkRefused,
+   oauth2,
+   object,
+   router,
+@@ -17,9 +18,52 @@
  import { icons } from "./icon.js";
  import { options } from "./openapi.js";
  
++const mcpUrl = "https://mcp.neon.tech/mcp";
++
++/**
++ * A key may only be sent to the hosts its provider listed when it was saved, so a key saved
++ * before both providers listed both hosts is refused for the other one before anything is sent.
++ * The check asks the other host without reading its answer and, on that refusal, the account's
++ * row says to reconnect. The ask shares the check's cancellation and at most five seconds of what
++ * is left of its deadline, so a slow host never fails a check whose own read passed.
++ */
++async function otherHostStatus(
++  fetch: (input: string, init?: RequestInit) => Promise<Response>,
++  {
++    url,
++    token,
++    signal,
++    deadline,
++    tools,
++  }: { url: string; token: string; signal: AbortSignal; deadline?: number; tools: string },
++) {
++  const remaining = Math.min(5_000, (deadline ?? Date.now() + 5_250) - Date.now() - 250);
++  if (remaining <= 0) return undefined;
++  try {
++    await fetch(url, {
++      method: "HEAD",
++      signal: AbortSignal.any([signal, AbortSignal.timeout(Math.floor(remaining))]),
++      headers: { Authorization: `Bearer ${token}` },
++    });
++  } catch (error) {
++    // Any other failure says nothing about this key's hosts, and the check's own read passed.
++    if (error instanceof NetworkRefused && error.refusal.reason === "credential_host")
++      return {
++        status: {
++          badges: [{ label: `Reconnect to use this key for the ${tools}`, tone: "warning" as const }],
++          meters: [],
++          stats: [],
++        },
++      };
++  }
++  return undefined;
++}
++
 +// One Neon API key serves the REST API and the MCP server, so each provider may send its credentials
 +// to both hosts; the REST router takes only API keys.
  const neon = defineProvider({
@@ -24,7 +73,32 @@
    auth: {
      apiKey: secrets({
        label: "API key",
-@@ -48,10 +50,11 @@
+@@ -27,16 +71,21 @@
+     }),
+   },
+   // /users/me needs a personal or organization key; project-scoped keys cannot call account-level endpoints.
+-  async health({ account, fetch, signal }) {
++  async health({ account, fetch, signal, deadline }) {
+     const response = await fetch("https://console.neon.tech/api/v2/users/me", {
+       signal,
+       headers: { Authorization: `Bearer ${account.fields.token}` },
+     });
+     await decodeJson(response, object({ id: string({ minLength: 1 }) }));
++    return otherHostStatus(fetch, {
++      url: mcpUrl,
++      token: account.fields.token,
++      signal,
++      deadline,
++      tools: "MCP tools",
++    });
+   },
+ });
+-
+-const mcpUrl = "https://mcp.neon.tech/mcp";
+ 
+ type McpAccount =
+   | { method: "apiKey"; fields: { token: string } }
+@@ -48,10 +97,11 @@
  });
  
  // Neon's MCP server adds SQL execution, migrations and query tuning. It has its own OAuth
@@ -38,7 +112,27 @@
    auth: {
      apiKey: secrets({
        label: "API key",
-@@ -69,7 +72,11 @@
+@@ -59,7 +109,18 @@
+     }),
+     oauth: oauth2({ discover: mcpUrl }),
+   },
+-  health: (check) => mcpHealth(check, { url: mcpUrl, headers: mcpHeaders(check.account) }),
++  async health(check) {
++    await mcpHealth(check, { url: mcpUrl, headers: mcpHeaders(check.account) });
++    if (check.account.method === "apiKey")
++      return otherHostStatus(check.fetch, {
++        url: "https://console.neon.tech/api/v2/users/me",
++        token: check.account.fields.token,
++        signal: check.signal,
++        deadline: check.deadline,
++        tools: "REST API tools",
++      });
++    return undefined;
++  },
+ });
+ 
+ export default defineApp(
+@@ -69,7 +130,11 @@
        {
          api: router(
            await accountRouter(
@@ -51,7 +145,7 @@
              (account) =>
                withApprovals(liveOpenapiRouter({ ...options, cache, fetch, signal, account }), (tool) =>
                  tool.kind === "mutation" ? always() : undefined,
-@@ -84,7 +91,8 @@
+@@ -84,7 +149,8 @@
          ),
          mcp: router(
            await accountRouter(
