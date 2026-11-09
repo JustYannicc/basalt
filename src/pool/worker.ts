@@ -201,6 +201,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       permissions: (pool, user) => this.computers.permissions(pool, user),
     });
     this.computers = new Computers({
+      retirePool: (pool, at) => this.memberships.retire(pool, at),
       storage: ctx.storage,
       home: new ComputerHome(
         new HomeClient(home, Date.now, () => this.control.invalidateViews()),
@@ -413,8 +414,12 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     if (pathname === accountAcquisitionPath) return this.control.acquire(request);
     if (pathname === membershipPath) {
       try {
-        await this.memberships.reserve(request);
-        this.ctx.waitUntil(this.memberships.tick());
+        const recovery = await this.memberships.reserve(request);
+        this.ctx.waitUntil(
+          recovery
+            ? this.memberships.ensure(recovery.pool, recovery.organization).catch(() => {})
+            : this.memberships.tick(),
+        );
         return new Response(null, { status: 204 });
       } catch {
         return Response.json({ error: "membership_unavailable" }, { status: 503 });

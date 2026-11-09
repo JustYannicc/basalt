@@ -7,6 +7,8 @@ export interface MembershipState extends NativeMembershipPolicy {
   installedRevision: number;
   installedUntil: number;
   installedGraceUntil?: number;
+  retiredAt?: number;
+  retired?: { resumeAfter: number };
 }
 
 export const equalMembershipAccounts = (left: readonly string[], right: readonly string[]) =>
@@ -32,6 +34,7 @@ export const membershipPolicy = ({
 export function acknowledgedMembership(policy: MembershipState | undefined, now: number) {
   if (!policy) return undefined;
   if (
+    policy.retired ||
     policy.dirty ||
     !policy.native ||
     policy.installedRevision !== policy.revision ||
