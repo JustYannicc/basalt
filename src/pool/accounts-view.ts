@@ -1,7 +1,7 @@
 import type { Account, BankedResets, UsageWindow } from "../../apps/pool/contract.ts";
 import { object, rows, text, type Json } from "./json.ts";
 
-/** Detail readings for the app; list readings remain supported for the alarm sampler. */
+/** App and alarm reads preserve full details; retained list replies remain readable. */
 export function accountsView(files: Json[], quota: Json[], ids: ReadonlySet<string>): Account[] {
   const byId = new Map(
     quota.map((row) => [

@@ -1,6 +1,7 @@
 import { capacityWeight } from "../../src/pool/capacity/weights.ts";
 import { PoolHome, HomeClient, accountsView } from "../../src/pool/control.ts";
 import { PoolViewSnapshots } from "../../src/pool/view-snapshot.ts";
+import { quotaSamplingFixture } from "../../src/pool/quota-sampling.test-helpers.ts";
 import { overviewFixture, capacityFixture } from "./overview-fixture.mjs";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -52,6 +53,7 @@ const artifacts = process.env.POOL_UI_ARTIFACTS;
 // Optional baseline: build that commit's app.tsx, accounts.tsx and api.ts into the fixture instead of the working tree.
 const sourceRef = process.env.POOL_UI_SOURCE_REF;
 const planBaseline = process.env.POOL_UI_PLAN_BASELINE === "1";
+const samplerRef = process.env.POOL_UI_SAMPLER_REF;
 const subscriptionsBaseline = process.env.POOL_UI_SUBSCRIPTIONS_BASELINE === "1";
 const freshnessRef = process.env.POOL_UI_FRESHNESS_REF;
 // Optional baseline: build that commit's overview.tsx and usage-groups.tsx to capture the old people copy.
@@ -479,7 +481,7 @@ test(
               name === "usage"
                 ? usageResult
                 : name === "capacity"
-                  ? capacityReply(input)
+                  ? await capacityReply(input)
                   : name === "computerContext"
                     ? {
                         ok: true,
@@ -1176,6 +1178,70 @@ test(
           );
         },
       );
+
+    let samplerUsage;
+    if (samplerRef) {
+      const path = join(directory, "baseline-pool-usage.ts");
+      const source = execFileSync(
+        "git",
+        ["-C", root, "show", `${samplerRef}:src/pool/pool-usage.ts`],
+        { encoding: "utf8" },
+      );
+      writeFileSync(
+        path,
+        source.replace(
+          /from "(\.[^"]+)"/g,
+          (_match, specifier) =>
+            `from ${JSON.stringify(pathToFileURL(resolve(root, "src/pool", specifier)).href)}`,
+        ),
+      );
+      samplerUsage = (await import(pathToFileURL(path).href)).PoolUsage;
+    }
+    for (const width of [1280, 390])
+      await t.test(`the sampled full quota reaches the capacity chart at ${width}px`, async () => {
+        const f = quotaSamplingFixture(Date.now() - minute, samplerUsage);
+        await f.usage.observe();
+        viewResult = { ok: true, value: f.view };
+        await session(
+          async ({ page, frame, settled }) => {
+            release();
+            await frame.getByRole("article", { name: "Codex", exact: true }).waitFor();
+            await settled();
+            const lab = frame.getByRole("article", { name: "Codex", exact: true });
+            const short = lab.getByRole("radio", { name: "5-hour", exact: true });
+            if (samplerRef) {
+              assert.equal(await short.count(), 0, "The baseline lost its reported short window");
+            } else {
+              await short.click();
+              await lab
+                .getByRole("radio", { name: "5-hour", exact: true, checked: true })
+                .waitFor();
+              assert.match(await lab.innerText(), /1 account/);
+            }
+            assert.ok(
+              await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+            );
+            await page.locator("iframe").evaluate(
+              (iframe, height) => {
+                iframe.style.height = `${height}px`;
+              },
+              await frame.evaluate(() => document.documentElement.scrollHeight),
+            );
+            await settled();
+            await capture(page, `sampled-capacity-${width}`);
+          },
+          {
+            viewport: { width, height: 1000 },
+            capacity: async (input) => ({
+              ok: true,
+              value: await f.capacity(
+                Math.floor((input.to - input.days * day) / hour) * hour,
+                input.to,
+              ),
+            }),
+          },
+        );
+      });
 
     for (const width of [1440, 390])
       await t.test(`usage loads while capacity is held at ${width}px`, async () => {
