@@ -11,14 +11,14 @@ import { assertJournaledBaselineInput, type ForwardInputProof } from "./forward-
 import { State } from "alchemy/State/State";
 import { beginForwardJournal } from "./forward-journal.ts";
 import { verifyRepairBaseline } from "./repair-baseline.ts";
-import { operationFailure, withOperation } from "./operation-failure.ts";
+import { operationFailure } from "./operation-failure.ts";
 import * as Apply from "alchemy/Apply";
-import * as Plan from "alchemy/Plan";
 import type { CompiledStack } from "alchemy/Stack";
 import type { Worker } from "alchemy/Cloudflare";
 import { Effect } from "effect";
 import { verificationAdmissions, type VerificationAdmission } from "./plan-admission.ts";
 import { finishPlan } from "./alchemy-plan.ts";
+import { planStack } from "./plan-stack.ts";
 import {
   readActivePlacements,
   readBaseline,
@@ -105,7 +105,7 @@ type Services = Effect.Services<ReturnType<typeof readBaseline> | ReturnType<typ
 /** The ordinary release entry uses this full-stack path, including transitive Commands. */
 export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =>
   Effect.gen(function* () {
-    const evaluatedPlan = yield* Plan.make(stack).pipe(withOperation("(plan)", "plan-stack"));
+    const evaluatedPlan = yield* planStack(stack);
     assertSupportedPlan(evaluatedPlan, new Map(), options.declarations);
     const context = yield* Effect.context<Services>();
     const run = <A, E>(effect: Effect.Effect<A, E, Services>) =>
@@ -259,7 +259,7 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
         databaseFqns.add(fqn);
         databaseChanges.add(fqn);
       }
-      const databasePlan = yield* Plan.make(stack, { include: ["PoolDatabase"] });
+      const databasePlan = yield* planStack(stack, { include: ["PoolDatabase"] });
       if (
         Object.values(databasePlan.resources).some(
           (node) => node.resource.Type === "Cloudflare.Worker",

@@ -225,6 +225,7 @@ test("only GET pool is available to a non-owner; empty reads create no Home reso
     isOwner: false,
     providers,
     accounts: [],
+    subscriptionAccountIds: [],
     reading: {
       source: "live",
       revalidationFailed: false,
@@ -281,7 +282,7 @@ test("pool view filters global credentials and quotas, sorts ids and normalizes 
   f.home.addGroup("pool-a", 1, ["z", "a", "u", "e"]);
   f.home.addGroup("pool-b", 2, ["foreign"]);
   f.home.addFile("foreign");
-  f.home.addFile("z", "synthetic", {
+  f.home.addFile("z", "kimi", {
     disabled: true,
     unavailable: true,
     status: "error",
@@ -1265,4 +1266,38 @@ test("pausing an account invalidates credential state in the retained view", asy
   const after = (await (await f.call("/pool")).json()) as PoolView;
   assert.equal(after.reading?.source, "live");
   assert.equal(after.accounts[0]!.state, "disabled");
+});
+
+test("pool view preserves app members and classifies subscriptions separately", async () => {
+  const f = await fixture();
+  f.home.addGroup("pool-a", 1, ["claude-seat", "codex-seat", "jev-key"]);
+  f.home.addFile("claude-seat", "claude");
+  f.home.addFile("codex-seat", "codex");
+  f.home.addFile("jev-key", "typesafe");
+  f.home.quota = ["claude-seat", "codex-seat"].map((id) => ({
+    credential_id: id,
+    freshness: "fresh",
+    collection_status: "success",
+    observed_at: "2026-11-09T02:00:00Z",
+    plan: { name: "Pro" },
+  }));
+  f.home.quota.push({
+    credential_id: "jev-key",
+    freshness: "never",
+    collection_status: "unsupported",
+  });
+  const response = await f.call("/pool");
+  assert.equal(response.status, 200);
+  const view = (await response.json()) as PoolView;
+  assert.deepEqual(
+    view.accounts.map(({ id }) => id),
+    ["claude-seat", "codex-seat", "jev-key"],
+  );
+  assert.deepEqual(view.subscriptionAccountIds, ["claude-seat", "codex-seat"]);
+  const subscriptions = view.accounts.filter(({ id }) => view.subscriptionAccountIds?.includes(id));
+  assert.equal(new Set(subscriptions.map(({ provider }) => provider)).size, 2);
+  assert.ok(subscriptions.every(({ freshness }) => freshness === "fresh"));
+  assert.equal(view.reading?.revalidationFailed, false);
+  assert.ok(f.home.members.some(({ auth_id }) => auth_id === "jev-key"));
+  assert.ok(f.home.files.has("jev-key"));
 });

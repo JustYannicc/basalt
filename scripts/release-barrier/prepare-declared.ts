@@ -12,6 +12,7 @@ import { expandDeclaredClasses } from "./declared-classes.ts";
 import { assertSupportedPlan } from "./plan-admission.ts";
 import { observeWorkerBaselines } from "./worker-baselines.ts";
 import { BarrierRefusal } from "./manifest.ts";
+import { planStack } from "./plan-stack.ts";
 
 /** Replan only after an observed expansion changed the live baseline and native namespace mapping. */
 export const prepareDeclaredRelease = (
@@ -88,7 +89,7 @@ export const prepareDeclaredRelease = (
       result.workerBaselines,
     );
     if (expanded) {
-      result = yield* attempt(yield* Plan.make(stack), {
+      result = yield* attempt(yield* planStack(stack), {
         buckets: result.declaredBuckets,
         databases: result.declaredDatabases,
       });

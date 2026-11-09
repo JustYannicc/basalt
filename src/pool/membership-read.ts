@@ -1,5 +1,5 @@
 import { PoolDependencyFailure, poolDependency } from "./dependency-failure.ts";
-import { object, text, unavailable } from "./json.ts";
+import { diagnosePoolFailure, object, text, unavailable } from "./json.ts";
 import { signEnvelope } from "./token.ts";
 import {
   membershipReadPath,
@@ -34,7 +34,11 @@ export async function readNativeMembership(
   );
   if (!response.ok) {
     if (response.body) await poolDependency("membership", response.body.cancel());
-    return unavailable();
+    return unavailable({
+      guard: "membership_read",
+      failure: "response_status",
+      backendStatus: response.status,
+    });
   }
   const body = await poolDependency("membership", response.text());
   let value: unknown;
@@ -42,7 +46,10 @@ export async function readNativeMembership(
     value = JSON.parse(body);
   } catch (cause) {
     if (!(cause instanceof SyntaxError)) throw cause;
-    throw new PoolDependencyFailure("membership", cause);
+    throw diagnosePoolFailure(new PoolDependencyFailure("membership", cause), {
+      guard: "membership_body",
+      failure: "invalid_body",
+    });
   }
   if (
     !object(value) ||
@@ -66,6 +73,6 @@ export async function readNativeMembership(
         optionalText(account.homeReference),
     )
   )
-    return unavailable();
+    return unavailable({ guard: "membership_body", failure: "invalid_body" });
   return value as unknown as NativeMembershipSnapshot;
 }

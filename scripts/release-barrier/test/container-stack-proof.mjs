@@ -221,7 +221,13 @@ export const proveContainerStack = (source, recompile, scenario) =>
                   )
                     throw new Error("Interrupted after PoolWorker activation");
                   events.push(`activate:${input.id}`);
-                  return result;
+                  return scenario === "activated-worker-attributes"
+                    ? {
+                        ...result,
+                        versionId,
+                        deploymentId: `deployment-${input.id}`,
+                      }
+                    : result;
                 }),
             });
           }),
@@ -674,6 +680,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
         const succeeded = Exit.isSuccess(exit);
         const expectedSuccess = [
           "success",
+          "activated-worker-attributes",
           "latest-upload-baseline",
           "updating-forward",
           "partial-worker-forward",
@@ -729,6 +736,15 @@ export const proveContainerStack = (source, recompile, scenario) =>
           }
           assert.ok(events.includes("verification:admitted"));
           assert.equal(receipts.at(-1).phase, "complete");
+          if (scenario === "activated-worker-attributes") {
+            const apiState = yield* memory.get({
+              stack: stack.name,
+              stage: stack.stage,
+              fqn: "Api",
+            });
+            assert.equal(apiState.attr.versionId, "accepted-Api");
+            assert.equal(apiState.attr.deploymentId, "deployment-Api");
+          }
           if (recordedBaseline) {
             const saved = yield* memory.get({
               stack: stack.name,

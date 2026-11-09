@@ -5,6 +5,7 @@ model {
       metadata {
         code "src/drive|apps/obsidian"
         libraries "effect|apps|buffer|isomorphic-git|sha.js"
+        constraint "The Obsidian app is installed from the public catalog. Its release-owned source snapshot must match the shipped app files and declare the served framework. Catalog registration and the source endpoint ship together."
       }
     }
     obsidianSync = part "Obsidian Sync" {

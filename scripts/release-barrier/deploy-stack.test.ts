@@ -8,6 +8,32 @@ import { join } from "node:path";
 import { releaseEvidence } from "./evidence.ts";
 import { reportRefusal } from "./refusal-report.ts";
 import { fixture } from "./test/deploy-stack-fixture.ts";
+import { BarrierRefusal } from "./manifest.ts";
+
+for (const planFailure of ["read", "diff"] as const)
+  test(`plan ${planFailure} refusal retains its logical resource and safe provider error`, async (context) => {
+    const directory = await mkdtemp(join(tmpdir(), "plan-cause-"));
+    context.after(() => rm(directory, { recursive: true, force: true }));
+    const privateText = "secret-value@private.example";
+    const proof = fixture({
+      planFailure,
+      planError: Object.assign(new Error(privateText), { _tag: "Unauthorized", status: 401 }),
+    });
+    const exit = await Effect.runPromiseExit(proof.effect);
+    assert.ok(Exit.isFailure(exit));
+    const failure = await releaseEvidence(directory, "a".repeat(40)).failure(
+      Cause.squash(exit.cause),
+    );
+    assert.equal(failure.worker, "Router");
+    assert.equal(Reflect.get(failure, "operation"), `plan-${planFailure}-resource`);
+    assert.deepEqual(Reflect.get(failure, "provider"), { type: "Unauthorized", status: 401 });
+    const lines: string[] = [];
+    await reportRefusal(failure, undefined, (line) => lines.push(line));
+    assert.match(lines.join("\n"), /Router/);
+    assert.ok(!lines.join("\n").includes(privateText));
+    assert.deepEqual(proof.events, []);
+    assert.equal(proof.writes(), 0);
+  });
 
 test("real Alchemy graph refuses a late upload without activating, executing Commands or committing live state", async () => {
   const proof = fixture({ reject: true });
@@ -30,6 +56,21 @@ test("real Alchemy graph activates accepted IDs before the Api.hash-dependent li
   ]);
   assert.ok(proof.writes() > 0);
 });
+
+for (const finalizeDrift of ["binding", "uncovered-env", "props"] as const)
+  test(`finalization still refuses changed ${finalizeDrift} inputs after activation`, async () => {
+    const proof = fixture({ finalizeDrift });
+    const exit = await Effect.runPromiseExit(proof.effect);
+    assert.ok(Exit.isFailure(exit));
+    const failure = Cause.squash(exit.cause);
+    assert.ok(failure instanceof BarrierRefusal);
+    assert.equal(failure.reason, "activation-input-drift");
+    assert.equal(failure.worker, "Router");
+    assert.ok(failure.delta?.changed.length);
+    const table = JSON.stringify(failure.delta);
+    assert.match(table, finalizeDrift === "binding" ? /bindings/ : /news/);
+    assert.ok(proof.events.includes("activate:Router:accepted-Router"));
+  });
 
 for (const options of [{ newResource: true }, { omitCapture: true }]) {
   test(`incomplete preparation ${JSON.stringify(options)} never reaches upload or activation`, async () => {

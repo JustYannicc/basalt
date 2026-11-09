@@ -22,8 +22,9 @@ import type { BarrierReceipt } from "../barrier.ts";
 
 interface FixtureWorker extends Resource<
   "Cloudflare.Worker",
-  { revision: string; peer?: string; ready?: string },
-  Worker["Attributes"]
+  { revision: string; peer?: string; ready?: string; env?: Record<string, unknown> },
+  Worker["Attributes"],
+  Worker["Binding"]
 > {}
 const FixtureWorker = Resource<FixtureWorker>("Cloudflare.Worker");
 
@@ -47,6 +48,9 @@ export const fixture = (
     namespace?: "eu" | "missing" | "wrong" | "drift";
     unknownCommand?: boolean;
     orphanedDatabaseCommand?: boolean;
+    planFailure?: "read" | "diff";
+    planError?: unknown;
+    finalizeDrift?: "binding" | "uncovered-env" | "props";
   } = {},
 ) => {
   const events: string[] = [],
@@ -56,8 +60,17 @@ export const fixture = (
   let failOrdinary = false;
   let seededStatus: string | undefined;
   let namespaceReads = 0;
+  let releasePlanning = false;
+  let activated = false;
   const workers = Provider.succeed(FixtureWorker, {
-    diff: () => Effect.succeed({ action: "update" }),
+    read: (input) =>
+      releasePlanning && options.planFailure === "read" && input.id === "Router"
+        ? Effect.fail(options.planError)
+        : Effect.succeed(input.output),
+    diff: (input) =>
+      releasePlanning && options.planFailure === "diff" && input.id === "Router"
+        ? Effect.fail(options.planError)
+        : Effect.succeed({ action: "update" }),
     reconcile: (input) =>
       Effect.gen(function* () {
         const hook = yield* Effect.serviceOption(WorkerUploadHook);
@@ -87,6 +100,7 @@ export const fixture = (
               Effect.sync(() => {
                 repair?.activate(input.id);
                 events.push(`activate:${input.id}:${version}`);
+                activated = true;
                 return result;
               }),
           });
@@ -155,11 +169,17 @@ export const fixture = (
         memo: false,
         env: { READY: api.hash.pipe(Output.map((hash) => hash?.input ?? "")) },
       });
-      yield* FixtureWorker("Router", {
-        revision: "candidate",
-        peer: api.workerName,
+      const lateValue = api.hash.pipe(Output.map(() => (activated ? "changed" : "frozen")));
+      const router = yield* FixtureWorker("Router", {
+        revision: options.finalizeDrift === "props" ? lateValue : "candidate",
+        peer: options.planFailure === "read" ? "Api" : api.workerName,
         ready: namespace?.hash.pipe(Output.map(() => "eu")),
+        ...(options.finalizeDrift === "uncovered-env" ? { env: { EXTRA: lateValue } } : {}),
       });
+      if (options.finalizeDrift === "binding")
+        yield* router.bind("image", {
+          bindings: [{ name: "POOL_IMAGE_HASH", type: "plain_text", text: lateValue }],
+        });
       for (const id of options.extraWorkers ?? [])
         yield* FixtureWorker(id, { revision: "candidate" });
       return { api: api.workerName };
@@ -184,10 +204,11 @@ export const fixture = (
         }
         events.length = 0;
         writes = 0;
-        if (options.newResource) {
+        if (options.newResource || options.planFailure === "read") {
           const state = yield* yield* State;
           yield* state.delete({ stack: compiled.name, stage: compiled.stage, fqn: "Router" });
         }
+        releasePlanning = true;
         return yield* deployStack(compiled, {
           candidate: "a".repeat(40),
           record: async (receipt) => {
