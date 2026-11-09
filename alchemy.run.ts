@@ -178,8 +178,12 @@ export default Alchemy.Stack(
     // The public home and legal pages at the zone's apex. Previews share the zone, so only
     // production owns its apex.
     if (preview === undefined) {
-      // Provision separately from the waiting-list Worker binding so admission precedes creation.
-      yield* provisionPublicSiteWaitlist;
+      // A separate release provisions the database before this binding ships, so admission
+      // precedes creation.
+      // Binding the resource this one declaration yields keeps the stack evaluable before the
+      // database is recorded, and gives the barrier the edge it needs to refuse create-and-bind.
+      // The exported state reference resolves from recorded state, so it only suits a later binding.
+      const waitlist = yield* provisionPublicSiteWaitlist;
       // Upstream's Command.Build already owns "Site". Alchemy reuses logical IDs across resource types.
       yield* Cloudflare.Worker("PublicSite", {
         main: fileURLToPath(new URL("./src/site/worker.ts", import.meta.url)),
@@ -193,6 +197,14 @@ export default Alchemy.Stack(
         workersDev: false,
         compatibility: { date: "2026-09-08" },
         observability: workerObservability,
+        env: {
+          WAITLIST: waitlist,
+          // Rate limit namespace IDs are account-wide; no other Basalt Worker uses 7101.
+          WAITLIST_LIMIT: Cloudflare.RateLimit("WAITLIST_LIMIT", {
+            namespaceId: 7101,
+            simple: { limit: 5, period: 60 },
+          }),
+        },
       });
     }
     const router = yield* Cloudflare.Worker("Router", {
