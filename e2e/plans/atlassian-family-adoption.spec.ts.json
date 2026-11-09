@@ -54,13 +54,13 @@
   },
   "runs": {
     "cloudAtlassianFamilyAdoption": [
-      "production-ops:migrations"
+      "production-ops:atlassian-adoption"
     ],
     "cloudAtlassianFamilySourcePreservation": [
-      "production-ops:migrations"
+      "production-ops:atlassian-saved-source"
     ],
     "cloudAtlassianFamilyDeployedSource": [
-      "production-ops:migrations"
+      "production-ops:atlassian-deployed-source"
     ]
   },
   "inputs": [

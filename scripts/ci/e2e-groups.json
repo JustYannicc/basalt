@@ -320,5 +320,23 @@
     "job": "aws-connectors",
     "target": "self-host",
     "mode": "managed"
+  },
+  "production-ops:atlassian-adoption": {
+    "job": "production-ops-atlassian-adoption",
+    "target": "cloud",
+    "mode": "managed",
+    "command": "node scripts/production-ops/prove-scope.ts"
+  },
+  "production-ops:atlassian-saved-source": {
+    "job": "production-ops-atlassian-adoption",
+    "target": "cloud",
+    "mode": "managed",
+    "command": "node scripts/production-ops/prove-scope.ts"
+  },
+  "production-ops:atlassian-deployed-source": {
+    "job": "production-ops-atlassian-adoption",
+    "target": "cloud",
+    "mode": "managed",
+    "command": "node scripts/production-ops/prove-scope.ts"
   }
 }
