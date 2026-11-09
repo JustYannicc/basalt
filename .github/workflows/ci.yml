@@ -419,6 +419,10 @@ jobs:
         working-directory: .upstream
       - name: Verify hosted PlanetScale sign-in asks for the full reviewed permissions
         run: bun e2e/planetscale-sign-in.mjs .generated/planetscale-sign-in/ci hosted
+      - name: Keep every supported configured PlanetScale grant scope
+        run: bun e2e/planetscale-sign-in.mjs .generated/planetscale-sign-in/ci expanded
+      - name: Refuse unknown PlanetScale scopes with names-only diagnostics
+        run: bun e2e/planetscale-sign-in.mjs .generated/planetscale-sign-in/ci exceeded
       - name: Verify the registered fallback lists only granted tools
         if: success() || failure()
         run: bun e2e/planetscale-sign-in.mjs .generated/planetscale-sign-in/ci dcr

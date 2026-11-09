@@ -34,6 +34,8 @@ assert.ok(
   mode === "retained" ||
     mode === "retained-unknown" ||
     mode === "hosted" ||
+    mode === "expanded" ||
+    mode === "exceeded" ||
     mode === "dcr" ||
     mode === "unknown" ||
     mode === "refused" ||
@@ -63,6 +65,7 @@ const metadata = JSON.parse(
 );
 process.chdir(upstream);
 const outcomes = [];
+let serverLog;
 const program = Effect.gen(function* () {
   const start = (acquire) =>
     Effect.acquireRelease(Effect.promise(acquire), (fixture) => Effect.promise(fixture.stop));
@@ -76,6 +79,14 @@ const program = Effect.gen(function* () {
             ? hostedScopes
             : metadata.scopes_supported,
       omitGrantedScope: omitsGrantedScope,
+      ...(["expanded", "exceeded"].includes(mode)
+        ? {
+            configuredScopes: [
+              ...metadata.scopes_supported,
+              ...(mode === "exceeded" ? ["organization:future_permission"] : []),
+            ],
+          }
+        : {}),
       ...(retained
         ? { refreshScopes: oldScopes.filter((scope) => scope !== "organization:write_comments") }
         : {}),
@@ -92,15 +103,6 @@ const program = Effect.gen(function* () {
     ),
   );
   assert.deepEqual(sorted(planetScaleOAuthClient.defaultScopes), sorted(hostedScopes));
-  assert.deepEqual(
-    sorted(planetScaleOAuthClient.allowedScopes),
-    sorted([
-      ...hostedScopes,
-      "organization:read_comments",
-      "organization:write_comments",
-      "organization:read_members",
-    ]),
-  );
   assert.equal(planetScaleOAuthClient.requireScopeConfirmation, true);
   // The reviewed client, moved to the loopback service as the Slack proof moves its client.
   const fixtureClient = {
@@ -127,6 +129,7 @@ const program = Effect.gen(function* () {
   const base = yield* startEnvironment({ target: "self-host", headless: true });
   const registry = yield* lockedNpmRegistry;
   const prepared = yield* prepareScenario(base.target, `PlanetScale ${mode} sign-in`);
+  serverLog = join(prepared.directory, "server.log");
   const authSecret = randomBytes(32).toString("hex");
   const actors = yield* Effect.promise(() =>
     provisionSelfHostActors({
@@ -246,6 +249,7 @@ const program = Effect.gen(function* () {
             client,
             getTool,
             service,
+            supportedScopes: metadata.scopes_supported,
           })
       ).pipe(
         Effect.timeout("120 seconds"),
@@ -316,6 +320,35 @@ try {
       Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)),
     ),
   );
+  if (mode === "exceeded") {
+    const log = await readFile(serverLog, "utf8");
+    const events = log.split("\n").flatMap((line) => {
+      const start = line.indexOf('{"type":"oauth.scope_exceeded"');
+      return start < 0 ? [] : [JSON.parse(line.slice(start))];
+    });
+    assert.equal(events.length, widths.length);
+    for (const event of events) {
+      assert.deepEqual(
+        Object.keys(event).sort(),
+        [
+          "client",
+          "excessScopes",
+          "grantedScopes",
+          "requestedScopes",
+          "scopeNamesOmitted",
+          "type",
+        ].sort(),
+      );
+      assert.deepEqual(event.excessScopes, ["organization:future_permission"]);
+      assert.deepEqual(sorted(event.requestedScopes), sorted(hostedScopes));
+      assert.deepEqual(
+        sorted(event.grantedScopes),
+        sorted([...metadata.scopes_supported, "organization:future_permission"]),
+      );
+      assert.equal(event.scopeNamesOmitted, false);
+    }
+    await writeFile(join(directory, "scope-exceeded-events.json"), JSON.stringify(events, null, 2));
+  }
 } catch (error) {
   await writeFile(join(directory, "failure.txt"), String(error?.stack ?? error), { mode: 0o600 });
   console.error(`PlanetScale ${mode} sign-in proof failed; private evidence retained.`);

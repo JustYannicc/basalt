@@ -9,43 +9,6 @@ import { handleCatalog } from "./worker.ts";
 import { onServedFramework } from "./framework.ts";
 import { planetscaleSource } from "./planetscale.ts";
 
-/** The 33 scopes the hosted Signalbox PlanetScale app is configured with. */
-const hosted = [
-  "read_user",
-  "read_organization",
-  "write_organization",
-  "read_databases",
-  "write_databases",
-  "organization:create_databases",
-  "organization:delete_databases",
-  "organization:read_databases",
-  "organization:write_databases",
-  "organization:read_branches",
-  "organization:write_branches",
-  "organization:delete_branches",
-  "organization:read_deploy_requests",
-  "organization:write_deploy_requests",
-  "organization:approve_deploy_requests",
-  "organization:deploy_deploy_requests",
-  "organization:read_backups",
-  "organization:write_backups",
-  "organization:delete_backups",
-  "organization:restore_backups",
-  "organization:manage_passwords",
-  "organization:manage_read_only_passwords",
-  "organization:read_workflows",
-  "organization:write_workflows",
-  "organization:read_audit_logs",
-  "user:read_organizations",
-  "organization:promote_branches",
-  "database:demote_branches",
-  "organization:write_members",
-  "organization:manage_sso",
-  "organization:read_payment_method",
-  "organization:write_payment_method",
-  "organization:read_invoices",
-];
-
 const file = (path: string) =>
   planetscaleSource.files.find((entry) => entry.path === path)?.content;
 
@@ -56,7 +19,6 @@ const scopeTable = async () => {
     const path = join(directory, "scopes.ts");
     writeFileSync(path, file("scopes.ts")!);
     return (await import(pathToFileURL(path).href)) as {
-      hostedScopes: readonly string[];
       scopeAliases: Readonly<Record<string, string>>;
       serviceTokenOnly: ReadonlySet<string>;
       operationNames: readonly string[];
@@ -210,7 +172,6 @@ test("PlanetScale preserves the legacy provider and scopes the new provider inde
 
 test("PlanetScale scope table covers every operation exactly once", async () => {
   const table = await scopeTable();
-  assert.deepEqual([...table.hostedScopes], hosted);
   const oauth = Object.keys(table.operationScopes);
   assert.equal(oauth.length, 257, "Operations PlanetScale accepts the hosted scopes for");
   assert.equal(table.serviceTokenOnly.size, 34, "Operations only a service token can call");
