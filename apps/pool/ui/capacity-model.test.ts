@@ -248,7 +248,7 @@ test("unknown plans are flagged on their chip", () => {
       plan: "No plan reported",
       accounts: 2,
       flagged: true,
-      note: "plan unknown · 1x",
+      note: "conservative estimate · 1x",
     },
   ]);
 });
@@ -369,7 +369,13 @@ test("plan aliases share one chip without changing capacity measurements", () =>
   });
   const original = structuredClone(snapshot);
   assert.deepEqual(planChips(snapshot), [
-    { key: "Pro (Max)", plan: "Pro (Max)", accounts: 4, flagged: true, note: "plan unknown · 1x" },
+    {
+      key: "Pro (Max)",
+      plan: "Pro (Max)",
+      accounts: 4,
+      flagged: true,
+      note: "conservative estimate · 1x",
+    },
   ]);
   assert.deepEqual(snapshot, original);
 });
@@ -447,4 +453,35 @@ test("tooltip aliases merge usable and raw readings without changing capacity hi
     raw: { ...snapshot.raw!, plans: snapshot.raw!.plans.slice(0, 1) },
   });
   assert.equal(partial[0]!.raw, null, "partial provider quota is not presented as the whole group");
+});
+
+test("recognised Max 20x weekly readings use published weights while retained estimates remain conservative", () => {
+  const published = {
+    ...aggregate(4, 10),
+    weights: [
+      { source: "published-weekly-multiplier" as const, revision: "2026-11-09", accountCount: 1 },
+    ],
+  };
+  const saved = aggregate(0.4, 1, 1);
+  for (const [reading, conservative, note] of [
+    [published, false, "published weekly multiplier"],
+    [saved, true, "conservative estimate · 1x"],
+  ] as const) {
+    const snapshot = point(0, reading.remaining, {
+      provider: "claude",
+      windowSeconds: 604_800,
+      minimum: reading,
+      last: reading,
+      plans: [{ plan: "Max 20x", minimum: reading, last: reading }],
+    });
+    assert.deepEqual(planChips(snapshot), [
+      {
+        key: "Max 20x",
+        plan: "Max 20x",
+        accounts: reading.accountCount,
+        flagged: conservative,
+        note,
+      },
+    ]);
+  }
 });
