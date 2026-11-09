@@ -15,7 +15,7 @@ import {
   RecoveryWorkflowRefusal,
   type RecoveryPlan,
 } from "./runtime-recovery/plan.ts";
-import { runReviewedRecovery } from "./runtime-recovery/run.ts";
+import { recordRecoveryIssue, runReviewedRecovery } from "./runtime-recovery/run.ts";
 import { recoverySummary } from "./runtime-recovery/summary.ts";
 
 const id = (n: number) => `00000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
@@ -41,6 +41,15 @@ async function fixture() {
   let boot = plan.bootId,
     posts = 0,
     restarts = 0;
+  const mode = {
+    lostReply: false,
+    lostBeforeReceipt: false,
+    changedAtPost: false,
+    finalWriteFailure: false,
+    invalidReply: false,
+    postInspectionFailure: false,
+    postProviderDrift: false,
+  };
   const receipts = new Map<string, RecoveryReceipt>();
   const runtime = {
     instanceId: plan.instanceId,
@@ -58,6 +67,8 @@ async function fixture() {
   const recovery = new RuntimeRecovery(runtime, {
     get: async <T>(key: string) => structuredClone(receipts.get(key)) as T | undefined,
     put: async (key, receipt) => {
+      if (mode.finalWriteFailure && receipt.status !== "started")
+        throw new Error("private-storage-sentinel");
       receipts.set(key, structuredClone(receipt));
     },
   });
@@ -99,7 +110,6 @@ async function fixture() {
             : application,
       });
     });
-  const mode = { lostReply: false, lostBeforeReceipt: false, changedAtPost: false };
   const operations = {
     fetch: async (request: Request) => {
       if (request.method === "POST") {
@@ -107,7 +117,11 @@ async function fixture() {
         if (mode.lostBeforeReceipt) throw new Error("private-network-sentinel");
         if (mode.changedAtPost) boot = id(7);
       }
+      if (request.method === "GET" && restarts > 0 && mode.postInspectionFailure)
+        throw new Error("private-inspection-sentinel");
       const response = await handleRuntimeRecovery(request, service, "ab".repeat(32));
+      if (request.method === "POST" && mode.postProviderDrift) application.version++;
+      if (request.method === "POST" && mode.invalidReply) return Response.json({ invalid: true });
       if (request.method === "POST" && mode.lostReply) throw new Error("private-response-sentinel");
       return response;
     },
@@ -259,6 +273,119 @@ test("an inspection-only workflow attempt cannot submit even without a server re
     assert.equal((await runReviewedRecovery(plan, "inspect", f.deps)).outcome, "uncertain");
     assert.equal(f.posts(), 0);
     assert.equal(f.restarts(), 0);
+  } finally {
+    await f.clean();
+  }
+});
+
+test("a failed final audit preserves the started receipt after one restart", async () => {
+  const f = await fixture();
+  try {
+    f.mode.finalWriteFailure = true;
+    const result = await runReviewedRecovery(plan, "apply", f.deps);
+    assert.equal(result.receipt?.status, "started");
+    assert.equal(result.issues?.[0]?.reason, "restart-http-503");
+    assert.equal(f.restarts(), 1);
+    await runReviewedRecovery(plan, "apply", f.deps);
+    assert.equal(f.posts(), 1);
+    const summary = recoverySummary(plan, recoveryPlanDigest(plan), result);
+    assert.match(summary, /started/);
+    assert.match(summary, /restart-http-503/);
+    assert.match(summary, /uncertain/);
+    assert.ok(!summary.includes("private"));
+  } finally {
+    await f.clean();
+  }
+});
+
+test("post-restart verification and cleanup failures retain the ready receipt and exact missing proof", async () => {
+  for (const mode of ["postInspectionFailure", "postProviderDrift"] as const) {
+    const f = await fixture();
+    try {
+      f.mode[mode] = true;
+      const result = await runReviewedRecovery(plan, "apply", f.deps);
+      assert.equal(result.outcome, "inspection");
+      assert.equal(result.receipt?.status, "ready");
+      assert.equal(result.receipt.bootId, id(6));
+      assert.equal(
+        result.issues?.[0]?.reason,
+        mode === "postProviderDrift"
+          ? "post-restart-pin-drift"
+          : "post-restart-verification-unavailable",
+      );
+      const final = recordRecoveryIssue(
+        result,
+        new RecoveryWorkflowRefusal("bridge-teardown-unconfirmed"),
+      );
+      assert.equal(final.receipt, result.receipt);
+      const summary = recoverySummary(plan, recoveryPlanDigest(plan), final);
+      assert.match(summary, /ready/);
+      assert.match(summary, /bridge-teardown-unconfirmed/);
+      assert.ok(!summary.includes("private"));
+      if (mode === "postProviderDrift") assert.match(summary, /applicationVersion.*29.*30/);
+      assert.equal(f.posts(), 1);
+      assert.equal(f.restarts(), 1);
+    } finally {
+      await f.clean();
+    }
+  }
+});
+
+test("parallel inventory failures name every resource without provider error text", async () => {
+  await assert.rejects(
+    providerPins(plan, "private-token", async () => {
+      throw new Error("private-transport-sentinel");
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof RecoveryWorkflowRefusal);
+      assert.equal(error.drift.length, 3);
+      const summary = recoverySummary(plan, recoveryPlanDigest(plan), error);
+      assert.match(summary, /instances/);
+      assert.match(summary, /deployments/);
+      assert.ok(summary.includes(plan.applicationId) && summary.includes(plan.instanceId));
+      assert.ok(!summary.includes("private"));
+      return true;
+    },
+  );
+});
+
+test("failed receipt summaries show the retained failure reason", () => {
+  for (const failure of ["boot-unchanged", "restart-failed"] as const) {
+    const summary = recoverySummary(plan, recoveryPlanDigest(plan), {
+      outcome: "inspection",
+      submissionAttempted: false,
+      plan,
+      planSha256: recoveryPlanDigest(plan),
+      receipt: {
+        operationId: plan.operationId,
+        instanceId: plan.instanceId,
+        imageHash: plan.imageHash,
+        release: plan.release,
+        previousBootId: plan.bootId,
+        status: "failed",
+        startedAt: 1,
+        failure,
+      },
+    });
+    assert.match(summary, new RegExp(failure));
+  }
+});
+
+test("an invalid successful POST reply still retains the durable ready receipt without repeating", async () => {
+  const f = await fixture();
+  try {
+    f.mode.invalidReply = true;
+    const result = await runReviewedRecovery(plan, "apply", f.deps);
+    assert.equal(result.receipt?.status, "ready");
+    assert.equal(result.issues?.[0]?.reason, "receipt-invalid");
+    assert.equal(result.submissionAttempted, true);
+    assert.match(
+      recoverySummary(plan, recoveryPlanDigest(plan), result),
+      /attempted one signed restart POST/,
+    );
+    await runReviewedRecovery(plan, "apply", f.deps);
+    assert.equal(f.posts(), 1);
+    assert.equal(f.restarts(), 1);
   } finally {
     await f.clean();
   }

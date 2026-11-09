@@ -57,16 +57,36 @@ export async function providerPins(plan: RecoveryPlan, token: string, fetcher: F
       if (envelope.success !== true) throw new RecoveryWorkflowRefusal("inventory-refused");
       return object(envelope.result);
     } catch (error) {
-      if (error instanceof RecoveryWorkflowRefusal) throw error;
-      throw new RecoveryWorkflowRefusal("inventory-unavailable");
+      if (error instanceof RecoveryWorkflowRefusal && error.drift.length) throw error;
+      throw new RecoveryWorkflowRefusal("inventory-read-failed", [
+        {
+          resource: path,
+          property: "inventory read",
+          expected: "available",
+          observed: error instanceof RecoveryWorkflowRefusal ? error.reason : "transport failure",
+        },
+      ]);
     }
   };
   try {
-    const [application, instance, deployments] = await Promise.all([
+    const reads = await Promise.allSettled([
       get(`containers/applications/${plan.applicationId}`),
       get(`containers/applications/${plan.applicationId}/instances/${plan.instanceId}`),
       get(`workers/scripts/${plan.worker}/deployments`),
     ]);
+    const failures = reads.flatMap((read) =>
+      read.status === "rejected" && read.reason instanceof RecoveryWorkflowRefusal
+        ? read.reason.drift
+        : [],
+    );
+    if (failures.length) throw new RecoveryWorkflowRefusal("inventory-read-failed", failures);
+    const value = (read: PromiseSettledResult<Record<string, unknown>>) => {
+      if (read.status === "fulfilled") return read.value;
+      throw new RecoveryWorkflowRefusal("inventory-unavailable");
+    };
+    const application = value(reads[0]);
+    const instance = value(reads[1]);
+    const deployments = value(reads[2]);
     const config = object(application.configuration);
     const versions = Schema.decodeUnknownSync(
       Schema.Array(

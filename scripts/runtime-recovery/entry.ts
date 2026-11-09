@@ -9,7 +9,7 @@ import {
   type RecoveryPlan,
 } from "./plan.ts";
 import { providerPins } from "./inventory.ts";
-import { runReviewedRecovery, type RecoveryReport } from "./run.ts";
+import { recordRecoveryIssue, runReviewedRecovery, type RecoveryReport } from "./run.ts";
 import { recoverySummary } from "./summary.ts";
 
 const [mode, file] = process.argv.slice(2);
@@ -24,7 +24,9 @@ if (mode === "digest" && file) {
   const directory = resolve(process.env.RECOVERY_OUTPUT_DIRECTORY ?? ".generated/runtime-recovery");
   const digest = process.env.RECOVERY_PLAN_SHA256 ?? "";
   let plan: RecoveryPlan | undefined;
-  let result: RecoveryReport | RecoveryWorkflowRefusal;
+  let result: RecoveryReport | RecoveryWorkflowRefusal = new RecoveryWorkflowRefusal(
+    "operation-unavailable",
+  );
   let platform: Awaited<ReturnType<typeof nodePoolOperations>> | undefined;
   try {
     await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -64,7 +66,9 @@ if (mode === "digest" && file) {
     try {
       await platform?.dispose();
     } catch {
-      result = new RecoveryWorkflowRefusal("bridge-teardown-unconfirmed");
+      const issue = new RecoveryWorkflowRefusal("bridge-teardown-unconfirmed");
+      result =
+        result instanceof RecoveryWorkflowRefusal ? result : recordRecoveryIssue(result, issue);
     }
   }
   const summary = recoverySummary(plan, /^[a-f0-9]{64}$/.test(digest) ? digest : "invalid", result);
@@ -90,6 +94,7 @@ if (mode === "digest" && file) {
   if (
     result instanceof RecoveryWorkflowRefusal ||
     result.outcome === "uncertain" ||
+    !!result.issues?.length ||
     (result.outcome === "inspection" && result.receipt?.status !== "ready")
   )
     process.exitCode = 1;

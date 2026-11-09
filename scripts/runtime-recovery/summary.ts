@@ -50,20 +50,46 @@ export function recoverySummary(
       "No further submission is permitted by this run. Retain the submission marker and inspect the operation receipt if a request may have been sent.",
     );
   } else {
-    if (result.receipt)
+    lines.push(
+      "",
+      result.submissionAttempted
+        ? "This step attempted one signed restart POST. It will not submit again."
+        : "This step submitted no restart.",
+    );
+    if (result.receipt) {
       lines.push(
         "",
         `Durable receipt: **${result.receipt.status}**.`,
         `Previous boot: \`${result.receipt.previousBootId}\`; recorded replacement boot: \`${result.receipt.bootId ?? "unavailable"}\`.`,
       );
+      if (result.receipt.failure) lines.push(`Recorded failure: \`${result.receipt.failure}\`.`);
+    }
     lines.push(
       "",
       result.outcome === "ready"
         ? "One reviewed restart completed. The receipt is ready, the boot changed, and provider/runtime pins passed post-restart verification."
         : result.outcome === "dry-run"
           ? "Dry run passed. No restart was submitted by this step."
-          : "Receipt inspection only after an existing or uncertain operation. This step did not submit another restart.",
+          : result.receipt
+            ? "The operation receipt is retained. Receipt inspection does not establish full post-restart verification."
+            : "No durable receipt was found. Keep the submission marker and inspect the same operation; do not submit again.",
     );
+    if (result.issues?.length) {
+      for (const issue of result.issues) {
+        lines.push("", `Incomplete verification: **${issue.reason}**.`);
+        if (issue.drift.length)
+          lines.push(
+            "| Resource | Property | Expected | Observed |",
+            "| --- | --- | --- | --- |",
+            ...issue.drift.map(
+              (d) => `| ${d.resource} | ${d.property} | \`${d.expected}\` | \`${d.observed}\` |`,
+            ),
+          );
+      }
+      lines.push(
+        "Do not resubmit. Retain the operation and inspect its receipt; a ready receipt alone does not establish post-restart verification.",
+      );
+    }
     if (result.outcome === "uncertain" || result.receipt?.status === "started")
       lines.push(
         "The outcome remains uncertain. Inspect this same operation; do not create a new operation or repeat its POST.",

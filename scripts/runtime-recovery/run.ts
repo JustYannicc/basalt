@@ -23,7 +23,19 @@ export interface RecoveryReport {
   outcome: "dry-run" | "ready" | "inspection" | "uncertain";
   plan: RecoveryPlan;
   planSha256: string;
+  submissionAttempted: boolean;
   receipt?: Receipt;
+  issues?: readonly { reason: string; drift: RecoveryWorkflowRefusal["drift"] }[];
+}
+
+export function recordRecoveryIssue(
+  result: RecoveryReport,
+  issue: RecoveryWorkflowRefusal,
+): RecoveryReport {
+  return {
+    ...result,
+    issues: [...(result.issues ?? []), { reason: issue.reason, drift: issue.drift }],
+  };
 }
 interface Operations {
   fetch(request: Request): Promise<Response>;
@@ -63,10 +75,12 @@ export async function runReviewedRecovery(
   deps: Dependencies,
 ): Promise<RecoveryReport> {
   const planSha256 = recoveryPlanDigest(plan);
+  let submissionAttempted = false;
   const report = (outcome: RecoveryReport["outcome"], receipt?: Receipt): RecoveryReport => ({
     outcome,
     plan,
     planSha256,
+    submissionAttempted,
     ...(receipt ? { receipt } : {}),
   });
   const decodeReceipt = (value: unknown) => {
@@ -148,6 +162,7 @@ export async function runReviewedRecovery(
   });
   let receipt: Receipt;
   try {
+    submissionAttempted = true;
     const response = await deps.operations.fetch(
       new Request(`http://pool-operations${runtimeRecoveryPath}`, {
         method: "POST",
@@ -171,25 +186,49 @@ export async function runReviewedRecovery(
         decoded._tag === "Some"
           ? decoded.value.map((d) => ({ resource: plan.instanceId, ...d }))
           : [];
-      throw new RecoveryWorkflowRefusal(`restart-http-${response.status}`, drift);
+      const issue = new RecoveryWorkflowRefusal(`restart-http-${response.status}`, drift);
+      if (response.status < 500) throw issue;
+      try {
+        const state = await inspect();
+        if (state.receipt !== undefined)
+          return recordRecoveryIssue(report("inspection", decodeReceipt(state.receipt)), issue);
+      } catch {
+        // The submission marker still prevents another POST if receipt inspection fails.
+      }
+      return recordRecoveryIssue(report("uncertain"), issue);
     }
     receipt = decodeReceipt(await responseJson(response));
   } catch (error) {
-    if (error instanceof RecoveryWorkflowRefusal) throw error;
-    // A lost POST reply permits one receipt read, never another submission.
+    if (error instanceof RecoveryWorkflowRefusal && /^restart-http-4[0-9]{2}$/.test(error.reason))
+      throw error;
+    const issue =
+      error instanceof RecoveryWorkflowRefusal
+        ? error
+        : new RecoveryWorkflowRefusal("restart-reply-unconfirmed");
+    // A lost or invalid POST reply permits one receipt read, never another submission.
     try {
       const state = await inspect();
-      if (state.receipt !== undefined) return report("inspection", decodeReceipt(state.receipt));
+      if (state.receipt !== undefined)
+        return recordRecoveryIssue(report("inspection", decodeReceipt(state.receipt)), issue);
     } catch {
       /* The durable operation and local marker remain authoritative. */
     }
-    return report("uncertain");
+    return recordRecoveryIssue(report("uncertain"), issue);
   }
   if (receipt.status !== "ready" || !receipt.bootId || receipt.bootId === plan.bootId)
     return report("inspection", receipt);
-  current = await inspect();
-  const after = observedPlan(plan, await deps.provider(), current);
-  const drift = pinDrift({ ...plan, bootId: receipt.bootId }, after);
-  if (drift.length) throw new RecoveryWorkflowRefusal("post-restart-pin-drift", drift);
-  return report("ready", receipt);
+  try {
+    current = await inspect();
+    const after = observedPlan(plan, await deps.provider(), current);
+    const drift = pinDrift({ ...plan, bootId: receipt.bootId }, after);
+    if (drift.length) throw new RecoveryWorkflowRefusal("post-restart-pin-drift", drift);
+    return report("ready", receipt);
+  } catch (error) {
+    return recordRecoveryIssue(
+      report("inspection", receipt),
+      error instanceof RecoveryWorkflowRefusal
+        ? error
+        : new RecoveryWorkflowRefusal("post-restart-verification-unavailable"),
+    );
+  }
 }
