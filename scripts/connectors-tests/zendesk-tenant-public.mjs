@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import guidanceSnapshot from "./zendesk-company-guidance.snapshot.json" with { type: "json" };
 
 /** Drive the saved app connection through the public hosted HTTP API. */
 export function proveTenantPublic({
@@ -157,7 +158,7 @@ export function proveTenantPublic({
       });
       assert.equal(wrongCallback.status, 422);
       assert.equal(wrongCallback.body.reason, "invalid_client");
-      assert.match(wrongCallback.body.clientSetupInstructions, /Add this callback URL/);
+      assert.equal(wrongCallback.body.clientSetupInstructions, guidanceSnapshot.setupInstructions);
       fixtures.setTenantCallback("site-b", callback);
       for (const [status, reason] of [
         [503, "service_unavailable"],
@@ -191,15 +192,14 @@ export function proveTenantPublic({
       });
       assert.equal(removed.status, 400);
       assert.equal(removed.body.reason, "invalid_client");
-      assert.match(removed.body.clientSetupInstructions, /public OAuth client site-b_zendesk/);
+      assert.equal(removed.body.clientSetupInstructions, guidanceSnapshot.setupInstructions);
       const missing = yield* request(actors.owner, "POST", `${path}/oauth/start`, {
         method: "oauth",
       });
       assert.equal(missing.status, 422);
       assert.equal(missing.body._tag, "OAuthSetupFailed");
       assert.equal(missing.body.reason, "invalid_client");
-      assert.match(missing.body.clientSetupInstructions, /In Zendesk Admin Center/);
-      assert.match(missing.body.clientSetupInstructions, /public OAuth client site-b_zendesk/);
+      assert.equal(missing.body.clientSetupInstructions, guidanceSnapshot.setupInstructions);
       const unavailableSetup = checked(
         yield* request(actors.owner, "GET", `${path}/oauth/oauth/setup`),
         200,
