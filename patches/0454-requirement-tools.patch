@@ -17,20 +17,20 @@ diff --git a/packages/catalog/src/contracts/catalog.ts b/packages/catalog/src/co
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-@@ -94,7 +94,11 @@ import {
+@@ -92,9 +92,10 @@ import { requirementTitles } from "./requirement-titles.ts";
+ import {
+   serviceGroups,
    serviceMethods,
-   servicePart,
+-  servicePart,
    serviceTitle,
 -  toolLimits,
-+  cantRun,
 +  namesEveryRequirement,
-+  requirementLimitTitles,
-+  toolLimitTitles,
++  rowNote,
 +  type RequirementTools,
    type ServiceMethod,
    type ToolSectionLimit,
  } from "./service-groups.ts";
-@@ -661,6 +665,7 @@ export function AppAccounts<E>({
+@@ -661,6 +662,7 @@ export function AppAccounts<E>({
    methods,
    connections,
    toolSections,
@@ -38,7 +38,7 @@ diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/package
    Failure,
  }: {
    readonly app: App;
-@@ -683,6 +688,8 @@ export function AppAccounts<E>({
+@@ -683,6 +685,8 @@ export function AppAccounts<E>({
     * section holds several requirements of a service, the other accounts say they can't run them.
     */
    readonly toolSections?: readonly ToolSectionLimit[] | undefined;
@@ -47,7 +47,7 @@ diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/package
    readonly Failure: ComponentType<FailureProps<E>>;
  }) {
    useRevalidateChecks(
-@@ -734,6 +741,7 @@ export function AppAccounts<E>({
+@@ -734,6 +738,7 @@ export function AppAccounts<E>({
            methods={methods}
            connections={connections}
            toolSections={toolSections}
@@ -55,7 +55,7 @@ diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/package
            showProvisionedProblems={repairs.app}
            Failure={Failure}
          />
-@@ -750,6 +758,7 @@ export function AppAccounts<E>({
+@@ -750,6 +755,7 @@ export function AppAccounts<E>({
            methods={methods}
            connections={connections}
            toolSections={toolSections}
@@ -63,7 +63,7 @@ diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/package
            showProvisionedProblems={repairs.user}
            Failure={Failure}
          />
-@@ -767,6 +776,7 @@ interface ScopeProps<E> {
+@@ -767,6 +773,7 @@ interface ScopeProps<E> {
    readonly methods?: RequirementMethods | undefined;
    readonly connections?: RequirementConnections | undefined;
    readonly toolSections?: readonly ToolSectionLimit[] | undefined;
@@ -71,31 +71,21 @@ diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/package
    readonly Failure: ComponentType<FailureProps<E>>;
  }
  
-@@ -1132,10 +1142,19 @@ function ServiceView<E>({
-   const methodsLine = methodsSummary(
+@@ -1133,9 +1140,10 @@ function ServiceView<E>({
      group.flatMap(([slot, requirement]) => methodStates(props.methods, slot, requirement)),
    );
--  const note = (slot: string) => (method: string) =>
+   const note = (slot: string) => (method: string) =>
 -    [servicePart(group, slot), toolLimits(props.toolSections, group, slot, method)]
 -      .filter((part) => part !== undefined)
 -      .join(" · ") || undefined;
-+  // Where the catalog names each requirement's tools, the row says which it can't run in place of
-+  // naming the part it serves, in one sentence with any declared tool sections it can't run.
-+  const note = (slot: string) => (method: string) => {
-+    const named = requirementLimitTitles(props.requirementTools, group, slot);
-+    return (
-+      [
-+        named === undefined ? servicePart(group, slot) : undefined,
-+        cantRun([...(named ?? []), ...toolLimitTitles(props.toolSections, group, slot, method)]),
-+      ]
-+        .filter((part) => part !== undefined)
-+        .join(" · ") || undefined
-+    );
-+  };
++    rowNote(group, slot, method, {
++      requirementTools: props.requirementTools,
++      toolSections: props.toolSections,
++    });
    return (
      <section
        aria-label={title}
-@@ -1209,6 +1228,7 @@ function ServiceConnect<E>({
+@@ -1209,6 +1217,7 @@ function ServiceConnect<E>({
    title,
    methods,
    connections,
@@ -103,15 +93,18 @@ diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/package
  }: ScopeProps<E> & {
    readonly group: readonly RequirementEntry[];
    readonly edit: LinkEditing<E>;
-@@ -1219,6 +1239,7 @@ function ServiceConnect<E>({
+@@ -1219,6 +1228,10 @@ function ServiceConnect<E>({
    const states = group.flatMap(([slot, requirement]) =>
      methodStates(methods, slot, requirement).map((state) => ({ ...state, slot, requirement })),
    );
-+  const tools = namesEveryRequirement(requirementTools, group) ? requirementTools : undefined;
++  const tools =
++    requirementTools !== undefined && namesEveryRequirement(requirementTools, group)
++      ? requirementTools
++      : undefined;
    const entries = serviceMethods(
      states.flatMap((state) =>
        state.reason === undefined
-@@ -1228,6 +1249,7 @@ function ServiceConnect<E>({
+@@ -1228,6 +1241,7 @@ function ServiceConnect<E>({
                requirement: state.requirement,
                method: state.name,
                label: state.label,
@@ -119,7 +112,7 @@ diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/package
              },
            ]
          : [],
-@@ -1318,9 +1340,24 @@ function ServiceMethodItem<E>({
+@@ -1318,9 +1332,24 @@ function ServiceMethodItem<E>({
    readonly onConnect: (entry: ServiceMethod) => void;
  }) {
    const allowed = useCanAdd(edit, entry.slot);
@@ -162,11 +155,11 @@ diff --git a/packages/ui/src/implementation/dashboard/service-groups.ts b/packag
   * another requirement of the same name already offers is left out, since both open the same kind
 - * of sign-in and the earlier requirement is the one the app declares first. Where requirements of
 + * of sign-in and the earlier requirement is the one the app declares first, unless the catalog
-+ * names different tools for them. Where requirements of
++ * names different tools for them; their tools then tell them apart. Where requirements of
   * different names offer the same label, each names its requirement, such as "API key · Neon MCP".
   */
  export const serviceMethods = (methods: readonly ServiceMethod[]): readonly ServiceMethod[] => {
-@@ -86,7 +89,12 @@ export const serviceMethods = (methods: readonly ServiceMethod[]): readonly Serv
+@@ -86,10 +89,17 @@ export const serviceMethods = (methods: readonly ServiceMethod[]): readonly Serv
      (entry, index) =>
        !methods
          .slice(0, index)
@@ -179,49 +172,17 @@ diff --git a/packages/ui/src/implementation/dashboard/service-groups.ts b/packag
 +        ),
    );
    return kept.map((entry) =>
-     kept.some((other) => other !== entry && other.label === entry.label)
-@@ -102,21 +110,32 @@ export type ToolSectionLimit = Pick<CatalogToolSection, "requirement" | "method"
-  * What an account of one requirement and method can't run beside the rest of its service: each
-  * declared tool section of the group's requirements that needs another requirement or method.
-  */
--export const toolLimits = (
-+export const toolLimitTitles = (
-   sections: readonly ToolSectionLimit[] | undefined,
-   group: readonly RequirementEntry[],
-   slot: string,
-   method: string,
--) => {
--  const titles = (sections ?? []).flatMap((section) =>
-+) =>
-+  (sections ?? []).flatMap((section) =>
-     group.some(([other]) => other === section.requirement) &&
-     !(section.requirement === slot && section.method === method)
-       ? [section.title]
-       : [],
+-    kept.some((other) => other !== entry && other.label === entry.label)
++    kept.some(
++      (other) => other !== entry && other.label === entry.label && nameOf(other) !== nameOf(entry),
++    )
+       ? { ...entry, label: `${entry.label} · ${nameOf(entry)}` }
+       : entry,
    );
--  return titles.length === 0 ? undefined : `Can't run ${[...new Set(titles)].join(" or ")}.`;
-+
-+/** One sentence for every set of tools a row's account can't run. */
-+export const cantRun = (titles: readonly string[]) => {
-+  const unique = [...new Set(titles)];
-+  return unique.length === 0 ? undefined : `Can't run ${unique.join(" or ")}.`;
- };
+@@ -98,30 +108,58 @@ export const serviceMethods = (methods: readonly ServiceMethod[]): readonly Serv
+ /** The fields of a catalog tool section that say which requirement and method run its tools. */
+ export type ToolSectionLimit = Pick<CatalogToolSection, "requirement" | "method" | "title">;
  
-+export const toolLimits = (
-+  sections: readonly ToolSectionLimit[] | undefined,
-+  group: readonly RequirementEntry[],
-+  slot: string,
-+  method: string,
-+) => cantRun(toolLimitTitles(sections, group, slot, method));
-+
- /**
-  * Which part of its service an account serves, where the section joins requirements of different
-  * names, such as "For GitLab MCP"; nothing for the part the section is named after.
-@@ -125,3 +144,35 @@ export const servicePart = (group: readonly RequirementEntry[], slot: string) =>
-   const name = group.find(([other]) => other === slot)?.[1].definition.name.trim();
-   return name === undefined || name === serviceTitle(group) ? undefined : `For ${name}`;
- };
-+
 +/** The tools each requirement of an app runs, by requirement, from its catalog listing. */
 +export type RequirementTools = Readonly<Record<string, string>>;
 +
@@ -229,30 +190,69 @@ diff --git a/packages/ui/src/implementation/dashboard/service-groups.ts b/packag
 +export const namesEveryRequirement = (
 +  tools: RequirementTools | undefined,
 +  group: readonly RequirementEntry[],
-+): tools is RequirementTools =>
-+  tools !== undefined && group.every(([slot]) => tools[slot] !== undefined);
++) => tools !== undefined && group.every(([slot]) => tools[slot] !== undefined);
 +
 +/**
-+ * The tools a row's account can't run beside the rest of its service: those of every other
-+ * requirement in the section. Undefined unless the catalog names the tools of every requirement
-+ * in the section, so no row claims a limit the app doesn't declare.
++ * Which part of its service an account serves, where the section joins requirements of different
++ * names, such as "For GitLab MCP"; nothing for the part the section is named after.
 + */
-+export const requirementLimitTitles = (
-+  tools: RequirementTools | undefined,
-+  group: readonly RequirementEntry[],
-+  slot: string,
-+) =>
-+  namesEveryRequirement(tools, group)
-+    ? group.flatMap(([other]) =>
-+        other === slot || tools[other] === tools[slot] ? [] : [tools[other]!],
-+      )
-+    : undefined;
++export const servicePart = (group: readonly RequirementEntry[], slot: string) => {
++  const name = group.find(([other]) => other === slot)?.[1].definition.name.trim();
++  return name === undefined || name === serviceTitle(group) ? undefined : `For ${name}`;
++};
 +
-+export const requirementLimits = (
-+  tools: RequirementTools | undefined,
-+  group: readonly RequirementEntry[],
-+  slot: string,
-+) => cantRun(requirementLimitTitles(tools, group, slot) ?? []);
+ /**
+- * What an account of one requirement and method can't run beside the rest of its service: each
+- * declared tool section of the group's requirements that needs another requirement or method.
++ * A row's note in a service section for an account of one requirement and method. Where the
++ * catalog names the tools of every requirement in the section, the note says which of the others'
++ * tools the account can't run, in place of naming the part it serves; it joins the declared tool
++ * sections of the section's requirements that need another requirement or method into the same
++ * sentence. No row claims a limit the app doesn't declare.
+  */
+-export const toolLimits = (
+-  sections: readonly ToolSectionLimit[] | undefined,
++export const rowNote = (
+   group: readonly RequirementEntry[],
+   slot: string,
+   method: string,
++  catalog: {
++    readonly requirementTools?: RequirementTools | undefined;
++    readonly toolSections?: readonly ToolSectionLimit[] | undefined;
++  },
+ ) => {
+-  const titles = (sections ?? []).flatMap((section) =>
++  const tools = catalog.requirementTools;
++  const named =
++    tools !== undefined && namesEveryRequirement(tools, group)
++      ? group.flatMap(([other]) =>
++          other === slot || tools[other] === tools[slot] ? [] : [tools[other]!],
++        )
++      : [];
++  const sections = (catalog.toolSections ?? []).flatMap((section) =>
+     group.some(([other]) => other === section.requirement) &&
+     !(section.requirement === slot && section.method === method)
+       ? [section.title]
+       : [],
+   );
+-  return titles.length === 0 ? undefined : `Can't run ${[...new Set(titles)].join(" or ")}.`;
+-};
+-
+-/**
+- * Which part of its service an account serves, where the section joins requirements of different
+- * names, such as "For GitLab MCP"; nothing for the part the section is named after.
+- */
+-export const servicePart = (group: readonly RequirementEntry[], slot: string) => {
+-  const name = group.find(([other]) => other === slot)?.[1].definition.name.trim();
+-  return name === undefined || name === serviceTitle(group) ? undefined : `For ${name}`;
++  const titles = [...new Set([...named, ...sections])];
++  const limit = titles.length === 0 ? undefined : `Can't run ${titles.join(" or ")}.`;
++  return (
++    [named.length > 0 ? undefined : servicePart(group, slot), limit]
++      .filter((part) => part !== undefined)
++      .join(" · ") || undefined
++  );
+ };
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 --- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx

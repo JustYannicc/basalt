@@ -48,6 +48,7 @@
     ".upstream/packages/catalog/src/contracts/catalog.ts",
     ".upstream/packages/ui/src/implementation/dashboard/service-groups.ts",
     ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx",
-    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx"
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx",
+    ".upstream/e2e/support/requirement-tools-catalog.ts"
   ]
 }
