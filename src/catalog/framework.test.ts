@@ -38,19 +38,25 @@ const publisher: typeof fetch = async (input) => {
   const url = String(input);
   if (url.endsWith("/index.json")) return Response.json(official);
   const id = /\/apps\/([^/]+)\.json$/.exec(url)?.[1];
-  return id === undefined ? new Response(null, { status: 404 }) : new Response(officialSource(`@executor.sh/${id}`));
+  return id === undefined
+    ? new Response(null, { status: 404 })
+    : new Response(officialSource(`@executor.sh/${id}`));
 };
 
 test("the catalog serves the framework release Basalt's compiler ships", () => {
   assert.equal(catalog.framework, servedFrameworkVersion);
   assert.equal(poolFrameworkVersion, servedFrameworkVersion);
-  const pool = JSON.parse(readFileSync(new URL("../../apps/pool/package.json", import.meta.url), "utf8"));
+  const pool = JSON.parse(
+    readFileSync(new URL("../../apps/pool/package.json", import.meta.url), "utf8"),
+  );
   assert.equal(pool.dependencies.apps, servedFrameworkVersion);
 });
 
 /** Each package the catalog serves that does not declare the served framework, and what it declares. */
 async function offFramework(source: typeof fetch) {
-  const index = (await (await handleCatalog(new Request(`${origin}/catalog/index.json`), source)).json()) as Feed;
+  const index = (await (
+    await handleCatalog(new Request(`${origin}/catalog/index.json`), source)
+  ).json()) as Feed;
   const declared: Record<string, unknown> = {};
   for (const entry of index.apps) {
     const response = await handleCatalog(new Request(`${origin}/catalog/${entry.source}`), source);
@@ -60,10 +66,11 @@ async function offFramework(source: typeof fetch) {
     const served = (await response.json()) as { files: { path: string; content: string }[] };
     // A package without a manifest or without the framework would build on no served framework.
     const manifest = served.files.find((file) => file.path === "package.json");
-    declared[entry.id] = manifest === undefined ? "no manifest" : JSON.parse(manifest.content).dependencies?.apps;
+    declared[entry.id] =
+      manifest === undefined ? "no manifest" : JSON.parse(manifest.content).dependencies?.apps;
   }
   // Official, carried and Basalt's own packages alike.
-  for (const id of ["gmail", "elevenlabs", "gitlab", "miro", "slack", "zendesk", "atlassian", "aws"])
+  for (const id of ["gmail", "elevenlabs", "gitlab", "miro", "slack", "zendesk", "aws"])
     assert.ok(Object.hasOwn(declared, id), `${id} was served`);
   return Object.entries(declared).filter(([, version]) => version !== catalog.framework);
 }
@@ -76,7 +83,12 @@ test("a served package that declares no framework fails the check", async () => 
   const bare: typeof fetch = async (input) => {
     const url = String(input);
     if (url.endsWith("/index.json")) return Response.json(official);
-    return new Response(JSON.stringify({ package: "@executor.sh/gmail", files: [{ path: "package.json", content: "{}" }] }));
+    return new Response(
+      JSON.stringify({
+        package: "@executor.sh/gmail",
+        files: [{ path: "package.json", content: "{}" }],
+      }),
+    );
   };
   const missing = await offFramework(bare);
   assert.ok(missing.some(([id, version]) => id === "gmail" && version === undefined));
