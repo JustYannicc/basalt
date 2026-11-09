@@ -4,10 +4,10 @@ import { createServer } from "node:http";
 import { test } from "node:test";
 import { Context, Effect, FileSystem, Layer, Redacted } from "effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { appOriginTls } from "../../.upstream/e2e/support/app-origin-tls.ts";
-import { BrowserDriver } from "../../.upstream/e2e/support/browser.ts";
-import { fixtureBrowser } from "../../.upstream/e2e/support/browser-launch.ts";
-import { Target } from "../../.upstream/e2e/support/platform.ts";
+import { appOriginTls } from "../.upstream/e2e/support/app-origin-tls.ts";
+import { BrowserDriver } from "../.upstream/e2e/support/browser.ts";
+import { fixtureBrowser } from "../.upstream/e2e/support/browser-launch.ts";
+import { Target } from "../.upstream/e2e/support/platform.ts";
 
 test("saved evidence can launch a browser without a live target", async () => {
   await Effect.runPromise(

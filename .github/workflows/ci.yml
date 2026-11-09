@@ -417,6 +417,8 @@ jobs:
       - run: bun run --cwd .upstream e2e:prepare
       - run: bunx playwright install --with-deps chromium
         working-directory: .upstream
+      - name: Verify fixture certificate trust and the unrelated-certificate rejection
+        run: node --test e2e/browser-fixture-certificate-trust.test.ts
       - name: Verify hosted PlanetScale sign-in asks for the full reviewed permissions
         run: bun e2e/planetscale-sign-in.mjs .generated/planetscale-sign-in/ci hosted
       - name: Verify the registered fallback lists only granted tools
