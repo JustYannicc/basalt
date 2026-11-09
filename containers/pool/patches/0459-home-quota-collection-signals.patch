@@ -1,0 +1,446 @@
+diff --git a/internal/quota/basalt_collection_signal.go b/internal/quota/basalt_collection_signal.go
+new file mode 100644
+index 0000000..159123f
+--- /dev/null
++++ b/internal/quota/basalt_collection_signal.go
+@@ -0,0 +1,210 @@
++package quota
++
++import (
++	"context"
++	"crypto/sha256"
++	"encoding/json"
++	"fmt"
++	"strings"
++
++	"github.com/google/uuid"
++	log "github.com/sirupsen/logrus"
++)
++
++const collectionSignalMarker = "POOL_QUOTA_COLLECTION "
++const maxSignalWindows = 32
++
++type collectionSignalKey struct{}
++type returnedWindow struct {
++	ID      string `json:"id"`
++	Seconds *int64 `json:"seconds"`
++}
++type returnedResponse struct {
++	Source  string           `json:"source"`
++	Valid   bool             `json:"valid"`
++	Windows []returnedWindow `json:"windows"`
++}
++type collectionSignal struct {
++	AccountRef string             `json:"account_ref"`
++	Provider   string             `json:"provider"`
++	ProbeOK    bool               `json:"probe_ok"`
++	Responses  []returnedResponse `json:"responses"`
++	Truncated  bool               `json:"truncated"`
++	count      int
++}
++
++func newCollectionSignal(id, provider string) *collectionSignal {
++	// Native IDs correlate with Home inventory. Legacy labels may contain secrets.
++	ref := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(id)))
++	if parsed, err := uuid.Parse(id); err == nil && parsed.String() == id {
++		ref = id
++	}
++	switch provider {
++	case "codex", "claude", "antigravity", "kimi", "xai", "meta":
++	default:
++		provider = "unknown"
++	}
++	return &collectionSignal{AccountRef: ref, Provider: provider, Responses: []returnedResponse{}}
++}
++
++func (s *collectionSignal) emit() {
++	encoded, err := json.Marshal(s)
++	if err == nil {
++		log.Info(collectionSignalMarker + string(encoded))
++	}
++}
++
++type signalObject map[string]json.RawMessage
++
++func signalMap(raw json.RawMessage) signalObject {
++	var value signalObject
++	_ = json.Unmarshal(raw, &value)
++	return value
++}
++func signalArray(raw json.RawMessage) []json.RawMessage {
++	var value []json.RawMessage
++	_ = json.Unmarshal(raw, &value)
++	return value
++}
++func signalPresent(raw json.RawMessage) bool { return len(raw) > 0 }
++func signalSeconds(raw json.RawMessage, multiplier int64) *int64 {
++	var duration flexInt64
++	_ = json.Unmarshal(raw, &duration)
++	if !duration.set {
++		return nil
++	}
++	seconds, ok := checkedPeriodSeconds(duration.value, multiplier)
++	if !ok || seconds > 315360000 {
++		return nil
++	}
++	return &seconds
++}
++func signalPeriod(m signalObject) *int64 {
++	var unit string
++	_ = json.Unmarshal(m["timeUnit"], &unit)
++	var duration flexInt64
++	_ = json.Unmarshal(m["duration"], &duration)
++	if !duration.set {
++		return nil
++	}
++	_, _, seconds := structuredPeriod(duration.value, unit)
++	if seconds != nil && *seconds > 315360000 {
++		return nil
++	}
++	return seconds
++}
++
++// Inspect field presence before quota parsing can discard an unusable quantity.
++// Only schema paths and durations leave this function; the payload is not retained.
++func recordReturnedWindows(ctx context.Context, source string, body []byte) {
++	s, _ := ctx.Value(collectionSignalKey{}).(*collectionSignal)
++	if s == nil {
++		return
++	}
++	if len(s.Responses) >= 8 {
++		s.Truncated = true
++		return
++	}
++	response := returnedResponse{Source: source, Windows: []returnedWindow{}}
++	var root signalObject
++	response.Valid = json.Unmarshal(body, &root) == nil && root != nil
++	add := func(id string, raw json.RawMessage, seconds *int64) {
++		if !signalPresent(raw) {
++			return
++		}
++		if s.count >= maxSignalWindows {
++			s.Truncated = true
++			return
++		}
++		response.Windows = append(response.Windows, returnedWindow{ID: id, Seconds: seconds})
++		s.count++
++	}
++	if response.Valid {
++		switch source {
++		case "claude":
++			for _, key := range []string{"five_hour", "seven_day", "seven_day_oauth_apps", "seven_day_opus", "seven_day_sonnet", "seven_day_cowork", "iguana_necktie", "extra_usage"} {
++				var seconds *int64
++				if key == "five_hour" {
++					seconds = quotaInt64Ptr(18000)
++				} else if strings.HasPrefix(key, "seven_day") {
++					seconds = quotaInt64Ptr(604800)
++				}
++				add(key, root[key], seconds)
++			}
++		case "codex":
++			limits := func(prefix string, m signalObject) {
++				for _, key := range []string{"primary_window", "secondary_window"} {
++					raw := m[key]
++					add(prefix+"."+key, raw, signalSeconds(signalMap(raw)["limit_window_seconds"], 1))
++				}
++			}
++			limits("rate_limit", signalMap(root["rate_limit"]))
++			limits("code_review_rate_limit", signalMap(root["code_review_rate_limit"]))
++			for i, raw := range signalArray(root["additional_rate_limits"]) {
++				if i >= 32 {
++					s.Truncated = true
++					break
++				}
++				limits(fmt.Sprintf("additional_rate_limits[%d].rate_limit", i), signalMap(signalMap(raw)["rate_limit"]))
++			}
++		case "meta":
++			m := signalMap(root["subs_usage"])
++			add("subs_usage.window", m["window"], signalSeconds(signalMap(m["window"])["window_duration_mins"], 60))
++			add("subs_usage.weekly", m["weekly"], quotaInt64Ptr(604800))
++		case "kimi":
++			add("usage", root["usage"], signalPeriod(signalMap(root["usage"])))
++			for i, raw := range signalArray(root["limits"]) {
++				if i >= 32 {
++					s.Truncated = true
++					break
++				}
++				m := signalMap(raw)
++				period := signalPeriod(m)
++				if window := signalMap(m["window"]); window != nil {
++					period = signalPeriod(window)
++				} else if detail := signalMap(m["detail"]); period == nil && detail != nil {
++					period = signalPeriod(detail)
++				}
++				add(fmt.Sprintf("limits[%d]", i), raw, period)
++			}
++		case "antigravity":
++			for i, raw := range signalArray(root["groups"]) {
++				if i >= 32 {
++					s.Truncated = true
++					break
++				}
++				for j, bucket := range signalArray(signalMap(raw)["buckets"]) {
++					if j >= 32 {
++						s.Truncated = true
++						break
++					}
++					var id string
++					_ = json.Unmarshal(signalMap(bucket)["bucketId"], &id)
++					var seconds *int64
++					if spec, ok := antigravityQuotaBucketSpec(id); ok {
++						seconds = periodSeconds(spec.periodUnit, spec.periodValue)
++					}
++					add(fmt.Sprintf("groups[%d].buckets[%d]", i, j), bucket, seconds)
++				}
++			}
++		case "xai-monthly", "xai-weekly":
++			m := signalMap(root["config"])
++			var seconds *int64
++			var periodType string
++			period := signalMap(m["currentPeriod"])
++			if period == nil {
++				period = signalMap(m["current_period"])
++			}
++			_ = json.Unmarshal(period["type"], &periodType)
++			if strings.EqualFold(periodType, "weekly") || strings.EqualFold(periodType, "week") {
++				seconds = quotaInt64Ptr(604800)
++			}
++			add("config.currentPeriod", m["currentPeriod"], seconds)
++			add("config.current_period", m["current_period"], seconds)
++			for _, key := range []string{"monthlyLimit", "monthly_limit", "creditUsagePercent", "credit_usage_percent"} {
++				add("config."+key, m[key], nil)
++			}
++		}
++	}
++	s.Responses = append(s.Responses, response)
++}
+diff --git a/internal/quota/basalt_collection_signal_test.go b/internal/quota/basalt_collection_signal_test.go
+new file mode 100644
+index 0000000..83e7a8f
+--- /dev/null
++++ b/internal/quota/basalt_collection_signal_test.go
+@@ -0,0 +1,142 @@
++package quota
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/logging"
++	log "github.com/sirupsen/logrus"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++)
++
++func TestQuotaCollectionSignalActualCollector(t *testing.T) {
++	for _, tc := range []struct {
++		name, body string
++		status     int
++		wantIDs    []string
++		ok         bool
++	}{
++		{"weekly-only", `{"rate_limit":{"secondary_window":{"used_percent":10,"limit_window_seconds":604800}}}`, 200, []string{"rate_limit.secondary_window"}, true},
++		{"returned-invalid-five-hour", `{"rate_limit":{"primary_window":{"used_percent":"private-value","limit_window_seconds":18000},"secondary_window":{"used_percent":10,"limit_window_seconds":604800}},"token":"private-token"}`, 200, []string{"rate_limit.primary_window", "rate_limit.secondary_window"}, false},
++		{"transport-failure", `{"token":"private-token"}`, 429, nil, false},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			repo := newCollectorTestRepository(t)
++			const id = "11111111-2222-4333-8444-555555555555"
++			seedCollectorAuth(t, repo, id, map[string]any{"type": "codex", "access_token": "private-token"})
++			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				w.WriteHeader(tc.status)
++				_, _ = w.Write([]byte(tc.body))
++			}))
++			defer server.Close()
++			var output bytes.Buffer
++			oldOut, oldFmt, oldLevel := log.StandardLogger().Out, log.StandardLogger().Formatter, log.GetLevel()
++			log.SetOutput(&output)
++			log.SetFormatter(&logging.LogFormatter{})
++			log.SetLevel(log.InfoLevel)
++			defer func() { log.SetOutput(oldOut); log.SetFormatter(oldFmt); log.SetLevel(oldLevel) }()
++			now := time.Date(2026, 11, 9, 22, 0, 0, 0, time.UTC)
++			NewCollector(repo, Options{Owner: "signal-test", CodexUsageURL: server.URL, Now: func() time.Time { return now }}).collect(context.Background())
++			const marker = "POOL_QUOTA_COLLECTION "
++			var events []map[string]any
++			for _, line := range strings.Split(output.String(), "\n") {
++				if i := strings.Index(line, marker); i >= 0 {
++					var event map[string]any
++					if err := json.Unmarshal([]byte(line[i+len(marker):]), &event); err != nil {
++						t.Fatal(err)
++					}
++					events = append(events, event)
++				}
++			}
++			if len(events) != 1 {
++				t.Fatalf("collection signals=%d, want 1", len(events))
++			}
++			event := events[0]
++			if event["account_ref"] != id || event["probe_ok"] != tc.ok {
++				t.Fatalf("wrong identity/status: %v", event)
++			}
++			encoded, _ := json.Marshal(event)
++			if strings.Contains(string(encoded), "private-") || strings.Contains(string(encoded), "used_percent") {
++				t.Fatal("private quota data escaped")
++			}
++			var ids []string
++			for _, response := range event["responses"].([]any) {
++				for _, window := range response.(map[string]any)["windows"].([]any) {
++					ids = append(ids, window.(map[string]any)["id"].(string))
++				}
++			}
++			if strings.Join(ids, ",") != strings.Join(tc.wantIDs, ",") {
++				t.Fatalf("returned windows=%v, want %v", ids, tc.wantIDs)
++			}
++			if tc.name == "returned-invalid-five-hour" {
++				t.Log(strings.TrimSpace(output.String()))
++			}
++		})
++	}
++}
++
++func TestQuotaCollectionSignalReturnedSchemas(t *testing.T) {
++	for _, tc := range []struct {
++		provider, source, body, id string
++		seconds                    int64
++	}{
++		{"claude", "claude", `{"five_hour":{"utilization":"private-value"},"token":"private-token"}`, "five_hour", 18000},
++		{"claude", "claude", `{"seven_day":{"utilization":10}}`, "seven_day", 604800},
++		{"claude", "claude", `{"five_hour":null}`, "five_hour", 18000},
++		{"codex", "codex", `{"rate_limit":{"primary_window":{"used_percent":"bad","limit_window_seconds":18000}}}`, "rate_limit.primary_window", 18000},
++		{"antigravity", "antigravity", `{"groups":[{"buckets":[{"bucketId":"gemini-5h","remainingFraction":"bad"}]}]}`, "groups[0].buckets[0]", 18000},
++		{"kimi", "kimi", `{"limits":[{"window":{"duration":5,"timeUnit":"TIME_UNIT_HOUR"},"used":"bad"}]}`, "limits[0]", 18000},
++		{"meta", "meta", `{"subs_usage":{"window":{"window_duration_mins":300,"used_percent":"bad"}}}`, "subs_usage.window", 18000},
++		{"xai", "xai-weekly", `{"config":{"currentPeriod":{"type":"weekly"},"creditUsagePercent":"bad"}}`, "config.currentPeriod", 604800},
++	} {
++		t.Run(tc.source+tc.id, func(t *testing.T) {
++			signal := newCollectionSignal("private@email.example", tc.provider)
++			ctx := context.WithValue(context.Background(), collectionSignalKey{}, signal)
++			recordReturnedWindows(ctx, tc.source, []byte(tc.body))
++			if len(signal.Responses) != 1 || !signal.Responses[0].Valid || len(signal.Responses[0].Windows) == 0 {
++				t.Fatal("missing response metadata")
++			}
++			window := signal.Responses[0].Windows[0]
++			if window.ID != tc.id || window.Seconds == nil || *window.Seconds != tc.seconds {
++				t.Fatalf("wrong window: %+v", window)
++			}
++			data, _ := json.Marshal(signal)
++			if strings.Contains(string(data), "private") || strings.Contains(string(data), "utilization") {
++				t.Fatal("private data escaped")
++			}
++		})
++	}
++	signal := newCollectionSignal("legacy-label", "codex")
++	ctx := context.WithValue(context.Background(), collectionSignalKey{}, signal)
++	recordReturnedWindows(ctx, "codex", []byte(`{"rate_limit":`))
++	if signal.Responses[0].Valid || len(signal.Responses[0].Windows) != 0 {
++		t.Fatal("invalid JSON looked like an omission")
++	}
++	for i := 0; i < 20; i++ {
++		recordReturnedWindows(ctx, "codex", []byte(`{"rate_limit":{"primary_window":{"limit_window_seconds":18000}}}`))
++	}
++	if !signal.Truncated || len(signal.Responses) != 8 {
++		t.Fatal("unbounded signal")
++	}
++}
++
++func TestQuotaCollectionSignalBoundedRecord(t *testing.T) {
++	signal := newCollectionSignal("legacy-label", "codex")
++	ctx := context.WithValue(context.Background(), collectionSignalKey{}, signal)
++	var limits []string
++	for i := 0; i < 100; i++ {
++		limits = append(limits, `{"rate_limit":{"primary_window":{"limit_window_seconds":18000},"secondary_window":{"limit_window_seconds":604800}},"limit_name":"private-label"}`)
++	}
++	body := []byte(`{"additional_rate_limits":[` + strings.Join(limits, ",") + `]}`)
++	for i := 0; i < 9; i++ {
++		recordReturnedWindows(ctx, "codex", body)
++	}
++	encoded, _ := json.Marshal(signal)
++	if !signal.Truncated || signal.count != 32 || len(encoded) > 7000 || strings.Contains(string(encoded), "private-label") {
++		t.Fatalf("unbounded/private signal: bytes=%d count=%d", len(encoded), signal.count)
++	}
++}
+diff --git a/internal/quota/collector.go b/internal/quota/collector.go
+index 63a8d37..3d77335 100644
+--- a/internal/quota/collector.go
++++ b/internal/quota/collector.go
+@@ -319,6 +319,9 @@ func (c *Collector) collectCredential(ctx context.Context, auth *coreauth.Auth,
+ 	if !claimed {
+ 		return
+ 	}
++	signal := newCollectionSignal(auth.ID, normalizedQuotaProvider(auth.Provider))
++	ctx = context.WithValue(ctx, collectionSignalKey{}, signal)
++	defer signal.emit()
+ 	resolveCtx, cancelResolve := context.WithTimeout(ctx, c.options.ProbeTimeout)
+ 	resolved, _, errResolve := c.repo.GetAuth(resolveCtx, auth.ID)
+ 	cancelResolve()
+@@ -332,6 +335,7 @@ func (c *Collector) collectCredential(ctx context.Context, auth *coreauth.Auth,
+ 		c.failProbe(ctx, auth.ID, errProbe)
+ 		return
+ 	}
++	signal.ProbeOK = true
+ 	observedAt := c.options.Now().UTC()
+ 	expiresAt := observedAt.Add(c.options.SnapshotFreshness)
+ 	status := quotaWindowAggregateStatus(result.windows)
+@@ -413,6 +417,7 @@ func (c *Collector) probeCodex(ctx context.Context, auth *coreauth.Auth) (probeR
+ 		return probeResult{}, errRequest
+ 	}
+ 	observedAt := c.options.Now().UTC()
++	recordReturnedWindows(ctx, "codex", body)
+ 	usage, errParse := parseCodexUsage(body, observedAt)
+ 	if errParse != nil || len(usage.windows) == 0 {
+ 		return probeResult{}, &probeError{code: "UPSTREAM_RESPONSE_INVALID", message: "Upstream quota response did not contain usable windows.", retryable: true}
+diff --git a/internal/quota/providers.go b/internal/quota/providers.go
+index 9eeac43..45af9b9 100644
+--- a/internal/quota/providers.go
++++ b/internal/quota/providers.go
+@@ -25,6 +25,7 @@ func (c *Collector) probeClaude(ctx context.Context, auth *coreauth.Auth) (probe
+ 	if errUsage != nil {
+ 		return probeResult{}, errUsage
+ 	}
++	recordReturnedWindows(ctx, "claude", body)
+ 	windows, errParse := parseClaudeUsageWindows(body, c.options.Now().UTC())
+ 	if errParse != nil || len(windows) == 0 {
+ 		return probeResult{}, &probeError{code: "UPSTREAM_RESPONSE_INVALID", message: "Claude quota response did not contain usable windows.", retryable: true}
+@@ -91,6 +92,7 @@ func (c *Collector) probeAntigravity(ctx context.Context, auth *coreauth.Auth) (
+ 			}
+ 			continue
+ 		}
++		recordReturnedWindows(ctx, "antigravity", payload)
+ 		windows, errParse := parseAntigravityWindows(payload, c.options.Now().UTC())
+ 		if errParse == nil && antigravityQuotaGroupsComplete(windows) {
+ 			return windows, nil
+@@ -108,6 +110,7 @@ func (c *Collector) probeKimi(ctx context.Context, auth *coreauth.Auth) ([]clust
+ 	if errRequest != nil {
+ 		return nil, errRequest
+ 	}
++	recordReturnedWindows(ctx, "kimi", payload)
+ 	windows, errParse := parseKimiUsageWindows(payload, c.options.Now().UTC())
+ 	if errParse != nil || len(windows) == 0 {
+ 		return nil, &probeError{code: "UPSTREAM_RESPONSE_INVALID", message: "Kimi quota response did not contain usable windows.", retryable: true}
+@@ -130,6 +133,7 @@ func (c *Collector) probeXAI(ctx context.Context, auth *coreauth.Auth) (probeRes
+ 	var plan *cluster.QuotaPlan
+ 	monthlyPayload, _, errMonthly := c.probeRequest(ctx, auth, http.MethodGet, c.options.XAIBillingURL, nil, headers)
+ 	if errMonthly == nil {
++		recordReturnedWindows(ctx, "xai-monthly", monthlyPayload)
+ 		monthlyWindows, monthlyPlan, errParse := parseXAIUsageWindows(monthlyPayload, now)
+ 		if errParse != nil {
+ 			return probeResult{}, &probeError{code: "UPSTREAM_RESPONSE_INVALID", message: "xAI billing response did not contain usable quota.", retryable: true}
+@@ -141,6 +145,7 @@ func (c *Collector) probeXAI(ctx context.Context, auth *coreauth.Auth) (probeRes
+ 	// is non-fatal while the monthly response still yields usable windows.
+ 	weeklyPayload, _, errWeekly := c.probeRequest(ctx, auth, http.MethodGet, xaiWeeklyBillingURL(c.options.XAIBillingURL), nil, headers)
+ 	if errWeekly == nil {
++		recordReturnedWindows(ctx, "xai-weekly", weeklyPayload)
+ 		if weeklyWindow, ok := parseXAIWeeklyWindow(weeklyPayload, now); ok {
+ 			windows = append([]cluster.QuotaWindow{weeklyWindow}, windows...)
+ 		}
+@@ -181,6 +186,7 @@ func (c *Collector) probeMeta(ctx context.Context, auth *coreauth.Auth) (probeRe
+ 	if errRequest != nil {
+ 		return probeResult{}, errRequest
+ 	}
++	recordReturnedWindows(ctx, "meta", payload)
+ 	windows, plan, errParse := parseMetaQuota(payload, c.options.Now().UTC())
+ 	if errParse != nil {
+ 		return probeResult{}, &probeError{code: "UPSTREAM_RESPONSE_INVALID", message: "Meta quota response could not be parsed.", retryable: true}

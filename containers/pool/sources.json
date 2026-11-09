@@ -68,6 +68,15 @@
             "mode": "manual",
             "requires": "Retire after the pinned Home uses xAI device authorization, keeps device secrets server-side, honors provider expiry and cancellation, saves the existing credential shape with an atomic exact-ID completion receipt, and passes the device start, exchange, expiry, denial, pending, slow-down and cancellation regressions."
           }
+        },
+        {
+          "identity": "cliproxy-home-quota-collection-signals",
+          "file": "0459-home-quota-collection-signals.patch",
+          "sha256": "dba68bbfe4bc82898519efac038cfd6324de497f3d912881b49c2df5b6ae0537",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after pinned Home emits one bounded metadata-only record per claimed quota collection with account references and returned vendor window field paths and durations before parsing, and passes actual collector, omitted and unusable window, privacy and real-child container stdout regressions."
+          }
         }
       ]
     },
