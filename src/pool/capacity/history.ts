@@ -194,6 +194,7 @@ interface HistoryIndex {
   bankedReceipts?: Record<string, number>;
   demandFrom?: number;
   demandSince?: number;
+  demandRevisions?: Record<string, { revision: string; at: number }>;
   demandShares?: Record<string, Record<string, { week: number; amount: number }[]>>;
   rollingUse?: Record<string, Record<string, RollingUseEvent[]>>;
   rollingChain?: Record<string, Record<string, RollingChainEntry>>;
@@ -701,17 +702,29 @@ export class CapacityHistory {
           [...groups].map(([key, values]) => [key, JSON.stringify([...values].sort())]),
         );
       };
-      const oldRevisions = revisions(priorLatestByKey.values());
+      const oldPolicies =
+        index.demandRevisions ??
+        Object.fromEntries(
+          [...revisions(priorLatestByKey.values())].map(([key, revision]) => [
+            key,
+            { revision, at: index.lastAt ?? snapshot.at },
+          ]),
+        );
+      const oldRevisions = new Map(
+        Object.entries(oldPolicies).map(([key, policy]) => [key, policy.revision]),
+      );
+      const currentRevisions = revisions(latestByKey.values());
       const changedPolicy =
         hashedCurrent.some((reading) => {
           const old = priorLatestByKey.get(readingKey(reading));
           return old !== undefined && old.revision !== reading.revision;
         }) ||
-        [...revisions(latestByKey.values())].some(
-          ([key, value]) => oldRevisions.has(key) && oldRevisions.get(key) !== value,
+        [...currentRevisions].some(
+          ([key, value]) => index.lastAt !== null && oldRevisions.get(key) !== value,
         );
       // Hourly demand has no revision provenance. Keep displayed history, but exclude the
-      // mixed transition hour and older training when its quota scale changes.
+      // mixed transition hour and older training when its quota scale changes. Policy
+      // provenance outlives active membership so removing every account cannot bypass it.
       const demandSince = changedPolicy
         ? Math.ceil(snapshot.at / hourMs) * hourMs
         : index.demandSince;
@@ -1337,6 +1350,16 @@ export class CapacityHistory {
         unclassifiedAccounts,
         demandFrom,
         demandSince,
+        demandRevisions: Object.fromEntries(
+          [
+            ...new Map([
+              ...Object.entries(oldPolicies),
+              ...[...currentRevisions].map(
+                ([key, revision]) => [key, { revision, at: snapshot.at }] as const,
+              ),
+            ]),
+          ].filter(([, policy]) => policy.at >= demandFrom),
+        ),
         demandShares,
         rollingUse,
         rollingChain,

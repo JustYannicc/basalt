@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { capacityOverview } from "./overview.ts";
 import { CapacityHistory, type CapacityExpectedCohort } from "./history.ts";
-import { type UsageStorage } from "../usage-storage.ts";
+import { ChunkStorage, type UsageStorage } from "../usage-storage.ts";
 import type { CapacityReading } from "./normalize.ts";
 
 class Memory implements UsageStorage {
@@ -135,74 +135,110 @@ test("serialized quota samples reach a seasonal service forecast after two weeks
   assert.ok(forecast.ordinary.accounts! >= 0);
 });
 
-test("retained conservative demand cannot train forecasts after a published weekly weight change", async () => {
-  const retained = await sampleWeeks([regular, regular, regular, regular], {
-    plan: "Max 20x",
-    full: 1,
-    knownWeight: false,
-    source: "unknown-plan",
-    revision: "2026-10-30",
-  });
-  const before = await capacityOverview(retained.history, "pool", start, retained.to);
-  assert.equal(before.forecasts[0]?.status, "estimated");
-  assert.equal(before.forecasts[0]?.history.completedWeeks, 4);
-  const displayed = await retained.history.read("pool", { to: retained.to });
-  const oldDemand = await retained.history.demandData("pool");
-  assert.ok(
-    Object.values(oldDemand.accountDemandTotals).some((accounts) =>
-      Object.values(accounts).some((total) => total > 0),
-    ),
-  );
-
-  const observe = async (minutes: number, remaining: number, current: boolean) => {
-    const at = retained.to + minutes * minute;
-    await new CapacityHistory(retained.storage).observe("pool", {
-      at,
-      expected: retained.expected,
-      readings: [
-        {
-          ...retained.latest,
-          observedAt: at,
-          staleAt: at + 6 * minute,
-          remaining,
-          ...(current
-            ? {
-                full: 10,
-                knownWeight: true,
-                source: "published-weekly-multiplier" as const,
-                revision: "2026-11-09",
-              }
-            : {}),
-        },
-      ],
+for (const membership of ["connected", "removed", "legacy-removed", "legacy-removed-other"]) {
+  test(`retained conservative demand cannot train new weekly weights: ${membership}`, async () => {
+    const retained = await sampleWeeks([regular, regular, regular, regular], {
+      plan: "Max 20x",
+      full: 1,
+      knownWeight: false,
+      source: "unknown-plan",
+      revision: "2026-10-30",
     });
-  };
-  await observe(5, 0.9, false);
-  await observe(10, 9, true);
-  await observe(15, 8.9, true);
-  const resumed = new CapacityHistory(retained.storage);
-  const transitioned = await resumed.demandData("pool");
-  assert.equal(transitioned.trackingSince, retained.to + hour);
-  assert.equal(transitioned.completedWeeks, 0);
-  assert.deepEqual(transitioned.points, []);
-  assert.deepEqual(transitioned.accountDemandTotals, {});
-  assert.deepEqual(await resumed.read("pool", { to: retained.to }), displayed);
+    const before = await capacityOverview(retained.history, "pool", start, retained.to);
+    assert.equal(before.forecasts[0]?.status, "estimated");
+    assert.equal(before.forecasts[0]?.history.completedWeeks, 4);
+    const displayed = await retained.history.read("pool", { to: retained.to });
+    const oldDemand = await retained.history.demandData("pool");
+    assert.ok(
+      Object.values(oldDemand.accountDemandTotals).some((accounts) =>
+        Object.values(accounts).some((total) => total > 0),
+      ),
+    );
 
-  await observe(65, 8.8, true);
-  await observe(70, 8.7, true);
-  const fresh = await resumed.demandData("pool");
-  assert.equal(fresh.trackingSince, retained.to + hour);
-  assert.equal(fresh.points.length, 1);
-  assert.equal(fresh.points[0]?.hour, retained.to + hour);
-  assert.ok(Math.abs(fresh.points[0]!.demand! - 0.1) < 1e-9);
-  const totals = Object.values(fresh.accountDemandTotals).flatMap((accounts) =>
-    Object.values(accounts),
-  );
-  assert.equal(totals.length, 1);
-  assert.ok(Math.abs(totals[0]! - 0.1) < 1e-9);
-  const after = await capacityOverview(resumed, "pool", start, retained.to + 70 * minute);
-  assert.equal(after.forecasts[0]?.status, "learning");
-  assert.equal(after.forecasts[0]?.history.completedWeeks, 0);
-  assert.equal(after.forecasts[0]?.ordinary, null);
-  assert.equal(after.forecasts[0]?.busy, null);
-});
+    const observe = async (minutes: number, remaining: number, current: boolean) => {
+      const at = retained.to + minutes * minute;
+      await new CapacityHistory(retained.storage).observe("pool", {
+        at,
+        expected: retained.expected,
+        accountStates: [
+          {
+            account: retained.latest.account,
+            provider: "claude",
+            windowSeconds,
+            usable: true,
+            bankedAvailable: 0,
+          },
+        ],
+        readings: [
+          {
+            ...retained.latest,
+            observedAt: at,
+            staleAt: at + 6 * minute,
+            remaining,
+            ...(current
+              ? {
+                  full: 10,
+                  knownWeight: true,
+                  source: "published-weekly-multiplier" as const,
+                  revision: "2026-11-09",
+                }
+              : {}),
+          },
+        ],
+      });
+    };
+    await observe(5, 0.9, false);
+    if (membership !== "connected") {
+      await retained.history.observe("pool", {
+        at: retained.to + 6 * minute,
+        expected: [],
+        readings: [],
+        accountStates: [],
+      });
+      assert.deepEqual((await retained.history.demandData("pool")).latestReadings, []);
+      if (membership.startsWith("legacy-removed")) {
+        const chunks = new ChunkStorage(retained.storage);
+        const key = "capacity-v1:pool:index";
+        const index = await chunks.get<Record<string, unknown>>(key);
+        assert.ok(index);
+        delete index.demandRevisions;
+        if (membership === "legacy-removed-other") {
+          index.demandRevisions = {
+            [JSON.stringify(["openai", windowSeconds, null, "chatgpt-plus-equivalent"])]: {
+              revision: "2026-10-30",
+              at: retained.to,
+            },
+          };
+        }
+        await chunks.put(key, index);
+      }
+    }
+    await observe(10, 9, true);
+    await observe(15, 8.9, true);
+    const resumed = new CapacityHistory(retained.storage);
+    const transitioned = await resumed.demandData("pool");
+    assert.equal(transitioned.trackingSince, retained.to + hour);
+    assert.equal(transitioned.completedWeeks, 0);
+    assert.deepEqual(transitioned.points, []);
+    assert.deepEqual(transitioned.accountDemandTotals, {});
+    assert.deepEqual(await resumed.read("pool", { to: retained.to }), displayed);
+
+    await observe(65, 8.8, true);
+    await observe(70, 8.7, true);
+    const fresh = await resumed.demandData("pool");
+    assert.equal(fresh.trackingSince, retained.to + hour);
+    assert.equal(fresh.points.length, 1);
+    assert.equal(fresh.points[0]?.hour, retained.to + hour);
+    assert.ok(Math.abs(fresh.points[0]!.demand! - 0.1) < 1e-9);
+    const totals = Object.values(fresh.accountDemandTotals).flatMap((accounts) =>
+      Object.values(accounts),
+    );
+    assert.equal(totals.length, 1);
+    assert.ok(Math.abs(totals[0]! - 0.1) < 1e-9);
+    const after = await capacityOverview(resumed, "pool", start, retained.to + 70 * minute);
+    assert.equal(after.forecasts[0]?.status, "learning");
+    assert.equal(after.forecasts[0]?.history.completedWeeks, 0);
+    assert.equal(after.forecasts[0]?.ordinary, null);
+    assert.equal(after.forecasts[0]?.busy, null);
+  });
+}
