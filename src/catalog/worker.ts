@@ -25,6 +25,7 @@ import { workosSource, withWorkOSSignIn } from "./workos.ts";
 import { planetscaleSource, withPlanetScaleAccess } from "./planetscale.ts";
 import { clerkSource, withClerkSignIn } from "./clerk.ts";
 import { canvaSource } from "./canva.ts";
+import { plaidSource, withPlaidAccess } from "./plaid.ts";
 import { obsidian } from "./obsidian/index.ts";
 
 // AWS source stays in the catalog until maintainers identify a maintained destination.
@@ -122,6 +123,11 @@ export async function handleCatalog(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(planetscaleSource)),
       { headers },
     );
+  if (relative === "apps/plaid.json")
+    return new Response(
+      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(plaidSource)),
+      { headers },
+    );
   if (relative === "apps/clerk.json")
     return new Response(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(clerkSource)),
@@ -161,14 +167,16 @@ export async function handleCatalog(
     if (!response.ok || response.status !== 200) return unavailable();
     let body: string;
     if (relative === "index.json") {
-      const upstream = withSentryConnections(
-        withPlanetScaleAccess(
-          withClerkSignIn(
-            withWorkOSSignIn(
-              withElevenLabsSignIn(
-                withVercelSignIn(
-                  withMiroCapabilities(
-                    withSlackUserAuth(withGitLabInstances((await response.json()) as Feed)),
+      const upstream = withPlaidAccess(
+        withSentryConnections(
+          withPlanetScaleAccess(
+            withClerkSignIn(
+              withWorkOSSignIn(
+                withElevenLabsSignIn(
+                  withVercelSignIn(
+                    withMiroCapabilities(
+                      withSlackUserAuth(withGitLabInstances((await response.json()) as Feed)),
+                    ),
                   ),
                 ),
               ),
