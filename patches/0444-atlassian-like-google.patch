@@ -64,11 +64,419 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts b/
    receipts: `select plan_sha256, migration, revision, release, backup_sha256,
      verification, applied_at::text from private_production_ops_receipts
      where organization_id = $1 order by applied_at desc, plan_sha256 limit 2001`,
+diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
+--- a/apps/hosted/cloud/src/infrastructure/executor.ts
++++ b/apps/hosted/cloud/src/infrastructure/executor.ts
+@@ -21,6 +21,8 @@
+ import { makeBatchExecutionMemo } from "./batch-execution.ts";
+ import * as Cloudflare from "alchemy/Cloudflare";
+ import { Config, Context, Effect, Option } from "effect";
++import { sourceWriteFence } from "../implementation/source-write-fence.ts";
++import { sourceWriteFrontier } from "../implementation/source-write-frontiers.ts";
+ import { cachedVersionSources } from "../implementation/version-source-cache.ts";
+ import { organizationPublishers } from "../implementation/publishers.ts";
+ import type { AppSources } from "./source.ts";
+@@ -127,7 +129,10 @@
+         secret: key,
+         origin,
+         webhookOrigin,
+-        git: appSources(background),
++        git: sourceWriteFence(
++          appSources(background),
++          sourceWriteFrontier(Context.get(services, SqlClient.SqlClient)),
++        ),
+         blobs: yield* cachedVersionSources(origin, blobs),
+         runtime,
+         workflows,
+diff --git a/apps/hosted/cloud/src/infrastructure/source.ts b/apps/hosted/cloud/src/infrastructure/source.ts
+--- a/apps/hosted/cloud/src/infrastructure/source.ts
++++ b/apps/hosted/cloud/src/infrastructure/source.ts
+@@ -12,7 +12,7 @@
+ ) => RepositoryBackend;
+ 
+ /** Resolve bindings during composition; each Git operation remains scoped to its invocation. */
+-export const cloudAppSources = (tokens: ArtifactsTokens) =>
++export const cloudUncachedSources = (tokens: ArtifactsTokens) =>
+   Effect.gen(function* () {
+     const accountId = yield* Config.String("CLOUDFLARE_ACCOUNT_ID").pipe(
+       Effect.flatMap(
+@@ -21,6 +21,12 @@
+     );
+     const namespace = yield* cloudSourceNamespace;
+     const git = cloudflareRepositories(tokens, { accountId, namespace });
++    return git;
++  }).pipe(Effect.orDie);
++
++export const cloudAppSources = (tokens: ArtifactsTokens) =>
++  Effect.gen(function* () {
++    const git = yield* cloudUncachedSources(tokens);
+     const workspaces = yield* cloudWorkspaceObjects;
+     /** Every caller in an execution shares one cache view, so all working-branch writes invalidate it. */
+     const sources: AppSources = (background) => cachedWorkspaces(git, workspaces, background);
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
+@@ -1,4 +1,8 @@
+ import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
++import { FamilySourceRuntime, prepareFamilySource } from "./migrations/atlassian-family-source.ts";
++import { cloudUncachedSources } from "../source.ts";
++import { cloudArtifactsTokensLive } from "../artifacts-tokens.ts";
++import { cloudBlobs } from "../blobs.ts";
+ import { HttpClientRequest } from "effect/http";
+ import { aesGcmCredentials } from "@executor-js/sdk/core";
+ import { firstPartyOAuthClients } from "@executor-js/hosted-server";
+@@ -39,6 +43,10 @@
+   const clients = yield* firstPartyOAuthClients({
+     testDefinitions: Option.isSome(yield* cloudEmulators),
+   });
++  const sourceRuntime = {
++    repositories: yield* cloudUncachedSources(yield* cloudArtifactsTokensLive),
++    blobs: yield* cloudBlobs,
++  };
+   const wire = yield* cloudOAuthWire;
+   const egress = yield* cloudEgress;
+   const signingKey = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
+@@ -111,6 +119,13 @@
+       "released-interactive-retirement-preflight-v1",
+       true,
+     ),
++    "atlassian-family-source": {
++      name: "atlassian-family-source",
++      run: (request) =>
++        prepareFamilySource(request).pipe(
++          Effect.provideService(FamilySourceRuntime, sourceRuntime),
++        ),
++    },
+     "atlassian-account-proofs": {
+       name: "atlassian-account-proofs",
+       run: (request) =>
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts b/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts
+@@ -89,6 +89,13 @@
+   hosted_group_members: {
+     keys: ["group_id", "member_id"],
+     predicate: `exists (select 1 from hosted_groups g join member m on m.id = entry.member_id where g.id = entry.group_id and g.organization_id = $1 and m."organizationId" = $1)`,
++  },
++  hosted_source_write_frontiers: {
++    keys: ["code"],
++    predicate: `exists (select 1 from executor_deployments d where d.code = entry.code
++      and d.owner = 'organization:' || $1)
++      and not exists (select 1 from executor_deployments d where d.code = entry.code
++      and d.owner <> 'organization:' || $1)`,
+   },
+   executor_apps: id(
+     `${owner} and ${optional("active_deployment", owned("executor_deployments", "active_deployment"))}`,
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/backup.ts b/apps/hosted/cloud/src/infrastructure/production-ops/backup.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/backup.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/backup.ts
+@@ -28,6 +28,7 @@
+   "hosted_app_groups",
+   "hosted_groups",
+   "hosted_group_members",
++  "hosted_source_write_frontiers",
+   "executor_apps",
+   "executor_deployments",
+   "hosted_contributed_departure_jobs",
+diff --git a/apps/hosted/cloud/src/implementation/migrations.ts b/apps/hosted/cloud/src/implementation/migrations.ts
+--- a/apps/hosted/cloud/src/implementation/migrations.ts
++++ b/apps/hosted/cloud/src/implementation/migrations.ts
+@@ -1,5 +1,6 @@
+ import { migrateToolPolicies } from "@executor-js/hosted-server/tool-policy-schema";
+ import { makeRegistryStorage } from "@executor-js/app-registry";
++import { migrateSourceWriteFrontiers } from "./source-write-frontiers.ts";
+ import { organizationPublishers } from "./publishers.ts";
+ /** The same explicit Postgres migration operation is used locally and in deployment jobs. */
+ import { PgClient, PgTypes } from "@effect/sql-pg";
+@@ -208,6 +209,7 @@
+       yield* migrationPhase("run the cloud product steps");
+       const registry = yield* makeRegistryStorage(yield* organizationPublishers);
+       yield* registry.migrate.pipe(Effect.mapError(migrationFailed("product")));
++      yield* migrateSourceWriteFrontiers.pipe(Effect.mapError(migrationFailed("product")));
+       yield* migrateProductSteps("private_cloud_migrations", {
+         "1_baseline": migrateOnboarding.pipe(Effect.andThen(migrateWelcomeEmails)),
+         "2_billing_seats": migrateBillingSeats,
+diff --git a/apps/hosted/cloud/src/implementation/source-preservation.ts b/apps/hosted/cloud/src/implementation/source-preservation.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/source-preservation.ts
+@@ -0,0 +1,74 @@
++import { Data, Effect } from "effect";
++import {
++  gitBlobId,
++  inlineBytes,
++  type AppCodeId,
++  type RepositoryBackend,
++  type SourceFiles,
++} from "@executor-js/sdk/core";
++import { sourceReferences } from "./source-references.ts";
++
++export class SourcePreservationRefused extends Data.TaggedError("SourcePreservationRefused")<{
++  readonly code: string;
++  readonly property: string;
++  readonly expected: string;
++  readonly actual: string;
++}> {}
++
++const sourceTree = (files: SourceFiles) =>
++  Effect.gen(function* () {
++    const entries = yield* Effect.forEach(
++      files,
++      (file) =>
++        Effect.gen(function* () {
++          const object = "object" in file ? file.object : yield* gitBlobId(inlineBytes(file));
++          return [file.path, object] as const;
++        }),
++      { concurrency: 4 },
++    );
++    const bytes = new TextEncoder().encode(
++      JSON.stringify(entries.toSorted((a, b) => a[0].localeCompare(b[0]))),
++    );
++    const digest = yield* Effect.promise(() => crypto.subtle.digest("SHA-256", bytes));
++    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(
++      "",
++    );
++  });
++
++/** The immutable seed, every retained version, and the complete editable history must agree. */
++export const pristineSource = (
++  repositories: RepositoryBackend,
++  code: AppCodeId,
++  initial: SourceFiles,
++) =>
++  Effect.gen(function* () {
++    const refuse = (property: string, expected: string, actual: string) =>
++      Effect.fail(new SourcePreservationRefused({ code, property, expected, actual }));
++    const refs = yield* sourceReferences(repositories, code);
++    for (const ref of refs) {
++      if (
++        ref.name !== "HEAD" &&
++        ref.name !== "refs/heads/main" &&
++        !/^refs\/heads\/__executor\/sources\/[a-f0-9]{64}$/u.test(ref.name)
++      )
++        return yield* refuse("saved ref", "only main and host-retained source", ref.name);
++    }
++    const head = refs.find((ref) => ref.name === "refs/heads/main")?.commit;
++    if (head === undefined || refs.find((ref) => ref.name === "HEAD")?.commit !== head)
++      return yield* refuse("main head", "one advertised main head", "missing or inconsistent");
++    const history = yield* repositories.history(code);
++    if (history.length !== 1 || history[0]?.commit !== head || history[0].message !== "Create app")
++      return yield* refuse(
++        "editable history",
++        "one unchanged initial commit",
++        `${history.length} commits, head ${history[0]?.commit ?? "missing"}`,
++      );
++    const tree = yield* sourceTree(initial);
++    for (const commit of new Set(refs.map((ref) => ref.commit))) {
++      const snapshot = yield* repositories.read(code, commit);
++      const actual = yield* sourceTree(snapshot.files);
++      if (snapshot.commit !== commit || actual !== tree)
++        return yield* refuse(`source ${commit}`, tree, actual);
++    }
++    return { head, tree, refs };
++  });
+diff --git a/apps/hosted/cloud/src/implementation/source-references.ts b/apps/hosted/cloud/src/implementation/source-references.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/source-references.ts
+@@ -0,0 +1,72 @@
++import { Effect } from "effect";
++import { SourceError, type AppCodeId, type RepositoryBackend } from "@executor-js/sdk/core";
++
++export interface SourceReference {
++  readonly commit: string;
++  readonly name: string;
++}
++
++/** Inspect every advertised ref; a main-branch read alone would miss saved branches and tags. */
++export const sourceReferences = (repositories: RepositoryBackend, code: AppCodeId) =>
++  Effect.gen(function* () {
++    const response = yield* repositories.request(
++      code,
++      new Request("https://repository.invalid/info/refs?service=git-upload-pack"),
++    );
++    return yield* Effect.tryPromise({
++      try: async () => {
++        if (!response.ok || response.body === null) throw new Error("Unreadable Git advertisement");
++        const reader = response.body.getReader();
++        const chunks: Uint8Array[] = [];
++        let size = 0;
++        try {
++          for (;;) {
++            const next = await reader.read();
++            if (next.done) break;
++            size += next.value.length;
++            if (size > 4 * 1024 * 1024) throw new Error("Git advertisement exceeds its bound");
++            chunks.push(next.value);
++          }
++        } finally {
++          await reader.cancel();
++        }
++        const bytes = new Uint8Array(size);
++        let copied = 0;
++        for (const chunk of chunks) {
++          bytes.set(chunk, copied);
++          copied += chunk.length;
++        }
++        return parseSourceReferences(bytes);
++      },
++      catch: () => new SourceError({ reason: "invalid-source" }),
++    });
++  });
++
++export const parseSourceReferences = (bytes: Uint8Array): readonly SourceReference[] => {
++  const decode = new TextDecoder("utf-8", { fatal: true });
++  const refs = new Map<string, string>();
++  let offset = 0;
++  while (offset < bytes.length) {
++    const prefix = decode.decode(bytes.subarray(offset, offset + 4));
++    if (!/^[a-f0-9]{4}$/iu.test(prefix)) throw new Error("Malformed Git packet length");
++    const length = Number.parseInt(prefix, 16);
++    if (length === 0) {
++      offset += 4;
++      continue;
++    }
++    if (length < 5 || length > 65520 || offset + length > bytes.length)
++      throw new Error("Incomplete Git reference packet");
++    const text = decode.decode(bytes.subarray(offset + 4, offset + length));
++    offset += length;
++    if (text === "# service=git-upload-pack\n") continue;
++    const match = /^([a-f0-9]{40}) (HEAD|refs\/[^\s\0]+)(?:\0[^\n]*)?\n?$/u.exec(text);
++    if (match?.[1] === undefined || match[2] === undefined || refs.has(match[2]))
++      throw new Error("Unrecognized or duplicate Git reference");
++    refs.set(match[2], match[1]);
++  }
++  if (refs.size === 0 || refs.size > 64)
++    throw new Error("Git reference count is outside its bound");
++  return [...refs]
++    .map(([name, commit]) => ({ name, commit }))
++    .toSorted((a, b) => a.name.localeCompare(b.name));
++};
+diff --git a/apps/hosted/cloud/src/implementation/source-write-fence.ts b/apps/hosted/cloud/src/implementation/source-write-fence.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/source-write-fence.ts
+@@ -0,0 +1,44 @@
++import { Effect } from "effect";
++import { SourceError, type AppCodeId, type RepositoryBackend } from "@executor-js/sdk/core";
++import type { SourceWriteFrontier } from "./source-write-frontiers.ts";
++
++/** SQL marks admission and completion only. Concurrent writes never wait for another Git call. */
++export const sourceWriteFence = (
++  git: RepositoryBackend,
++  frontier: SourceWriteFrontier,
++): RepositoryBackend => {
++  const write = <A>(code: AppCodeId, work: Effect.Effect<A, SourceError>) =>
++    Effect.uninterruptibleMask((restore) =>
++      Effect.gen(function* () {
++        yield* frontier.begin(code);
++        const value = yield* restore(work);
++        // Failure or interruption may leave Git running remotely. Never expire that uncertainty.
++        yield* frontier.complete(code);
++        return value;
++      }),
++    );
++  return {
++    ...git,
++    create: (code) => write(code, git.create(code)),
++    commit: (input) => write(input.id, git.commit(input)),
++    request: (code, request) =>
++      request.method === "POST" && new URL(request.url).pathname.endsWith("/git-receive-pack")
++        ? write(
++            code,
++            Effect.gen(function* () {
++              const response = yield* git.request(code, request);
++              if (!response.ok) return yield* new SourceError({ reason: "git" });
++              // A streamed receive-pack is not finished until its report has arrived in full.
++              const body = yield* Effect.tryPromise({
++                try: () => response.arrayBuffer(),
++                catch: () => new SourceError({ reason: "git" }),
++              });
++              return new Response(response.body === null ? null : body, {
++                status: response.status,
++                headers: response.headers,
++              });
++            }),
++          )
++        : git.request(code, request),
++  };
++};
+diff --git a/apps/hosted/cloud/src/implementation/source-write-frontiers.ts b/apps/hosted/cloud/src/implementation/source-write-frontiers.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/source-write-frontiers.ts
+@@ -0,0 +1,66 @@
++import { Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import { SourceError, type AppCodeId } from "@executor-js/sdk/core";
++
++// Fork table: Git writes do not change app SQL rows, so retirement needs its own write frontier.
++export const migrateSourceWriteFrontiers = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  yield* sql`create table if not exists hosted_source_write_frontiers (
++    code text primary key,
++    generation bigint not null default 0 check (generation >= -1),
++    active_writes integer not null default 0 check (active_writes >= 0),
++    prepared_head text,
++    fingerprint text,
++    check ((prepared_head is null) = (fingerprint is null)),
++    check (generation <> -1 or active_writes = 0)
++  )`;
++});
++
++export const SourceFrontier = Schema.Struct({
++  code: Schema.String,
++  // JSON row snapshots use strings so bigint generations never lose precision.
++  generation: Schema.String,
++  active_writes: Schema.Number,
++  prepared_head: Schema.NullOr(Schema.String),
++  fingerprint: Schema.NullOr(Schema.String),
++});
++export type SourceFrontier = typeof SourceFrontier.Type;
++
++/** -1 is a permanent tombstone. A failed write remains active; later app writes still proceed. */
++export const sourceWriteFrontier = (sql: SqlClient.SqlClient) => {
++  const begin = (code: AppCodeId) =>
++    sql
++      .withTransaction(
++        Effect.gen(function* () {
++          yield* sql`set local lock_timeout = '500ms'`;
++          yield* sql`set local statement_timeout = '5s'`;
++          yield* sql`insert into hosted_source_write_frontiers (code) values (${code}) on conflict do nothing`;
++          const rows = yield* sql`update hosted_source_write_frontiers set
++      generation = generation + 1, active_writes = active_writes + 1,
++      prepared_head = null, fingerprint = null
++      where code = ${code} and generation >= 0 returning code`;
++          if (rows.length !== 1) return yield* new SourceError({ reason: "conflict" });
++        }),
++      )
++      .pipe(Effect.mapError(() => new SourceError({ reason: "storage" })));
++  const complete = (code: AppCodeId) =>
++    sql`update hosted_source_write_frontiers
++    set active_writes = active_writes - 1 where code = ${code} and generation >= 0 and active_writes > 0
++    returning code`.pipe(
++      Effect.flatMap((rows) =>
++        rows.length === 1 ? Effect.void : Effect.fail(new SourceError({ reason: "storage" })),
++      ),
++      Effect.mapError(() => new SourceError({ reason: "storage" })),
++    );
++  return { begin, complete };
++};
++export type SourceWriteFrontier = ReturnType<typeof sourceWriteFrontier>;
++
++/** Stable SQL proof reads are separate from Git I/O; every writer invalidates the saved proof. */
++export const readSourceFrontier = (code: AppCodeId) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const rows = yield* sql`select code, generation::text, active_writes, prepared_head, fingerprint
++    from hosted_source_write_frontiers where code = ${code}`;
++    return yield* Schema.decodeUnknownEffect(Schema.Array(SourceFrontier))(rows);
++  });
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-adoption-v1.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-adoption-v1.ts
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-adoption-v1.ts
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,119 @@
 +import { Effect, Schema } from "effect";
 +import { SqlClient } from "effect/sql";
 +import type { Json, ProductionMigration } from "../contracts.ts";
@@ -94,7 +502,9 @@ new file mode 100644
 +export const atlassianFamilyAdoptionV1: ProductionMigration = {
 +  name: "atlassian-family-adoption-v1",
 +  revision: "1",
++  preflight: "atlassian-family-source",
 +  tables: [
++    "hosted_source_write_frontiers",
 +    "organization",
 +    "member",
 +    "executor_apps",
@@ -110,10 +520,14 @@ new file mode 100644
 +    "hosted_account_groups",
 +  ],
 +  inspect,
-+  lockAuthority: (request) =>
++  lockAuthority: (request, plan) =>
 +    Effect.gen(function* () {
 +      const input = yield* Schema.decodeUnknownEffect(FamilyAdoption)(request);
 +      const sql = yield* SqlClient.SqlClient;
++      const source = familyRecord(familyRecord(plan.data)?.sourceFrontier);
++      if (typeof source?.code !== "string")
++        return yield* familyRefused("source frontier is missing");
++      yield* sql`select code from hosted_source_write_frontiers where code = ${source.code} for update nowait`;
 +      yield* sql`select pg_advisory_xact_lock(hashtextextended(${`executor-access:${input.organization}`}, 0))`;
 +      yield* sql`select id from organization where id = ${input.organization} for update nowait`;
 +      yield* sql`select id from member where "organizationId" = ${input.organization}
@@ -132,6 +546,20 @@ new file mode 100644
 +          `${input.umbrella.app}: the reviewed adoption snapshot changed`,
 +        );
 +      const sql = yield* SqlClient.SqlClient;
++      const source = familyRecord(familyRecord(plan.data)?.sourceFrontier);
++      if (
++        typeof source?.code !== "string" ||
++        typeof source.generation !== "string" ||
++        typeof source.fingerprint !== "string"
++      )
++        return yield* familyRefused("source frontier is missing");
++      const fenced = yield* sql`update hosted_source_write_frontiers set generation = -1
++        where code = ${source.code} and generation::text = ${source.generation}
++        and fingerprint = ${source.fingerprint} and active_writes = 0 returning code`;
++      if (fenced.length !== 1)
++        return yield* familyRefused(
++          `${input.umbrella.app}/${source.code}: source changed or writes are active; source retained`,
++        );
 +      const metadata = familyRecord(plan.data)?.metadata;
 +      if (typeof metadata !== "string") return yield* familyRefused("adoption metadata is missing");
 +      const updated = yield* sql`update organization set metadata = ${metadata}
@@ -172,7 +600,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atla
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-plan.ts
-@@ -0,0 +1,257 @@
+@@ -0,0 +1,285 @@
 +import { Effect, Schema } from "effect";
 +import { ProviderDefinition } from "@executor-js/sdk/core";
 +import { canonical, sha256 } from "../crypto.ts";
@@ -248,6 +676,25 @@ new file mode 100644
 +          `${selected.app}: declared database or SQL prevents retirement`,
 +        );
 +    }
++    const umbrella = yield* by(snapshot, "executor_apps", "id", input.umbrella.app);
++    const frontier = yield* by(
++      snapshot,
++      "hosted_source_write_frontiers",
++      "code",
++      String(umbrella.code),
++    );
++    if (
++      frontier.generation === "-1" ||
++      frontier.active_writes !== 0 ||
++      typeof frontier.prepared_head !== "string" ||
++      !/^[a-f0-9]{40}$/u.test(frontier.prepared_head) ||
++      typeof frontier.fingerprint !== "string" ||
++      !/^[a-f0-9]{64}$/u.test(frontier.fingerprint)
++    )
++      return yield* familyRefused(
++        `${input.umbrella.app}/${String(umbrella.code)}: unchanged, settled source proof required`,
++      );
++    const retiredFrontier = { ...frontier, generation: "-1" };
 +    const accounts = new Map<string, FamilyRow>();
 +    for (const id of familyAccounts(input)) {
 +      const account = yield* by(snapshot, "executor_accounts", "id", id);
@@ -397,8 +844,16 @@ new file mode 100644
 +    const after: Record<string, readonly FamilyRow[]> = {
 +      ...snapshot,
 +      organization: [nextOrganization],
++      hosted_source_write_frontiers: [retiredFrontier],
 +    };
 +    const changes: Change[] = [
++      {
++        table: "hosted_source_write_frontiers",
++        key: { code: String(frontier.code) },
++        action: "update",
++        beforeSha256: sha256(canonical(frontier)),
++        afterSha256: sha256(canonical(retiredFrontier)),
++      },
 +      {
 +        table: "organization",
 +        key: { id: input.organization },
@@ -420,6 +875,7 @@ new file mode 100644
 +    return {
 +      changes,
 +      data: {
++        sourceFrontier: frontier,
 +        metadata: nextMetadata,
 +        beforeSha256: sha256(canonical(snapshot)),
 +        afterSha256: sha256(canonical(after)),
@@ -482,7 +938,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atla
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-snapshot.ts
-@@ -0,0 +1,100 @@
+@@ -0,0 +1,104 @@
 +import { Effect, Schema } from "effect";
 +import { SqlClient } from "effect/sql";
 +import {
@@ -505,6 +961,10 @@ new file mode 100644
 +    const queries: Readonly<Record<string, readonly [string, readonly string[]]>> = {
 +      organization: ["id = $1", [input.organization]],
 +      member: ['"organizationId" = $1 and "userId" = $2', [input.organization, input.actor]],
++      hosted_source_write_frontiers: [
++        "code in (select code from executor_apps where id = $1 union select code from executor_deployments where id = $2)",
++        [input.umbrella.app, input.umbrella.version],
++      ],
 +      executor_apps: [`id in (${selected})`, [appIds]],
 +      executor_deployments: [
 +        `code in (select code from executor_deployments where id in (${selected}))`,
@@ -535,7 +995,7 @@ new file mode 100644
 +    const snapshot: Record<string, readonly FamilyRow[]> = {};
 +    for (const [table, [predicate, params]] of Object.entries(queries)) {
 +      const rows = yield* sql.unsafe(
-+        `select to_jsonb(entry) as row from ${table} entry where ${predicate}
++        `select ${table === "hosted_source_write_frontiers" ? "to_jsonb(entry) || jsonb_build_object('generation', entry.generation::text)" : "to_jsonb(entry)"} as row from ${table} entry where ${predicate}
 +        order by to_jsonb(entry)::text limit 2001`,
 +        [...params],
 +      );
@@ -582,6 +1042,100 @@ new file mode 100644
 +      limit 1`;
 +    if (dependents.length !== 0)
 +      return yield* familyRefused(`${app}: ${String(dependents[0]?.kind)} prevents retirement`);
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-source.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-source.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-source.ts
+@@ -0,0 +1,89 @@
++import { Context, Effect, Option, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import {
++  AppCodeId,
++  BlobKey,
++  SourceFiles,
++  type BlobStorage,
++  type RepositoryBackend,
++} from "@executor-js/sdk/core";
++import { pristineSource } from "../../../implementation/source-preservation.ts";
++import { readSourceFrontier } from "../../../implementation/source-write-frontiers.ts";
++import { canonical, sha256 } from "../crypto.ts";
++import type { Json } from "../contracts.ts";
++import { FamilyAdoption, familyOne, familyRefused } from "./atlassian-family-records.ts";
++
++export class FamilySourceRuntime extends Context.Service<
++  FamilySourceRuntime,
++  {
++    readonly repositories: RepositoryBackend;
++    readonly blobs: BlobStorage;
++  }
++>()("basalt/production-ops/FamilySourceRuntime") {}
++
++/** Read Git without a SQL lock, then publish its proof only if no writer crossed that read. */
++export const prepareFamilySource = (request: Json) =>
++  Effect.gen(function* () {
++    const input = yield* Schema.decodeUnknownEffect(FamilyAdoption)(request);
++    const sql = yield* SqlClient.SqlClient;
++    const runtime = yield* FamilySourceRuntime;
++    const apps = yield* sql`select id, code from executor_apps where id = ${input.umbrella.app}
++    and owner = ${`organization:${input.organization}`} and active_deployment = ${input.umbrella.version}`;
++    const app = yield* familyOne(
++      yield* Schema.decodeUnknownEffect(Schema.Array(Schema.Record(Schema.String, Schema.Json)))(
++        apps,
++      ),
++      input.umbrella.app,
++    );
++    const code = yield* Schema.decodeUnknownEffect(AppCodeId)(app.code);
++    // A code fence cannot retire one app while another live app still writes the same lineage.
++    const siblings =
++      yield* sql`select id from executor_apps where code = ${code} and id <> ${input.umbrella.app} limit 1`;
++    if (siblings.length !== 0)
++      return yield* familyRefused(
++        `${input.umbrella.app}/${code}: source lineage is shared by another installed app`,
++      );
++    yield* sql`insert into hosted_source_write_frontiers (code) values (${code}) on conflict do nothing`;
++    const rows = yield* readSourceFrontier(code);
++    const before = rows[0];
++    if (
++      rows.length !== 1 ||
++      before === undefined ||
++      before.generation === "-1" ||
++      before.active_writes !== 0
++    )
++      return yield* familyRefused(
++        `${input.umbrella.app}/${code}: source writes must be settled; active or uncertain writes prevent retirement`,
++      );
++    const proof = yield* Effect.gen(function* () {
++      const stored = yield* runtime.blobs.get(BlobKey.make(`app-source/${code}/initial.json`));
++      if (Option.isNone(stored))
++        return yield* familyRefused(
++          `${input.umbrella.app}/${code}: immutable initial source is missing`,
++        );
++      const initial = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(SourceFiles))(
++        new TextDecoder().decode(stored.value),
++      );
++      return yield* pristineSource(runtime.repositories, code, initial);
++    }).pipe(
++      Effect.catchTag("SourcePreservationRefused", (error) =>
++        familyRefused(
++          `${input.umbrella.app}/${code}: ${error.property} changed; expected ${error.expected}, found ${error.actual}; source retained`,
++        ),
++      ),
++      Effect.catchTag("SourceError", (error) =>
++        familyRefused(
++          `${input.umbrella.app}/${code}: source proof unavailable (${error.reason}); source retained`,
++        ),
++      ),
++    );
++    const fingerprint = sha256(canonical(proof));
++    const recorded =
++      yield* sql`update hosted_source_write_frontiers set prepared_head = ${proof.head}, fingerprint = ${fingerprint}
++    where code = ${code} and generation::text = ${before.generation} and active_writes = 0 returning code`;
++    if (recorded.length !== 1)
++      return yield* familyRefused(
++        `${input.umbrella.app}/${code}: source write frontier changed during proof; source retained`,
++      );
++    return { code, generation: before.generation, head: proof.head, fingerprint };
 +  });
 diff --git a/e2e/support/atlassian-adoption-fixture.ts b/e2e/support/atlassian-adoption-fixture.ts
 new file mode 100644
@@ -736,13 +1290,13 @@ new file mode 100644
 +  });
 +  for (const consumer of consumers) {
 +    yield* database.run({
-+      sql: "insert into executor_deployments select (jsonb_populate_record(null::executor_deployments, to_jsonb(d) || jsonb_build_object('id', $2::text))).* from executor_deployments d where id = $1",
-+      params: [own.deployment, consumer.version],
++      sql: "insert into executor_deployments select (jsonb_populate_record(null::executor_deployments, to_jsonb(d) || jsonb_build_object('id', $2::text, 'requirements', (select requirements from executor_deployments where id = $3)))).* from executor_apps a join executor_deployments d on d.id = a.active_deployment where a.id = $1",
++      params: [fixture.sourceTemplate, consumer.version, own.deployment],
 +    });
 +    yield* database.run({
 +      sql: "insert into executor_apps select (jsonb_populate_record(null::executor_apps, to_jsonb(a) || jsonb_build_object('id', $2::text, 'active_deployment', $3::text, 'name', $2::text, 'slug', replace($2::text, '_', '-'), 'copied_from', $4::jsonb))).* from executor_apps a where id = $1",
 +      params: [
-+        own.app,
++        fixture.sourceTemplate,
 +        consumer.app,
 +        consumer.version,
 +        JSON.stringify({
@@ -838,10 +1392,13 @@ diff --git a/e2e/support/atlassian-adoption-rows.ts b/e2e/support/atlassian-adop
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/atlassian-adoption-rows.ts
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,112 @@
 +import { expect } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { randomUUID } from "node:crypto";
++import { Api, body } from "./api.ts";
++import { App } from "./contracts.ts";
++import { Workspace } from "./app-authoring.ts";
 +import { Actors } from "./actors.ts";
 +import { cloudLocks } from "./cloud-locks.ts";
 +import { productionOpsAccount } from "./production-ops-account.ts";
@@ -872,6 +1429,35 @@ new file mode 100644
 +    grant: `acc_${randomUUID()}`,
 +    identity: randomUUID(),
 +  };
++  const api = yield* Api;
++  const prefix = `/api/organizations/${actors.organization.id}/apps`;
++  const originalSource = yield* body(
++    Workspace,
++    yield* api.request(actors.owner, "GET", `${prefix}/${original.app}/workspace`),
++  );
++  const deployed = yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
++    name: "Retained umbrella fixture",
++    files: originalSource.files,
++  });
++  expect(deployed.status).toBe(200);
++  const umbrella = yield* body(App, deployed);
++  own.app = umbrella.id;
++  const deployments = yield* database
++    .run({
++      sql: "select active_deployment as id from executor_apps where id = $1",
++      params: [own.app],
++    })
++    .pipe(
++      Effect.flatMap(
++        Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ id: Schema.String }))),
++      ),
++    );
++  if (deployments[0] === undefined) return yield* Effect.die("Umbrella deployment missing");
++  own.deployment = deployments[0].id;
++  // Initialize through the public source path, independently of migration preparation.
++  expect((yield* api.request(actors.owner, "GET", `${prefix}/${own.app}/workspace`)).status).toBe(
++    200,
++  );
 +  const owner = `organization:${own.organization}`;
 +  yield* Effect.addFinalizer(() =>
 +    Effect.gen(function* () {
@@ -903,14 +1489,6 @@ new file mode 100644
 +    params: [original.account, own.account],
 +  });
 +  yield* database.run({
-+    sql: "insert into executor_deployments select (jsonb_populate_record(null::executor_deployments, to_jsonb(d) || jsonb_build_object('id', $2::text))).* from executor_apps a join executor_deployments d on d.id = a.active_deployment where a.id = $1",
-+    params: [original.app, own.deployment],
-+  });
-+  yield* database.run({
-+    sql: "insert into executor_apps select (jsonb_populate_record(null::executor_apps, to_jsonb(a) || jsonb_build_object('id', $2::text, 'active_deployment', $3::text, 'name', $2::text, 'slug', replace($2::text, '_', '-')))).* from executor_apps a where id = $1",
-+    params: [original.app, own.app, own.deployment],
-+  });
-+  yield* database.run({
 +    sql: "insert into executor_oauth_grants (id, owner, encrypted, status, updated_at) values ($1, $2, decode('00', 'hex'), 'active', now())",
 +    params: [own.grant, owner],
 +  });
@@ -925,7 +1503,7 @@ new file mode 100644
 +  expect(
 +    yield* database.run({ sql: "select id from executor_apps where id = $1", params: [own.app] }),
 +  ).toHaveLength(1);
-+  return { own, database };
++  return { own, database, sourceTemplate: original.app };
 +});
 diff --git a/e2e/support/atlassian-family-fixture.ts b/e2e/support/atlassian-family-fixture.ts
 new file mode 100644
@@ -1366,10 +1944,11 @@ diff --git a/e2e/tests/atlassian-family-adoption.spec.ts b/e2e/tests/atlassian-f
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/atlassian-family-adoption.spec.ts
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,227 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
-+import { body } from "../support/api.ts";
++import { Api, body } from "../support/api.ts";
++import { Committed, Workspace } from "../support/app-authoring.ts";
 +import { Actors } from "../support/actors.ts";
 +import { Browser } from "../support/browser.ts";
 +import { Evidence } from "../support/evidence.ts";
@@ -1494,6 +2073,101 @@ new file mode 100644
 +        expect(replay.status, JSON.stringify(replay.body)).toBe(200);
 +        expect((yield* body(Applied, replay)).repeated).toBe(true);
 +        expect(yield* p.protectedRows).toEqual(changed);
++      }),
++    ),
++  );
++
++  it.effect(scenarios.cloudAtlassianFamilySourcePreservation.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const p = yield* atlassianAdoptionFixture;
++        const actors = yield* Actors;
++        const api = yield* Api;
++        const response = yield* p.request(p.operation);
++        expect(response.status, JSON.stringify(response.body)).toBe(200);
++        const dry = yield* body(DryRun, response);
++        const path = `/api/organizations/${p.own.organization}/apps/${p.own.app}`;
++        const working = yield* body(
++          Workspace,
++          yield* api.request(actors.owner, "GET", `${path}/workspace`),
++        );
++        const files = [
++          ...working.files,
++          { path: "saved-work.md", content: "Keep this private source edit.\n" },
++        ];
++        const save = yield* api.request(actors.owner, "POST", `${path}/commits`, {
++          expected: working.revision.commit,
++          files,
++          message: "Save private app work",
++        });
++        expect(save.status).toBe(200);
++        const committed = yield* body(Committed, save);
++        const protectedRows = yield* p.protectedRows;
++        expect(
++          (yield* p.request({
++            ...p.operation,
++            action: "apply",
++            artifact: dry.artifact,
++            planSha256: dry.artifact.sha256,
++            backupSha256: dry.backupSha256,
++            go: `GO ${dry.artifact.sha256}`,
++          })).status,
++        ).toBe(409);
++        expect((yield* p.request(p.operation)).status).toBe(409);
++        const retained = yield* api.request(actors.owner, "GET", `${path}/workspace`);
++        expect(retained.status).toBe(200);
++        const source = yield* body(Workspace, retained);
++        expect(source.revision).toEqual(committed.revision);
++        expect(source.files).toEqual(
++          expect.arrayContaining([
++            { path: "saved-work.md", content: "Keep this private source edit.\n" },
++          ]),
++        );
++        expect(yield* p.protectedRows).toEqual(protectedRows);
++        // An uncertain earlier write fences retirement, not the person's subsequent saves.
++        const codes = yield* p.database
++          .run({ sql: "select code from executor_apps where id = $1", params: [p.own.app] })
++          .pipe(
++            Effect.flatMap(
++              Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ code: Schema.String }))),
++            ),
++          );
++        const code = codes[0]?.code;
++        if (code === undefined) return yield* Effect.die("Retained source lineage missing");
++        yield* p.database.run({
++          sql: "update hosted_source_write_frontiers set active_writes = 1 where code = $1",
++          params: [code],
++        });
++        expect((yield* p.request(p.operation)).status).toBe(409);
++        const continued = yield* api.request(actors.owner, "POST", `${path}/commits`, {
++          expected: source.revision.commit,
++          files: [
++            ...source.files,
++            { path: "continued-work.md", content: "Normal writes still work.\n" },
++          ],
++          message: "Continue after uncertain write",
++        });
++        expect(continued.status, JSON.stringify(continued.body)).toBe(200);
++        const continuedRevision = yield* body(Committed, continued);
++        const continuedSource = yield* body(
++          Workspace,
++          yield* api.request(actors.owner, "GET", `${path}/workspace`),
++        );
++        expect(continuedSource.revision).toEqual(continuedRevision.revision);
++        expect(continuedSource.files).toEqual(
++          expect.arrayContaining([
++            { path: "continued-work.md", content: "Normal writes still work.\n" },
++          ]),
++        );
++        expect(
++          yield* p.database.run({
++            sql: "select active_writes from hosted_source_write_frontiers where code = $1",
++            params: [code],
++          }),
++        ).toEqual([{ active_writes: 1 }]);
++        expect((yield* p.request(p.operation)).status).toBe(409);
++        expect(yield* p.protectedRows).toEqual(protectedRows);
 +      }),
 +    ),
 +  );

@@ -1,12 +1,7 @@
 model {
   extend basalt.catalog {
     metadata {
-      constraint "Reviewed OAuth families supply identity defaults only for their matching authorization server, token endpoint and API audience. Jira and Confluence remain separate catalog services sharing one Atlassian identity; the redundant umbrella disappears from discovery while its installed source remains readable. Trello retains its separate authorization audience. A legacy sign-in must reconnect to prove its subject; matching email never transfers identity."
-    }
-  }
-  extend basalt.deployment {
-    metadata {
-      constraint "Atlassian family adoption is an inert named production operation with exact app, active deployment, account and user selections. Existing verified consumer links must precede umbrella retirement. Saved work prevents retirement, a changed snapshot invalidates approval, and every account, grant and deployment is preserved. Applying an approved plan again verifies its receipt without repeating changes."
+      constraint "Reviewed outside-service families default identity only for matching authorization servers, token endpoints and API audiences. Their tools stay separate catalog services; a redundant umbrella leaves discovery while installed source remains readable. Different audiences keep separate sign-ins, and legacy accounts reconnect to prove their subject without email inference. Installed-app adoption requires exact approved selections and verified consumer links. Retirement refuses saved work and changed source, fences concurrent source writes, preserves every account, grant and deployment, and verifies repeated application without repeating changes."
     }
   }
 }

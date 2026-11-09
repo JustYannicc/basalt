@@ -16,16 +16,41 @@
           "reason": "Requires the Cloud production operations database."
         }
       }
+    },
+    "cloudAtlassianFamilySourcePreservation": {
+      "fixtures": "actors",
+      "title": "Cloud production operations preserve app source saved before approval or after a dry run",
+      "targets": {
+        "cloud": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Requires the Cloud production operations database."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Requires the Cloud production operations database."
+        }
+      }
     }
   },
   "runs": {
     "cloudAtlassianFamilyAdoption": [
+      "production-ops:migrations"
+    ],
+    "cloudAtlassianFamilySourcePreservation": [
       "production-ops:migrations"
     ]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-adoption-v1.ts",
     ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-plan.ts",
-    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-snapshot.ts"
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-snapshot.ts",
+    ".upstream/apps/hosted/cloud/src/implementation/source-write-frontiers.ts",
+    ".upstream/apps/hosted/cloud/src/implementation/source-write-fence.ts",
+    ".upstream/apps/hosted/cloud/src/implementation/source-preservation.ts",
+    ".upstream/apps/hosted/cloud/src/implementation/source-references.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-source.ts"
   ]
 }
