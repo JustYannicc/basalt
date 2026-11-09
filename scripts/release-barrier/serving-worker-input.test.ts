@@ -6,7 +6,7 @@ import { preparedUpload } from "./fixture.ts";
 import { containerPublication } from "./test/container-fixture.ts";
 import { assertBaselineWorkerInput } from "./container.ts";
 import { assertJournaledBaselineInput } from "./forward-worker-input.ts";
-import { servingWorkerSettings } from "./serving-worker-input.ts";
+import { safeInputIdentity, servingWorkerSettings } from "./serving-worker-input.ts";
 import { BarrierRefusal } from "./manifest.ts";
 
 const binding = (text: string) => ({ name: "POOL_IMAGE_HASH", type: "plain_text", text });
@@ -15,7 +15,7 @@ const serving = [{ id: "serving", placement: undefined, bindings: [binding("a".r
 
 test("latest upload differs from serving: both frozen recovery hash and container pairing use serving bindings", async () => {
   const upload = preparedUpload("PoolWorker");
-  upload.previousSettings!.bindings = [binding("b".repeat(16))];
+  upload.previousSettings!.bindings = [{ ...binding("b".repeat(16)), type: "plain_text" }];
   const { frozen } = containerPublication();
   // This is the refused production call before serving-version selection.
   assert.throws(
@@ -35,10 +35,14 @@ test("a genuine serving/container mismatch refuses with the exact field and safe
       assert.ok(error instanceof BarrierRefusal);
       assert.match(
         error.message,
-        /bindings\.POOL_IMAGE_HASH expected=aaaaaaaaaaaa observed=cccccccccccc/,
+        /bindings\.POOL_IMAGE_HASH expected=aaaaaaaaaaaa.*observed=cccccccccccc/,
       );
       assert.deepEqual(error.delta?.changed, [
-        { path: "bindings.POOL_IMAGE_HASH", old: "a".repeat(12), new: "c".repeat(12) },
+        {
+          path: "bindings.POOL_IMAGE_HASH",
+          old: safeInputIdentity("a".repeat(16)),
+          new: safeInputIdentity("c".repeat(16)),
+        },
       ]);
       return true;
     },
@@ -101,4 +105,30 @@ test("malformed coverage reaches the release error report with expected and obse
   const output: string[] = [];
   await reportRefusal(refusal, undefined, (line) => output.push(line));
   assert.match(output.join("\n"), /PoolWorker.*servingVersions\.trafficTotal.*100.*50/);
+});
+
+test("different serving hashes with identical display prefixes still report distinct safe identities", () => {
+  const current = [
+    { versionId: "serving", percentage: 50 },
+    { versionId: "other", percentage: 50 },
+  ];
+  assert.throws(
+    () =>
+      servingWorkerSettings(
+        [
+          ...serving,
+          { id: "other", placement: undefined, bindings: [binding("aaaaaaaaaaaabbbb")] },
+        ],
+        current,
+      ),
+    (error) => {
+      assert.ok(error instanceof BarrierRefusal);
+      assert.ok(
+        error.delta?.changed.some(
+          (item) => "old" in item && item.old !== item.new && item.path.endsWith(".hash"),
+        ),
+      );
+      return true;
+    },
+  );
 });

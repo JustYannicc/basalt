@@ -12,6 +12,9 @@ export const safeInputHash = (value: string | undefined) =>
       ? value.slice(0, 12)
       : `sha256:${digest(value).slice(0, 12)}`;
 
+export const safeInputIdentity = (value: string | undefined) =>
+  value === undefined ? "missing" : `${safeInputHash(value)} [sha256:${digest(value)}]`;
+
 export function workerInputHash(settings: BaselineWorkerSettings | undefined) {
   const bindings =
     settings?.bindings?.filter((binding) => binding.name === "POOL_IMAGE_HASH") ?? [];
@@ -87,14 +90,18 @@ export function servingWorkerSettings(
         const bindings =
           version.bindings?.filter((binding) => binding.name === "POOL_IMAGE_HASH") ?? [];
         return differences(
-          { count: 1, type: "plain_text", hash: hashes[0] ? safeInputHash(hashes[0]) : "present" },
+          {
+            count: 1,
+            type: "plain_text",
+            hash: hashes[0] ? safeInputIdentity(hashes[0]) : "present",
+          },
           {
             count: bindings.length,
             type:
               bindings.length === 1 && bindings[0]?.type === "plain_text"
                 ? "plain_text"
                 : "missing-or-invalid",
-            hash: safeInputHash(hashes[index]),
+            hash: safeInputIdentity(hashes[index]),
           },
           `servingVersions.${index}.bindings.POOL_IMAGE_HASH`,
         );

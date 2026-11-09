@@ -1,5 +1,5 @@
 import {
-  safeInputHash,
+  safeInputIdentity,
   workerInputHash,
   type BaselineWorkerSettings,
 } from "./serving-worker-input.ts";
@@ -355,13 +355,13 @@ export function assertBaselineWorkerInput(
         changed: [
           {
             path: "bindings.POOL_IMAGE_HASH",
-            old: safeInputHash(container.baselineInputHash),
-            new: safeInputHash(observed),
+            old: safeInputIdentity(container.baselineInputHash),
+            new: safeInputIdentity(observed),
           },
         ],
       },
     );
-    refusal.message += `: bindings.POOL_IMAGE_HASH expected=${safeInputHash(container.baselineInputHash)} observed=${safeInputHash(observed)}`;
+    refusal.message += `: bindings.POOL_IMAGE_HASH expected=${safeInputIdentity(container.baselineInputHash)} observed=${safeInputIdentity(observed)}`;
     throw refusal;
   }
 }
