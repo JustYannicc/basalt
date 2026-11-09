@@ -53,6 +53,7 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
     return { started, release };
   };
   const timers = new Set();
+  let stopped = false;
   const home = async (path, init) => {
     const url = new URL(path, "http://synthetic-home.test");
     const route = url.pathname.replace("/v8/management", "");
@@ -195,6 +196,7 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
     abort: () => {},
     invalidateView: (pool) => control.invalidateViews(pool),
     schedule: async (at) => {
+      if (stopped) return;
       const timer = setTimeout(
         () => {
           timers.delete(timer);
@@ -437,6 +439,7 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
       readings.delete(id);
     },
     async stop() {
+      stopped = true;
       resets.stop();
       for (const removal of removals.values()) removal.release();
       removals.clear();
