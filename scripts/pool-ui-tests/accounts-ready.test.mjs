@@ -667,7 +667,7 @@ test(
               release();
               await frame
                 .getByText(
-                  `${subscriptionsBaseline ? 5 : 4} subscription accounts across ${subscriptionsBaseline ? 3 : 2} labs`,
+                  `${subscriptionsBaseline ? 5 : 4} subscription accounts across ${subscriptionsBaseline ? 3 : 2} labs · 1 person`,
                   { exact: true },
                 )
                 .waitFor();
