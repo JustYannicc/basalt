@@ -1,0 +1,54 @@
+{
+  "scenarios": {
+    "requirementToolsDesktop": {
+      "fixtures": "actors",
+      "title": "a service's account rows say which of its catalog-named tools they can't run, and its connect menu names each method's tools, at 1280px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Shared hosted account UI is exercised through the complete self-host product."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The local host reads the same catalog field into the same section component."
+        }
+      }
+    },
+    "requirementToolsPhone": {
+      "fixtures": "actors",
+      "title": "a service's account rows say which of its catalog-named tools they can't run, and its connect menu names each method's tools, at 390px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Shared hosted account UI is exercised through the complete self-host product."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The local host reads the same catalog field into the same section component."
+        }
+      }
+    }
+  },
+  "runs": {
+    "requirementToolsDesktop": [
+      "host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"
+    ],
+    "requirementToolsPhone": [
+      "host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"
+    ]
+  },
+  "inherited": [],
+  "inputs": [
+    ".upstream/packages/catalog/src/contracts/catalog.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/service-groups.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx",
+    ".upstream/e2e/support/requirement-tools-catalog.ts"
+  ]
+}

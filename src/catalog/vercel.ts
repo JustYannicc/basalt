@@ -13,6 +13,8 @@ export function withVercelSignIn(feed: Feed): Feed {
       return {
         ...entry,
         auth: [{ method: "oauth", kind: "oauth2", label: "Sign in with Vercel" }, ...entry.auth],
+        // Sign-in reaches the MCP server's tools; an access token reaches the full REST API.
+        requirementTools: { signIn: "Vercel MCP tools", vercel: "Vercel REST API tools" },
       };
     }),
   };

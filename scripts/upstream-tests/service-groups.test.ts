@@ -13,22 +13,34 @@ type Requirement = {
   readonly cardinality: "one" | "many";
 };
 type Entry = readonly [string, Requirement];
-type Method = { slot: string; requirement: Requirement; method: string; label: string };
-type Section = { requirement: string; method: string; title: string };
-const { serviceGroups, serviceMethods, servicePart, serviceTitle, toolLimits } = (await import(
-  new URL("service-groups.ts", dashboard).href
-)) as {
-  serviceGroups: (entries: readonly Entry[], mergeable: (entry: Entry) => boolean) => Entry[][];
-  serviceMethods: (methods: readonly Method[]) => Method[];
-  servicePart: (group: readonly Entry[], slot: string) => string | undefined;
-  serviceTitle: (group: readonly Entry[]) => string;
-  toolLimits: (
-    sections: readonly Section[] | undefined,
-    group: readonly Entry[],
-    slot: string,
-    method: string,
-  ) => string | undefined;
+type Method = {
+  slot: string;
+  requirement: Requirement;
+  method: string;
+  label: string;
+  tools?: string;
 };
+type Section = { requirement: string; method: string; title: string };
+const { namesEveryRequirement, rowNote, serviceGroups, serviceMethods, servicePart, serviceTitle } =
+  (await import(new URL("service-groups.ts", dashboard).href)) as {
+    namesEveryRequirement: (
+      tools: Record<string, string> | undefined,
+      group: readonly Entry[],
+    ) => boolean;
+    rowNote: (
+      group: readonly Entry[],
+      slot: string,
+      method: string,
+      catalog: {
+        readonly requirementTools?: Record<string, string>;
+        readonly toolSections?: readonly Section[];
+      },
+    ) => string | undefined;
+    serviceGroups: (entries: readonly Entry[], mergeable: (entry: Entry) => boolean) => Entry[][];
+    serviceMethods: (methods: readonly Method[]) => Method[];
+    servicePart: (group: readonly Entry[], slot: string) => string | undefined;
+    serviceTitle: (group: readonly Entry[]) => string;
+  };
 
 const requirement = (
   provider: string,
@@ -199,19 +211,88 @@ test("a row says which declared tool sections it can't run, and only those of it
     ["planetscaleSignIn", requirement("prv_sign_in", "PlanetScale")],
     ["planetscale", requirement("prv_legacy", "PlanetScale")],
   ];
-  const declared: Section[] = [
+  const toolSections: Section[] = [
     { requirement: "planetscale", method: "token", title: "PlanetScale service-token tools" },
     { requirement: "other", method: "key", title: "Other tools" },
   ];
   // A sign-in or a legacy OAuth account can't run the token tools; a token account can.
   assert.equal(
-    toolLimits(declared, group, "planetscaleSignIn", "signIn"),
+    rowNote(group, "planetscaleSignIn", "signIn", { toolSections }),
     "Can't run PlanetScale service-token tools.",
   );
   assert.equal(
-    toolLimits(declared, group, "planetscale", "oauth2"),
+    rowNote(group, "planetscale", "oauth2", { toolSections }),
     "Can't run PlanetScale service-token tools.",
   );
-  assert.equal(toolLimits(declared, group, "planetscale", "token"), undefined);
-  assert.equal(toolLimits(undefined, group, "planetscaleSignIn", "signIn"), undefined);
+  assert.equal(rowNote(group, "planetscale", "token", { toolSections }), undefined);
+  assert.equal(rowNote(group, "planetscaleSignIn", "signIn", {}), undefined);
+});
+
+test("a row says which other requirements' tools it can't run, only where all are named", () => {
+  const clerk: Entry[] = [
+    ["signIn", requirement("prv_mcp", "Clerk")],
+    ["clerk", requirement("prv_key", "Clerk")],
+  ];
+  const requirementTools = { signIn: "Clerk MCP tools", clerk: "Clerk REST API tools" };
+  assert.equal(namesEveryRequirement(requirementTools, clerk), true);
+  assert.equal(
+    rowNote(clerk, "signIn", "oauth", { requirementTools }),
+    "Can't run Clerk REST API tools.",
+  );
+  assert.equal(
+    rowNote(clerk, "clerk", "apiKey", { requirementTools }),
+    "Can't run Clerk MCP tools.",
+  );
+  // A requirement the catalog doesn't name leaves every row without a claim.
+  const partial = { signIn: "Clerk MCP tools" };
+  assert.equal(namesEveryRequirement(partial, clerk), false);
+  assert.equal(rowNote(clerk, "clerk", "apiKey", { requirementTools: partial }), undefined);
+  // Requirements that run the same tools never limit each other.
+  assert.equal(
+    rowNote(clerk, "clerk", "apiKey", {
+      requirementTools: { signIn: "Clerk tools", clerk: "Clerk tools" },
+    }),
+    undefined,
+  );
+});
+
+test("named tools replace the part a row serves and join its tool sections in one sentence", () => {
+  const gitlab: Entry[] = [
+    ["signIn", requirement("prv_mcp", "GitLab MCP")],
+    ["gitlab", requirement("prv_rest", "GitLab")],
+  ];
+  const requirementTools = { signIn: "GitLab MCP tools", gitlab: "GitLab REST API tools" };
+  const toolSections: Section[] = [
+    { requirement: "gitlab", method: "token", title: "GitLab admin tools" },
+  ];
+  // Without named tools the MCP row names its part, joined with any tool sections it can't run;
+  // with them it says what it can't run instead.
+  assert.equal(rowNote(gitlab, "signIn", "mcp", {}), "For GitLab MCP");
+  assert.equal(
+    rowNote(gitlab, "signIn", "mcp", { toolSections }),
+    "For GitLab MCP · Can't run GitLab admin tools.",
+  );
+  assert.equal(
+    rowNote(gitlab, "signIn", "mcp", { requirementTools, toolSections }),
+    "Can't run GitLab REST API tools or GitLab admin tools.",
+  );
+  // A part named after the section still says only what it can't run.
+  assert.equal(
+    rowNote(gitlab, "gitlab", "oauth", { requirementTools, toolSections }),
+    "Can't run GitLab MCP tools or GitLab admin tools.",
+  );
+});
+
+test("the connect menu keeps a repeated label whose requirement runs other catalog-named tools", () => {
+  const signIn = requirement("prv_sign_in", "Service");
+  const legacy = requirement("prv_legacy", "Service");
+  // Both stay, under their own label: their tools tell them apart, not a repeated service name.
+  const kept = serviceMethods([
+    { slot: "signIn", requirement: signIn, method: "oauth", label: "Sign in", tools: "MCP tools" },
+    { slot: "legacy", requirement: legacy, method: "oauth", label: "Sign in", tools: "REST tools" },
+  ]).map(({ slot, label, tools }) => ({ slot, label, tools }));
+  assert.deepEqual(kept, [
+    { slot: "signIn", label: "Sign in", tools: "MCP tools" },
+    { slot: "legacy", label: "Sign in", tools: "REST tools" },
+  ]);
 });
