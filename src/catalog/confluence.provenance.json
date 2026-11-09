@@ -1,0 +1,16 @@
+{
+  "package": "@executor.sh/confluence",
+  "publishedUrl": "https://catalog.executor.sh/apps/confluence.json",
+  "publishedSha256": "be9751625a0278dd24dd09dea05559cc1a004ebc8c0ac683e3265483c11f15e4",
+  "carriedSha256": "c54bc3b9b0490a58b208ae03f3f554767adc62c2646706640c330ff390205bb3",
+  "patchSha256": "363909121102303afcb9af459a035c82973a10180365e597a3f4d0fc3a06c6b9",
+  "appsVersion": "0.0.1-beta.104-basalt.13",
+  "license": "Not declared in the published package",
+  "excludedOperations": [
+    "getForgeAppProperties",
+    "getForgeAppProperty",
+    "putForgeAppProperty",
+    "deleteForgeAppProperty"
+  ],
+  "reason": "Forge app-owned properties are unavailable to personal OAuth 2.0 (3LO) clients."
+}

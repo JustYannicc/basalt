@@ -1,0 +1,51 @@
+/** Test-only transport to the proof's native Git; never loaded by a shipped Worker. */
+import { Effect, Schema } from "effect";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
+import { SourceError, isUpload, type RepositoryBackend } from "@executor-js/sdk/core";
+
+const Reply = Schema.Union([
+  Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
+  Schema.Struct({ ok: Schema.Literal(false), reason: SourceError.fields.reason }),
+]);
+const bytes = (value: string) => Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
+const encoded = (value: Uint8Array) => {
+  let output = "";
+  for (const byte of value) output += String.fromCharCode(byte);
+  return btoa(output);
+};
+export const sourceFixtureRepositories = (origin: string): RepositoryBackend => {
+  const call = <A, I>(input: unknown, schema: Schema.Codec<A, I>) => Effect.gen(function* () {
+    const client = yield* HttpClient.HttpClient;
+    const response = yield* client.execute(HttpClientRequest.post(`${origin}/source`).pipe(HttpClientRequest.bodyJsonUnsafe(input)));
+    const json = yield* response.json;
+    const reply = yield* Schema.decodeUnknownEffect(Reply)(json);
+    if (!reply.ok) return yield* new SourceError({ reason: reply.reason });
+    return yield* Schema.decodeUnknownEffect(schema)(reply.value);
+  }).pipe(Effect.scoped, Effect.provide(FetchHttpClient.layer), Effect.mapError((error) => Schema.is(SourceError)(error) ? error : new SourceError({ reason: "git" })));
+  // Schemas at both ends keep the fixture on the same portable repository contract.
+  return {
+    create: (code) => call({ op: "create", code }, Schema.Null).pipe(Effect.asVoid),
+    history: (code) => call({ op: "history", code }, Schema.Array(Schema.Struct({ commit: Schema.String, author: Schema.String, message: Schema.String, timestamp: Schema.Number }))),
+    head: (code, branch) => call({ op: "head", code, branch }, Schema.NullOr(Schema.String)),
+    read: (code, ref) => call({ op: "read", code, ref }, Snapshot),
+    commit: (input) => Effect.gen(function* () {
+      if (input.files.some(isUpload)) return yield* new SourceError({ reason: "invalid-source" });
+      return yield* call({ ...input, op: "commit", code: input.id }, Saved);
+    }),
+    blob: (code, object) => call({ op: "blob", code, object }, Schema.String).pipe(Effect.map(bytes)),
+    file: (code, commit, path) => call({ op: "file", code, commit, path }, Schema.String).pipe(Effect.map(bytes)),
+    request: (code, request) => Effect.gen(function* () {
+      const body = request.body === null ? null : encoded(new Uint8Array(yield* Effect.tryPromise({
+        try: () => request.arrayBuffer(), catch: () => new SourceError({ reason: "git" }),
+      })));
+      const result = yield* call({ op: "request", code, url: request.url, method: request.method,
+        headers: Object.fromEntries(request.headers), body,
+      }, Response);
+      return new globalThis.Response(bytes(result.body), { status: result.status, headers: result.headers });
+    }),
+  };
+};
+import { SourceCommit, SourceFiles, SourceRemovals } from "@executor-js/sdk/core";
+const Snapshot = Schema.Struct({ commit: SourceCommit, files: SourceFiles });
+const Saved = Schema.Struct({ commit: SourceCommit, removed: SourceRemovals });
+const Response = Schema.Struct({ status: Schema.Number, headers: Schema.Record(Schema.String, Schema.String), body: Schema.String });

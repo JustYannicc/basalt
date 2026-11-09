@@ -7,6 +7,7 @@ import oauthReviewData from "./oauth-reviews.json" with { type: "json" };
 import { catalog } from "./settings.ts";
 import { onServedFramework } from "./framework.ts";
 import { atlassianAddition } from "./atlassian/index.ts";
+import { atlassianConsumers } from "./atlassian-consumers.ts";
 import { gitlabSource, withGitLabInstances } from "./gitlab.ts";
 import { slackSource, withSlackUserAuth } from "./slack.ts";
 import { miroSource, withMiroCapabilities } from "./miro.ts";
@@ -29,8 +30,11 @@ import { obsidian } from "./obsidian/index.ts";
 
 // AWS source stays in the catalog until maintainers identify a maintained destination.
 const sourceAdditions: readonly Addition[] = [aws, zohoPeople, obsidian, ...providerApps];
-// GitLab sign-in moved into the one GitLab app. Installed copies still read their source.
-const retiredSources: readonly Addition[] = [gitlabMcp];
+// Retired umbrella apps remain readable until their installed copies are explicitly migrated.
+const retiredSources = (origin: string): readonly Addition[] => [
+  gitlabMcp,
+  atlassianAddition(origin),
+];
 const reviewedOAuth = oauthReviews(oauthReviewData);
 const headers = {
   "Content-Type": "application/json; charset=utf-8",
@@ -48,15 +52,8 @@ function configuredAdditions(
   origin: string,
   metadata?: ZendeskMarketplaceMetadata,
 ): readonly FeedAddition[] {
-  const additions = [atlassianAddition(origin)];
   const zendesk = zendeskAddition(metadata);
-  return [
-    ...additions,
-    ...sourceAdditions,
-    ...recipeAdditions(origin),
-    googleMapsAddition(origin),
-    zendesk,
-  ];
+  return [...sourceAdditions, ...recipeAdditions(origin), googleMapsAddition(origin), zendesk];
 }
 
 /** A read-only feed. Never forward cookies, authorization or query parameters to its publisher. */
@@ -72,6 +69,14 @@ export async function handleCatalog(
   const relative = path.startsWith(catalog.path) ? path.slice(catalog.path.length) : "";
   if (relative !== "index.json" && !/^apps\/[a-zA-Z0-9_-]+\.json$/.test(relative))
     return new Response(null, { status: 404 });
+  const consumer = Object.entries(atlassianConsumers).find(
+    ([id]) => relative === `apps/${id}.json`,
+  )?.[1];
+  if (consumer !== undefined)
+    return new Response(
+      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(consumer)),
+      { headers },
+    );
   if (relative === "apps/slack.json")
     return new Response(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(slackSource)),
@@ -132,7 +137,7 @@ export async function handleCatalog(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(spotifySource)),
       { headers },
     );
-  const added = [...additions, ...retiredSources].find(
+  const added = [...additions, ...retiredSources(new URL(request.url).origin)].find(
     (item) => relative === `apps/${encodeURIComponent(item.entry.id)}.json`,
   );
   if (added) {

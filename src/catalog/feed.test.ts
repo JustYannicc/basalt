@@ -460,7 +460,7 @@ test("the public feed identifies services with exact MCP aliases and keeps disti
   assert.notEqual(vercel.service?.id, models.service?.id);
 });
 
-test("Confluence aliases the canonical Atlassian service while Jira stays separate", async () => {
+test("Confluence and Jira keep separate catalog services while sharing sign-in", async () => {
   const entries: Feed = {
     version: 1,
     apps: ["confluence", "jira"].map((id) => ({
@@ -479,9 +479,9 @@ test("Confluence aliases the canonical Atlassian service while Jira stays separa
   const confluence = result.apps.find((entry) => entry.id === "confluence")!;
   const jira = result.apps.find((entry) => entry.id === "jira")!;
   assert.deepEqual(confluence.service, {
-    id: "atlassian",
+    id: "@executor.sh/confluence",
     mcp: [],
-    packages: ["@executor.sh/confluence", "atlassian"],
+    packages: ["@executor.sh/confluence"],
   });
   assert.equal(jira.service?.id, "@executor.sh/jira");
 });
