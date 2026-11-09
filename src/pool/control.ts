@@ -547,7 +547,7 @@ export class PoolHome {
       ] as const;
       await Promise.allSettled(reads);
       const [files, usage] = await Promise.all(reads);
-      return { accounts: subscriptionAccounts(accountsView(files, usage, new Set(ids))), readAt };
+      return { accounts: accountsView(files, usage, new Set(ids)), readAt };
     } finally {
       // homeResponse settles on abort even while container readiness or its port fetch is hung.
       controller.abort();
@@ -563,7 +563,7 @@ export class PoolHome {
     const result = views
       ? await views.view(this.pool, fresh, () => this.readView(now))
       : { data: await this.readView(now), source: "live" as const, revalidationFailed: false };
-    const accounts = subscriptionAccounts(result.data.accounts).map((account) =>
+    const accounts = result.data.accounts.map((account) =>
       result.source === "snapshot"
         ? {
             ...account,
@@ -575,6 +575,7 @@ export class PoolHome {
       isOwner,
       providers,
       accounts,
+      subscriptionAccountIds: subscriptionAccounts(accounts).map((account) => account.id),
       reading: {
         source: result.source,
         readAt: result.data.readAt,

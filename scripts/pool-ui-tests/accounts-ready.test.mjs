@@ -641,6 +641,9 @@ test(
             "overview-fixture",
           );
           const value = await home.view(true);
+          assert.equal(value.accounts.length, 5);
+          assert.ok(value.accounts.some((account) => account.id === "jev-key"));
+          assert.equal(value.subscriptionAccountIds.length, 4);
           if (subscriptionsBaseline)
             value.accounts = accountsView(files, quota, new Set(files.map(({ id }) => id)));
           viewResult = { ok: true, value };

@@ -187,7 +187,7 @@ test("invalidation expires the saved result after a completed revalidation", asy
   assert.equal(result.data.accounts[0]!.label, "After removal");
 });
 
-test("snapshot and live views apply the same pool filter and current owner flag without exposing raw Home", async () => {
+test("retained views preserve app members and classify subscriptions without exposing raw Home", async () => {
   const cache = new PoolViewSnapshots(new MemoryStorage(), () => {});
   const retained = data();
   retained.accounts.push({
@@ -208,8 +208,9 @@ test("snapshot and live views apply the same pool filter and current owner flag 
   assert.equal(member.removals, undefined);
   assert.deepEqual(
     member.accounts.map((account) => account.id),
-    ["a"],
+    ["a", "app-key"],
   );
+  assert.deepEqual(member.subscriptionAccountIds, ["a"]);
   assert.equal(member.accounts[0]!.freshness, "stale");
   assert.equal(member.accounts[0]!.observedAt, observed);
   assert.equal(member.reading?.source, "snapshot");

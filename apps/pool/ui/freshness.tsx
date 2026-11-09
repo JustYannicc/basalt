@@ -1,3 +1,4 @@
+import { overviewAccounts } from "./overview-accounts.ts";
 import type { PoolView } from "../contract.ts";
 import { Button } from "./controls.tsx";
 import { duration, exactTime, lastReading } from "./usage.ts";
@@ -8,7 +9,9 @@ function ago(at: number, now: number): string {
 
 /** When the retained view was put together: the last of its Home reads to finish. */
 function savedAt(view: PoolView): number | null {
-  const times = Object.values(view.reading?.readAt ?? {}).map((iso) => Date.parse(iso)).filter((at) => !Number.isNaN(at));
+  const times = Object.values(view.reading?.readAt ?? {})
+    .map((iso) => Date.parse(iso))
+    .filter((at) => !Number.isNaN(at));
   return times.length ? Math.max(...times) : null;
 }
 
@@ -27,7 +30,7 @@ export function Freshness({
   now: number;
   onRetry?: () => void;
 }) {
-  const reading = lastReading(view.accounts);
+  const reading = lastReading(overviewAccounts(view));
   const retained = view.reading?.source === "snapshot";
   const failed = retained && view.reading?.revalidationFailed === true;
   const saved = retained ? savedAt(view) : null;

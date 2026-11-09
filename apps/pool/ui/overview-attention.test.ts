@@ -85,3 +85,19 @@ test("attention copy agrees with one account and one reset", () => {
   assert.equal(bankedResetText(1), "1 banked reset available");
   assert.equal(bankedResetText(2), "2 banked resets available");
 });
+
+test("app members keep real health errors but do not need subscription quota readings", () => {
+  const subscription = account("subscription");
+  const key = account("app-key", { freshness: "never" });
+  const pool = { ...view([subscription, key]), subscriptionAccountIds: [subscription.id] };
+  assert.deepEqual(accountProblems(pool), []);
+  const failed = {
+    ...pool,
+    accounts: [subscription, { ...key, credentialFailure: "unauthorized" as const }],
+  };
+  assert.deepEqual(
+    accountProblems(failed).map(({ kind, count }) => [kind, count]),
+    [["sign-in", 1]],
+  );
+  assert.equal(accountsNeedingSomeone(failed), 1);
+});

@@ -1,3 +1,4 @@
+import { overviewAccounts } from "./overview-accounts.ts";
 import type { PoolView } from "../contract.ts";
 
 export interface AccountProblem {
@@ -11,7 +12,7 @@ export interface AccountProblem {
 export function accountProblems(view: PoolView): AccountProblem[] {
   const signIn = view.accounts.filter((account) => account.credentialFailure === "unauthorized");
   const checks = view.accounts.filter((account) => account.readingFailed);
-  const readings = view.accounts.filter((account) => account.freshness !== "fresh");
+  const readings = overviewAccounts(view).filter((account) => account.freshness !== "fresh");
   const unavailable = view.accounts.filter(
     (account) => account.state !== "active" || account.credentialFailure === "unavailable",
   );
