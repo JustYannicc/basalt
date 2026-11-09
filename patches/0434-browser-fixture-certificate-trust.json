@@ -1,11 +1,11 @@
 {
   "identity": "browser-fixture-certificate-trust",
   "file": "0434-browser-fixture-certificate-trust.patch",
-  "content_sha256": "e8e60b4b82a21d655911bc8d0357719037b21787947612521ed1284c3b4a7464",
+  "content_sha256": "e417bd3fa19e4fa9554b6e1d30dcff584e68d686be086bf2c4cc5448b0a934fe",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
   "workflow_sensitive": false,
   "remove_with": "upstream-browser-fixture-certificate-trust",
-  "requires": "Chromium fixture browsers must trust only the current scenario certificate public key at launch, including cases created after a shared browser; saved-evidence rendering remains targetless."
+  "requires": "Pin Chromium fixture certificate keys at launch, preserve APIRequestContext HTTPS handling, and render saved evidence without a target."
 }
