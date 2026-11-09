@@ -1,7 +1,7 @@
 import { poolDependency } from "./dependency-failure.ts";
 import { PoolRuntimeUnhealthy } from "./lifecycle.ts";
 import { HomeTransportFailure } from "./json.ts";
-import { accountsView } from "./accounts-view.ts";
+import { accountsView, retainedAccount } from "./accounts-view.ts";
 import { subscriptionAccounts } from "./subscription-accounts.ts";
 import { mapBounded } from "./bounded.ts";
 import { poolGroupPrefix } from "./pool-group.ts";
@@ -564,12 +564,7 @@ export class PoolHome {
       ? await views.view(this.pool, fresh, () => this.readView(now))
       : { data: await this.readView(now), source: "live" as const, revalidationFailed: false };
     const accounts = result.data.accounts.map((account) =>
-      result.source === "snapshot"
-        ? {
-            ...account,
-            freshness: account.freshness === "never" ? ("never" as const) : ("stale" as const),
-          }
-        : account,
+      result.source === "snapshot" ? retainedAccount(account, now().getTime()) : account,
     );
     return {
       isOwner,

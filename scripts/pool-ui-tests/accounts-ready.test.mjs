@@ -1,5 +1,6 @@
 import { capacityWeight } from "../../src/pool/capacity/weights.ts";
 import { PoolHome, HomeClient, accountsView } from "../../src/pool/control.ts";
+import { PoolViewSnapshots } from "../../src/pool/view-snapshot.ts";
 import { overviewFixture, capacityFixture } from "./overview-fixture.mjs";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -18,7 +19,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const require = createRequire(join(root, ".upstream/package.json"));
@@ -52,6 +53,7 @@ const artifacts = process.env.POOL_UI_ARTIFACTS;
 const sourceRef = process.env.POOL_UI_SOURCE_REF;
 const planBaseline = process.env.POOL_UI_PLAN_BASELINE === "1";
 const subscriptionsBaseline = process.env.POOL_UI_SUBSCRIPTIONS_BASELINE === "1";
+const freshnessRef = process.env.POOL_UI_FRESHNESS_REF;
 // Optional baseline: build that commit's overview.tsx and usage-groups.tsx to capture the old people copy.
 const peopleCopyRef = process.env.POOL_UI_PEOPLE_COPY_REF;
 const baselineRef = sourceRef ?? peopleCopyRef;
@@ -281,6 +283,24 @@ test(
 
     // Use the same source and entry point as the shipped app; only the deployment origin changes.
     const app = join(directory, "app");
+    let ViewHome = PoolHome;
+    if (freshnessRef) {
+      const source = execFileSync(
+        "git",
+        ["-C", root, "show", `${freshnessRef}:src/pool/control.ts`],
+        { encoding: "utf8" },
+      );
+      const baseline = join(directory, "baseline-control.ts");
+      writeFileSync(
+        baseline,
+        source.replace(
+          /(from\s+["'])(\.[^"']+)(["'])/g,
+          (_, before, relative, after) =>
+            before + pathToFileURL(resolve(root, "src/pool", relative)).href + after,
+        ),
+      );
+      ViewHome = (await import(pathToFileURL(baseline).href)).PoolHome;
+    }
     cpSync(join(root, "apps/pool"), app, {
       recursive: true,
       filter: (path) => !path.includes("node_modules") && !/\.(test|spec)\./.test(path),
@@ -622,6 +642,7 @@ test(
               freshness: provider === "typesafe" ? "never" : "fresh",
               status: provider === "typesafe" ? "unsupported" : "success",
               observed_at: iso,
+              expires_at: new Date(now + 30 * minute).toISOString(),
             },
             windows:
               provider === "typesafe"
@@ -640,7 +661,7 @@ test(
                   })),
             reset_credits: { available_count: id === "codex-1" ? 1 : 0, credits: [] },
           }));
-          const home = new PoolHome(
+          const home = new ViewHome(
             new HomeClient(async (path) => {
               if (path.endsWith("/channel-groups"))
                 return Response.json({
@@ -663,7 +684,24 @@ test(
             }),
             "overview-fixture",
           );
-          const value = await home.view(true);
+          const saved = new Map();
+          const snapshots = new PoolViewSnapshots(
+            {
+              get: async (key) => structuredClone(saved.get(key)),
+              put: async (key, value) => {
+                saved.set(key, structuredClone(value));
+              },
+            },
+            () => {},
+          );
+          await home.view(true, snapshots, false, () => new Date(now));
+          const value = await home.view(true, snapshots, false, () => new Date(now));
+          assert.equal(value.reading.source, "snapshot");
+          assert.ok(
+            value.accounts
+              .filter((account) => account.provider !== "typesafe")
+              .every((account) => account.freshness === (freshnessRef ? "stale" : "fresh")),
+          );
           assert.equal(value.accounts.length, 5);
           assert.ok(value.accounts.some((account) => account.id === "jev-key"));
           assert.equal(value.subscriptionAccountIds.length, 4);
@@ -721,7 +759,9 @@ test(
                 assert.ok(text.includes(title), `Approved r2 section: ${title}`);
               assert.doesNotMatch(text, /This read is incomplete|Read incomplete/);
               if (!subscriptionsBaseline) {
-                assert.doesNotMatch(text, /stale or missing readings|1 accounts|1 banked resets/);
+                assert.doesNotMatch(text, /1 accounts|1 banked resets/);
+                if (freshnessRef) assert.match(text, /4 accounts have stale or missing readings/);
+                else assert.doesNotMatch(text, /stale or missing readings/);
                 const reset = frame.getByRole("link", {
                   name: "1 banked reset available",
                   exact: true,
