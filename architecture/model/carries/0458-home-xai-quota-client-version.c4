@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "The subscription quota collector uses the supported Grok CLI identity for both monthly and weekly billing reads. Client identity changes preserve saved credentials, quota persistence and vendor authentication, permission, rate-limit and outage classification. Synthetic HTTP rejection and successful persisted readings cover the billing path without paid inference."
+    }
+  }
+}

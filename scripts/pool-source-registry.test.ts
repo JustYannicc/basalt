@@ -78,6 +78,16 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /expiry, denial, pending, slow-down and cancellation regressions/,
         );
+      } else if (patch.identity === "cliproxy-home-xai-quota-client-version") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0458-home-xai-quota-client-version.patch");
+        assert.match(patch.retirement.requires, /supported Grok CLI client version/);
+        assert.match(patch.retirement.requires, /both subscription billing reads/);
+        assert.match(patch.retirement.requires, /HTTP 426 rejection/);
+        assert.match(
+          patch.retirement.requires,
+          /unchanged credential, permission, rate-limit and outage classification/,
+        );
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&
