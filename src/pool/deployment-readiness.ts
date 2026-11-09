@@ -54,7 +54,8 @@ export async function handleDeploymentReadiness(
       value.imageHash !== target.imageHash
     )
       return new Response(null, { status: 409 });
-    const receipt = Schema.decodeUnknownSync(RuntimeReady)(await ready());
+    // The new entrypoint can still reach a Durable Object on the previous deployed version.
+    const receipt = decodeRuntimeReady(await ready(), target);
     return Response.json(receipt, { headers: { "Cache-Control": "no-store" } });
   } catch {
     return Response.json({ outcome: "readiness-error", stage: "readiness" }, { status: 503 });
