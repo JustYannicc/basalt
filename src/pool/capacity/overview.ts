@@ -115,7 +115,9 @@ function candidateFor(accounts: readonly CapacityReading[]) {
       (reading.source === "reported-absolute" ? "Reported limit" : "Reference plan"),
     capacity: reading.full,
     source:
-      reading.source === "reported-absolute" || reading.source === "published-session-multiplier"
+      reading.source === "reported-absolute" ||
+      reading.source === "published-session-multiplier" ||
+      reading.source === "published-weekly-multiplier"
         ? ("reported" as const)
         : reading.source === "reference-plan"
           ? ("unit" as const)

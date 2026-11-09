@@ -417,8 +417,8 @@ function Attention({
       if (flagged.size)
         items.push({
           tone: "warn",
-          text: `${name(lab.provider)}: ${[...flagged].join(", ")} counts at a flagged 1x`,
-          sub: "Its plan isn't recognised, so capacity treats each account as one reference plan.",
+          text: `${name(lab.provider)}: ${[...flagged].join(", ")} counted conservatively`,
+          sub: "Capacity uses a conservative 1x estimate where no verified weight was saved.",
         });
       const missing = Math.max(
         0,

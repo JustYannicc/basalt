@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { capacityWeight } from "./weights.ts";
 import { CapacityHistory, type CapacityExpectedCohort } from "./history.ts";
 import type { CapacityReading } from "./normalize.ts";
 import { ChunkStorage, type UsageStorage } from "../usage-storage.ts";
@@ -541,4 +542,55 @@ test("plan contributions match the total minimum and an unknown plan can disappe
     point!.plans.reduce((sum, plan) => sum + (plan.last?.remaining ?? 0), 0),
     point!.last.remaining,
   );
+});
+
+test("new Max 20x weekly weights leave retained conservative observations unchanged", async () => {
+  const storage = new Memory();
+  const first = new CapacityHistory(storage);
+  const weekly = [{ provider: "claude", windowSeconds: 604_800, accounts: 1 }];
+  await first.observe("pool-weekly", {
+    at: start,
+    expected: weekly,
+    readings: [
+      reading("max-seat", 0.4, {
+        plan: "Max 20x",
+        windowSeconds: 604_800,
+        full: 1,
+        source: "unknown-plan",
+        knownWeight: false,
+        revision: "2026-10-30",
+      }),
+    ],
+  });
+  const history = new CapacityHistory(storage);
+  const current = capacityWeight("claude", "Max 20x", 604_800);
+  await history.observe("pool-weekly", {
+    at: start + hour,
+    expected: weekly,
+    readings: [
+      reading("max-seat", 4, {
+        plan: "Max 20x",
+        windowSeconds: 604_800,
+        observedAt: start + hour - 60_000,
+        full: current.multiplier,
+        source: current.source,
+        knownWeight: current.known,
+        revision: current.revision,
+      }),
+    ],
+  });
+  const points = await history.read("pool-weekly");
+  assert.equal(points.length, 2);
+  assert.equal(points[0]!.last.full, 1);
+  assert.equal(points[0]!.last.remaining, 0.4);
+  assert.equal(points[0]!.last.unknownWeightCount, 1);
+  assert.deepEqual(points[0]!.last.weights, [
+    { source: "unknown-plan", revision: "2026-10-30", accountCount: 1 },
+  ]);
+  assert.equal(points[1]!.last.full, 10);
+  assert.equal(points[1]!.last.remaining, 4);
+  assert.equal(points[1]!.last.unknownWeightCount, 0);
+  assert.deepEqual(points[1]!.last.weights, [
+    { source: "published-weekly-multiplier", revision: "2026-11-09", accountCount: 1 },
+  ]);
 });
