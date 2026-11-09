@@ -69,7 +69,7 @@ export function refusalTable(failure: Failure) {
     rows.push([
       failure.worker ?? "PoolContainer",
       `$serving.${value.check}`,
-      `${value.cause}; status=${value.status ?? "none"}; elapsedMs=${value.elapsedMs ?? "none"}; last=${JSON.stringify(value.observation ?? null)}`,
+      `${value.cause}; status=${value.status ?? "none"}; elapsedMs=${value.elapsedMs ?? "none"}; last=${JSON.stringify(value.observation ?? null)}${value.codeIdentity ? `; observedIdentity=${JSON.stringify(value.codeIdentity.observed)}; expectedIdentity=${JSON.stringify(value.codeIdentity.expected)}` : ""}`,
     ]);
   }
   return [

@@ -323,12 +323,16 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     await reportPoolStorage(this.ctx.storage);
   }
 
-  async deploymentReady() {
-    return {
+  async deploymentReady(phase: "adoption" | "runtime" = "runtime") {
+    const identity = {
       candidate: productionOpsRelease,
       workerInput: poolWorkerRevision,
       imageHash: this.env.POOL_IMAGE_HASH,
       instanceId: this.ctx.id.toString(),
+    };
+    if (phase === "adoption") return identity;
+    return {
+      ...identity,
       ...(await (await this.lifecycle).deploymentReady()),
     };
   }
@@ -568,7 +572,7 @@ export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
           imageHash: this.env.POOL_IMAGE_HASH,
         },
         this.env.POOL_DEPLOYMENT_KEY ?? "",
-        () => singleton(this.env).deploymentReady(),
+        (phase) => singleton(this.env).deploymentReady(phase),
       );
     if (path === runtimeRecoveryPath) return singleton(this.env).fetch(request);
     if ([historySchemaCatalogPath, historySchemaApplyPath, historyBackfillPath].includes(path))

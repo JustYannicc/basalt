@@ -31,7 +31,11 @@ const {
   PoolContainer: new (
     ctx: object,
     env: object,
-  ) => { fetch(request: Request): Promise<Response>; alarm(): Promise<void> };
+  ) => {
+    fetch(request: Request): Promise<Response>;
+    alarm(): Promise<void>;
+    deploymentReady(phase?: "adoption" | "runtime"): Promise<unknown>;
+  };
   PoolOperations: {
     prototype: { fetch(this: { env: object }, request: Request): Promise<Response> };
   };
@@ -1029,4 +1033,38 @@ test("deployment readiness cannot be invoked on public routes or without the rel
     assert.notEqual((await PoolOperations.prototype.fetch.call({ env }, request)).status, 200);
   }
   assert.equal(warms, 0);
+});
+
+test("the actual controller reports its code identity without reading startup state", async () => {
+  const { productionOpsRelease } =
+    await import("../../.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts");
+  const { poolWorkerRevision } =
+    await import("../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts");
+  const instanceId = "d".repeat(64);
+  const pool = new PoolContainer(
+    {
+      id: { toString: () => instanceId },
+      storage: {
+        get() {
+          throw new Error("Code identity must not read startup state");
+        },
+        put() {
+          throw new Error("Code identity must not write startup state");
+        },
+      },
+      container: { running: false },
+    },
+    {
+      POOL_DATABASE_URL: "postgres://fixture:fixture@localhost/pool",
+      POOL_IMAGE_HASH: "1234abcd",
+      POOL_MANAGEMENT_KEY: "synthetic-management-key",
+      POOL_APP_SIGNING_KEY: "a".repeat(64),
+    },
+  );
+  assert.deepEqual(await pool.deploymentReady("adoption"), {
+    candidate: productionOpsRelease,
+    workerInput: poolWorkerRevision,
+    imageHash: "1234abcd",
+    instanceId,
+  });
 });
