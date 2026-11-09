@@ -33,7 +33,7 @@ export interface LaunchExpectation {
   operationId: string;
 }
 export interface LaunchHooks {
-  prepare(expected?: LaunchExpectation): Promise<LaunchRecord>;
+  prepare(expected?: LaunchExpectation, intent?: "restart"): Promise<LaunchRecord>;
   verify(status: PoolStatus): Promise<void>;
 }
 

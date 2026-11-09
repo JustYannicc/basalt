@@ -99,7 +99,7 @@ export class PoolLifecycle {
       await beforeStop?.();
       await this.driver.stop();
       this.served = false;
-      return this.ensureWarm();
+      return this.ensureWarm("restart");
     })();
     const work = restart.finally(() => {
       if (this.warming === work) this.warming = undefined;
@@ -136,11 +136,15 @@ export class PoolLifecycle {
     return work;
   }
 
-  private async start(expected?: LaunchExpectation, beforeLaunch?: () => Promise<void>) {
+  private async start(
+    expected?: LaunchExpectation,
+    beforeLaunch?: () => Promise<void>,
+    intent?: "restart",
+  ) {
     await this.storage.put("revision", this.revision);
     await this.storage.put("ready-revision", "");
     this.served = false;
-    const launch = await this.launch?.prepare(expected);
+    const launch = await this.launch?.prepare(expected, intent);
     await beforeLaunch?.();
     if (this.driver.running()) throw new LaunchRefused("runtime-no-longer-stopped");
     this.driver.start(launch);
@@ -172,7 +176,7 @@ export class PoolLifecycle {
     if (scheduled === null || scheduled > next) await this.storage.setAlarm(next);
   }
 
-  private async ensureWarm(): Promise<PoolStatus> {
+  private async ensureWarm(intent?: "restart"): Promise<PoolStatus> {
     try {
       const previousRevision = await this.storage.get<string>("revision");
       this.served =
@@ -181,7 +185,7 @@ export class PoolLifecycle {
         (this.served || (await this.storage.get<string>("ready-revision")) === this.revision);
       if (this.driver.running() && previousRevision !== this.revision) await this.driver.stop();
       if (!this.driver.running()) {
-        await this.start();
+        await this.start(undefined, undefined, intent);
       }
       return await this.awaitReady();
     } finally {

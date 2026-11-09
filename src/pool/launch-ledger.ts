@@ -1,4 +1,6 @@
 import { Schema } from "effect";
+import { automaticBudgetKey } from "./automatic-authority.ts";
+import { decodeAutomaticBudget } from "./automatic-recovery.ts";
 import type { PoolStatus } from "./lifecycle.ts";
 import {
   LaunchRecord,
@@ -65,8 +67,17 @@ export class LaunchLedger {
     return record;
   }
 
-  async prepare(expected?: LaunchExpectation): Promise<LaunchRecord> {
+  async prepare(expected?: LaunchExpectation, intent?: "restart"): Promise<LaunchRecord> {
     const previous = expected ? await this.check(expected) : await this.current();
+    if (!expected && intent !== "restart") {
+      const retained = await this.storage.get<unknown>(automaticBudgetKey);
+      if (
+        (previous && !previous.bootId) ||
+        (retained !== undefined &&
+          decodeAutomaticBudget(retained).attempts.some((attempt) => attempt.status === "started"))
+      )
+        throw new LaunchRefused("launch-result-uncertain");
+    }
     const target = decodeTarget(await this.readTarget());
     if (expected && !sameLaunchTarget(target, expected.target))
       throw new LaunchRefused("release-target-drift");
@@ -91,14 +102,13 @@ export class LaunchLedger {
       !status.policyLeaseUntil ||
       status.policyLeaseUntil <= performance.now() ||
       status.launch?.generation !== record.generation ||
-      status.launch.tokenHash !== (await launchTokenHash(record.token)) ||
-      (record.bootId !== undefined && status.boot_id !== record.bootId)
+      status.launch.tokenHash !== (await launchTokenHash(record.token))
     )
       throw new LaunchRefused("launch-readiness-mismatch");
     const bootId = Schema.decodeUnknownSync(launchOperationId)(status.boot_id);
     if (!bootId) throw new LaunchRefused("boot-identity-missing");
     if (!status.policyLeaseUntil || status.policyLeaseUntil <= performance.now())
       throw new LaunchRefused("launch-health-expired");
-    if (!record.bootId) await this.storage.put(launchStorageKey, { ...record, bootId });
+    if (record.bootId !== bootId) await this.storage.put(launchStorageKey, { ...record, bootId });
   }
 }

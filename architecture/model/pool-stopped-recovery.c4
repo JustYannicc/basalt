@@ -6,7 +6,7 @@ model {
   }
   extend basalt.poolRuntime {
     metadata {
-      constraint "Optional launch generation and token inputs are validated together. Authenticated ready responses expose only the generation and token digest as headers while the existing independent policy-health lease is live. Boot rotation cannot renew or replace the controller-owned launch identity. Neither the raw token nor launch metadata enters logs or the existing readiness body. Legacy startup omits both inputs and retains the same readiness contract."
+      constraint "Optional launch generation and token inputs are validated together. Authenticated ready responses expose only the generation and token digest as headers while the existing independent policy-health lease is live. A healthy internal Home boot rotation may update the observed boot within the same authenticated launch; it cannot renew or replace the controller-owned launch generation or token. Ordinary warm and alarm starts refuse an unresolved automatic STARTED budget or an unacknowledged previous launch. Explicit recovery retains its existing manual or automatic guard authority. Neither the raw token nor launch metadata enters logs or the existing readiness body. Legacy startup omits both inputs and retains the same readiness contract."
     }
   }
 }
