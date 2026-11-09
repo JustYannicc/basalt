@@ -67,7 +67,9 @@ export function ManagerOverview({
   const mismatched = data.coherent === false && data.capacity !== undefined;
   // Partial usage is coverage of the same snapshot, so it gets its own note and keeps capacity.
   const usagePartial =
-    !mismatched && [data.people, data.models].some((read) => read?.ok && read.value.truncated);
+    !mismatched &&
+    ((data.usage?.ok && data.usage.value.partial) ||
+      [data.people, data.models].some((read) => read?.ok && read.value.truncated));
   return (
     <>
       {mismatched && (

@@ -59,6 +59,8 @@ const peopleCopyRef = process.env.POOL_UI_PEOPLE_COPY_REF;
 // Optional baseline: build that commit's overview-snapshot.ts and overview.tsx, which withheld a
 // same-snapshot learning verdict whenever usage coverage was partial.
 const learningRef = process.env.POOL_UI_LEARNING_REF;
+const historicalOverview = Boolean(planBaseline || peopleCopyRef || learningRef);
+const requestWindow = historicalOverview ? "in" : "· last";
 const baselineRef = sourceRef ?? peopleCopyRef ?? learningRef;
 const artifactLabel =
   process.env.POOL_UI_ARTIFACT_LABEL ??
@@ -753,7 +755,7 @@ test(
                 .getByRole("radio", { name: "Weekly", exact: true, checked: true })
                 .waitFor();
               // The live case: one person with pool access. The total decides the noun.
-              const noun = peopleCopyRef ? "people" : "person";
+              const noun = historicalOverview ? "people" : "person";
               if (!subscriptionsBaseline) {
                 await frame.getByText(`1 of 1 ${noun} active`).waitFor();
                 await frame.getByText(`1 of 1 ${noun} with pool access`).waitFor();
@@ -762,7 +764,7 @@ test(
               if (!subscriptionsBaseline) {
                 assert.match(
                   text,
-                  new RegExp(`(?<!\\d)1 of 1 ${noun} active · 0 requests · last \\d+ days`),
+                  new RegExp(`(?<!\\d)1 of 1 ${noun} active · 0 requests ${requestWindow} \\d+ days`),
                 );
                 assert.match(
                   text,
@@ -770,7 +772,7 @@ test(
                     `(?<!\\d)1 of 1 ${noun} with pool access made a request in these \\d+ days\\.`,
                   ),
                 );
-                if (!peopleCopyRef) assert.doesNotMatch(text, /1 of 1 people/);
+                if (!historicalOverview) assert.doesNotMatch(text, /1 of 1 people/);
               }
               for (const title of [
                 "Do we have enough accounts?",
@@ -849,7 +851,10 @@ test(
                 await frame.getByText("0 of 3 people active").waitFor();
                 await frame.getByText("0 of 3 people with pool access").waitFor();
                 const text = await frame.locator("body").innerText();
-                assert.match(text, /(?<!\d)0 of 3 people active · 0 requests · last \d+ days/);
+                assert.match(
+                  text,
+                  new RegExp(`(?<!\\d)0 of 3 people active · 0 requests ${requestWindow} \\d+ days`),
+                );
                 assert.match(
                   text,
                   /(?<!\d)0 of 3 people with pool access made a request in these \d+ days\./,
@@ -1019,8 +1024,19 @@ test(
                 "Needs attention",
               ])
                 assert.ok(text.includes(title), `Approved r2 section: ${title}`);
-              // Usage coverage stays visibly incomplete in its own section either way.
-              assert.match(await frame.locator("#who").innerText(), /partial|incomplete/i);
+              // Coverage remains visible without claiming another page exists.
+              assert.match(
+                await frame
+                  .getByRole("status")
+                  .filter({ hasText: "Usage for this range is incomplete." })
+                  .innerText(),
+                /partial|incomplete/i,
+              );
+              assert.equal(
+                await frame.locator("#who").getByText(/Showing the first 10 pages/).count(),
+                0,
+                "Partial coverage without a next cursor has no pagination note",
+              );
               // No projection or run-out date exists, so none may be drawn or promised.
               assert.doesNotMatch(text, /Projected ·|runs short|runs out|out ~/i);
               const charts = await frame
