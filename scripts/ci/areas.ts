@@ -116,6 +116,10 @@ export const sharedInputs = [
 
 export const areas = [
   {
+    paths: ["e2e/browser-fixture-certificate-trust.test.ts"],
+    jobs: ["planetscale-sign-in"],
+  },
+  {
     paths: ["e2e/workos-sign-in.mjs", "e2e/management-signin/**"],
     jobs: ["workos-sign-in", "clerk-sign-in"],
   },
