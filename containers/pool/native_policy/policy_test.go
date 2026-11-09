@@ -78,7 +78,7 @@ func TestPolicyPickChecksPoolRevisionExpiryAndDirtyState(t *testing.T) {
 		{name: "stale revision", assertion: assertionClaims{Pool: "pool-a", Revision: 10, ExpiresAt: now.UnixMilli() + 1000}, snapshot: snapshot, want: "native_policy_unavailable"},
 		{name: "expired request assertion", assertion: assertionClaims{Pool: "pool-a", Revision: 11, ExpiresAt: now.UnixMilli() - 1}, snapshot: snapshot, want: "native_policy_invalid"},
 		{name: "assertion over two hours", assertion: assertionClaims{Pool: "pool-a", Revision: 11, ExpiresAt: now.UnixMilli() + int64(maxAssertionTTL/time.Millisecond) + 1}, snapshot: snapshot, want: "native_policy_invalid"},
-		{name: "expired local projection", assertion: assertionClaims{Pool: "pool-a", Revision: 11, ExpiresAt: now.UnixMilli() + int64(maxAssertionTTL/time.Millisecond)}, now: now.Add(maxProjectionTTL), snapshot: snapshot, want: "native_policy_unavailable"},
+		{name: "expired local projection grace", assertion: assertionClaims{Pool: "pool-a", Revision: 11, ExpiresAt: now.Add(maxProjectionTTL + maxPolicyGrace + time.Second).UnixMilli()}, now: now.Add(maxProjectionTTL + maxPolicyGrace), snapshot: snapshot, want: "native_policy_unavailable"},
 		{name: "dirty local projection", assertion: assertionClaims{Pool: "pool-a", Revision: 11, ExpiresAt: now.UnixMilli() + int64(maxAssertionTTL/time.Millisecond)}, snapshot: testSnapshot(t, now, projectionClaims{Pool: "pool-a", Organization: "org-a", Revision: 11, ExpiresAt: claims.ExpiresAt, Accounts: []string{"home-auth"}, Dirty: true}, keys), want: "native_policy_unavailable"},
 	}
 	for _, test := range tests {

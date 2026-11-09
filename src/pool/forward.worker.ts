@@ -58,14 +58,12 @@ export async function forwardPoolRequest(
         deps.memberships,
         deps.env.POOL_APP_SIGNING_KEY,
         deps.env.POOL_AUTH_DATABASE?.connectionString,
+        deps.streams,
         native ?? deps.appModel,
       );
       request = gate.request;
       identity = gate.identity;
-      if (gate.pool) {
-        modelLease = deps.streams.acquire(crypto.randomUUID(), gate.pool, request.signal);
-        request = new Request(request, { signal: modelLease.signal });
-      }
+      modelLease = gate.lease;
     }
     guard = "runtime_readiness";
     const status = await (await deps.lifecycle).warm();
