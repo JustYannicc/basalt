@@ -112,8 +112,8 @@ model {
 
 
     siteWaitlist = store "Waiting list" {
-      #basalt #v1 #planned
-      description "The retained EU database is deferred until the deploy credential has database permissions. Reviewed release intent provisions it before the site Worker adds its binding. Creation acknowledgement, native ownership, fresh readiness and binding activation are separate receipts. A lost create response never permits retry or adoption. Consumers bind through a native reference to this single declaration. Class expansion replans preserve frozen database ownership. Every release exit appends storage creation and readiness plus class expansion outcomes to the job summary, even after a later refusal. Public summaries omit physical storage identities and configuration values."
+      #basalt #v1
+      description "Retained EU database provisioned by reviewed release intent once the deploy credential's full read-only native plan succeeds, before the site Worker adds its binding. Creation acknowledgement, native ownership, fresh readiness and binding activation are separate receipts. A lost create response never permits retry or adoption. Consumers bind through a native reference to this single declaration. Class expansion replans preserve frozen database ownership. Every release exit appends storage creation and readiness plus class expansion outcomes to the job summary, even after a later refusal. Public summaries omit physical storage identities and configuration values."
     }
 
     catalog = module "Connector catalog" {
