@@ -125,11 +125,6 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
 
   constructor(ctx: DurableObjectState, env: PoolEnvironment) {
     super(ctx, env);
-    // A restarted object, after a deploy or an eviction, has lost its container's inactivity
-    // timeout, and the platform stops a running container soon after the object goes idle.
-    // Requests that never warm the pool, like an hourly inventory or setup polling, did exactly that.
-    if (ctx.container?.running)
-      ctx.waitUntil(ctx.container.setInactivityTimeout(poolLifecycle.idleTimeoutMs));
     this.handoff = new RuntimeHandoff(
       ctx,
       env,
@@ -192,7 +187,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       ctx.waitUntil(captureProduct(env, event, accountId));
     };
     const home = async (path: string, init?: RequestInit) => {
-      const request = new Request(`http://pool${path}`, init);
+      const request = new Request(new URL(path, "http://pool"), init);
       return this.handoff.forward(request, 8327, undefined, async (forwarded, prepared) => {
         if (!env.POOL_MANAGEMENT_KEY) throw new Error("Pool management key is missing");
         forwarded.signal.throwIfAborted();

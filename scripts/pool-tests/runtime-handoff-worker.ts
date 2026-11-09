@@ -45,7 +45,7 @@ const {
   ) => {
     fetch(request: Request): Promise<Response>;
     runtimeHandoff(request: Request): Promise<Response>;
-    deploymentReady(): Promise<{ bootId: string }>;
+    deploymentReady(): Promise<{ bootId: string; instanceId: string }>;
     availabilityProbe(pool: string): Promise<ProbeResult>;
     automaticRecoveryObservation(pool: string): Promise<unknown>;
     forward(request: Request, identity: { pool: string; person: string }): Promise<Response>;
@@ -53,7 +53,7 @@ const {
 } = await import(workerPath);
 hooks.deregister();
 
-export async function handoffWorker() {
+export async function handoffWorker(options: { rotateSigningKey?: boolean } = {}) {
   const oldTarget: SlotTarget = {
     format: "pool-runtime-slot-v1",
     controllerId: "a".repeat(64),
@@ -87,6 +87,12 @@ export async function handoffWorker() {
     ...env,
     POOL_IMAGE_HASH: candidateTarget.imageInput,
     POOL_MANAGEMENT_KEY: "fixture-new-key",
+    ...(options.rotateSigningKey
+      ? {
+          POOL_APP_SIGNING_KEY: "cd".repeat(32),
+          POOL_APP_SIGNING_KEY_PREVIOUS: env.POOL_APP_SIGNING_KEY,
+        }
+      : {}),
   };
   const candidate = await handoffRuntime(candidateTarget, nextEnv, { home: old.home });
   const claims = { pool: "pool-a", owner: "fixture-owner", organization: "fixture-organization" };
@@ -166,7 +172,14 @@ export async function handoffWorker() {
         );
         const assertion = Schema.decodeUnknownSync(
           Schema.Struct({ pool: Schema.String, organization: Schema.String }),
-        )(await openEnvelope(env.POOL_APP_SIGNING_KEY, membershipReadPrefix, envelope));
+        )(
+          await openEnvelope(
+            nextEnv.POOL_APP_SIGNING_KEY,
+            membershipReadPrefix,
+            envelope,
+            env.POOL_APP_SIGNING_KEY,
+          ),
+        );
         return Response.json({
           ...assertion,
           native: true,

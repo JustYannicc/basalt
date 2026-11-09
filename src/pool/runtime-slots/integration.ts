@@ -227,6 +227,7 @@ export class RuntimeHandoff {
         );
         return {
           desiredRevisionMatch: true as const,
+          instanceId: identity.instanceId,
           bootId: identity.bootId,
           readyAt: Date.now(),
         };
