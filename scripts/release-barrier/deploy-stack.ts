@@ -1,3 +1,12 @@
+import {
+  d1Account,
+  preflightDeclaredD1,
+  declaredD1Exists,
+  createDeclaredD1,
+  readDeclaredD1,
+} from "./d1-cloudflare.ts";
+import { createDeclaredDatabases } from "./declared-d1.ts";
+import type { D1Provider, D1Progress } from "./declared-d1-types.ts";
 import { assertJournaledBaselineInput, type ForwardInputProof } from "./forward-worker-input.ts";
 import { State } from "alchemy/State/State";
 import { beginForwardJournal } from "./forward-journal.ts";
@@ -66,7 +75,7 @@ import {
 export interface DeployStackOptions {
   candidate: string;
   declarations?: DeclaredChanges;
-  declared?(progress: BucketProgress): Promise<void>;
+  declared?(progress: BucketProgress | D1Progress): Promise<void>;
   declaredReadiness?(value: DeclaredReadiness): Promise<void>;
   expansion?(value: ClassProgress): Promise<void>;
   forwardInput?: ForwardInputProof;
@@ -78,6 +87,7 @@ export interface DeployStackOptions {
   serving?(container: ServingContainer): Promise<void>;
   io?: {
     buckets?: BucketProvider;
+    d1?: D1Provider;
     classes?: ClassProvider;
     baseline: typeof readBaseline;
     upload: typeof uploadVersion;
@@ -108,6 +118,15 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
         create: (target) => run(createDeclaredBucket(target)),
         configure: (target) => run(configureDeclaredBucket(target)),
       } satisfies BucketProvider);
+    const d1 =
+      options.io?.d1 ??
+      ({
+        accountId: () => run(d1Account),
+        preflight: (accountId) => run(preflightDeclaredD1(accountId)),
+        exists: (target) => run(declaredD1Exists(target)),
+        create: (target) => run(createDeclaredD1(target)),
+        read: (target, id, fqn) => run(readDeclaredD1(target, id, fqn)),
+      } satisfies D1Provider);
     const scope = { stack: stack.name, stage: stack.stage };
     if (options.declarations && (!options.declared || !options.declaredReadiness))
       throw declaredMismatch(
@@ -129,13 +148,8 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
         clone: (target, version) => run(readClassClone(target, version)),
         removeClone: (target, version) => run(deleteClassClone(target, version)),
       } satisfies ClassProvider);
-    const { plan, prepared, declaredBuckets, workerBaselines } = yield* prepareDeclaredRelease(
-      stack,
-      evaluatedPlan,
-      options,
-      buckets,
-      classes,
-    );
+    const { plan, prepared, declaredBuckets, declaredDatabases, declaredStorage, workerBaselines } =
+      yield* prepareDeclaredRelease(stack, evaluatedPlan, options, buckets, classes, d1);
     const prerequisites = (phase: DeclaredReadiness["phase"]) =>
       declaredChecks([
         {
@@ -147,10 +161,12 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
             buckets,
             phase,
             options.declaredReadiness,
-          ),
+            d1,
+          ).pipe(Effect.asVoid),
         },
         {
           fqn: "(declared classes)",
+          type: "Cloudflare.Worker",
           check: observeClassReadiness(
             plan,
             options.declarations,
@@ -231,7 +247,15 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
         options.candidate,
         options.declared!,
       );
-      for (const fqn of declaredBuckets.keys()) {
+      yield* createDeclaredDatabases(
+        plan,
+        declaredDatabases,
+        scope,
+        d1,
+        options.candidate,
+        options.declared!,
+      );
+      for (const fqn of declaredStorage.keys()) {
         databaseFqns.add(fqn);
         databaseChanges.add(fqn);
       }

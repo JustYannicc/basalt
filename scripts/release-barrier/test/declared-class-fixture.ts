@@ -1,3 +1,6 @@
+import { d1Companion, d1Declaration } from "./d1-companion.ts";
+import type { BucketProgress } from "../declared-buckets.ts";
+import type { D1Progress } from "../declared-d1-types.ts";
 import { classCompanion, type CompanionMode } from "./class-companion.ts";
 import { retirePlacement } from "../placement-retirement.ts";
 import assert from "node:assert/strict";
@@ -53,6 +56,7 @@ const added = {
 
 export function classProvisioning(
   options: ClassApiOptions & {
+    d1?: { missingPermission?: boolean; unknown?: boolean; readFailsOnce?: boolean };
     reject?: boolean;
     rerun?: boolean;
     lateDrift?: boolean;
@@ -69,6 +73,8 @@ export function classProvisioning(
 ) {
   const events: string[] = [];
   const api = classApi(events, options);
+  const database = d1Companion(events, options.d1);
+  const storageProgress: (BucketProgress | D1Progress)[] = [];
   const companion = classCompanion(options.companion ?? "numeric", events);
   const progress: ClassProgress[] = [];
   const failures: unknown[] = [];
@@ -148,6 +154,7 @@ export function classProvisioning(
       providers: Layer.mergeAll(
         workers,
         commands,
+        database.providers,
         Provider.succeed(TestBucket, {
           diff: () => Effect.succeed({ action: "noop" }),
           reconcile: () => Effect.die("No adopting bucket reconcile"),
@@ -159,6 +166,7 @@ export function classProvisioning(
     Effect.gen(function* () {
       yield* Command.Exec("PoolDatabase", { command: "node ensure-pool-database.ts", memo: false });
       yield* TestBucket("DriveRecords", bucketProps).pipe(RemovalPolicy.retain());
+      if (options.d1) yield* database.resource;
       if (options.companion) yield* TestWorker("Api", {});
       if (options.secondForeignWorker) yield* TestWorker("OtherData", {});
       return yield* TestWorker("AppData", {});
@@ -169,6 +177,7 @@ export function classProvisioning(
     stack: "fixture",
     retentionOwner: "Fixture owner",
     changes: [
+      ...(options.d1 ? [d1Declaration] : []),
       {
         action: "create-bucket",
         type: "Cloudflare.R2.Bucket",
@@ -208,7 +217,9 @@ export function classProvisioning(
           ...initial,
           resources: Object.fromEntries(
             Object.entries(initial.resources).filter(
-              ([, node]) => node.resource.Type !== "Cloudflare.R2.Bucket",
+              ([, node]) =>
+                node.resource.Type !== "Cloudflare.R2.Bucket" &&
+                node.resource.Type !== "Cloudflare.D1Database",
             ),
           ),
         });
@@ -220,7 +231,10 @@ export function classProvisioning(
         const release = {
           candidate: "a".repeat(40),
           declarations,
-          declared: options.evidence?.declared ?? (async () => {}),
+          declared: async (value) => {
+            storageProgress.push(structuredClone(value));
+            await options.evidence?.declared(value);
+          },
           declaredReadiness: options.evidence?.declaredReadiness ?? (async () => {}),
           expansion: async (value) => {
             progress.push(value);
@@ -228,6 +242,7 @@ export function classProvisioning(
             if (options.recordFails) throw new Error("Synthetic evidence write failure");
           },
           record: async (value) => {
+            if (options.d1 && value.phase === "admitted") events.push("admitted");
             await options.evidence?.record(value);
             receipt = value;
           },
@@ -276,6 +291,7 @@ export function classProvisioning(
                 };
               }),
             classes: api.provider,
+            ...(options.d1 ? { d1: database.provider } : {}),
             buckets: {
               accountId: async () => "fixture",
               read: async () => (stored ? { attributes: stored, publicAccess: false } : undefined),
@@ -388,6 +404,7 @@ export function classProvisioning(
     progress,
     failures,
     recoveryFailures,
+    storageProgress,
     emptyClassSource: api.emptyClassSource,
     cloneState: api.cloneState,
   };

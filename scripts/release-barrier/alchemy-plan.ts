@@ -29,6 +29,7 @@ import {
 import { imagePlanReasons } from "./plan-reasons.ts";
 import { assertSupportedPlan, newVerification } from "./plan-admission.ts";
 import type { DeclaredChanges } from "./declared-change-schema.ts";
+import type { PreparedD1 } from "./declared-d1-types.ts";
 import type { PreparedBucket } from "./declared-buckets.ts";
 export { assertSupportedPlan } from "./plan-admission.ts";
 
@@ -47,7 +48,7 @@ export const preparePlan = (
     normalization?: BaselineNormalization,
   ) => Promise<void>,
   declarations?: DeclaredChanges,
-  declaredBuckets: ReadonlyMap<string, PreparedBucket> = new Map(),
+  declaredBuckets: ReadonlyMap<string, PreparedBucket | PreparedD1> = new Map(),
 ) =>
   Effect.gen(function* () {
     assertSupportedPlan(plan, yield* imagePlanReasons(plan), declarations);

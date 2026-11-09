@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { State } from "alchemy/State/State";
 import { evalStack } from "alchemy/Stack";
-import { Cause, Context, Effect, Exit } from "effect";
+import { Context, Effect } from "effect";
 import { recoverStack } from "./recover-stack.ts";
 import { readRecoveryManifest } from "./recovery.ts";
 import { deployStack } from "./deploy-stack.ts";
@@ -15,7 +15,7 @@ import { withReleaseRuntime } from "./runtime.ts";
 import { releaseEvidence } from "./evidence.ts";
 import { openRecovery } from "./recovery-envelope.ts";
 import { canonical, digest, BarrierRefusal } from "./manifest.ts";
-import { reportRefusal } from "./refusal-report.ts";
+import { releaseOutcome } from "./entry-outcome.ts";
 import { readRecoveryProgress } from "./recovery-manifest.ts";
 
 if (
@@ -71,67 +71,63 @@ const evidence = releaseEvidence(
   process.env.BASALT_RELEASE_CANDIDATE!,
   process.env.EXECUTOR_ENCRYPTION_KEY,
 );
-await evidence.desired(
-  JSON.parse(
-    await readFile(new URL("../../containers/pool/releases.json", import.meta.url), "utf8"),
-  ),
-);
-const result = await Effect.runPromiseExit(
-  Effect.suspend(() =>
-    Effect.promise(
-      async () => (await import(new URL("../../alchemy.run.ts", import.meta.url).href)).default,
+process.exitCode = await releaseOutcome(evidence, process.env.GITHUB_STEP_SUMMARY, async () => {
+  await evidence.desired(
+    JSON.parse(
+      await readFile(new URL("../../containers/pool/releases.json", import.meta.url), "utf8"),
     ),
-  ).pipe(
-    Effect.flatMap((stack) =>
-      evalStack(
-        stack,
-        (compiled) =>
-          (undoPath
-            ? undoForwardAdoption(compiled, undoPath)
-            : recovery
-              ? recoverStack(
-                  compiled,
-                  recovery.manifest,
-                  recovery.receipt,
-                  (value) => evidence.recovery(value),
-                  containerRecovery,
-                )
-              : Effect.gen(function* () {
-                  const declarations = yield* Effect.tryPromise({
-                    try: () =>
-                      loadDeclaredChanges(fileURLToPath(new URL("../../", import.meta.url))),
-                    catch: (error) => error,
-                  });
-                  const forward = yield* resumeForwardRelease(compiled, { directory });
-                  return yield* deployStack(compiled, {
-                    candidate: process.env.BASALT_RELEASE_CANDIDATE!,
-                    declarations,
-                    declared: evidence.declared,
-                    declaredReadiness: evidence.declaredReadiness,
-                    expansion: evidence.expansion,
-                    forwardInput: forward?.continuation,
-                    forwardEncryptionKey: process.env.EXECUTOR_ENCRYPTION_KEY,
-                    record: evidence.record,
-                    publication: evidence.publication,
-                    admission: evidence.admission,
-                    serving: evidence.serving,
-                    manifest: evidence.manifest,
-                  });
-                })
-          ).pipe(
-            (effect) => assertReleaseStateVersion(compiled).pipe(Effect.andThen(effect)),
-            Effect.provideContext(compiled.services),
-            Effect.provideService(State, Context.get(compiled.services, State)),
-          ),
-        { stage: "production" },
+  );
+  return await Effect.runPromiseExit(
+    Effect.suspend(() =>
+      Effect.promise(
+        async () => (await import(new URL("../../alchemy.run.ts", import.meta.url).href)).default,
       ),
+    ).pipe(
+      Effect.flatMap((stack) =>
+        evalStack(
+          stack,
+          (compiled) =>
+            (undoPath
+              ? undoForwardAdoption(compiled, undoPath)
+              : recovery
+                ? recoverStack(
+                    compiled,
+                    recovery.manifest,
+                    recovery.receipt,
+                    (value) => evidence.recovery(value),
+                    containerRecovery,
+                  )
+                : Effect.gen(function* () {
+                    const declarations = yield* Effect.tryPromise({
+                      try: () =>
+                        loadDeclaredChanges(fileURLToPath(new URL("../../", import.meta.url))),
+                      catch: (error) => error,
+                    });
+                    const forward = yield* resumeForwardRelease(compiled, { directory });
+                    return yield* deployStack(compiled, {
+                      candidate: process.env.BASALT_RELEASE_CANDIDATE!,
+                      declarations,
+                      declared: evidence.declared,
+                      declaredReadiness: evidence.declaredReadiness,
+                      expansion: evidence.expansion,
+                      forwardInput: forward?.continuation,
+                      forwardEncryptionKey: process.env.EXECUTOR_ENCRYPTION_KEY,
+                      record: evidence.record,
+                      publication: evidence.publication,
+                      admission: evidence.admission,
+                      serving: evidence.serving,
+                      manifest: evidence.manifest,
+                    });
+                  })
+            ).pipe(
+              (effect) => assertReleaseStateVersion(compiled).pipe(Effect.andThen(effect)),
+              Effect.provideContext(compiled.services),
+              Effect.provideService(State, Context.get(compiled.services, State)),
+            ),
+          { stage: "production" },
+        ),
+      ),
+      withReleaseRuntime,
     ),
-    withReleaseRuntime,
-  ),
-);
-if (Exit.isFailure(result)) {
-  const error = Cause.squash(result.cause);
-  const failure = await evidence.failure(error);
-  await reportRefusal(failure, process.env.GITHUB_STEP_SUMMARY);
-  process.exitCode = 1;
-}
+  );
+});

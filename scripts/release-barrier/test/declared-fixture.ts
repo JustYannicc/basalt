@@ -71,6 +71,7 @@ export function provisioning(
     collision?: boolean;
     featureBinding?: boolean;
     providerError?: boolean;
+    accountError?: boolean;
     nativeBucket?: boolean;
     multipleMissing?: boolean;
     recoveredForeign?: boolean;
@@ -211,7 +212,7 @@ export function provisioning(
               })
             : declarations,
           declared: async (value) => {
-            progress.push(structuredClone(value));
+            if ("bucket" in value) progress.push(structuredClone(value));
             if (options.recordFails && value.outcome === "pending")
               throw Object.assign(new Error("private-evidence-error"), { status: 500, code: 9001 });
           },
@@ -232,7 +233,10 @@ export function provisioning(
                 return { versionId: "accepted", startupTimeMs: 100 };
               }),
             buckets: {
-              accountId: async () => "fixture",
+              accountId: async () => {
+                if (options.accountError) throw new Error("private-account-failure");
+                return "fixture";
+              },
               read: async (target) => {
                 if (options.providerError)
                   throw Object.assign(new Error("private-provider-detail"), {

@@ -1,3 +1,4 @@
+import { provisionPublicSiteWaitlist } from "./scripts/release-barrier/public-site-waitlist.ts";
 import { productionOpsRelease } from "./.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -176,7 +177,9 @@ export default Alchemy.Stack(
     });
     // The public home and legal pages at the zone's apex. Previews share the zone, so only
     // production owns its apex.
-    if (preview === undefined)
+    if (preview === undefined) {
+      // Provision separately from the waiting-list Worker binding so admission precedes creation.
+      yield* provisionPublicSiteWaitlist;
       // Upstream's Command.Build already owns "Site". Alchemy reuses logical IDs across resource types.
       yield* Cloudflare.Worker("PublicSite", {
         main: fileURLToPath(new URL("./src/site/worker.ts", import.meta.url)),
@@ -191,6 +194,7 @@ export default Alchemy.Stack(
         compatibility: { date: "2026-09-08" },
         observability: workerObservability,
       });
+    }
     const router = yield* Cloudflare.Worker("Router", {
       main: new URL("./src/router.ts", import.meta.url).pathname,
       // The brand's logo and favicon; every other path reaches the router code.
