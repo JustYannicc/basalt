@@ -265,8 +265,13 @@ test("named tools replace the part a row serves and join its tool sections in on
   const toolSections: Section[] = [
     { requirement: "gitlab", method: "token", title: "GitLab admin tools" },
   ];
-  // Without named tools the MCP row names its part; with them it says what it can't run instead.
+  // Without named tools the MCP row names its part, joined with any tool sections it can't run;
+  // with them it says what it can't run instead.
   assert.equal(rowNote(gitlab, "signIn", "mcp", {}), "For GitLab MCP");
+  assert.equal(
+    rowNote(gitlab, "signIn", "mcp", { toolSections }),
+    "For GitLab MCP · Can't run GitLab admin tools.",
+  );
   assert.equal(
     rowNote(gitlab, "signIn", "mcp", { requirementTools, toolSections }),
     "Can't run GitLab REST API tools or GitLab admin tools.",

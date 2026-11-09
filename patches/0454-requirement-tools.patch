@@ -93,18 +93,15 @@ diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/package
  }: ScopeProps<E> & {
    readonly group: readonly RequirementEntry[];
    readonly edit: LinkEditing<E>;
-@@ -1219,6 +1228,10 @@ function ServiceConnect<E>({
+@@ -1219,6 +1228,7 @@ function ServiceConnect<E>({
    const states = group.flatMap(([slot, requirement]) =>
      methodStates(methods, slot, requirement).map((state) => ({ ...state, slot, requirement })),
    );
-+  const tools =
-+    requirementTools !== undefined && namesEveryRequirement(requirementTools, group)
-+      ? requirementTools
-+      : undefined;
++  const tools = namesEveryRequirement(requirementTools, group) ? requirementTools : undefined;
    const entries = serviceMethods(
      states.flatMap((state) =>
        state.reason === undefined
-@@ -1228,6 +1241,7 @@ function ServiceConnect<E>({
+@@ -1228,6 +1238,7 @@ function ServiceConnect<E>({
                requirement: state.requirement,
                method: state.name,
                label: state.label,
@@ -112,7 +109,7 @@ diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/package
              },
            ]
          : [],
-@@ -1318,9 +1332,24 @@ function ServiceMethodItem<E>({
+@@ -1318,9 +1329,24 @@ function ServiceMethodItem<E>({
    readonly onConnect: (entry: ServiceMethod) => void;
  }) {
    const allowed = useCanAdd(edit, entry.slot);
@@ -179,7 +176,7 @@ diff --git a/packages/ui/src/implementation/dashboard/service-groups.ts b/packag
        ? { ...entry, label: `${entry.label} · ${nameOf(entry)}` }
        : entry,
    );
-@@ -98,30 +108,58 @@ export const serviceMethods = (methods: readonly ServiceMethod[]): readonly Serv
+@@ -98,30 +108,59 @@ export const serviceMethods = (methods: readonly ServiceMethod[]): readonly Serv
  /** The fields of a catalog tool section that say which requirement and method run its tools. */
  export type ToolSectionLimit = Pick<CatalogToolSection, "requirement" | "method" | "title">;
  
@@ -206,7 +203,8 @@ diff --git a/packages/ui/src/implementation/dashboard/service-groups.ts b/packag
 - * declared tool section of the group's requirements that needs another requirement or method.
 + * A row's note in a service section for an account of one requirement and method. Where the
 + * catalog names the tools of every requirement in the section, the note says which of the others'
-+ * tools the account can't run, in place of naming the part it serves; it joins the declared tool
++ * tools the account can't run, in place of naming the part it serves where the others run
++ * different tools; it joins the declared tool
 + * sections of the section's requirements that need another requirement or method into the same
 + * sentence. No row claims a limit the app doesn't declare.
   */

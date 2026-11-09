@@ -1,7 +1,7 @@
 {
   "identity": "basalt-requirement-tools",
   "file": "0454-requirement-tools.patch",
-  "content_sha256": "cbabdd29c3d7fecf5288b2b92735a48c9d9fdca401d2c351bc12156d282eb9f4",
+  "content_sha256": "6f9adfe06ac20a5a205a24e3a622c0e8f389ddf06cc25e54b462c89cf491bfb8",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
