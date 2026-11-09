@@ -3,6 +3,7 @@ import type { NativeMembershipPolicy } from "./membership-contract.ts";
 
 export interface MembershipState extends NativeMembershipPolicy {
   native: boolean;
+  nativeConfirmed?: boolean;
   checkedAt: number;
   installedRevision: number;
   installedUntil: number;

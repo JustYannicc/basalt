@@ -408,6 +408,8 @@ test("retirement acknowledges a blocked host read and completion does not rearm 
   const f = fixture(),
     memberships = new NativeMemberships(f.deps);
   await memberships.reserve(await f.request());
+  await memberships.tick();
+  f.home.set("a", ["unchanged-during-retirement"]);
   const entered = deferred<void>(),
     release = deferred<NativeMembershipSnapshot>();
   const snapshot = await f.deps.read("a", "org");
@@ -424,7 +426,11 @@ test("retirement acknowledges a blocked host read and completion does not rearm 
   await ticking;
   assert.deepEqual(f.alarms, []);
   assert.equal(f.installed.get("a")?.dirty, true);
-  assert.deepEqual(f.home.get("a"), undefined, "the superseded read must not reconcile Home");
+  assert.deepEqual(
+    f.home.get("a"),
+    ["unchanged-during-retirement"],
+    "the superseded read must not reconcile Home",
+  );
 });
 
 test("an in-flight clean install finishes before retirement's denying acknowledgement", async () => {
@@ -489,6 +495,7 @@ test("a stale or newer signed reservation cannot revive a retired pool", async (
   const f = fixture(),
     memberships = new NativeMemberships(f.deps);
   await memberships.reserve(await f.request());
+  await memberships.tick();
   const stale = await f.request();
   await memberships.retire("a", f.deps.now());
   await assert.rejects(memberships.reserve(stale), /retired/);
@@ -505,16 +512,21 @@ test("a reservation paused before persistence cannot overwrite a later retiremen
   const f = fixture(),
     entered = deferred<void>(),
     release = deferred<void>();
-  let invalidations = 0;
+  let hold = false;
   const memberships = new NativeMemberships({
     ...f.deps,
     invalidateView: async () => {
-      if (++invalidations === 1) {
+      if (hold) {
+        hold = false;
         entered.resolve();
         await release.promise;
       }
     },
   });
+  await memberships.reserve(await f.request());
+  await memberships.tick();
+  f.alarms.length = 0;
+  hold = true;
   const reservation = memberships.reserve(await f.request());
   await entered.promise;
   await memberships.retire("a", f.deps.now());
@@ -522,5 +534,58 @@ test("a reservation paused before persistence cannot overwrite a later retiremen
   await assert.rejects(reservation, /retired/);
   await memberships.tick();
   assert.deepEqual(f.alarms, []);
+  await assert.rejects(memberships.authority("a"), /refreshing/);
+});
+
+test("retained and unconfirmed pools keep their existing behavior after pool deletion", async () => {
+  for (const state of ["absent", "reserved", "retained"] as const) {
+    const f = fixture();
+    f.deps.read = async (pool, organization) => ({
+      pool,
+      organization,
+      native: false,
+      accounts: [],
+    });
+    const memberships = new NativeMemberships(f.deps);
+    if (state !== "absent") await memberships.reserve(await f.request());
+    if (state === "retained") await memberships.ensure("a", "org");
+    const before = await f.deps.storage.get("native-pool-memberships-v1");
+    const aborted = [...f.aborted];
+    await memberships.retire("a", f.deps.now());
+    assert.deepEqual(await f.deps.storage.get("native-pool-memberships-v1"), before, state);
+    assert.deepEqual(f.aborted, aborted, state);
+    await memberships.ensure("a", "org");
+    assert.equal(await memberships.configured(), state !== "absent", state);
+  }
+});
+
+test("a native record from the previous layout retains retirement across a failed install and retry", async () => {
+  const f = fixture();
+  await f.deps.storage.put("native-pool-memberships-v1", {
+    a: {
+      pool: "a",
+      organization: "org",
+      revision: 4,
+      expiresAt: f.deps.now() + 15_000,
+      accounts: ["auth-a"],
+      dirty: false,
+      native: true,
+      checkedAt: f.deps.now(),
+      installedRevision: 4,
+      installedUntil: f.deps.now() + 15_000,
+    },
+  });
+  const memberships = new NativeMemberships(f.deps),
+    install = f.deps.install;
+  f.deps.install = async () => {
+    throw new Error("install failed");
+  };
+  await assert.rejects(memberships.retire("a", f.deps.now()), /install failed/);
+  f.deps.install = install;
+  await memberships.retire("a", f.deps.now());
+  assert.equal(f.installed.get("a")?.dirty, true);
+  const alarms = [...f.alarms];
+  await new NativeMemberships(f.deps).tick();
+  assert.deepEqual(f.alarms, alarms);
   await assert.rejects(memberships.authority("a"), /refreshing/);
 });

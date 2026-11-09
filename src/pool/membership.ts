@@ -39,6 +39,9 @@ interface Dependencies {
   now?: () => number;
 }
 const storageKey = "native-pool-memberships-v1";
+const confirmedNative = (state: State | undefined) =>
+  state?.nativeConfirmed ??
+  Boolean(state?.native && state.checkedAt > 0 && state.installedRevision > 0);
 
 /** Durable desired state and periodic level repair. Backend membership never authorizes native use. */
 export class NativeMemberships {
@@ -106,6 +109,7 @@ export class NativeMemberships {
         accounts: previous?.accounts ?? [],
         dirty: true,
         native: true,
+        nativeConfirmed: confirmedNative(previous),
         checkedAt: previous?.checkedAt ?? 0,
         installedRevision: 0,
         installedUntil: 0,
@@ -128,8 +132,7 @@ export class NativeMemberships {
   }
   private install(policy: State): Promise<void> {
     const work = (async () => {
-      // Deletion can arrive before this controller ever learned the organization.
-      if (!policy.organization || !(await this.current(policy))) return;
+      if (!(await this.current(policy))) return;
       await this.deps.install(
         publicPolicy(
           policy.retired ? { ...policy, expiresAt: this.now() + membershipTtlMs } : policy,
@@ -145,18 +148,18 @@ export class NativeMemberships {
     });
   }
   async retire(pool: string, at: number): Promise<void> {
-    await this.run(async (state) => {
+    const retired = await this.run(async (state) => {
       const previous = state[pool];
-      if (previous?.retiredAt !== undefined && previous.retiredAt >= at) return;
+      // Reservations claim native intent; only a host read establishes native membership.
+      if (!previous || !confirmedNative(previous)) return false;
+      if (previous.retiredAt !== undefined && previous.retiredAt >= at) return !!previous.retired;
       const next: State = {
-        pool,
-        organization: previous?.organization ?? "",
+        ...previous,
+        nativeConfirmed: true,
         accounts: [],
-        native: true,
-        revision: (previous?.revision ?? 0) + 1,
+        revision: previous.revision + 1,
         expiresAt: this.now() + membershipTtlMs,
         dirty: true,
-        checkedAt: previous?.checkedAt ?? 0,
         installedRevision: 0,
         installedUntil: 0,
         retiredAt: at,
@@ -165,7 +168,9 @@ export class NativeMemberships {
       state[pool] = next;
       await this.save(state);
       this.deps.abort(pool);
+      return true;
     });
+    if (!retired) return;
     await this.deps.invalidateView?.(pool);
     // A host read can be waiting on the removal transaction that awaits this acknowledgement.
     // Drain older installs, but never wait for the repair's host read here.
@@ -227,6 +232,7 @@ export class NativeMemberships {
           accounts: [],
           dirty: true,
           native: true,
+          nativeConfirmed: true,
           checkedAt: 0,
           installedRevision: 0,
           installedUntil: 0,
@@ -358,6 +364,7 @@ export class NativeMemberships {
         const next: State = {
           ...current,
           native: snapshot.native,
+          nativeConfirmed: snapshot.native,
           accounts,
           revision: current.revision + (changed ? 1 : 0),
           dirty: !ready,
