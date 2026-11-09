@@ -161,6 +161,7 @@ jobs:
           APP_DOMAIN_CONTROL_SECRET: ${{ secrets.APP_DOMAIN_CONTROL_SECRET }}
           POOL_APP_SIGNING_KEY: ${{ secrets.POOL_APP_SIGNING_KEY }}
           POOL_AVAILABILITY_TARGET: ${{ vars.POOL_AVAILABILITY_TARGET }}
+          POOL_AUTOMATIC_RECOVERY_TARGET: ${{ vars.POOL_AUTOMATIC_RECOVERY_TARGET }}
           GOOGLE_MAPS_ROUTES_API_KEY: ${{ secrets.GOOGLE_MAPS_ROUTES_API_KEY }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           SENTRY_OTLP_ENDPOINT: ${{ secrets.SENTRY_OTLP_ENDPOINT }}
@@ -511,6 +512,33 @@ jobs:
           path: ${{ runner.temp }}/connector-evidence.json
           if-no-files-found: error
 
+  neon-key-reuse:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'neon-key-reuse')
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - run: bun run --cwd .upstream e2e:prepare
+      - name: Verify one Neon API key serves the REST API and the MCP server
+        run: bun e2e/neon-key-reuse.mjs .generated/neon-key-reuse/ci
+      - name: Collect sanitized connector diagnostics
+        if: always()
+        run: node scripts/ci/collect-connector-evidence.mjs neon-key-reuse "$RUNNER_TEMP/connector-evidence.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: neon-key-reuse-evidence
+          path: ${{ runner.temp }}/connector-evidence.json
+          if-no-files-found: error
+
   slack-health:
     needs: select
     if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'slack-health')
@@ -781,6 +809,39 @@ jobs:
       - name: Keep listed account actions usable through Cloud
         working-directory: .upstream
         run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-cloud:listed-account-actions)" --workers 1
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          include-hidden-files: true
+          name: host-managed-accounts-cloud-e2e
+          path: |
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
+          if-no-files-found: warn
+  host-managed-accounts-runtime:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'host-managed-accounts-runtime')
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build the isolated Cloud test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the scenarios' browser engine
+        uses: ./.github/actions/setup-browser
       - name: Verify shared account families and consumer capability refusals
         working-directory: .upstream
         run: >-
@@ -803,7 +864,7 @@ jobs:
         if: always()
         with:
           include-hidden-files: true
-          name: host-managed-accounts-cloud-e2e
+          name: host-managed-accounts-runtime-e2e
           path: |
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
@@ -2026,7 +2087,7 @@ jobs:
       - name: Check the provider table against the pinned pool backend
         run: npm run check:providers
       - name: Check the pool bootstrap
-        run: python3 -m unittest containers.pool.test_bootstrap containers.pool.test_sources containers.pool.test_release_cache containers.pool.test_output_privacy containers.pool.test_native_policy containers.pool.test_policy_diagnostic containers.pool.test_policy_check containers.pool.test_recovery containers.pool.test_recovery_supervisor containers.pool.test_recovery_readiness containers.pool.test_recovery_http containers.pool.test_recovery_cleanup containers.pool.test_capture_recovery containers.pool.test_billing_policy containers.pool.test_usage_write_signals
+        run: python3 -m unittest containers.pool.test_bootstrap containers.pool.test_sources containers.pool.test_release_cache containers.pool.test_output_privacy containers.pool.test_native_policy containers.pool.test_policy_diagnostic containers.pool.test_policy_check containers.pool.test_recovery containers.pool.test_recovery_supervisor containers.pool.test_recovery_readiness containers.pool.test_launch_readiness containers.pool.test_recovery_http containers.pool.test_recovery_cleanup containers.pool.test_capture_recovery containers.pool.test_billing_policy containers.pool.test_usage_write_signals
       - name: Prove the output regression catches the previous image source
         run: |
           mkdir -p "$RUNNER_TEMP/pool-output-baseline"
@@ -2305,6 +2366,7 @@ jobs:
         host-managed-accounts-pool,
         host-managed-accounts-local,
         host-managed-accounts-cloud,
+        host-managed-accounts-runtime,
         google-account-recovery,
         google-account-diagnostics,
         oauth-account-regressions,
@@ -2341,6 +2403,7 @@ jobs:
         planetscale-sign-in,
         vercel-sign-in,
         elevenlabs-sign-in,
+        neon-key-reuse,
         boat-bundle,
         boat-check,
       ]

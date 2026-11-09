@@ -25,6 +25,13 @@ export const poolWorker = Effect.gen(function* () {
   const probeTarget = yield* Config.String("POOL_AVAILABILITY_TARGET").pipe(Config.withDefault(""));
   if (probeTarget && !validProbeTarget(probeTarget))
     return yield* Effect.die(new Error("Invalid pool availability target"));
+  const recoveryTarget = yield* Config.String("POOL_AUTOMATIC_RECOVERY_TARGET").pipe(
+    Config.withDefault(""),
+  );
+  if (recoveryTarget && (!validProbeTarget(recoveryTarget) || recoveryTarget !== probeTarget))
+    return yield* Effect.die(
+      new Error("Automatic recovery requires the same monitored pool target"),
+    );
   if (probeTarget && !validSentryDsn(Redacted.value(yield* Config.Redacted("SENTRY_DSN"))))
     return yield* Effect.die(
       new Error("Pool availability monitoring requires a valid Sentry destination"),
@@ -72,6 +79,7 @@ export const poolWorker = Effect.gen(function* () {
         }),
       ),
       ...(probeTarget ? { POOL_AVAILABILITY_TARGET: probeTarget } : {}),
+      ...(recoveryTarget ? { POOL_AUTOMATIC_RECOVERY_TARGET: recoveryTarget } : {}),
     },
   });
   yield* verifyRuntimeDatabaseBudget("PoolBackendBudget", {

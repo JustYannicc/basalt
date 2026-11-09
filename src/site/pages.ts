@@ -1,5 +1,6 @@
 import { brand } from "../../brand.ts";
 import { home, legalPages, type Block, type LegalPage } from "./content.ts";
+import type { JoinResult } from "./waitlist.ts";
 import { height, introSeconds, width } from "./volcano.ts";
 
 const escapeHtml = (value: string) =>
@@ -11,15 +12,18 @@ const escapeHtml = (value: string) =>
 
 /** Escapes the text, then expands `**bold**` and `[label](href)`; no other markup gets through. */
 export function inline(text: string): string {
-  return escapeHtml(text)
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    // Only web, mail and same-site links; anything else stays as written.
-    .replace(/\[([^\]]+)\]\(((?:https?:|mailto:|\/)[^)\s]*)\)/g, '<a href="$2">$1</a>');
+  return (
+    escapeHtml(text)
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+      // Only web, mail and same-site links; anything else stays as written.
+      .replace(/\[([^\]]+)\]\(((?:https?:|mailto:|\/)[^)\s]*)\)/g, '<a href="$2">$1</a>')
+  );
 }
 
 function block(item: Block): string {
   if ("h2" in item) return `<h2>${inline(item.h2)}</h2>`;
-  if ("ul" in item) return `<ul>${item.ul.map((entry) => `<li>${inline(entry)}</li>`).join("")}</ul>`;
+  if ("ul" in item)
+    return `<ul>${item.ul.map((entry) => `<li>${inline(entry)}</li>`).join("")}</ul>`;
   if ("lines" in item) return `<p>${item.lines.map(inline).join("<br>")}</p>`;
   return `<p>${inline(item.p)}</p>`;
 }
@@ -48,7 +52,17 @@ h1{margin:0 0 28px;font-weight:400;font-size:clamp(40px,5vw,64px);line-height:1.
 h1 em{display:block}
 .lede{margin:0 0 18px;max-width:34em;color:#a3a29d}
 .tagline{margin:28px 0 40px;font-style:italic;color:#f8f8f4}
-.action{font-size:22px}
+.join{margin:0;max-width:30em}
+.join p{margin:0 0 16px;color:#a3a29d}
+.join .row{display:flex;gap:12px;flex-wrap:wrap}
+.join input[type=email]{flex:1 1 15em;min-width:0;padding:10px 0;border:0;border-bottom:1px solid #6f6e6a;border-radius:0;background:transparent;color:#f8f8f4;font:inherit;font-size:20px}
+.join input[type=email]::placeholder{color:#6f6e6a}
+.join input[type=email]:focus-visible{outline:0;border-bottom-color:#f8f8f4}
+.join button{padding:10px 0;border:0;background:none;color:#f8f8f4;font:inherit;font-size:22px;text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:4px;cursor:pointer}
+.join button:hover{color:#fff}
+.join .status{margin:14px 0 0;color:#f8f8f4;font-style:italic}
+.trap{position:absolute;left:-10000px;width:1px;height:1px;overflow:hidden}
+.visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .note{margin:40px 0 0;max-width:40em;color:#6f6e6a;font:13px/1.6 system-ui,sans-serif}
 header{padding:28px 0}
 .legal main{width:100%;max-width:640px;margin:0 auto;padding:40px 0 72px}
@@ -117,7 +131,24 @@ function document(
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="dark"><meta name="theme-color" content="#09090b"><title>${escapeHtml(title)}</title>${meta("name", "description", description)}${share}<link rel="preload" href="/brand/serif/eb-garamond.woff2" as="font" type="font/woff2" crossorigin><link rel="icon" href="${escapeHtml(brand.logo)}"><link rel="apple-touch-icon" href="${escapeHtml(brand.logo)}"><style>${style}</style></head><body><div class="page ${kind}">${header}<main>${content}</main>${footer(kind === "home")}</div></body></html>`;
 }
 
-function homePage(): string {
+/** What the waiting-list form shows: ready for an address, or the answer to the last one. */
+export type HomeState = "open" | JoinResult;
+
+/**
+ * A plain same-origin POST, so it works without scripts. The trap field sits off-screen and out
+ * of the tab order, and its name matches nothing browsers autofill; people never fill it, and
+ * form-filling bots tend to.
+ */
+function waitlist(state: HomeState): string {
+  const { waitlist: copy } = home;
+  if (state === "joined")
+    return `<div class="join"><p class="status" role="status">${inline(copy.joined)}</p></div>`;
+  const status =
+    state === "open" ? "" : `<p class="status" role="alert">${inline(copy[state])}</p>`;
+  return `<form class="join" method="post" action="/waitlist"><p>${inline(copy.invite)}</p><div class="row"><label class="visually-hidden" for="email">${escapeHtml(copy.label)}</label><input id="email" name="email" type="email" required maxlength="254" autocomplete="email" inputmode="email" placeholder="you@example.com"${state === "invalid" ? ' aria-invalid="true"' : ""}><button type="submit">${escapeHtml(copy.button)}</button></div><div class="trap" aria-hidden="true"><label for="leave_empty">Leave this empty</label><input id="leave_empty" name="leave_empty" type="text" tabindex="-1" autocomplete="off"></div>${status}</form>`;
+}
+
+function homePage(state: HomeState): string {
   const [roman, italic] = home.headline;
   // The eruption plays once on top of the loop that carries on from it, then steps aside. The
   // frames line up when both images start together; a slow load can cut the intro short. People
@@ -128,7 +159,7 @@ function homePage(): string {
     brand.name,
     home.note,
     "home",
-    `${art}<div><h1>${inline(roman)} <em>${inline(italic)}</em></h1><p class="lede">${inline(home.subheadline)}</p>${home.body.map((paragraph) => `<p class="lede">${inline(paragraph)}</p>`).join("")}<p class="tagline">${inline(home.tagline)}</p><a class="action" href="${escapeHtml(home.action.href)}">${escapeHtml(home.action.label)}</a><p class="note">${inline(home.note)}</p></div>`,
+    `${art}<div><h1>${inline(roman)} <em>${inline(italic)}</em></h1><p class="lede">${inline(home.subheadline)}</p>${home.body.map((paragraph) => `<p class="lede">${inline(paragraph)}</p>`).join("")}<p class="tagline">${inline(home.tagline)}</p>${waitlist(state)}<p class="note">${inline(home.note)}</p></div>`,
     "/",
   );
 }
@@ -166,8 +197,18 @@ const notFound = () =>
   );
 
 // Every page is built from constants, so each is rendered once when the Worker starts.
+const homes = new Map<HomeState, string>(
+  (["open", "joined", "invalid", "limited", "failed"] as const).map((state) => [
+    state,
+    homePage(state),
+  ]),
+);
+export const homeWith = (state: HomeState) => homes.get(state)!;
+
 const pages = new Map<string, string>([
-  ["/", homePage()],
+  ["/", homeWith("open")],
+  // The form's own address. A visit shows the form; only a successful post answers "joined".
+  ["/waitlist", homeWith("open")],
   ...legalPages.map((page) => [page.path, legalPage(page)] as const),
 ]);
 const missing = notFound();

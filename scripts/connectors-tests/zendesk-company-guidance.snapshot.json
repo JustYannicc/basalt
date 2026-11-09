@@ -1,0 +1,3 @@
+{
+  "setupInstructions": "In Zendesk Admin Center, open Apps and integrations > APIs > OAuth clients. If the Client ID below already exists there as a public client, add the Callback URL below to it with read and write access; no secret is needed. To use a company-owned client instead, create one there with read and write access, then choose Your own Zendesk app (OAuth), register the Redirect URL it shows, and enter the client's ID and secret, if it has one."
+}
