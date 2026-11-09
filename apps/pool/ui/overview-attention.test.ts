@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Account, PoolView } from "../contract.ts";
-import { accountProblems, accountsNeedingSomeone, bankedResetCount } from "./overview-attention.ts";
+import {
+  accountProblems,
+  accountsNeedingSomeone,
+  bankedResetCount,
+  bankedResetText,
+} from "./overview-attention.ts";
 
 const account = (id: string, overrides: Partial<Account> = {}): Account => ({
   id,
@@ -54,4 +59,29 @@ test("an account with several symptoms counts once; a stale or first reading alo
   ]);
   assert.equal(accountsNeedingSomeone(pool), 2);
   assert.equal(accountsNeedingSomeone(view([account("f")])), 0);
+});
+
+test("attention copy agrees with one account and one reset", () => {
+  const troubled = account("a", {
+    credentialFailure: "unauthorized",
+    readingFailed: true,
+    freshness: "stale",
+    state: "disabled",
+  });
+  assert.deepEqual(
+    accountProblems(view([troubled])).map(({ count, text }) => `${count} ${text}`),
+    [
+      "1 account needs sign-in",
+      "1 account failed its latest usage check",
+      "1 account has stale or missing readings",
+      "1 account is unavailable or paused",
+    ],
+  );
+  assert.ok(
+    accountProblems(view([troubled, { ...troubled, id: "b" }])).every(({ text }) =>
+      text.startsWith("accounts "),
+    ),
+  );
+  assert.equal(bankedResetText(1), "1 banked reset available");
+  assert.equal(bankedResetText(2), "2 banked resets available");
 });

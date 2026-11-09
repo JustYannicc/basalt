@@ -116,6 +116,7 @@ export interface PoolView {
     }[];
   };
   readonly providers: readonly Provider[];
+  /** Subscription accounts from the served provider catalog. App API keys remain routing members only. */
   readonly accounts: readonly Account[];
 }
 
