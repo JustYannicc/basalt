@@ -755,21 +755,22 @@ test(
                 .getByRole("radio", { name: "Weekly", exact: true, checked: true })
                 .waitFor();
               // The live case: one person with pool access. The total decides the noun.
-              const noun = historicalOverview ? "people" : "person";
+              const overviewNoun = historicalOverview ? "people" : "person";
+              const tableNoun = peopleCopyRef ? "people" : "person";
               if (!subscriptionsBaseline) {
-                await frame.getByText(`1 of 1 ${noun} active`).waitFor();
-                await frame.getByText(`1 of 1 ${noun} with pool access`).waitFor();
+                await frame.getByText(`1 of 1 ${overviewNoun} active`).waitFor();
+                await frame.getByText(`1 of 1 ${tableNoun} with pool access`).waitFor();
               }
               const text = await frame.locator("body").innerText();
               if (!subscriptionsBaseline) {
                 assert.match(
                   text,
-                  new RegExp(`(?<!\\d)1 of 1 ${noun} active · 0 requests ${requestWindow} \\d+ days`),
+                  new RegExp(`(?<!\\d)1 of 1 ${overviewNoun} active · 0 requests ${requestWindow} \\d+ days`),
                 );
                 assert.match(
                   text,
                   new RegExp(
-                    `(?<!\\d)1 of 1 ${noun} with pool access made a request in these \\d+ days\\.`,
+                    `(?<!\\d)1 of 1 ${tableNoun} with pool access made a request in these \\d+ days\\.`,
                   ),
                 );
                 if (!historicalOverview) assert.doesNotMatch(text, /1 of 1 people/);
@@ -1028,7 +1029,11 @@ test(
               assert.match(
                 await frame
                   .getByRole("status")
-                  .filter({ hasText: "Usage for this range is incomplete." })
+                  .filter({
+                    hasText: learningRef
+                      ? "This read is incomplete."
+                      : "Usage for this range is incomplete.",
+                  })
                   .innerText(),
                 /partial|incomplete/i,
               );
