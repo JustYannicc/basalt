@@ -15,7 +15,8 @@ server.listen(0, "0.0.0.0");
 await once(server, "listening");
 const address = server.address();
 assert.ok(address && typeof address === "object");
-const url = `http://host.docker.internal:${address.port}/`;
+const url = new URL("http://host.docker.internal/");
+url.port = String(address.port);
 const docker = (args) => execute("docker", args, { timeout: 15_000 });
 let createdNetwork = false;
 try {
@@ -40,7 +41,7 @@ try {
         image,
         "-c",
         "import sys,urllib.request; r=urllib.request.build_opener(urllib.request.ProxyHandler({})).open(sys.argv[1],timeout=5); assert r.status==200; print(r.read().decode())",
-        url,
+        url.href,
       ]);
       assert.equal(stdout.trim(), marker, `Container on ${bridge} did not reach the host listener`);
       console.log(
