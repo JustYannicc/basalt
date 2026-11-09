@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { capacityWeight, capacityWeightRevision } from "./weights.ts";
 
-test("Claude uses each window's published multiplier for Home's exact plan identifiers", () => {
+test("Claude applies the pool plan policy alongside published window multipliers", () => {
   // Pinned Home internal/quota/providers.go maps default_claude_max_20x to this exact name.
   for (const [plan, session, weekly] of [
-    ["Max 20x", 20, 10],
+    ["Max 20x", 20, 20],
     ["Max 5x", 5, 5],
   ] as const) {
     for (const provider of ["claude", "anthropic"]) {
@@ -13,8 +13,11 @@ test("Claude uses each window's published multiplier for Home's exact plan ident
       const weight = capacityWeight(provider, plan, 604_800);
       assert.equal(weight.multiplier, weekly);
       assert.equal(weight.known, true);
-      assert.equal(weight.source, "published-weekly-multiplier");
-      assert.equal(weight.revision, "2026-11-09");
+      assert.equal(
+        weight.source,
+        plan === "Max 20x" ? "plan-multiplier" : "published-weekly-multiplier",
+      );
+      assert.equal(weight.revision, plan === "Max 20x" ? "2026-11-09-max20x-20" : "2026-11-09");
     }
   }
   assert.equal(capacityWeightRevision, "2026-10-30");
@@ -42,9 +45,24 @@ test("only changed Claude weekly tiers acquire a new policy revision", () => {
           ["Max 5x", "Max 20x", "Ultra"].includes(plan ?? "");
         assert.equal(
           capacityWeight(provider, plan, seconds).revision,
-          changed ? "2026-11-09" : "2026-10-30",
+          changed ? (plan === "Max 20x" ? "2026-11-09-max20x-20" : "2026-11-09") : "2026-10-30",
           `${provider}/${plan}/${seconds}`,
         );
       }
   assert.equal(capacityWeight("claude", "Ultra", 604_800).multiplier, 10);
+});
+
+test("Max 20x counts as twenty weekly units under the pool's plan policy", () => {
+  for (const provider of ["claude", "anthropic"]) {
+    const weight = capacityWeight(provider, "  MAX 20X  ", 604_800);
+    assert.equal(weight.multiplier, 20);
+    assert.equal(weight.source, "plan-multiplier");
+    assert.equal(weight.known, true);
+    assert.notEqual(weight.revision, "2026-11-09");
+    assert.equal(capacityWeight(provider, "Max 20x", 18_000).multiplier, 20);
+    assert.equal(capacityWeight(provider, "Max 5x", 604_800).multiplier, 5);
+    assert.equal(capacityWeight(provider, "Max 5x", 604_800).revision, "2026-11-09");
+    assert.equal(capacityWeight(provider, "Ultra", 604_800).multiplier, 10);
+    assert.equal(capacityWeight(provider, "Ultra", 604_800).revision, "2026-11-09");
+  }
 });

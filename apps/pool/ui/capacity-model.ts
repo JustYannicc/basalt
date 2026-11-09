@@ -475,6 +475,7 @@ export const weightSourceLabel: Record<CapacityWeightSource, string> = {
   "reference-plan": "plan table",
   "published-session-multiplier": "published multiplier",
   "published-weekly-multiplier": "published weekly multiplier",
+  "plan-multiplier": "plan multiplier",
   "reported-absolute": "limit reported",
   "unknown-plan": "conservative estimate · 1x",
 };
