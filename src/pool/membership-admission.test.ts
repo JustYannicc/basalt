@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { forwardPoolRequest } from "./forward.worker.ts";
 import { NativeMemberships } from "./membership.ts";
 import { PoolLifecycle } from "./lifecycle.ts";
 import { RuntimeProtection } from "./runtime-protection.ts";
@@ -8,6 +7,14 @@ import {
   membershipGraceFixture,
   membershipSigningKey,
 } from "../../scripts/pool-tests/membership-grace-fixture.ts";
+
+// Dynamic import keeps the Worker and Node fetch globals in their own typechecks.
+const workerModule = "./forward.worker.ts";
+const {
+  forwardPoolRequest,
+}: {
+  forwardPoolRequest(request: Request, port: 8317, dependencies: object): Promise<Response>;
+} = await import(workerModule);
 
 function deferred() {
   let resolve!: () => void;
@@ -69,11 +76,11 @@ async function fixture() {
       streams: f.streams,
       lifecycle: Promise.resolve(lifecycle),
       protection,
-      fetch: async (outbound) => {
+      fetch: async (outbound: Request) => {
         dispatches.push({ method: outbound.method, body: await outbound.text() });
         return Response.json({ ok: true });
       },
-      defer: (work) => {
+      defer: (work: Promise<unknown>) => {
         background.push(work);
       },
     });
