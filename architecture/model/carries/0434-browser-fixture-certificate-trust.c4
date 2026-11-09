@@ -1,7 +1,7 @@
 model {
   extend basalt.build {
     metadata {
-      constraint "Chromium fixture browsers trust only the current Target certificate public key at launch. A shared browser with another or no pin yields a case-scoped browser; unrelated certificates remain rejected. Saved evidence renders without a live Target, and existing WebKit behavior remains supported. Connector assertions and deadlines are unchanged."
+      constraint "Chromium fixture browsers pin the current Target certificate public key at launch. A shared browser with another or no pin yields a case-scoped browser. Preserve the context HTTPS setting for Playwright's separate APIRequestContext, which does not inherit Chromium launch options. Saved evidence renders without a live Target, WebKit behavior remains supported, and connector assertions and deadlines are unchanged."
     }
   }
 }

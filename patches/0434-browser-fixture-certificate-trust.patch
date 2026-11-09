@@ -134,14 +134,11 @@ diff --git a/e2e/support/browser.ts b/e2e/support/browser.ts
        const clock = yield* Clock.Clock;
        const scope = yield* Effect.scope;
        const navigations: { at: string; url: string; elapsedMs: number; page: number }[] = [];
-@@ -113,7 +117,9 @@
+@@ -113,6 +117,7 @@
        const context = yield* driver("create browser context", () =>
          browser.newContext({
            baseURL: targetHosts(target).browser,
--          ...(target.tlsCertificate === undefined ? {} : { ignoreHTTPSErrors: true }),
-+          ...(target.tlsCertificate === undefined || browser.browserType().name() === "chromium"
-+            ? {}
-+            : { ignoreHTTPSErrors: true }),
++          // Playwright's APIRequestContext does not inherit Chromium's launch-time SPKI pin.
+           ...(target.tlsCertificate === undefined ? {} : { ignoreHTTPSErrors: true }),
            viewport: { width: 1440, height: 960 },
            ...visitorUserAgent(browser),
-           recordVideo: { dir: `${evidence.directory}/raw`, size: { width: 1440, height: 960 } },
