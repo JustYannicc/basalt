@@ -1,3 +1,4 @@
+import { capacityWeight } from "../../src/pool/capacity/weights.ts";
 import { PoolHome, HomeClient, accountsView } from "../../src/pool/control.ts";
 import { overviewFixture, capacityFixture } from "./overview-fixture.mjs";
 import assert from "node:assert/strict";
@@ -49,6 +50,7 @@ const emptyUsage = {
 const artifacts = process.env.POOL_UI_ARTIFACTS;
 // Optional baseline: build that commit's app.tsx, accounts.tsx and api.ts into the fixture instead of the working tree.
 const sourceRef = process.env.POOL_UI_SOURCE_REF;
+const planBaseline = process.env.POOL_UI_PLAN_BASELINE === "1";
 const subscriptionsBaseline = process.env.POOL_UI_SUBSCRIPTIONS_BASELINE === "1";
 const artifactLabel =
   process.env.POOL_UI_ARTIFACT_LABEL ?? (sourceRef ? `before-${sourceRef.slice(0, 8)}` : "after");
@@ -290,6 +292,12 @@ test(
         writeFileSync(
           join(app, file),
           execFileSync("git", ["-C", root, "show", `a434a2af:${`apps/pool/${file}`}`]),
+        );
+    if (planBaseline)
+      for (const file of ["ui/overview.tsx", "ui/capacity-model.ts", "ui/capacity-chart.tsx"])
+        writeFileSync(
+          join(app, file),
+          execFileSync("git", ["-C", root, "show", `50d48551:apps/pool/${file}`]),
         );
     writeFileSync(
       join(app, "deployment.ts"),
@@ -738,6 +746,101 @@ test(
           );
         },
       );
+
+    for (const width of [1280, 390])
+      await t.test(`Claude weekly plan weights and retained estimates at ${width}px`, async () => {
+        for (const retained of [false, true]) {
+          const value = poolView(Date.now(), {
+            source: "live",
+            observedAgo: 0,
+            savedAgo: 0,
+            left: [
+              [0.4, 0.4],
+              [0.4, 0.4],
+              [0.4, 0.4],
+            ],
+          }).value;
+          value.accounts = value.accounts
+            .filter(({ provider }) => provider === "claude")
+            .map((account) => ({ ...account, plan: "Max 20x" }));
+          value.providers = providers;
+          viewResult = { ok: true, value };
+          const conservative = retained || planBaseline;
+          const weight = capacityWeight("claude", "Max 20x", 604_800);
+          await session(
+            async ({ page, frame, settled }) => {
+              release();
+              await frame
+                .getByText("1 subscription account across 1 lab", { exact: true })
+                .waitFor();
+              await frame.locator("#capacity article").waitFor();
+              await settled();
+              const body = await frame.locator("body").innerText();
+              assert.ok(body.includes("Max 20x"), "Keep the provider's exact plan label");
+              assert.doesNotMatch(body, /Ultra/);
+              if (planBaseline) assert.match(body, /plan isn't recognised/);
+              else {
+                assert.doesNotMatch(body, /plan isn't recognised|plan unknown|flagged 1x/);
+                if (retained) {
+                  assert.match(body, /Max 20x counted conservatively/);
+                  assert.match(body, /conservative estimate · 1x/);
+                } else {
+                  assert.match(body, /published weekly multiplier/);
+                  assert.doesNotMatch(body, /Max 20x counted conservatively/);
+                }
+              }
+              assert.ok(
+                await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+              );
+              await page.locator("iframe").evaluate(
+                (iframe, height) => {
+                  iframe.style.height = `${height}px`;
+                },
+                await frame.evaluate(() => document.documentElement.scrollHeight),
+              );
+              await settled();
+              await capture(page, `claude-weekly-${retained ? "retained" : "published"}-${width}`);
+            },
+            {
+              viewport: { width, height: 1000 },
+              capacity: (input) => {
+                const result = capacityFixture(input);
+                const at = input.to;
+                const full = conservative ? 1 : weight.multiplier;
+                const reading = {
+                  remaining: full * 0.4,
+                  full,
+                  at,
+                  observedAt: { from: at, to: at },
+                  accountCount: 1,
+                  knownWeightCount: conservative ? 0 : 1,
+                  unknownWeightCount: conservative ? 1 : 0,
+                  weights: [
+                    {
+                      source: conservative ? "unknown-plan" : weight.source,
+                      revision: conservative ? "2026-10-30" : weight.revision,
+                      accountCount: 1,
+                    },
+                  ],
+                };
+                result.value.points = [
+                  {
+                    provider: "claude",
+                    windowSeconds: 604_800,
+                    mode: null,
+                    unit: { id: weight.unit.id, label: weight.unit.label },
+                    hour: Math.floor(at / hour) * hour,
+                    minimum: reading,
+                    last: reading,
+                    plans: [{ plan: "Max 20x", minimum: reading, last: reading }],
+                  },
+                ];
+                return result;
+              },
+            },
+          );
+        }
+      });
 
     for (const width of [1440, 390])
       await t.test(`usage loads while capacity is held at ${width}px`, async () => {
