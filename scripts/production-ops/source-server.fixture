@@ -1,14 +1,14 @@
 /** Native Git behind the source adapter boundary of a disposable local Cloud proof. */
 import { createServer } from "node:http";
 import { parseArgs } from "node:util";
-import { Effect, Schema } from "../../.upstream/node_modules/effect/dist/index.js";
-import { nativeRepositories } from "../../.upstream/packages/app-source/src/node.ts";
+import { Effect, Schema } from "effect";
+import { nativeRepositories } from "@executor-js/app-source/node";
 import {
   AppCodeId,
   GitObjectId,
   SourceCommit,
   SourceFiles,
-} from "../../.upstream/packages/sdk/src/core.ts";
+} from "@executor-js/sdk/core";
 
 const { values } = parseArgs({ options: { directory: { type: "string" } } });
 if (values.directory === undefined) throw new Error("The proof must own its Git directory");

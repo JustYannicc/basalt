@@ -200,14 +200,16 @@ diff --git a/apps/hosted/cloud/src/implementation/source-preservation.ts b/apps/
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/source-preservation.ts
-@@ -0,0 +1,74 @@
-+import { Data, Effect } from "effect";
+@@ -0,0 +1,108 @@
++import { Data, Effect, Option, Schema } from "effect";
 +import {
++  BlobKey,
++  SourceFiles,
++  type BlobStorage,
 +  gitBlobId,
 +  inlineBytes,
 +  type AppCodeId,
 +  type RepositoryBackend,
-+  type SourceFiles,
 +} from "@executor-js/sdk/core";
 +import { sourceReferences } from "./source-references.ts";
 +
@@ -275,6 +277,38 @@ new file mode 100644
 +    }
 +    return { head, tree, refs };
 +  });
++
++/** Version blobs are immutable inputs too; a files-only deployment never has to touch Git. */
++export const pristineDeploymentSources = (
++  blobs: BlobStorage,
++  code: AppCodeId,
++  versions: readonly string[],
++  initialTree: string,
++) =>
++  Effect.forEach(
++    versions,
++    (version) =>
++      Effect.gen(function* () {
++        const refuse = (actual: string) =>
++          new SourcePreservationRefused({
++            code,
++            property: `deployment ${version} source`,
++            expected: initialTree,
++            actual,
++          });
++        const stored = yield* blobs
++          .get(BlobKey.make(`deployments/${version}/source.json`))
++          .pipe(Effect.mapError(() => refuse("unreadable")));
++        if (Option.isNone(stored)) return yield* refuse("missing");
++        const files = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(SourceFiles))(
++          new TextDecoder().decode(stored.value),
++        ).pipe(Effect.mapError(() => refuse("invalid retained files")));
++        const tree = yield* sourceTree(files);
++        if (tree !== initialTree) return yield* refuse(tree);
++        return { version, tree };
++      }),
++    { concurrency: 4 },
++  );
 diff --git a/apps/hosted/cloud/src/implementation/source-references.ts b/apps/hosted/cloud/src/implementation/source-references.ts
 new file mode 100644
 --- /dev/null
@@ -600,7 +634,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atla
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-plan.ts
-@@ -0,0 +1,285 @@
+@@ -0,0 +1,290 @@
 +import { Effect, Schema } from "effect";
 +import { ProviderDefinition } from "@executor-js/sdk/core";
 +import { canonical, sha256 } from "../crypto.ts";
@@ -683,13 +717,18 @@ new file mode 100644
 +      "code",
 +      String(umbrella.code),
 +    );
++    const sourceVersions = rows(snapshot, "executor_deployments")
++      .filter((version) => version.code === umbrella.code)
++      .map((version) => String(version.id))
++      .sort();
 +    if (
 +      frontier.generation === "-1" ||
 +      frontier.active_writes !== 0 ||
 +      typeof frontier.prepared_head !== "string" ||
 +      !/^[a-f0-9]{40}$/u.test(frontier.prepared_head) ||
 +      typeof frontier.fingerprint !== "string" ||
-+      !/^[a-f0-9]{64}$/u.test(frontier.fingerprint)
++      !/^[a-f0-9]{64}:[a-f0-9]{64}$/u.test(frontier.fingerprint) ||
++      frontier.fingerprint.split(":")[0] !== sha256(canonical(sourceVersions))
 +    )
 +      return yield* familyRefused(
 +        `${input.umbrella.app}/${String(umbrella.code)}: unchanged, settled source proof required`,
@@ -1047,7 +1086,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atla
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-source.ts
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,116 @@
 +import { Context, Effect, Option, Schema } from "effect";
 +import { SqlClient } from "effect/sql";
 +import {
@@ -1057,7 +1096,10 @@ new file mode 100644
 +  type BlobStorage,
 +  type RepositoryBackend,
 +} from "@executor-js/sdk/core";
-+import { pristineSource } from "../../../implementation/source-preservation.ts";
++import {
++  pristineDeploymentSources,
++  pristineSource,
++} from "../../../implementation/source-preservation.ts";
 +import { readSourceFrontier } from "../../../implementation/source-write-frontiers.ts";
 +import { canonical, sha256 } from "../crypto.ts";
 +import type { Json } from "../contracts.ts";
@@ -1105,6 +1147,23 @@ new file mode 100644
 +      return yield* familyRefused(
 +        `${input.umbrella.app}/${code}: source writes must be settled; active or uncertain writes prevent retirement`,
 +      );
++    const versionIds = Effect.gen(function* () {
++      const records =
++        yield* sql`select id, owner from executor_deployments where code = ${code} order by id limit 101`;
++      const versions = yield* Schema.decodeUnknownEffect(
++        Schema.Array(Schema.Struct({ id: Schema.String, owner: Schema.String })),
++      )(records);
++      if (
++        versions.length === 0 ||
++        versions.length > 100 ||
++        versions.some((version) => version.owner !== `organization:${input.organization}`)
++      )
++        return yield* familyRefused(
++          `${input.umbrella.app}/${code}: expected 1-100 owned retained deployments`,
++        );
++      return versions.map((version) => version.id);
++    });
++    const versions = yield* versionIds;
 +    const proof = yield* Effect.gen(function* () {
 +      const stored = yield* runtime.blobs.get(BlobKey.make(`app-source/${code}/initial.json`));
 +      if (Option.isNone(stored))
@@ -1114,7 +1173,9 @@ new file mode 100644
 +      const initial = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(SourceFiles))(
 +        new TextDecoder().decode(stored.value),
 +      );
-+      return yield* pristineSource(runtime.repositories, code, initial);
++      const git = yield* pristineSource(runtime.repositories, code, initial);
++      const deployments = yield* pristineDeploymentSources(runtime.blobs, code, versions, git.tree);
++      return { ...git, deployments };
 +    }).pipe(
 +      Effect.catchTag("SourcePreservationRefused", (error) =>
 +        familyRefused(
@@ -1127,7 +1188,12 @@ new file mode 100644
 +        ),
 +      ),
 +    );
-+    const fingerprint = sha256(canonical(proof));
++    if (canonical(yield* versionIds) !== canonical(versions))
++      return yield* familyRefused(
++        `${input.umbrella.app}/${code}: retained deployments changed during source proof`,
++      );
++    // Inspection can recheck the version set in SQL without reading source inside its transaction.
++    const fingerprint = `${sha256(canonical(versions))}:${sha256(canonical(proof))}`;
 +    const recorded =
 +      yield* sql`update hosted_source_write_frontiers set prepared_head = ${proof.head}, fingerprint = ${fingerprint}
 +    where code = ${code} and generation::text = ${before.generation} and active_writes = 0 returning code`;
@@ -1943,15 +2009,180 @@ new file mode 100644
 +      ),
 +    };
 +  });
+diff --git a/e2e/support/atlassian-source-proof.ts b/e2e/support/atlassian-source-proof.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/atlassian-source-proof.ts
+@@ -0,0 +1,161 @@
++import { expect } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Api, body } from "./api.ts";
++import { Actors } from "./actors.ts";
++import { Workspace, Committed } from "./app-authoring.ts";
++import { atlassianAdoptionFixture } from "./atlassian-adoption-fixture.ts";
++import { DryRun } from "./production-ops-migration-proof.ts";
++
++export const savedSourceProof = Effect.gen(function* () {
++  const p = yield* atlassianAdoptionFixture;
++  const actors = yield* Actors;
++  const api = yield* Api;
++  const response = yield* p.request(p.operation);
++  expect(response.status, JSON.stringify(response.body)).toBe(200);
++  const dry = yield* body(DryRun, response);
++  const path = `/api/organizations/${p.own.organization}/apps/${p.own.app}`;
++  const working = yield* body(
++    Workspace,
++    yield* api.request(actors.owner, "GET", `${path}/workspace`),
++  );
++  const files = [
++    ...working.files,
++    { path: "saved-work.md", content: "Keep this private source edit.\n" },
++  ];
++  const save = yield* api.request(actors.owner, "POST", `${path}/commits`, {
++    expected: working.revision.commit,
++    files,
++    message: "Save private app work",
++  });
++  expect(save.status).toBe(200);
++  const committed = yield* body(Committed, save);
++  const protectedRows = yield* p.protectedRows;
++  expect(
++    (yield* p.request({
++      ...p.operation,
++      action: "apply",
++      artifact: dry.artifact,
++      planSha256: dry.artifact.sha256,
++      backupSha256: dry.backupSha256,
++      go: `GO ${dry.artifact.sha256}`,
++    })).status,
++  ).toBe(409);
++  expect((yield* p.request(p.operation)).status).toBe(409);
++  const retained = yield* api.request(actors.owner, "GET", `${path}/workspace`);
++  expect(retained.status).toBe(200);
++  const source = yield* body(Workspace, retained);
++  expect(source.revision).toEqual(committed.revision);
++  expect(source.files).toEqual(
++    expect.arrayContaining([
++      { path: "saved-work.md", content: "Keep this private source edit.\n" },
++    ]),
++  );
++  expect(yield* p.protectedRows).toEqual(protectedRows);
++  // An uncertain earlier write fences retirement, not the person's subsequent saves.
++  const codes = yield* p.database
++    .run({ sql: "select code from executor_apps where id = $1", params: [p.own.app] })
++    .pipe(
++      Effect.flatMap(
++        Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ code: Schema.String }))),
++      ),
++    );
++  const code = codes[0]?.code;
++  if (code === undefined) return yield* Effect.die("Retained source lineage missing");
++  yield* p.database.run({
++    sql: "update hosted_source_write_frontiers set active_writes = 1 where code = $1",
++    params: [code],
++  });
++  expect((yield* p.request(p.operation)).status).toBe(409);
++  const continued = yield* api.request(actors.owner, "POST", `${path}/commits`, {
++    expected: source.revision.commit,
++    files: [...source.files, { path: "continued-work.md", content: "Normal writes still work.\n" }],
++    message: "Continue after uncertain write",
++  });
++  expect(continued.status, JSON.stringify(continued.body)).toBe(200);
++  const continuedRevision = yield* body(Committed, continued);
++  const continuedSource = yield* body(
++    Workspace,
++    yield* api.request(actors.owner, "GET", `${path}/workspace`),
++  );
++  expect(continuedSource.revision).toEqual(continuedRevision.revision);
++  expect(continuedSource.files).toEqual(
++    expect.arrayContaining([{ path: "continued-work.md", content: "Normal writes still work.\n" }]),
++  );
++  expect(
++    yield* p.database.run({
++      sql: "select active_writes from hosted_source_write_frontiers where code = $1",
++      params: [code],
++    }),
++  ).toEqual([{ active_writes: 1 }]);
++  expect((yield* p.request(p.operation)).status).toBe(409);
++  expect(yield* p.protectedRows).toEqual(protectedRows);
++});
++
++/** A direct-files deploy and its later replacement both leave the Git workspace unchanged. */
++export const deployedSourceProof = Effect.gen(function* () {
++  const p = yield* atlassianAdoptionFixture;
++  const actors = yield* Actors;
++  const api = yield* Api;
++  const response = yield* p.request(p.operation);
++  expect(response.status, JSON.stringify(response.body)).toBe(200);
++  const dry = yield* body(DryRun, response);
++  const path = `/api/organizations/${p.own.organization}/apps/${p.own.app}`;
++  const original = yield* body(
++    Workspace,
++    yield* api.request(actors.owner, "GET", `${path}/workspace`),
++  );
++  const savedFile = { path: "saved-deployment.md", content: "Preserve this deployed source.\n" };
++  const deployed = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
++    files: [...original.files, savedFile],
++  });
++  expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++  const edited = yield* body(
++    Schema.Struct({ version: Schema.Struct({ id: Schema.String }) }),
++    deployed,
++  );
++  expect(
++    (yield* body(Workspace, yield* api.request(actors.owner, "GET", `${path}/workspace`))).revision,
++  ).toEqual(original.revision);
++  const protectedRows = yield* p.protectedRows;
++  expect(
++    (yield* p.request({
++      ...p.operation,
++      action: "apply",
++      artifact: dry.artifact,
++      planSha256: dry.artifact.sha256,
++      backupSha256: dry.backupSha256,
++      go: `GO ${dry.artifact.sha256}`,
++    })).status,
++  ).toBe(409);
++  const inspect = (version: string) =>
++    p.request({
++      ...p.operation,
++      request: { ...p.operation.request, umbrella: { app: p.own.app, version } },
++    });
++  const refused = yield* inspect(edited.version.id);
++  expect(refused.status).toBe(409);
++  expect(JSON.stringify(refused.body)).toContain(`deployment ${edited.version.id} source`);
++  const source = yield* api.request(actors.owner, "GET", `${path}/source`);
++  expect(source.status).toBe(200);
++  expect((yield* body(Schema.Struct({ files: Workspace.fields.files }), source)).files).toEqual(
++    expect.arrayContaining([savedFile]),
++  );
++  expect(yield* p.protectedRows).toEqual(protectedRows);
++  // Checking only the active version would miss edited work after a later deployment replaces it.
++  const restored = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
++    files: original.files,
++  });
++  expect(restored.status, JSON.stringify(restored.body)).toBe(200);
++  const active = yield* body(
++    Schema.Struct({ version: Schema.Struct({ id: Schema.String }) }),
++    restored,
++  );
++  const afterRestore = yield* p.protectedRows;
++  const historical = yield* inspect(active.version.id);
++  expect(historical.status).toBe(409);
++  expect(JSON.stringify(historical.body)).toContain(`deployment ${edited.version.id} source`);
++  expect(yield* p.protectedRows).toEqual(afterRestore);
++  expect(
++    (yield* body(Workspace, yield* api.request(actors.owner, "GET", `${path}/workspace`))).revision,
++  ).toEqual(original.revision);
++});
 diff --git a/e2e/tests/atlassian-family-adoption.spec.ts b/e2e/tests/atlassian-family-adoption.spec.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/atlassian-family-adoption.spec.ts
-@@ -0,0 +1,227 @@
+@@ -0,0 +1,139 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
-+import { Api, body } from "../support/api.ts";
-+import { Committed, Workspace } from "../support/app-authoring.ts";
++import { body } from "../support/api.ts";
 +import { Actors } from "../support/actors.ts";
 +import { Browser } from "../support/browser.ts";
 +import { Evidence } from "../support/evidence.ts";
@@ -1959,6 +2190,7 @@ new file mode 100644
 +import { atlassianAdoptionFixture } from "../support/atlassian-adoption-fixture.ts";
 +import { HostedLive, withHostedCase } from "../support/case.ts";
 +import { Applied, DryRun } from "../support/production-ops-migration-proof.ts";
++import { savedSourceProof, deployedSourceProof } from "../support/atlassian-source-proof.ts";
 +import { scenarios } from "../test-plan.ts";
 +
 +layer(HostedLive, { excludeTestServices: true })("Atlassian family adoption", (it) => {
@@ -2081,98 +2313,10 @@ new file mode 100644
 +  );
 +
 +  it.effect(scenarios.cloudAtlassianFamilySourcePreservation.title, (context) =>
-+    withHostedCase(
-+      context,
-+      Effect.gen(function* () {
-+        const p = yield* atlassianAdoptionFixture;
-+        const actors = yield* Actors;
-+        const api = yield* Api;
-+        const response = yield* p.request(p.operation);
-+        expect(response.status, JSON.stringify(response.body)).toBe(200);
-+        const dry = yield* body(DryRun, response);
-+        const path = `/api/organizations/${p.own.organization}/apps/${p.own.app}`;
-+        const working = yield* body(
-+          Workspace,
-+          yield* api.request(actors.owner, "GET", `${path}/workspace`),
-+        );
-+        const files = [
-+          ...working.files,
-+          { path: "saved-work.md", content: "Keep this private source edit.\n" },
-+        ];
-+        const save = yield* api.request(actors.owner, "POST", `${path}/commits`, {
-+          expected: working.revision.commit,
-+          files,
-+          message: "Save private app work",
-+        });
-+        expect(save.status).toBe(200);
-+        const committed = yield* body(Committed, save);
-+        const protectedRows = yield* p.protectedRows;
-+        expect(
-+          (yield* p.request({
-+            ...p.operation,
-+            action: "apply",
-+            artifact: dry.artifact,
-+            planSha256: dry.artifact.sha256,
-+            backupSha256: dry.backupSha256,
-+            go: `GO ${dry.artifact.sha256}`,
-+          })).status,
-+        ).toBe(409);
-+        expect((yield* p.request(p.operation)).status).toBe(409);
-+        const retained = yield* api.request(actors.owner, "GET", `${path}/workspace`);
-+        expect(retained.status).toBe(200);
-+        const source = yield* body(Workspace, retained);
-+        expect(source.revision).toEqual(committed.revision);
-+        expect(source.files).toEqual(
-+          expect.arrayContaining([
-+            { path: "saved-work.md", content: "Keep this private source edit.\n" },
-+          ]),
-+        );
-+        expect(yield* p.protectedRows).toEqual(protectedRows);
-+        // An uncertain earlier write fences retirement, not the person's subsequent saves.
-+        const codes = yield* p.database
-+          .run({ sql: "select code from executor_apps where id = $1", params: [p.own.app] })
-+          .pipe(
-+            Effect.flatMap(
-+              Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ code: Schema.String }))),
-+            ),
-+          );
-+        const code = codes[0]?.code;
-+        if (code === undefined) return yield* Effect.die("Retained source lineage missing");
-+        yield* p.database.run({
-+          sql: "update hosted_source_write_frontiers set active_writes = 1 where code = $1",
-+          params: [code],
-+        });
-+        expect((yield* p.request(p.operation)).status).toBe(409);
-+        const continued = yield* api.request(actors.owner, "POST", `${path}/commits`, {
-+          expected: source.revision.commit,
-+          files: [
-+            ...source.files,
-+            { path: "continued-work.md", content: "Normal writes still work.\n" },
-+          ],
-+          message: "Continue after uncertain write",
-+        });
-+        expect(continued.status, JSON.stringify(continued.body)).toBe(200);
-+        const continuedRevision = yield* body(Committed, continued);
-+        const continuedSource = yield* body(
-+          Workspace,
-+          yield* api.request(actors.owner, "GET", `${path}/workspace`),
-+        );
-+        expect(continuedSource.revision).toEqual(continuedRevision.revision);
-+        expect(continuedSource.files).toEqual(
-+          expect.arrayContaining([
-+            { path: "continued-work.md", content: "Normal writes still work.\n" },
-+          ]),
-+        );
-+        expect(
-+          yield* p.database.run({
-+            sql: "select active_writes from hosted_source_write_frontiers where code = $1",
-+            params: [code],
-+          }),
-+        ).toEqual([{ active_writes: 1 }]);
-+        expect((yield* p.request(p.operation)).status).toBe(409);
-+        expect(yield* p.protectedRows).toEqual(protectedRows);
-+      }),
-+    ),
++    withHostedCase(context, savedSourceProof),
++  );
++  it.effect(scenarios.cloudAtlassianFamilyDeployedSource.title, (context) =>
++    withHostedCase(context, deployedSourceProof),
 +  );
 +});
 diff --git a/e2e/tests/atlassian-family-screens.spec.ts b/e2e/tests/atlassian-family-screens.spec.ts

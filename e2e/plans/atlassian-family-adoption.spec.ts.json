@@ -33,6 +33,23 @@
           "reason": "Requires the Cloud production operations database."
         }
       }
+    },
+    "cloudAtlassianFamilyDeployedSource": {
+      "fixtures": "actors",
+      "title": "Cloud production operations preserve directly deployed and historical source outside Git",
+      "targets": {
+        "cloud": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Requires the Cloud production operations database."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Requires the Cloud production operations database."
+        }
+      }
     }
   },
   "runs": {
@@ -40,6 +57,9 @@
       "production-ops:migrations"
     ],
     "cloudAtlassianFamilySourcePreservation": [
+      "production-ops:migrations"
+    ],
+    "cloudAtlassianFamilyDeployedSource": [
       "production-ops:migrations"
     ]
   },

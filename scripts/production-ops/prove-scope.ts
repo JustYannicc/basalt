@@ -60,15 +60,24 @@ const sourceFixture = new URL("./source-fixture.ts", database);
 const originalSource = await readFile(sourceModule, "utf8");
 const sourceMarker = "const git = cloudflareRepositories(tokens, { accountId, namespace });";
 assert.ok(originalSource.includes(sourceMarker), "Expected the production Git adapter boundary");
+const nativeFixture = new URL(
+  "../../.upstream/apps/hosted/testing/source-fixture.ts",
+  import.meta.url,
+);
+await writeFile(
+  nativeFixture,
+  await readFile(new URL("./source-server.fixture", import.meta.url), "utf8"),
+  { flag: "wx" },
+);
 const nativeGit = spawn(
   "node",
   [
-    "scripts/production-ops/source-fixture.ts",
+    "apps/hosted/testing/source-fixture.ts",
     "--directory",
     `${root}/.generated/production-ops-native-git`,
   ],
   {
-    cwd: root,
+    cwd: `${root}/.upstream`,
     stdio: ["ignore", "pipe", "inherit"],
   },
 );
@@ -91,8 +100,9 @@ const origin = await new Promise<string>((resolve, reject) => {
       reject(error);
     }
   });
-}).catch((error) => {
+}).catch(async (error) => {
   nativeGit.kill("SIGTERM");
+  await unlink(nativeFixture);
   throw error;
 });
 lines.close();
@@ -103,7 +113,7 @@ const expectedSource =
     `const git = sourceFixtureRepositories(${JSON.stringify(origin)});`,
   );
 let expected = original;
-const created: URL[] = [];
+const created: URL[] = [nativeFixture];
 const restore = async (file: URL, before: string, after: string) => {
   const current = await readFile(file, "utf8");
   if (current === before) return;
@@ -137,6 +147,7 @@ try {
         fileURLToPath(database),
         fileURLToPath(sourceModule),
         fileURLToPath(sourceFixture),
+        fileURLToPath(nativeFixture),
       ],
       exclude: [],
       compilerOptions: { typeRoots: [`${root}/.upstream/node_modules/@types`] },
