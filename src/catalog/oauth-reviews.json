@@ -5114,7 +5114,7 @@
           "kind": "automatic",
           "protocol": "cimd",
           "metadata": "https://signin.workos.com/.well-known/oauth-authorization-server",
-          "metadataSha256": "45804d0840493f0d4694fd4fd63410ea9f264f8834ff6688b6c35230dacd195b"
+          "metadataSha256": "e803c89a2dcd92f4391b1857923793d3b18add3764d3d3b882fdb55c1b97bf12"
         }
       }
     },
