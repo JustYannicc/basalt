@@ -1,10 +1,6 @@
 import { poolGuard } from "./guard-failure.ts";
 import { poolDependency } from "./dependency-failure.ts";
-import {
-  reportPoolFailure,
-  poolFailureDiagnostic,
-  type PoolFailureDiagnostic,
-} from "./json.ts";
+import { reportPoolFailure, poolFailureDiagnostic, type PoolFailureDiagnostic } from "./json.ts";
 import { accessGrace } from "./access-contract.ts";
 import { readMembershipReservation } from "./membership-reservation.ts";
 import { homeReferences } from "./home-references.ts";
