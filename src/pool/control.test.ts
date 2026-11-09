@@ -225,6 +225,7 @@ test("only GET pool is available to a non-owner; empty reads create no Home reso
     isOwner: false,
     providers,
     accounts: [],
+    subscriptionAccountIds: [],
     reading: {
       source: "live",
       revalidationFailed: false,
@@ -1267,7 +1268,7 @@ test("pausing an account invalidates credential state in the retained view", asy
   assert.equal(after.accounts[0]!.state, "disabled");
 });
 
-test("pool overview excludes an app API key without changing its routing membership", async () => {
+test("pool view preserves app members and classifies subscriptions separately", async () => {
   const f = await fixture();
   f.home.addGroup("pool-a", 1, ["claude-seat", "codex-seat", "jev-key"]);
   f.home.addFile("claude-seat", "claude");
@@ -1290,10 +1291,12 @@ test("pool overview excludes an app API key without changing its routing members
   const view = (await response.json()) as PoolView;
   assert.deepEqual(
     view.accounts.map(({ id }) => id),
-    ["claude-seat", "codex-seat"],
+    ["claude-seat", "codex-seat", "jev-key"],
   );
-  assert.equal(new Set(view.accounts.map(({ provider }) => provider)).size, 2);
-  assert.ok(view.accounts.every(({ freshness }) => freshness === "fresh"));
+  assert.deepEqual(view.subscriptionAccountIds, ["claude-seat", "codex-seat"]);
+  const subscriptions = view.accounts.filter(({ id }) => view.subscriptionAccountIds?.includes(id));
+  assert.equal(new Set(subscriptions.map(({ provider }) => provider)).size, 2);
+  assert.ok(subscriptions.every(({ freshness }) => freshness === "fresh"));
   assert.equal(view.reading?.revalidationFailed, false);
   assert.ok(f.home.members.some(({ auth_id }) => auth_id === "jev-key"));
   assert.ok(f.home.files.has("jev-key"));

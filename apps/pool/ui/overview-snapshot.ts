@@ -1,3 +1,4 @@
+import { overviewAccounts } from "./overview-accounts.ts";
 import type { PoolCapacityHistory } from "../capacity-contract.ts";
 import type { PoolView } from "../contract.ts";
 import type { Result } from "../index.ts";
@@ -36,7 +37,7 @@ export function currentCapacity(
   view: PoolView | undefined,
 ): Result<PoolCapacityHistory> | undefined {
   if (!view || !capacity?.ok) return capacity;
-  const labs = new Set(view.accounts.map((account) => account.provider));
+  const labs = new Set(overviewAccounts(view).map((account) => account.provider));
   const value = capacity.value;
   return {
     ok: true,
