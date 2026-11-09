@@ -57,6 +57,7 @@ const cases = [
     failure: "response_status",
     backendStatus: 400,
     reason: "lease_window",
+    leaseMs: 15001,
   },
   {
     fault: "policy_framing",

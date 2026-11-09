@@ -7,7 +7,9 @@ export const policyPrefix = "sbm-policy1";
 export const policyUsePrefix = "sbm-use1";
 export const policyHeader = "X-Signalbox-Native-Policy";
 export const membershipRefreshMs = 5_000;
-export const membershipTtlMs = 15_000;
+// Leave clock-skew headroom below the native 15-second cap. Five-second upkeep
+// and two-second installs renew with three seconds left after completion rearm.
+export const membershipTtlMs = 12_000;
 
 export interface NativeMembershipAccount {
   account: string;
