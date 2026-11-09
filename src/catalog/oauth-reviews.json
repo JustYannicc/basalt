@@ -5593,7 +5593,7 @@
           "message": "Shared sign-in for PlanetScale is not configured on this host. You can connect with your own OAuth app or a service token."
         }
       },
-      "sourceSha256": "0e31dec5459f6b8b6beab13ca6c19776efb17f3202b9fc185011f8e8cbf4ac01"
+      "sourceSha256": "656d62c29f72b808f8cd0fa153fb1b0bd0e87ace541484558be9bdcaa9560c6f"
     }
   ]
 }
