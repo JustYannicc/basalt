@@ -10,10 +10,12 @@ const added = (before, after) =>
 // Open the sign-in requirement and choose a self-managed instance in place of GitLab.com.
 const openAt = async (page, origin) => {
   const region = page.getByRole("region", { name: "Your accounts", exact: true });
+  // GitLab and GitLab MCP share one section, whose connect menu lists each method.
   await region
-    .getByRole("region", { name: "GitLab MCP", exact: true })
+    .getByRole("region", { name: "GitLab", exact: true })
     .getByRole("button", { name: "Connect new account", exact: true })
     .click();
+  await page.getByRole("menuitem", { name: "Sign in with GitLab MCP", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: dialogName });
   await dialog.getByText("Using https://gitlab.com", { exact: true }).waitFor();
   await dialog.getByRole("button", { name: "Use another instance", exact: true }).click();
@@ -239,11 +241,20 @@ export const verifyGitLabConnections = ({
         await page.getByRole("region", { name: "Your accounts", exact: true }).waitFor();
       },
     );
-    yield* browser.use("Accounts distinguish MCP sign-in from full REST", async (page) => {
-      const accounts = page.getByRole("region", { name: "Your accounts", exact: true });
-      await accounts.getByRole("region", { name: "GitLab MCP", exact: true }).waitFor();
-      await accounts.getByRole("region", { name: "GitLab", exact: true }).waitFor();
-    });
+    yield* browser.use(
+      "Accounts list MCP sign-in and full REST in one GitLab section",
+      async (page) => {
+        const accounts = page.getByRole("region", { name: "Your accounts", exact: true });
+        const gitlab = accounts.getByRole("region", { name: "GitLab", exact: true });
+        await gitlab.waitFor();
+        // The MCP sign-in's row names the part it serves; a REST account needs no note.
+        await gitlab.getByText("For GitLab MCP", { exact: true }).first().waitFor();
+        assert.equal(
+          await accounts.getByRole("region", { name: "GitLab MCP", exact: true }).count(),
+          0,
+        );
+      },
+    );
     yield* browser.checkpoint(`GitLab sign-in complete ${width}`);
     const [signedIn] = added(signInBefore, yield* links("signIn"));
     assert.ok(signedIn, "Approval saves and links one MCP account");

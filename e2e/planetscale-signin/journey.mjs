@@ -14,12 +14,14 @@ const noOverflow = async (page) =>
     true,
     "No horizontal overflow",
   );
+// PlanetScale's two requirements share one section, whose connect menu lists each method.
 const openConnect = async (page) => {
   await page
     .getByRole("region", { name: "Your accounts", exact: true })
-    .getByRole("region", { name: "PlanetScale · Sign in", exact: true })
-    .getByRole("button", { name: /^Connect new account/ })
+    .getByRole("region", { name: "PlanetScale", exact: true })
+    .getByRole("button", { name: "Connect new account", exact: true })
     .click();
+  await page.getByRole("menuitem", { name: "Sign in with PlanetScale", exact: true }).click();
   return page.getByRole("dialog", { name: dialogName });
 };
 

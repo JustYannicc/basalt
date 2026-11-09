@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-one-section-per-service",
+  "file": "0442-one-section-per-service.patch",
+  "content_sha256": "30c82cdd086c7c65b98ced3b71bf29e97c47649bacea6c254b5528b710d39a11",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
