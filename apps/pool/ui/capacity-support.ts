@@ -1,6 +1,7 @@
 import type { Account } from "../contract.ts";
 
-export type LimitAccount = Pick<Account, "provider" | "plan" | "windows">;
+export type LimitAccount = Pick<Account, "provider" | "plan" | "windows"> &
+  Partial<Pick<Account, "freshness">>;
 
 const claudePlans = new Set(["pro", "max", "max 5x", "max 20x", "ultra"]);
 const codexPlans = new Set([

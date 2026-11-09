@@ -190,7 +190,10 @@ function Panel({
         text: "Capacity readings do not form a complete snapshot, so this panel has no forecast or verdict.",
         detail: null,
       };
-  const chips = planChips(facts.latest);
+  const unmeasured = Boolean(
+    line.missingCurrentReading || (line.supportedAccounts && line.points.length === 0),
+  );
+  const chips = unmeasured ? [] : planChips(facts.latest);
   const accounts =
     facts.latest?.last.accountCount ??
     line.points.at(-1)?.raw?.last.accountCount ??
@@ -199,7 +202,6 @@ function Panel({
     0;
   const color = labColor(lab.provider);
   const weekly = line.windowSeconds === 604_800;
-  const unmeasured = Boolean(line.supportedAccounts && line.points.length === 0);
   const onlyReporting = !unmeasured && !weekly && lab.fiveHourAccounts < lab.weeklyAccounts;
   const accountLabel =
     !unmeasured && !weekly && lab.weeklyAccounts > accounts

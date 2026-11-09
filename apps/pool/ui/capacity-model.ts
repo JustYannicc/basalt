@@ -30,6 +30,8 @@ export interface CapacityLine {
   readonly refills: readonly CapacityRefillEvent[];
   /** Plan support only. An empty supported line contains no measured or inferred balance. */
   readonly supportedAccounts?: number;
+  readonly missingCurrentReading?: boolean;
+  readonly lastReadingAt?: number;
 }
 
 export interface CapacityLab {
@@ -122,11 +124,34 @@ export function capacityLabs(
       });
     }
     // Two units on one window would otherwise share a label.
-    const named = built.map((line) =>
-      built.some((other) => other !== line && other.label === line.label)
-        ? { ...line, label: `${line.label} · ${line.unit.label}` }
-        : line,
-    );
+    const named = built.map((line) => {
+      const members = accounts.filter((account) => account.provider === provider);
+      const windows = members.flatMap((account) =>
+        account.windows.filter((window) => window.windowSeconds === line.windowSeconds),
+      );
+      const times = [
+        ...line.points.map((point) => (point.raw?.last ?? point.last).observedAt.to),
+        ...windows.map((window) => Date.parse(window.observedAt ?? "")),
+      ].filter(Number.isFinite);
+      return {
+        ...line,
+        ...(line.windowSeconds === 18_000 && members.length > 0
+          ? {
+              missingCurrentReading: !members.some(
+                (account) =>
+                  account.freshness === "fresh" &&
+                  account.windows.some(
+                    (window) => window.windowSeconds === 18_000 && window.remainingRatio !== null,
+                  ),
+              ),
+              ...(times.length > 0 ? { lastReadingAt: Math.max(...times) } : {}),
+            }
+          : {}),
+        label: built.some((other) => other !== line && other.label === line.label)
+          ? `${line.label} · ${line.unit.label}`
+          : line.label,
+      };
+    });
     const ordered = named.sort(
       (a, b) => b.windowSeconds - a.windowSeconds || a.label.localeCompare(b.label),
     );
@@ -258,6 +283,7 @@ export function pressing(
   const fallback = lab.lines[0];
   if (!weekly || !five) return { key: fallback?.key ?? "", text: null };
   const isFresh = (line: CapacityLine) => {
+    if (line.missingCurrentReading) return false;
     const latest = line.points.filter(isMeasuredCapacityPoint).at(-1);
     return Boolean(
       latest &&
@@ -275,7 +301,10 @@ export function pressing(
     );
   };
   const forecastReady = (line: CapacityLine) =>
-    !withheld && line.forecast?.status === "estimated" && line.forecast.points.length > 0;
+    !withheld &&
+    !line.missingCurrentReading &&
+    line.forecast?.status === "estimated" &&
+    line.forecast.points.length > 0;
   const projectedRunOut = (line: CapacityLine) =>
     forecastReady(line) ? line.forecast!.runsOutAt : null;
   const readyLines = lab.lines.filter(forecastReady);
@@ -320,6 +349,7 @@ export function pressing(
   }
   // Nothing runs out: the window with less left now is the one to watch.
   const left = (line: CapacityLine) => {
+    if (line.missingCurrentReading) return null;
     const latest = line.points.filter(isMeasuredCapacityPoint).at(-1);
     return latest && latest.last.full > 0 ? latest.last.remaining / latest.last.full : null;
   };
@@ -360,15 +390,16 @@ export function verdict(
   readonly detail: string | null;
 } {
   const forecast = line?.forecast;
-  if (line?.supportedAccounts && line.points.length === 0) {
+  if (line?.missingCurrentReading || (line?.supportedAccounts && line.points.length === 0)) {
+    const label = line.windowSeconds === 18_000 ? "5-hour" : "weekly";
     return {
       tone: "learn",
-      short: "No current reading",
-      text:
-        line.windowSeconds === 18_000
-          ? "This plan has a 5-hour allowance. When idle, the full allowance starts on next use."
-          : "This plan has a weekly allowance, but no current reading is available.",
-      detail: "A fresh reading will show how much remains.",
+      short: `No current ${label} reading`,
+      text: "A fresh provider reading will show how much remains.",
+      detail:
+        line.lastReadingAt === undefined
+          ? `No previous ${label} reading is available.`
+          : `Last ${label} reading: ${new Date(line.lastReadingAt).toISOString().slice(0, 16).replace("T", " ")} UTC.`,
     };
   }
   if (

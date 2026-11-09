@@ -62,6 +62,7 @@ const peopleCopyRef = process.env.POOL_UI_PEOPLE_COPY_REF;
 // same-snapshot learning verdict whenever usage coverage was partial.
 const learningRef = process.env.POOL_UI_LEARNING_REF;
 const limitSupportRef = process.env.POOL_UI_LIMIT_SUPPORT_REF;
+const unknownReadingRef = process.env.POOL_UI_UNKNOWN_READING_REF;
 const historicalOverview = Boolean(planBaseline || peopleCopyRef || learningRef);
 const requestWindow = historicalOverview ? "in" : "· last";
 const baselineRef = sourceRef ?? peopleCopyRef ?? learningRef;
@@ -348,6 +349,12 @@ test(
         writeFileSync(
           join(app, file),
           execFileSync("git", ["-C", root, "show", `${limitSupportRef}:apps/pool/${file}`]),
+        );
+    if (unknownReadingRef)
+      for (const file of ["ui/capacity-model.ts", "ui/capacity-view.tsx", "ui/capacity-support.ts"])
+        writeFileSync(
+          join(app, file),
+          execFileSync("git", ["-C", root, "show", `${unknownReadingRef}:apps/pool/${file}`]),
         );
     writeFileSync(
       join(app, "deployment.ts"),
@@ -933,8 +940,13 @@ test(
                     .getByRole("radio", { name: "5-hour", exact: true, checked: true })
                     .waitFor();
                   const body = await panel.innerText();
-                  assert.match(body, /No current reading/);
-                  assert.match(body, /When idle, the full allowance starts on next use/);
+                  if (unknownReadingRef) {
+                    assert.match(body, /When idle, the full allowance starts on next use/);
+                  } else {
+                    assert.match(body, /No current 5-hour reading/);
+                    assert.match(body, /No previous 5-hour reading is available/);
+                    assert.doesNotMatch(body, /idle|full allowance/i);
+                  }
                   assert.doesNotMatch(body, /Nominal|100%|80%|out now|showing Weekly/);
                   await panel.getByRole("radio", { name: "Weekly", exact: true }).click();
                   await panel
@@ -1099,6 +1111,86 @@ test(
           );
         }
       });
+
+    for (const width of [1280, 390])
+      await t.test(
+        `a fresh published view missing five-hour data shows only its last reading time at ${width}px`,
+        async () => {
+          const f = quotaSamplingFixture(Date.now() - minute);
+          await f.usage.observe();
+          const previous = f.detail.windows.find(
+            (window) => window.window_seconds === 18_000,
+          ).observed_at;
+          f.detail.windows = f.detail.windows.filter((window) => window.window_seconds !== 18_000);
+          const id = f.credential.credential_id;
+          const accounts = accountsView(
+            [{ id, provider: "codex", label: "Synthetic Codex" }],
+            [f.detail],
+            new Set([id]),
+          );
+          assert.equal(accounts[0].freshness, "fresh");
+          assert.ok(accounts[0].windows.every((window) => window.windowSeconds !== 18_000));
+          viewResult = { ok: true, value: { ...f.view, accounts } };
+          await session(
+            async ({ page, frame, settled }) => {
+              release();
+              const panel = frame.getByRole("article", { name: "Codex", exact: true });
+              await panel.getByRole("radio", { name: "5-hour", exact: true }).click();
+              await panel
+                .getByRole("radio", { name: "5-hour", exact: true, checked: true })
+                .waitFor();
+              const body = await panel.innerText();
+              if (unknownReadingRef || limitSupportRef) {
+                assert.match(body, /Nominal/);
+              } else {
+                assert.match(body, /No current 5-hour reading/);
+                assert.ok(
+                  body.includes(
+                    `Last 5-hour reading: ${previous.slice(0, 16).replace("T", " ")} UTC.`,
+                  ),
+                );
+                assert.doesNotMatch(body, /\d+(?:\.\d+)?%|Nominal|idle|full allowance|out now/i);
+                assert.equal(
+                  await panel
+                    .locator('[role="group"][aria-label*="capacity. Measured history"]')
+                    .count(),
+                  0,
+                );
+              }
+              await panel.getByRole("radio", { name: "Weekly", exact: true }).click();
+              await panel
+                .getByRole("radio", { name: "Weekly", exact: true, checked: true })
+                .waitFor();
+              assert.match(await panel.innerText(), /Nominal/);
+              await panel.getByRole("radio", { name: "5-hour", exact: true }).click();
+              await panel
+                .getByRole("radio", { name: "5-hour", exact: true, checked: true })
+                .waitFor();
+              assert.ok(
+                await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+              );
+              await page.locator("iframe").evaluate(
+                (iframe, height) => {
+                  iframe.style.height = `${height}px`;
+                },
+                await frame.evaluate(() => document.documentElement.scrollHeight),
+              );
+              await settled();
+              await capture(page, `unknown-five-hour-${width}`);
+            },
+            {
+              viewport: { width, height: 1000 },
+              capacity: async (input) => ({
+                ok: true,
+                value: await f.capacity(
+                  Math.floor((input.to - input.days * day) / hour) * hour,
+                  input.to,
+                ),
+              }),
+            },
+          );
+        },
+      );
 
     // The live shape: usage coverage is partial, yet usage and capacity share one range and
     // capture, and capacity has no completed comparable week yet.
