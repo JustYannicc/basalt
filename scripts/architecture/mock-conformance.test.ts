@@ -32,7 +32,7 @@ const implementation = `it.effect(scenarios.accountRows.title, context => withHo
 const workflow = `jobs:
   account-rows:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'account-rows')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'account-rows')
     steps:
       - working-directory: .upstream
         run: bun run e2e:self-host --test-name '^Rows retain usable actions on a phone$' --workers 1
@@ -173,7 +173,10 @@ test("aggregate gate invocation and exact inputs must unconditionally propagate 
     workflow.replace("    if: always()", "    if: success()"),
     workflow.replace("    if: always()", "    if: always()\n    continue-on-error: true"),
     workflow.replace("toJSON(needs)", "toJSON({})"),
-    workflow.replace("needs.select.outputs.jobs", "needs.select.outputs.other"),
+    workflow.replace(
+      "CI_JOBS: ${{ needs.select.outputs.jobs }}",
+      "CI_JOBS: ${{ needs.select.outputs.other }}",
+    ),
     workflow.replace("needs.select.outputs.boat_jobs", "needs.select.outputs.other"),
     workflow.replace("      - env:", "      - shell: bash -c {0}\n        env:"),
   ]) {
@@ -218,7 +221,7 @@ test("removing the selector, target, required dependency or selected job fails",
     workflow.replace("    steps:", "    continue-on-error: true\n    steps:"),
     workflow.replace("      - working-directory", "      - if: false\n        working-directory"),
     workflow.replace(
-      "    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'account-rows')",
+      "    if: contains(fromJSON(needs.select.outputs.jobs), 'account-rows')",
       "    if: false",
     ),
     workflow.replace("--workers 1", "--workers 1 || true"),

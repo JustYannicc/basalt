@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { carryTargets, changedInputs, jobRoutes, selectPaths } from "./ci/affected.ts";
 import { selectUnitTests } from "./ci/unit-tests.ts";
 import { heavyJobs } from "./ci/areas.ts";
-import { bundleJobs, conditionalJobs, fastJobs, gateErrors } from "./ci/gate.ts";
+import { conditionalJobs, fastJobs, gateErrors } from "./ci/gate.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
 
@@ -180,7 +180,7 @@ test("AWS catalog, proof inputs and loopback carries select the AWS runtime proo
 test("the aggregate blocks missing, failed, cancelled and unexpectedly skipped work", () => {
   const selected = ["production-build"];
   const needs = Object.fromEntries(
-    [...fastJobs, ...heavyJobs, ...bundleJobs, ...conditionalJobs].map((job) => [
+    [...fastJobs, ...heavyJobs, ...conditionalJobs].map((job) => [
       job,
       {
         result:
@@ -207,7 +207,7 @@ test("every workflow job has a gate dependency and declared selection policy", (
     readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
   );
   const jobs = workflow.jobs;
-  const expected = [...fastJobs, ...heavyJobs, ...bundleJobs, ...conditionalJobs];
+  const expected = [...fastJobs, ...heavyJobs, ...conditionalJobs];
   assert.deepEqual(Object.keys(jobs).sort(), [...expected, "check"].sort());
   assert.deepEqual([...jobs.check.needs].sort(), [...expected].sort());
   for (const job of heavyJobs) {
@@ -216,11 +216,7 @@ test("every workflow job has a gate dependency and declared selection policy", (
       job === "upstream-image" ? ["select", "workerd-assets"] : "select",
       job,
     );
-    assert.equal(
-      jobs[job].if,
-      `contains(fromJSON(needs.select.outputs.hosted_jobs), '${job}')`,
-      job,
-    );
+    assert.equal(jobs[job].if, `contains(fromJSON(needs.select.outputs.jobs), '${job}')`, job);
   }
   assert.equal(jobs.check.if, "always()");
   assert.equal(
@@ -228,21 +224,15 @@ test("every workflow job has a gate dependency and declared selection policy", (
     "${{ needs.select.outputs.full_suite == 'true' && 'check' || 'check (fast-only)' }}",
   );
   assert.deepEqual(workflow.on.push.branches, ["main", "batch/**"]);
-  assert.equal(jobs["boat-bundle"].if, "needs.select.outputs.boat_jobs != '[]'");
-  assert.equal(
-    jobs["boat-bundle"].steps.find((step: { id?: string }) => step.id === "bundle").env
-      .BASALT_CI_BOAT_JOBS,
-    "${{ needs.select.outputs.boat_jobs_csv }}",
-  );
   assert.equal(
     jobs.select.steps.find((step: { id?: string }) => step.id === "jobs").env.FULL_SUITE,
-    "${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'batch/') || contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'release-update') }}",
+    "${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'batch/') || contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:boat') || contains(github.event.pull_request.labels.*.name, 'release-update') }}",
   );
 });
 
-test("only affected configured Boat jobs substitute for hosted jobs, and every bundle must pass", () => {
+test("Boat routing keeps every original selected job required", () => {
   const selected = ["host-managed-accounts", "production-build"];
-  const routes = jobRoutes(selected, "host-managed-accounts,production-ops-identity");
+  const routes = jobRoutes(selected, "host-managed-accounts,compiler-diagnostics");
   assert.deepEqual(routes, {
     hostedJobs: ["production-build"],
     boatJobs: ["host-managed-accounts"],
@@ -251,22 +241,18 @@ test("only affected configured Boat jobs substitute for hosted jobs, and every b
   assert.throws(() => jobRoutes(selected, "unknown"));
   assert.throws(() => jobRoutes(selected, "production-build"));
   const needs = Object.fromEntries(
-    [...fastJobs, ...heavyJobs, ...bundleJobs, ...conditionalJobs].map((job) => [
+    [...fastJobs, ...heavyJobs, ...conditionalJobs].map((job) => [
       job,
-      {
-        result:
-          fastJobs.includes(job) || routes.hostedJobs.includes(job) || bundleJobs.includes(job)
-            ? "success"
-            : "skipped",
-      },
+      { result: fastJobs.includes(job) || selected.includes(job) ? "success" : "skipped" },
     ]),
   );
   assert.deepEqual(gateErrors(needs, selected, routes.boatJobs), []);
   for (const result of ["failure", "cancelled", "skipped"])
     assert.ok(
-      gateErrors({ ...needs, "boat-bundle": { result } }, selected, routes.boatJobs).length,
+      gateErrors({ ...needs, "host-managed-accounts": { result } }, selected, routes.boatJobs)
+        .length,
     );
-  assert.ok(gateErrors(needs, selected, ["production-ops-identity"]).length);
+  assert.ok(gateErrors(needs, selected, ["compiler-diagnostics"]).length);
 });
 
 test("access editor changes select the public independent-read guards", () => {
@@ -283,7 +269,7 @@ test("access editor changes select the public independent-read guards", () => {
 test("fast-only and full gates reject missing work and dishonest lane selections", () => {
   const needs = (selected: readonly string[]) =>
     Object.fromEntries(
-      [...fastJobs, ...heavyJobs, ...bundleJobs, ...conditionalJobs].map((job) => [
+      [...fastJobs, ...heavyJobs, ...conditionalJobs].map((job) => [
         job,
         {
           result:
@@ -495,7 +481,7 @@ test("hidden section reads select their browser guards", () => {
 test("a selected image requires successful workerd warming and an unselected image skips it", () => {
   const selected = ["upstream-image"];
   const needs = Object.fromEntries(
-    [...fastJobs, ...heavyJobs, ...bundleJobs, ...conditionalJobs].map((job) => [
+    [...fastJobs, ...heavyJobs, ...conditionalJobs].map((job) => [
       job,
       {
         result:
