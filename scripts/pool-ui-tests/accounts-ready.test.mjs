@@ -50,8 +50,12 @@ const artifacts = process.env.POOL_UI_ARTIFACTS;
 // Optional baseline: build that commit's app.tsx, accounts.tsx and api.ts into the fixture instead of the working tree.
 const sourceRef = process.env.POOL_UI_SOURCE_REF;
 const subscriptionsBaseline = process.env.POOL_UI_SUBSCRIPTIONS_BASELINE === "1";
+// Optional baseline: build that commit's overview.tsx and usage-groups.tsx to capture the old people copy.
+const peopleCopyRef = process.env.POOL_UI_PEOPLE_COPY_REF;
+const baselineRef = sourceRef ?? peopleCopyRef;
 const artifactLabel =
-  process.env.POOL_UI_ARTIFACT_LABEL ?? (sourceRef ? `before-${sourceRef.slice(0, 8)}` : "after");
+  process.env.POOL_UI_ARTIFACT_LABEL ??
+  (baselineRef ? `before-${baselineRef.slice(0, 8)}` : "after");
 if (artifacts)
   assert.ok(
     isAbsolute(artifacts) && !`${resolve(artifacts)}/`.startsWith(root),
@@ -291,6 +295,12 @@ test(
           join(app, file),
           execFileSync("git", ["-C", root, "show", `a434a2af:${`apps/pool/${file}`}`]),
         );
+    if (peopleCopyRef)
+      for (const file of ["ui/overview.tsx", "ui/usage-groups.tsx"])
+        writeFileSync(
+          join(app, file),
+          execFileSync("git", ["-C", root, "show", `${peopleCopyRef}:apps/pool/${file}`]),
+        );
     writeFileSync(
       join(app, "deployment.ts"),
       `export const poolOrigin = ${JSON.stringify(parentOrigin)}; export const productName = "Signalbox";`,
@@ -333,6 +343,8 @@ test(
     // When set, fresh view requests are answered as they arrive instead of held.
     let answerFresh = false;
     let usageResult = emptyUsage;
+    // When set, replaces the overview's people directory counts.
+    let directoryResult;
     const answer = (entry) =>
       entry.response.end(
         JSON.stringify(entry.fresh && freshResult !== undefined ? freshResult : viewResult),
@@ -363,6 +375,7 @@ test(
           return;
         }
         const value = overviewFixture(JSON.parse(body).input, usageResult.value);
+        if (directoryResult) value.directory = directoryResult;
         const tokens = usageResult.value.total.tokens.total;
         if (tokens > 0) {
           value.metrics.apiBilled = {
@@ -511,9 +524,11 @@ test(
         capacityHeld = false,
         capacity = capacityFixture,
         personal = false,
+        people,
       } = {},
     ) => {
       usageResult = usage;
+      directoryResult = people;
       capacityReply = capacity;
       holdCapacity = capacityHeld;
       member = personal;
@@ -669,7 +684,26 @@ test(
               await claude
                 .getByRole("radio", { name: "Weekly", exact: true, checked: true })
                 .waitFor();
+              // The live case: one person with pool access. The total decides the noun.
+              const noun = peopleCopyRef ? "people" : "person";
+              if (!subscriptionsBaseline) {
+                await frame.getByText(`1 of 1 ${noun} active`).waitFor();
+                await frame.getByText(`1 of 1 ${noun} with pool access`).waitFor();
+              }
               const text = await frame.locator("body").innerText();
+              if (!subscriptionsBaseline) {
+                assert.match(
+                  text,
+                  new RegExp(`(?<!\\d)1 of 1 ${noun} active · 0 requests in \\d+ days`),
+                );
+                assert.match(
+                  text,
+                  new RegExp(
+                    `(?<!\\d)1 of 1 ${noun} with pool access made a request in these \\d+ days\\.`,
+                  ),
+                );
+                if (!peopleCopyRef) assert.doesNotMatch(text, /1 of 1 people/);
+              }
               for (const title of [
                 "Do we have enough accounts?",
                 "Who uses what",
@@ -704,6 +738,7 @@ test(
             },
             {
               viewport: { width, height: 1000 },
+              people: { members: [], activeCount: 1, totalCount: 1 },
               capacity: (input) => {
                 const result = capacityFixture(input);
                 const at = input.to;
@@ -736,6 +771,38 @@ test(
               },
             },
           );
+          // Plural: nobody active out of three people with pool access.
+          if (!subscriptionsBaseline)
+            await session(
+              async ({ page, frame, settled }) => {
+                release();
+                await frame.getByText("0 of 3 people active").waitFor();
+                await frame.getByText("0 of 3 people with pool access").waitFor();
+                const text = await frame.locator("body").innerText();
+                assert.match(text, /(?<!\d)0 of 3 people active · 0 requests in \d+ days/);
+                assert.match(
+                  text,
+                  /(?<!\d)0 of 3 people with pool access made a request in these \d+ days\./,
+                );
+                assert.doesNotMatch(text, /of 3 person/);
+                assert.ok(
+                  await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+                  "People copy fits at phone and desktop widths",
+                );
+                await page.locator("iframe").evaluate(
+                  (iframe, height) => {
+                    iframe.style.height = `${height}px`;
+                  },
+                  await frame.evaluate(() => document.documentElement.scrollHeight),
+                );
+                await settled();
+                await capture(page, `people-plural-overview-${width}`);
+              },
+              {
+                viewport: { width, height: 1000 },
+                people: { members: [], activeCount: 0, totalCount: 3 },
+              },
+            );
         },
       );
 
