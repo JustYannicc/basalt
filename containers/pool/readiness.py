@@ -214,7 +214,7 @@ class ReadyHandler(http.server.BaseHTTPRequestHandler):
         self._send(200 if ready else 503, payload, headers)
 
     def do_POST(self) -> None:
-        if self.path != "/native-policy":
+        if self.path not in ("/native-policy", "/native-policy/check"):
             self._send(404, {"error": "not_found"})
             return
         readiness = self.readiness
@@ -229,6 +229,15 @@ class ReadyHandler(http.server.BaseHTTPRequestHandler):
             content_length = 0
         if content_length < 2 or content_length > MAX_POLICY_INSTALL_BYTES:
             self._send(400, {"error": "invalid_projection_framing", "reason": "envelope"})
+            return
+        if self.path == "/native-policy/check":
+            from .policy_check import check_policy
+
+            if content_length > 8192:
+                self._send(400, {"ok": False})
+                return
+            status, payload = check_policy(self.rfile.read(content_length))
+            self._send(status, payload)
             return
         try:
             body = json.loads(

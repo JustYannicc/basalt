@@ -32,6 +32,10 @@ import { OverviewPrices } from "./overview-prices.ts";
 import { managedCapPath, managedUsagePath, PoolUsage, summaryPath } from "./pool-usage.ts";
 import { timePoolRead } from "./read-timing.ts";
 import { inventoryCron, reportPoolInventory } from "./inventory.ts";
+import { probePool } from "./availability.ts";
+import { availabilityCron, validProbeTarget } from "./availability-config.ts";
+import { availabilityRuntime } from "./availability-runtime.ts";
+import { runAvailabilityProbe } from "./availability-schedule.ts";
 import { reportPoolStorage } from "./inventory-storage.ts";
 import { migrateCodexWebSockets, type CodexWebSocketPlan } from "./codex-websockets.ts";
 import { captureHomeRequests } from "./model-history/capture.ts";
@@ -83,6 +87,7 @@ export interface PoolEnvironment extends TelemetryEnv, SentryEnv {
   POOL_IMAGE_HASH: string;
   POOL_DEPLOYMENT_KEY?: string;
   POOL_MODEL_HISTORY_ENABLED?: string;
+  POOL_AVAILABILITY_TARGET?: string;
   TOOLS_SERVICE: Fetcher;
 }
 
@@ -290,6 +295,17 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       });
     }
     return this.managementWarming;
+  }
+
+  async availabilityProbe(pool: string) {
+    return probePool(pool, {
+      ...availabilityRuntime(
+        this.ctx.container,
+        this.env.POOL_MANAGEMENT_KEY,
+        this.env.POOL_APP_SIGNING_KEY,
+      ),
+      membership: (target) => this.memberships.inspect(target),
+    });
   }
 
   async alarm() {
@@ -565,6 +581,14 @@ function modelAuthResponse(status: 401 | 503, error: string): Response {
 export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
   async fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
+    if (path === "/availability") {
+      if (request.method !== "GET") return new Response(null, { status: 405 });
+      const pool = new URL(request.url).searchParams.get("pool") ?? undefined;
+      if (!validProbeTarget(pool)) return new Response(null, { status: 400 });
+      return Response.json(await singleton(this.env).availabilityProbe(pool), {
+        headers: { "Cache-Control": "no-store" },
+      });
+    }
     if (path === deploymentReadinessPath)
       return handleDeploymentReadiness(
         request,
@@ -615,6 +639,10 @@ export default {
     return handlePoolWorkerRequest(request, env);
   },
   async scheduled(event: ScheduledEvent, env: PoolEnvironment) {
+    if (event.cron === availabilityCron) {
+      await runAvailabilityProbe(env, (pool) => singleton(env).availabilityProbe(pool));
+      return;
+    }
     if (event.cron === inventoryCron) {
       await reportPoolInventory(env.POOL_AUTH_DATABASE);
       await singleton(env).migrationInventory();

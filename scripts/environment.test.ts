@@ -30,6 +30,7 @@ test("deploy maps login secrets and pins EU production without hosted emulators"
   source.POOL_APP_SIGNING_KEY = "ab".repeat(32);
   source.POOL_DEPLOYMENT_KEY = "ef".repeat(32);
   source.POOL_MODEL_HISTORY_ENABLED = "false";
+  source.POOL_AVAILABILITY_TARGET = "fixture-pool";
   source.GOOGLE_MAPS_ROUTES_API_KEY = "production-routes-fixture";
   const env = deployEnvironment(source);
   assert.equal(env.GITHUB_CLIENT_SECRET, source.AUTH_GITHUB_CLIENT_SECRET);
@@ -44,6 +45,7 @@ test("deploy maps login secrets and pins EU production without hosted emulators"
   assert.equal(env.EXECUTOR_ENCRYPTED_WORKFLOW_STARTS, "true");
   assert.equal(env.EXECUTOR_APP_PUBLISHING, "off");
   assert.equal(env.POOL_MODEL_HISTORY_ENABLED, "true");
+  assert.equal(env.POOL_AVAILABILITY_TARGET, "fixture-pool");
   assert.equal(env.EXECUTOR_EMULATORS, undefined);
   assert.equal(env.TEST_STAGE_DATABASE_PROVIDER, undefined);
   assert.match(env.EXECUTOR_BUILD_VERSION!, /^[a-f0-9]{40}$/);
@@ -161,6 +163,7 @@ test("preview environment is per-PR, isolated, and keeps smoke credentials deplo
     POOL_DEPLOYMENT_KEY: "ef".repeat(32),
     POOL_APP_SIGNING_KEY_PREVIOUS: "cd".repeat(32),
     POOL_MODEL_HISTORY_ENABLED: "true",
+    POOL_AVAILABILITY_TARGET: "production-pool-must-not-pass-through",
     OAUTH_PROXY_SECRET: "production-proxy-secret-must-not-pass-through",
     PREVIEW_CLAUDE_AUTH_JSON: "private-claude-login",
     PREVIEW_CODEX_SUBSCRIPTION_AUTH_JSON: "private-codex-subscription",
@@ -190,6 +193,7 @@ test("preview environment is per-PR, isolated, and keeps smoke credentials deplo
   assert.equal(first.deploy.EXECUTOR_ENCRYPTED_WORKFLOW_STARTS, "true");
   assert.equal(first.deploy.EXECUTOR_APP_PUBLISHING, "off");
   assert.equal(first.deploy.POOL_MODEL_HISTORY_ENABLED, undefined);
+  assert.equal(first.deploy.POOL_AVAILABILITY_TARGET, undefined);
   assert.equal(first.deploy.EXECUTOR_COMPILER_CACHE_RELEASE, undefined);
   assert.equal(first.deploy.PLANETSCALE_ADOPT_DATABASE, "false");
   assert.equal(first.deploy.PREVIEW_SMOKE_EMAIL, undefined);
