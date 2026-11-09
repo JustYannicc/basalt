@@ -1,30 +1,30 @@
 import { Schema } from "effect";
 import { canonical, hash } from "../production-ops/artifact.ts";
 
-const uuid = Schema.String.check(Schema.isPattern(/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/));
+const uuid = Schema.String.check(Schema.isPattern(/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u));
 const hex = (length: number) =>
-  Schema.String.check(Schema.isPattern(new RegExp(`^[a-f0-9]{${length}}$`)));
+  Schema.String.check(Schema.isPattern(new RegExp(`^[a-f0-9]{${length}}$`, "u")));
 const positive = Schema.Int.check(Schema.isGreaterThan(0));
 export const RecoveryPlan = Schema.Struct({
   version: Schema.Literal(1),
   operationId: uuid,
   accountId: hex(32),
-  worker: Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}$/)),
+  worker: Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}$/u)),
   deploymentId: uuid,
   workerVersion: uuid,
   release: hex(40),
   applicationId: uuid,
   applicationVersion: positive,
-  imageDigest: Schema.String.check(Schema.isPattern(/^sha256:[a-f0-9]{64}$/)),
+  imageDigest: Schema.String.check(Schema.isPattern(/^sha256:[a-f0-9]{64}$/u)),
   resources: Schema.Struct({
-    instanceType: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[a-z0-9-]{1,64}$/))),
+    instanceType: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[a-z0-9-]{1,64}$/u))),
     vcpu: Schema.Number.check(Schema.isGreaterThan(0)),
     memoryMiB: positive,
     diskMiB: positive,
     maxInstances: positive,
   }),
   instanceId: hex(64),
-  imageHash: Schema.String.check(Schema.isPattern(/^[a-f0-9]{16,64}$/)),
+  imageHash: Schema.String.check(Schema.isPattern(/^[a-f0-9]{16,64}$/u)),
   bootId: uuid,
 });
 export type RecoveryPlan = typeof RecoveryPlan.Type;

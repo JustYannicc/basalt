@@ -162,8 +162,8 @@ export async function runReviewedRecovery(
         Schema.Array(
           Schema.Struct({
             property: Schema.Literals(["release", "instanceId", "imageHash", "bootId"]),
-            expected: Schema.String.check(Schema.isPattern(/^[a-f0-9-]{1,64}$/)),
-            observed: Schema.String.check(Schema.isPattern(/^(?:[a-f0-9-]{1,64}|unavailable)$/)),
+            expected: Schema.String.check(Schema.isPattern(/^[a-f0-9-]{1,64}$/u)),
+            observed: Schema.String.check(Schema.isPattern(/^(?:[a-f0-9-]{1,64}|unavailable)$/u)),
           }),
         ),
       )(body.drift);
