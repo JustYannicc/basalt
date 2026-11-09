@@ -394,6 +394,20 @@ test("signed access changes reach the computer queue before generic pool-token c
     workerEnv,
   );
   assert.equal(denied.status, 401);
+  values.set("native-pool-memberships-v1", {
+    "fake-pool": {
+      pool: "fake-pool",
+      organization: "fake-org",
+      revision: 1,
+      expiresAt: now + 15_000,
+      accounts: [],
+      dirty: false,
+      native: true,
+      checkedAt: now,
+      installedRevision: 1,
+      installedUntil: now + 15_000,
+    },
+  });
   const deletion = await signEnvelope(signingKey, accessPrefix, {
     action: "pool-deleted",
     pool: "fake-pool",
@@ -689,6 +703,26 @@ test("management calls share readiness for 30 seconds and rewarm when the contai
   await read();
   assert.equal(ready, 3);
   assert.equal(starts, 2);
+  const deletion = await signEnvelope(signingKey, accessPrefix, {
+    action: "pool-deleted",
+    pool: "fake-pool",
+    at: Date.now(),
+    expiresAt: Date.now() + accessTtl,
+  });
+  const removed = await worker.fetch(
+    new Request(`https://pool.example${accessPath}`, {
+      method: "POST",
+      body: JSON.stringify({ envelope: deletion }),
+    }),
+  );
+  assert.equal(removed.status, 200, await removed.clone().text());
+  assert.equal(storage.has("native-pool-memberships-v1"), false);
+  await read();
+  assert.equal(
+    storage.has("native-pool-memberships-v1"),
+    false,
+    "retained native:false reads keep their existing behavior after a rolled-back removal",
+  );
 });
 
 test("old pool tools cannot acquire credentials or start the runtime through the Worker", async () => {
@@ -863,6 +897,21 @@ for (const retire of [false, true])
       let alarm: number | null = null,
         reads = 0,
         native = true;
+      if (retire)
+        values.set("native-pool-memberships-v1", {
+          a: {
+            pool: "a",
+            organization: "org",
+            revision: 1,
+            expiresAt: start + 15_000,
+            accounts: [],
+            dirty: false,
+            native: true,
+            checkedAt: start,
+            installedRevision: 1,
+            installedUntil: start + 15_000,
+          },
+        });
       const worker = new PoolContainer(
         {
           container: {
