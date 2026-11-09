@@ -1,3 +1,6 @@
+import { freezeUpload } from "./version-request.ts";
+import { assertBaselineWorkerInput } from "./container.ts";
+import { safeInputHash, servingWorkerSettings, workerInputHash } from "./serving-worker-input.ts";
 import * as Workers from "@distilled.cloud/cloudflare/workers";
 import {
   Credentials,
@@ -17,7 +20,12 @@ import {
   candidateSettingsWithRetirements,
   type ProbeWorker,
 } from "./candidate-settings.ts";
-import { readActivePlacements, readCurrentDeployment, readScriptSettings } from "./cloudflare.ts";
+import {
+  readActivePlacements,
+  readCurrentDeployment,
+  readScriptSettings,
+  readLatestVersion,
+} from "./cloudflare.ts";
 import { readVersionPlacement } from "./active-placement-read.ts";
 import {
   pendingPlacementRepair,
@@ -26,7 +34,7 @@ import {
 } from "./pending-placement.ts";
 import { BarrierRefusal } from "./manifest.ts";
 import { safeProviderFailure } from "./operation-failure.ts";
-import { assertScriptSettings, scriptSettingFields } from "./script-settings.ts";
+import { scriptSettingFields } from "./script-settings.ts";
 import type { PropChange } from "./prop-diff.ts";
 import { verifyRepairBaseline } from "./repair-baseline.ts";
 import { CandidateSettingsReadFailure } from "./candidate-failure.ts";
@@ -43,6 +51,18 @@ export interface SettingsProbeRow extends BaselineProbeRow {
   compared: readonly string[];
   differences: readonly PropChange[];
   pendingPlacementRepair?: PendingPlacementRepair;
+  preparation?: {
+    frozen: true;
+    containerInput?: {
+      baseline: string;
+      settings: string;
+      serving: string;
+      versions: string[];
+      latestVersion: string;
+      latestInput: string;
+      settingsMatchLatest: boolean;
+    };
+  };
 }
 type CandidateReader = (workers: readonly ProbeWorker[]) => Promise<
   readonly {
@@ -62,6 +82,7 @@ export async function probeWorkerSettings(
   apiBaseUrl = DEFAULT_API_BASE_URL,
   candidate?: CandidateReader,
   retirementReader = candidateSettingsWithRetirements,
+  containerBaselineInputHash?: string,
 ) {
   const base = new URL(apiBaseUrl);
   const prefix = base.pathname.replace(/\/$/, "");
@@ -163,6 +184,7 @@ export async function probeWorkerSettings(
           const versionPaths: string[] = [];
           let failure: unknown;
           let compared = false;
+          let preparation: SettingsProbeRow["preparation"];
           let repair: PendingPlacementRepair | undefined;
           let readStage = "settings";
           const run = async <A, E>(
@@ -230,15 +252,43 @@ export async function probeWorkerSettings(
               });
               readStage = "pre-activation-baseline";
               await run(verifyRepairBaseline({ ...input, baseline }, declaration.metadata, repair));
-            } else
-              assertScriptSettings(
-                worker.role,
-                worker.scriptName,
-                expected.find((item) => item.role === worker.role)!.metadata,
-                settings,
-                versions,
-                baseline,
+            }
+            readStage = "freeze-worker-upload";
+            const frozen = await freezeUpload(
+              {
+                fqn: worker.role,
+                request: { ...input, metadata: declaration.metadata },
+                previousSettings: settings,
+                previousProps: {},
+                props: {},
+              },
+              baseline,
+              versions,
+              repair,
+            );
+            preparation = { frozen: true };
+            if (worker.role === "PoolWorker" && containerBaselineInputHash !== undefined) {
+              const serving = servingWorkerSettings(versions, baseline);
+              allow(`${path}/versions`);
+              const latestVersion = await run(readLatestVersion(input));
+              const latestPath = `${path}/versions/${encodeURIComponent(latestVersion)}`;
+              allow(latestPath);
+              versionPaths.push(latestPath);
+              const latest = await run(
+                readVersionPlacement(accountId, worker.scriptName, latestVersion),
               );
+              preparation.containerInput = {
+                baseline: safeInputHash(containerBaselineInputHash),
+                settings: safeInputHash(workerInputHash(settings)),
+                serving: safeInputHash(frozen.baselineImageHash),
+                versions: baseline.map(({ versionId }) => versionId.slice(0, 12)),
+                latestVersion: latestVersion.slice(0, 12),
+                latestInput: safeInputHash(workerInputHash(latest)),
+                settingsMatchLatest: workerInputHash(settings) === workerInputHash(latest),
+              };
+              readStage = "container-baseline-worker-input";
+              assertBaselineWorkerInput({ baselineInputHash: containerBaselineInputHash }, serving);
+            }
             compared = true;
           } catch (error) {
             failure = error;
@@ -278,6 +328,7 @@ export async function probeWorkerSettings(
             compared: compared || failure instanceof BarrierRefusal ? scriptSettingFields : [],
             differences: failure instanceof BarrierRefusal ? (failure.delta?.changed ?? []) : [],
             ...(repair ? { pendingPlacementRepair: repair } : {}),
+            ...(preparation ? { preparation } : {}),
           };
         }),
       ),

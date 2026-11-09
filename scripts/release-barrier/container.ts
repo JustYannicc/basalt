@@ -1,4 +1,8 @@
-import type { PreparedWorkerUpload } from "alchemy/Cloudflare/Workers/WorkerUploadHook";
+import {
+  safeInputHash,
+  workerInputHash,
+  type BaselineWorkerSettings,
+} from "./serving-worker-input.ts";
 import type * as Containers from "@distilled.cloud/cloudflare/containers";
 import type { ContainerApplication } from "alchemy/Cloudflare";
 import {
@@ -337,14 +341,27 @@ export function assertConfiguredContainer(current: ContainerAttributes, frozen: 
 
 /** Pair the saved container input with the actual baseline Worker binding, not its desired new props. */
 export function assertBaselineWorkerInput(
-  container: FrozenContainer,
-  settings: PreparedWorkerUpload["previousSettings"],
+  container: Pick<FrozenContainer, "baselineInputHash">,
+  settings: BaselineWorkerSettings | undefined,
 ) {
-  const hashes = settings?.bindings?.filter((binding) => binding.name === "POOL_IMAGE_HASH") ?? [];
-  if (
-    hashes.length !== 1 ||
-    hashes[0]?.type !== "plain_text" ||
-    hashes[0].text !== container.baselineInputHash
-  )
-    throw new BarrierRefusal("container-baseline-worker-input-unconfirmed", "PoolWorker");
+  const observed = workerInputHash(settings);
+  if (!observed || observed !== container.baselineInputHash) {
+    const refusal = new BarrierRefusal(
+      "container-baseline-worker-input-unconfirmed",
+      "PoolWorker",
+      {
+        fqn: "PoolWorker",
+        type: "Cloudflare.Worker",
+        changed: [
+          {
+            path: "bindings.POOL_IMAGE_HASH",
+            old: safeInputHash(container.baselineInputHash),
+            new: safeInputHash(observed),
+          },
+        ],
+      },
+    );
+    refusal.message += `: bindings.POOL_IMAGE_HASH expected=${safeInputHash(container.baselineInputHash)} observed=${safeInputHash(observed)}`;
+    throw refusal;
+  }
 }

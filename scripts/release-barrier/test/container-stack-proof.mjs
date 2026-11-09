@@ -198,10 +198,9 @@ export const proveContainerStack = (source, recompile, scenario) =>
               upload.previousSettings.bindings.push({
                 name: "POOL_IMAGE_HASH",
                 type: "plain_text",
-                text:
-                  scenario === "baseline-worker-input-drift"
-                    ? "foreign-input-hash"
-                    : baselinePoolInput,
+                text: ["baseline-worker-input-drift", "latest-upload-baseline"].includes(scenario)
+                  ? "foreign-input-hash"
+                  : baselinePoolInput,
               });
               upload.request.metadata.bindings.push({
                 name: "POOL_IMAGE_HASH",
@@ -422,6 +421,23 @@ export const proveContainerStack = (source, recompile, scenario) =>
                   events.push("image:retained");
                 },
                 io: {
+                  placements: (_worker, baseline) =>
+                    Effect.succeed(
+                      baseline.map(({ versionId }) => ({
+                        id: versionId,
+                        placement: undefined,
+                        bindings: [
+                          {
+                            name: "POOL_IMAGE_HASH",
+                            type: "plain_text",
+                            text:
+                              scenario === "baseline-worker-input-drift"
+                                ? "foreign-input-hash"
+                                : baselinePoolInput,
+                          },
+                        ],
+                      })),
+                    ),
                   advanceContainer: (_target, rollout) =>
                     Effect.sync(() => {
                       assert.equal(staged.rolloutRequest.kind, "full_manual");
@@ -658,6 +674,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
         const succeeded = Exit.isSuccess(exit);
         const expectedSuccess = [
           "success",
+          "latest-upload-baseline",
           "updating-forward",
           "partial-worker-forward",
           "same-digest",
@@ -677,6 +694,11 @@ export const proveContainerStack = (source, recompile, scenario) =>
         assert.equal(succeeded, expectedSuccess);
         let unchangedAction;
         if (succeeded) {
+          if (scenario === "latest-upload-baseline")
+            assert.equal(
+              lastManifest.workers.find((worker) => worker.id === "PoolWorker").baselineImageHash,
+              baselinePoolInput,
+            );
           assert.equal(api.writes, sameDigest ? 0 : 1);
           assert.equal(api.rollouts, sameDigest ? 0 : 1);
           assert.equal(api.app.configuration.image, staged.proposed.configuration.image);

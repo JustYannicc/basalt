@@ -81,6 +81,7 @@ export async function candidateProbeProof(settings, mode, declarationHttp, sourc
         result = {
           id: "active",
           resources: {
+            bindings: [{ name: "POOL_IMAGE_HASH", type: "plain_text", text: "a".repeat(16) }],
             script: {
               placement: {
                 mode: "targeted",

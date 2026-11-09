@@ -1,3 +1,9 @@
+import { probeWorkerSettings } from "./settings-probe.ts";
+import { settingsFromDeclarations } from "./candidate-settings.ts";
+import { recordedContainer } from "./forward-model.ts";
+import { containerKey } from "./forward-journal.ts";
+import { retiredPlacements } from "./placement-retirement.ts";
+import { reportBaselineProbe } from "./baseline-probe-report.ts";
 import { releaseEvidence } from "./evidence.ts";
 import { reportRefusal, refusalTable } from "./refusal-report.ts";
 import { mkdir, writeFile, appendFile } from "node:fs/promises";
@@ -48,6 +54,39 @@ try {
                 setOutput: deny,
               };
               nativeState = yield* readForwardStateObservation(actual, compiled);
+              const { identity } = recordedContainer(yield* actual.get(containerKey(compiled)));
+              const retired = yield* retiredPlacements(actual, compiled);
+              const preparation = yield* Effect.promise(() =>
+                probeWorkerSettings(
+                  environment.CLOUDFLARE_ACCOUNT_ID!,
+                  environment.CLOUDFLARE_API_TOKEN!,
+                  environment,
+                  undefined,
+                  async (workers) =>
+                    Effect.runPromise(
+                      settingsFromDeclarations(compiled, workers).pipe(
+                        Effect.map((rows) =>
+                          rows.map((row) => ({
+                            ...row,
+                            retiredPlacement: retired.includes(row.role),
+                          })),
+                        ),
+                        Effect.provideContext(compiled.services),
+                      ),
+                    ),
+                  undefined,
+                  identity.hash.image,
+                ),
+              );
+              yield* Effect.promise(() =>
+                reportBaselineProbe(
+                  preparation,
+                  resolve(directory, "preparation.json"),
+                  process.env.GITHUB_STEP_SUMMARY,
+                ),
+              );
+              if (preparation.some((row) => !row.ok))
+                throw new BarrierRefusal("preparation-probe-refused");
               const reconciliation = yield* resumeForwardRelease(compiled, {
                 dryRun: true,
                 directory,

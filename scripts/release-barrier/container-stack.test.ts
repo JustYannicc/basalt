@@ -6,6 +6,7 @@ import { discoverContainerBarrierProof } from "../architecture/native-stack.ts";
 const root = fileURLToPath(new URL("../../", import.meta.url));
 for (const scenario of [
   "success",
+  "latest-upload-baseline",
   "updating-forward",
   "partial-worker-forward",
   "recorded-baseline",
@@ -33,6 +34,7 @@ for (const scenario of [
     const result = discoverContainerBarrierProof(root, scenario);
     const success = [
       "success",
+      "latest-upload-baseline",
       "updating-forward",
       "partial-worker-forward",
       "recorded-baseline",
@@ -50,6 +52,7 @@ for (const scenario of [
       result.applicationWrites,
       [
         "success",
+        "latest-upload-baseline",
         "updating-forward",
         "partial-worker-forward",
         "unhealthy-serving",
@@ -65,6 +68,7 @@ for (const scenario of [
       result.rollouts,
       [
         "success",
+        "latest-upload-baseline",
         "updating-forward",
         "partial-worker-forward",
         "unhealthy-serving",

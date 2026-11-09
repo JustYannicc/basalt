@@ -4,6 +4,7 @@ export interface ActiveWorkerPlacement {
   id: string;
   placement: unknown;
   limits?: unknown;
+  bindings?: readonly { name: string; type: string; text?: string }[];
 }
 
 const record = (value: unknown): value is Record<string, unknown> =>
