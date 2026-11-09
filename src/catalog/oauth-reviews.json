@@ -281,7 +281,7 @@
     {
       "entry": "atlassian",
       "package": "atlassian",
-      "sourceSha256": "e51b4835acecf2fc15665676980dee14795bbfccf5db42baaedf12c3a5da10c2",
+      "sourceSha256": "630ec53c5195db281c3ea56e75aed26a610f06d0e6a670889d3c62db22b2add2",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -367,7 +367,7 @@
     {
       "entry": "aws",
       "package": "aws",
-      "sourceSha256": "d4d961e041c78a1d54ddff8a0ecfc9083370894f84c375a909a168bfdc5d8e90",
+      "sourceSha256": "86df5cb251ec4303688178a824b8b76d8fb8d0a29fd474b86fa166bf19ee5299",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -890,7 +890,7 @@
     {
       "entry": "clerk",
       "package": "@executor.sh/clerk",
-      "sourceSha256": "c53eb55ecb9c63c80ce556f50c24f51dcfe5503e1dfc154aee5b448445524220",
+      "sourceSha256": "3b902b8a627f3b02d145d03f9ef9a1b72e2c9320bfa2d8c2fa2b72e33e201c7e",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -1503,7 +1503,7 @@
     {
       "entry": "elevenlabs",
       "package": "@executor.sh/elevenlabs",
-      "sourceSha256": "26dad4827d62281d8b1f844b536506904d36967aa9f0aa8e8783c8a78da17d2b",
+      "sourceSha256": "855f67c556ffe883fb4d5708a767b98205125785cfa67c0dc0e5a34fd216ab65",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -1916,7 +1916,7 @@
     {
       "entry": "gitlab",
       "package": "@executor.sh/gitlab",
-      "sourceSha256": "e9b285f14f0908c07227f27d83932fd4da612ea1daba78668d4cbea765eed242",
+      "sourceSha256": "c65c43648ef3ba270ba8e2d0e65a436cb0f956b40b43a7aa40f4d3d45e277164",
       "methods": {
         "mcp": {
           "kind": "deferred",
@@ -3062,7 +3062,7 @@
     {
       "entry": "miro",
       "package": "@executor.sh/miro",
-      "sourceSha256": "e9bcad4bd7a32dc37b3fc256f28a016c7e6ef0639637f7df77bcd720e0b2bf75",
+      "sourceSha256": "5753e1ebdf0508464c1dcd0548b87bafba82c91c34d76a1e6609c325d09f65c9",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -3264,7 +3264,7 @@
     {
       "entry": "notion",
       "package": "@executor.sh/notion",
-      "sourceSha256": "81f5a49cc4e73a9238bc491be2499d36a7a074c11169d2f8096f75a97763c799",
+      "sourceSha256": "e18e5b0fed72ff90f0d3b78b86e56acc3b140d0d9482d1c67e71d51f2d7d896f",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -4204,7 +4204,7 @@
           "metadataSha256": "ac53a310cc0ec4db31c17d29a1f5886bb67f7429593206adf285c210fe298851"
         }
       },
-      "sourceSha256": "7d2e34276f64cce67bb27e75ee49ac199e6d9f0296cf7283ebf0a3d137b6126a"
+      "sourceSha256": "7e767e79c45c679cc6318b913883551952a929c729b037940e99b405bc034f4d"
     },
     {
       "entry": "servicem8",
@@ -4289,7 +4289,7 @@
     {
       "entry": "slack",
       "package": "@executor.sh/slack",
-      "sourceSha256": "b3f64274264cf608579f96017a230e1c31cd1527c59b9f1d95934a61a6964f34",
+      "sourceSha256": "139ab558c74e3a854ab77caa420c76175ef4064c0123f6d4289e44835b556123",
       "methods": {
         "user": {
           "kind": "hosted",
@@ -4847,7 +4847,7 @@
     {
       "entry": "vercel",
       "package": "@executor.sh/vercel",
-      "sourceSha256": "d1c40dcb7b796d82412f51ef38d568b67ad24baf050b6c00085539a8c0dee347",
+      "sourceSha256": "9208d8eadf8d9980387f40b935b4be29cb95b3a8e9794d3dd60ef97437d3de29",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -5108,7 +5108,7 @@
     {
       "entry": "workos",
       "package": "@executor.sh/workos",
-      "sourceSha256": "96de3d55cbc7f119b911770a609e69ae05e5409c65493dc4cfee104b9df5c197",
+      "sourceSha256": "b4923781454c96493cf299be39f1686777251d72375bcddcd0705bd3274ea4b5",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -5292,7 +5292,7 @@
     {
       "entry": "zoho-people",
       "package": "@signalbox/zoho-people",
-      "sourceSha256": "50429858f9e1238705653024db73b25e7afbc22ed3774bf7f237380b309d24d1",
+      "sourceSha256": "efd9af9872881a3ee11bf179feca5c860381e2c814eed00cb792c7c1cf87aa1a",
       "methods": {
         "oauthEu": {
           "kind": "hosted",
@@ -5593,7 +5593,7 @@
           "message": "Shared sign-in for PlanetScale is not configured on this host. You can connect with your own OAuth app or a service token."
         }
       },
-      "sourceSha256": "c4001bccfee500d69d08d968798250088b2f13350ccf4c859e4dd26c4eb0ec7f"
+      "sourceSha256": "0e31dec5459f6b8b6beab13ca6c19776efb17f3202b9fc185011f8e8cbf4ac01"
     }
   ]
 }
