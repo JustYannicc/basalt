@@ -145,6 +145,58 @@ diff --git a/apps/hosted/server/src/implementation/resource-directory.ts b/apps/
      const executor = yield* Effect.flatten(HostedExecutor);
      const { owner } = yield* CurrentOrganization;
      const policy = yield* CurrentAuthorization;
+diff --git a/e2e/tests/app-account-links.spec.ts b/e2e/tests/app-account-links.spec.ts
+--- a/e2e/tests/app-account-links.spec.ts
++++ b/e2e/tests/app-account-links.spec.ts
+@@ -36,6 +36,7 @@
+ import { advanceToReconciliation, installBrowserClock } from "../support/query-transition.ts";
+ import { scenarios } from "../test-plan.ts";
+ import { appsManifest } from "../support/apps-release.ts";
++import { managementApp } from "../support/management-app.ts";
+ 
+ /** Inbox has a plain and a many() requirement on one provider, each linked on its own. */
+ const source = `import {defineApp,defineProvider,secrets,query,object,string, router} from "apps";
+@@ -127,14 +128,14 @@
+         owned.push({ actor, id });
+         return id;
+       });
+-    /** The IDs of the accounts `actor` has saved, linked to an app or not. */
++    /** People's saved sign-ins, linked to an app or not, exclude host-managed credentials. */
+     const saved = (actor: Session) =>
+       Effect.gen(function* () {
+-        const inventory = yield* body(
+-          Schema.Struct({ accounts: Schema.Array(Schema.Struct({ id: Schema.String })) }),
+-          yield* api.request(actor, "GET", `${prefix}/inventory`),
+-        );
+-        return inventory.accounts.map((account) => account.id);
++        const directory = yield* body(
++          Schema.Struct({ accounts: Schema.Array(Schema.Struct({ account: Resource })) }),
++          yield* api.request(actor, "GET", `${prefix}/resources`),
++        );
++        return directory.accounts.map(({ account }) => account.id);
+       });
+     return { api, actors, browser, prefix, files, app, path, url, owned, connect, saved };
+   });
+@@ -251,8 +252,18 @@
+     withHostedCase(
+       context,
+       Effect.gen(function* () {
+-        const { actors, browser, path, url, owned, saved } = yield* inboxFixture;
++        const { api, actors, browser, prefix, path, url, owned, saved } = yield* inboxFixture;
+         const before = (yield* saved(actors.member)).sort();
++        const { account: hostKey } = yield* managementApp(actors.member);
++        const inventory = yield* body(
++          Schema.Struct({ accounts: Schema.Array(Resource) }),
++          yield* api.request(actors.member, "GET", `${prefix}/inventory`),
++        );
++        expect(inventory.accounts.map((account) => account.id)).toContain(hostKey);
++        expect(
++          yield* saved(actors.member),
++          "host credentials are not saved sign-ins",
++        ).not.toContain(hostKey);
+         expect(yield* linkedAccountIds(actors.member, path)).toEqual([]);
+         yield* browser.login(actors.member);
+         yield* browser.use("Open the shared inbox app", (page) => page.goto(`${url}?view=tools`));
 diff --git a/e2e/tests/executor-key-account.spec.ts b/e2e/tests/executor-key-account.spec.ts
 --- a/e2e/tests/executor-key-account.spec.ts
 +++ b/e2e/tests/executor-key-account.spec.ts
