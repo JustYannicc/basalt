@@ -1,0 +1,75 @@
+name: Exact pool runtime recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      plan_json:
+        description: Exact reviewed runtime recovery plan JSON; non-secret pins only
+        required: true
+        type: string
+      plan_sha256:
+        description: Reviewed canonical plan SHA-256; every pin must still match
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: production-release
+      deployment: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Prepare the pinned operator dependencies
+        run: npm run prepare:upstream
+      - name: Dry run the reviewed target
+        run: bun scripts/runtime-recovery/entry.ts dry-run
+        env:
+          RECOVERY_PLAN_JSON: ${{ inputs.plan_json }}
+          RECOVERY_PLAN_SHA256: ${{ inputs.plan_sha256 }}
+          RECOVERY_OUTPUT_DIRECTORY: ${{ runner.temp }}/runtime-recovery
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      - name: Retain the dry run before any restart
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-recovery-before-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runtime-recovery
+          if-no-files-found: error
+          retention-days: 30
+      - name: Run the exact reviewed restart
+        run: bun scripts/runtime-recovery/entry.ts apply
+        env:
+          RECOVERY_PLAN_JSON: ${{ inputs.plan_json }}
+          RECOVERY_PLAN_SHA256: ${{ inputs.plan_sha256 }}
+          RECOVERY_OUTPUT_DIRECTORY: ${{ runner.temp }}/runtime-recovery
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          POOL_APP_SIGNING_KEY: ${{ secrets.POOL_APP_SIGNING_KEY }}
+      - name: Retain the exact operation and any uncertain submission marker
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-recovery-result-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runtime-recovery
+          if-no-files-found: error
+          retention-days: 30
