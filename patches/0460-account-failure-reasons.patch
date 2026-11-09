@@ -359,6 +359,61 @@ diff --git a/e2e/tests/account-observations.spec.ts b/e2e/tests/account-observat
          });
          const now = new Date().toISOString();
          const future = new Date(Date.now() + 365 * 86_400_000).toISOString();
+diff --git a/e2e/tests/native-subscription-health.spec.ts b/e2e/tests/native-subscription-health.spec.ts
+--- a/e2e/tests/native-subscription-health.spec.ts
++++ b/e2e/tests/native-subscription-health.spec.ts
+@@ -24,11 +24,6 @@
+ export default defineApp({ user: { accounts: { openai: openai.many() } } }, {});`;
+ 
+ const Detail = Schema.Struct({ account: Schema.Struct({ label: Schema.String }) });
+-const DriverMessage = Schema.Struct({
+-  driver: Schema.Struct({
+-    check: Schema.Struct({ message: Schema.optionalKey(Schema.String) }),
+-  }),
+-});
+ // The row's own container, so captures show the account, its apps and the health line together.
+ const inventoryRow =
+   "xpath=ancestor::div[contains(concat(' ', @class, ' '), ' inventory-row ')][1]";
+@@ -159,7 +154,6 @@
+         expect(shown[4]).toEqual([]);
+         expect(shown[5]).toBe(0);
+ 
+-        let failed = healthy;
+         for (const [reason, status] of [
+           ["unauthorized", "credentials_rejected"],
+           ["rate_limited", "upstream_unavailable"],
+@@ -170,11 +164,19 @@
+           expect(result.status, JSON.stringify(result.body)).toBe(200);
+           expect(result.body).toMatchObject({ driver: { check: { status, current: true } } });
+           expect(JSON.stringify(result.body)).not.toContain("opaque-subscription-reference");
+-          failed = result;
++          expect(result.body).toMatchObject({
++            driver: {
++              check: {
++                failure: {
++                  phase: "vendor",
++                  tag: "ProviderError",
++                  detail: { source: "provider", reason },
++                },
++              },
++            },
++          });
+         }
+ 
+-        // A current failure keeps the line compact and shows the reason the driver gave.
+-        const reported = (yield* body(DriverMessage, failed)).driver.check.message;
+         yield* browser.use("Reload Accounts after the service stops answering", (page) =>
+           page
+             .reload()
+@@ -184,7 +186,7 @@
+         yield* capture("unavailable");
+         const unavailable = yield* readRow("Read the unavailable subscription row");
+         expect(unavailable.slice(1, 4)).toEqual(["upstream_unavailable", "true", true]);
+-        expect(unavailable[4]).toEqual(reported === undefined ? [] : [reported]);
++        expect(unavailable[4]).toEqual(["The provider is unavailable."]);
+         expect(unavailable[5], "an unavailable service never asks to reconnect").toBe(0);
+         const calls = (yield* backend.calls).length;
+         expect((yield* api.request(actors.member, "POST", `${accountPath}/health`)).status).toBe(
 diff --git a/packages/sdk/src/contracts/account-check-failure.ts b/packages/sdk/src/contracts/account-check-failure.ts
 --- a/packages/sdk/src/contracts/account-check-failure.ts
 +++ b/packages/sdk/src/contracts/account-check-failure.ts
