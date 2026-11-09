@@ -221,7 +221,12 @@ export class NativeMemberships {
     const pools = await this.run(async (state) => Object.keys(state));
     if (!pools.length) return;
     await this.schedule();
-    await Promise.allSettled(pools.map((pool) => this.refresh(pool)));
+    try {
+      await Promise.allSettled(pools.map((pool) => this.refresh(pool)));
+    } finally {
+      // An alarm can consume the deadline while joining an HTTP-triggered repair.
+      await this.schedule();
+    }
   }
   refresh(pool: string): Promise<void> {
     const active = this.running.get(pool);

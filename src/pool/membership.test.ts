@@ -180,12 +180,16 @@ test("overlapping ticks share one upkeep pass without postponing its alarm or st
   const overlap = [memberships.tick(), memberships.tick()];
   release.resolve();
   await Promise.all([first, ...overlap]);
-  assert.deepEqual(f.alarms, [deadline], "overlap must retain the first pass's short deadline");
+  assert.deepEqual(
+    f.alarms,
+    [deadline, deadline! + 13_800],
+    "one shared pass rearms on completion",
+  );
   assert.equal(reads, 1, "late callers must not queue another repair behind the active pass");
   assert.equal((await memberships.authority("a"))?.dirty, false);
   await memberships.tick();
   assert.equal(reads, 2, "a later alarm starts a fresh pass");
-  assert.equal(f.alarms.length, 2);
+  assert.equal(f.alarms.length, 4);
 });
 
 test("a rejected tick releases upkeep so the next alarm can repair membership", async () => {
@@ -203,6 +207,23 @@ test("a rejected tick releases upkeep so the next alarm can repair membership", 
   await assert.rejects(memberships.tick(), /alarm storage unavailable/);
   rejectSchedule = false;
   await memberships.tick();
+  assert.deepEqual((await memberships.authority("a"))?.accounts, ["auth-a"]);
+});
+
+test("a failed completion rearm releases the shared tick for the next alarm", async () => {
+  const f = fixture();
+  let schedules = 0;
+  const memberships = new NativeMemberships({
+    ...f.deps,
+    schedule: async (at) => {
+      if (++schedules === 3) throw new Error("completion alarm write failed");
+      await f.deps.schedule(at);
+    },
+  });
+  await memberships.reserve(await f.request());
+  await assert.rejects(memberships.tick(), /completion alarm write failed/);
+  await memberships.tick();
+  assert.equal(schedules, 5);
   assert.deepEqual((await memberships.authority("a"))?.accounts, ["auth-a"]);
 });
 
