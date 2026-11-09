@@ -1,5 +1,5 @@
 // One ordinary job per VM keeps the 16 GB runner free of competing suites.
-// Twelve non-matrix jobs fit the $20 plan's included starts per minute.
+// Eleven non-matrix jobs fit the $20 tier's included starts per minute.
 export const boatJobs = [
   "host-managed-accounts",
   "host-managed-accounts-adopted",
@@ -7,7 +7,6 @@ export const boatJobs = [
   "host-managed-accounts-local",
   "host-managed-accounts-cloud",
   "production-ops",
-  "production-ops-migrations",
   "account-acquisition",
   "compiler-diagnostics",
   "pool-runtime",

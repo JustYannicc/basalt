@@ -13,7 +13,7 @@ const workflow = parse(
 );
 
 test("native Boat jobs fit the included start burst and retain individual job gates", () => {
-  assert.equal(boatJobs.length, 12);
+  assert.equal(boatJobs.length, 11);
   assert.equal(new Set(boatJobs).size, boatJobs.length);
   for (const id of boatJobs) {
     assert.ok(heavyJobs.includes(id), id);
@@ -67,6 +67,7 @@ test("same-repository PR proof requests the full lane without changing normal ro
   for (const value of [
     "unknown",
     "production-ops-identity",
+    "production-ops-migrations",
     "client-desktop",
     "declared-self-host",
   ])
@@ -116,5 +117,27 @@ test("pool fixture networking is scoped to Boat and checked before the original 
   assert.equal(
     steps[contracts].run,
     "node --test --test-concurrency=1 scripts/pool-tests/*.test.ts",
+  );
+});
+
+test("signed migration proofs stay hosted with their original commands and budgets", () => {
+  const job = workflow.jobs["production-ops-migrations"];
+  assert.equal(job["runs-on"], "ubuntu-latest");
+  assert.ok(!boatJobs.includes("production-ops-migrations"));
+  assert.equal(job["timeout-minutes"], 14);
+  const adoption = job.steps.find(
+    (step: { name?: string }) =>
+      step.name === "Verify exact provider account adoption through signed operations",
+  );
+  const migrations = job.steps.find(
+    (step: { name?: string }) =>
+      step.name === "Verify migration ownership through signed apply verification and replay",
+  );
+  assert.equal(adoption["timeout-minutes"], 5);
+  assert.equal(adoption.run, "node scripts/production-ops/prove-provider-adoption.ts");
+  assert.equal(migrations["timeout-minutes"], 5);
+  assert.equal(
+    migrations.run,
+    'BASALT_SCOPE_PROOF_PATTERN="$(node scripts/ci/e2e-pattern.ts production-ops:migrations)" node scripts/production-ops/prove-scope.ts',
   );
 });

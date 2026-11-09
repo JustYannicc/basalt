@@ -1109,7 +1109,7 @@ jobs:
   production-ops-migrations:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'production-ops-migrations')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'production-ops-migrations') && 'boat-large' || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 14
     steps:
       - uses: actions/checkout@v4
