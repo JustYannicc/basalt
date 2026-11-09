@@ -1,5 +1,5 @@
 import { PoolDependencyFailure, poolDependency } from "./dependency-failure.ts";
-import { unavailable } from "./json.ts";
+import { diagnosePoolFailure, unavailable } from "./json.ts";
 import { policyPrefix, type NativeMembershipPolicy } from "./membership-contract.ts";
 import { signEnvelope } from "./token.ts";
 
@@ -26,7 +26,11 @@ export async function installNativePolicy(
   );
   if (!response.ok) {
     if (response.body) await poolDependency("membership", response.body.cancel());
-    return unavailable();
+    return unavailable({
+      guard: "native_policy_install",
+      failure: "response_status",
+      backendStatus: response.status,
+    });
   }
   const body = await poolDependency("membership", response.text());
   let acknowledgement: unknown;
@@ -34,7 +38,10 @@ export async function installNativePolicy(
     acknowledgement = JSON.parse(body);
   } catch (cause) {
     if (!(cause instanceof SyntaxError)) throw cause;
-    throw new PoolDependencyFailure("membership", cause);
+    throw diagnosePoolFailure(new PoolDependencyFailure("membership", cause), {
+      guard: "native_policy_install",
+      failure: "invalid_body",
+    });
   }
   if (
     typeof acknowledgement !== "object" ||
@@ -44,5 +51,5 @@ export async function installNativePolicy(
     !("revision" in acknowledgement) ||
     acknowledgement.revision !== policy.revision
   )
-    return unavailable();
+    return unavailable({ guard: "native_policy_install", failure: "invalid_body" });
 }

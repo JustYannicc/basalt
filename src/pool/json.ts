@@ -2,6 +2,58 @@ import type { ControlError, ControlErrorCode } from "../../apps/pool/contract.ts
 
 export type Json = Record<string, unknown>;
 
+export interface PoolFailureDiagnostic {
+  guard: "membership_read" | "membership_body" | "reconciliation" | "native_policy_install";
+  failure:
+    | "response_status"
+    | "invalid_body"
+    | "transport"
+    | "timeout"
+    | "runtime_unhealthy"
+    | "storage"
+    | "unknown";
+  backendStatus?: number;
+}
+const diagnostics = new WeakMap<object, PoolFailureDiagnostic>();
+const diagnosticGuards = new Set<PoolFailureDiagnostic["guard"]>([
+  "membership_read",
+  "membership_body",
+  "reconciliation",
+  "native_policy_install",
+]);
+const diagnosticFailures = new Set<PoolFailureDiagnostic["failure"]>([
+  "response_status",
+  "invalid_body",
+  "transport",
+  "timeout",
+  "runtime_unhealthy",
+  "storage",
+  "unknown",
+]);
+
+/** Annotate the original error without changing how model and control callers handle it. */
+export function diagnosePoolFailure(error: unknown, diagnostic: PoolFailureDiagnostic): unknown {
+  const backendStatus = diagnostic.backendStatus;
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    !diagnostics.has(error) &&
+    diagnosticGuards.has(diagnostic.guard) &&
+    diagnosticFailures.has(diagnostic.failure)
+  )
+    diagnostics.set(error, {
+      guard: diagnostic.guard,
+      failure: diagnostic.failure,
+      ...(typeof backendStatus === "number" &&
+      Number.isInteger(backendStatus) &&
+      backendStatus >= 100 &&
+      backendStatus <= 599
+        ? { backendStatus }
+        : {}),
+    });
+  return error;
+}
+
 export class ControlFailure extends Error {
   readonly status: number;
   readonly code: ControlErrorCode;
@@ -25,8 +77,10 @@ export function fail(
   throw new ControlFailure(status, code, message, retryAfterSeconds);
 }
 const unavailableMessage = "The pool backend is unavailable. Try again later.";
-export function unavailable(): never {
-  return fail(503, "backend_unavailable", unavailableMessage);
+export function unavailable(diagnostic?: PoolFailureDiagnostic): never {
+  const error = new ControlFailure(503, "backend_unavailable", unavailableMessage);
+  if (diagnostic) diagnosePoolFailure(error, diagnostic);
+  throw error;
 }
 export function json(value: unknown, status = 200): Response {
   return Response.json(value, { status, headers: { "Cache-Control": "no-store" } });
@@ -61,6 +115,15 @@ export class BackendFailure extends ControlFailure {
   }
 }
 export function failureResponse(error: unknown): Response {
+  const diagnostic =
+    typeof error === "object" && error !== null ? diagnostics.get(error) : undefined;
+  if (diagnostic && (!(error instanceof ControlFailure) || error.status === 503)) {
+    try {
+      console.error("pool_guard_failure", diagnostic);
+    } catch {
+      /* Diagnostics must not change the refusal. */
+    }
+  }
   if (!(error instanceof ControlFailure)) return unavailableResponse();
   const response = json(error.response(), error.status);
   if (error.retryAfterSeconds !== undefined)

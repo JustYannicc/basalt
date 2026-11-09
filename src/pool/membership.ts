@@ -1,3 +1,4 @@
+import { poolGuard } from "./guard-failure.ts";
 import { poolDependency } from "./dependency-failure.ts";
 import { ControlFailure, object, text } from "./json.ts";
 import { homeReferences } from "./home-references.ts";
@@ -51,7 +52,15 @@ export class NativeMemberships {
   private running = new Map<string, Promise<void>>();
   private deps: Dependencies;
   constructor(deps: Dependencies) {
-    this.deps = deps;
+    this.deps = {
+      ...deps,
+      read: (pool, organization) =>
+        poolGuard("membership_read", () => deps.read(pool, organization)),
+      reconcile: (pool, accounts) =>
+        poolGuard("reconciliation", () => deps.reconcile(pool, accounts)),
+      actual: (pool) => poolGuard("reconciliation", () => deps.actual(pool)),
+      install: (policy) => poolGuard("native_policy_install", () => deps.install(policy)),
+    };
   }
   private now() {
     return this.deps.now?.() ?? Date.now();
