@@ -5,6 +5,7 @@ export interface CapacityWeight {
     | "reference-plan"
     | "published-session-multiplier"
     | "published-weekly-multiplier"
+    | "plan-multiplier"
     | "unknown-plan";
   readonly known: boolean;
   readonly unit: { readonly id: string; readonly label: string };
@@ -17,12 +18,12 @@ const claudeSessionMultiples = new Map([
   ["max 5x", 5],
   ["max 20x", 20],
 ]);
-// Verified 2026-11-09: Max has 5x Pro weekly; legacy Max 20x moves to Ultra with 10x Pro weekly.
+// Max 20x follows the pool's 20x plan policy; Max 5x and Ultra retain published weekly limits.
 // https://support.claude.com/en/articles/11049741-what-is-the-max-plan
 // https://support.claude.com/en/articles/17728952-what-is-the-ultra-plan
 const claudeWeeklyMultiples = new Map([
   ["max 5x", 5],
-  ["max 20x", 10],
+  ["max 20x", 20],
   ["ultra", 10],
 ]);
 
@@ -48,19 +49,23 @@ export function capacityWeight(
         ? claudeWeeklyMultiples
         : undefined;
   const multiple = claude && name !== undefined ? multiples?.get(name) : undefined;
+  const planPolicy = claude && name === "max 20x" && windowSeconds === 604_800;
   return {
     multiplier: multiple ?? 1,
-    source: reference
-      ? "reference-plan"
-      : multiple === undefined
-        ? "unknown-plan"
-        : windowSeconds === 604_800
-          ? "published-weekly-multiplier"
-          : "published-session-multiplier",
+    source: planPolicy
+      ? "plan-multiplier"
+      : reference
+        ? "reference-plan"
+        : multiple === undefined
+          ? "unknown-plan"
+          : windowSeconds === 604_800
+            ? "published-weekly-multiplier"
+            : "published-session-multiplier",
     known: reference || multiple !== undefined,
     unit,
-    revision:
-      claude && windowSeconds === 604_800 && multiple !== undefined
+    revision: planPolicy
+      ? "2026-11-09-max20x-20"
+      : claude && windowSeconds === 604_800 && multiple !== undefined
         ? claudeWeeklyWeightRevision
         : capacityWeightRevision,
   };

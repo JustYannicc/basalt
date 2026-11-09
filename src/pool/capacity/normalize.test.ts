@@ -117,11 +117,11 @@ test("Home's Max 20x quota detail produces a recognised weekly contribution with
   const [reading] = capacityReadings("max-seat", "claude", quota, now);
   assert.ok(reading);
   assert.equal(reading.plan, "Max 20x");
-  assert.equal(reading.full, 10);
-  assert.equal(reading.remaining, 4);
+  assert.equal(reading.full, 20);
+  assert.equal(reading.remaining, 8);
   assert.equal(reading.knownWeight, true);
-  assert.equal(reading.source, "published-weekly-multiplier");
-  assert.equal(reading.revision, "2026-11-09");
+  assert.equal(reading.source, "plan-multiplier");
+  assert.equal(reading.revision, "2026-11-09-max20x-20");
 });
 
 test("absolute weekly allowances retain their unchanged revision", () => {

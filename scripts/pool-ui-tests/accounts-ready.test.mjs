@@ -52,6 +52,7 @@ const emptyUsage = {
 const artifacts = process.env.POOL_UI_ARTIFACTS;
 // Optional baseline: build that commit's app.tsx, accounts.tsx and api.ts into the fixture instead of the working tree.
 const sourceRef = process.env.POOL_UI_SOURCE_REF;
+const weightPolicyRef = process.env.POOL_UI_WEIGHT_POLICY_REF;
 const planBaseline = process.env.POOL_UI_PLAN_BASELINE === "1";
 const samplerRef = process.env.POOL_UI_SAMPLER_REF;
 const subscriptionsBaseline = process.env.POOL_UI_SUBSCRIPTIONS_BASELINE === "1";
@@ -888,6 +889,20 @@ test(
         },
       );
 
+    let policyWeight = capacityWeight;
+    if (weightPolicyRef) {
+      const path = join(directory, "baseline-weights.ts");
+      writeFileSync(
+        path,
+        execFileSync("git", [
+          "-C",
+          root,
+          "show",
+          `${weightPolicyRef}:src/pool/capacity/weights.ts`,
+        ]),
+      );
+      policyWeight = (await import(pathToFileURL(path).href)).capacityWeight;
+    }
     for (const width of [1280, 390])
       await t.test(`Claude weekly plan weights and retained estimates at ${width}px`, async () => {
         for (const retained of [false, true]) {
@@ -901,18 +916,20 @@ test(
               [0.4, 0.4],
             ],
           }).value;
-          value.accounts = value.accounts
-            .filter(({ provider }) => provider === "claude")
-            .map((account) => ({ ...account, plan: "Max 20x" }));
+          value.accounts = value.accounts.map((account) => ({
+            ...account,
+            provider: "claude",
+            plan: "Max 20x",
+          }));
           value.providers = providers;
           viewResult = { ok: true, value };
           const conservative = retained || planBaseline;
-          const weight = capacityWeight("claude", "Max 20x", 604_800);
+          const weight = policyWeight("claude", "Max 20x", 604_800);
           await session(
             async ({ page, frame, settled }) => {
               release();
               await frame
-                .getByText("1 subscription account across 1 lab", { exact: true })
+                .getByText("3 subscription accounts across 1 lab", { exact: true })
                 .waitFor();
               await frame.locator("#capacity article").waitFor();
               await settled();
@@ -926,7 +943,11 @@ test(
                   assert.match(body, /Max 20x counted conservatively/);
                   assert.match(body, /conservative estimate · 1x/);
                 } else {
-                  assert.match(body, /published weekly multiplier/);
+                  assert.match(
+                    body,
+                    weightPolicyRef ? /published weekly multiplier/ : /plan multiplier/,
+                  );
+                  assert.match(body, new RegExp(`Nominal ${weightPolicyRef ? 30 : 60} Pro-eq`));
                   assert.doesNotMatch(body, /Max 20x counted conservatively/);
                 }
               }
@@ -947,20 +968,20 @@ test(
               capacity: (input) => {
                 const result = capacityFixture(input);
                 const at = input.to;
-                const full = conservative ? 1 : weight.multiplier;
+                const full = (conservative ? 1 : weight.multiplier) * 3;
                 const reading = {
                   remaining: full * 0.4,
                   full,
                   at,
                   observedAt: { from: at, to: at },
-                  accountCount: 1,
-                  knownWeightCount: conservative ? 0 : 1,
-                  unknownWeightCount: conservative ? 1 : 0,
+                  accountCount: 3,
+                  knownWeightCount: conservative ? 0 : 3,
+                  unknownWeightCount: conservative ? 3 : 0,
                   weights: [
                     {
                       source: conservative ? "unknown-plan" : weight.source,
                       revision: conservative ? "2026-10-30" : weight.revision,
-                      accountCount: 1,
+                      accountCount: 3,
                     },
                   ],
                 };

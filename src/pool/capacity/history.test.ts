@@ -544,56 +544,66 @@ test("plan contributions match the total minimum and an unknown plan can disappe
   );
 });
 
-test("new Max 20x weekly weights leave retained conservative observations unchanged", async () => {
-  const storage = new Memory();
-  const first = new CapacityHistory(storage);
-  const weekly = [{ provider: "claude", windowSeconds: 604_800, accounts: 1 }];
-  await first.observe("pool-weekly", {
-    at: start,
-    expected: weekly,
-    readings: [
-      reading("max-seat", 0.4, {
-        plan: "Max 20x",
-        windowSeconds: 604_800,
-        full: 1,
-        source: "unknown-plan",
-        knownWeight: false,
-        revision: "2026-10-30",
-      }),
-    ],
+for (const prior of [
+  { full: 1, remaining: 0.4, source: "unknown-plan", known: false, revision: "2026-10-30" },
+  {
+    full: 10,
+    remaining: 4,
+    source: "published-weekly-multiplier",
+    known: true,
+    revision: "2026-11-09",
+  },
+] as const)
+  test(`Max 20x policy leaves retained ${prior.full}x observations unchanged`, async () => {
+    const storage = new Memory();
+    const first = new CapacityHistory(storage);
+    const weekly = [{ provider: "claude", windowSeconds: 604_800, accounts: 1 }];
+    await first.observe("pool-weekly", {
+      at: start,
+      expected: weekly,
+      readings: [
+        reading("max-seat", prior.remaining, {
+          plan: "Max 20x",
+          windowSeconds: 604_800,
+          full: prior.full,
+          source: prior.source,
+          knownWeight: prior.known,
+          revision: prior.revision,
+        }),
+      ],
+    });
+    const history = new CapacityHistory(storage);
+    const current = capacityWeight("claude", "Max 20x", 604_800);
+    await history.observe("pool-weekly", {
+      at: start + hour,
+      expected: weekly,
+      readings: [
+        reading("max-seat", 8, {
+          plan: "Max 20x",
+          windowSeconds: 604_800,
+          observedAt: start + hour - 60_000,
+          full: current.multiplier,
+          source: current.source,
+          knownWeight: current.known,
+          revision: current.revision,
+        }),
+      ],
+    });
+    const points = await history.read("pool-weekly");
+    assert.equal(points.length, 2);
+    assert.equal(points[0]!.last.full, prior.full);
+    assert.equal(points[0]!.last.remaining, prior.remaining);
+    assert.equal(points[0]!.last.unknownWeightCount, prior.known ? 0 : 1);
+    assert.deepEqual(points[0]!.last.weights, [
+      { source: prior.source, revision: prior.revision, accountCount: 1 },
+    ]);
+    assert.equal(points[1]!.last.full, 20);
+    assert.equal(points[1]!.last.remaining, 8);
+    assert.equal(points[1]!.last.unknownWeightCount, 0);
+    assert.deepEqual(points[1]!.last.weights, [
+      { source: "plan-multiplier", revision: "2026-11-09-max20x-20", accountCount: 1 },
+    ]);
   });
-  const history = new CapacityHistory(storage);
-  const current = capacityWeight("claude", "Max 20x", 604_800);
-  await history.observe("pool-weekly", {
-    at: start + hour,
-    expected: weekly,
-    readings: [
-      reading("max-seat", 4, {
-        plan: "Max 20x",
-        windowSeconds: 604_800,
-        observedAt: start + hour - 60_000,
-        full: current.multiplier,
-        source: current.source,
-        knownWeight: current.known,
-        revision: current.revision,
-      }),
-    ],
-  });
-  const points = await history.read("pool-weekly");
-  assert.equal(points.length, 2);
-  assert.equal(points[0]!.last.full, 1);
-  assert.equal(points[0]!.last.remaining, 0.4);
-  assert.equal(points[0]!.last.unknownWeightCount, 1);
-  assert.deepEqual(points[0]!.last.weights, [
-    { source: "unknown-plan", revision: "2026-10-30", accountCount: 1 },
-  ]);
-  assert.equal(points[1]!.last.full, 10);
-  assert.equal(points[1]!.last.remaining, 4);
-  assert.equal(points[1]!.last.unknownWeightCount, 0);
-  assert.deepEqual(points[1]!.last.weights, [
-    { source: "published-weekly-multiplier", revision: "2026-11-09", accountCount: 1 },
-  ]);
-});
 
 test("a Claude weekly policy reset preserves Codex demand and Claude rolling training", async () => {
   const start = Date.parse("2026-11-03T10:55:00Z");
@@ -609,14 +619,14 @@ test("a Claude weekly policy reset preserves Codex demand and Claude rolling tra
     { provider: "claude", windowSeconds: 18_000, accounts: 1 },
   ];
   const samples = (at: number, consumed: boolean) => [
-    reading("claude-weekly", consumed ? 0.9 : 1, {
+    reading("claude-weekly", consumed ? 9 : 10, {
       plan: "Max 20x",
       windowSeconds: 604_800,
       mode: "fixed",
-      full: 1,
+      full: 10,
       observedAt: at,
       resetAt: start + 7 * 24 * hour,
-      revision: "2026-10-30",
+      revision: "2026-11-09",
     }),
     reading("codex-weekly", consumed ? 0.9 : 1, {
       provider: "codex",
@@ -663,7 +673,14 @@ test("a Claude weekly policy reset preserves Codex demand and Claude rolling tra
     expected,
     accountStates,
     readings: [
-      { ...priorReadings[0]!, full: 10, remaining: 9, revision: "2026-11-09", observedAt: at },
+      {
+        ...priorReadings[0]!,
+        full: 20,
+        remaining: 18,
+        source: "plan-multiplier",
+        revision: "2026-11-09-max20x-20",
+        observedAt: at,
+      },
       ...priorReadings.slice(1),
     ],
   });

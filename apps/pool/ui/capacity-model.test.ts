@@ -455,15 +455,22 @@ test("tooltip aliases merge usable and raw readings without changing capacity hi
   assert.equal(partial[0]!.raw, null, "partial provider quota is not presented as the whole group");
 });
 
-test("recognised Max 20x weekly readings use published weights while retained estimates remain conservative", () => {
+test("Max 20x policy and retained weekly readings keep their recorded provenance", () => {
   const published = {
     ...aggregate(4, 10),
     weights: [
       { source: "published-weekly-multiplier" as const, revision: "2026-11-09", accountCount: 1 },
     ],
   };
+  const policy = {
+    ...aggregate(8, 20),
+    weights: [
+      { source: "plan-multiplier" as const, revision: "2026-11-09-max20x-20", accountCount: 1 },
+    ],
+  };
   const saved = aggregate(0.4, 1, 1);
   for (const [reading, conservative, note] of [
+    [policy, false, "plan multiplier"],
     [published, false, "published weekly multiplier"],
     [saved, true, "conservative estimate · 1x"],
   ] as const) {
