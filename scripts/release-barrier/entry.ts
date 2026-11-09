@@ -1,3 +1,4 @@
+import { assertReleaseStateVersion } from "./release-state-version.ts";
 import { undoForwardAdoption } from "./forward-undo.ts";
 import { resumeForwardRelease } from "./forward-resume.ts";
 import { readFile } from "node:fs/promises";
@@ -108,6 +109,7 @@ const result = await Effect.runPromiseExit(
                   });
                 })
           ).pipe(
+            (effect) => assertReleaseStateVersion(compiled).pipe(Effect.andThen(effect)),
             Effect.provideContext(compiled.services),
             Effect.provideService(State, Context.get(compiled.services, State)),
           ),

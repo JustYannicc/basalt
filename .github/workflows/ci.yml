@@ -95,7 +95,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/setup-node
         with:
@@ -103,7 +104,14 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Bind the probe to current main and the exact PR head
+        id: probe-candidate
+        run: node scripts/ci/probe-candidate.ts
+        env:
+          BASALT_PROBE_HEAD: ${{ github.event.pull_request.head.sha }}
       - run: npm run prepare:upstream
+        env:
+          GITHUB_SHA: ${{ steps.probe-candidate.outputs.candidate }}
       - name: Compare every production Worker setting and container baseline through the release client
         run: |
           BASALT_RELEASE_ATTEMPT="$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')" \
@@ -111,6 +119,7 @@ jobs:
           BASALT_RELEASE_ATTEMPT="$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')" \
             bun scripts/release-barrier/forward-probe-entry.ts
         env:
+          GITHUB_SHA: ${{ steps.probe-candidate.outputs.candidate }}
           GITHUB_TOKEN: ${{ github.token }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -170,6 +179,7 @@ jobs:
           path: |
             .local/baseline-probe.json
             .local/forward-probe/preparation.json
+            .local/probe-candidate.json
           include-hidden-files: true
           if-no-files-found: warn
 

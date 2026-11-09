@@ -6,6 +6,7 @@ import { recordedContainer } from "./forward-model.ts";
 import { containerKey } from "./forward-journal.ts";
 import { retiredPlacements } from "./placement-retirement.ts";
 import { reportBaselineProbe } from "./baseline-probe-report.ts";
+import { assertReleaseStateVersion } from "./release-state-version.ts";
 import { releaseEvidence } from "./evidence.ts";
 import { reportRefusal, refusalTable } from "./refusal-report.ts";
 import { mkdir, writeFile, appendFile } from "node:fs/promises";
@@ -45,6 +46,7 @@ try {
           root,
           (compiled) =>
             Effect.gen(function* () {
+              yield* assertReleaseStateVersion(compiled, guarded, "forward-probe");
               const actual = yield* yield* State;
               const deny = () =>
                 Effect.die(new BarrierRefusal("forward-probe-state-write-refused"));
