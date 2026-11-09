@@ -42,13 +42,14 @@ export const finishPlan = (
             : (activatedContainers.get(fqn) ??
               prepared.builds.get(fqn) ??
               prepared.checkedCommands.get(fqn));
+        // Apply exposes saved cycle attributes to peers before reconciliation.
+        // Seed the verified outputs so transient baseline inputs never reappear.
+        const finalized =
+          result && prepared.plan.cycleMembers.has(fqn) && node.action === "update"
+            ? { ...node, state: { ...node.state, attr: result } }
+            : node;
         resources[fqn] = {
-          ...node,
-          // Apply exposes saved cycle attributes to peers before reconciliation.
-          // Seed the verified outputs so transient baseline inputs never reappear.
-          ...(result && prepared.plan.cycleMembers.has(fqn) && node.state && "attr" in node.state
-            ? { state: { ...node.state, attr: result } }
-            : {}),
+          ...finalized,
           provider: {
             ...node.provider,
             reconcile: (input) =>
