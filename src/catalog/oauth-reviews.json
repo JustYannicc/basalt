@@ -4201,7 +4201,7 @@
           "kind": "automatic",
           "protocol": "dcr",
           "metadata": "https://mcp.sentry.dev/.well-known/oauth-authorization-server",
-          "metadataSha256": "ac53a310cc0ec4db31c17d29a1f5886bb67f7429593206adf285c210fe298851"
+          "metadataSha256": "48af54e2e9736b4e947a3250093ec3c1fef2924aa7a38949047e9fc898fc0033"
         }
       },
       "sourceSha256": "7d2e34276f64cce67bb27e75ee49ac199e6d9f0296cf7283ebf0a3d137b6126a"
