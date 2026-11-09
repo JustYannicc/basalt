@@ -1,7 +1,7 @@
 {
   "identity": "executor-provider-install-state",
   "file": "0439-provider-install-state.patch",
-  "content_sha256": "45118d15af03ab612a960305c20471b23bb726cdaadda7c1e394cbd015b3caaf",
+  "content_sha256": "1f60dc820f7e4d659fc60bad9b5894ec0f65f79222e0178f12977acb957fd28c",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

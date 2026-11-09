@@ -3,7 +3,13 @@ import { test } from "node:test";
 import { Crypto, Effect } from "effect";
 import { providers } from "../../src/pool/provider-accounts/definitions.ts";
 import { fixture } from "./provider-destinations-fixture.ts";
-import { providerAccountContext, methods, sdk } from "./provider-destinations-modules.ts";
+import {
+  providerAccountContext,
+  methods,
+  sdk,
+  resources,
+  AccountListReads,
+} from "./provider-destinations-modules.ts";
 
 const native = { shape: "literal", native: true } as const;
 
@@ -154,6 +160,43 @@ test("registered pools never become connection destinations, even with provider 
           const provider = listed.find((entry) => entry.id === "app_jev")!;
           yield* sql`update organization set metadata = jsonb_set(metadata::jsonb, '{basaltPools,second}', ${JSON.stringify({ app: provider.id })}::jsonb)::text`;
           const context = yield* providerAccountContext(app, ["jev"]);
+          assert.deepEqual(context.destination("jev"), { kind: "catalog", entry: "provider-jev" });
+        }),
+      native,
+    ),
+  );
+});
+
+test("an incomplete Accounts snapshot cannot hide a newly listed registered pool", async () => {
+  await Effect.runPromise(
+    fixture(
+      ({ app, listed, sql }) =>
+        Effect.gen(function* () {
+          const provider = listed.find((entry) => entry.id === "app_jev")!;
+          yield* sql`update organization set metadata = jsonb_set(metadata::jsonb, '{basaltPools,second}', ${JSON.stringify({ app: provider.id })}::jsonb)::text`;
+          const actor = yield* resources.currentResourceAuthority;
+          const context = yield* providerAccountContext(app, ["jev"]).pipe(
+            Effect.provideService(AccountListReads, {
+              owner: app.owner,
+              actor,
+              apps: new Map([[app.id, app]]),
+              pools: new Set([app.id]),
+              appAccesses: new Map(),
+              accountAccesses: new Map(),
+              userLinks: [],
+              records: [],
+              managed: new Set<never>(),
+              identity: { held: new Set<never>(), linked: new Map(), labels: new Map() },
+              observations: new Map(),
+              snapshot: {
+                accounts: [],
+                providers: new Map(),
+                signIns: new Map(),
+                acquired: new Set<never>(),
+                health: [],
+              },
+            }),
+          );
           assert.deepEqual(context.destination("jev"), { kind: "catalog", entry: "provider-jev" });
         }),
       native,

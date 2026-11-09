@@ -24,13 +24,14 @@ diff --git a/apps/hosted/server/src/implementation/provider-account-context.ts b
  
  type Slot = App["requirements"]["accounts"][string];
  const unavailable = (reason: string) => ({ kind: "unavailable" as const, reason });
-@@ -109,18 +117,48 @@
+@@ -109,18 +117,49 @@
        family === undefined || found.some((plan) => plan.family !== family)
          ? null
          : { family, requirements: found.map((plan) => plan.requirement) };
 +    const reads = yield* AccountListReads;
++    const covered = reads !== undefined && apps.every((candidate) => reads.apps.has(candidate.id));
 +    const poolIds =
-+      reads === undefined && apps.length !== 0
++      !covered && apps.length !== 0
 +        ? yield* Effect.gen(function* () {
 +            const sql = yield* policyDatabase;
 +            return yield* sql`select app.id
@@ -43,7 +44,7 @@ diff --git a/apps/hosted/server/src/implementation/provider-account-context.ts b
 +                where pool.value ->> 'app' = app.id)`;
 +          })
 +        : [];
-+    const pools = reads?.pools ?? new Set(poolIds.map((row) => row.id));
++    const pools = covered ? reads.pools : new Set(poolIds.map((row) => row.id));
 +    const { registrations } = yield* AccountAcquisitionConfiguration;
      const destination = (requirement: string): ProviderAccountDestination => {
        if (!requested.has(requirement))
