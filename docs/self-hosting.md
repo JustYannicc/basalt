@@ -52,6 +52,8 @@ Prepare a non-secret [recovery plan](../scripts/runtime-recovery/plan.ts) from r
 
 The workflow retains a dry run before submitting anything and refuses changed pins. Its result names the operation, previous and replacement boot, or every observed pin difference. A restart discards in-memory work, including the pending usage queue; it does not change the image or saved accounts. After an uncertain result, rerun that workflow to inspect the same durable receipt. Reruns cannot submit a restart. Do not create another operation to work around uncertainty.
 
+Automatic recovery is off by default. Enable it only for a reviewed target that is already monitored, using the same pool ID for `POOL_AUTOMATIC_RECOVERY_TARGET` and `POOL_AVAILABILITY_TARGET`. Store the non-secret [automatic target](../scripts/runtime-recovery/automatic.ts) and its canonical digest in repository variables `POOL_AUTOMATIC_RECOVERY_PLAN` and `POOL_AUTOMATIC_RECOVERY_PLAN_SHA256`. The protected scheduled workflow requires three minute-spaced view transport failures while current-boot readiness and exact native policy still pass. It permits one attempt per instance per thirty minutes and three in a rolling day. Stopped, unready, invalid-policy and unknown failures require a human decision. Unset the automatic target and plan variables to disable it; retain unresolved operation receipts for inspection.
+
 ## GitHub Actions secrets
 
 GitHub Actions is authoritative for every deploy input; Alchemy-generated credentials, encrypted Cloudflare state and its bootstrap secrets are managed runtime copies, with plaintext scratch allowed only on ephemeral Actions runners and never in the repo, logs, artifacts or persisted developer storage.
