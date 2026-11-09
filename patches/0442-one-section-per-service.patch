@@ -719,21 +719,25 @@ diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/package
 diff --git a/packages/ui/src/implementation/dashboard/name-account.tsx b/packages/ui/src/implementation/dashboard/name-account.tsx
 --- a/packages/ui/src/implementation/dashboard/name-account.tsx
 +++ b/packages/ui/src/implementation/dashboard/name-account.tsx
-@@ -136,7 +136,12 @@ export function NameAccountForm<E>({
+@@ -136,8 +136,15 @@ export function NameAccountForm<E>({
    const offered = identity?.resolving === false ? identity.name?.slice(0, 120) : undefined;
    const [suggestion, setSuggestion] = useState<string>();
    if (suggestion === undefined && offered !== undefined) setSuggestion(offered);
 -  const label = draft ?? authored ?? suggestion ?? offered ?? "";
+-  const waiting = identity?.resolving && label.trim() === "";
 +  // The name the account gets anyway, such as "Clerk secret key", which the field starts with once
 +  // the provider is known.
 +  // A sign-in's check can then report who it signed in as, which replaces it until someone types.
 +  const prefilled =
 +    provider === undefined ? undefined : providerAccountTitle(account, provider.definition);
 +  const label = draft ?? authored ?? suggestion ?? offered ?? prefilled ?? "";
-   const waiting = identity?.resolving && label.trim() === "";
++  // An untouched default names nothing yet, so saving still waits for the check that may name it.
++  const unnamed = label.trim() === "" || (draft === undefined && label === prefilled);
++  const waiting = identity?.resolving && unnamed;
    const status = identity?.resolving
      ? "Checking account…"
-@@ -158,8 +163,11 @@ export function NameAccountForm<E>({
+     : identity?.failed && !authored && !suggestion && !offered
+@@ -158,8 +165,11 @@ export function NameAccountForm<E>({
          const next = label.trim();
          if (pending || waiting) return;
          const described = accountDescriptionValue(description);
