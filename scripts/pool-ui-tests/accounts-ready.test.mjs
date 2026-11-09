@@ -949,7 +949,11 @@ test(
                   );
                   assert.match(
                     body,
-                    new RegExp(`Nominal ${weightPolicyRef ? 30 : 60} · reference`),
+                    new RegExp(
+                      width === 390
+                        ? `Nominal ${weightPolicyRef ? 30 : 60} · reference`
+                        : `Nominal ${weightPolicyRef ? 30 : 60} Pro-eq · every window fresh · reference, not available`,
+                    ),
                   );
                   assert.match(body, /Unit: Pro-eq\./);
                   assert.doesNotMatch(body, /Max 20x counted conservatively/);
