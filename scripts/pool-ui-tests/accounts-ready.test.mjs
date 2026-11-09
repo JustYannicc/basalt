@@ -53,10 +53,17 @@ const artifacts = process.env.POOL_UI_ARTIFACTS;
 const sourceRef = process.env.POOL_UI_SOURCE_REF;
 const planBaseline = process.env.POOL_UI_PLAN_BASELINE === "1";
 const subscriptionsBaseline = process.env.POOL_UI_SUBSCRIPTIONS_BASELINE === "1";
+<<<<<<< HEAD
 const freshnessRef = process.env.POOL_UI_FRESHNESS_REF;
 // Optional baseline: build that commit's overview.tsx and usage-groups.tsx to capture the old people copy.
 const peopleCopyRef = process.env.POOL_UI_PEOPLE_COPY_REF;
 const baselineRef = sourceRef ?? peopleCopyRef;
+=======
+// Optional baseline: build that commit's overview-snapshot.ts and overview.tsx, which withheld a
+// same-snapshot learning verdict whenever usage coverage was partial.
+const learningRef = process.env.POOL_UI_LEARNING_REF;
+const baselineRef = sourceRef ?? learningRef;
+>>>>>>> refs/b40/inputs/750
 const artifactLabel =
   process.env.POOL_UI_ARTIFACT_LABEL ??
   (baselineRef ? `before-${baselineRef.slice(0, 8)}` : "after");
@@ -317,6 +324,7 @@ test(
           join(app, file),
           execFileSync("git", ["-C", root, "show", `a434a2af:${`apps/pool/${file}`}`]),
         );
+<<<<<<< HEAD
     if (planBaseline)
       for (const file of ["ui/overview.tsx", "ui/capacity-model.ts", "ui/capacity-chart.tsx"])
         writeFileSync(
@@ -328,6 +336,13 @@ test(
         writeFileSync(
           join(app, file),
           execFileSync("git", ["-C", root, "show", `${peopleCopyRef}:apps/pool/${file}`]),
+=======
+    if (learningRef)
+      for (const file of ["ui/overview-snapshot.ts", "ui/overview.tsx"])
+        writeFileSync(
+          join(app, file),
+          execFileSync("git", ["-C", root, "show", `${learningRef}:apps/pool/${file}`]),
+>>>>>>> refs/b40/inputs/750
         );
     writeFileSync(
       join(app, "deployment.ts"),
@@ -371,8 +386,13 @@ test(
     // When set, fresh view requests are answered as they arrive instead of held.
     let answerFresh = false;
     let usageResult = emptyUsage;
+<<<<<<< HEAD
     // When set, replaces the overview's people directory counts.
     let directoryResult;
+=======
+    // Reshapes the manager overview reply, e.g. into partial coverage of one snapshot.
+    let overviewShape = (value) => value;
+>>>>>>> refs/b40/inputs/750
     const answer = (entry) =>
       entry.response.end(
         JSON.stringify(entry.fresh && freshResult !== undefined ? freshResult : viewResult),
@@ -438,7 +458,7 @@ test(
                 metrics: value.metrics,
                 partial: false,
               }
-            : value,
+            : overviewShape(value),
         );
         if (personal && holdPersonal) heldPersonal.push({ response, reply });
         else response.end(reply);
@@ -551,12 +571,17 @@ test(
         usage = emptyUsage,
         capacityHeld = false,
         capacity = capacityFixture,
+        overview = (value) => value,
         personal = false,
         people,
       } = {},
     ) => {
       usageResult = usage;
+<<<<<<< HEAD
       directoryResult = people;
+=======
+      overviewShape = overview;
+>>>>>>> refs/b40/inputs/750
       capacityReply = capacity;
       holdCapacity = capacityHeld;
       member = personal;
@@ -854,6 +879,7 @@ test(
         },
       );
 
+<<<<<<< HEAD
     for (const width of [1280, 390])
       await t.test(`Claude weekly plan weights and retained estimates at ${width}px`, async () => {
         for (const retained of [false, true]) {
@@ -874,10 +900,43 @@ test(
           viewResult = { ok: true, value };
           const conservative = retained || planBaseline;
           const weight = capacityWeight("claude", "Max 20x", 604_800);
+=======
+    // The live shape: usage coverage is partial, yet usage and capacity share one range and
+    // capture, and capacity has no completed comparable week yet.
+    for (const width of [1280, 390])
+      await t.test(
+        `partial usage keeps the same-snapshot learning capacity verdict at ${width}px`,
+        async () => {
+          viewResult = poolView(Date.now(), {
+            source: "live",
+            observedAgo: minute,
+            savedAgo: minute,
+            left: [
+              [0.6, 0.7],
+              [0.5, 0.6],
+              [0.8, 0.9],
+            ],
+          });
+          const total = {
+            ...emptyUsage.value.total,
+            requests: 3,
+            cost: 0.04,
+            tokens: { ...emptyUsage.value.total.tokens, input: 300, output: 84, total: 384 },
+          };
+          const usage = {
+            ok: true,
+            value: {
+              ...emptyUsage.value,
+              total,
+              models: [{ ...total, provider: "codex", model: "Synthetic model" }],
+            },
+          };
+>>>>>>> refs/b40/inputs/750
           await session(
             async ({ page, frame, settled }) => {
               release();
               await frame
+<<<<<<< HEAD
                 .getByText("1 subscription account across 1 lab", { exact: true })
                 .waitFor();
               await frame.locator("#capacity article").waitFor();
@@ -898,6 +957,80 @@ test(
               }
               assert.ok(
                 await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+=======
+                .getByText("3 subscription accounts across 2 labs", { exact: true })
+                .waitFor();
+              await frame.getByRole("heading", { name: "Needs attention", exact: true }).waitFor();
+              await frame.locator("#capacity article").nth(1).waitFor();
+              await settled();
+              assert.equal(await frame.locator("#capacity article").count(), 2);
+              const text = await frame.locator("body").innerText();
+              for (const title of [
+                "Do we have enough accounts?",
+                "Who uses what",
+                "API cost and subscription value",
+                "Needs attention",
+              ])
+                assert.ok(text.includes(title), `Approved r2 section: ${title}`);
+              // Usage coverage stays visibly incomplete in its own section either way.
+              assert.match(await frame.locator("#who").innerText(), /partial|incomplete/i);
+              // No projection or run-out date exists, so none may be drawn or promised.
+              assert.doesNotMatch(text, /Projected ·|runs short|runs out|out ~/i);
+              const charts = await frame
+                .locator('#capacity [role="group"][aria-label*="capacity. Measured history"]')
+                .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-label")));
+              assert.equal(charts.length, 2);
+              for (const label of charts) assert.doesNotMatch(label, /seasonal forecast/);
+              const enough = await frame
+                .getByRole("link", { name: /Enough accounts\?/ })
+                .innerText();
+              if (learningRef) {
+                // The historical guard treated partial coverage as a different snapshot.
+                assert.match(text, /This read is incomplete/);
+                assert.match(enough, /Read incomplete/);
+                for (const lab of ["Codex", "Claude"]) {
+                  const body = await frame
+                    .getByRole("article", { name: lab, exact: true })
+                    .innerText();
+                  assert.match(body, /Incomplete snapshot/);
+                  assert.match(body, /Forecast and verdict withheld/);
+                }
+              } else {
+                for (const withheld of [
+                  "Incomplete snapshot",
+                  "Forecast and verdict withheld",
+                  "This read is incomplete",
+                  "Read incomplete",
+                ])
+                  assert.ok(!text.includes(withheld), `No withheld state: ${withheld}`);
+                assert.equal(
+                  await frame
+                    .getByRole("status")
+                    .filter({ hasText: "Usage for this range is incomplete." })
+                    .isVisible(),
+                  true,
+                  "Partial usage keeps its own warning",
+                );
+                assert.match(enough, /Too early to say/);
+                for (const lab of ["Codex", "Claude"]) {
+                  const body = await frame
+                    .getByRole("article", { name: lab, exact: true })
+                    .innerText();
+                  assert.match(body, /Learning · /);
+                  assert.ok(
+                    body.includes(
+                      "The forecast starts after 2 completed weeks; advice starts after 4.",
+                    ),
+                    `${lab} names the 2-week forecast and 4-week advice thresholds`,
+                  );
+                  assert.match(body, /0 completed weeks\. No projection or account count yet\./);
+                }
+                for (const label of charts) assert.match(label, /forecast learning/);
+              }
+              assert.ok(
+                await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+                "Overview fits at phone and desktop widths",
+>>>>>>> refs/b40/inputs/750
               );
               await page.locator("iframe").evaluate(
                 (iframe, height) => {
@@ -906,6 +1039,7 @@ test(
                 await frame.evaluate(() => document.documentElement.scrollHeight),
               );
               await settled();
+<<<<<<< HEAD
               await capture(page, `claude-weekly-${retained ? "retained" : "published"}-${width}`);
             },
             {
@@ -942,12 +1076,76 @@ test(
                     plans: [{ plan: "Max 20x", minimum: reading, last: reading }],
                   },
                 ];
+=======
+              await capture(page, `learning-overview-${width}`);
+            },
+            {
+              viewport: { width, height: 1000 },
+              usage,
+              // Same range, same capture, no further page: only coverage is partial.
+              overview: (value) => ({ ...value, partial: true }),
+              capacity: (input) => {
+                const result = capacityFixture(input);
+                const at = input.to;
+                const labs = [
+                  { provider: "claude", count: 1 },
+                  { provider: "codex", count: 2 },
+                ];
+                const unit = (provider) => ({ id: `${provider}-equivalent`, label: "account-eq" });
+                result.value.points = labs.map(({ provider, count }) => {
+                  const reading = {
+                    remaining: 0.7 * count,
+                    full: count,
+                    at,
+                    observedAt: { from: at, to: at },
+                    accountCount: count,
+                    knownWeightCount: count,
+                    unknownWeightCount: 0,
+                    weights: [],
+                  };
+                  return {
+                    provider,
+                    windowSeconds: 604_800,
+                    mode: null,
+                    unit: unit(provider),
+                    hour: Math.floor(at / hour) * hour,
+                    minimum: reading,
+                    last: reading,
+                    plans: [],
+                  };
+                });
+                result.value.forecasts = labs.map(({ provider }) => ({
+                  provider,
+                  windowSeconds: 604_800,
+                  mode: null,
+                  unit: unit(provider),
+                  status: "learning",
+                  reasons: [],
+                  history: { expectedHours: 168, observedHours: 1, coverage: 0, completedWeeks: 0 },
+                  backtest: null,
+                  residualCalibration: null,
+                  classification: null,
+                  streak: 0,
+                  recurringPeak: null,
+                  points: [],
+                  runsOutAt: null,
+                  busyRunsOutAt: null,
+                  ordinary: null,
+                  busy: null,
+                  bankedAvailable: null,
+                }));
+>>>>>>> refs/b40/inputs/750
                 return result;
               },
             },
           );
+<<<<<<< HEAD
         }
       });
+=======
+        },
+      );
+>>>>>>> refs/b40/inputs/750
 
     for (const width of [1440, 390])
       await t.test(`usage loads while capacity is held at ${width}px`, async () => {

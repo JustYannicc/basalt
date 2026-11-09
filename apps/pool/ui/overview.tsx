@@ -64,12 +64,25 @@ export function ManagerOverview({
     providers && current.coherent === true && current.capacity?.ok
       ? labSummaries(current.capacity.value, days)
       : [];
+  const mismatched = data.coherent === false && data.capacity !== undefined;
+  // Partial usage is coverage of the same snapshot, so it gets its own note and keeps capacity.
+  const usagePartial =
+    !mismatched && [data.people, data.models].some((read) => read?.ok && read.value.truncated);
   return (
     <>
-      {data.coherent === false && data.capacity !== undefined && (
+      {mismatched && (
         <p role="status" className="mb-4 text-sm text-muted-foreground">
           This read is incomplete. Totals below keep their coverage notes; no complete capacity
           verdict is claimed.{" "}
+          <button type="button" onClick={onRetry} className="underline underline-offset-2">
+            Read again
+          </button>
+        </p>
+      )}
+      {usagePartial && (
+        <p role="status" className="mb-4 text-sm text-muted-foreground">
+          Usage for this range is incomplete. Request and cost totals below keep their coverage
+          notes. Capacity uses its own readings.{" "}
           <button type="button" onClick={onRetry} className="underline underline-offset-2">
             Read again
           </button>
