@@ -1060,7 +1060,7 @@
           "message": "Shared sign-in for Atlassian is not configured on this host. You can connect with your own OAuth app."
         }
       },
-      "sourceSha256": "fb5b9cee0cacb2adbdf02fd9b9a8a26aaee9a882b8f1a0c1a61f41bee0499fa9"
+      "sourceSha256": "d62405069efe2866f852d3cba4a33fd9b15a483455713bfa7517267aa6552cfd"
     },
     {
       "entry": "connecteam",
@@ -2569,7 +2569,7 @@
           "message": "Shared sign-in for Atlassian is not configured on this host. You can connect with your own OAuth app."
         }
       },
-      "sourceSha256": "c50c7e3a76bfb09033fe78f13a4155b59428512fd30af0a8e9bd9ec001c2b52b"
+      "sourceSha256": "1c4b60bbfbd1d715a5e56768b60ce4e9832c35f8a65ef3dc7efb8f0cd4d3e4fd"
     },
     {
       "entry": "jobadder",
