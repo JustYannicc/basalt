@@ -42,6 +42,7 @@ COPY native_policy_home_host_helper.go.tmpl /build/native_policy_home_host_helpe
 COPY native_policy /build/native_policy
 RUN mkdir -p /out/plugins && \
     cd /build/native_policy && \
+    go test -p=2 -mod=readonly . && \
     CGO_ENABLED=1 go build -p=2 -mod=readonly -trimpath -buildmode=c-shared \
       -o /out/plugins/basalt-native-policy.so .
 RUN cd /source/home && \
@@ -92,7 +93,7 @@ COPY crash_tail.py /opt/pool/crash_tail.py
 COPY runtime_signals.py /opt/pool/runtime_signals.py
 COPY pool_contract.py /opt/pool/pool_contract.py
 COPY billing_policy.py billing-settings.json /opt/pool/
-COPY readiness.py /opt/pool/readiness.py
+COPY readiness.py policy_diagnostic.py /opt/pool/
 COPY policy_monitor.py /opt/pool/policy_monitor.py
 COPY healthcheck.py /opt/pool/healthcheck.py
 ENV HOME=/dev/shm/cliproxy-pool \
