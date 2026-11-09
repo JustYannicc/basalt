@@ -1,11 +1,66 @@
 {
-  "scenarios": {},
-  "runs": {},
-  "inherited": [
-    "legacyProfileSchedules",
-    "legacyProfileScheduleMerge",
-    "legacyProfileCopyResumeRetry"
-  ],
+  "scenarios": {
+    "legacyProfileSchedules": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "a hosted member's profiles with other accounts upgrade to copies of the app that keep their schedules, link those accounts for that member and start with empty data",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted members and their profiles; local has one subject."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Legacy rows need a runner-owned database; Cloud cases share one Worker and database."
+        }
+      }
+    },
+    "legacyProfileScheduleMerge": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "a hosted member's profile schedules with the same accounts merge with their history and run with each requirement's own accounts, and ones that would widen a many() requirement (whatever a disabled profile selected), lost their account or their member upgrade paused",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted members and their profiles; local has one subject."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Legacy rows need a runner-owned database; Cloud cases share one Worker and database."
+        }
+      }
+    },
+    "legacyProfileCopyResumeRetry": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "a profile copy's schedule whose resume fails for storage stays paused with its copy still planned, and the next start resumes it but not again the ones the failed pass resumed",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted members and their profiles; local has one subject."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Legacy rows need a runner-owned database; Cloud cases share one Worker and database."
+        }
+      }
+    }
+  },
+  "runs": {
+    "legacyProfileSchedules": ["declared:self-host"],
+    "legacyProfileScheduleMerge": ["declared:self-host"],
+    "legacyProfileCopyResumeRetry": ["declared:self-host"]
+  },
+  "inherited": [],
   "inputs": [
     ".upstream/apps/hosted/cloud/alchemy.run.ts",
     ".upstream/apps/hosted/cloud/scripts/build-site.ts",

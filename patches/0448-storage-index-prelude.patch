@@ -1,0 +1,162 @@
+diff --git a/packages/sdk/src/implementation/storage-schema.ts b/packages/sdk/src/implementation/storage-schema.ts
+index 7b5082d1e..36374761d 100644
+--- a/packages/sdk/src/implementation/storage-schema.ts
++++ b/packages/sdk/src/implementation/storage-schema.ts
+@@ -997,3 +997,10 @@ export const accountIdentityIndexes = [
+ ] as const;
+ 
+ export const version4025Tables = { ...version4024Tables, accountAcquisitions };
++
++/** Queue indexes shared by fresh setup and the additive 4.0.29 upgrade. */
++export const queueReadIndexes = [
++  "CREATE INDEX IF NOT EXISTS executor_webhook_sources_intent ON executor_webhook_sources (lease_until) WHERE status = 'pending' AND lease IS NULL",
++  "CREATE INDEX IF NOT EXISTS executor_webhook_sources_retry ON executor_webhook_sources (lease_until) WHERE status <> 'ready'",
++  "CREATE INDEX IF NOT EXISTS executor_account_checks_account_app ON executor_account_checks (account, app)",
++] as const;
+diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sdk/src/implementation/storage-migrations.ts
+index 359c4fb9f..944ceec83 100644
+--- a/packages/sdk/src/implementation/storage-migrations.ts
++++ b/packages/sdk/src/implementation/storage-migrations.ts
+@@ -41,6 +41,7 @@ import {
+   storedOAuthClientIndexes,
+   storedOAuthClientIssuerIndexes,
+   accountReportIndexes,
++  queueReadIndexes,
+ } from "./storage-schema.ts";
+ 
+ /** Indexes the 4.0.1 step added. Released steps never change; later indexes join their own step. */
+@@ -99,6 +100,7 @@ export const currentIndexes = [
+   ...boundedReadIndexes,
+   ...storedOAuthClientIssuerIndexes,
+   ...accountReportIndexes,
++  ...queueReadIndexes,
+ ] as const;
+ 
+ /** Versions built by {@link indexOnlyVersion}. */
+@@ -498,7 +500,7 @@ const version4 = <Version extends string>(version: Version, up?: CustomMigration
+ /** Version 4 is the oldest supported layout. Append future compatible upgrades here. */
+ const version4020Tables = { ...version4019Tables, accountAcquisitions: accountAcquisitions4020 };
+ 
+-export const storageSchemas = [
++const applicationSchemas = [
+   version4("4.0.0"),
+   version4("4.0.1", () =>
+     Effect.succeed(storageIndexes.map((sql) => ({ type: "custom" as const, sql }))),
+@@ -824,6 +826,13 @@ export const storageSchemas = [
+   currentStorageSchema,
+ ] as const;
+ 
++// Basalt's 4.0.16 stores account sites. Append upstream's queue indexes above the complete
++// Basalt layout so existing installs run them without changing any released schema.
++export const storageSchemas = [
++  ...applicationSchemas,
++  indexOnlyVersion(currentStorageSchema, "4.0.29", queueReadIndexes),
++] as const;
++
+ /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */
+ export const trailingStorageIndexVersions = trailingIndexVersions(storageSchemas);
+ 
+diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/implementation/storage.ts
+index 030613bf6..0040a29fb 100644
+--- a/packages/sdk/src/implementation/storage.ts
++++ b/packages/sdk/src/implementation/storage.ts
+@@ -44,7 +44,11 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
+             yield* Effect.forEach(currentIndexes, (statement) => sql.unsafe(statement).unprepared, {
+               discard: true,
+             });
+-          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.25")));
++          }).pipe(
++            Effect.mapError((cause) =>
++              storageMigrationFailed(cause, storageSchemas[storageSchemas.length - 1]!.version),
++            ),
++          );
+           return;
+         }
+         // Execute every registered upgrade in order. A direct diff to latest can skip
+diff --git a/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts b/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts
+index 889bc19a6..588d34336 100644
+--- a/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts
++++ b/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts
+@@ -188,7 +188,7 @@ export const retirementReader = (
+               Schema.Struct({
+                 database: Identifier,
+                 snapshot: Identifier,
+-                version: Schema.Literal("4.0.28"),
++                version: Schema.Literal("4.0.29"),
+               }),
+             ),
+           ),
+diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status-storage.spec.ts
+index 17f9ed15d..72656016c 100644
+--- a/e2e/tests/account-status-storage.spec.ts
++++ b/e2e/tests/account-status-storage.spec.ts
+@@ -57,7 +57,7 @@ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
+         expect(afterInput.slice(0, retainedTables.length)).toEqual(
+           beforeInput.slice(0, retainedTables.length),
+         );
+-        expect(afterInput[retainedTables.length]).toEqual([{ value: "4.0.28" }]);
++        expect(afterInput[retainedTables.length]).toEqual([{ value: "4.0.29" }]);
+         expect(afterInput[retainedTables.length + 1]).toEqual([
+           { table_name: "executor_workflow_inputs" },
+         ]);
+@@ -89,7 +89,7 @@ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
+             params: [fixture.account],
+           },
+         ]);
+-        expect(version).toEqual([{ value: "4.0.28" }]);
++        expect(version).toEqual([{ value: "4.0.29" }]);
+         expect(columns).toEqual([]);
+         expect(records).toEqual([
+           {
+diff --git a/e2e/tests/legacy-targetless-connections.spec.ts b/e2e/tests/legacy-targetless-connections.spec.ts
+index d4c737281..682de2111 100644
+--- a/e2e/tests/legacy-targetless-connections.spec.ts
++++ b/e2e/tests/legacy-targetless-connections.spec.ts
+@@ -136,7 +136,7 @@ const expectUpgraded = (
+   ids: Ids,
+ ) => {
+   expect(column).toEqual([{ is_nullable: "NO", column_default: null }]);
+-  expect(version).toEqual([{ value: "4.0.28" }]);
++  expect(version).toEqual([{ value: "4.0.29" }]);
+ 
+   // Only the connection with a target is left, and only the sign-in no connection pointed at.
+   expect(connections).toEqual([{ id: template, target: "object" }]);
+diff --git a/e2e/tests/account-identities.spec.ts b/e2e/tests/account-identities.spec.ts
+index b7b687077..b5d39e20e 100644
+--- a/e2e/tests/account-identities.spec.ts
++++ b/e2e/tests/account-identities.spec.ts
+@@ -57,7 +57,7 @@ layer(TestLive, { excludeTestServices: true })("Verified account identities", (i
+         const storage = yield* legacyStorage([
+           { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
+         ]);
+-        expect(storage).toEqual([[{ value: "4.0.28" }]]);
++        expect(storage).toEqual([[{ value: "4.0.29" }]]);
+         yield* serverControl("start");
+         expect((yield* product.read(app)).status).toBe(200);
+         const again = yield* body(
+diff --git a/e2e/tests/oauth-client-issuer-migration.spec.ts b/e2e/tests/oauth-client-issuer-migration.spec.ts
+index cb3e07dc8..dfadc1700 100644
+--- a/e2e/tests/oauth-client-issuer-migration.spec.ts
++++ b/e2e/tests/oauth-client-issuer-migration.spec.ts
+@@ -361,7 +361,7 @@ layer(TestLive, { excludeTestServices: true })("OAuth client issuer migration",
+           },
+         ]);
+         yield* serverControl("start");
+-        expect(version).toEqual([{ value: "4.0.28" }]);
++        expect(version).toEqual([{ value: "4.0.29" }]);
+ 
+         expect(credentials).toEqual([
+           { client: ids.a },
+diff --git a/e2e/tests/legacy-profile-schedules.spec.ts b/e2e/tests/legacy-profile-schedules.spec.ts
+index 8b20ee2ec..3dbd581ea 100644
+--- a/e2e/tests/legacy-profile-schedules.spec.ts
++++ b/e2e/tests/legacy-profile-schedules.spec.ts
+@@ -630,7 +630,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
+           { sql: "SELECT id, status FROM executor_profile_app_copies ORDER BY id" },
+         ]);
+         expect(ledger).toEqual([{ name: "app_account_links" }]);
+-        expect(version).toEqual([{ value: "4.0.28" }]);
++        expect(version).toEqual([{ value: "4.0.29" }]);
+ 
+         expect(plans).toEqual(
+           [copies.work, copies.bobOld].toSorted().map((copy) => ({ id: copy, status: "copied" })),
