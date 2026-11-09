@@ -24,6 +24,7 @@ import { googleMapsAddition } from "./google-maps/index.ts";
 import { workosSource, withWorkOSSignIn } from "./workos.ts";
 import { planetscaleSource, withPlanetScaleAccess } from "./planetscale.ts";
 import { clerkSource, withClerkSignIn } from "./clerk.ts";
+import { canvaSource } from "./canva.ts";
 import { obsidian } from "./obsidian/index.ts";
 
 // AWS source stays in the catalog until maintainers identify a maintained destination.
@@ -94,6 +95,11 @@ export async function handleCatalog(
   if (relative === "apps/sentry.json")
     return new Response(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(sentrySource)),
+      { headers },
+    );
+  if (relative === "apps/canva.json")
+    return new Response(
+      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(canvaSource)),
       { headers },
     );
   if (relative === "apps/vercel.json")
