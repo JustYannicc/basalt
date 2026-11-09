@@ -158,6 +158,75 @@ test("level repair removes a late stale attach on every pass and after controlle
   assert.equal((await memberships.authority("a"))?.dirty, false);
 });
 
+test("overlapping ticks share one upkeep pass without postponing its alarm or stacking repairs", async () => {
+  const f = fixture();
+  const memberships = new NativeMemberships(f.deps);
+  await memberships.reserve(await f.request());
+  f.alarms.length = 0;
+  const entered = deferred<void>(),
+    release = deferred<void>();
+  const read = f.deps.read;
+  let reads = 0;
+  f.deps.read = async (pool, organization) => {
+    reads++;
+    entered.resolve();
+    await release.promise;
+    return read(pool, organization);
+  };
+  const first = memberships.tick();
+  await entered.promise;
+  const deadline = f.alarms[0];
+  f.advance(13_800);
+  const overlap = [memberships.tick(), memberships.tick()];
+  release.resolve();
+  await Promise.all([first, ...overlap]);
+  assert.deepEqual(
+    f.alarms,
+    [deadline, deadline! + 13_800],
+    "one shared pass rearms on completion",
+  );
+  assert.equal(reads, 1, "late callers must not queue another repair behind the active pass");
+  assert.equal((await memberships.authority("a"))?.dirty, false);
+  await memberships.tick();
+  assert.equal(reads, 2, "a later alarm starts a fresh pass");
+  assert.equal(f.alarms.length, 4);
+});
+
+test("a rejected tick releases upkeep so the next alarm can repair membership", async () => {
+  const f = fixture();
+  let rejectSchedule = false;
+  const memberships = new NativeMemberships({
+    ...f.deps,
+    schedule: async (at) => {
+      if (rejectSchedule) throw new Error("alarm storage unavailable");
+      await f.deps.schedule(at);
+    },
+  });
+  await memberships.reserve(await f.request());
+  rejectSchedule = true;
+  await assert.rejects(memberships.tick(), /alarm storage unavailable/);
+  rejectSchedule = false;
+  await memberships.tick();
+  assert.deepEqual((await memberships.authority("a"))?.accounts, ["auth-a"]);
+});
+
+test("a failed completion rearm releases the shared tick for the next alarm", async () => {
+  const f = fixture();
+  let schedules = 0;
+  const memberships = new NativeMemberships({
+    ...f.deps,
+    schedule: async (at) => {
+      if (++schedules === 3) throw new Error("completion alarm write failed");
+      await f.deps.schedule(at);
+    },
+  });
+  await memberships.reserve(await f.request());
+  await assert.rejects(memberships.tick(), /completion alarm write failed/);
+  await memberships.tick();
+  assert.equal(schedules, 5);
+  assert.deepEqual((await memberships.authority("a"))?.accounts, ["auth-a"]);
+});
+
 test("a reserve during an old read repairs the newest selection before re-enabling use", async () => {
   const f = fixture(),
     memberships = new NativeMemberships(f.deps);

@@ -50,6 +50,8 @@ ERROR_TEMPLATES = (
     "listener accept error: %v",
     "cluster coordinator error: %v",
     "cluster event watcher error: %v",
+    "usage database async write error: %v",
+    "usage database write error: %v",
 )
 
 # First match wins. Error text can choose one of these labels, never input text.

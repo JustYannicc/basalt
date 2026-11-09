@@ -898,7 +898,6 @@ function Tip({
                   <span
                     className={`block text-[11px] ${flagged ? "text-warning" : "text-muted-foreground"}`}
                   >
-                    {flagged ? "Flagged. " : ""}
                     {sources}
                   </span>
                   {line.windowSeconds === 18_000 && plan.raw !== null && (
@@ -937,7 +936,7 @@ function Tip({
         <span>
           {point.minimum.accountCount} {point.minimum.accountCount === 1 ? "account" : "accounts"}
           {point.minimum.unknownWeightCount > 0
-            ? ` · ${point.minimum.unknownWeightCount} with flagged weights`
+            ? ` · ${point.minimum.unknownWeightCount} with conservative estimates`
             : ""}
         </span>
         <span>

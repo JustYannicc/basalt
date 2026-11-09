@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PoolControl, type ControlStorage } from "./attribution.ts";
-import { HomeClient, PoolHome } from "./control.ts";
+import { accountsView, HomeClient, PoolHome } from "./control.ts";
 import { PoolViewSnapshots, type HomeViewData } from "./view-snapshot.ts";
 import { signPoolToken } from "./token.ts";
 import type { PoolView } from "../../apps/pool/contract.ts";
@@ -54,6 +54,53 @@ function data(label = "Old"): HomeViewData {
     readAt: { membership: observed, credentials: observed, quota: observed },
   };
 }
+
+test("retained quota freshness follows the original reading deadline, not cache provenance", async () => {
+  const expires = "2026-11-01T10:30:00.000Z";
+  const account = accountsView(
+    [{ id: "a", provider: "codex" }],
+    [
+      {
+        credential: { credential_id: "a" },
+        collection: {
+          freshness: "fresh",
+          status: "success",
+          observed_at: observed,
+          expires_at: expires,
+        },
+        windows: [
+          {
+            id: "codex-1-week",
+            scope: "account",
+            window_seconds: 604800,
+            observed_at: observed,
+            expires_at: expires,
+            remaining_ratio: 0.8,
+          },
+        ],
+      },
+    ],
+    new Set(["a"]),
+  )[0]!;
+  for (const [at, expected] of [
+    ["2026-11-01T10:05:00.000Z", "fresh"],
+    [expires, "stale"],
+    ["2026-11-01T11:00:00.000Z", "stale"],
+  ] as const) {
+    const cache = new PoolViewSnapshots(new MemoryStorage(), () => {});
+    await cache.view("pool-a", false, async () => ({ ...data(), accounts: [account] }));
+    const home = new PoolHome(
+      new HomeClient(async () => {
+        throw Error("held Home");
+      }),
+      "pool-a",
+    );
+    const result = await home.view(false, cache, false, () => new Date(at));
+    assert.equal(result.reading?.source, "snapshot");
+    assert.equal(result.accounts[0]!.freshness, expected);
+    assert.equal(result.accounts[0]!.observedAt, observed);
+  }
+});
 
 test("snapshot miss waits for the complete view and persists it across restarts", async () => {
   const storage = new MemoryStorage();

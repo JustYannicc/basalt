@@ -1,0 +1,9 @@
+{
+  "identity": "executor-jev-model-provider",
+  "file": "0435-jev-model-provider.patch",
+  "content_sha256": "b9a0bfa71eb6aa8e433bf2e96ff645294653f8c25e182a68831a8f7030aa6983",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

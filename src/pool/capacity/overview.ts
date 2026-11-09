@@ -115,7 +115,9 @@ function candidateFor(accounts: readonly CapacityReading[]) {
       (reading.source === "reported-absolute" ? "Reported limit" : "Reference plan"),
     capacity: reading.full,
     source:
-      reading.source === "reported-absolute" || reading.source === "published-session-multiplier"
+      reading.source === "reported-absolute" ||
+      reading.source === "published-session-multiplier" ||
+      reading.source === "published-weekly-multiplier"
         ? ("reported" as const)
         : reading.source === "reference-plan"
           ? ("unit" as const)
@@ -240,11 +242,14 @@ function normalizedDemand(
   unitId: string,
   now: number,
 ) {
+  const trackingSince =
+    data.cohortTrackingSince?.[groupId(provider, windowSeconds, mode, unitId)] ??
+    data.trackingSince;
   const from = Math.max(
     Math.ceil((now - 12 * weekMs) / hourMs) * hourMs,
-    data.trackingSince === null
+    trackingSince === null
       ? Math.floor(now / hourMs) * hourMs - hourMs
-      : Math.floor(data.trackingSince / hourMs) * hourMs,
+      : Math.floor(trackingSince / hourMs) * hourMs,
   );
   const byHour = new Map(
     data.points

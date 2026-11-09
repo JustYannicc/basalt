@@ -12,7 +12,7 @@ import {
   sameArtifact,
 } from "./sources.ts";
 import {
-  buildProviderTable,
+  buildPoolProviderTable,
   extractOAuthProviderIds,
   renderProviderTable,
   type PoolProvider,
@@ -200,7 +200,7 @@ async function generateProviderTable(
   const ids = [
     ...new Set([...extractOAuthProviderIds(source), ...pluginOAuthProviderIds(rootPath)]),
   ];
-  return renderProviderTable(buildProviderTable(ids, existing));
+  return renderProviderTable(buildPoolProviderTable(ids, existing));
 }
 
 function slug(value: string): string {

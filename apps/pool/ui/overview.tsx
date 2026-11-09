@@ -21,6 +21,7 @@ import {
   accountsNeedingSomeone,
   bankedResetCount,
   bankedResetText,
+  peopleOfText,
 } from "./overview-attention.ts";
 import { currentCapacity } from "./overview-snapshot.ts";
 
@@ -63,12 +64,27 @@ export function ManagerOverview({
     providers && current.coherent === true && current.capacity?.ok
       ? labSummaries(current.capacity.value, days)
       : [];
+  const mismatched = data.coherent === false && data.capacity !== undefined;
+  // Partial usage is coverage of the same snapshot, so it gets its own note and keeps capacity.
+  const usagePartial =
+    !mismatched &&
+    ((data.usage?.ok && data.usage.value.partial) ||
+      [data.people, data.models].some((read) => read?.ok && read.value.truncated));
   return (
     <>
-      {data.coherent === false && data.capacity !== undefined && (
+      {mismatched && (
         <p role="status" className="mb-4 text-sm text-muted-foreground">
           This read is incomplete. Totals below keep their coverage notes; no complete capacity
           verdict is claimed.{" "}
+          <button type="button" onClick={onRetry} className="underline underline-offset-2">
+            Read again
+          </button>
+        </p>
+      )}
+      {usagePartial && (
+        <p role="status" className="mb-4 text-sm text-muted-foreground">
+          Usage for this range is incomplete. Request and cost totals below keep their coverage
+          notes. Capacity uses its own readings.{" "}
           <button type="button" onClick={onRetry} className="underline underline-offset-2">
             Read again
           </button>
@@ -136,7 +152,7 @@ export function PersonalOverview({
     );
   const read = {
     ok: true as const,
-    value: seriesRead(data.value.series, data.value.partial || data.value.series.next !== null),
+    value: seriesRead(data.value.series),
   };
   return (
     <>
@@ -299,9 +315,11 @@ function Answers({
       >
         {sum && (
           <span className="text-[13px] text-muted-foreground tabular-nums">
-            {usage?.directory.activeCount ?? people.length} of{" "}
-            {usage?.directory.totalCount ?? people.length} people active ·{" "}
-            {sum.requests.toLocaleString()} requests in {days} days
+            {peopleOfText(
+              usage?.directory.activeCount ?? people.length,
+              usage?.directory.totalCount ?? people.length,
+            )}{" "}
+            active · {sum.requests.toLocaleString()} requests · last {days} days
           </span>
         )}
       </Answer>
@@ -423,8 +441,8 @@ function Attention({
       if (flagged.size)
         items.push({
           tone: "warn",
-          text: `${name(lab.provider)}: ${[...flagged].join(", ")} counts at a flagged 1x`,
-          sub: "Its plan isn't recognised, so capacity treats each account as one reference plan.",
+          text: `${name(lab.provider)}: ${[...flagged].join(", ")} counted conservatively`,
+          sub: "Capacity uses a conservative 1x estimate where no verified weight was saved.",
         });
       const missing = Math.max(
         0,

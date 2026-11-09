@@ -43,5 +43,12 @@
     "id": "gemini-cli",
     "name": "Gemini CLI",
     "site": "gemini.google.com"
+  },
+  {
+    "id": "typesafe",
+    "name": "Jev",
+    "site": "typesafe.ai",
+    "protocol": "typesafe-systemone",
+    "description": "System One model provider. Not offered in chat model pickers."
   }
 ]

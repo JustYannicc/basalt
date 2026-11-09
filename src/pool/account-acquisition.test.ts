@@ -133,3 +133,10 @@ test("saved removal needs a host acting person and never borrows its organizatio
     );
   }
 });
+
+test("native model discovery does not offer an OAuth sign-in for Jev keys", async () => {
+  const f = fixture();
+  assert.equal((await f.send("start", { provider: "typesafe" })).status, 503);
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.markers.size, 0);
+});

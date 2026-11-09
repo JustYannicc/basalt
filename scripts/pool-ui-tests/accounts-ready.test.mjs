@@ -1,4 +1,6 @@
+import { capacityWeight } from "../../src/pool/capacity/weights.ts";
 import { PoolHome, HomeClient, accountsView } from "../../src/pool/control.ts";
+import { PoolViewSnapshots } from "../../src/pool/view-snapshot.ts";
 import { overviewFixture, capacityFixture } from "./overview-fixture.mjs";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -17,7 +19,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const require = createRequire(join(root, ".upstream/package.json"));
@@ -49,9 +51,20 @@ const emptyUsage = {
 const artifacts = process.env.POOL_UI_ARTIFACTS;
 // Optional baseline: build that commit's app.tsx, accounts.tsx and api.ts into the fixture instead of the working tree.
 const sourceRef = process.env.POOL_UI_SOURCE_REF;
+const planBaseline = process.env.POOL_UI_PLAN_BASELINE === "1";
 const subscriptionsBaseline = process.env.POOL_UI_SUBSCRIPTIONS_BASELINE === "1";
+const freshnessRef = process.env.POOL_UI_FRESHNESS_REF;
+// Optional baseline: build that commit's overview.tsx and usage-groups.tsx to capture the old people copy.
+const peopleCopyRef = process.env.POOL_UI_PEOPLE_COPY_REF;
+// Optional baseline: build that commit's overview-snapshot.ts and overview.tsx, which withheld a
+// same-snapshot learning verdict whenever usage coverage was partial.
+const learningRef = process.env.POOL_UI_LEARNING_REF;
+const historicalOverview = Boolean(planBaseline || peopleCopyRef || learningRef);
+const requestWindow = historicalOverview ? "in" : "· last";
+const baselineRef = sourceRef ?? peopleCopyRef ?? learningRef;
 const artifactLabel =
-  process.env.POOL_UI_ARTIFACT_LABEL ?? (sourceRef ? `before-${sourceRef.slice(0, 8)}` : "after");
+  process.env.POOL_UI_ARTIFACT_LABEL ??
+  (baselineRef ? `before-${baselineRef.slice(0, 8)}` : "after");
 if (artifacts)
   assert.ok(
     isAbsolute(artifacts) && !`${resolve(artifacts)}/`.startsWith(root),
@@ -275,6 +288,24 @@ test(
 
     // Use the same source and entry point as the shipped app; only the deployment origin changes.
     const app = join(directory, "app");
+    let ViewHome = PoolHome;
+    if (freshnessRef) {
+      const source = execFileSync(
+        "git",
+        ["-C", root, "show", `${freshnessRef}:src/pool/control.ts`],
+        { encoding: "utf8" },
+      );
+      const baseline = join(directory, "baseline-control.ts");
+      writeFileSync(
+        baseline,
+        source.replace(
+          /(from\s+["'])(\.[^"']+)(["'])/g,
+          (_, before, relative, after) =>
+            before + pathToFileURL(resolve(root, "src/pool", relative)).href + after,
+        ),
+      );
+      ViewHome = (await import(pathToFileURL(baseline).href)).PoolHome;
+    }
     cpSync(join(root, "apps/pool"), app, {
       recursive: true,
       filter: (path) => !path.includes("node_modules") && !/\.(test|spec)\./.test(path),
@@ -290,6 +321,24 @@ test(
         writeFileSync(
           join(app, file),
           execFileSync("git", ["-C", root, "show", `a434a2af:${`apps/pool/${file}`}`]),
+        );
+    if (planBaseline)
+      for (const file of ["ui/overview.tsx", "ui/capacity-model.ts", "ui/capacity-chart.tsx"])
+        writeFileSync(
+          join(app, file),
+          execFileSync("git", ["-C", root, "show", `50d48551:apps/pool/${file}`]),
+        );
+    if (peopleCopyRef)
+      for (const file of ["ui/overview.tsx", "ui/usage-groups.tsx"])
+        writeFileSync(
+          join(app, file),
+          execFileSync("git", ["-C", root, "show", `${peopleCopyRef}:apps/pool/${file}`]),
+        );
+    if (learningRef)
+      for (const file of ["ui/overview-snapshot.ts", "ui/overview.tsx"])
+        writeFileSync(
+          join(app, file),
+          execFileSync("git", ["-C", root, "show", `${learningRef}:apps/pool/${file}`]),
         );
     writeFileSync(
       join(app, "deployment.ts"),
@@ -333,6 +382,12 @@ test(
     // When set, fresh view requests are answered as they arrive instead of held.
     let answerFresh = false;
     let usageResult = emptyUsage;
+    // Reshapes the manager overview reply, e.g. into partial coverage of one snapshot.
+    let overviewShape = (value) => value;
+    // When set, replaces the overview's people directory counts.
+    let directoryResult;
+    let usagePartial = false;
+    let seriesNext = null;
     const answer = (entry) =>
       entry.response.end(
         JSON.stringify(entry.fresh && freshResult !== undefined ? freshResult : viewResult),
@@ -363,6 +418,10 @@ test(
           return;
         }
         const value = overviewFixture(JSON.parse(body).input, usageResult.value);
+        if (directoryResult) value.directory = directoryResult;
+        value.partial = usagePartial;
+        value.people.next = seriesNext;
+        value.models.next = seriesNext;
         const tokens = usageResult.value.total.tokens.total;
         if (tokens > 0) {
           value.metrics.apiBilled = {
@@ -395,9 +454,9 @@ test(
                   })),
                 },
                 metrics: value.metrics,
-                partial: false,
+                partial: value.partial,
               }
-            : value,
+            : overviewShape(value),
         );
         if (personal && holdPersonal) heldPersonal.push({ response, reply });
         else response.end(reply);
@@ -510,10 +569,18 @@ test(
         usage = emptyUsage,
         capacityHeld = false,
         capacity = capacityFixture,
+        overview = (value) => value,
         personal = false,
+        partial = false,
+        next = null,
+        people,
       } = {},
     ) => {
       usageResult = usage;
+      overviewShape = overview;
+      directoryResult = people;
+      usagePartial = partial;
+      seriesNext = next;
       capacityReply = capacity;
       holdCapacity = capacityHeld;
       member = personal;
@@ -599,6 +666,7 @@ test(
               freshness: provider === "typesafe" ? "never" : "fresh",
               status: provider === "typesafe" ? "unsupported" : "success",
               observed_at: iso,
+              expires_at: new Date(now + 30 * minute).toISOString(),
             },
             windows:
               provider === "typesafe"
@@ -617,7 +685,7 @@ test(
                   })),
             reset_credits: { available_count: id === "codex-1" ? 1 : 0, credits: [] },
           }));
-          const home = new PoolHome(
+          const home = new ViewHome(
             new HomeClient(async (path) => {
               if (path.endsWith("/channel-groups"))
                 return Response.json({
@@ -640,7 +708,24 @@ test(
             }),
             "overview-fixture",
           );
-          const value = await home.view(true);
+          const saved = new Map();
+          const snapshots = new PoolViewSnapshots(
+            {
+              get: async (key) => structuredClone(saved.get(key)),
+              put: async (key, value) => {
+                saved.set(key, structuredClone(value));
+              },
+            },
+            () => {},
+          );
+          await home.view(true, snapshots, false, () => new Date(now));
+          const value = await home.view(true, snapshots, false, () => new Date(now));
+          assert.equal(value.reading.source, "snapshot");
+          assert.ok(
+            value.accounts
+              .filter((account) => account.provider !== "typesafe")
+              .every((account) => account.freshness === (freshnessRef ? "stale" : "fresh")),
+          );
           assert.equal(value.accounts.length, 5);
           assert.ok(value.accounts.some((account) => account.id === "jev-key"));
           assert.equal(value.subscriptionAccountIds.length, 4);
@@ -652,7 +737,7 @@ test(
               release();
               await frame
                 .getByText(
-                  `${subscriptionsBaseline ? 5 : 4} subscription accounts across ${subscriptionsBaseline ? 3 : 2} labs`,
+                  `${subscriptionsBaseline ? 5 : 4} subscription accounts across ${subscriptionsBaseline ? 3 : 2} labs · 1 person`,
                   { exact: true },
                 )
                 .waitFor();
@@ -669,7 +754,29 @@ test(
               await claude
                 .getByRole("radio", { name: "Weekly", exact: true, checked: true })
                 .waitFor();
+              // The live case: one person with pool access. The total decides the noun.
+              const overviewNoun = historicalOverview ? "people" : "person";
+              const tableNoun = peopleCopyRef ? "people" : "person";
+              if (!subscriptionsBaseline) {
+                await frame.getByText(`1 of 1 ${overviewNoun} active`).waitFor();
+                await frame.getByText(`1 of 1 ${tableNoun} with pool access`).waitFor();
+              }
               const text = await frame.locator("body").innerText();
+              if (!subscriptionsBaseline) {
+                assert.match(
+                  text,
+                  new RegExp(
+                    `(?<!\\d)1 of 1 ${overviewNoun} active · 0 requests ${requestWindow} \\d+ days`,
+                  ),
+                );
+                assert.match(
+                  text,
+                  new RegExp(
+                    `(?<!\\d)1 of 1 ${tableNoun} with pool access made a request in these \\d+ days\\.`,
+                  ),
+                );
+                if (!historicalOverview) assert.doesNotMatch(text, /1 of 1 people/);
+              }
               for (const title of [
                 "Do we have enough accounts?",
                 "Who uses what",
@@ -679,7 +786,9 @@ test(
                 assert.ok(text.includes(title), `Approved r2 section: ${title}`);
               assert.doesNotMatch(text, /This read is incomplete|Read incomplete/);
               if (!subscriptionsBaseline) {
-                assert.doesNotMatch(text, /stale or missing readings|1 accounts|1 banked resets/);
+                assert.doesNotMatch(text, /1 accounts|1 banked resets/);
+                if (freshnessRef) assert.match(text, /4 accounts have stale or missing readings/);
+                else assert.doesNotMatch(text, /stale or missing readings/);
                 const reset = frame.getByRole("link", {
                   name: "1 banked reset available",
                   exact: true,
@@ -704,6 +813,7 @@ test(
             },
             {
               viewport: { width, height: 1000 },
+              people: { members: [], activeCount: 1, totalCount: 1 },
               capacity: (input) => {
                 const result = capacityFixture(input);
                 const at = input.to;
@@ -732,6 +842,334 @@ test(
                     };
                   }),
                 );
+                return result;
+              },
+            },
+          );
+          // Plural: nobody active out of three people with pool access.
+          if (!subscriptionsBaseline)
+            await session(
+              async ({ page, frame, settled }) => {
+                release();
+                await frame.getByText("0 of 3 people active").waitFor();
+                await frame.getByText("0 of 3 people with pool access").waitFor();
+                const text = await frame.locator("body").innerText();
+                assert.match(
+                  text,
+                  new RegExp(
+                    `(?<!\\d)0 of 3 people active · 0 requests ${requestWindow} \\d+ days`,
+                  ),
+                );
+                assert.match(
+                  text,
+                  /(?<!\d)0 of 3 people with pool access made a request in these \d+ days\./,
+                );
+                assert.doesNotMatch(text, /of 3 person/);
+                assert.ok(
+                  await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+                  "People copy fits at phone and desktop widths",
+                );
+                await page.locator("iframe").evaluate(
+                  (iframe, height) => {
+                    iframe.style.height = `${height}px`;
+                  },
+                  await frame.evaluate(() => document.documentElement.scrollHeight),
+                );
+                await settled();
+                await capture(page, `people-plural-overview-${width}`);
+              },
+              {
+                viewport: { width, height: 1000 },
+                people: { members: [], activeCount: 0, totalCount: 3 },
+              },
+            );
+        },
+      );
+
+    for (const width of [1280, 390])
+      await t.test(`Claude weekly plan weights and retained estimates at ${width}px`, async () => {
+        for (const retained of [false, true]) {
+          const value = poolView(Date.now(), {
+            source: "live",
+            observedAgo: 0,
+            savedAgo: 0,
+            left: [
+              [0.4, 0.4],
+              [0.4, 0.4],
+              [0.4, 0.4],
+            ],
+          }).value;
+          value.accounts = value.accounts
+            .filter(({ provider }) => provider === "claude")
+            .map((account) => ({ ...account, plan: "Max 20x" }));
+          value.providers = providers;
+          viewResult = { ok: true, value };
+          const conservative = retained || planBaseline;
+          const weight = capacityWeight("claude", "Max 20x", 604_800);
+          await session(
+            async ({ page, frame, settled }) => {
+              release();
+              await frame
+                .getByText("1 subscription account across 1 lab", { exact: true })
+                .waitFor();
+              await frame.locator("#capacity article").waitFor();
+              await settled();
+              const body = await frame.locator("body").innerText();
+              assert.ok(body.includes("Max 20x"), "Keep the provider's exact plan label");
+              assert.doesNotMatch(body, /Ultra/);
+              if (planBaseline) assert.match(body, /plan isn't recognised/);
+              else {
+                assert.doesNotMatch(body, /plan isn't recognised|plan unknown|flagged 1x/);
+                if (retained) {
+                  assert.match(body, /Max 20x counted conservatively/);
+                  assert.match(body, /conservative estimate · 1x/);
+                } else {
+                  assert.match(body, /published weekly multiplier/);
+                  assert.doesNotMatch(body, /Max 20x counted conservatively/);
+                }
+              }
+              assert.ok(
+                await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+              );
+              await page.locator("iframe").evaluate(
+                (iframe, height) => {
+                  iframe.style.height = `${height}px`;
+                },
+                await frame.evaluate(() => document.documentElement.scrollHeight),
+              );
+              await settled();
+              await capture(page, `claude-weekly-${retained ? "retained" : "published"}-${width}`);
+            },
+            {
+              viewport: { width, height: 1000 },
+              capacity: (input) => {
+                const result = capacityFixture(input);
+                const at = input.to;
+                const full = conservative ? 1 : weight.multiplier;
+                const reading = {
+                  remaining: full * 0.4,
+                  full,
+                  at,
+                  observedAt: { from: at, to: at },
+                  accountCount: 1,
+                  knownWeightCount: conservative ? 0 : 1,
+                  unknownWeightCount: conservative ? 1 : 0,
+                  weights: [
+                    {
+                      source: conservative ? "unknown-plan" : weight.source,
+                      revision: conservative ? "2026-10-30" : weight.revision,
+                      accountCount: 1,
+                    },
+                  ],
+                };
+                result.value.points = [
+                  {
+                    provider: "claude",
+                    windowSeconds: 604_800,
+                    mode: null,
+                    unit: { id: weight.unit.id, label: weight.unit.label },
+                    hour: Math.floor(at / hour) * hour,
+                    minimum: reading,
+                    last: reading,
+                    plans: [{ plan: "Max 20x", minimum: reading, last: reading }],
+                  },
+                ];
+                return result;
+              },
+            },
+          );
+        }
+      });
+
+    // The live shape: usage coverage is partial, yet usage and capacity share one range and
+    // capture, and capacity has no completed comparable week yet.
+    for (const width of [1280, 390])
+      await t.test(
+        `partial usage keeps the same-snapshot learning capacity verdict at ${width}px`,
+        async () => {
+          viewResult = poolView(Date.now(), {
+            source: "live",
+            observedAgo: minute,
+            savedAgo: minute,
+            left: [
+              [0.6, 0.7],
+              [0.5, 0.6],
+              [0.8, 0.9],
+            ],
+          });
+          const total = {
+            ...emptyUsage.value.total,
+            requests: 3,
+            cost: 0.04,
+            tokens: { ...emptyUsage.value.total.tokens, input: 300, output: 84, total: 384 },
+          };
+          const usage = {
+            ok: true,
+            value: {
+              ...emptyUsage.value,
+              total,
+              models: [{ ...total, provider: "codex", model: "Synthetic model" }],
+            },
+          };
+          await session(
+            async ({ page, frame, settled }) => {
+              release();
+              await frame
+                .getByText("3 subscription accounts across 2 labs", { exact: true })
+                .waitFor();
+              await frame.getByRole("heading", { name: "Needs attention", exact: true }).waitFor();
+              await frame.locator("#capacity article").nth(1).waitFor();
+              await settled();
+              assert.equal(await frame.locator("#capacity article").count(), 2);
+              const text = await frame.locator("body").innerText();
+              for (const title of [
+                "Do we have enough accounts?",
+                "Who uses what",
+                "API cost and subscription value",
+                "Needs attention",
+              ])
+                assert.ok(text.includes(title), `Approved r2 section: ${title}`);
+              // Coverage remains visible without claiming another page exists.
+              assert.match(
+                await frame
+                  .getByRole("status")
+                  .filter({
+                    hasText: learningRef
+                      ? "This read is incomplete."
+                      : "Usage for this range is incomplete.",
+                  })
+                  .innerText(),
+                /partial|incomplete/i,
+              );
+              assert.equal(
+                await frame
+                  .locator("#who")
+                  .getByText(/Showing the first 10 pages/)
+                  .count(),
+                0,
+                "Partial coverage without a next cursor has no pagination note",
+              );
+              // No projection or run-out date exists, so none may be drawn or promised.
+              assert.doesNotMatch(text, /Projected ·|runs short|runs out|out ~/i);
+              const charts = await frame
+                .locator('#capacity [role="group"][aria-label*="capacity. Measured history"]')
+                .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-label")));
+              assert.equal(charts.length, 2);
+              for (const label of charts) assert.doesNotMatch(label, /seasonal forecast/);
+              const enough = await frame
+                .getByRole("link", { name: /Enough accounts\?/ })
+                .innerText();
+              if (learningRef) {
+                // The historical guard treated partial coverage as a different snapshot.
+                assert.match(text, /This read is incomplete/);
+                assert.match(enough, /Read incomplete/);
+                for (const lab of ["Codex", "Claude"]) {
+                  const body = await frame
+                    .getByRole("article", { name: lab, exact: true })
+                    .innerText();
+                  assert.match(body, /Incomplete snapshot/);
+                  assert.match(body, /Forecast and verdict withheld/);
+                }
+              } else {
+                for (const withheld of [
+                  "Incomplete snapshot",
+                  "Forecast and verdict withheld",
+                  "This read is incomplete",
+                  "Read incomplete",
+                ])
+                  assert.ok(!text.includes(withheld), `No withheld state: ${withheld}`);
+                assert.equal(
+                  await frame
+                    .getByRole("status")
+                    .filter({ hasText: "Usage for this range is incomplete." })
+                    .isVisible(),
+                  true,
+                  "Partial usage keeps its own warning",
+                );
+                assert.match(enough, /Too early to say/);
+                for (const lab of ["Codex", "Claude"]) {
+                  const body = await frame
+                    .getByRole("article", { name: lab, exact: true })
+                    .innerText();
+                  assert.match(body, /Learning · /);
+                  assert.ok(
+                    body.includes(
+                      "The forecast starts after 2 completed weeks; advice starts after 4.",
+                    ),
+                    `${lab} names the 2-week forecast and 4-week advice thresholds`,
+                  );
+                  assert.match(body, /0 completed weeks\. No projection or account count yet\./);
+                }
+                for (const label of charts) assert.match(label, /forecast learning/);
+              }
+              assert.ok(
+                await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+                "Overview fits at phone and desktop widths",
+              );
+              await page.locator("iframe").evaluate(
+                (iframe, height) => {
+                  iframe.style.height = `${height}px`;
+                },
+                await frame.evaluate(() => document.documentElement.scrollHeight),
+              );
+              await settled();
+              await capture(page, `learning-overview-${width}`);
+            },
+            {
+              viewport: { width, height: 1000 },
+              usage,
+              // Same range, same capture, no further page: only coverage is partial.
+              overview: (value) => ({ ...value, partial: true }),
+              capacity: (input) => {
+                const result = capacityFixture(input);
+                const at = input.to;
+                const labs = [
+                  { provider: "claude", count: 1 },
+                  { provider: "codex", count: 2 },
+                ];
+                const unit = (provider) => ({ id: `${provider}-equivalent`, label: "account-eq" });
+                result.value.points = labs.map(({ provider, count }) => {
+                  const reading = {
+                    remaining: 0.7 * count,
+                    full: count,
+                    at,
+                    observedAt: { from: at, to: at },
+                    accountCount: count,
+                    knownWeightCount: count,
+                    unknownWeightCount: 0,
+                    weights: [],
+                  };
+                  return {
+                    provider,
+                    windowSeconds: 604_800,
+                    mode: null,
+                    unit: unit(provider),
+                    hour: Math.floor(at / hour) * hour,
+                    minimum: reading,
+                    last: reading,
+                    plans: [],
+                  };
+                });
+                result.value.forecasts = labs.map(({ provider }) => ({
+                  provider,
+                  windowSeconds: 604_800,
+                  mode: null,
+                  unit: unit(provider),
+                  status: "learning",
+                  reasons: [],
+                  history: { expectedHours: 168, observedHours: 1, coverage: 0, completedWeeks: 0 },
+                  backtest: null,
+                  residualCalibration: null,
+                  classification: null,
+                  streak: 0,
+                  recurringPeak: null,
+                  points: [],
+                  runsOutAt: null,
+                  busyRunsOutAt: null,
+                  ordinary: null,
+                  busy: null,
+                  bankedAvailable: null,
+                }));
                 return result;
               },
             },
@@ -1519,6 +1957,32 @@ test(
           });
         },
       );
+
+    await t.test(
+      "incomplete coverage only names truncated pages when a next cursor remains",
+      async () => {
+        const usage = {
+          ok: true,
+          value: {
+            ...emptyUsage.value,
+            total: { ...emptyUsage.value.total, requests: 1 },
+            models: [{ provider: "codex", model: "Synthetic model" }],
+          },
+        };
+        for (const next of [null, "synthetic-next-page"]) {
+          viewResult = { ok: true, value: { ...empty, providers, isOwner: true } };
+          await session(
+            async ({ frame }) => {
+              const who = frame.locator("#who");
+              await who.getByText(/1 request in 7 days/).waitFor();
+              const note = who.getByText(/Showing the first 10 pages/);
+              assert.equal(await note.count(), next === null ? 0 : 1);
+            },
+            { usage, partial: true, next },
+          );
+        }
+      },
+    );
 
     const retained = () =>
       poolView(Date.now(), {
