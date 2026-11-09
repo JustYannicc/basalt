@@ -136,10 +136,10 @@ export class PoolLifecycle {
       }
       throw new PoolStartupDeadline();
     } finally {
-      // An alarm retries failed starts too. The container can outlive a sleeping DO.
+      // Membership upkeep shares this alarm and may already be due after a slow pass.
       const next = this.clock.now() + poolLifecycle.refreshMs;
       const scheduled = await this.storage.getAlarm();
-      if (scheduled === null || scheduled < this.clock.now() || scheduled > next) {
+      if (scheduled === null || scheduled > next) {
         await this.storage.setAlarm(next);
       }
     }

@@ -79,6 +79,33 @@ test("concurrent requests share startup and refresh the warm timeout beyond an h
   assert.equal(f.state().starts, 1);
 });
 
+for (const elapsed of [1_000, 5_000, 13_800]) {
+  test(`runtime warming preserves the upkeep alarm after a ${elapsed} ms tick`, async () => {
+    const f = fixture();
+    const runtime = new PoolLifecycle(f.driver, f.storage, "release-a", f.clock);
+    await runtime.warm();
+    await f.storage.setAlarm(5_000);
+    f.advance(elapsed);
+    await runtime.warm();
+    assert.equal(f.state().alarm, 5_000, "runtime upkeep cannot postpone membership upkeep");
+    assert.ok(f.state().alarm! <= f.clock.now() + 5_000);
+    assert.equal(f.state().starts, 1);
+  });
+}
+
+test("a failed warm preserves an overdue upkeep alarm", async () => {
+  const f = fixture();
+  const runtime = new PoolLifecycle(f.driver, f.storage, "release-a", f.clock);
+  await runtime.warm();
+  await f.storage.setAlarm(5_000);
+  f.advance(13_800);
+  f.driver.status = async () => {
+    throw new Error("readiness unavailable");
+  };
+  await assert.rejects(runtime.warm(), PoolRuntimeUnhealthy);
+  assert.equal(f.state().alarm, 5_000);
+});
+
 test("DO eviction keeps a running container; a changed secret/image revision restarts it", async () => {
   const f = fixture();
   const first = await new PoolLifecycle(f.driver, f.storage, "release-a", f.clock).warm();

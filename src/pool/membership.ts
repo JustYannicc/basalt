@@ -50,6 +50,7 @@ const publicPolicy = ({
 export class NativeMemberships {
   private queue: Promise<unknown> = Promise.resolve();
   private running = new Map<string, Promise<void>>();
+  private ticking?: Promise<void>;
   private deps: Dependencies;
   constructor(deps: Dependencies) {
     this.deps = {
@@ -208,7 +209,15 @@ export class NativeMemberships {
     if (!(await this.run(async (state) => state[pool]?.native))) return;
     await this.authority(pool);
   }
-  async tick(): Promise<void> {
+  tick(): Promise<void> {
+    if (this.ticking) return this.ticking;
+    const work = this.tickOnce().finally(() => {
+      if (this.ticking === work) this.ticking = undefined;
+    });
+    this.ticking = work;
+    return work;
+  }
+  private async tickOnce(): Promise<void> {
     const pools = await this.run(async (state) => Object.keys(state));
     if (!pools.length) return;
     await this.schedule();

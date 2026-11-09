@@ -164,6 +164,7 @@ model {
 
     poolController = actor "Pool controller" {
       #basalt #v1
+      description "One shared controller coalesces membership upkeep into one active pass. Its five-second deadline survives an overrun and remains earlier than runtime upkeep, so the fifteen-second policy lease does not depend on the five-minute lifecycle interval. Gateway refusal logs retain a closed cause class and the failing guard without request content or raw exception messages."
       metadata { jurisdiction "eu"; singleton "control-plane" }
     }
 
