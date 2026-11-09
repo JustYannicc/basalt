@@ -74,6 +74,33 @@ const sqlClasses = [
   "XX",
 ] as const;
 
+interface SourceRefusal {
+  readonly code: string;
+  readonly version: string;
+  readonly expected: string;
+  readonly actual: string;
+}
+
+const sourceRefusal = (value: unknown): SourceRefusal | undefined => {
+  if (typeof value !== "object" || value === null) return;
+  const row = value as Record<string, unknown>;
+  if (
+    typeof row.code !== "string" ||
+    !/^code_[a-zA-Z0-9-]+$/u.test(row.code) ||
+    typeof row.version !== "string" ||
+    !/^dpl_[a-zA-Z0-9-]+$/u.test(row.version) ||
+    typeof row.expected !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(row.expected) ||
+    typeof row.actual !== "string" ||
+    !(
+      /^[a-f0-9]{64}$/u.test(row.actual) ||
+      ["missing", "unreadable", "invalid"].includes(row.actual)
+    )
+  )
+    return;
+  return { code: row.code, version: row.version, expected: row.expected, actual: row.actual };
+};
+
 export interface FailureReceipt {
   readonly format: "basalt-production-ops-failure-v1";
   readonly category: (typeof categories)[number];
@@ -88,6 +115,7 @@ export interface FailureReceipt {
   readonly rowId?: string;
   readonly homeStatus?: number;
   readonly homeCode?: RemovalDiagnostic["homeCode"];
+  readonly source?: SourceRefusal;
 }
 
 export class OperationFailure extends Error {
@@ -116,6 +144,7 @@ export function failureReceipt(value: unknown): FailureReceipt | undefined {
   const sqlStateClass = sqlClasses.find((entry) => entry === row.sqlStateClass);
   const causeKind = causeKinds.find((entry) => entry === row.causeKind);
   const removal = removalDiagnostic(row);
+  const source = category === "refused" ? sourceRefusal(row.source) : undefined;
   return {
     format: "basalt-production-ops-failure-v1",
     category,
@@ -124,6 +153,7 @@ export function failureReceipt(value: unknown): FailureReceipt | undefined {
     ...(causeKind === undefined ? {} : { causeKind }),
     ...reason,
     ...removal,
+    ...(source === undefined ? {} : { source }),
   };
 }
 
