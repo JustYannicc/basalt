@@ -177,6 +177,7 @@ test("the actual build downloader and pool wrapper require a release service", (
       "readiness.py",
       "healthcheck.py",
       "policy_monitor.py",
+      "policy_check.py",
       "recovery.py",
       "recovery_deadline.py",
       "recovery_http.py",
