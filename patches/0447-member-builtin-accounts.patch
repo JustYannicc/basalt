@@ -145,6 +145,17 @@ diff --git a/apps/hosted/server/src/implementation/resource-directory.ts b/apps/
      const executor = yield* Effect.flatten(HostedExecutor);
      const { owner } = yield* CurrentOrganization;
      const policy = yield* CurrentAuthorization;
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -8809,6 +8809,7 @@
+   },
+   accountLinking: {
+     fixtures: "actors",
++    managementApps: ["member"],
+     file: "app-account-links.spec.ts",
+     title:
+       "connecting accounts from an app's Accounts tab links each only to the requirement it was connected for and discards cancelled drafts, so a plain requirement and a many() requirement sharing its provider run with their own links",
 diff --git a/e2e/tests/app-account-links.spec.ts b/e2e/tests/app-account-links.spec.ts
 --- a/e2e/tests/app-account-links.spec.ts
 +++ b/e2e/tests/app-account-links.spec.ts
