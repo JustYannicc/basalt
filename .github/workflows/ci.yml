@@ -26,7 +26,6 @@ jobs:
       jobs: ${{ steps.jobs.outputs.jobs }}
       hosted_jobs: ${{ steps.jobs.outputs.hosted_jobs }}
       boat_jobs: ${{ steps.jobs.outputs.boat_jobs }}
-      boat_jobs_csv: ${{ steps.jobs.outputs.boat_jobs_csv }}
       matrices: ${{ steps.jobs.outputs.matrices }}
       baseline_probe: ${{ steps.baseline.outputs.needed }}
     steps:
@@ -67,8 +66,8 @@ jobs:
         env:
           BASE_SHA: ${{ steps.comparison.outputs.base_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          BOAT_JOBS: ${{ vars.BASALT_CI_BOAT_JOBS }}
-          FULL_SUITE: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'batch/') || contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'release-update') }}
+          BOAT_JOBS: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'ci:boat') && 'proof' || vars.BASALT_CI_BOAT_JOBS }}
+          FULL_SUITE: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'batch/') || contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:boat') || contains(github.event.pull_request.labels.*.name, 'release-update') }}
         run: |
           if [ "$FULL_SUITE" = true ]; then
             node scripts/ci/select-jobs.ts --all
@@ -222,7 +221,7 @@ jobs:
         run: bun run --cwd clients test
   client-mobile:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'client-mobile')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'client-mobile')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -240,7 +239,7 @@ jobs:
       - run: bun run --cwd clients/mobile export:android
   client-desktop:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'client-desktop')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'client-desktop')
     env:
       ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
       ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
@@ -284,7 +283,7 @@ jobs:
           if-no-files-found: error
   client-native-product:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'client-native-product')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'client-native-product')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -315,7 +314,7 @@ jobs:
           if-no-files-found: warn
   clerk-sign-in:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'clerk-sign-in')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'clerk-sign-in')
     runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
@@ -344,7 +343,7 @@ jobs:
 
   workos-sign-in:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'workos-sign-in')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'workos-sign-in')
     runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
@@ -373,7 +372,7 @@ jobs:
 
   gitlab-sign-in:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'gitlab-sign-in')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'gitlab-sign-in')
     runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
@@ -402,7 +401,7 @@ jobs:
 
   planetscale-sign-in:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'planetscale-sign-in')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'planetscale-sign-in')
     runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
@@ -454,7 +453,7 @@ jobs:
 
   vercel-sign-in:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'vercel-sign-in')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'vercel-sign-in')
     runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
@@ -481,7 +480,7 @@ jobs:
 
   elevenlabs-sign-in:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'elevenlabs-sign-in')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'elevenlabs-sign-in')
     runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
@@ -508,7 +507,7 @@ jobs:
 
   slack-health:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'slack-health')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'slack-health')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -540,8 +539,8 @@ jobs:
 
   catalog-compat:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'catalog-compat')
-    runs-on: ubuntu-latest
+    if: contains(fromJSON(needs.select.outputs.jobs), 'catalog-compat')
+    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'catalog-compat') && 'boat-large' || 'ubuntu-latest' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -575,8 +574,8 @@ jobs:
 
   host-managed-accounts:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'host-managed-accounts')
-    runs-on: ubuntu-latest
+    if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts')
+    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'host-managed-accounts') && 'boat-large' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -626,8 +625,8 @@ jobs:
           if-no-files-found: warn
   host-managed-accounts-adopted:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'host-managed-accounts-adopted')
-    runs-on: ubuntu-latest
+    if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-adopted')
+    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'host-managed-accounts-adopted') && 'boat-large' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -663,8 +662,8 @@ jobs:
           if-no-files-found: warn
   host-managed-accounts-pool:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'host-managed-accounts-pool')
-    runs-on: ubuntu-latest
+    if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-pool')
+    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'host-managed-accounts-pool') && 'boat-large' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -709,8 +708,8 @@ jobs:
           if-no-files-found: warn
   host-managed-accounts-local:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'host-managed-accounts-local')
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-local')
+    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'host-managed-accounts-local') && 'boat-large' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -750,8 +749,8 @@ jobs:
           if-no-files-found: warn
   host-managed-accounts-cloud:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'host-managed-accounts-cloud')
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-cloud')
+    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'host-managed-accounts-cloud') && 'boat-large' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -807,7 +806,7 @@ jobs:
           if-no-files-found: warn
   google-account-recovery:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'google-account-recovery')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'google-account-recovery')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -864,7 +863,7 @@ jobs:
           if-no-files-found: warn
   google-account-diagnostics:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'google-account-diagnostics')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'google-account-diagnostics')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -925,7 +924,7 @@ jobs:
           if-no-files-found: warn
   oauth-account-regressions:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'oauth-account-regressions')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'oauth-account-regressions')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -975,7 +974,7 @@ jobs:
           if-no-files-found: warn
   pool-account-recovery:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'pool-account-recovery')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'pool-account-recovery')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -1020,7 +1019,7 @@ jobs:
           if-no-files-found: warn
   sso-service-binding:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'sso-service-binding')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'sso-service-binding')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -1056,8 +1055,8 @@ jobs:
           if-no-files-found: warn
   production-ops:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'production-ops')
-    runs-on: ubuntu-latest
+    if: contains(fromJSON(needs.select.outputs.jobs), 'production-ops')
+    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'production-ops') && 'boat-large' || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -1109,8 +1108,8 @@ jobs:
           if-no-files-found: warn
   production-ops-migrations:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'production-ops-migrations')
-    runs-on: ubuntu-latest
+    if: contains(fromJSON(needs.select.outputs.jobs), 'production-ops-migrations')
+    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'production-ops-migrations') && 'boat-large' || 'ubuntu-latest' }}
     timeout-minutes: 14
     steps:
       - uses: actions/checkout@v4
@@ -1152,7 +1151,7 @@ jobs:
           if-no-files-found: warn
   production-ops-identity:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'production-ops-identity')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'production-ops-identity')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
@@ -1211,8 +1210,8 @@ jobs:
           if-no-files-found: warn
   compiler-diagnostics:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'compiler-diagnostics')
-    runs-on: ubuntu-latest
+    if: contains(fromJSON(needs.select.outputs.jobs), 'compiler-diagnostics')
+    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'compiler-diagnostics') && 'boat-large' || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -1254,7 +1253,7 @@ jobs:
           if-no-files-found: warn
   human-in-the-loop:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'human-in-the-loop')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'human-in-the-loop')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -1295,7 +1294,7 @@ jobs:
           if-no-files-found: warn
   human-in-the-loop-cloud:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'human-in-the-loop-cloud')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'human-in-the-loop-cloud')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -1333,7 +1332,7 @@ jobs:
           if-no-files-found: warn
   access-editor-reads:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'access-editor-reads')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'access-editor-reads')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -1373,8 +1372,8 @@ jobs:
           if-no-files-found: warn
   contributed-accounts:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'contributed-accounts')
-    runs-on: ubuntu-latest
+    if: contains(fromJSON(needs.select.outputs.jobs), 'contributed-accounts')
+    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'contributed-accounts') && 'boat-large' || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -1418,7 +1417,7 @@ jobs:
           if-no-files-found: warn
   contributed-account-recipes:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'contributed-account-recipes')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'contributed-account-recipes')
     runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
@@ -1455,7 +1454,7 @@ jobs:
           if-no-files-found: warn
   personal-data-reporting:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'personal-data-reporting')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'personal-data-reporting')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -1499,7 +1498,7 @@ jobs:
           if-no-files-found: warn
   pool-inventory:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'pool-inventory')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'pool-inventory')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -1560,7 +1559,7 @@ jobs:
           if-no-files-found: warn
   dashboard-batch:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'dashboard-batch')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'dashboard-batch')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -1622,7 +1621,7 @@ jobs:
           if-no-files-found: warn
   aws-connectors:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'aws-connectors')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'aws-connectors')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -1676,7 +1675,7 @@ jobs:
           if-no-files-found: warn
   gitlab-connectors:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'gitlab-connectors')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'gitlab-connectors')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -1712,7 +1711,7 @@ jobs:
 
   mcp-apps:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'mcp-apps')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'mcp-apps')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -1753,7 +1752,7 @@ jobs:
           if-no-files-found: warn
   declared-self-host:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'declared-self-host')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'declared-self-host')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -1790,7 +1789,7 @@ jobs:
           if-no-files-found: warn
   declared-local:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'declared-local')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'declared-local')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -1827,7 +1826,7 @@ jobs:
           if-no-files-found: warn
   declared-cloud:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'declared-cloud')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'declared-cloud')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -1864,7 +1863,7 @@ jobs:
           if-no-files-found: warn
   workerd-assets:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'upstream-image')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'upstream-image')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -1878,7 +1877,7 @@ jobs:
 
   upstream-image:
     needs: [select, workerd-assets]
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'upstream-image')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'upstream-image')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -2067,8 +2066,8 @@ jobs:
 
   pool-runtime:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'pool-runtime')
-    runs-on: ubuntu-latest
+    if: contains(fromJSON(needs.select.outputs.jobs), 'pool-runtime')
+    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'pool-runtime') && 'boat-large' || 'ubuntu-latest' }}
     services:
       postgres:
         image: postgres:17.7-alpine@sha256:bb377b7239d2774ac8cc76f481596ce96c5a6b5e9d141f6d0a0ee371a6e7c0f2
@@ -2201,7 +2200,7 @@ jobs:
 
   production-build:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'production-build')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'production-build')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -2232,7 +2231,7 @@ jobs:
 
   docs-build:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'docs-build')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'docs-build')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -2250,7 +2249,7 @@ jobs:
 
   upstream-contracts:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'upstream-contracts')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'upstream-contracts')
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -2336,8 +2335,6 @@ jobs:
         planetscale-sign-in,
         vercel-sign-in,
         elevenlabs-sign-in,
-        boat-bundle,
-        boat-check,
       ]
     if: always()
     runs-on: ubuntu-latest
@@ -2378,8 +2375,8 @@ jobs:
 
   account-acquisition:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'account-acquisition')
-    runs-on: ubuntu-latest
+    if: contains(fromJSON(needs.select.outputs.jobs), 'account-acquisition')
+    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'account-acquisition') && 'boat-large' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -2419,7 +2416,7 @@ jobs:
 
   account-usage:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'account-usage')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'account-usage')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -2454,60 +2451,3 @@ jobs:
           path: ${{ runner.temp }}/basalt-e2e-evidence
           include-hidden-files: true
           if-no-files-found: warn
-
-  boat-bundle:
-    needs: select
-    if: needs.select.outputs.boat_jobs != '[]'
-    strategy:
-      fail-fast: false
-      max-parallel: 3
-      matrix:
-        shard: [1, 2, 3]
-    runs-on: boat-large
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: ./.github/actions/setup-node
-        with:
-          node-version: 24.18.0
-      - uses: ./.github/actions/setup-bun
-        with:
-          bun-version: 1.4.4
-      - uses: ./.github/actions/setup-bun
-        with:
-          bun-version: 1.4.2
-      - run: bun install --cwd scripts/architecture --frozen-lockfile
-      - name: Run every selected suite and retain its resource measurements
-        id: bundle
-        env:
-          BASALT_CI_BOAT_JOBS: ${{ needs.select.outputs.boat_jobs_csv }}
-          BASALT_CI_BOAT_SHARD: ${{ matrix.shard }}
-          BASALT_CI_BOAT_MAX_PARALLEL: ${{ vars.BASALT_CI_BOAT_MAX_PARALLEL }}
-          BASALT_CI_BASE_SHA: ${{ needs.select.outputs.base_sha }}
-        run: node scripts/ci-bundles/run.mjs
-      - name: Retain bundle evidence and incremental measurements
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: boat-bundle-${{ matrix.shard }}
-          path: ${{ runner.temp }}/basalt-boat/output
-          include-hidden-files: true
-          if-no-files-found: error
-
-  boat-check:
-    if: ${{ always() }}
-    needs: [select, boat-bundle]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Require every enabled Boat bundle to pass
-        env:
-          BOAT_ENABLED: ${{ needs.select.outputs.boat_jobs != '[]' }}
-          BOAT_RESULT: ${{ needs.boat-bundle.result }}
-        run: |
-          if [ "$BOAT_ENABLED" = "true" ] && [ "$BOAT_RESULT" != "success" ]; then
-            echo "::error::Boat bundles failed, were cancelled, or could not start. Check Boat account capacity and each bundle log."
-            exit 1
-          fi
