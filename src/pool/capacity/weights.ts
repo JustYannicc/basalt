@@ -11,7 +11,8 @@ export interface CapacityWeight {
   readonly revision: string;
 }
 
-export const capacityWeightRevision = "2026-11-09";
+export const capacityWeightRevision = "2026-10-30";
+const claudeWeeklyWeightRevision = "2026-11-09";
 const claudeSessionMultiples = new Map([
   ["max 5x", 5],
   ["max 20x", 20],
@@ -22,6 +23,7 @@ const claudeSessionMultiples = new Map([
 const claudeWeeklyMultiples = new Map([
   ["max 5x", 5],
   ["max 20x", 10],
+  ["ultra", 10],
 ]);
 
 /** A missing plan is a flagged 1x contribution, never a known candidate-account weight. */
@@ -57,6 +59,9 @@ export function capacityWeight(
           : "published-session-multiplier",
     known: reference || multiple !== undefined,
     unit,
-    revision: capacityWeightRevision,
+    revision:
+      claude && windowSeconds === 604_800 && multiple !== undefined
+        ? claudeWeeklyWeightRevision
+        : capacityWeightRevision,
   };
 }

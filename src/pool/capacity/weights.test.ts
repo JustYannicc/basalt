@@ -14,10 +14,10 @@ test("Claude uses each window's published multiplier for Home's exact plan ident
       assert.equal(weight.multiplier, weekly);
       assert.equal(weight.known, true);
       assert.equal(weight.source, "published-weekly-multiplier");
-      assert.equal(weight.revision, capacityWeightRevision);
+      assert.equal(weight.revision, "2026-11-09");
     }
   }
-  assert.equal(capacityWeightRevision, "2026-11-09");
+  assert.equal(capacityWeightRevision, "2026-10-30");
   assert.equal(capacityWeight("claude", "Max 20x", 86_400).known, false);
 });
 
@@ -30,4 +30,21 @@ test("reference units stay fixed across pool composition and unknown tiers stay 
     assert.equal(value.multiplier, 1);
     assert.equal(value.unit.id, "chatgpt-plus-equivalent");
   }
+});
+
+test("only changed Claude weekly tiers acquire a new policy revision", () => {
+  for (const provider of ["claude", "anthropic", "codex", "openai", "other"])
+    for (const plan of ["Max 5x", "Max 20x", "Ultra", "Pro", "Plus", "Unknown", null])
+      for (const seconds of [18_000, 604_800, 86_400]) {
+        const changed =
+          ["claude", "anthropic"].includes(provider) &&
+          seconds === 604_800 &&
+          ["Max 5x", "Max 20x", "Ultra"].includes(plan ?? "");
+        assert.equal(
+          capacityWeight(provider, plan, seconds).revision,
+          changed ? "2026-11-09" : "2026-10-30",
+          `${provider}/${plan}/${seconds}`,
+        );
+      }
+  assert.equal(capacityWeight("claude", "Ultra", 604_800).multiplier, 10);
 });

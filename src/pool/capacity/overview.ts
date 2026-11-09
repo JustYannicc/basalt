@@ -242,11 +242,14 @@ function normalizedDemand(
   unitId: string,
   now: number,
 ) {
+  const trackingSince =
+    data.cohortTrackingSince?.[groupId(provider, windowSeconds, mode, unitId)] ??
+    data.trackingSince;
   const from = Math.max(
     Math.ceil((now - 12 * weekMs) / hourMs) * hourMs,
-    data.trackingSince === null
+    trackingSince === null
       ? Math.floor(now / hourMs) * hourMs - hourMs
-      : Math.floor(data.trackingSince / hourMs) * hourMs,
+      : Math.floor(trackingSince / hourMs) * hourMs,
   );
   const byHour = new Map(
     data.points

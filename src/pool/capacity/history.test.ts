@@ -594,3 +594,141 @@ test("new Max 20x weekly weights leave retained conservative observations unchan
     { source: "published-weekly-multiplier", revision: "2026-11-09", accountCount: 1 },
   ]);
 });
+
+test("a Claude weekly policy reset preserves Codex demand and Claude rolling training", async () => {
+  const start = Date.parse("2026-11-03T10:55:00Z");
+  const history = new CapacityHistory(new Memory());
+  const key = (provider: string, seconds: number, mode: string | null, unit: string) =>
+    JSON.stringify([provider, seconds, mode, unit]);
+  const weeklyKey = key("claude", 604_800, "fixed", "claude-pro-equivalent");
+  const codexKey = key("codex", 604_800, "fixed", "chatgpt-plus-equivalent");
+  const sessionKey = key("claude", 18_000, "rolling", "claude-pro-equivalent");
+  const expected = [
+    { provider: "claude", windowSeconds: 604_800, accounts: 1 },
+    { provider: "codex", windowSeconds: 604_800, accounts: 1 },
+    { provider: "claude", windowSeconds: 18_000, accounts: 1 },
+  ];
+  const samples = (at: number, consumed: boolean) => [
+    reading("claude-weekly", consumed ? 0.9 : 1, {
+      plan: "Max 20x",
+      windowSeconds: 604_800,
+      mode: "fixed",
+      full: 1,
+      observedAt: at,
+      resetAt: start + 7 * 24 * hour,
+      revision: "2026-10-30",
+    }),
+    reading("codex-weekly", consumed ? 0.9 : 1, {
+      provider: "codex",
+      plan: "Plus",
+      windowSeconds: 604_800,
+      mode: "fixed",
+      full: 1,
+      unit: { id: "chatgpt-plus-equivalent", label: "Plus-eq" },
+      observedAt: at,
+      resetAt: start + 7 * 24 * hour,
+      revision: "2026-10-30",
+    }),
+    sampleWithAccount("claude-weekly", at, consumed ? 80 : 100),
+  ];
+  const accountStates = samples(start, false).map((entry) => ({
+    account: entry.account,
+    provider: entry.provider,
+    windowSeconds: entry.windowSeconds,
+    usable: true,
+    bankedAvailable: 0,
+  }));
+  await history.observe("mixed", {
+    at: start,
+    expected,
+    accountStates,
+    readings: samples(start, false),
+  });
+  const priorReadings = samples(start + 5 * 60_000, true);
+  await history.observe("mixed", {
+    at: start + 5 * 60_000,
+    expected,
+    accountStates,
+    readings: priorReadings,
+  });
+  const before = await history.demandData("mixed");
+  const displayed = await history.read("mixed", { to: start + 5 * 60_000 });
+  assert.ok(before.accountDemandTotals[weeklyKey]);
+  assert.ok(before.accountDemandTotals[codexKey]);
+  assert.ok(before.rollingUse[sessionKey]);
+  assert.ok(Object.values(before.rollingComplete[sessionKey]!).every((entry) => entry.complete));
+  const at = start + 10 * 60_000;
+  await history.observe("mixed", {
+    at,
+    expected,
+    accountStates,
+    readings: [
+      { ...priorReadings[0]!, full: 10, remaining: 9, revision: "2026-11-09", observedAt: at },
+      ...priorReadings.slice(1),
+    ],
+  });
+  const after = await history.demandData("mixed");
+  assert.equal(after.cohortTrackingSince?.[weeklyKey], Math.ceil(at / hour) * hour);
+  assert.equal(after.cohortTrackingSince?.[codexKey], undefined);
+  assert.equal(after.cohortTrackingSince?.[sessionKey], undefined);
+  assert.equal(after.accountDemandTotals[weeklyKey], undefined);
+  assert.deepEqual(after.accountDemandTotals[codexKey], before.accountDemandTotals[codexKey]);
+  assert.deepEqual(after.accountDemandTotals[sessionKey], before.accountDemandTotals[sessionKey]);
+  assert.deepEqual(after.rollingUse[sessionKey], before.rollingUse[sessionKey]);
+  assert.deepEqual(after.rollingComplete[sessionKey], before.rollingComplete[sessionKey]);
+  assert.deepEqual(
+    after.points.filter(
+      (point) =>
+        (point.provider === "codex" || point.windowSeconds === 18_000) &&
+        point.hour < Math.floor(at / hour) * hour,
+    ),
+    before.points.filter(
+      (point) =>
+        (point.provider === "codex" || point.windowSeconds === 18_000) &&
+        point.hour < Math.floor(at / hour) * hour,
+    ),
+  );
+  assert.equal(
+    after.points.some((point) => point.provider === "claude" && point.windowSeconds === 604_800),
+    false,
+  );
+  assert.deepEqual(await history.read("mixed", { to: start + 5 * 60_000 }), displayed);
+});
+
+test("unchanged Codex policy preserves training across the weekly-weight rollout", async () => {
+  const history = new CapacityHistory(new Memory());
+  const expected = [{ provider: "codex", windowSeconds: 604_800, accounts: 1 }];
+  const sample = (at: number, remaining: number, revision: string) =>
+    reading("codex", remaining, {
+      provider: "codex",
+      plan: "Plus",
+      windowSeconds: 604_800,
+      mode: "fixed",
+      full: 1,
+      observedAt: at,
+      resetAt: start + 7 * 24 * hour,
+      revision,
+      unit: { id: "chatgpt-plus-equivalent", label: "Plus-eq" },
+    });
+  await history.observe("codex-only", {
+    at: start,
+    expected,
+    readings: [sample(start, 1, "2026-10-30")],
+  });
+  await history.observe("codex-only", {
+    at: start + 5 * 60_000,
+    expected,
+    readings: [sample(start + 5 * 60_000, 0.9, "2026-10-30")],
+  });
+  const before = await history.demandData("codex-only");
+  await history.observe("codex-only", {
+    at: start + 10 * 60_000,
+    expected,
+    readings: [sample(start + 10 * 60_000, 0.8, capacityWeight("codex", "Plus", 604_800).revision)],
+  });
+  const after = await history.demandData("codex-only");
+  assert.deepEqual(after.cohortTrackingSince, {});
+  assert.equal(after.trackingSince, before.trackingSince);
+  assert.equal(after.points.length, before.points.length);
+  assert.ok(after.points[0]!.demand! > before.points[0]!.demand!);
+});

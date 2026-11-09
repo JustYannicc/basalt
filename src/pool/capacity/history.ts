@@ -109,6 +109,7 @@ export interface CapacityDemandPoint {
 
 export interface CapacityDemandData {
   readonly trackingSince: number | null;
+  readonly cohortTrackingSince?: Readonly<Record<string, number>>;
   readonly readAt: number | null;
   readonly completedWeeks: number;
   readonly points: readonly CapacityDemandPoint[];
@@ -193,7 +194,7 @@ interface HistoryIndex {
   unclassifiedAccounts?: { account: string; provider: string }[];
   bankedReceipts?: Record<string, number>;
   demandFrom?: number;
-  demandSince?: number;
+  demandSinceByGroup?: Record<string, number>;
   demandRevisions?: Record<string, { revision: string; at: number }>;
   demandShares?: Record<string, Record<string, { week: number; amount: number }[]>>;
   rollingUse?: Record<string, Record<string, RollingUseEvent[]>>;
@@ -714,23 +715,30 @@ export class CapacityHistory {
         Object.entries(oldPolicies).map(([key, policy]) => [key, policy.revision]),
       );
       const currentRevisions = revisions(latestByKey.values());
-      const changedPolicy =
-        hashedCurrent.some((reading) => {
-          const old = priorLatestByKey.get(readingKey(reading));
-          return old !== undefined && old.revision !== reading.revision;
-        }) ||
-        [...currentRevisions].some(
-          ([key, value]) => index.lastAt !== null && oldRevisions.get(key) !== value,
-        );
-      // Hourly demand has no revision provenance. Keep displayed history, but exclude the
-      // mixed transition hour and older training when its quota scale changes. Policy
-      // provenance outlives active membership so removing every account cannot bypass it.
-      const demandSince = changedPolicy
-        ? Math.ceil(snapshot.at / hourMs) * hourMs
-        : index.demandSince;
-      const demandShares = structuredClone(changedPolicy ? {} : (index.demandShares ?? {}));
-      const rollingUse = structuredClone(changedPolicy ? {} : (index.rollingUse ?? {}));
-      const rollingChain = structuredClone(changedPolicy ? {} : (index.rollingChain ?? {}));
+      const changedGroups = new Set(
+        [...currentRevisions]
+          .filter(([key, value]) => index.lastAt !== null && oldRevisions.get(key) !== value)
+          .map(([key]) => key),
+      );
+      for (const reading of hashedCurrent) {
+        const old = priorLatestByKey.get(readingKey(reading));
+        if (old !== undefined && old.revision !== reading.revision)
+          changedGroups.add(
+            groupKey(reading.provider, reading.windowSeconds, reading.mode, reading.unit.id),
+          );
+      }
+      // Hourly demand has no revision provenance. Only the changed cohort loses its
+      // mixed hour and older training; its boundary survives empty membership.
+      const demandSinceByGroup = { ...index.demandSinceByGroup };
+      const demandShares = structuredClone(index.demandShares ?? {});
+      const rollingUse = structuredClone(index.rollingUse ?? {});
+      const rollingChain = structuredClone(index.rollingChain ?? {});
+      for (const group of changedGroups) {
+        demandSinceByGroup[group] = Math.ceil(snapshot.at / hourMs) * hourMs;
+        delete demandShares[group];
+        delete rollingUse[group];
+        delete rollingChain[group];
+      }
       const oldestShareWeek = weekOf(snapshot.at) - 13 * 7 * dayMs;
       const rollingCutoff = snapshot.at - 6 * 60 * 60_000;
       for (const accounts of Object.values(demandShares))
@@ -1178,7 +1186,7 @@ export class CapacityHistory {
         const observedWeight = samples.reduce((total, sample) => total + sample.reading.full, 0);
         if (expectedWeight <= 0 || observedWeight <= 0) continue;
         for (const sample of samples) {
-          const sampleFrom = Math.max(sample.from, demandSince ?? sample.from);
+          const sampleFrom = Math.max(sample.from, demandSinceByGroup[group] ?? sample.from);
           if (sampleFrom >= sample.to) continue;
           const contributionId = await accountHash(sample.reading.account);
           const accounts = (demandShares[group] ??= {});
@@ -1349,7 +1357,9 @@ export class CapacityHistory {
         bankedReceipts: Object.fromEntries(bankedReceipts),
         unclassifiedAccounts,
         demandFrom,
-        demandSince,
+        demandSinceByGroup: Object.fromEntries(
+          Object.entries(demandSinceByGroup).filter(([, since]) => since >= demandFrom),
+        ),
         demandRevisions: Object.fromEntries(
           [
             ...new Map([
@@ -1424,7 +1434,7 @@ export class CapacityHistory {
           refills: [],
         };
       const first = Math.max(
-        index.demandSince ?? index.fromHour,
+        index.fromHour,
         index.demandFrom ?? index.fromHour,
         from ?? index.demandFrom ?? index.fromHour,
       );
@@ -1437,7 +1447,16 @@ export class CapacityHistory {
       );
       const points = histories
         .flatMap((history) => history.demand ?? [])
-        .filter((point) => point.hour >= first && point.hour <= hourOf(index.lastAt!))
+        .filter(
+          (point) =>
+            point.hour >=
+              Math.max(
+                first,
+                index.demandSinceByGroup?.[
+                  groupKey(point.provider, point.windowSeconds, point.mode, point.unit.id)
+                ] ?? first,
+              ) && point.hour <= hourOf(index.lastAt!),
+        )
         .map((point): CapacityDemandPoint => ({
           provider: point.provider,
           windowSeconds: point.windowSeconds,
@@ -1461,7 +1480,7 @@ export class CapacityHistory {
             a.windowSeconds - b.windowSeconds ||
             a.unit.id.localeCompare(b.unit.id),
         );
-      const trackingSince = index.demandSince ?? index.trackingSince ?? null;
+      const trackingSince = index.trackingSince ?? null;
       const currentWeek = weekOf(index.lastAt);
       const firstWeek =
         trackingSince === null
@@ -1470,7 +1489,16 @@ export class CapacityHistory {
       const completedWeeks = Math.max(0, Math.floor((currentWeek - firstWeek) / (7 * dayMs)));
       const refills = histories
         .flatMap((history) => history.refills ?? [])
-        .filter((refill) => refill.at >= first);
+        .filter(
+          (refill) =>
+            refill.at >=
+            Math.max(
+              first,
+              index.demandSinceByGroup?.[
+                groupKey(refill.provider, refill.windowSeconds, refill.mode, refill.unitId)
+              ] ?? first,
+            ),
+        );
       const oldestShareWeek = weekOf(index.lastAt) - 13 * 7 * dayMs;
       const accountDemandTotals: Record<string, Record<string, number>> = {};
       for (const [group, accounts] of Object.entries(index.demandShares ?? {})) {
@@ -1502,6 +1530,7 @@ export class CapacityHistory {
         );
       return {
         trackingSince,
+        cohortTrackingSince: index.demandSinceByGroup ?? {},
         readAt: index.lastAt,
         completedWeeks,
         points,

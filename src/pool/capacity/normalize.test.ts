@@ -123,3 +123,23 @@ test("Home's Max 20x quota detail produces a recognised weekly contribution with
   assert.equal(reading.source, "published-weekly-multiplier");
   assert.equal(reading.revision, "2026-11-09");
 });
+
+test("absolute weekly allowances retain their unchanged revision", () => {
+  const [reading] = capacityReadings(
+    "seat",
+    "claude",
+    observation(
+      {
+        id: "claude-seven-day",
+        window_seconds: 604_800,
+        unit: "credits",
+        limit: 300,
+        remaining: 200,
+      },
+      "Max 20x",
+    ),
+    now,
+  );
+  assert.equal(reading.source, "reported-absolute");
+  assert.equal(reading.revision, "2026-10-30");
+});
