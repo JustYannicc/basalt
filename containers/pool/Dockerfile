@@ -42,6 +42,7 @@ COPY native_policy_home_host_helper.go.tmpl /build/native_policy_home_host_helpe
 COPY native_policy /build/native_policy
 RUN mkdir -p /out/plugins && \
     cd /build/native_policy && \
+    CGO_ENABLED=1 go test -race -p=2 -mod=readonly -count=1 ./... && \
     CGO_ENABLED=1 go build -p=2 -mod=readonly -trimpath -buildmode=c-shared \
       -o /out/plugins/basalt-native-policy.so .
 RUN cd /source/home && \
