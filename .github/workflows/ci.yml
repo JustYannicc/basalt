@@ -513,7 +513,7 @@ jobs:
 
   neon-key-reuse:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'neon-key-reuse')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'neon-key-reuse')
     runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
@@ -824,7 +824,7 @@ jobs:
           if-no-files-found: warn
   host-managed-accounts-runtime:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'host-managed-accounts-runtime')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-runtime')
     runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
