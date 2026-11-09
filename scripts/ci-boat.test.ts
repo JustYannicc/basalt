@@ -88,3 +88,33 @@ test("the real selector routes a full proof while keeping all original jobs sele
     heavyJobs.filter((id) => !boatJobs.includes(id)),
   );
 });
+
+test("pool fixture networking is scoped to Boat and checked before the original contracts", () => {
+  const steps = workflow.jobs["pool-runtime"].steps;
+  const firewall = steps.findIndex(
+    (step: { name?: string }) =>
+      step.name === "Allow pool fixture HTTP from Docker bridges on Boat",
+  );
+  const probe = steps.findIndex(
+    (step: { name?: string }) =>
+      step.name === "Verify containers can reach the host fixture listeners",
+  );
+  const contracts = steps.findIndex(
+    (step: { name?: string }) => step.name === "Check the pool runtime and database contracts",
+  );
+  assert.equal(
+    steps[firewall].if,
+    "contains(fromJSON(needs.select.outputs.boat_jobs), 'pool-runtime')",
+  );
+  assert.deepEqual(steps[firewall].run.trim().split("\n"), [
+    "sudo iptables -I INPUT 1 -i docker0 -p tcp -j ACCEPT",
+    "sudo iptables -I INPUT 1 -i br+ -p tcp -j ACCEPT",
+  ]);
+  assert.ok(firewall < probe && probe < contracts);
+  assert.equal(steps[probe].if, undefined);
+  assert.equal(steps[probe].run, "node scripts/ci/check-docker-host.mjs basalt-1409-pool:test");
+  assert.equal(
+    steps[contracts].run,
+    "node --test --test-concurrency=1 scripts/pool-tests/*.test.ts",
+  );
+});

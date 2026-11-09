@@ -2119,6 +2119,13 @@ jobs:
           echo "Runner disk before candidate build (bytes)"
           df -B1 /
           docker build --target runtime --tag basalt-1409-pool:test containers/pool
+      - name: Allow pool fixture HTTP from Docker bridges on Boat
+        if: contains(fromJSON(needs.select.outputs.boat_jobs), 'pool-runtime')
+        run: |
+          sudo iptables -I INPUT 1 -i docker0 -p tcp -j ACCEPT
+          sudo iptables -I INPUT 1 -i br+ -p tcp -j ACCEPT
+      - name: Verify containers can reach the host fixture listeners
+        run: node scripts/ci/check-docker-host.mjs basalt-1409-pool:test
       - name: Start the isolated transaction pooler
         env:
           POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
