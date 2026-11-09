@@ -55,7 +55,12 @@ export async function joinWaitlist(
   rateLimit: WaitlistRateLimit,
   now: () => Date = () => new Date(),
 ): Promise<JoinResult> {
-  if (!(await rateLimit.limit({ key: client })).success) return "limited";
+  try {
+    if (!(await rateLimit.limit({ key: client })).success) return "limited";
+  } catch {
+    console.error("waitlist: rate limit check failed");
+    return "failed";
+  }
   // A bot that fills the trap sees the same success a person does, and nothing is stored.
   if (typeof honeypot === "string" && honeypot !== "") return "joined";
   const address = normalizeEmail(email);
@@ -66,7 +71,7 @@ export async function joinWaitlist(
       database.prepare(insert).bind(address, now().toISOString()),
     ]);
   } catch {
-    // Never log the address; the fixed line is enough to find the outage.
+    // Never log the address; a fixed line is enough to find the outage.
     console.error("waitlist: database write failed");
     return "failed";
   }

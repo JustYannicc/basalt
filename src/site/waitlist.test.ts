@@ -235,6 +235,34 @@ test("a database failure keeps the form, says to try again, and never echoes the
   }
 });
 
+test("a failing rate limit check answers like a storage failure and stores nothing", async () => {
+  const { env, rows } = site();
+  const original = console.error;
+  console.error = () => {};
+  try {
+    const response = await handleSite(
+      new Request("https://signalbox.run/waitlist", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: "email=ada%40example.com&leave_empty=",
+      }),
+      {
+        ...env,
+        WAITLIST_LIMIT: {
+          limit: async () => {
+            throw new Error("rate limit unavailable");
+          },
+        },
+      },
+    );
+    assert.equal(response.status, 503);
+    assert.match(await response.text(), /We couldn't save that just now/);
+    assert.deepEqual(rows(), []);
+  } finally {
+    console.error = original;
+  }
+});
+
 test("addresses are trimmed and lowercased, and only plausible ones pass", () => {
   assert.equal(
     normalizeEmail(" Ada.Lovelace+list@Example.co.uk "),
