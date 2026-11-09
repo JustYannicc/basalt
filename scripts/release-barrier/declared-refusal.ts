@@ -11,6 +11,9 @@ const enums = new Set([
   "creationEvidence",
   "readinessEvidence",
   "providerMode",
+  "previousSettings",
+  "previousProps",
+  "usageModel",
 ]);
 const values = new Set([
   "creating",
@@ -29,6 +32,9 @@ const values = new Set([
   "null",
   "live",
   "local",
+  "standard",
+  "bundled",
+  "unbound",
 ]);
 const numbers = new Set([
   "providerVersion",
@@ -68,10 +74,11 @@ export const declaredMismatch = (
   fqn: string,
   expected: unknown,
   observed: unknown,
+  type = "Cloudflare.R2.Bucket",
 ) =>
   new BarrierRefusal(reason, fqn, {
     fqn,
-    type: "Cloudflare.R2.Bucket",
+    type,
     changed: changedProps(expected, observed).map((change) => {
       if ("old" in change || change.path.includes(".")) return change;
       const old = publicValue(field(expected, change.path), change.path);

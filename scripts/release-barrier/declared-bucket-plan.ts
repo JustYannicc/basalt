@@ -19,6 +19,7 @@ export const prepareDeclaredBuckets = (
   stack: string,
   stage: string,
   provider: BucketProvider,
+  frozen: ReadonlyMap<string, PreparedBucket> = new Map(),
 ) =>
   Effect.gen(function* () {
     const prepared = new Map<string, PreparedBucket>();
@@ -102,9 +103,12 @@ export const prepareDeclaredBuckets = (
                 ],
               });
             const accountId = yield* Effect.promise(provider.accountId);
-            const instanceId = row?.instanceId ?? (yield* generateInstanceId());
+            const previous = frozen.get(fqn);
+            const instanceId =
+              row?.instanceId ?? previous?.native.instanceId ?? (yield* generateInstanceId());
             const bucketName =
               saved?.target.bucketName ??
+              previous?.target.bucketName ??
               (yield* createPhysicalName({
                 id: node.resource.LogicalId,
                 instanceId,
@@ -152,7 +156,7 @@ export const prepareDeclaredBuckets = (
                   logicalId: row.logicalId,
                 },
               );
-            prepared.set(fqn, {
+            const next: PreparedBucket = {
               fqn,
               declaration: digest(canonical(declarations)),
               entry,
@@ -176,7 +180,10 @@ export const prepareDeclaredBuckets = (
                       removalPolicy: "retain",
                       providerMode: node.mode,
                     },
-            });
+            };
+            if (previous && canonical(previous) !== canonical(next))
+              throw declaredMismatch("declared-replan-intent-drift", fqn, previous, next);
+            prepared.set(fqn, next);
           }),
         })),
     );
@@ -190,6 +197,7 @@ export const prepareDeclaredStorage = (
   scope: { stack: string; stage: string },
   provider: BucketProvider,
   record?: (value: DeclaredReadiness) => Promise<void>,
+  frozen: ReadonlyMap<string, PreparedBucket> = new Map(),
 ) =>
   Effect.gen(function* () {
     let buckets = new Map<string, PreparedBucket>();
@@ -202,6 +210,7 @@ export const prepareDeclaredStorage = (
           scope.stack,
           scope.stage,
           provider,
+          frozen,
         ).pipe(
           Effect.tap((value) =>
             Effect.sync(() => {

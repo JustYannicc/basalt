@@ -108,6 +108,7 @@ const result = await Effect.runPromiseExit(
                     declarations,
                     declared: evidence.declared,
                     declaredReadiness: evidence.declaredReadiness,
+                    expansion: evidence.expansion,
                     forwardInput: forward?.continuation,
                     forwardEncryptionKey: process.env.EXECUTOR_ENCRYPTION_KEY,
                     record: evidence.record,

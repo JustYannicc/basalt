@@ -4,19 +4,20 @@ import { canonical } from "./manifest.ts";
 import type { BucketDeclaration, DeclaredChanges } from "./declared-change-schema.ts";
 import { changedProps } from "./prop-diff.ts";
 import type { PlanRefusal } from "./manifest.ts";
+import { classPlanMatches, classPlanChanges } from "./declared-class-contract.ts";
 
 export function declarationRefusals(plan: Plan.Plan, declarations?: DeclaredChanges) {
   const refusals: PlanRefusal[] = [];
   for (const entry of declarations?.changes ?? []) {
     const node = plan.resources[entry.fqn];
-    if (entry.action !== "create-bucket")
+    if (entry.action === "add-sqlite-class" && node && !classPlanMatches(node, entry))
       refusals.push({
-        reason: "unsupported-declared-operation",
+        reason: "declaration-does-not-match-plan",
         fqn: entry.fqn,
         type: entry.type,
-        changed: [{ path: "$declaration.action", old: null, new: entry.action }],
+        changed: classPlanChanges(node, entry),
       });
-    else if (node && !bucketIntentMatches(node, entry))
+    else if (entry.action === "create-bucket" && node && !bucketIntentMatches(node, entry))
       refusals.push({
         reason: "declaration-does-not-match-plan",
         fqn: entry.fqn,
