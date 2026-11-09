@@ -1,0 +1,12 @@
+{
+  "package": "@executor.sh/neon",
+  "publishedUrl": "https://catalog.executor.sh/apps/neon.json",
+  "publishedSha256": "74f9a2831817166b57b9f3e11db523c1d180b426b2b52637adc92716b4e43795",
+  "carriedSha256": "0639362d0ff066c686fce30828c9e902466b1a36caaccc1e955b12fd459982e1",
+  "patchSha256": "2da96ce49090ae9ad70e246184d2f2e4af2bd05dd70d52b8dbc2c345b515aa9b",
+  "appsVersion": "0.0.1-beta.104-basalt.14",
+  "license": "Not declared in the published package",
+  "contribution": {
+    "state": "One Neon API key serves both the REST API and the MCP server; provider auth unchanged; publication not claimed"
+  }
+}
