@@ -373,8 +373,7 @@ test("alarm samples Home collection status and each primary window's observation
       });
     if (route === "/capabilities") return Response.json({});
     if (route === "/usage/records") return Response.json({ items: [], total: 0 });
-    if (route === "/credentials")
-      return Response.json({ files: [{ id: "a", provider: "fixture" }] });
+    if (route === "/credentials") return Response.json({ files: [{ id: "a", provider: "kimi" }] });
     if (route === "/quota/credentials") return Response.json({ items: [reading] });
     throw new Error(path);
   });
@@ -572,7 +571,7 @@ test("the existing alarm persists weighted capacity without extra Home reads and
       });
     if (route === "/channel-group-details")
       return Response.json({
-        channel_group_details: ["a", "b"].map((id, index) => ({
+        channel_group_details: ["a", "b", "app-key"].map((id, index) => ({
           id: index + 1,
           channel_group_id: 1,
           auth_id: id,
@@ -581,7 +580,12 @@ test("the existing alarm persists weighted capacity without extra Home reads and
     if (route === "/capabilities") return Response.json({});
     if (route === "/usage/records") return Response.json({ items: [], total: 0 });
     if (route === "/credentials")
-      return Response.json({ files: ["a", "b"].map((id) => ({ id, provider: "claude" })) });
+      return Response.json({
+        files: ["a", "b", "app-key"].map((id) => ({
+          id,
+          provider: id === "app-key" ? "typesafe" : "claude",
+        })),
+      });
     if (route === "/quota/credentials")
       return Response.json({
         items: ["a", "b"].map((id) => ({
@@ -620,6 +624,8 @@ test("the existing alarm persists weighted capacity without extra Home reads and
   assert.equal(points[0]!.last.remaining, 4);
   assert.equal(points[0]!.last.full, 10);
   assert.equal(points[0]!.last.accountCount, 2);
+  const demand = await new CapacityHistory(storage).demandData("pool-a");
+  assert.deepEqual(demand.unclassifiedProviders, []);
   assert.equal(calls.filter((route) => route === "/quota/credentials").length, 1);
   assert.equal(
     calls.some((route) => route.startsWith("/quota/credentials/")),

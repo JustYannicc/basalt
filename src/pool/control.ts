@@ -2,6 +2,7 @@ import { poolDependency } from "./dependency-failure.ts";
 import { PoolRuntimeUnhealthy } from "./lifecycle.ts";
 import { HomeTransportFailure } from "./json.ts";
 import { accountsView } from "./accounts-view.ts";
+import { subscriptionAccounts } from "./subscription-accounts.ts";
 import { mapBounded } from "./bounded.ts";
 import { poolGroupPrefix } from "./pool-group.ts";
 import providers from "./providers.json" with { type: "json" };
@@ -574,6 +575,7 @@ export class PoolHome {
       isOwner,
       providers,
       accounts,
+      subscriptionAccountIds: subscriptionAccounts(accounts).map((account) => account.id),
       reading: {
         source: result.source,
         readAt: result.data.readAt,
