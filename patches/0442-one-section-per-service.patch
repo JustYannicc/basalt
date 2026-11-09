@@ -899,13 +899,13 @@ diff --git a/e2e/support/name-account-identity.ts b/e2e/support/name-account-ide
      yield* capture("settled");
      yield* evidence.json("initial-name-states.json", { pending, settled: yield* state });
 -    expect(pending.value, "a generated saved label never prefills the pending name").toBe("");
-+    // The pending name offers the title the account gets anyway, never its generated label, and
-+    // saving it keeps that label, so it need not wait for the check.
++    // The pending name offers the default title, but Save waits for the check that may name it.
++    // Keeping the untouched default after that check still preserves its generated label.
 +    expect(pending.value).toBe("OpenAI Subscription");
      expect(pending.placeholder).toBe("OpenAI Subscription");
      expect(pending.statuses).toEqual(["Checking account…"]);
 -    expect(pending.disabled).toBe(true);
-+    expect(pending.disabled).toBe(false);
++    expect(pending.disabled).toBe(true);
      expect((yield* state).statuses).toEqual([]);
      yield* dismiss;
  
