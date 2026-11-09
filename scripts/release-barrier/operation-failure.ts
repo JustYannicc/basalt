@@ -3,6 +3,8 @@ import { BarrierRefusal } from "./refusal.ts";
 
 export type ReleaseOperation =
   | "plan-stack"
+  | "plan-read-resource"
+  | "plan-diff-resource"
   | "prepare-resource"
   | "read-worker-baseline"
   | "freeze-worker-upload"

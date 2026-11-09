@@ -47,6 +47,8 @@ export const fixture = (
     namespace?: "eu" | "missing" | "wrong" | "drift";
     unknownCommand?: boolean;
     orphanedDatabaseCommand?: boolean;
+    planFailure?: "read" | "diff";
+    planError?: unknown;
   } = {},
 ) => {
   const events: string[] = [],
@@ -56,8 +58,16 @@ export const fixture = (
   let failOrdinary = false;
   let seededStatus: string | undefined;
   let namespaceReads = 0;
+  let releasePlanning = false;
   const workers = Provider.succeed(FixtureWorker, {
-    diff: () => Effect.succeed({ action: "update" }),
+    read: (input) =>
+      releasePlanning && options.planFailure === "read" && input.id === "Router"
+        ? Effect.fail(options.planError)
+        : Effect.succeed(input.output),
+    diff: (input) =>
+      releasePlanning && options.planFailure === "diff" && input.id === "Router"
+        ? Effect.fail(options.planError)
+        : Effect.succeed({ action: "update" }),
     reconcile: (input) =>
       Effect.gen(function* () {
         const hook = yield* Effect.serviceOption(WorkerUploadHook);
@@ -157,7 +167,7 @@ export const fixture = (
       });
       yield* FixtureWorker("Router", {
         revision: "candidate",
-        peer: api.workerName,
+        peer: options.planFailure === "read" ? "Api" : api.workerName,
         ready: namespace?.hash.pipe(Output.map(() => "eu")),
       });
       for (const id of options.extraWorkers ?? [])
@@ -184,10 +194,11 @@ export const fixture = (
         }
         events.length = 0;
         writes = 0;
-        if (options.newResource) {
+        if (options.newResource || options.planFailure === "read") {
           const state = yield* yield* State;
           yield* state.delete({ stack: compiled.name, stage: compiled.stage, fqn: "Router" });
         }
+        releasePlanning = true;
         return yield* deployStack(compiled, {
           candidate: "a".repeat(40),
           record: async (receipt) => {

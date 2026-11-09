@@ -21,6 +21,7 @@ import { resumeForwardRelease } from "./forward-resume.ts";
 import { readOnlyProbeFetch } from "./probe-network.ts";
 import { BarrierRefusal } from "./manifest.ts";
 import { safeProviderFailure } from "./operation-failure.ts";
+import { planStack } from "./plan-stack.ts";
 import {
   readForwardStateObservation,
   type ForwardStateObservation,
@@ -58,6 +59,9 @@ try {
                 setOutput: deny,
               };
               nativeState = yield* readForwardStateObservation(actual, compiled);
+              const plan = yield* planStack(compiled).pipe(
+                Effect.provideService(State, Effect.succeed(readOnly)),
+              );
               const reconciliation = yield* resumeForwardRelease(compiled, {
                 dryRun: true,
                 directory,
@@ -103,6 +107,7 @@ try {
               return {
                 schemaVersion: 1,
                 nativeSchemaVersion: nativeState.nativeSchemaVersion,
+                plannedResources: Object.keys(plan.resources).length,
                 nativeState,
                 readOnly: true,
                 reconciliation: reconciliation ?? { disposition: "completed-journal" },
@@ -135,6 +140,7 @@ try {
   const fields = {
     schemaVersion: exit.value.schemaVersion,
     nativeSchemaVersion: exit.value.nativeSchemaVersion,
+    plannedResources: exit.value.plannedResources,
     readOnly: true,
     nativeState: exit.value.nativeState,
     ...exit.value.reconciliation,
