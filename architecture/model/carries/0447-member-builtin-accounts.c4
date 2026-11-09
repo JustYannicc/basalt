@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Built-in management access is personal for every eligible organization member. Ordinary member jobs and initial team setup create each person's own managed key and user-scoped service link without sharing another person's credentials. Apps and inventory reads repair members whose setup was skipped by older releases, only when no account was ever recorded for that person and team installation is complete. The existing transaction serializes concurrent first reads and rechecks live membership before committing. Recorded accounts, deliberate unlinks and deletions remain unchanged. Pool token jobs retain their existing-holder authority."
+    }
+  }
+}

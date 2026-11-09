@@ -1,0 +1,456 @@
+diff --git a/apps/hosted/server/src/implementation/member-defaults.ts b/apps/hosted/server/src/implementation/member-defaults.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/member-defaults.ts
+@@ -0,0 +1,29 @@
++import { StorageError } from "@executor-js/sdk/core";
++import { Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import { OrganizationDefaults } from "../contracts/organization-defaults.ts";
++import { policyDatabase, type ResourceAuthority } from "./resource-policy.ts";
++
++/** Repair members skipped by earlier setup without replacing recorded accounts or choices. */
++export const ensureMemberDefaults = (actor: ResourceAuthority) =>
++  Effect.gen(function* () {
++    const sql = yield* policyDatabase;
++    const members = yield* sql`select "user".id as "userId", "user".name
++      from organization team join member on member."organizationId" = team.id
++      join "user" on "user".id = member."userId"
++      where team.id = ${actor.organization} and member."userId" = ${actor.user}
++        and coalesce((team.metadata::jsonb -> 'executorDefaults' ->> 'installed')::boolean, false)
++        and not (coalesce(team.metadata::jsonb -> 'executorKeyAccounts', '{}'::jsonb) ? member."userId")`.pipe(
++      Effect.flatMap(
++        Schema.decodeUnknownEffect(
++          Schema.Array(Schema.Struct({ userId: Schema.String, name: Schema.String })),
++        ),
++      ),
++    );
++    const member = members[0];
++    if (member === undefined) return;
++    const initialize = yield* OrganizationDefaults;
++    yield* initialize(actor.organization, member).pipe(
++      Effect.provideService(SqlClient.SqlClient, sql),
++    );
++  }).pipe(Effect.mapError(() => new StorageError()));
+diff --git a/apps/hosted/server/src/implementation/organization-defaults.ts b/apps/hosted/server/src/implementation/organization-defaults.ts
+--- a/apps/hosted/server/src/implementation/organization-defaults.ts
++++ b/apps/hosted/server/src/implementation/organization-defaults.ts
+@@ -231,7 +231,7 @@
+               const eligible =
+                 yield* sql`select member.id from member join "user" on "user".id = member."userId"
+                 where member."organizationId" = ${organization} and member."userId" = ${user.userId}
+-                and member.role in ('owner', 'admin') and (${requireVerifiedEmail} = false or "user"."emailVerified" = true)
++                and (${requireVerifiedEmail} = false or "user"."emailVerified" = true)
+                 for share of member, "user"`.pipe(Effect.mapError(() => new StorageError()));
+               if (eligible.length === 0) return;
+               const account =
+diff --git a/apps/hosted/server/src/implementation/organization.ts b/apps/hosted/server/src/implementation/organization.ts
+--- a/apps/hosted/server/src/implementation/organization.ts
++++ b/apps/hosted/server/src/implementation/organization.ts
+@@ -8,6 +8,7 @@
+   observeProductOperation,
+   traceProductRead,
+ } from "../contracts/product-analytics.ts";
++import { ensureMemberDefaults } from "./member-defaults.ts";
+ import { projectAppServices } from "./service-install-records.ts";
+ import { policyDatabase } from "./resource-policy.ts";
+ import { RequiredAction, CurrentAuthorization } from "../contracts/authorization.ts";
+@@ -229,11 +230,11 @@
+ /** List organization metadata through the SDK without evaluating app code. */
+ export const inventory = (owner: OwnerId) =>
+   Effect.gen(function* () {
++    const actor = yield* currentResourceAuthority;
++    yield* ensureMemberDefaults(actor);
+     const executor = yield* Effect.flatten(HostedExecutor);
+     const policy = yield* CurrentAuthorization;
+     const listedApps = yield* executor.apps.list({ owner, ids: permittedAppIds(policy) });
+-    // Membership is read once for both the app and the account policies.
+-    const actor = yield* currentResourceAuthority;
+     const visibleApps = yield* visibleAppsAs(actor, listedApps);
+     const apps = yield* appUiIndicators(
+       yield* projectAppServices(yield* policyDatabase, visibleApps),
+diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted/server/src/implementation/provisioning.ts
+--- a/apps/hosted/server/src/implementation/provisioning.ts
++++ b/apps/hosted/server/src/implementation/provisioning.ts
+@@ -31,7 +31,7 @@
+     organization_id: OrganizationId,
+   }),
+ ]);
+-const Manager = Schema.Struct({ userId: Schema.String, name: Schema.String });
++const Member = Schema.Struct({ userId: Schema.String, name: Schema.String });
+ /** A safe failure projection for background logs and workflow retries. */
+ export class ProvisioningFailed extends Schema.TaggedError<ProvisioningFailed>()(
+   "ProvisioningFailed",
+@@ -143,8 +143,8 @@
+     Effect.withSpan("hosted.provision"),
+   );
+ 
+-/** Team setup reads managers; token jobs may revisit an existing pool holder of any role. */
+-const managers = (
++/** Ordinary setup serves every member; token jobs can only revisit an existing pool holder. */
++const setupMembers = (
+   organization: OrganizationId,
+   requireVerifiedEmail: boolean,
+   user?: string,
+@@ -155,13 +155,13 @@
+     return yield* sql`select "user".id as "userId", "user".name from member join "user" on "user".id = member."userId"
+       where member."organizationId" = ${organization}
+       and (${user ?? null}::text is null or member."userId" = ${user ?? null}::text)
+-      and ((member.role in ('owner', 'admin') and (${requireVerifiedEmail} = false or "user"."emailVerified" = true))
++      and ((${rotationOnly} = false and (${requireVerifiedEmail} = false or "user"."emailVerified" = true))
+         or (${rotationOnly} = true and ${user ?? null}::text is not null and exists (
+           select 1 from organization pool_team
+           cross join lateral jsonb_each(coalesce(pool_team.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) pool
+           where pool_team.id = member."organizationId"
+           and coalesce(pool.value ->> 'owner', pool.key) = member."userId"
+-        )))`.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Manager))));
++        )))`.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Member))));
+   });
+ 
+ /** Install the organization's defaults. Concurrent runs are safe: defaults install one app. */
+@@ -172,7 +172,7 @@
+     // Member jobs that ran before installation finished wait for their retry delay. Set up
+     // those members now, so their managed key is linked once the app is installed. Their
+     // own jobs still own member setup and find it done.
+-    for (const member of yield* managers(organization, requireVerifiedEmail))
++    for (const member of yield* setupMembers(organization, requireVerifiedEmail))
+       yield* initialize(organization, member).pipe(
+         Effect.catch((error) =>
+           Schema.is(PoolSetupPending)(error)
+@@ -213,7 +213,7 @@
+             : undefined;
+           const bundle = tagged?.slice(0, tagged.lastIndexOf(":"));
+           if (!rotationOnly && !catalogOnly) yield* services.member?.(job.user_id) ?? Effect.void;
+-          const [member] = yield* managers(
++          const [member] = yield* setupMembers(
+             job.organization_id,
+             services.requireVerifiedEmail,
+             job.user_id,
+diff --git a/apps/hosted/server/src/implementation/resource-directory.ts b/apps/hosted/server/src/implementation/resource-directory.ts
+--- a/apps/hosted/server/src/implementation/resource-directory.ts
++++ b/apps/hosted/server/src/implementation/resource-directory.ts
+@@ -12,6 +12,7 @@
+ import { HostedExecutor } from "../contracts/executor.ts";
+ import { CurrentOrganization } from "../contracts/organization.ts";
+ import type { ResourceDirectory } from "../contracts/resource-access.ts";
++import { ensureMemberDefaults } from "./member-defaults.ts";
+ import { AccountListReads } from "./account-list-reads.ts";
+ import { readAccountListLinks } from "./account-list-links.ts";
+ import { accountListPhase } from "./account-list-timing.ts";
+@@ -41,6 +42,7 @@
+ ) =>
+   Effect.gen(function* () {
+     const actor = yield* currentResourceAuthority;
++    yield* ensureMemberDefaults(actor);
+     const executor = yield* Effect.flatten(HostedExecutor);
+     const { owner } = yield* CurrentOrganization;
+     const policy = yield* CurrentAuthorization;
+diff --git a/e2e/tests/executor-key-account.spec.ts b/e2e/tests/executor-key-account.spec.ts
+--- a/e2e/tests/executor-key-account.spec.ts
++++ b/e2e/tests/executor-key-account.spec.ts
+@@ -7,7 +7,7 @@
+ import { Effect, Schema, Schedule } from "effect";
+ import type { Page } from "playwright";
+ import { scenarios } from "../test-plan.ts";
+-import { Actors } from "../support/actors.ts";
++import { Actors, password } from "../support/actors.ts";
+ import { Api, body, type Session } from "../support/api.ts";
+ import { Browser } from "../support/browser.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+@@ -48,7 +48,7 @@
+           browser = yield* Browser;
+         const prefix = `/api/organizations/${actors.organization.id}`;
+         const selectedAccounts: string[] = [];
+-        for (const actor of [actors.owner, actors.admin]) {
++        for (const actor of [actors.owner, actors.admin, actors.member]) {
+           const inventory = yield* api.request(actor, "GET", `${prefix}/inventory`).pipe(
+             Effect.flatMap((response) => body(Inventory, response)),
+             Effect.repeat({
+@@ -176,6 +176,12 @@
+               yield* api.request(actor, "GET", `${prefix}/resources?view=${view}`),
+             );
+             const entry = directory.apps.find((entry) => entry.app.id === app.id);
++            if (view === "managed" && actor === actors.member) {
++              expect(entry).toBeUndefined();
++              expect(directory.accounts.some((item) => item.account.id === account.id)).toBe(false);
++              continue;
++            }
++            expect(entry).toBeDefined();
+             expect(entry?.app.accounts).toBeUndefined();
+             // People's directory counts the key as filling the requirement, never as a sign-in.
+             expect(entry?.linkedAccounts).toEqual([]);
+@@ -278,7 +284,8 @@
+               expect(relinkedCall.status, JSON.stringify(relinkedCall.body)).toBe(200);
+               expect(yield* body(Identity, relinkedCall)).toEqual({
+                 organization: actors.organization.id,
+-                role: actor === actors.owner ? "owner" : "admin",
++                role:
++                  actor === actors.owner ? "owner" : actor === actors.admin ? "admin" : "member",
+               });
+             }),
+           );
+@@ -499,6 +506,18 @@
+         expect(deniedLink.body).toMatchObject({ _tag: "OrganizationForbidden" });
+         expect(JSON.stringify(deniedLink.body)).not.toContain(account);
+         expect(yield* linkedKey(actors.admin)).toBe(admin);
++        const member = yield* linkedKey(actors.member);
++        expect([account, admin]).not.toContain(member);
++        const memberInventory = yield* read(actors.member);
++        expect(
++          memberInventory.accounts.some((item) => item.id === account || item.id === admin),
++        ).toBe(false);
++        const memberCall = yield* call(actors.member);
++        expect(memberCall.status, JSON.stringify(memberCall.body)).toBe(200);
++        expect(yield* body(Identity, memberCall)).toEqual({
++          organization: actors.organization.id,
++          role: "member",
++        });
+         const connection = yield* body(
+           Schema.Struct({ id: Schema.String }),
+           yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
+@@ -561,14 +580,14 @@
+         const api = yield* Api,
+           actors = yield* Actors;
+         const prefix = `/api/organizations/${actors.organization.id}`;
+-        const { app, account } = yield* managementApp(actors.admin);
++        const { app, account } = yield* managementApp(actors.member);
+         const path = `${prefix}/apps/${app.id}`;
+         const read = (actor: Session) =>
+           api.request(actor, "GET", `${prefix}/inventory`).pipe(
+             Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))),
+             Effect.flatMap((response) => body(Inventory, response)),
+           );
+-        const managedKeys = api.request(actors.admin, "GET", "/api/auth/api-key/list").pipe(
++        const managedKeys = api.request(actors.member, "GET", "/api/auth/api-key/list").pipe(
+           Effect.flatMap((response) =>
+             body(
+               Schema.Struct({
+@@ -583,10 +602,10 @@
+           ),
+         );
+         expect(yield* managedKeys).toBe(1);
+-        yield* unlinkAccount(actors.admin, path, "service", account);
++        yield* unlinkAccount(actors.member, path, "service", account);
+         // Member setup runs on every read; none of them may link the key again or mint another.
+         const unlinked = Effect.gen(function* () {
+-          const inventories = yield* Effect.forEach([0, 1, 2, 3], () => read(actors.admin), {
++          const inventories = yield* Effect.forEach([0, 1, 2, 3], () => read(actors.member), {
+             concurrency: 4,
+           });
+           for (const inventory of inventories) {
+@@ -601,17 +620,17 @@
+                 Schema.Struct({ app: App, linkedAccounts: Schema.Array(Schema.String) }),
+               ),
+             }),
+-            yield* api.request(actors.admin, "GET", `${prefix}/resources`),
++            yield* api.request(actors.member, "GET", `${prefix}/resources`),
+           );
+           expect(directory.apps.find((entry) => entry.app.id === app.id)?.linkedAccounts).toEqual(
+             [],
+           );
+-          expect(yield* linkedAccountIds(actors.admin, path)).toEqual([]);
++          expect(yield* linkedAccountIds(actors.member, path)).toEqual([]);
+           expect(
+-            (yield* api.request(actors.admin, "GET", `${prefix}/accounts/${account}`)).status,
++            (yield* api.request(actors.member, "GET", `${prefix}/accounts/${account}`)).status,
+           ).toBe(200);
+           expect(yield* managedKeys).toBe(1);
+-          const call = yield* api.request(actors.admin, "POST", `${path}/tools/call`, {
++          const call = yield* api.request(actors.member, "POST", `${path}/tools/call`, {
+             tool: "context.get",
+             kind: "query",
+             input: {},
+@@ -640,8 +659,80 @@
+         expect(redeployed.status, JSON.stringify(redeployed.body)).toBe(200);
+         yield* unlinked;
+         // Linking again is the member's own choice and works on the kept account.
+-        yield* linkAccount(actors.admin, path, "service", account);
+-        expect(yield* linkedAccountIds(actors.admin, path)).toEqual([account]);
++        yield* linkAccount(actors.member, path, "service", account);
++        expect(yield* linkedAccountIds(actors.member, path)).toEqual([account]);
++      }),
++    ),
++  );
++  it.effect(scenarios.executorLateMember.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors;
++        const { app, account: ownerKey } = yield* managementApp(actors.owner);
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const email = "late-member@example.test";
++        const invitation = yield* api.request(
++          actors.owner,
++          "POST",
++          "/api/auth/organization/invite-member",
++          {
++            organizationId: actors.organization.id,
++            email,
++            role: "member",
++          },
++        );
++        expect(invitation.status).toBe(200);
++        const recipient = yield* api.session();
++        const registered = yield* api.request(recipient, "POST", "/api/auth/self-host/register", {
++          invitation: (yield* body(Schema.Struct({ id: Schema.String }), invitation)).id,
++          email,
++          name: "Late member",
++          password,
++        });
++        expect(registered.status).toBe(200);
++        const path = `${prefix}/apps/${app.id}`;
++        // The join's durable job must set up this user without an inventory or Apps read.
++        const linked = yield* linkedAccountIds(recipient, path).pipe(
++          Effect.repeat({
++            schedule: Schedule.spaced("250 millis"),
++            until: (ids) => ids.length > 0,
++            times: 40,
++          }),
++          Effect.timeout("30 seconds"),
++        );
++        expect(linked).toHaveLength(1);
++        expect(linked).not.toContain(ownerKey);
++        const called = yield* api.request(recipient, "POST", `${path}/tools/call`, {
++          tool: "context.get",
++          kind: "query",
++          input: {},
++        });
++        expect(called.status, JSON.stringify(called.body)).toBe(200);
++        expect(yield* body(Identity, called)).toEqual({
++          organization: actors.organization.id,
++          role: "member",
++        });
++        for (const response of yield* Effect.forEach(
++          [0, 1, 2, 3],
++          () => api.request(recipient, "GET", `${prefix}/inventory`),
++          { concurrency: 4 },
++        )) {
++          const inventory = yield* body(Inventory, response);
++          expect(
++            inventory.links.filter((link) => link.app === app.id).map((link) => link.account),
++          ).toEqual(linked);
++        }
++        const keys = yield* body(
++          Schema.Struct({
++            apiKeys: Schema.Array(Schema.Struct({ name: Schema.NullOr(Schema.String) })),
++          }),
++          yield* api.request(recipient, "GET", "/api/auth/api-key/list"),
++        );
++        expect(
++          keys.apiKeys.filter((key) => key.name === "Executor app (created automatically)"),
++        ).toHaveLength(1);
+       }),
+     ),
+   );
+diff --git a/e2e/tests/host-managed-accounts.spec.ts b/e2e/tests/host-managed-accounts.spec.ts
+--- a/e2e/tests/host-managed-accounts.spec.ts
++++ b/e2e/tests/host-managed-accounts.spec.ts
+@@ -10,7 +10,8 @@
+ import { Api, body } from "../support/api.ts";
+ import { Browser } from "../support/browser.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+-import { Resource } from "../support/contracts.ts";
++import { linkedAccountIds } from "../support/app-accounts.ts";
++import { Resource, Inventory } from "../support/contracts.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+ import { Evidence } from "../support/evidence.ts";
+ import { legacyStorage } from "../support/legacy-storage.ts";
+@@ -18,6 +19,7 @@
+ import { serverControl } from "../support/server-control.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
++const Identity = Schema.Struct({ organization: Schema.String, role: Schema.String });
+ const App = Schema.Struct({
+   id: Schema.String,
+   activeVersion: Schema.String,
+@@ -383,4 +385,89 @@
+       }),
+     ),
+   );
++  it.effect(scenarios.executorExistingMember.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors;
++        const { app, account: ownerKey } = yield* managementApp(actors.owner);
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const path = `${prefix}/apps/${app.id}`;
++        const { user } = yield* body(
++          Schema.Struct({ user: Schema.Struct({ id: Schema.String }) }),
++          yield* api.request(actors.member, "GET", "/api/auth/get-session"),
++        );
++        const initial = yield* body(
++          Inventory,
++          yield* api.request(actors.member, "GET", `${prefix}/inventory`),
++        );
++        // Emulate the retained state an earlier release left: membership exists, its job
++        // succeeded, and this user has never had a managed account. Other users stay intact.
++        for (const link of initial.links.filter((link) => link.app === app.id))
++          expect(
++            (yield* api.request(actors.member, "DELETE", `${prefix}/accounts/${link.account}`))
++              .status,
++          ).toBe(200);
++        yield* Effect.addFinalizer(() => serverControl("start").pipe(Effect.orDie));
++        const [retained] = yield* legacyStorage([
++          {
++            sql: `UPDATE organization SET metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb),
++              '{executorKeyAccounts}', coalesce(metadata::jsonb -> 'executorKeyAccounts', '{}'::jsonb) - $1)::text
++              WHERE id = $2 RETURNING id`,
++            params: [user.id, actors.organization.id],
++          },
++          {
++            sql: `DELETE FROM apikey WHERE "referenceId" = $1 AND name = 'Executor app (created automatically)'`,
++            params: [user.id],
++          },
++          {
++            sql: `UPDATE hosted_provisioning SET status = 'succeeded' WHERE kind = 'member' AND organization_id = $1 AND user_id = $2`,
++            params: [actors.organization.id, user.id],
++          },
++        ]);
++        expect(retained).toHaveLength(1);
++        yield* serverControl("start");
++        // Concurrent first reads repair through shipped code, without replaying old jobs.
++        const reads = yield* Effect.forEach(
++          ["resources", "inventory", "resources", "inventory"],
++          (route) => api.request(actors.member, "GET", `${prefix}/${route}`),
++          { concurrency: 4 },
++        );
++        for (const response of reads)
++          expect(response.status, JSON.stringify(response.body)).toBe(200);
++        const linked = yield* linkedAccountIds(actors.member, path);
++        expect(linked).toHaveLength(1);
++        expect(linked).not.toContain(ownerKey);
++        for (const response of [reads[1], reads[3]]) {
++          if (response === undefined)
++            return yield* Effect.die("Missing concurrent inventory response");
++          const inventory = yield* body(Inventory, response);
++          expect(
++            inventory.links.filter((link) => link.app === app.id).map((link) => link.account),
++          ).toEqual(linked);
++        }
++        expect((yield* managementApp(actors.owner)).account).toBe(ownerKey);
++        const keys = yield* body(
++          Schema.Struct({
++            apiKeys: Schema.Array(Schema.Struct({ name: Schema.NullOr(Schema.String) })),
++          }),
++          yield* api.request(actors.member, "GET", "/api/auth/api-key/list"),
++        );
++        expect(
++          keys.apiKeys.filter((key) => key.name === "Executor app (created automatically)"),
++        ).toHaveLength(1);
++        const called = yield* api.request(actors.member, "POST", `${path}/tools/call`, {
++          tool: "context.get",
++          kind: "query",
++          input: {},
++        });
++        expect(called.status, JSON.stringify(called.body)).toBe(200);
++        expect(yield* body(Identity, called)).toEqual({
++          organization: actors.organization.id,
++          role: "member",
++        });
++      }),
++    ),
++  );
+ });
