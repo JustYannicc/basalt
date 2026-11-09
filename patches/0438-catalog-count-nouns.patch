@@ -1,0 +1,76 @@
+diff --git a/packages/ui/src/implementation/dashboard/catalog.tsx b/packages/ui/src/implementation/dashboard/catalog.tsx
+--- a/packages/ui/src/implementation/dashboard/catalog.tsx
++++ b/packages/ui/src/implementation/dashboard/catalog.tsx
+@@ -201,7 +201,7 @@
+           placeholder="Search apps…"
+         />
+         <span className="muted text-muted-foreground">
+-          {entries.length.toLocaleString("en-US")} apps
++          {entries.length.toLocaleString("en-US")} {entries.length === 1 ? "app" : "apps"}
+         </span>
+         {focused !== undefined && (
+           <Button variant="outline" size="sm" onClick={() => setOnly(undefined)}>
+diff --git a/e2e/tests/catalog-official-apps.spec.ts b/e2e/tests/catalog-official-apps.spec.ts
+--- a/e2e/tests/catalog-official-apps.spec.ts
++++ b/e2e/tests/catalog-official-apps.spec.ts
+@@ -276,6 +276,60 @@
+         yield* browser.use("Open Add app", (page) =>
+           page.goto(`/org/${actors.organization.slug}/apps/add`),
+         );
++        const oneApp = "1 app";
++        const appCount = (page: Page) => page.locator(".list-toolbar .muted");
++        const listed = (page: Page) => page.locator(".catalog-row");
++        const fits = (page: Page) =>
++          page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
++        const viewport = yield* browser.use("Read the starting viewport", (page) =>
++          Promise.resolve(page.viewportSize()),
++        );
++        yield* browser.use("Search for one app", (page) =>
++          page.getByPlaceholder("Search apps…").fill(officialApps.mail.name),
++        );
++        for (const width of [1280, 390]) {
++          expect(
++            yield* browser.use(`One result at ${width}px`, (page) =>
++              page
++                .setViewportSize({ width, height: 900 })
++                .then(() => row(page, officialApps.mail.name).waitFor())
++                .then(() =>
++                  Promise.all([listed(page).count(), appCount(page).innerText(), fits(page)]),
++                ),
++            ),
++          ).toEqual([1, oneApp, true]);
++          yield* browser.checkpoint(`One matching app at ${width}px`);
++        }
++        yield* browser.use("Search for several apps", (page) =>
++          page.getByPlaceholder("Search apps…").fill("synthetic"),
++        );
++        const several = yield* browser.use("Several results", (page) =>
++          row(page, officialApps.tracker.name)
++            .waitFor()
++            .then(() =>
++              Promise.all([listed(page).count(), appCount(page).innerText(), fits(page)]),
++            ),
++        );
++        expect(several[0]).toBeGreaterThan(1);
++        expect(several).toEqual([several[0], `${several[0]} apps`, true]);
++        yield* browser.checkpoint("Several matching apps");
++        yield* browser.use("Search for no app", (page) =>
++          page.getByPlaceholder("Search apps…").fill(`no-such-app-${randomUUID().slice(0, 8)}`),
++        );
++        expect(
++          yield* browser.use("No results", (page) =>
++            page
++              .getByRole("heading", { name: "No matching apps", exact: true })
++              .waitFor()
++              .then(() =>
++                Promise.all([listed(page).count(), appCount(page).innerText(), fits(page)]),
++              ),
++          ),
++        ).toEqual([0, "0 apps", true]);
++        yield* browser.checkpoint("No matching apps");
++        yield* browser.use("Restore the starting viewport", (page) =>
++          viewport === null ? Promise.resolve() : page.setViewportSize(viewport),
++        );
+         yield* browser.use("Search the catalog", (page) =>
+           page.getByPlaceholder("Search apps…").fill("synthetic"),
+         );
