@@ -30,10 +30,16 @@ const accounts = [
   "mcp-apps",
   "production-ops",
   "production-ops-migrations",
+  "production-ops-atlassian-adoption",
   "production-ops-identity",
   "production-build",
 ];
-const operations = ["production-ops", "production-ops-migrations", "production-ops-identity"];
+const operations = [
+  "production-ops",
+  "production-ops-migrations",
+  "production-ops-atlassian-adoption",
+  "production-ops-identity",
+];
 
 export const heavyJobs = [
   "client-mobile",
