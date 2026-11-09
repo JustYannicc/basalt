@@ -47,3 +47,13 @@ class QuotaSignalsTests(unittest.TestCase):
         self.assertIsNone(safe_child_output_line("node", text))
         self.assertIsNone(safe_child_output_line("home", text + "\nprivate-token"))
         self.assertIsNone(safe_child_output_line("home", text.replace('"probe_ok": true', '"probe_ok": true,"probe_ok": false')))
+
+    def test_xai_on_demand_fields_survive(self):
+        for field in ("onDemandCap", "on_demand_cap"):
+            e = event()
+            e["provider"] = "xai"
+            e["responses"] = [{"source": "xai-monthly", "valid": True,
+                               "windows": [{"id": "config." + field, "seconds": None}]}]
+            projected = safe_child_output_line("home", MARKER + json.dumps(e))
+            self.assertIsNotNone(projected)
+            self.assertEqual(json.loads(projected[len(MARKER):]), e)

@@ -14,8 +14,8 @@ WINDOW_IDS = {
     "antigravity": re.compile(r"groups\[(?:[0-9]|[12][0-9]|3[01])\]\.buckets\[(?:[0-9]|[12][0-9]|3[01])\]"),
     "kimi": re.compile(r"usage|limits\[(?:[0-9]|[12][0-9]|3[01])\]"),
     "meta": re.compile(r"subs_usage\.(?:window|weekly)"),
-    "xai-monthly": re.compile(r"config\.(?:currentPeriod|current_period|monthlyLimit|monthly_limit|creditUsagePercent|credit_usage_percent)"),
-    "xai-weekly": re.compile(r"config\.(?:currentPeriod|current_period|monthlyLimit|monthly_limit|creditUsagePercent|credit_usage_percent)"),
+    "xai-monthly": re.compile(r"config\.(?:currentPeriod|current_period|monthlyLimit|monthly_limit|onDemandCap|on_demand_cap|creditUsagePercent|credit_usage_percent)"),
+    "xai-weekly": re.compile(r"config\.(?:currentPeriod|current_period|monthlyLimit|monthly_limit|onDemandCap|on_demand_cap|creditUsagePercent|credit_usage_percent)"),
 }
 
 

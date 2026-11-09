@@ -1,9 +1,9 @@
 diff --git a/internal/quota/basalt_collection_signal.go b/internal/quota/basalt_collection_signal.go
 new file mode 100644
-index 0000000..159123f
+index 0000000..0e3a0b2
 --- /dev/null
 +++ b/internal/quota/basalt_collection_signal.go
-@@ -0,0 +1,210 @@
+@@ -0,0 +1,214 @@
 +package quota
 +
 +import (
@@ -85,11 +85,20 @@ index 0000000..159123f
 +	}
 +	return &seconds
 +}
-+func signalPeriod(m signalObject) *int64 {
++func signalPeriod(candidates ...signalObject) *int64 {
 +	var unit string
-+	_ = json.Unmarshal(m["timeUnit"], &unit)
 +	var duration flexInt64
-+	_ = json.Unmarshal(m["duration"], &duration)
++	// Kimi chooses positive duration and nonempty unit independently.
++	for _, m := range candidates {
++		var candidateDuration flexInt64
++		_ = json.Unmarshal(m["duration"], &candidateDuration)
++		if (!duration.set || duration.value <= 0) && candidateDuration.set && candidateDuration.value > 0 {
++			duration = candidateDuration
++		}
++		var candidateUnit string
++		_ = json.Unmarshal(m["timeUnit"], &candidateUnit)
++		unit = firstNonEmptyString(unit, candidateUnit)
++	}
 +	if !duration.set {
 +		return nil
 +	}
@@ -165,12 +174,7 @@ index 0000000..159123f
 +					break
 +				}
 +				m := signalMap(raw)
-+				period := signalPeriod(m)
-+				if window := signalMap(m["window"]); window != nil {
-+					period = signalPeriod(window)
-+				} else if detail := signalMap(m["detail"]); period == nil && detail != nil {
-+					period = signalPeriod(detail)
-+				}
++				period := signalPeriod(signalMap(m["window"]), m, signalMap(m["detail"]))
 +				add(fmt.Sprintf("limits[%d]", i), raw, period)
 +			}
 +		case "antigravity":
@@ -207,7 +211,7 @@ index 0000000..159123f
 +			}
 +			add("config.currentPeriod", m["currentPeriod"], seconds)
 +			add("config.current_period", m["current_period"], seconds)
-+			for _, key := range []string{"monthlyLimit", "monthly_limit", "creditUsagePercent", "credit_usage_percent"} {
++			for _, key := range []string{"monthlyLimit", "monthly_limit", "onDemandCap", "on_demand_cap", "creditUsagePercent", "credit_usage_percent"} {
 +				add("config."+key, m[key], nil)
 +			}
 +		}
@@ -216,10 +220,10 @@ index 0000000..159123f
 +}
 diff --git a/internal/quota/basalt_collection_signal_test.go b/internal/quota/basalt_collection_signal_test.go
 new file mode 100644
-index 0000000..83e7a8f
+index 0000000..d37867d
 --- /dev/null
 +++ b/internal/quota/basalt_collection_signal_test.go
-@@ -0,0 +1,142 @@
+@@ -0,0 +1,175 @@
 +package quota
 +
 +import (
@@ -360,6 +364,39 @@ index 0000000..83e7a8f
 +	encoded, _ := json.Marshal(signal)
 +	if !signal.Truncated || signal.count != 32 || len(encoded) > 7000 || strings.Contains(string(encoded), "private-label") {
 +		t.Fatalf("unbounded/private signal: bytes=%d count=%d", len(encoded), signal.count)
++	}
++}
++
++func TestQuotaCollectionSignalKimiFallbacks(t *testing.T) {
++	for _, body := range []string{
++		`{"limits":[{"duration":5,"timeUnit":"TIME_UNIT_HOUR","window":{},"used":1}]}`,
++		`{"limits":[{"window":{},"detail":{"duration":5,"timeUnit":"TIME_UNIT_HOUR","used":1}}]}`,
++		`{"limits":[{"window":{"duration":5},"timeUnit":"TIME_UNIT_HOUR","used":1}]}`,
++	} {
++		signal := newCollectionSignal("legacy-label", "kimi")
++		ctx := context.WithValue(context.Background(), collectionSignalKey{}, signal)
++		recordReturnedWindows(ctx, "kimi", []byte(body))
++		window := signal.Responses[0].Windows[0]
++		if window.Seconds == nil || *window.Seconds != 18000 {
++			t.Fatalf("returned Kimi fallback duration lost: %+v", window)
++		}
++	}
++}
++
++func TestQuotaCollectionSignalXAIOnDemand(t *testing.T) {
++	for _, key := range []string{"onDemandCap", "on_demand_cap"} {
++		body := `{"config":{"` + key + `":100,"onDemandUsed":1}}`
++		parsed, _, err := parseXAIUsageWindows([]byte(body), time.Now())
++		if err != nil || len(parsed) != 1 || parsed[0].ID != "xai-on-demand" {
++			t.Fatal("fixture must produce actual on-demand quota")
++		}
++		signal := newCollectionSignal("legacy-label", "xai")
++		ctx := context.WithValue(context.Background(), collectionSignalKey{}, signal)
++		recordReturnedWindows(ctx, "xai-monthly", []byte(body))
++		windows := signal.Responses[0].Windows
++		if len(windows) != 1 || windows[0].ID != "config."+key || windows[0].Seconds != nil {
++			t.Fatalf("returned on-demand field lost: %+v", windows)
++		}
 +	}
 +}
 diff --git a/internal/quota/collector.go b/internal/quota/collector.go
