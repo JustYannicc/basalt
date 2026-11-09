@@ -33,7 +33,7 @@ test("native app documents preserve portable resource rewriting across HTML pars
           assert.ok(aliases && !Array.isArray(aliases));
           builder.onResolve({ filter: /ui-document(?:-decode)?[.]ts$/ }, (args) => {
             const replacement = aliases[resolve(args.resolveDir, args.path)];
-            assert.equal(typeof replacement, "string", "production binds both document adapters");
+            assert.ok(typeof replacement === "string", "production binds both document adapters");
             return { path: replacement };
           });
         },
@@ -56,6 +56,7 @@ test("native app documents preserve portable resource rewriting across HTML pars
     `<img src="&#x2f;root.svg"><img src="caf&eacute;.svg?x=&amp;copy;&amp;y=2"><img src="one.svg" src="two.svg"><script>const html = '<img src="skip.svg">';</script><textarea>&amp;raw</textarea><template><div style="background: url(&quot;with&#32;space.svg&quot;)"></div></template>`,
     `<html><head><title>&lt;!--executor-ui--&gt;</title></head><body><div title="<!--executor-ui-->"></div><textarea><!--executor-ui--></textarea><!--executor-ui--></body></html>`,
     `<html><head><title>${"t".repeat(65_530)}<!--executor-ui--></title></head><body><textarea><!--executor-ui--></textarea><!--executor-ui--></body></html>`,
+    `<html><head><noscript><img src="no-script.svg"></noscript></head><body><svg><style>.a{background:url(mark&#x2e;svg)}</style><text>&amp;raw</text></svg><xmp><img src="literal.svg"></xmp><iframe><img src="frame.svg"></iframe><!--executor-ui--></body></html>`,
   ];
   try {
     for (const [index, html] of documents.entries()) {
