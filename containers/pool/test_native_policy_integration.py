@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import http.client
 import json
 import os
@@ -13,7 +16,7 @@ import subprocess
 import threading
 import time
 import unittest
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 try:
@@ -29,6 +32,24 @@ MANAGEMENT_KEY = "native-policy-integration-management-key"
 SIGNING_KEY = "1" * 64
 HOME_PORT = 8327
 READY_MARKER = "POOL_NATIVE_POLICY_TEST_HOME_READY"
+
+
+def signed_policy(prefix: str, claims: dict[str, Any]) -> str:
+    payload = base64.urlsafe_b64encode(json.dumps(claims, separators=(",", ":")).encode()).decode().rstrip("=")
+    message = f"{prefix}.{payload}"
+    signature = hmac.new(bytes.fromhex(SIGNING_KEY), message.encode(), hashlib.sha256).digest()
+    return f"{message}.{base64.urlsafe_b64encode(signature).decode().rstrip('=')}"
+
+
+def policy_http_request(host: str, port: int, path: str, body: dict[str, str]) -> tuple[int, dict[str, Any]]:
+    connection = http.client.HTTPConnection(host, port, timeout=1)
+    connection.request("POST", path, body=json.dumps(body), headers={
+        "Authorization": f"Bearer {MANAGEMENT_KEY}", "Content-Type": "application/json",
+    })
+    response = connection.getresponse()
+    raw = response.read()
+    connection.close()
+    return response.status, json.loads(raw)
 
 
 def helper_request(path: str, method: str = "POST") -> dict[str, Any]:
@@ -85,7 +106,7 @@ class NativePolicyProductionIntegrationTests(unittest.TestCase):
         ready_server.daemon_threads = True
         ready_thread = threading.Thread(target=ready_server.serve_forever, daemon=True)
         ready_thread.start()
-        ready_host, ready_port = ready_server.server_address
+        ready_host, ready_port = cast(tuple[str, int], ready_server.server_address)
 
         child_env = pool_contract.child_environment("home", MANAGEMENT_KEY)
         child_env.update(
@@ -175,6 +196,24 @@ class NativePolicyProductionIntegrationTests(unittest.TestCase):
                 self.assertEqual(set(payload), {"boot_id", "started_at"})
                 self.assertIsNotNone(lease)
                 self.assertGreater(int(lease or "0"), 0)
+
+                at = time.time_ns() // 1_000_000
+                projection = signed_policy("sbm-policy1", {
+                    "pool": "passive-http-fixture", "organization": "fixture-org", "revision": 1,
+                    "expiresAt": at + 15_000, "accounts": ["fixture-auth"], "dirty": False,
+                })
+                self.assertEqual(policy_http_request(ready_host, ready_port, "/native-policy", {"projection": projection}),
+                                 (200, {"installed": True, "revision": 1}))
+                lease_before = ready.readiness_response()[2]
+                with patch.object(ready, "refresh_policy_lease", side_effect=AssertionError("passive checks must not renew readiness")):
+                    for revision, expected in ((1, 200), (2, 503)):
+                        assertion = signed_policy("sbm-use1", {
+                            "pool": "passive-http-fixture", "revision": revision, "expiresAt": at + 30_000,
+                        })
+                        self.assertEqual(policy_http_request(ready_host, ready_port, "/native-policy/check", {"assertion": assertion}),
+                                         (expected, {"ok": expected == 200}))
+                self.assertLessEqual(ready.readiness_response()[2], lease_before)
+                print("native-policy passive authenticated image HTTP check: installed revision accepted; absent revision refused; no lease renewal")
 
                 helper_request("/native-policy-test/load/start")
                 monitor_wall: list[int] = []

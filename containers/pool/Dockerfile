@@ -95,6 +95,7 @@ COPY pool_contract.py /opt/pool/pool_contract.py
 COPY billing_policy.py billing-settings.json /opt/pool/
 COPY readiness.py /opt/pool/readiness.py
 COPY policy_monitor.py /opt/pool/policy_monitor.py
+COPY policy_check.py /opt/pool/policy_check.py
 COPY healthcheck.py /opt/pool/healthcheck.py
 ENV HOME=/dev/shm/cliproxy-pool \
     PYTHONUNBUFFERED=1 \
