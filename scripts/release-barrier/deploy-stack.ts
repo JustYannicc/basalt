@@ -13,7 +13,6 @@ import { beginForwardJournal } from "./forward-journal.ts";
 import { verifyRepairBaseline } from "./repair-baseline.ts";
 import { operationFailure } from "./operation-failure.ts";
 import * as Apply from "alchemy/Apply";
-import * as Plan from "alchemy/Plan";
 import type { CompiledStack } from "alchemy/Stack";
 import type { Worker } from "alchemy/Cloudflare";
 import { Effect } from "effect";
@@ -260,7 +259,7 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
         databaseFqns.add(fqn);
         databaseChanges.add(fqn);
       }
-      const databasePlan = yield* Plan.make(stack, { include: ["PoolDatabase"] });
+      const databasePlan = yield* planStack(stack, { include: ["PoolDatabase"] });
       if (
         Object.values(databasePlan.resources).some(
           (node) => node.resource.Type === "Cloudflare.Worker",

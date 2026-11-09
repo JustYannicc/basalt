@@ -33,7 +33,7 @@ function observedProvider(provider: Provider.ProviderService): Provider.Provider
 }
 
 /** Keep the failing logical resource when Plan invokes a provider, without changing its lifecycle. */
-export const planStack = (stack: CompiledStack) =>
+export const planStack = (stack: CompiledStack, options?: Plan.FilteredPlanOptions) =>
   Effect.gen(function* () {
     let context = yield* Effect.context<never>();
     for (const type of new Set(Object.values(stack.resources).map((resource) => resource.Type))) {
@@ -45,5 +45,5 @@ export const planStack = (stack: CompiledStack) =>
           observedProvider(provider.value),
         );
     }
-    return yield* Plan.make(stack).pipe(Effect.provideContext(context));
+    return yield* Plan.make(stack, options).pipe(Effect.provideContext(context));
   }).pipe(withOperation("(plan)", "plan-stack"));
