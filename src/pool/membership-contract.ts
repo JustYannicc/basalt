@@ -8,6 +8,7 @@ export const policyUsePrefix = "sbm-use1";
 export const policyHeader = "X-Signalbox-Native-Policy";
 export const membershipRefreshMs = 5_000;
 export const membershipTtlMs = 15_000;
+export const membershipGraceMs = 24 * 60 * 60_000;
 
 export interface NativeMembershipAccount {
   account: string;

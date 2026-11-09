@@ -1,22 +1,22 @@
 import { poolGuard } from "./guard-failure.ts";
 import { poolDependency } from "./dependency-failure.ts";
-import { ControlFailure, object, text } from "./json.ts";
+import { object, reportPoolFailure, text } from "./json.ts";
 import { homeReferences } from "./home-references.ts";
 import { openEnvelope } from "./token.ts";
 import {
   membershipPrefix,
   membershipRefreshMs,
   membershipTtlMs,
+  membershipGraceMs,
   type NativeMembershipPolicy,
   type NativeMembershipSnapshot,
 } from "./membership-contract.ts";
-
-interface State extends NativeMembershipPolicy {
-  native: boolean;
-  checkedAt: number;
-  installedRevision: number;
-  installedUntil: number;
-}
+import {
+  acknowledgedMembership,
+  equalMembershipAccounts as equal,
+  membershipPolicy as publicPolicy,
+  type MembershipState as State,
+} from "./membership-state.ts";
 interface Storage {
   get<T>(key: string): Promise<T | undefined>;
   put(key: string, value: unknown): Promise<unknown>;
@@ -35,16 +35,6 @@ interface Dependencies {
   now?: () => number;
 }
 const storageKey = "native-pool-memberships-v1";
-const equal = (left: readonly string[], right: readonly string[]) =>
-  JSON.stringify([...new Set(left)].sort()) === JSON.stringify([...new Set(right)].sort());
-const publicPolicy = ({
-  pool,
-  organization,
-  revision,
-  expiresAt,
-  accounts,
-  dirty,
-}: State): NativeMembershipPolicy => ({ pool, organization, revision, expiresAt, accounts, dirty });
 
 /** Durable desired state and periodic level repair. Backend membership never authorizes native use. */
 export class NativeMemberships {
@@ -140,23 +130,7 @@ export class NativeMemberships {
   }
 
   async authority(pool: string): Promise<NativeMembershipPolicy | undefined> {
-    return this.run(async (state) => {
-      const policy = state[pool];
-      if (!policy) return undefined;
-      if (
-        policy.dirty ||
-        !policy.native ||
-        policy.expiresAt <= this.now() ||
-        policy.installedRevision !== policy.revision ||
-        policy.installedUntil <= this.now()
-      )
-        throw new ControlFailure(
-          503,
-          "backend_unavailable",
-          "Native pool membership is refreshing",
-        );
-      return publicPolicy(policy);
-    });
+    return this.run(async (state) => acknowledgedMembership(state[pool], this.now()));
   }
   async configured(): Promise<boolean> {
     return this.run(async (state) => Object.keys(state).length > 0);
@@ -202,7 +176,10 @@ export class NativeMemberships {
       current.installedRevision !== current.revision ||
       current.installedUntil <= this.now()
     )
-      await this.refresh(pool);
+      await this.refresh(pool).catch(async (error: unknown) => {
+        if (!(await this.authority(pool).catch(() => undefined))) throw error;
+        reportPoolFailure(error);
+      });
     // A signed invalidation alone does not convert retained Home bindings to native authority.
     // The host's registration decides that handoff; native model use remains vetoed by authority().
     if (!(await this.run(async (state) => state[pool]?.native))) return;
@@ -212,7 +189,9 @@ export class NativeMemberships {
     const pools = await this.run(async (state) => Object.keys(state));
     if (!pools.length) return;
     await this.schedule();
-    await Promise.allSettled(pools.map((pool) => this.refresh(pool)));
+    const results = await Promise.allSettled(pools.map((pool) => this.refresh(pool)));
+    for (const result of results)
+      if (result.status === "rejected") reportPoolFailure(result.reason);
   }
   refresh(pool: string): Promise<void> {
     const active = this.running.get(pool);
@@ -237,13 +216,38 @@ export class NativeMemberships {
       ].sort();
       const valid =
         snapshot.native && snapshot.accounts.every((account) => account.homeReference !== null);
+      const prepared = await this.run(async (state) => {
+        const current = state[pool];
+        if (!current || current.revision !== before.revision) return undefined;
+        const changed =
+          current.native !== snapshot.native ||
+          !equal(current.accounts, accounts) ||
+          (!valid && !current.dirty);
+        if (!changed) return current;
+        // An observed selection change must veto old authority before fallible Home repair.
+        const next: State = {
+          ...current,
+          accounts,
+          native: snapshot.native,
+          dirty: true,
+          revision: current.revision + 1,
+          installedRevision: 0,
+          installedUntil: 0,
+          installedGraceUntil: 0,
+        };
+        state[pool] = next;
+        await this.save(state);
+        this.deps.abort(pool);
+        return next;
+      });
+      if (!prepared) continue;
       // Each pass reads actual state, including a write that arrived after a previous matching read.
       if (valid) await this.deps.reconcile(pool, accounts);
       const actual = valid ? await this.deps.actual(pool) : [];
       const ready = valid && equal(actual, accounts);
       const policy = await this.run(async (state) => {
         const current = state[pool];
-        if (!current || current.revision !== before.revision) return undefined;
+        if (!current || current.revision !== prepared.revision) return undefined;
         const changed = current.dirty !== !ready || !equal(current.accounts, accounts);
         const next: State = {
           ...current,
@@ -267,6 +271,7 @@ export class NativeMemberships {
           ...current,
           installedRevision: policy.revision,
           installedUntil: Math.max(current.installedUntil ?? 0, policy.expiresAt),
+          installedGraceUntil: policy.dirty ? 0 : policy.expiresAt + membershipGraceMs,
         };
         await this.save(state);
         return true;

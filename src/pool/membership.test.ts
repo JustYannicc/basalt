@@ -4,6 +4,7 @@ import { NativeMemberships } from "./membership.ts";
 import {
   membershipPrefix,
   membershipTtlMs,
+  membershipGraceMs,
   type NativeMembershipPolicy,
   type NativeMembershipSnapshot,
 } from "./membership-contract.ts";
@@ -206,7 +207,7 @@ test("a missing current Home binding fails closed while the other pool remains u
   assert.deepEqual((await memberships.authority("b"))?.accounts, ["auth-b"]);
 });
 
-test("authority expires when the native read fails and recovers on the next successful level read", async () => {
+test("authority retains its acknowledgement during failed reads and expires at the fixed grace bound", async () => {
   const f = fixture(),
     memberships = new NativeMemberships(f.deps);
   await memberships.reserve(await f.request());
@@ -217,6 +218,8 @@ test("authority expires when the native read fails and recovers on the next succ
   };
   f.advance(membershipTtlMs);
   await memberships.tick();
+  assert.ok(await memberships.authority("a"));
+  f.advance(membershipGraceMs);
   await assert.rejects(memberships.authority("a"), /refreshing/);
   f.deps.read = read;
   await memberships.tick();
@@ -255,6 +258,8 @@ test("authority requires the exact clean policy acknowledgement and never extend
     "the previous acknowledged policy is still inside its lease",
   );
   f.advance(membershipTtlMs - 5_000);
+  assert.deepEqual(await memberships.authority("a"), accepted);
+  f.advance(membershipGraceMs);
   await assert.rejects(memberships.authority("a"), /refreshing/);
 });
 

@@ -114,7 +114,7 @@ export class BackendFailure extends ControlFailure {
     this.backendStatus = status;
   }
 }
-export function failureResponse(error: unknown): Response {
+export function reportPoolFailure(error: unknown): void {
   const diagnostic =
     typeof error === "object" && error !== null ? diagnostics.get(error) : undefined;
   if (diagnostic && (!(error instanceof ControlFailure) || error.status === 503)) {
@@ -124,6 +124,10 @@ export function failureResponse(error: unknown): Response {
       /* Diagnostics must not change the refusal. */
     }
   }
+}
+
+export function failureResponse(error: unknown): Response {
+  reportPoolFailure(error);
   if (!(error instanceof ControlFailure)) return unavailableResponse();
   const response = json(error.response(), error.status);
   if (error.retryAfterSeconds !== undefined)

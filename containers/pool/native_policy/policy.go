@@ -15,6 +15,7 @@ import (
 const (
 	maxSafeInteger    int64 = 1<<53 - 1
 	maxProjectionTTL        = 15 * time.Second
+	maxPolicyGrace          = 24 * time.Hour
 	maxAssertionTTL         = 2 * time.Hour
 	maxAccountIDs           = 4096
 	maxAccountIDBytes       = 512
@@ -71,10 +72,15 @@ func decodeProjection(keys signingKeys, token string, now time.Time) (*policySna
 		}
 		allowed[id] = struct{}{}
 	}
+	deadline := now.Add(remaining)
+	if !claims.Dirty {
+		// Installation still requires a fresh signature. Only accepted clean state gets grace.
+		deadline = deadline.Add(maxPolicyGrace)
+	}
 	return &policySnapshot{
 		claims:   claims,
 		allowed:  allowed,
-		deadline: now.Add(remaining),
+		deadline: deadline,
 	}, nil
 }
 

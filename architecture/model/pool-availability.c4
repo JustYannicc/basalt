@@ -1,0 +1,12 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "Membership renewal failures preserve only the last acknowledged clean revision until its original expiry plus 24 hours. Failed reads and installs never advance that deadline. Signed invalidation persists a newer dirty revision and aborts that pool before acknowledging a membership writer. Observed account or native-authority changes also persist a veto before fallible runtime repair. A failed first installation, a different revision, dirty state or an elapsed grace deadline never grants model use. Controller reactivation preserves the acknowledged deadline; retained records without an acknowledged grace deadline keep their original lease. Pool views may use this same acknowledged authority while current identity and organization checks remain required."
+    }
+  }
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "Native policy installation still requires an authenticated signed projection with at most 15 seconds remaining. Only successful clean installation retains the exact account set for at most 24 hours beyond that signed expiry. Rejected installation and expired-envelope replay cannot extend it. A newer dirty policy immediately replaces the clean snapshot and has no grace. Request assertions, candidate-set vetoes and the independent scheduler-plugin health lease remain mandatory. An empty or replaced runtime never invents a previously installed policy."
+    }
+  }
+}
