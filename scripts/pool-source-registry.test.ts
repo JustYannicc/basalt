@@ -67,6 +67,16 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         assert.match(patch.retirement.requires, /stable schema owner/);
         assert.match(patch.retirement.requires, /commit and rollback/);
         assert.match(patch.retirement.requires, /multi-process shared-budget/);
+      } else if (patch.identity === "cliproxy-home-quota-collection-signals") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0459-home-quota-collection-signals.patch");
+        assert.match(patch.retirement.requires, /one bounded metadata-only record/);
+        assert.match(
+          patch.retirement.requires,
+          /returned vendor window field paths and durations before parsing/,
+        );
+        assert.match(patch.retirement.requires, /actual collector, omitted and unusable window/);
+        assert.match(patch.retirement.requires, /real-child container stdout/);
       } else if (patch.identity === "cliproxy-home-xai-device") {
         assert.equal(name, "home");
         assert.equal(patch.file, "0399-home-xai-device.patch");
