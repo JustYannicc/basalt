@@ -112,6 +112,7 @@ test("account and pool jobs retain their owned scenarios, commands and execution
         "poolSharingUi",
         "poolUsageNavigation",
         "poolUsageUi",
+        "providerQuotaCapabilities",
         "sentryBothDesktop",
         "sentryBothPhone",
         "sentryRegionalRecovery",
