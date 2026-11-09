@@ -16,6 +16,8 @@ export function isControlPath(pathname: string): boolean {
 export interface Provider {
   readonly id: string;
   readonly name: string;
+  readonly protocol?: "typesafe-systemone";
+  readonly description?: string;
 }
 
 /**

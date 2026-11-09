@@ -1,9 +1,16 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { availableProviderCapabilities } from "../src/pool/provider-accounts/capabilities.ts";
 import { pluginOAuthProviderIds } from "./pool-plugin-providers.ts";
 
 /** `site` is the provider's public web address, used only to show its logo. */
-export type PoolProvider = { id: string; name: string; site?: string };
+export type PoolProvider = {
+  id: string;
+  name: string;
+  site?: string;
+  protocol?: "typesafe-systemone";
+  description?: string;
+};
 
 const PROVIDER_ID = /^[a-z0-9][a-z0-9_-]*$/;
 const SITE = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/;
@@ -88,7 +95,12 @@ function findDirectCaseExpressions(switchBody: string): string[] {
       continue;
     }
 
-    if (braces === 0 && parentheses === 0 && brackets === 0 && isWordAt(switchBody, index, "case")) {
+    if (
+      braces === 0 &&
+      parentheses === 0 &&
+      brackets === 0 &&
+      isWordAt(switchBody, index, "case")
+    ) {
       const expressionStart = index + "case".length;
       const colon = findCaseColon(switchBody, expressionStart);
       expressions.push(switchBody.slice(expressionStart, colon).trim());
@@ -172,7 +184,8 @@ export function extractOAuthProviderIds(goSource: string): string[] {
   const functionOpen = functionMatch.index + functionMatch[0].lastIndexOf("{");
   const functionClose = findMatchingBrace(goSource, functionOpen);
   const functionBody = goSource.slice(functionOpen + 1, functionClose);
-  const switchPattern = /\bswitch\s+strings\s*\.\s*ToLower\s*\(\s*strings\s*\.\s*TrimSpace\s*\(\s*c\s*\.\s*Query\s*\(\s*"provider"\s*\)\s*\)\s*\)\s*\{/g;
+  const switchPattern =
+    /\bswitch\s+strings\s*\.\s*ToLower\s*\(\s*strings\s*\.\s*TrimSpace\s*\(\s*c\s*\.\s*Query\s*\(\s*"provider"\s*\)\s*\)\s*\)\s*\{/g;
   const switchMatch = switchPattern.exec(functionBody);
   if (!switchMatch) throw new Error("Could not find the provider signin switch in StartOAuthV8");
   const switchOpen = switchMatch.index + switchMatch[0].lastIndexOf("{");
@@ -212,6 +225,25 @@ export function buildProviderTable(
   });
 }
 
+export function buildPoolProviderTable(
+  ids: readonly string[],
+  existing: readonly PoolProvider[] = [],
+): PoolProvider[] {
+  const native = availableProviderCapabilities.filter(
+    (entry) => entry.protocol === "typesafe-systemone" && entry.backend !== undefined,
+  );
+  return [
+    ...buildProviderTable(ids, existing),
+    ...native.map((entry) => ({
+      id: entry.backend!,
+      name: "Jev",
+      site: "typesafe.ai",
+      protocol: "typesafe-systemone" as const,
+      description: "System One model provider. Not offered in chat model pickers.",
+    })),
+  ];
+}
+
 function parseProviderTable(text: string): PoolProvider[] {
   const value: unknown = JSON.parse(text);
   if (!Array.isArray(value)) throw new Error("Provider table must be a JSON array");
@@ -234,7 +266,19 @@ function parseProviderTable(text: string): PoolProvider[] {
     const site = "site" in row ? row.site : undefined;
     if (site !== undefined && (typeof site !== "string" || !SITE.test(site)))
       throw new Error(`Provider site must be a bare domain: ${row.id}`);
-    return { id: row.id, name: row.name, ...(site ? { site } : {}) };
+    const protocol = "protocol" in row ? row.protocol : undefined;
+    const description = "description" in row ? row.description : undefined;
+    if (protocol !== undefined && protocol !== "typesafe-systemone")
+      throw new Error(`Unsupported native provider protocol: ${row.id}`);
+    if (description !== undefined && typeof description !== "string")
+      throw new Error(`Invalid provider description: ${row.id}`);
+    return {
+      id: row.id,
+      name: row.name,
+      ...(site ? { site } : {}),
+      ...(protocol === undefined ? {} : { protocol }),
+      ...(typeof description === "string" ? { description } : {}),
+    };
   });
 }
 
@@ -255,12 +299,7 @@ export function assertProviderIdsMatch(
 }
 
 function isNodeError(error: unknown, code: string): boolean {
-  return (
-    error !== null &&
-    typeof error === "object" &&
-    "code" in error &&
-    error.code === code
-  );
+  return error !== null && typeof error === "object" && "code" in error && error.code === code;
 }
 
 async function readExistingProviders(): Promise<PoolProvider[]> {
@@ -272,7 +311,12 @@ async function readExistingProviders(): Promise<PoolProvider[]> {
   }
 }
 
-async function fetchPinnedOAuthSource(): Promise<{ source: string; repository: string; tag: string; commit: string }> {
+async function fetchPinnedOAuthSource(): Promise<{
+  source: string;
+  repository: string;
+  tag: string;
+  commit: string;
+}> {
   const releaseText = await readFile(RELEASES_URL, "utf8");
   const release: unknown = JSON.parse(releaseText);
   if (
@@ -302,8 +346,14 @@ async function fetchPinnedOAuthSource(): Promise<{ source: string; repository: s
   }
   const url = `https://raw.githubusercontent.com/${home.repository}/${home.commit}/${OAUTH_SOURCE_PATH}`;
   const response = await fetch(url, { signal: AbortSignal.timeout(15_000) });
-  if (!response.ok) throw new Error(`Pinned OAuth source fetch failed with HTTP ${response.status}`);
-  return { source: await response.text(), repository: home.repository, tag: home.tag, commit: home.commit };
+  if (!response.ok)
+    throw new Error(`Pinned OAuth source fetch failed with HTTP ${response.status}`);
+  return {
+    source: await response.text(),
+    repository: home.repository,
+    tag: home.tag,
+    commit: home.commit,
+  };
 }
 
 async function main(): Promise<void> {
@@ -312,22 +362,34 @@ async function main(): Promise<void> {
   if (args.length > 0 && !check) throw new Error("Usage: node scripts/pool-providers.ts [--check]");
 
   const pinned = await fetchPinnedOAuthSource();
-  const ids = [...new Set([...extractOAuthProviderIds(pinned.source), ...pluginOAuthProviderIds(fileURLToPath(new URL("../", import.meta.url)))])];
+  const ids = [
+    ...new Set([
+      ...extractOAuthProviderIds(pinned.source),
+      ...pluginOAuthProviderIds(fileURLToPath(new URL("../", import.meta.url))),
+    ]),
+  ];
   const existing = await readExistingProviders();
-  const generated = buildProviderTable(ids, existing);
+  const generated = buildPoolProviderTable(ids, existing);
   const rendered = renderProviderTable(generated);
 
   if (check) {
     const existingIds = existing.map(({ id }) => id);
-    assertProviderIdsMatch(existingIds, ids, `${pinned.repository}@${pinned.commit}`);
+    assertProviderIdsMatch(
+      existingIds,
+      generated.map(({ id }) => id),
+      `${pinned.repository}@${pinned.commit}`,
+    );
     const current = await readFile(PROVIDERS_URL, "utf8");
-    if (current !== rendered) throw new Error("Provider names or formatting differ from generated table");
+    if (current !== rendered)
+      throw new Error("Provider names or formatting differ from generated table");
     console.log(`Provider ids match ${pinned.repository}@${pinned.commit} (${pinned.tag})`);
     return;
   }
 
   await writeFile(PROVIDERS_URL, rendered);
-  console.log(`Wrote ${ids.length} provider ids from ${pinned.repository}@${pinned.commit} (${pinned.tag})`);
+  console.log(
+    `Wrote ${ids.length} provider ids from ${pinned.repository}@${pinned.commit} (${pinned.tag})`,
+  );
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();

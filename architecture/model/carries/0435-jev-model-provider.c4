@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "Model inference and quota collection are independent account-method capabilities. Jev remains available to tool apps and native System One pool clients, with protocol metadata in the shared provider catalog and no chat conversion. Only methods backed by a pinned backend collector install observation callbacks or enter quota scheduling. Current registrations without a collector suppress empty retained driver reports at read time; genuine readings, unavailable registrations, saved credentials and every stored observation remain unchanged."
+    }
+  }
+}
