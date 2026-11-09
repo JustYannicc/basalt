@@ -1,5 +1,6 @@
 import { selectScopeCases } from "./scope-cases.ts";
 import assert from "node:assert/strict";
+import { createInterface } from "node:readline";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdir, readdir, readFile, writeFile, unlink } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -53,10 +54,70 @@ const original = await readFile(registry, "utf8");
 assert.match(original, /export const productionMigrations/);
 assert.ok(!original.includes('"scope-proof"'), "The proof name must not shadow a migration");
 const source = await readFile(new URL("./scope-proof.fixture", import.meta.url), "utf8");
-await writeFile(fixture, source, { flag: "wx" });
-await writeFile(originFixture, originSource, { flag: "wx" });
+const sourceAdapter = new URL("./source-adapter.fixture", import.meta.url);
+const sourceModule = new URL("./source.ts", database);
+const sourceFixture = new URL("./source-fixture.ts", database);
+const originalSource = await readFile(sourceModule, "utf8");
+const sourceMarker = "const git = cloudflareRepositories(tokens, { accountId, namespace });";
+assert.ok(originalSource.includes(sourceMarker), "Expected the production Git adapter boundary");
+const nativeGit = spawn(
+  "node",
+  [
+    "scripts/production-ops/source-fixture.ts",
+    "--directory",
+    `${root}/.generated/production-ops-native-git`,
+  ],
+  {
+    cwd: root,
+    stdio: ["ignore", "pipe", "inherit"],
+  },
+);
+const lines = createInterface({ input: nativeGit.stdout });
+const origin = await new Promise<string>((resolve, reject) => {
+  nativeGit.once("error", reject);
+  nativeGit.once("exit", () => reject(new Error("Native Git fixture exited before readiness")));
+  lines.once("line", (line) => {
+    try {
+      const data: unknown = JSON.parse(line);
+      assert.ok(
+        data !== null &&
+          typeof data === "object" &&
+          "origin" in data &&
+          typeof data.origin === "string",
+      );
+      assert.equal(new URL(data.origin).hostname, "127.0.0.1");
+      resolve(data.origin);
+    } catch (error) {
+      reject(error);
+    }
+  });
+}).catch((error) => {
+  nativeGit.kill("SIGTERM");
+  throw error;
+});
+lines.close();
+const expectedSource =
+  'import { sourceFixtureRepositories } from "./source-fixture.ts";\n' +
+  originalSource.replace(
+    sourceMarker,
+    `const git = sourceFixtureRepositories(${JSON.stringify(origin)});`,
+  );
 let expected = original;
+const created: URL[] = [];
+const restore = async (file: URL, before: string, after: string) => {
+  const current = await readFile(file, "utf8");
+  if (current === before) return;
+  assert.equal(current, after, "A proof-owned file changed outside the proof");
+  await writeFile(file, before);
+};
 try {
+  await writeFile(fixture, source, { flag: "wx" });
+  created.push(fixture);
+  await writeFile(originFixture, originSource, { flag: "wx" });
+  created.push(originFixture);
+  await writeFile(sourceFixture, await readFile(sourceAdapter, "utf8"), { flag: "wx" });
+  created.push(sourceFixture);
+  await writeFile(sourceModule, expectedSource);
   await writeFile(database, expectedDatabase);
   await writeFile(http, expectedHttp);
   expected =
@@ -71,7 +132,12 @@ try {
     config,
     JSON.stringify({
       extends: `${root}/.upstream/tsconfig.json`,
-      include: [fileURLToPath(fixture), fileURLToPath(database)],
+      include: [
+        fileURLToPath(fixture),
+        fileURLToPath(database),
+        fileURLToPath(sourceModule),
+        fileURLToPath(sourceFixture),
+      ],
       exclude: [],
       compilerOptions: { typeRoots: [`${root}/.upstream/node_modules/@types`] },
     }),
@@ -172,23 +238,11 @@ try {
     }
   }
 } finally {
-  assert.equal(await readFile(registry, "utf8"), expected, "The registry changed during the proof");
-  assert.equal(
-    await readFile(database, "utf8"),
-    expectedDatabase,
-    "The direct origin binding changed during the proof",
-  );
-  await writeFile(registry, original);
-  await writeFile(database, originalDatabase);
-  assert.equal(
-    await readFile(http, "utf8"),
-    expectedHttp,
-    "The release binding changed during the proof",
-  );
-  await writeFile(http, originalHttp);
-  await unlink(fixture);
-  await unlink(originFixture);
-  console.log(
-    "Restored the migration registry and direct origin binding; removed proof-only modules",
-  );
+  nativeGit.kill("SIGTERM");
+  await restore(sourceModule, originalSource, expectedSource);
+  await restore(registry, original, expected);
+  await restore(database, originalDatabase, expectedDatabase);
+  await restore(http, originalHttp, expectedHttp);
+  for (const file of created.reverse()) await unlink(file);
+  console.log("Restored production adapters and bindings; removed proof-only modules");
 }

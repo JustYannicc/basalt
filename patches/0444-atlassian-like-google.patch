@@ -1281,7 +1281,7 @@ new file mode 100644
 +    params: [own.app],
 +  });
 +  yield* database.run({
-+    sql: "insert into hosted_app_access (id, organization_id, creator_id, audience) values ($1, $2, $3, 'everyone')",
++    sql: "update hosted_app_access set organization_id = $2, creator_id = $3, audience = 'everyone' where id = $1",
 +    params: [own.app, own.organization, own.user],
 +  });
 +  yield* database.run({
@@ -1392,7 +1392,7 @@ diff --git a/e2e/support/atlassian-adoption-rows.ts b/e2e/support/atlassian-adop
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/atlassian-adoption-rows.ts
-@@ -0,0 +1,112 @@
+@@ -0,0 +1,115 @@
 +import { expect } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { randomUUID } from "node:crypto";
@@ -1431,10 +1431,13 @@ new file mode 100644
 +  };
 +  const api = yield* Api;
 +  const prefix = `/api/organizations/${actors.organization.id}/apps`;
-+  const originalSource = yield* body(
-+    Workspace,
-+    yield* api.request(actors.owner, "GET", `${prefix}/${original.app}/workspace`),
++  const originalRead = yield* api.request(
++    actors.owner,
++    "GET",
++    `${prefix}/${original.app}/workspace`,
 +  );
++  expect(originalRead.status, JSON.stringify(originalRead.body)).toBe(200);
++  const originalSource = yield* body(Workspace, originalRead);
 +  const deployed = yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
 +    name: "Retained umbrella fixture",
 +    files: originalSource.files,
