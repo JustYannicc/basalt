@@ -21,15 +21,20 @@ test("the home page says what the service does, why it asks for Google access, a
   assert.match(home, /<a href="\/privacy">Privacy<\/a>/);
 });
 
-test("no page links to the app, so it stays unlisted until someone knows its address", () => {
-  assert.ok(!page("/").includes(brand.host));
-  assert.ok(!page("/waitlist").includes(brand.host));
+test("no page names or links the app's address, so it stays unlisted until someone knows it", () => {
   for (const path of [...paths, "/waitlist", "/pricing"]) {
     const html = page(path);
-    // The legal pages still name the host they cover, in text; no page links to it.
-    assert.doesNotMatch(html, new RegExp(`href="[^"]*${brand.host.replaceAll(".", "\\.")}`), path);
+    assert.ok(!html.includes(brand.host), `${path} names ${brand.host}`);
     assert.doesNotMatch(html, />\s*Sign in\s*</i, path);
   }
+  assert.match(
+    text(page("/privacy")),
+    /Signalbox \(signalbox\.run and the Signalbox app\) is operated by/,
+  );
+  assert.match(
+    text(page("/terms")),
+    /These terms apply to Signalbox: signalbox\.run and the Signalbox app\./,
+  );
 });
 
 test("the home page offers the waiting list: one email field, one button, a hidden trap and no script", () => {
@@ -102,7 +107,7 @@ test("privacy names the Limited Use commitment, complaint routes and the failed-
     /To be removed from the waiting list, write to\s+info@signalbox\.run\s+from that address/,
   );
   assert.match(privacy, /Waiting list: Cloudflare D1, restricted to the EU\./);
-  assert.match(privacy, /Waiting list: until you're invited or ask to be removed\./);
+  assert.match(privacy, /Waiting list: until you ask to be removed\./);
   assert.match(
     privacy,
     /We don't log what your tools read or return\. A tool call waiting for your approval is stored encrypted/,

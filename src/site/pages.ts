@@ -207,8 +207,8 @@ export const homeWith = (state: HomeState) => homes.get(state)!;
 
 const pages = new Map<string, string>([
   ["/", homeWith("open")],
-  // Where a sign-up lands after its redirect, so a reload never posts the form again.
-  ["/waitlist", homeWith("joined")],
+  // The form's own address. A visit shows the form; only a successful post answers "joined".
+  ["/waitlist", homeWith("open")],
   ...legalPages.map((page) => [page.path, legalPage(page)] as const),
 ]);
 const missing = notFound();

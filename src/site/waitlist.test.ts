@@ -71,20 +71,29 @@ function site(limit?: number) {
   return { env, post, rows: store.rows, limiter };
 }
 
-test("a sign-up is stored lowercased with its time, then redirects to the joined page", async () => {
-  const { post, rows, env } = site();
+test("a sign-up is stored lowercased with its time and answered with the joined line", async () => {
+  const { post, rows } = site();
   const response = await post({ email: "  Ada@Example.COM " });
-  assert.equal(response.status, 303);
-  assert.equal(response.headers.get("location"), "/waitlist");
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  const html = await response.text();
+  assert.match(html, /You're on the list\./);
+  assert.doesNotMatch(html, /<form/);
   const [row, ...rest] = rows();
   assert.equal(rest.length, 0);
   assert.equal(row?.email, "ada@example.com");
   assert.ok(!Number.isNaN(Date.parse(String(row?.created_at))));
-  const joined = await handleSite(new Request("https://signalbox.run/waitlist"), env);
-  assert.equal(joined.status, 200);
-  const html = await joined.text();
-  assert.match(html, /You're on the list\./);
-  assert.doesNotMatch(html, /<form/);
+});
+
+test("visiting the form's address without posting shows the form, never the joined line", async () => {
+  const { env } = site();
+  for (const path of ["/waitlist", "/waitlist/"]) {
+    const response = await handleSite(new Request(`https://signalbox.run${path}`), env);
+    assert.equal(response.status, 200, path);
+    const html = await response.text();
+    assert.match(html, /<form class="join" method="post" action="\/waitlist">/, path);
+    assert.doesNotMatch(html, /You're on the list/, path);
+  }
 });
 
 test("signing up again keeps one row and the first time, and answers exactly as the first did", async () => {
@@ -94,7 +103,6 @@ test("signing up again keeps one row and the first time, and answers exactly as 
   const again = await post({ email: "ADA@example.com" }, { ip: "192.0.2.2" });
   assert.deepEqual(rows(), before);
   assert.equal(again.status, first.status);
-  assert.equal(again.headers.get("location"), first.headers.get("location"));
   assert.equal(await again.text(), await first.text());
 });
 
@@ -121,20 +129,20 @@ test("an invalid address is refused with the form and a message, and nothing is 
 test("a filled trap field looks like success to the bot and stores nothing", async () => {
   const { post, rows } = site();
   const response = await post({ email: "bot@example.com", leave_empty: "https://spam.example" });
-  assert.equal(response.status, 303);
-  assert.equal(response.headers.get("location"), "/waitlist");
+  assert.equal(response.status, 200);
+  assert.match(await response.text(), /You're on the list\./);
   assert.deepEqual(rows(), []);
 });
 
 test("each IP gets a few tries per period, counted before anything else, and others are unaffected", async () => {
   const { post, rows, limiter } = site(2);
-  assert.equal((await post({ email: "one@example.com" })).status, 303);
+  assert.equal((await post({ email: "one@example.com" })).status, 200);
   assert.equal((await post({ email: "nope" })).status, 400);
   const limited = await post({ email: "three@example.com" });
   assert.equal(limited.status, 429);
   assert.equal(limited.headers.get("retry-after"), "60");
   assert.match(await limited.text(), /Too many tries from here/);
-  assert.equal((await post({ email: "four@example.com" }, { ip: "198.51.100.7" })).status, 303);
+  assert.equal((await post({ email: "four@example.com" }, { ip: "198.51.100.7" })).status, 200);
   assert.deepEqual(
     rows().map((row) => row.email),
     ["four@example.com", "one@example.com"],
@@ -149,7 +157,7 @@ test("only same-origin form posts reach the list", async () => {
     403,
   );
   // Browsers may omit Origin on a same-site navigation; the form still works.
-  assert.equal((await post({ email: "ada@example.com" }, { origin: null })).status, 303);
+  assert.equal((await post({ email: "ada@example.com" }, { origin: null })).status, 200);
   const json = await handleSite(
     new Request("https://signalbox.run/waitlist", {
       method: "POST",
@@ -194,7 +202,7 @@ test("a body with no declared length is still capped, and a trailing slash posts
     (await chunked("/waitlist", `email=big%40example.com&pad=${"x".repeat(4096)}`)).status,
     413,
   );
-  assert.equal((await chunked("/waitlist/", "email=ada%40example.com&leave_empty=")).status, 303);
+  assert.equal((await chunked("/waitlist/", "email=ada%40example.com&leave_empty=")).status, 200);
   assert.deepEqual(
     rows().map((row) => row.email),
     ["ada@example.com"],

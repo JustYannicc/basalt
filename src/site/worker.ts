@@ -72,11 +72,9 @@ async function join(request: Request, env: SiteEnv): Promise<Response> {
     });
   if (result === "failed")
     return new Response(homeWith(result), { status: 503, headers: uncached });
-  // See Other turns the POST into a GET, so reloading the result doesn't send the form again.
-  return new Response(null, {
-    status: 303,
-    headers: { Location: "/waitlist", "Cache-Control": "no-store" },
-  });
+  // The joined line is the answer to this post itself, so no address can show it without one.
+  // A reload re-sends the form, which the list treats as the same sign-up.
+  return new Response(homeWith("joined"), { status: 200, headers: uncached });
 }
 
 /** The brand's logo and fonts come from static assets first; every other path lands here. */

@@ -58,7 +58,7 @@ const privacy: LegalPage = {
   summary: `What ${name} stores, where, who else receives it, and what you can do about it.`,
   blocks: [
     {
-      p: `${name} (${brand.zone} and ${brand.host}) is operated by ${operator} ("we"). Questions: ${email}.`,
+      p: `${name} (${brand.zone} and the ${name} app) is operated by ${operator} ("we"). Questions: ${email}.`,
     },
     { h2: "What we store" },
     {
@@ -144,7 +144,7 @@ const privacy: LegalPage = {
         "Inactive agent connections: revoked after 30 days.",
         "Pool usage counts: 30 days.",
         "Events apps send each other: 3 days.",
-        "Waiting list: until you're invited or ask to be removed.",
+        "Waiting list: until you ask to be removed.",
       ],
     },
     {
@@ -171,7 +171,7 @@ const terms: LegalPage = {
   summary: `The terms for using ${name}.`,
   blocks: [
     {
-      p: `These terms apply to ${name} at ${brand.zone} and ${brand.host}. ${name} is operated by ${operator} ("we"). By creating an account or using ${name}, you agree to them.`,
+      p: `These terms apply to ${name}: ${brand.zone} and the ${name} app. ${name} is operated by ${operator} ("we"). By creating an account or using ${name}, you agree to them.`,
     },
     { h2: "The service" },
     {

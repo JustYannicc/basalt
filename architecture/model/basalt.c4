@@ -106,7 +106,7 @@ model {
 
     site = module "Public site" {
       #basalt #v1
-      description "Home, privacy, terms and legal notice at the zone apex (signalbox.run), rendered from the brand configuration in a separate Worker. Pages carry no scripts or third-party requests and no link to the app host. The home page's one form posts an email to the same origin and redirects to a joined page; it works without JavaScript."
+      description "Home, privacy, terms and legal notice at the zone apex (signalbox.run), rendered from the brand configuration in a separate Worker. Pages carry no scripts or third-party requests and never name or link the app host. The home page's one form posts an email to the same origin; only that post's response shows the joined line, and it works without JavaScript."
       metadata { code "src/site" }
     }
 
