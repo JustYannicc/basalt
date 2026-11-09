@@ -5,6 +5,7 @@ import { Effect } from "effect";
 import { Browser } from "../../.upstream/e2e/support/browser.ts";
 import { hostedScopes, sorted, legacyNames, api, limited, tokenOnly } from "./expectations.mjs";
 import { registrationDefault, serviceToken } from "./service.mjs";
+import { verifyExceededGrant } from "./grant-envelope.mjs";
 import { verifyRefusedGrant } from "./grant-refusal.mjs";
 const dialogName = /^Connect PlanetScale(?: · .+)?$/;
 const noOverflow = async (page) =>
@@ -13,12 +14,14 @@ const noOverflow = async (page) =>
     true,
     "No horizontal overflow",
   );
+// PlanetScale's two requirements share one section, whose connect menu lists each method.
 const openConnect = async (page) => {
   await page
     .getByRole("region", { name: "Your accounts", exact: true })
-    .getByRole("region", { name: "PlanetScale · Sign in", exact: true })
-    .getByRole("button", { name: /^Connect new account/ })
+    .getByRole("region", { name: "PlanetScale", exact: true })
+    .getByRole("button", { name: "Connect new account", exact: true })
     .click();
+  await page.getByRole("menuitem", { name: "Sign in with PlanetScale", exact: true }).click();
   return page.getByRole("dialog", { name: dialogName });
 };
 
@@ -42,6 +45,7 @@ export const verifyPlanetScaleConnections = ({
   client,
   getTool,
   service,
+  supportedScopes,
 }) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
@@ -52,6 +56,18 @@ export const verifyPlanetScaleConnections = ({
       await page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`);
       await page.getByRole("region", { name: "Your accounts", exact: true }).waitFor();
     });
+    if (mode === "exceeded") {
+      yield* verifyExceededGrant({
+        browser,
+        request,
+        path,
+        prefix,
+        added,
+        links,
+        before: setupBefore,
+      });
+      return;
+    }
     if (mode === "refused" || mode === "unreported") {
       yield* verifyRefusedGrant({
         browser,
@@ -142,6 +158,10 @@ export const verifyPlanetScaleConnections = ({
         .waitFor();
       await page.getByRole("button", { name: "Authorize", exact: true }).click();
       const naming = page.getByRole("dialog", { name: "Name this account", exact: true });
+      await naming
+        .or(page.getByRole("heading", { name: "Account not connected", exact: true }))
+        .waitFor();
+      assert.equal(await naming.count(), 1, "Every supported PlanetScale scope must be kept");
       await naming.getByLabel("Account name", { exact: true }).fill(`PlanetScale ${mode} ${width}`);
       await naming.getByRole("button", { name: "Save name", exact: true }).click();
       await page.getByRole("region", { name: "Your accounts", exact: true }).waitFor();
@@ -173,7 +193,12 @@ export const verifyPlanetScaleConnections = ({
       );
       assert.equal(own.unavailableTools, null);
     } else {
-      const granted = mode === "hosted" ? hostedScopes : registrationDefault;
+      const granted =
+        mode === "expanded"
+          ? supportedScopes
+          : mode === "hosted"
+            ? hostedScopes
+            : registrationDefault;
       for (const scope of granted)
         assert.ok(own.permissions.includes(scope), `${scope} is reported`);
       assert.ok(own.unavailableTools.includes("serviceToken.serviceTokens.listServiceTokens"));
@@ -181,7 +206,11 @@ export const verifyPlanetScaleConnections = ({
 
     // Tools follow the reported grant: nothing PlanetScale did not grant is listed or reachable.
     const oauthTools = yield* listed();
-    const expectedOauthTools = omitsGrantedScope ? legacyNames : mode === "hosted" ? api : limited;
+    const expectedOauthTools = omitsGrantedScope
+      ? legacyNames
+      : ["hosted", "expanded"].includes(mode)
+        ? api
+        : limited;
     assert.deepEqual(oauthTools, sorted([...expectedOauthTools, "permissions"]));
     const read = yield* call("databases.listDatabases", signedIn.account.id, {
       path: { organization: "acme" },
@@ -234,6 +263,10 @@ export const verifyPlanetScaleConnections = ({
       );
       await dialog.getByRole("button", { name: "Continue", exact: true }).click();
       const naming = page.getByRole("dialog", { name: "Name this account", exact: true });
+      await naming
+        .or(page.getByRole("heading", { name: "Account not connected", exact: true }))
+        .waitFor();
+      assert.equal(await naming.count(), 1, "Every supported PlanetScale scope must be kept");
       await naming.getByLabel("Account name", { exact: true }).fill(`PlanetScale token ${width}`);
       const checked = await namingCheck;
       assert.equal(checked.status(), 200, "The token naming health check completes");

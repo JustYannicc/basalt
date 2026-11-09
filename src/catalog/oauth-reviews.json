@@ -5114,7 +5114,7 @@
           "kind": "automatic",
           "protocol": "cimd",
           "metadata": "https://signin.workos.com/.well-known/oauth-authorization-server",
-          "metadataSha256": "45804d0840493f0d4694fd4fd63410ea9f264f8834ff6688b6c35230dacd195b"
+          "metadataSha256": "e803c89a2dcd92f4391b1857923793d3b18add3764d3d3b882fdb55c1b97bf12"
         }
       }
     },
@@ -5593,7 +5593,7 @@
           "message": "Shared sign-in for PlanetScale is not configured on this host. You can connect with your own OAuth app or a service token."
         }
       },
-      "sourceSha256": "0e31dec5459f6b8b6beab13ca6c19776efb17f3202b9fc185011f8e8cbf4ac01"
+      "sourceSha256": "656d62c29f72b808f8cd0fa153fb1b0bd0e87ace541484558be9bdcaa9560c6f"
     }
   ]
 }

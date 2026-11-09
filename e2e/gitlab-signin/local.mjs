@@ -69,8 +69,11 @@ export const verifyLocalGitLabGuidance = ({ catalog, instance, directory }) =>
           const open = async (page, origin) => {
             await page
               .getByRole("region", { name: "Your accounts", exact: true })
-              .getByRole("region", { name: "GitLab MCP", exact: true })
+              .getByRole("region", { name: "GitLab", exact: true })
               .getByRole("button", { name: "Connect new account", exact: true })
+              .click();
+            await page
+              .getByRole("menuitem", { name: "Sign in with GitLab MCP", exact: true })
               .click();
             const d = page.getByRole("dialog");
             await d.getByRole("button", { name: "Use another instance", exact: true }).click();

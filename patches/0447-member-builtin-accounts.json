@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-member-builtin-accounts",
+  "file": "0447-member-builtin-accounts.patch",
+  "content_sha256": "3aff6cccb4b636bcab091657b770052f1a902356bde92d9c9e9210312d197250",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": true
+}

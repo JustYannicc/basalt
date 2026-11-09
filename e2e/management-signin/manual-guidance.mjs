@@ -49,9 +49,12 @@ export function verifyManualGuidance(browser, width) {
   return Effect.gen(function* () {
     yield* browser.use("Manual client guidance follows the selected OAuth client", async (page) => {
       const region = page.getByRole("region", { name: "Your accounts", exact: true });
+      // WorkOS's sign-in and API key requirements share one section and one connect menu.
       await region
-        .getByRole("button", { name: "Connect new account for WorkOS · Sign in", exact: true })
+        .getByRole("region", { name: "WorkOS", exact: true })
+        .getByRole("button", { name: "Connect new account", exact: true })
         .click();
+      await page.getByRole("menuitem", { name: "Sign in with WorkOS", exact: true }).click();
       const dialog = page.getByRole("dialog", { name: /^Connect WorkOS(?: · Sign in)?$/ });
       await dialog.getByRole("button", { name: "Sign in with WorkOS", exact: true }).waitFor();
       assert.equal(

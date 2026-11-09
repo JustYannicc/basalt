@@ -15,7 +15,10 @@ for (const reason of nativePolicyReasons)
       },
       { status: 400 },
     );
-    assert.equal(await readNativePolicyReason(response, new AbortController().signal), reason);
+    assert.deepEqual(await readNativePolicyReason(response, new AbortController().signal), {
+      reason,
+      ...(reason === "lease_window" ? { leaseMs: 15001 } : {}),
+    });
   });
 
 test("unknown, malformed, oversized and unrelated bodies provide no diagnostic", async () => {
@@ -61,4 +64,33 @@ test("a failed or already-locked diagnostic body cannot replace the HTTP refusal
   const reader = locked.body!.getReader();
   assert.equal(await readNativePolicyReason(locked, new AbortController().signal), undefined);
   await reader.cancel();
+});
+
+test("only bounded integral lease-window milliseconds survive the diagnostic body", async () => {
+  for (const leaseMs of [
+    -60_000,
+    -1,
+    0,
+    15_001,
+    60_000,
+    -60_001,
+    60_001,
+    1.5,
+    "15001",
+    null,
+    true,
+  ]) {
+    const response = Response.json({
+      error: "invalid_projection",
+      reason: "lease_window",
+      leaseMs,
+      private: "private-sentinel",
+    });
+    const bounded =
+      typeof leaseMs === "number" && Number.isInteger(leaseMs) && Math.abs(leaseMs) <= 60_000;
+    assert.deepEqual(await readNativePolicyReason(response, new AbortController().signal), {
+      reason: "lease_window",
+      ...(bounded ? { leaseMs } : {}),
+    });
+  }
 });

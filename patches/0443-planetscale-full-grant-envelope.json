@@ -1,0 +1,11 @@
+{
+  "identity": "planetscale-full-grant-envelope",
+  "file": "0443-planetscale-full-grant-envelope.patch",
+  "content_sha256": "8a336d0de7248dc4487948e89399d43184893d57f687c827a5b818c2894efd6a",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "upstream-planetscale-full-grant-envelope",
+  "requires": "Accept the published PlanetScale grant envelope, refuse unknown scope names, and record bounded names-only excess-scope diagnostics."
+}

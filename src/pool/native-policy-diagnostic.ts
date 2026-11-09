@@ -14,6 +14,9 @@ export type NativePolicyReason = (typeof nativePolicyReasons)[number];
 export const isNativePolicyReason = (value: unknown): value is NativePolicyReason =>
   nativePolicyReasons.some((reason) => reason === value);
 
+export const isNativePolicyLeaseMs = (value: unknown): value is number =>
+  typeof value === "number" && Number.isInteger(value) && value >= -60_000 && value <= 60_000;
+
 /** Diagnostics share the install deadline and cannot replace the original refusal. */
 export async function readNativePolicyReason(response: Response, signal: AbortSignal) {
   try {
@@ -44,7 +47,14 @@ export async function readNativePolicyReason(response: Response, signal: AbortSi
             !isNativePolicyReason(body.reason)
           )
             return undefined;
-          return body.reason;
+          return {
+            reason: body.reason,
+            ...(body.reason === "lease_window" &&
+            "leaseMs" in body &&
+            isNativePolicyLeaseMs(body.leaseMs)
+              ? { leaseMs: body.leaseMs }
+              : {}),
+          };
         }
         size += value.byteLength;
         if (size > 1024) return undefined;

@@ -87,11 +87,12 @@ export class PoolLifecycle {
     };
   }
 
-  restart(): Promise<PoolStatus> {
+  restart(beforeStop?: () => Promise<void>): Promise<PoolStatus> {
     const previous = this.warming;
     const restart = (async () => {
       // A pending warm must finish before destruction, or its retry loop could relaunch the old boot.
       await previous?.catch(() => {});
+      await beforeStop?.();
       await this.driver.stop();
       this.served = false;
       return this.ensureWarm();

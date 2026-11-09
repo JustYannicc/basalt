@@ -57,20 +57,33 @@ test("real Alchemy graph activates accepted IDs before the Api.hash-dependent li
   assert.ok(proof.writes() > 0);
 });
 
-for (const finalizeDrift of ["binding", "uncovered-env", "props"] as const)
-  test(`finalization still refuses changed ${finalizeDrift} inputs after activation`, async () => {
-    const proof = fixture({ finalizeDrift });
-    const exit = await Effect.runPromiseExit(proof.effect);
-    assert.ok(Exit.isFailure(exit));
-    const failure = Cause.squash(exit.cause);
-    assert.ok(failure instanceof BarrierRefusal);
-    assert.equal(failure.reason, "activation-input-drift");
-    assert.equal(failure.worker, "Router");
-    assert.ok(failure.delta?.changed.length);
-    const table = JSON.stringify(failure.delta);
-    assert.match(table, finalizeDrift === "binding" ? /bindings/ : /news/);
-    assert.ok(proof.events.includes("activate:Router:accepted-Router"));
+for (const cyclicImage of ["changed", "unchanged"] as const)
+  test(`finalization starts a cyclic ${cyclicImage} image from the verified candidate outputs`, async () => {
+    const proof = fixture({ cyclicImage });
+    await Effect.runPromise(proof.effect);
+    assert.equal(proof.receipts.at(-1)?.phase, "complete");
+    assert.deepEqual(
+      proof.events.filter((event) => event.startsWith("activate:")),
+      ["activate:Api:accepted-Api", "activate:Router:accepted-Router"],
+    );
+    assert.ok(!proof.events.some((event) => event.startsWith("ordinary-upload:")));
   });
+
+for (const finalizeDrift of ["binding", "uncovered-env", "props"] as const)
+  for (const cyclicImage of [undefined, "changed", "unchanged"] as const)
+    test(`finalization still refuses changed ${finalizeDrift} inputs after activation (image=${cyclicImage ?? "acyclic"})`, async () => {
+      const proof = fixture({ finalizeDrift, cyclicImage });
+      const exit = await Effect.runPromiseExit(proof.effect);
+      assert.ok(Exit.isFailure(exit));
+      const failure = Cause.squash(exit.cause);
+      assert.ok(failure instanceof BarrierRefusal);
+      assert.equal(failure.reason, "activation-input-drift");
+      assert.equal(failure.worker, "Router");
+      assert.ok(failure.delta?.changed.length);
+      const table = JSON.stringify(failure.delta);
+      assert.match(table, finalizeDrift === "binding" ? /bindings/ : /news/);
+      assert.ok(proof.events.includes("activate:Router:accepted-Router"));
+    });
 
 for (const options of [{ newResource: true }, { omitCapture: true }]) {
   test(`incomplete preparation ${JSON.stringify(options)} never reaches upload or activation`, async () => {

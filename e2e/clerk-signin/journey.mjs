@@ -44,14 +44,18 @@ export const clerkJourney = ({
         await page.locator("body").evaluate((body) => getComputedStyle(body).fontFamily),
         /Geist|sans-serif/i,
       );
+      // Clerk's sign-in and secret-key requirements share one section and one connect menu.
       const region = page.getByRole("region", { name: "Your accounts", exact: true });
       await region
-        .getByRole("button", {
+        .getByRole("region", { name: "Clerk", exact: true })
+        .getByRole("button", { name: "Connect new account", exact: true })
+        .click();
+      await page
+        .getByRole("menuitem", {
           name:
-            phase === "signin" ? "Connect new account for Clerk · Sign in" : "Connect new account",
+            phase === "signin" ? "Sign in with Clerk" : "Secret key (sk_test_... or sk_live_...)",
           exact: true,
         })
-        .first()
         .click();
       const dialog = page.getByRole("dialog", { name: /^Connect Clerk(?: · Sign in)?$/ });
       await dialog.locator("form").waitFor();
