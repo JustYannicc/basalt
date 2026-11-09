@@ -2,7 +2,8 @@ import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:cr
 import { Schema } from "effect";
 import { BarrierRefusal } from "./manifest.ts";
 
-const maximumBytes = 1024 * 1024;
+const limits = { configuration: 1024 * 1024, "worker-modules": 64 * 1024 * 1024 } as const;
+type RecoveryKind = keyof typeof limits;
 const envelope = Schema.Struct({
   schemaVersion: Schema.Literal(1),
   candidate: Schema.String,
@@ -24,7 +25,14 @@ function keyFor(key: string, candidate: string) {
 }
 
 /** Public CI artifacts retain only authenticated ciphertext; the key is the existing deployment encryption secret. */
-export function sealRecovery(value: unknown, key: string, candidate: string, manifest: string) {
+export function sealRecovery(
+  value: unknown,
+  key: string,
+  candidate: string,
+  manifest: string,
+  kind: RecoveryKind = "configuration",
+) {
+  const maximumBytes = limits[kind];
   const plaintext = Buffer.from(JSON.stringify(value));
   if (plaintext.length > maximumBytes)
     throw new BarrierRefusal("container-recovery-manifest-too-large");
@@ -47,7 +55,9 @@ export function openRecovery(
   key: string,
   candidate: string,
   manifest: string,
+  kind: RecoveryKind = "configuration",
 ): unknown {
+  const maximumBytes = limits[kind];
   try {
     const sealed = Schema.decodeUnknownSync(envelope, { onExcessProperty: "error" })(value);
     if (

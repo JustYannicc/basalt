@@ -1,7 +1,7 @@
 // Generated from the deployment stack. Do not edit.
 deployment {
   stage deployed "Declared deployment" {
-    metadata { bindings "83fbafa61d88a911630ed47fb42da35149d317993dc86e13af856142e35a65a7" }
+    metadata { bindings "f939f56b2bfd84ca2c7a094db45c207df077e10a4179d05b68ca617247c7268b" }
     zone group-2703341ef73f1544 "Asset service" {
       storage resource-5feb83cf920a7484743f0f20b6120bffd7591b4d943a0e1b4182bdae81230638 "App Builds" {
         app = instanceOf assetsService {
@@ -119,6 +119,13 @@ deployment {
       worker resource-531eb6d7acc49f1f691a2eeccb49b761ebee12d7fe88bdff67c0d19793319ca8 "Public Site" {
         app = instanceOf basalt.site {
           metadata { resource "resource-531eb6d7acc49f1f691a2eeccb49b761ebee12d7fe88bdff67c0d19793319ca8" }
+        }
+      }
+    }
+    zone group-74c927efcfe80495 "Waiting list" {
+      storage resource-60887fd142e719d28a18bdb97e1343926287cfea67cc89cf60606ffc3ca4ed91 "Public Site Waitlist" {
+        app = instanceOf basalt.siteWaitlist {
+          metadata { resource "resource-60887fd142e719d28a18bdb97e1343926287cfea67cc89cf60606ffc3ca4ed91" }
         }
       }
     }
@@ -402,6 +409,11 @@ views {
   deployment view deployment_group_c3679ee8560118df {
     title "Basalt/Deployment/Public site"
     include deployed.group-c3679ee8560118df.*
+    autoLayout TopBottom
+  }
+  deployment view deployment_group_74c927efcfe80495 {
+    title "Basalt/Deployment/Waiting list"
+    include deployed.group-74c927efcfe80495.*
     autoLayout TopBottom
   }
   deployment view deployment_group_e3fd948365456088 {

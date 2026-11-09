@@ -1,10 +1,11 @@
 import { servingWorkerSettings, workerInputHash } from "./serving-worker-input.ts";
 import type * as Workers from "@distilled.cloud/cloudflare/workers";
 import type { PreparedWorkerUpload } from "alchemy/Cloudflare/Workers/WorkerUploadHook";
+import { declaredMismatch } from "./declared-refusal.ts";
 import { havePropsChanged } from "alchemy/Diff";
 import { assertScriptSettings, settingsRefusal } from "./script-settings.ts";
 import type { ActiveWorkerPlacement } from "./script-placement.ts";
-import { BarrierRefusal, canonical, digest, type FrozenWorker } from "./manifest.ts";
+import { canonical, digest, type FrozenWorker } from "./manifest.ts";
 import { repairComparisonSettings, type PendingPlacementRepair } from "./pending-placement.ts";
 
 const globalProps = [
@@ -42,8 +43,13 @@ export type WorkerVersionInput = Pick<
   PreparedWorkerUpload,
   "fqn" | "request" | "previousSettings" | "previousProps" | "props"
 >;
-const refusal = (reason: string, upload: WorkerVersionInput) => {
-  throw new BarrierRefusal(reason, upload.fqn);
+const refusal = (
+  reason: string,
+  upload: WorkerVersionInput,
+  expected: unknown,
+  observed: unknown,
+) => {
+  throw declaredMismatch(reason, upload.fqn, expected, observed, "Cloudflare.Worker");
 };
 /** Versions cannot carry migrations or change script-level settings. Refuse rather than silently omit an intended change. */
 export function versionMetadata(
@@ -54,12 +60,30 @@ export function versionMetadata(
 ): Workers.PutScriptMetadata {
   const { metadata, scriptName } = upload.request;
   const observed = upload.previousSettings;
-  if (!observed || !upload.previousProps) refusal("missing-existing-settings", upload);
+  if (!observed || !upload.previousProps)
+    refusal(
+      "missing-existing-settings",
+      upload,
+      { previousSettings: "present", previousProps: "present" },
+      {
+        previousSettings: observed ? "present" : null,
+        previousProps: upload.previousProps ? "present" : null,
+      },
+    );
   for (const [key, value] of Object.entries(metadata))
     if (value !== undefined && !allowedMetadata.has(key))
-      refusal("unsupported-upload-metadata", upload);
+      refusal("unsupported-upload-metadata", upload, { [key]: null }, { [key]: value });
   if (metadata.bodyPart != null || metadata.keepBindings != null || metadata.usageModel != null)
-    refusal("unsupported-upload-metadata", upload);
+    refusal(
+      "unsupported-upload-metadata",
+      upload,
+      { bodyPart: null, keepBindings: null, usageModel: null },
+      {
+        bodyPart: metadata.bodyPart,
+        keepBindings: metadata.keepBindings,
+        usageModel: metadata.usageModel,
+      },
+    );
   const migrations = metadata.migrations;
   if (migrations) {
     const steps = "steps" in migrations ? (migrations.steps ?? []) : [migrations];
@@ -73,7 +97,26 @@ export function versionMetadata(
         ),
       )
     )
-      refusal("durable-object-migration", upload);
+      refusal(
+        "durable-object-migration",
+        upload,
+        {
+          migrations: steps.map((step) =>
+            Object.fromEntries(
+              Object.entries(step)
+                .filter(([key]) => !["oldTag", "newTag"].includes(key))
+                .map(([key, value]) => [key, Array.isArray(value) ? [] : null]),
+            ),
+          ),
+        },
+        {
+          migrations: steps.map((step) =>
+            Object.fromEntries(
+              Object.entries(step).filter(([key]) => !["oldTag", "newTag"].includes(key)),
+            ),
+          ),
+        },
+      );
   }
   const changed = globalProps.filter((key) =>
     havePropsChanged({ value: upload.previousProps![key] }, { value: upload.props[key] }),
@@ -94,7 +137,18 @@ export function versionMetadata(
     baseline,
   );
   if (metadata.bindings?.some((binding) => binding.name === "BASALT_RELEASE_ATTEMPT"))
-    refusal("attempt-value-in-worker", upload);
+    refusal(
+      "attempt-value-in-worker",
+      upload,
+      { releaseAttemptBindings: { count: 0 } },
+      {
+        releaseAttemptBindings: {
+          count:
+            metadata.bindings?.filter((binding) => binding.name === "BASALT_RELEASE_ATTEMPT")
+              .length ?? 0,
+        },
+      },
+    );
   return {
     // Placement is version-scoped even when declarations are unchanged.
     placement: metadata.placement,
@@ -134,7 +188,13 @@ export async function freezeUpload(
     metadata: structuredClone(metadata),
     files: await Promise.all(
       files.map(async (file) => {
-        if (!(file instanceof File) || !file.name) return refusal("unnamed-upload-part", upload);
+        if (!(file instanceof File) || !file.name)
+          return refusal(
+            "unnamed-upload-part",
+            upload,
+            { uploadPart: "named-File" },
+            { uploadPart: file instanceof File ? "empty-name" : "not-File" },
+          );
         return {
           name: file.name,
           type: file.type,
