@@ -87,3 +87,20 @@ test("stopped, unready, signature/data failures and unknown failures require hum
     assert.equal(await observeAutomaticPool("synthetic-pool", f.deps), "unknown");
   }
 });
+
+test("a pending view cannot consume the native guard's observation deadline", async () => {
+  const f = fixture();
+  const controller = new AbortController();
+  const checked = Promise.withResolvers<void>();
+  f.deps.view = (_pool, signal) =>
+    new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
+  f.deps.native = async () => {
+    checked.resolve();
+  };
+  const pending = observeAutomaticPool("synthetic-pool", f.deps, controller.signal);
+  await checked.promise;
+  controller.abort(new DOMException("synthetic view deadline", "TimeoutError"));
+  assert.equal(await pending, "view-transport");
+});

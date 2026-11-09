@@ -161,7 +161,7 @@ export async function runReviewedRecovery(
     bootId: plan.bootId,
     at,
     expiresAt: at + 60_000,
-    ...(deps.automatic ?? {}),
+    ...deps.automatic,
   });
   let receipt: Receipt;
   try {
