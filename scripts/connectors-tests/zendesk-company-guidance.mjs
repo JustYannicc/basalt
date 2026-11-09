@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import guidanceSnapshot from "./zendesk-company-guidance.snapshot.json" with { type: "json" };
 
 /** Keep Chromium's Linux singleton socket below the Unix socket path limit. */
 export async function withGuidanceBrowser({ chromium, browserExecutable, directory }, run) {
@@ -87,12 +88,17 @@ export async function proveCompanyGuidance({
         assert.ok(box.x >= 0 && box.x + box.width <= width, "The dialog must fit the viewport");
         if (method === "custom") {
           assert.match(text, /Use an OAuth app in Zendesk that allows this redirect URL/);
+          assert.equal(await dialog.getByLabel("Client ID", { exact: true }).count(), 1);
           assert.equal(await dialog.getByLabel("Client secret (optional)").count(), 1);
         }
       }
     }
     await writeFile(join(captures, "observations.json"), JSON.stringify(observations, null, 2));
     for (const entry of observations.filter(({ method }) => method !== "custom")) {
+      assert.ok(
+        entry.text.includes(guidanceSnapshot.setupInstructions),
+        `${entry.method} at ${entry.width}: show the company-owned client setup guidance`,
+      );
       assert.match(
         entry.text,
         /Admin Center.*Apps and integrations.*APIs.*OAuth clients/s,
