@@ -73,7 +73,7 @@ Set Actions variables `PREVIEW_CLAUDE_MODEL` and `PREVIEW_CODEX_MODEL` to exact 
 
 ### Database changes and rollback
 
-The upstream-sync prelude keeps the old upstream pin and appends SDK storage 4.0.29 as three queue indexes over the complete 4.0.28 layout. Release it separately and retain its exact release SHA as the cutover rollback baseline. The earlier binary does not recognize the new marker. Runtime layout selection stays at 4.0.28, and the retired-pool reader requires 4.0.29. Physical index inventory remains required because a stored version alone cannot detect a dropped index. Production migration still requires a backup, an exact-ID dry run and explicit GO.
+The upstream-sync prelude keeps the old upstream pin and appends SDK storage 4.0.29 as three queue indexes over the complete 4.0.28 layout. Release it separately and retain its exact release SHA as the cutover rollback baseline. The earlier binary does not recognize the new marker. Runtime layout selection stays at 4.0.28, and the retired-pool reader requires 4.0.29. Index creation holds writes to the webhook-source and account-check tables until the migration transaction commits. Physical index inventory remains required because a stored version alone cannot detect a dropped index. Production migration still requires a backup, an exact-ID dry run and explicit GO.
 
 The deployment compares the candidate with the last successful production deployment. Normal releases auto-merge and deploy. A database change, workflow step identity change, or uncertain classification requires a manual release. Its PR explains the evidence and carries `manual-release` with `database-change` or `workflow-identity-change`.
 

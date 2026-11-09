@@ -225,5 +225,5 @@ const seedRetained = (version: string) =>
       yield* sql`insert into executor_account_checks
         (id, account, app, deployment, credential_generation, status, checked_at)
         values ('check_storageprelude', 'acc_storageprelude', 'app_storageprelude',
-          'version_storageprelude', 7, 'ready', '2026-01-01T00:00:00Z')`;
+          'dpl_storageprelude', 7, 'ready', '2026-01-01T00:00:00Z')`;
   });
