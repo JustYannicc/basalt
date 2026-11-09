@@ -25,12 +25,12 @@
     "mode": "managed"
   },
   "host-managed-accounts-cloud:shared-account-families-and-consumer-capability-refusals": {
-    "job": "host-managed-accounts-cloud",
+    "job": "host-managed-accounts-runtime",
     "target": "local",
     "mode": "managed"
   },
   "host-managed-accounts-cloud:one-saved-provider-account-supplies-two-native-pools": {
-    "job": "host-managed-accounts-cloud",
+    "job": "host-managed-accounts-runtime",
     "target": "self-host",
     "mode": "managed"
   },
@@ -177,7 +177,7 @@
     "command": "node scripts/production-ops/prove-scope.ts"
   },
   "production-ops:atlassian-adoption": {
-    "job": "production-ops-migrations",
+    "job": "production-ops-atlassian-adoption",
     "target": "cloud",
     "mode": "managed",
     "command": "node scripts/production-ops/prove-scope.ts"

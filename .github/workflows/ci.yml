@@ -809,6 +809,39 @@ jobs:
       - name: Keep listed account actions usable through Cloud
         working-directory: .upstream
         run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-cloud:listed-account-actions)" --workers 1
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          include-hidden-files: true
+          name: host-managed-accounts-cloud-e2e
+          path: |
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
+          if-no-files-found: warn
+  host-managed-accounts-runtime:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'host-managed-accounts-runtime')
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build the isolated Cloud test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the scenarios' browser engine
+        uses: ./.github/actions/setup-browser
       - name: Verify shared account families and consumer capability refusals
         working-directory: .upstream
         run: >-
@@ -831,7 +864,7 @@ jobs:
         if: always()
         with:
           include-hidden-files: true
-          name: host-managed-accounts-cloud-e2e
+          name: host-managed-accounts-runtime-e2e
           path: |
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
@@ -1165,9 +1198,6 @@ jobs:
       - name: Verify migration ownership through signed apply verification and replay
         timeout-minutes: 5
         run: BASALT_SCOPE_PROOF_PATTERN="$(node scripts/ci/e2e-pattern.ts production-ops:migrations)" node scripts/production-ops/prove-scope.ts
-      - name: Verify Atlassian adoption and source preservation through signed operations
-        timeout-minutes: 5
-        run: BASALT_SCOPE_PROOF_PATTERN="$(node scripts/ci/e2e-pattern.ts production-ops:atlassian-adoption)" node scripts/production-ops/prove-scope.ts
       # One isolated proof (about 1m40s with its Cloud setup), so it keeps its own budget.
       - name: Verify abandoned connection removal through a reviewed plan
         timeout-minutes: 3
@@ -1179,6 +1209,42 @@ jobs:
         if: always()
         with:
           name: production-ops-migrations-e2e
+          include-hidden-files: true
+          path: |
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
+          if-no-files-found: warn
+  production-ops-atlassian-adoption:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'production-ops-atlassian-adoption')
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build the isolated signed migration test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the scenarios' browser engine
+        uses: ./.github/actions/setup-browser
+      - name: Verify Atlassian adoption and source preservation through signed operations
+        timeout-minutes: 5
+        run: BASALT_SCOPE_PROOF_PATTERN="$(node scripts/ci/e2e-pattern.ts production-ops:atlassian-adoption)" node scripts/production-ops/prove-scope.ts
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: production-ops-atlassian-adoption-e2e
           include-hidden-files: true
           path: |
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
@@ -2336,6 +2402,7 @@ jobs:
         host-managed-accounts-pool,
         host-managed-accounts-local,
         host-managed-accounts-cloud,
+        host-managed-accounts-runtime,
         google-account-recovery,
         google-account-diagnostics,
         oauth-account-regressions,
@@ -2343,6 +2410,7 @@ jobs:
         sso-service-binding,
         production-ops,
         production-ops-migrations,
+        production-ops-atlassian-adoption,
         production-ops-identity,
         compiler-diagnostics,
         human-in-the-loop,

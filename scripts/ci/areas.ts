@@ -4,6 +4,7 @@ const accounts = [
   "host-managed-accounts-pool",
   "host-managed-accounts-local",
   "host-managed-accounts-cloud",
+  "host-managed-accounts-runtime",
   "oauth-account-regressions",
   "pool-account-recovery",
   "contributed-accounts",
@@ -29,10 +30,16 @@ const accounts = [
   "mcp-apps",
   "production-ops",
   "production-ops-migrations",
+  "production-ops-atlassian-adoption",
   "production-ops-identity",
   "production-build",
 ];
-const operations = ["production-ops", "production-ops-migrations", "production-ops-identity"];
+const operations = [
+  "production-ops",
+  "production-ops-migrations",
+  "production-ops-atlassian-adoption",
+  "production-ops-identity",
+];
 
 export const heavyJobs = [
   "client-mobile",
@@ -44,6 +51,7 @@ export const heavyJobs = [
   "host-managed-accounts-pool",
   "host-managed-accounts-local",
   "host-managed-accounts-cloud",
+  "host-managed-accounts-runtime",
   "oauth-account-regressions",
   "pool-account-recovery",
   "google-account-recovery",
