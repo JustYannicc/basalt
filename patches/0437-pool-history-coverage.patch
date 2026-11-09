@@ -1,0 +1,12 @@
+diff --git a/apps/hosted/web/src/implementation/pages/pool-usage.tsx b/apps/hosted/web/src/implementation/pages/pool-usage.tsx
+--- a/apps/hosted/web/src/implementation/pages/pool-usage.tsx
++++ b/apps/hosted/web/src/implementation/pages/pool-usage.tsx
+@@ -96,7 +96,7 @@
+             <span className="text-xs text-muted-foreground tabular-nums">
+               {range !== null && (
+                 <>
+-                  Last {format.count(range.days)} days · {format.day(range.first)} –{" "}
++                  Last {format.count(range.days)} days · UTC · {format.day(range.first)} –{" "}
+                   {format.day(range.last)}
+                 </>
+               )}

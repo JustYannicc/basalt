@@ -333,6 +333,8 @@ test(
     // When set, fresh view requests are answered as they arrive instead of held.
     let answerFresh = false;
     let usageResult = emptyUsage;
+    let usagePartial = false;
+    let seriesNext = null;
     const answer = (entry) =>
       entry.response.end(
         JSON.stringify(entry.fresh && freshResult !== undefined ? freshResult : viewResult),
@@ -363,6 +365,9 @@ test(
           return;
         }
         const value = overviewFixture(JSON.parse(body).input, usageResult.value);
+        value.partial = usagePartial;
+        value.people.next = seriesNext;
+        value.models.next = seriesNext;
         const tokens = usageResult.value.total.tokens.total;
         if (tokens > 0) {
           value.metrics.apiBilled = {
@@ -395,7 +400,7 @@ test(
                   })),
                 },
                 metrics: value.metrics,
-                partial: false,
+                partial: value.partial,
               }
             : value,
         );
@@ -511,9 +516,13 @@ test(
         capacityHeld = false,
         capacity = capacityFixture,
         personal = false,
+        partial = false,
+        next = null,
       } = {},
     ) => {
       usageResult = usage;
+      usagePartial = partial;
+      seriesNext = next;
       capacityReply = capacity;
       holdCapacity = capacityHeld;
       member = personal;
@@ -1519,6 +1528,32 @@ test(
           });
         },
       );
+
+    await t.test(
+      "incomplete coverage only names truncated pages when a next cursor remains",
+      async () => {
+        const usage = {
+          ok: true,
+          value: {
+            ...emptyUsage.value,
+            total: { ...emptyUsage.value.total, requests: 1 },
+            models: [{ provider: "codex", model: "Synthetic model" }],
+          },
+        };
+        for (const next of [null, "synthetic-next-page"]) {
+          viewResult = { ok: true, value: { ...empty, providers, isOwner: true } };
+          await session(
+            async ({ frame }) => {
+              const who = frame.locator("#who");
+              await who.getByText(/1 request in 7 days/).waitFor();
+              const note = who.getByText(/Showing the first 10 pages/);
+              assert.equal(await note.count(), next === null ? 0 : 1);
+            },
+            { usage, partial: true, next },
+          );
+        }
+      },
+    );
 
     const retained = () =>
       poolView(Date.now(), {

@@ -1,0 +1,9 @@
+{
+  "identity": "pool-history-coverage",
+  "file": "0437-pool-history-coverage.patch",
+  "content_sha256": "e6da088a51bf19047b7668c67984f58909738bef6222bd4864ebe2ce62ed7110",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

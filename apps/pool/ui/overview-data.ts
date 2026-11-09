@@ -46,13 +46,13 @@ interface OverviewPieces {
 
 const refresh = 5 * 60_000;
 
-export function seriesRead(result: PoolUsageSeriesResult, partial: boolean): SeriesRead {
+export function seriesRead(result: PoolUsageSeriesResult): SeriesRead {
   return {
     groups: result.groups,
     coverage: result.coverage,
     asOf: result.asOf,
     asOfChanged: false,
-    truncated: partial || result.next !== null,
+    truncated: result.next !== null,
   };
 }
 
@@ -95,8 +95,8 @@ function overviewFrom(
   return {
     capacity: capacity?.ok ? { ok: true, value: withRequests(capacity.value, value) } : capacity,
     usage,
-    people: { ok: true, value: seriesRead(value.people, value.partial) },
-    models: { ok: true, value: seriesRead(value.models, value.partial) },
+    people: { ok: true, value: seriesRead(value.people) },
+    models: { ok: true, value: seriesRead(value.models) },
     coherent: capacity?.ok === true && coherentOverview(capacity.value, value, range),
   };
 }

@@ -136,7 +136,7 @@ export function PersonalOverview({
     );
   const read = {
     ok: true as const,
-    value: seriesRead(data.value.series, data.value.partial || data.value.series.next !== null),
+    value: seriesRead(data.value.series),
   };
   return (
     <>
@@ -301,7 +301,7 @@ function Answers({
           <span className="text-[13px] text-muted-foreground tabular-nums">
             {usage?.directory.activeCount ?? people.length} of{" "}
             {usage?.directory.totalCount ?? people.length} people active ·{" "}
-            {sum.requests.toLocaleString()} requests in {days} days
+            {sum.requests.toLocaleString()} requests · last {days} days
           </span>
         )}
       </Answer>

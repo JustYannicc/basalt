@@ -16,6 +16,7 @@ HOME_SCHEMA_OWNER_FAILURE_MARKER = "POOL_HOME_SCHEMA_OWNER_UNAVAILABLE "
 HOME_MAINTENANCE_FAILURE_MARKER = "POOL_HOME_MAINTENANCE_FAILURE "
 APP_LOG_PRIVACY_AUDIT_MARKER = "POOL_APP_LOG_PRIVACY_AUDIT "
 APP_LOG_WRITE_FAILURE_MARKER = "POOL_APP_LOG_WRITE_FAILURE "
+USAGE_WRITE_FAILURE_MARKER = "POOL_USAGE_WRITE_FAILURE "
 NATIVE_POLICY_FUSED_MARKER = "POOL_NATIVE_POLICY_FUSED "
 NATIVE_POLICY_PLUGIN_ID = "basalt-native-policy"
 NATIVE_POLICY_PROBE_LOG_PREFIX = "pool-native-policy-probe:"
@@ -50,6 +51,10 @@ HOME_MAINTENANCE_FAILURE_MESSAGES = {
     "derived_columns": "usage derived-column backfill batch failed",
     "cache_read": "usage cache-read backfill batch failed",
     "token_accounting": "usage token accounting backfill batch failed",
+}
+USAGE_WRITE_FAILURE_MESSAGES = {
+    "async": "usage database async write error:",
+    "sync": "usage database write error:",
 }
 
 # These prefixes come from Home's fixed startup error messages. Their suffixes
@@ -296,6 +301,13 @@ def safe_child_output_line(name: str, line: str) -> str | None:
             }
             return HOME_MAINTENANCE_FAILURE_MARKER + json.dumps(
                 counts, sort_keys=True, separators=(",", ":")
+            )
+
+    for category, prefix in USAGE_WRITE_FAILURE_MESSAGES.items():
+        if message is not None and message.startswith(prefix):
+            return USAGE_WRITE_FAILURE_MARKER + json.dumps(
+                {field: int(field == category) for field in USAGE_WRITE_FAILURE_MESSAGES},
+                sort_keys=True, separators=(",", ":"),
             )
 
     category = _home_init_failure_category(message)
