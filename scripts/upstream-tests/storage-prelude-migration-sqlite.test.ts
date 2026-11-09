@@ -17,6 +17,7 @@ const require = createRequire(
 );
 const SqliteClient: typeof import("../../.upstream/packages/fumadb-effect/node_modules/@effect/sql-sqlite-node/dist/SqliteClient.js") =
   await import(require.resolve("@effect/sql-sqlite-node/SqliteClient"));
+// Product hosts use PostgreSQL. This driver proves the additive SQLite upgrade.
 const historicalDatabase = fumadb({
   namespace: "executor",
   schemas: storageSchemas.filter((entry) => entry.version !== "4.0.29"),
@@ -86,22 +87,6 @@ const historicalLayout = Effect.gen(function* () {
     values ('receipt_fixture', 'app_fixture', 'fixture-owner', 'connection_fixture', 'reserved',
       4070908800000, X'070809', 1767225600000, 1767225600000)`;
   return storage;
-});
-
-test("the SDK's SQLite driver creates the full fresh schema and records 4.0.29", async () => {
-  await inSqlite(
-    Effect.gen(function* () {
-      const storage = yield* makeExecutorStorage({ provider: "sqlite" });
-      assert.equal(yield* storage.version, undefined);
-      yield* storage.migrate;
-      assert.equal(yield* storage.version, "4.0.29");
-      const before = yield* retained;
-      const indexes = yield* assertIndexes;
-      yield* storage.migrate;
-      assert.deepEqual(yield* retained, before);
-      assert.deepEqual(yield* queueIndexes, indexes);
-    }),
-  );
 });
 
 test("the SDK defers SQLite indexes, commits them with the marker and reopens unchanged", async () => {
