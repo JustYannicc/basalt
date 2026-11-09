@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { catalogDocumentSha256 } from "../../scripts/catalog-oauth-evidence.ts";
 import { oauthFitness, oauthReviews } from "./oauth-policy.ts";
+import type { Feed } from "./feed.ts";
 import reviewData from "./oauth-reviews.json" with { type: "json" };
 import sentryMetadata from "./sentry.oauth-metadata.json" with { type: "json" };
 
@@ -12,7 +13,7 @@ test("Sentry's reviewed metadata admits account selection and still refuses docu
   const method = review.methods.oauth!;
   assert.equal(method.kind, "automatic");
   if (method.kind !== "automatic") throw new Error("Sentry must use reviewed automatic metadata");
-  const feed = {
+  const feed: Feed = {
     version: 1,
     apps: [
       {
