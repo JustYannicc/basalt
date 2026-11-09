@@ -149,10 +149,21 @@ diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/package
                titles={titles}
                methods={methods}
              />
-@@ -894,6 +943,67 @@ const requirementNote = (requirement: AccountRequirement, linked: number) =>
+@@ -894,6 +943,78 @@ const requirementNote = (requirement: AccountRequirement, linked: number) =>
          ? "The app uses this account for everyone."
          : "The app uses this account when you use it.";
  
++/**
++ * A requirement the caller cannot change offers none of the host's account actions, even beside a
++ * contributed one; a row keeps only its own (usage, Details).
++ */
++const readOnlyData = <E,>(data: ScopeAccounts<E>): ScopeAccounts<E> => ({
++  links: data.links,
++  viewer: data.viewer,
++  accountRow: data.accountRow,
++  accountTraffic: data.accountTraffic,
++});
++
 +/** The methods a section offers, said only where the host reports a limit or a native API. */
 +const methodsSummary = (
 +  states: readonly { readonly label: string; readonly reason?: string | undefined }[],
@@ -217,7 +228,7 @@ diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/package
  function RequirementView<E>({
    slot,
    requirement,
-@@ -919,63 +1029,43 @@ function RequirementView<E>({
+@@ -919,81 +1040,50 @@ function RequirementView<E>({
    const managed = provisionedOnly(requirement);
    const native = props.methods?.native(slot);
    const kept = retained(connectionOf(props.connections, slot), data, requirement);
@@ -313,7 +324,26 @@ diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/package
        <div className="overflow-hidden rounded-lg border">
          {data.edit !== undefined && managed && linked.length === 0 ? (
            <MissingHostAccount edit={data.edit} slot={slot} Failure={props.Failure} />
-@@ -1015,6 +1105,231 @@ function RequirementView<E>({
+         ) : edit === undefined || managed ? (
+           <ReadOnlyChoices
+             {...props}
+-            // A requirement the caller cannot change offers none of the host's account actions,
+-            // even beside a contributed one; a row keeps only its own (usage, Details).
+-            data={
+-              edit === undefined
+-                ? {
+-                    links: data.links,
+-                    viewer: data.viewer,
+-                    accountRow: data.accountRow,
+-                    accountTraffic: data.accountTraffic,
+-                  }
+-                : data
+-            }
++            data={edit === undefined ? readOnlyData(data) : data}
+             slot={slot}
+             requirement={requirement}
+             title={title}
+@@ -1015,6 +1105,226 @@ function RequirementView<E>({
    );
  }
  
@@ -344,7 +374,7 @@ diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/package
 +  const methodsLine = methodsSummary(
 +    group.flatMap(([slot, requirement]) => methodStates(props.methods, slot, requirement)),
 +  );
-+  const limit = (slot: string) => (method: string) =>
++  const note = (slot: string) => (method: string) =>
 +    [servicePart(group, slot), toolLimits(props.toolSections, group, slot, method)]
 +      .filter((part) => part !== undefined)
 +      .join(" · ") || undefined;
@@ -375,17 +405,12 @@ diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/package
 +                <ReadOnlyChoices
 +                  key={slot}
 +                  {...props}
-+                  data={{
-+                    links: data.links,
-+                    viewer: data.viewer,
-+                    accountRow: data.accountRow,
-+                    accountTraffic: data.accountTraffic,
-+                  }}
++                  data={readOnlyData(data)}
 +                  slot={slot}
 +                  requirement={requirement}
 +                  title={undefined}
 +                  linked={linkedTo(slot)}
-+                  limit={limit(slot)}
++                  note={note(slot)}
 +                />
 +              ),
 +            )
@@ -404,7 +429,7 @@ diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/package
 +                importTitle={titles.get(slot)}
 +                linked={linkedTo(slot)}
 +                connectControl={false}
-+                limit={limit(slot)}
++                note={note(slot)}
 +              />
 +            ))}
 +            <ServiceConnect {...props} group={group} edit={edit} title={title} />
@@ -545,52 +570,52 @@ diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/package
  // The line is a grid; usage under it starts where the name does: choice, gap, logo, gap.
  const rowClass = "group/account min-w-0 px-3.5 py-1.5 transition-colors";
  const lineClass = (requests: boolean) => cn(accountRowGrid(true, requests), "min-h-9 gap-y-1.5");
-@@ -1053,6 +1368,11 @@ function AccountRowIdentity({
+@@ -1053,6 +1363,11 @@ function AccountRowIdentity({
    );
  }
  
 +/** Which part of its service a row's account serves, and the tools it can't run. */
-+function ToolLimit({ text }: { readonly text?: string | undefined }) {
++function RowServiceNote({ text }: { readonly text?: string | undefined }) {
 +  return text === undefined ? null : <p className="text-xs text-muted-foreground">{text}</p>;
 +}
 +
  /** Who contributed the link, in the row's last column. */
  function AddedBy({ credit }: { readonly credit?: string | undefined }) {
    return (
-@@ -1094,11 +1414,14 @@ function ReadOnlyChoices<E>({
+@@ -1094,11 +1409,14 @@ function ReadOnlyChoices<E>({
    title,
    linked,
    data,
-+  limit,
++  note,
  }: ScopeProps<E> & {
    readonly slot: string;
    readonly requirement: AccountRequirement;
    readonly title: string | undefined;
    readonly linked: readonly AccountSummary[];
-+  /** What an account of this method can't run, where its section holds other requirements. */
-+  readonly limit?: ((method: string) => string | undefined) | undefined;
++  /** A row's note in a service section: the part it serves and the tools it can't run. */
++  readonly note?: ((method: string) => string | undefined) | undefined;
  }) {
    const section = useContext(RowSection);
    const plain = requirement.cardinality === "one";
-@@ -1177,6 +1500,7 @@ function ReadOnlyChoices<E>({
+@@ -1177,6 +1495,7 @@ function ReadOnlyChoices<E>({
                )}
              </AccountRowMenu>
              <div className={bandClass}>
-+              <ToolLimit text={limit?.(account.method)} />
++              <RowServiceNote text={note?.(account.method)} />
                <AccountStatusNotes app={app} account={account} />
                {account.description && (
                  <AccountRowDetails inline={false}>
-@@ -1261,6 +1585,9 @@ function EditableChoices<E>({
+@@ -1261,6 +1580,9 @@ function EditableChoices<E>({
    methods,
    connections,
    Failure,
 +  connectControl = true,
 +  importTitle,
-+  limit,
++  note,
  }: ScopeProps<E> & {
    readonly edit: LinkEditing<E>;
    readonly slot: string;
-@@ -1269,6 +1596,12 @@ function EditableChoices<E>({
+@@ -1269,6 +1591,12 @@ function EditableChoices<E>({
    /** The requirement's title when another requirement in its scope shares its service. */
    readonly shared: string | undefined;
    readonly linked: readonly AccountSummary[];
@@ -598,20 +623,20 @@ diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/package
 +  readonly connectControl?: boolean | undefined;
 +  /** The requirement's own title for its login-file import inside a service section. */
 +  readonly importTitle?: string | undefined;
-+  /** What an account of this method can't run, where its section holds other requirements. */
-+  readonly limit?: ((method: string) => string | undefined) | undefined;
++  /** A row's note in a service section: the part it serves and the tools it can't run. */
++  readonly note?: ((method: string) => string | undefined) | undefined;
  }) {
    const brand = useProductBrand();
    const { result, data: loaded, refresh } = useQuery(edit.choices(slot));
-@@ -1363,6 +1696,7 @@ function EditableChoices<E>({
+@@ -1363,6 +1691,7 @@ function EditableChoices<E>({
        saved={accounts.some((item) => item.id === choice.account.id)}
        selectionOnly={selectionOnly(connection)}
        shared={shared}
-+      limit={limit?.(choice.account.method)}
++      note={note?.(choice.account.method)}
        Failure={Failure}
      />
    ));
-@@ -1385,7 +1719,7 @@ function EditableChoices<E>({
+@@ -1385,7 +1714,7 @@ function EditableChoices<E>({
      </ul>
    );
    return (
@@ -620,7 +645,7 @@ diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/package
        {AsyncResult.isFailure(result) && (
          <div className="px-3.5 py-2.5 text-xs">
            <Failure cause={result.cause} retry={refresh} retrying={result.waiting} />
-@@ -1405,7 +1739,7 @@ function EditableChoices<E>({
+@@ -1405,7 +1734,7 @@ function EditableChoices<E>({
          ) : (
            list
          ))}
@@ -629,7 +654,7 @@ diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/package
          <p className="px-3.5 py-2.5 text-[13px] text-muted-foreground">Set up automatically</p>
        ) : connection === "pending" ? null : selectionOnly(connection) ? (
          // Accounts for this requirement are connected and repaired in their provider's app.
-@@ -1425,19 +1759,13 @@ function EditableChoices<E>({
+@@ -1425,19 +1754,13 @@ function EditableChoices<E>({
            {closedReasons.join(" ")}
          </p>
        ) : (
@@ -651,7 +676,7 @@ diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/package
        )}
        {typeof connection === "object" &&
          connection.canConnect &&
-@@ -1449,9 +1777,16 @@ function EditableChoices<E>({
+@@ -1449,9 +1772,16 @@ function EditableChoices<E>({
                size="sm"
                disabled={edit.connecting === true || !allowed}
                onClick={() =>
@@ -670,24 +695,24 @@ diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/package
              >
                Import login file
              </Button>
-@@ -1491,9 +1826,12 @@ function ChoiceRow<E>({
+@@ -1491,9 +1821,12 @@ function ChoiceRow<E>({
    selectionOnly: selecting,
    saved,
    shared,
-+  limit,
++  note,
  }: {
    /** The requirement's title when another requirement in its scope shares its service. */
    readonly shared: string | undefined;
-+  /** What this account can't run, where its section holds other requirements of its service. */
-+  readonly limit?: string | undefined;
++  /** The row's note in a service section: the part it serves and the tools it can't run. */
++  readonly note?: string | undefined;
    /** The account is one of the caller's own, which stays listed after unlinking. */
    readonly saved: boolean;
    /** The host's provenance for this account here, when it reports one. */
-@@ -1655,6 +1993,7 @@ function ChoiceRow<E>({
+@@ -1655,6 +1988,7 @@ function ChoiceRow<E>({
                  {blockedReason}
                </p>
              )}
-+            <ToolLimit text={limit} />
++            <RowServiceNote text={note} />
              <AccountStatusNotes app={app} account={account} />
              {account.description && (
                <AccountRowDetails inline={false}>
@@ -918,8 +943,8 @@ diff --git a/apps/docs/content/connect-an-account.mdx b/apps/docs/content/connec
  
  Every account is connected for an app. Choose **Connect new account** at the end of a provider's list on the app's
 -**Accounts** tab, then choose **Connect** to start browser sign-in. If the provider
-+**Accounts** tab. When the service offers several ways to connect, such as signing in or an API key, pick one from
-+the menu that opens. Then choose **Connect** to start browser sign-in. If the provider
++**Accounts** tab. When the app connects one service in more than one way, such as a sign-in and an API key, a menu
++opens: pick one. For a sign-in, choose **Connect** to start browser sign-in. If the provider
  needs credentials, enter them in the same dialog. The connection dialog contains the
  sign-in methods supported by the provider.
  

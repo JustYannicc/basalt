@@ -199,19 +199,19 @@ test("a row says which declared tool sections it can't run, and only those of it
     ["planetscaleSignIn", requirement("prv_sign_in", "PlanetScale")],
     ["planetscale", requirement("prv_legacy", "PlanetScale")],
   ];
-  const sections: Section[] = [
+  const declared: Section[] = [
     { requirement: "planetscale", method: "token", title: "PlanetScale service-token tools" },
     { requirement: "other", method: "key", title: "Other tools" },
   ];
   // A sign-in or a legacy OAuth account can't run the token tools; a token account can.
   assert.equal(
-    toolLimits(sections, group, "planetscaleSignIn", "signIn"),
+    toolLimits(declared, group, "planetscaleSignIn", "signIn"),
     "Can't run PlanetScale service-token tools.",
   );
   assert.equal(
-    toolLimits(sections, group, "planetscale", "oauth2"),
+    toolLimits(declared, group, "planetscale", "oauth2"),
     "Can't run PlanetScale service-token tools.",
   );
-  assert.equal(toolLimits(sections, group, "planetscale", "token"), undefined);
+  assert.equal(toolLimits(declared, group, "planetscale", "token"), undefined);
   assert.equal(toolLimits(undefined, group, "planetscaleSignIn", "signIn"), undefined);
 });
