@@ -11,7 +11,7 @@ import { assertJournaledBaselineInput, type ForwardInputProof } from "./forward-
 import { State } from "alchemy/State/State";
 import { beginForwardJournal } from "./forward-journal.ts";
 import { verifyRepairBaseline } from "./repair-baseline.ts";
-import { operationFailure, withOperation } from "./operation-failure.ts";
+import { operationFailure } from "./operation-failure.ts";
 import * as Apply from "alchemy/Apply";
 import * as Plan from "alchemy/Plan";
 import type { CompiledStack } from "alchemy/Stack";
