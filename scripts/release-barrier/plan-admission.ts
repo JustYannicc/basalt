@@ -6,6 +6,8 @@ import { changedProps, publicPropPath } from "./prop-diff.ts";
 import { firstVerificationCommand, supportedCommand } from "./commands.ts";
 
 import { plannedReasons } from "./plan-reasons.ts";
+import type { DeclaredChanges } from "./declared-change-schema.ts";
+import { declarationRefusals, declaredBucketCreate } from "./declared-changes.ts";
 
 const readinessId = "PoolBackendBudgetRuntimeReady";
 const deploymentEnvironment = new Set([
@@ -84,8 +86,9 @@ const existing = (node: Plan.Apply) =>
 export function assertSupportedPlan(
   plan: Plan.Plan,
   imageReasons: ReadonlyMap<string, string[]> = new Map(),
+  declarations?: DeclaredChanges,
 ) {
-  const refusals: PlanRefusal[] = [];
+  const refusals: PlanRefusal[] = declarationRefusals(plan, declarations);
   if (plan.selectedFqns || plan.destroy) refusals.push({ reason: "partial-or-destroy-plan" });
   for (const [fqn, saved] of Object.entries(plan.deletions))
     refusals.push({
@@ -106,6 +109,7 @@ export function assertSupportedPlan(
         changed: [{ path: "$action", old, new: next }],
       });
   for (const [fqn, node] of Object.entries(plan.resources)) {
+    const declaredCreate = declaredBucketCreate(node, declarations);
     const refuseNode = (reason: string) => {
       let changed = changedProps(recordedProps(node), node.resource.Props);
       if (node.resource.LogicalId === readinessId && node.resource.Type === "Command.Exec")
@@ -130,7 +134,9 @@ export function assertSupportedPlan(
       });
     };
     if (
-      (!newVerification(node) && (!existing(node) || !["update", "noop"].includes(node.action))) ||
+      (!newVerification(node) &&
+        !declaredCreate &&
+        (!existing(node) || !["update", "noop"].includes(node.action))) ||
       node.renamedFrom?.length
     )
       refuseNode("new-or-unsettled-resource");
@@ -143,6 +149,7 @@ export function assertSupportedPlan(
     } else if (
       node.resource.Type !== "Command.Exec" &&
       node.resource.Type !== "Command.Build" &&
+      !declaredCreate &&
       node.action !== "noop"
     ) {
       // Returning an old image/application attribute would freeze the wrong PoolWorker input.

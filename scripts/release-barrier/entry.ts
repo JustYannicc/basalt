@@ -1,4 +1,5 @@
 import { assertReleaseStateVersion } from "./release-state-version.ts";
+import { loadDeclaredChanges } from "./declared-file.ts";
 import { undoForwardAdoption } from "./forward-undo.ts";
 import { resumeForwardRelease } from "./forward-resume.ts";
 import { readFile } from "node:fs/promises";
@@ -96,9 +97,17 @@ const result = await Effect.runPromiseExit(
                   containerRecovery,
                 )
               : Effect.gen(function* () {
+                  const declarations = yield* Effect.tryPromise({
+                    try: () =>
+                      loadDeclaredChanges(fileURLToPath(new URL("../../", import.meta.url))),
+                    catch: (error) => error,
+                  });
                   const forward = yield* resumeForwardRelease(compiled, { directory });
                   return yield* deployStack(compiled, {
                     candidate: process.env.BASALT_RELEASE_CANDIDATE!,
+                    declarations,
+                    declared: evidence.declared,
+                    declaredReadiness: evidence.declaredReadiness,
                     forwardInput: forward?.continuation,
                     forwardEncryptionKey: process.env.EXECUTOR_ENCRYPTION_KEY,
                     record: evidence.record,
