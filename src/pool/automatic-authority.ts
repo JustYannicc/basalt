@@ -8,7 +8,8 @@ import {
 import { RecoveryRefused, type AutomaticApproval } from "./recovery-approval.ts";
 import { validProbeTarget } from "./availability-config.ts";
 
-const budgetKey = "runtime-recovery-v1:automatic-budget";
+export const automaticBudgetKey = "runtime-recovery-v1:automatic-budget";
+const budgetKey = automaticBudgetKey;
 interface Storage {
   get<T>(key: string): Promise<T | undefined>;
   put(key: string, value: AutomaticBudget): Promise<void>;
