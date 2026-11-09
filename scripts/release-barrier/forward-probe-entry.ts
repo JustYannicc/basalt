@@ -1,3 +1,5 @@
+import { observeContainer } from "./container-cloudflare.ts";
+import { containerSnapshot } from "./container.ts";
 import { probeWorkerSettings } from "./settings-probe.ts";
 import { settingsFromDeclarations } from "./candidate-settings.ts";
 import { recordedContainer } from "./forward-model.ts";
@@ -54,7 +56,12 @@ try {
                 setOutput: deny,
               };
               nativeState = yield* readForwardStateObservation(actual, compiled);
+              const reconciliation = yield* resumeForwardRelease(compiled, {
+                dryRun: true,
+                directory,
+              }).pipe(Effect.provideService(State, Effect.succeed(readOnly)));
               const { identity } = recordedContainer(yield* actual.get(containerKey(compiled)));
+              const observed = yield* observeContainer(identity);
               const retired = yield* retiredPlacements(actual, compiled);
               const preparation = yield* Effect.promise(() =>
                 probeWorkerSettings(
@@ -75,7 +82,11 @@ try {
                       ),
                     ),
                   undefined,
-                  identity.hash.image,
+                  {
+                    baseline: containerSnapshot(observed),
+                    baselineInputHash: reconciliation?.inputHash ?? identity.hash.image,
+                    forwardInput: reconciliation?.continuation,
+                  },
                 ),
               );
               yield* Effect.promise(() =>
@@ -87,10 +98,6 @@ try {
               );
               if (preparation.some((row) => !row.ok))
                 throw new BarrierRefusal("preparation-probe-refused");
-              const reconciliation = yield* resumeForwardRelease(compiled, {
-                dryRun: true,
-                directory,
-              }).pipe(Effect.provideService(State, Effect.succeed(readOnly)));
               return {
                 schemaVersion: 1,
                 nativeSchemaVersion: nativeState.nativeSchemaVersion,

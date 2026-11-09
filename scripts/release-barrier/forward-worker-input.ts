@@ -62,7 +62,7 @@ export function forwardWorkerInput(
 
 /** A journal-proven mixed release permits only the exact observed binding and container baseline. */
 export function assertJournaledBaselineInput(
-  container: FrozenContainer,
+  container: Pick<FrozenContainer, "baseline" | "baselineInputHash">,
   settings: BaselineWorkerSettings | undefined,
   worker: FrozenWorker | undefined,
   proof?: ForwardInputProof,

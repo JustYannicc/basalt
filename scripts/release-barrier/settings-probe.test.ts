@@ -6,7 +6,8 @@ import { probeWorkerSettings } from "./settings-probe.ts";
 import { baselineRoles } from "./baseline-probe.ts";
 import { normalizePlacement } from "./script-placement.ts";
 import { assertScriptSettings, scriptSettingFields } from "./script-settings.ts";
-import { BarrierRefusal } from "./manifest.ts";
+import { containerPublication } from "./test/container-fixture.ts";
+import { canonical, digest, BarrierRefusal } from "./manifest.ts";
 import { placementRepairTargets } from "./pending-placement.ts";
 import { CandidateSettingsReadFailure } from "./candidate-failure.ts";
 
@@ -19,9 +20,13 @@ for (const mode of [
   "repair-retirement-failure",
   "preparation-latest-upload",
   "preparation-mismatch",
+  "preparation-forward",
+  "preparation-forward-invalid",
 ] as const) {
   const preparation = mode.startsWith("preparation");
   const mismatch = mode === "preparation-mismatch";
+  const forward = mode.startsWith("preparation-forward");
+  const invalidForward = mode === "preparation-forward-invalid";
   const drift = mode === "drift";
   const inventoryFailure = mode === "inventory-refusals";
   const repair = mode.startsWith("repair");
@@ -95,7 +100,7 @@ for (const mode of [
               {
                 name: "POOL_IMAGE_HASH",
                 type: "plain_text",
-                text: (path.endsWith("/latest") ? "b" : mismatch ? "c" : "a").repeat(16),
+                text: (path.endsWith("/latest") || forward ? "b" : mismatch ? "c" : "a").repeat(16),
               },
             ],
             script_runtime:
@@ -152,7 +157,27 @@ for (const mode of [
       async () => {
         throw new CandidateSettingsReadFailure("projection", "ConfigError");
       },
-      preparation ? "a".repeat(16) : undefined,
+      preparation
+        ? {
+            ...containerPublication().frozen,
+            ...(forward
+              ? {
+                  forwardInput: {
+                    baseline: digest(canonical(containerPublication().frozen.baseline)),
+                    containerInputHash: "a".repeat(16),
+                    workerInputHash: (invalidForward ? "c" : "b").repeat(16),
+                    workerTarget: digest(
+                      canonical({
+                        accountId: "fixture",
+                        scriptName: "basalt-poolworker-production-fixture",
+                      }),
+                    ),
+                    workerVersions: [{ versionId: "active", percentage: 100 }],
+                  },
+                }
+              : {}),
+          }
+        : undefined,
     );
     assert.equal(rows.length, inventoryFailure ? 21 : 20);
     assert.deepEqual(
@@ -188,17 +213,18 @@ for (const mode of [
         continue;
       }
       if (preparation && row.role === "PoolWorker") {
-        assert.equal(row.ok, !mismatch);
+        assert.equal(row.ok, !mismatch && !invalidForward);
         assert.deepEqual(row.preparation?.containerInput, {
           baseline: "a".repeat(12),
           settings: "b".repeat(12),
-          serving: (mismatch ? "c" : "a").repeat(12),
+          serving: (forward ? "b" : mismatch ? "c" : "a").repeat(12),
           versions: ["active"],
           latestVersion: "latest",
           latestInput: "b".repeat(12),
           settingsMatchLatest: true,
         });
-        if (mismatch) assert.equal(row.reason, "container-baseline-worker-input-unconfirmed");
+        if (mismatch || invalidForward)
+          assert.equal(row.reason, "container-baseline-worker-input-unconfirmed");
         continue;
       }
       const retirementFailed = retirementFailure && ["Api", "AppPages"].includes(row.role);

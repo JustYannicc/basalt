@@ -1,3 +1,4 @@
+import { reportRefusal } from "./refusal-report.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { freezeUpload } from "./version-request.ts";
@@ -67,5 +68,37 @@ for (const mode of [
       ];
       versions.push({ id: "other", placement: undefined, bindings: [binding("b".repeat(16))] });
     }
-    assert.throws(() => servingWorkerSettings(versions, current), BarrierRefusal);
+    assert.throws(
+      () => servingWorkerSettings(versions, current),
+      (error) => {
+        assert.ok(error instanceof BarrierRefusal);
+        assert.ok(error.delta?.changed.length);
+        if (mode === "incomplete")
+          assert.deepEqual(error.delta.changed, [
+            { path: "servingVersions.trafficTotal", old: 100, new: 50 },
+          ]);
+        if (mode === "duplicate")
+          assert.ok(
+            error.delta.changed.some(
+              (item) =>
+                item.path.endsWith(".count") && "old" in item && item.old === 1 && item.new === 2,
+            ),
+          );
+        return true;
+      },
+    );
   });
+
+test("malformed coverage reaches the release error report with expected and observed values", async () => {
+  let refusal: BarrierRefusal | undefined;
+  try {
+    servingWorkerSettings(serving, [{ versionId: "serving", percentage: 50 }]);
+  } catch (error) {
+    assert.ok(error instanceof BarrierRefusal);
+    refusal = error;
+  }
+  assert.ok(refusal);
+  const output: string[] = [];
+  await reportRefusal(refusal, undefined, (line) => output.push(line));
+  assert.match(output.join("\n"), /PoolWorker.*servingVersions\.trafficTotal.*100.*50/);
+});

@@ -1,5 +1,6 @@
 import { freezeUpload } from "./version-request.ts";
-import { assertBaselineWorkerInput } from "./container.ts";
+import type { FrozenContainer } from "./container.ts";
+import { assertJournaledBaselineInput, type ForwardInputProof } from "./forward-worker-input.ts";
 import { safeInputHash, servingWorkerSettings, workerInputHash } from "./serving-worker-input.ts";
 import * as Workers from "@distilled.cloud/cloudflare/workers";
 import {
@@ -82,7 +83,9 @@ export async function probeWorkerSettings(
   apiBaseUrl = DEFAULT_API_BASE_URL,
   candidate?: CandidateReader,
   retirementReader = candidateSettingsWithRetirements,
-  containerBaselineInputHash?: string,
+  containerBaseline?: Pick<FrozenContainer, "baseline" | "baselineInputHash"> & {
+    forwardInput?: ForwardInputProof;
+  },
 ) {
   const base = new URL(apiBaseUrl);
   const prefix = base.pathname.replace(/\/$/, "");
@@ -267,7 +270,7 @@ export async function probeWorkerSettings(
               repair,
             );
             preparation = { frozen: true };
-            if (worker.role === "PoolWorker" && containerBaselineInputHash !== undefined) {
+            if (worker.role === "PoolWorker" && containerBaseline !== undefined) {
               const serving = servingWorkerSettings(versions, baseline);
               allow(`${path}/versions`);
               const latestVersion = await run(readLatestVersion(input));
@@ -278,7 +281,7 @@ export async function probeWorkerSettings(
                 readVersionPlacement(accountId, worker.scriptName, latestVersion),
               );
               preparation.containerInput = {
-                baseline: safeInputHash(containerBaselineInputHash),
+                baseline: safeInputHash(containerBaseline.baselineInputHash),
                 settings: safeInputHash(workerInputHash(settings)),
                 serving: safeInputHash(frozen.baselineImageHash),
                 versions: baseline.map(({ versionId }) => versionId.slice(0, 12)),
@@ -287,7 +290,12 @@ export async function probeWorkerSettings(
                 settingsMatchLatest: workerInputHash(settings) === workerInputHash(latest),
               };
               readStage = "container-baseline-worker-input";
-              assertBaselineWorkerInput({ baselineInputHash: containerBaselineInputHash }, serving);
+              assertJournaledBaselineInput(
+                containerBaseline,
+                serving,
+                frozen,
+                containerBaseline.forwardInput,
+              );
             }
             compared = true;
           } catch (error) {
