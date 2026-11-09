@@ -54,7 +54,7 @@ export function quotaSamplingFixture(at: number, Usage = PoolUsage) {
   const calls: string[] = [];
   const client = new HomeClient(
     async (path) => {
-      const route = new URL(path, "https://home.example.test").pathname.slice(
+      const route = new URL(path, "http://127.0.0.1").pathname.slice(
         "/v8/management".length,
       );
       calls.push(route);
