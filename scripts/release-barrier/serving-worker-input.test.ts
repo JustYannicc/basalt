@@ -1,3 +1,7 @@
+import { State } from "alchemy/State/State";
+import { InMemoryService } from "alchemy/State/InMemoryState";
+import { Effect } from "effect";
+import { observeWorkerBaselines } from "./worker-baselines.ts";
 import { reportRefusal } from "./refusal-report.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -25,6 +29,33 @@ test("latest upload differs from serving: both frozen recovery hash and containe
   const worker = await freezeUpload(upload, baseline, serving);
   assert.equal(worker.baselineImageHash, "a".repeat(16));
   assertJournaledBaselineInput(frozen, servingWorkerSettings(serving, baseline), worker);
+});
+
+test("shared class and candidate preparation freezes the serving binding without placement", async () => {
+  const upload = preparedUpload("PoolWorker");
+  upload.previousSettings!.bindings = [{ ...binding("b".repeat(16)), type: "plain_text" }];
+  const proofs = await Effect.runPromise(
+    Effect.gen(function* () {
+      const state = yield* InMemoryService();
+      return yield* observeWorkerBaselines(
+        new Map([[upload.fqn, upload]]),
+        { name: "fixture", stage: "production" },
+        {
+          baseline: () => Effect.succeed(baseline),
+          placements: () => Effect.succeed(serving),
+          upload: () => Effect.die("Preparation cannot upload"),
+        },
+      ).pipe(Effect.provideService(State, Effect.succeed(state)));
+    }),
+  );
+  const proof = proofs.get("PoolWorker")!;
+  const worker = await freezeUpload(upload, proof.baseline, proof.versions, proof.repair);
+  assert.equal(worker.baselineImageHash, "a".repeat(16));
+  assertJournaledBaselineInput(
+    containerPublication().frozen,
+    servingWorkerSettings(proof.versions, proof.baseline),
+    worker,
+  );
 });
 
 test("a genuine serving/container mismatch refuses with the exact field and safe values", () => {
