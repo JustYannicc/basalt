@@ -568,7 +568,9 @@ export class PoolHome {
     );
     return {
       isOwner,
-      providers,
+      providers: providers.map(({ protocol, ...provider }) =>
+        protocol === "typesafe-systemone" ? { ...provider, protocol } : provider,
+      ),
       accounts,
       subscriptionAccountIds: subscriptionAccounts(accounts).map((account) => account.id),
       reading: {
