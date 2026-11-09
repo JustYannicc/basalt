@@ -16,6 +16,11 @@ export const SlotTarget = Schema.Struct({
 export type SlotTarget = typeof SlotTarget.Type;
 export const SlotIdentity = Schema.Struct({ ...SlotTarget.fields, bootId: Identifier });
 export type SlotIdentity = typeof SlotIdentity.Type;
+export const ControllerCode = Schema.Struct({
+  candidate: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/u)),
+  workerInput: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
+});
+export type ControllerCode = typeof ControllerCode.Type;
 export const SlotRecord = Schema.Struct({
   target: SlotTarget,
   identity: Schema.optional(SlotIdentity),
@@ -42,6 +47,7 @@ const PolicyRevision = Schema.Struct({
 });
 export const PromotionIntent = Schema.Struct({
   operationId: Identifier,
+  controllerCode: ControllerCode,
   expectedEpoch: Counter,
   previous: SlotIdentity,
   candidate: SlotIdentity,
@@ -103,8 +109,13 @@ export const sameIdentity = (left: SlotIdentity | undefined, right: SlotIdentity
   left !== undefined && sameTarget(left, right) && left.bootId === right.bootId;
 export const slotKey = (target: SlotTarget) =>
   JSON.stringify([target.applicationId, target.instanceId]);
+export const executionKey = (identity: SlotIdentity) =>
+  JSON.stringify(Schema.decodeUnknownSync(SlotIdentity)(identity));
+export const sameControllerCode = (left: ControllerCode, right: ControllerCode) =>
+  left.candidate === right.candidate && left.workerInput === right.workerInput;
 export const sameIntent = (left: PromotionIntent, right: PromotionIntent) =>
   left.operationId === right.operationId &&
+  sameControllerCode(left.controllerCode, right.controllerCode) &&
   left.expectedEpoch === right.expectedEpoch &&
   left.policyDigest === right.policyDigest &&
   sameIdentity(left.previous, right.previous) &&

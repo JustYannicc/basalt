@@ -5,6 +5,8 @@ import {
   SlotRefused,
   sameIdentity,
   sameIntent,
+  sameControllerCode,
+  type ControllerCode,
   type SlotDriver,
   type SlotSelection,
   type SlotSnapshot,
@@ -14,6 +16,7 @@ import { RuntimeSlotStorage, slotSelectionKey } from "./storage.ts";
 
 interface Dependencies {
   controllerId: string;
+  controllerCode: ControllerCode;
   storage: RuntimeSlotStorage;
   driver: SlotDriver;
 }
@@ -30,6 +33,8 @@ export class SlotPromotion {
   }
   async run(value: PromotionIntent): Promise<PromotionReceipt> {
     const intent = Schema.decodeUnknownSync(PromotionIntent)(value);
+    if (!sameControllerCode(intent.controllerCode, this.deps.controllerCode))
+      throw new SlotRefused("identity");
     if (
       intent.previous.controllerId !== this.deps.controllerId ||
       intent.candidate.controllerId !== this.deps.controllerId

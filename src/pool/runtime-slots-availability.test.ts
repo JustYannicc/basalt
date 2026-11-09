@@ -72,7 +72,7 @@ test("promotion changes only new admissions and retires the exact old boot only 
   assert.equal(f.calls.retire.length, 1);
 });
 
-test("controller reconstruction and a new code image do not replace the retained active boot", async (context) => {
+test("controller reconstruction does not replace the retained active boot", async (context) => {
   const f = await slotFixture();
   context.after(f.cleanup);
   await f.slots.stage(f.candidate);

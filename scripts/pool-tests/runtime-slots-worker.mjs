@@ -30,12 +30,12 @@ const identity = (name) => ({
 const old = identity("old"),
   candidate = identity("candidate"),
   key = "ab".repeat(32);
+const controllerCode = globalThis.FIXTURE_CONTROLLER_CODE;
 
 export class Controller extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     this.streams = new SlotStreams();
-    this.installed = new Map();
     this.calls = { start: 0, install: 0, retire: 0 };
     this.closed = new Set();
     this.inTransaction = false;
@@ -74,9 +74,9 @@ export class Controller extends DurableObject {
         external();
         this.calls.install++;
         if (this.failCandidate && identity.slotId === "candidate") throw new Error("policy400");
-        const prior = this.installed.get(identity.slotId);
+        const prior = await ctx.storage.get(`fixture-native-policy:${identity.slotId}`);
         if (prior && prior.revision > policy.revision) throw new Error("stale policy");
-        this.installed.set(identity.slotId, policy);
+        await ctx.storage.put(`fixture-native-policy:${identity.slotId}`, policy);
       },
       retire: async () => {
         external();
@@ -89,7 +89,7 @@ export class Controller extends DurableObject {
           policyUsePrefix,
           request.headers.get(policyHeader) ?? "",
         );
-        const policy = this.installed.get(identity.slotId);
+        const policy = await ctx.storage.get(`fixture-native-policy:${identity.slotId}`);
         if (!policy || policy.dirty || use?.revision !== policy.revision)
           return new Response(null, { status: 503 });
         const pair = new WebSocketPair();
@@ -117,6 +117,7 @@ export class Controller extends DurableObject {
   reconstruct() {
     this.slots = new RuntimeSlots({
       controllerId: "controller",
+      controllerCode,
       storage: this.store,
       streams: this.streams,
       driver: this.driver,
@@ -154,11 +155,12 @@ export class Controller extends DurableObject {
       } else if (path === "/stage-failure") {
         this.failCandidate = true;
         await this.slots.stage(candidate);
-      } else if (path === "/promote") {
+      } else if (path === "/promote" || path === "/promote-old-code") {
         this.failCandidate = false;
         const snapshot = await this.slots.inspect();
         const intent = {
           operationId: "worker-promotion",
+          controllerCode: path === "/promote-old-code" ? await request.json() : controllerCode,
           expectedEpoch: 1,
           previous: old,
           candidate,

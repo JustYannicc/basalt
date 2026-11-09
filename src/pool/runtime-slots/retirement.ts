@@ -4,7 +4,7 @@ import {
   SlotRefused,
   sameIdentity,
   sameTarget,
-  slotKey,
+  executionKey,
   type SlotDriver,
 } from "./contract.ts";
 import type { SlotClock } from "./proof.ts";
@@ -48,7 +48,7 @@ export class SlotRetirement {
       if (!selection || !slot) throw new SlotRefused("selection");
       // Unknown startup cannot be destroyed by guessing a boot. Keep it visibly pending.
       if (!slot.identity || slot.retirement) throw new SlotRefused("uncertain");
-      if (role === "draining" && this.streams.active(slotKey(slot.target)))
+      if (role === "draining" && this.streams.active(executionKey(slot.identity)))
         throw new SlotRefused("draining");
       const receipt: RetirementReceipt = {
         operationId,
@@ -65,7 +65,7 @@ export class SlotRetirement {
       return { receipt, slot };
     });
     if (!started.slot) return started.receipt;
-    this.streams.abortSlot(slotKey(started.slot.target));
+    this.streams.abortSlot(executionKey(started.slot.identity!));
     await this.driver.retire(
       started.slot.target,
       started.slot.identity!,

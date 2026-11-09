@@ -1,7 +1,7 @@
 import { RuntimeProtection } from "../runtime-protection.ts";
 import { PoolRuntimeUnhealthy } from "../lifecycle.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
-import { SlotRefused, slotKey, type SlotDriver, type SlotIdentity } from "./contract.ts";
+import { SlotRefused, executionKey, type SlotDriver, type SlotIdentity } from "./contract.ts";
 import { healthy, type SlotClock } from "./proof.ts";
 import { RuntimeSlotStorage } from "./storage.ts";
 import { SlotStreams } from "./streams.ts";
@@ -45,7 +45,7 @@ export class RuntimeSlotRouter {
         const policy = policies.find((policy) => policy.pool === pool);
         if (!policy || policy.dirty) throw new SlotRefused("policy");
         // Only local lease metadata changes here. A retried transaction can safely rebind it.
-        pending.bind(slotKey(active.target));
+        pending.bind(executionKey(active.identity));
         return active.identity;
       });
       const status = healthy(
@@ -75,7 +75,7 @@ export class RuntimeSlotRouter {
   }
 
   private guard(identity: SlotIdentity) {
-    const key = slotKey(identity);
+    const key = executionKey(identity);
     let guard = this.protection.get(key);
     if (guard) return guard;
     guard = new RuntimeProtection(this.deps.streams.forSlot(key), {

@@ -2,12 +2,14 @@ import { Schema } from "effect";
 import {
   type PromotionIntent,
   type PromotionReceipt,
+  ControllerCode,
   SlotIdentity,
   SlotRefused,
   SlotTarget,
   sameIdentity,
   sameTarget,
   slotKey,
+  executionKey,
   type SlotDriver,
   type SlotRecord,
   type SlotSelection,
@@ -21,6 +23,7 @@ import { SlotPromotion } from "./promotion.ts";
 
 interface Dependencies {
   controllerId: string;
+  controllerCode: ControllerCode;
   storage: RuntimeSlotStorage;
   driver: SlotDriver;
   streams: SlotStreams;
@@ -33,14 +36,17 @@ export class RuntimeSlots {
   readonly retirement: SlotRetirement;
   private promotion: SlotPromotion;
   constructor(deps: Dependencies) {
-    this.deps = deps;
+    this.deps = {
+      ...deps,
+      controllerCode: Schema.decodeUnknownSync(ControllerCode)(deps.controllerCode),
+    };
     this.clock = deps.clock ?? slotClock;
-    this.promotion = new SlotPromotion(deps, this.clock);
+    this.promotion = new SlotPromotion(this.deps, this.clock);
     this.retirement = new SlotRetirement(deps.storage, deps.driver, deps.streams, this.clock);
   }
 
-  inspect() {
-    return this.deps.storage.inspect();
+  async inspect() {
+    return { ...(await this.deps.storage.inspect()), controllerCode: this.deps.controllerCode };
   }
   receipt(operationId: string) {
     return this.deps.storage.receipt(operationId);
@@ -196,7 +202,7 @@ export class RuntimeSlots {
         [role]: { ...selection[role], fenced: true },
       });
     });
-    this.deps.streams.abortSlot(slotKey(identity));
+    this.deps.streams.abortSlot(executionKey(identity));
   }
 
   async unfence(identity: SlotIdentity) {

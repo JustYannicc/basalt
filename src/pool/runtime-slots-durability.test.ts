@@ -87,6 +87,7 @@ test("TTL renewal cannot disguise expiry of the candidate's actual policy acknow
   let now = Date.now();
   const slots = new RuntimeSlots({
     controllerId: f.old.controllerId,
+    controllerCode: f.controllerCode,
     storage: f.storage,
     driver: f.driver,
     streams: f.streams,

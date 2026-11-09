@@ -9,6 +9,7 @@ import {
   type SlotDriver,
   type SlotIdentity,
   type SlotTarget,
+  type ControllerCode,
 } from "../../src/pool/runtime-slots/contract.ts";
 import { NativeMemberships } from "../../src/pool/membership.ts";
 import {
@@ -40,6 +41,7 @@ export const slotIdentity = (name: string): SlotIdentity => ({
 });
 
 export async function slotFixture() {
+  let controllerCode: ControllerCode = { candidate: "a".repeat(40), workerInput: "1".repeat(64) };
   const memory = new SlotMemory(),
     storage = new RuntimeSlotStorage(memory),
     streams = new SlotStreams();
@@ -168,7 +170,7 @@ export async function slotFixture() {
   };
   const background: Promise<void>[] = [];
   const controller = () =>
-    new RuntimeSlots({ controllerId: old.controllerId, storage, streams, driver });
+    new RuntimeSlots({ controllerId: old.controllerId, controllerCode, storage, streams, driver });
   let slots = controller();
   const memberships = new NativeMemberships({
     storage: memory,
@@ -253,6 +255,7 @@ export async function slotFixture() {
     );
   const intent = async () => ({
     operationId: crypto.randomUUID(),
+    controllerCode,
     expectedEpoch: (await storage.inspect()).selection!.epoch,
     previous: old,
     candidate,
@@ -276,6 +279,9 @@ export async function slotFixture() {
     intent,
     background,
     streamsClosed,
+    get controllerCode() {
+      return controllerCode;
+    },
     emit: (boot: string, text: string) => {
       for (const channel of channels.filter((channel) => channel.boot === boot)) {
         try {
@@ -283,7 +289,8 @@ export async function slotFixture() {
         } catch {}
       }
     },
-    reconstruct: () => {
+    reconstruct: (code = controllerCode) => {
+      controllerCode = code;
       slots = controller();
       router = makeRouter();
       return slots;
