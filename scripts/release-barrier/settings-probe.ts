@@ -38,7 +38,7 @@ import { safeProviderFailure } from "./operation-failure.ts";
 import { scriptSettingFields } from "./script-settings.ts";
 import type { PropChange } from "./prop-diff.ts";
 import { verifyRepairBaseline } from "./repair-baseline.ts";
-import { CandidateSettingsReadFailure } from "./candidate-failure.ts";
+import { CandidateSettingsReadFailure, candidateFailureDetails } from "./candidate-failure.ts";
 
 interface ReadMetrics {
   status: number | null;
@@ -329,6 +329,9 @@ export async function probeWorkerSettings(
                         ? failure.reason
                         : (provider!.reason ?? `${readStage}-read-failed`),
                 }
+              : {}),
+            ...(failure instanceof CandidateSettingsReadFailure
+              ? { candidateFailure: candidateFailureDetails(failure) }
               : {}),
             ...metrics.get(`${path}/deployments`)!,
             settings: metrics.get(`${path}/settings`)!,

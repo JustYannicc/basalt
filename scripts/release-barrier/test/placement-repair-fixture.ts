@@ -14,6 +14,7 @@ export function placementRepairFixture(
     previousUpload?: boolean;
     settingsDrift?: boolean;
     deploymentDrift?: boolean;
+    numericPlacement?: boolean;
   } = {},
 ) {
   const target = placementRepairTargets[0];
@@ -59,7 +60,7 @@ export function placementRepairFixture(
           logpush: scriptSettings.logpush,
           tail_consumers: [{ service: "fixture-tail" }],
           observability: scriptSettings.observability,
-          ...(activated || (options.latestSettings && uploaded)
+          ...(activated || options.numericPlacement || (options.latestSettings && uploaded)
             ? { placement: { mode: "targeted", target: [39] }, limits: { subrequests: 50000 } }
             : {}),
         };
@@ -122,7 +123,12 @@ export function placementRepairFixture(
     baseline(scriptName: string) {
       return [
         {
-          versionId: scriptName === target.scriptName ? target.version : "previous",
+          versionId:
+            scriptName === target.scriptName
+              ? options.numericPlacement
+                ? target.prior
+                : target.version
+              : "previous",
           percentage: 100,
         },
       ];

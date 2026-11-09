@@ -11,8 +11,7 @@ import { withReleaseRuntime } from "./runtime.ts";
 import { BarrierRefusal } from "./manifest.ts";
 import { baselineRoles } from "./baseline-probe.ts";
 import { assertCandidateInputs, candidateReadFailure } from "./candidate-failure.ts";
-import { State } from "alchemy/State/State";
-import { retiredPlacements } from "./placement-retirement.ts";
+import { readPlacementRetirements } from "./retirement-state.ts";
 import { readOnlyProbeFetch } from "./probe-network.ts";
 
 export interface ProbeWorker {
@@ -101,13 +100,7 @@ export async function candidateScriptSettings(
           Effect.gen(function* () {
             const rows = yield* settingsFromDeclarations(stack, workers);
             const retired = retirementFetch
-              ? yield* Effect.gen(function* () {
-                  const state = yield* yield* State;
-                  return yield* retiredPlacements(state, stack);
-                }).pipe(
-                  Effect.provideContext(stack.services),
-                  Effect.provideService(FetchHttpClient.Fetch, retirementFetch),
-                )
+              ? yield* readPlacementRetirements(stack, retirementFetch)
               : [];
             return rows.map((row) => ({
               ...row,

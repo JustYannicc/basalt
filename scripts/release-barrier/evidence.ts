@@ -1,6 +1,6 @@
 import { ServingFailure } from "./serving-failure.ts";
 import { operationFailure, ReleaseOperationFailure } from "./operation-failure.ts";
-import { chmod, mkdir, rename, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdir, rename, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { BarrierReceipt } from "./barrier.ts";
 import {
@@ -18,6 +18,8 @@ import { Schema } from "effect";
 import type { ServingContainer } from "./container-serving.ts";
 import type { VerificationAdmission } from "./plan-admission.ts";
 import { sealRecovery } from "./recovery-envelope.ts";
+import { declaredEvidence } from "./declared-evidence.ts";
+import { classEvidence } from "./class-evidence.ts";
 
 const write = async (directory: string, name: string, value: unknown) => {
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -31,7 +33,23 @@ const write = async (directory: string, name: string, value: unknown) => {
 export function releaseEvidence(directory: string, candidate: string, encryptionKey?: string) {
   let fingerprint: string | undefined;
   let latest: BarrierReceipt | undefined;
+  const declared = declaredEvidence(
+    (name, value) => write(directory, name, value),
+    candidate,
+    encryptionKey ?? "",
+  );
+  const classes = classEvidence(
+    (name, value) => write(directory, name, value),
+    candidate,
+    encryptionKey ?? "",
+  );
   return {
+    ...declared,
+    expansion: classes.expansion,
+    async summary(path: string | undefined, disposition: "complete" | "failed") {
+      const text = classes.summary() + declared.summary(disposition, latest?.activated ?? []);
+      if (path && text) await appendFile(path, text);
+    },
     async desired(value: unknown) {
       const identity = Schema.Struct({
         tag: Schema.String.check(Schema.isPattern(/^v[0-9]+(?:\.[0-9]+)+(?:-[a-zA-Z0-9.-]+)?$/u)),
@@ -122,6 +140,7 @@ export function releaseEvidence(directory: string, candidate: string, encryption
         ...(latest?.containers ? { containers: latest.containers } : {}),
         ...(latest?.pendingContainer ? { pendingContainer: latest.pendingContainer } : {}),
         reason: refusal.reason,
+        ...(refusal.stateStore ? { stateStore: refusal.stateStore } : {}),
         ...(refusal instanceof ServingFailure ? { serving: refusal.serving } : {}),
         ...(refusal instanceof ReleaseOperationFailure
           ? { operation: refusal.operation, provider: refusal.provider }
