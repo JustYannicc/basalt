@@ -25,7 +25,8 @@ for (const failure of ["none", "runtime", "model-auth"] as const)
       const path = new URL(request.url).pathname;
       paths.push(path);
       if (path === "/deployment-readiness")
-        return handleDeploymentReadiness(request, target, key, async () => {
+        return handleDeploymentReadiness(request, target, key, async (phase) => {
+          if (phase === "adoption") return { ...target, instanceId };
           if (failure === "runtime") throw new Error("Home/node/policy not ready");
           return { ...target, desiredRevisionMatch: true, instanceId, bootId: "boot", readyAt: 1 };
         });

@@ -8,6 +8,7 @@ import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/imple
 import { ServingFailure } from "./serving-failure.ts";
 import { releaseEvidence } from "./evidence.ts";
 import { refusalTable } from "./refusal-report.ts";
+import { containerCodeAdoptionMs, waitForContainerCode } from "./container-adoption.ts";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,7 +32,14 @@ const finalStart = milestones[4]!;
 const finalReady = milestones[8]!;
 
 function fixture(
-  mode: "cycling" | "never-ready" | "never-allocated" | "adopting" | "old-runtime" = "cycling",
+  mode:
+    | "cycling"
+    | "never-ready"
+    | "never-allocated"
+    | "adopting"
+    | "old-runtime"
+    | "missing-identity" = "cycling",
+  runtimeDelayMs = 0,
 ) {
   let now = epoch;
   let startupAt = -1;
@@ -70,18 +78,32 @@ function fixture(
       POOL_OPERATIONS: {
         fetch: async (request: Request) => {
           if (new URL(request.url).pathname === "/deployment-readiness") {
-            readyRequests++;
-            return handleDeploymentReadiness(request, target, key, async () => {
-              if (mode === "adopting" || mode === "old-runtime")
+            return handleDeploymentReadiness(request, target, key, async (phase) => {
+              if (phase === "adoption") {
+                if (mode === "missing-identity") throw new TypeError("No such RPC method");
                 return {
                   ...target,
                   candidate:
-                    mode === "old-runtime" || now < epoch + 10_000 ? "e".repeat(40) : candidate,
+                    mode === "old-runtime" || (mode === "adopting" && now < epoch + 300_000)
+                      ? "e".repeat(40)
+                      : candidate,
+                  instanceId,
+                };
+              }
+              readyRequests++;
+              if (mode === "adopting" || mode === "old-runtime") {
+                if (now < epoch + 300_000 + runtimeDelayMs)
+                  throw new Error("Synthetic startup in progress after adoption");
+                return {
+                  ...target,
+                  candidate:
+                    mode === "old-runtime" || now < epoch + 300_000 ? "e".repeat(40) : candidate,
                   desiredRevisionMatch: true,
                   instanceId,
                   bootId: "final-boot",
                   readyAt: now,
                 };
+              }
               if (mode !== "cycling") throw new Error("Synthetic runtime remains unready");
               if (readyRequests === 1) for (const at of milestones.slice(0, 4)) advanceTo(at);
               if (now >= finalStart && now < finalReady)
@@ -188,18 +210,59 @@ test("a newly activated entrypoint waits for the old Durable Object to adopt the
   const f = fixture("adopting");
   const result = await atClock(f, f.run);
   assert.equal(result.bootId, "final-boot");
-  assert.equal(f.now - epoch, 10_000);
+  assert.equal(f.now - epoch, 300_000);
   assert.ok(f.now - f.startupAt < 180_000);
 });
 
-test("a Durable Object that never adopts the target refuses within the startup budget", async () => {
+test("runtime startup retains its own budget after the full deferred code adoption", async () => {
+  const f = fixture("adopting", 150_000);
+  const result = await atClock(f, f.run);
+  assert.equal(result.bootId, "final-boot");
+  assert.equal(f.startupAt, epoch + 300_000);
+  assert.equal(f.now - f.startupAt, 150_000);
+});
+
+test("a stalled old adapter cannot hide the next code observation", async () => {
+  const f = fixture();
+  const expected = {
+    candidate: "a".repeat(40),
+    workerInput: "b".repeat(64),
+    imageHash: "c".repeat(16),
+  };
+  let requests = 0;
+  await waitForContainerCode(
+    {
+      async adoption() {
+        if (++requests === 1) {
+          await f.clock.sleep(10_000);
+          return new Promise(() => {});
+        }
+        return { adopted: true, observed: { ...expected, instanceId: "d".repeat(64) } };
+      },
+    },
+    expected,
+    f.clock,
+    epoch + containerCodeAdoptionMs,
+    new AbortController().signal,
+  );
+  assert.equal(requests, 2);
+  assert.equal(f.now - epoch, 15_000);
+});
+
+test("a Durable Object that never adopts refuses with the old and expected identity", async () => {
   const f = fixture("old-runtime");
   await atClock(f, async () =>
     assert.rejects(f.run(), (error: unknown) => {
       assert.ok(error instanceof ServingFailure);
-      assert.equal(error.serving.check, "deployment-readiness");
-      assert.equal(error.serving.status, 503);
-      assert.equal(f.now - f.startupAt, 180_000);
+      assert.equal(error.serving.check, "code-adoption");
+      assert.equal(error.serving.cause, "identity-deadline");
+      assert.equal(error.serving.codeIdentity?.observed?.candidate, "e".repeat(40));
+      assert.equal(error.serving.codeIdentity?.expected.candidate, "a".repeat(40));
+      assert.equal(f.now - epoch, containerCodeAdoptionMs);
+      assert.equal(f.startupAt, -1);
+      const table = refusalTable(error);
+      assert.match(table, new RegExp("e".repeat(40)));
+      assert.match(table, new RegExp("a".repeat(40)));
       return true;
     }),
   );
@@ -243,4 +306,20 @@ test("never ready retains HTTP status, stage and last state in evidence and the 
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("a deferred adapter without the identity RPC times out with identity unavailable", async () => {
+  const f = fixture("missing-identity");
+  await atClock(f, async () =>
+    assert.rejects(f.run(), (error: unknown) => {
+      assert.ok(error instanceof ServingFailure);
+      assert.equal(error.serving.check, "code-adoption");
+      assert.equal(error.serving.codeIdentity?.observed, null);
+      assert.equal(error.serving.codeIdentity?.expected.candidate, "a".repeat(40));
+      assert.equal(f.now - epoch, containerCodeAdoptionMs);
+      assert.equal(f.startupAt, -1);
+      assert.match(refusalTable(error), /observedIdentity=unavailable/u);
+      return true;
+    }),
+  );
 });

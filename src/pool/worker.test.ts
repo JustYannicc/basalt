@@ -32,7 +32,12 @@ const {
   PoolContainer: new (
     ctx: object,
     env: object,
-  ) => { fetch(request: Request): Promise<Response>; alarm(): Promise<void> };
+  ) => {
+    fetch(request: Request): Promise<Response>;
+    alarm(): Promise<void>;
+    deploymentReady(): Promise<unknown>;
+    deploymentIdentity(): Promise<unknown>;
+  };
   PoolOperations: {
     prototype: { fetch(this: { env: object }, request: Request): Promise<Response> };
   };
@@ -1167,5 +1172,92 @@ test("deployment readiness cannot be invoked on public routes or without the rel
     assert.equal((await poolWorker.fetch(request, env)).status, 404);
     assert.notEqual((await PoolOperations.prototype.fetch.call({ env }, request)).status, 200);
   }
+  assert.equal(warms, 0);
+});
+
+test("the actual controller reports its code identity without reading startup state", async () => {
+  const { productionOpsRelease } =
+    await import("../../.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts");
+  const { poolWorkerRevision } =
+    await import("../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts");
+  const instanceId = "d".repeat(64);
+  const pool = new PoolContainer(
+    {
+      id: { toString: () => instanceId },
+      storage: {
+        get() {
+          throw new Error("Code identity must not read startup state");
+        },
+        put() {
+          throw new Error("Code identity must not write startup state");
+        },
+      },
+      container: { running: false },
+    },
+    {
+      POOL_DATABASE_URL: "postgres://fixture:fixture@localhost/pool",
+      POOL_IMAGE_HASH: "1234abcd",
+      POOL_MANAGEMENT_KEY: "synthetic-management-key",
+      POOL_APP_SIGNING_KEY: "a".repeat(64),
+    },
+  );
+  assert.deepEqual(await pool.deploymentIdentity(), {
+    candidate: productionOpsRelease,
+    workerInput: poolWorkerRevision,
+    imageHash: "1234abcd",
+    instanceId,
+  });
+});
+
+test("a deferred base controller receives no startup call from the signed adoption probe", async () => {
+  const { productionOpsRelease } =
+    await import("../../.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts");
+  const { poolWorkerRevision } =
+    await import("../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts");
+  const target = {
+    candidate: productionOpsRelease,
+    workerInput: poolWorkerRevision,
+    imageHash: "1234abcd",
+  };
+  const key = "a".repeat(64);
+  const identity = { ...target, instanceId: "d".repeat(64) };
+  let warms = 0;
+  const oldController = {
+    async deploymentReady() {
+      // The pinned base has this startup RPC and no identity-only RPC.
+      warms++;
+      throw new Error("Old revision must never start during adoption");
+    },
+  };
+  let controller: object = oldController;
+  const env = {
+    POOL_DEPLOYMENT_KEY: key,
+    POOL_IMAGE_HASH: target.imageHash,
+    PoolContainer: {
+      jurisdiction: () => ({ getByName: () => controller }),
+    },
+  };
+  const request = async () =>
+    new Request("https://private.invalid/deployment-readiness", {
+      method: "POST",
+      body: JSON.stringify({
+        envelope: await signEnvelope(key, "sbpdr1", {
+          ...target,
+          phase: "adoption",
+          at: Date.now(),
+          expiresAt: Date.now() + 60_000,
+        }),
+      }),
+    });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const response = await PoolOperations.prototype.fetch.call({ env }, await request());
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { outcome: "readiness-error", stage: "readiness" });
+    assert.equal(warms, 0);
+  }
+  controller = { ...oldController, deploymentIdentity: async () => identity };
+  const adopted = await PoolOperations.prototype.fetch.call({ env }, await request());
+  assert.equal(adopted.status, 200);
+  assert.deepEqual(await adopted.json(), identity);
   assert.equal(warms, 0);
 });
