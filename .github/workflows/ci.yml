@@ -709,7 +709,7 @@ jobs:
   host-managed-accounts-local:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-local')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'host-managed-accounts-local') && 'boat-large' || 'ubuntu-latest' }}
+    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'host-managed-accounts-local') && 'boat-large' || vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -750,7 +750,7 @@ jobs:
   host-managed-accounts-cloud:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-cloud')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'host-managed-accounts-cloud') && 'boat-large' || 'ubuntu-latest' }}
+    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'host-managed-accounts-cloud') && 'boat-large' || vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4

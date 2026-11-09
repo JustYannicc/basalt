@@ -20,9 +20,12 @@ test("native Boat jobs fit the included start burst and retain individual job ga
     const job = workflow.jobs[id];
     assert.equal(job.strategy?.matrix, undefined, id);
     assert.equal(job.if, `contains(fromJSON(needs.select.outputs.jobs), '${id}')`);
+    const fallback = ["host-managed-accounts-local", "host-managed-accounts-cloud"].includes(id)
+      ? "vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest'"
+      : "'ubuntu-latest'";
     assert.equal(
       job["runs-on"],
-      `\${{ contains(fromJSON(needs.select.outputs.boat_jobs), '${id}') && 'boat-large' || 'ubuntu-latest' }}`,
+      `\${{ contains(fromJSON(needs.select.outputs.boat_jobs), '${id}') && 'boat-large' || ${fallback} }}`,
     );
     assert.ok(workflow.jobs.check.needs.includes(id), id);
     assert.equal(job["continue-on-error"], undefined, id);
