@@ -175,9 +175,9 @@ export async function slotFixture() {
   const memberships = new NativeMemberships({
     storage: memory,
     signingKey: secret,
-    read: async () => ({
-      pool: "pool",
-      organization: "organization",
+    read: async (pool, organization) => ({
+      pool,
+      organization,
       native: true,
       accounts: [
         {

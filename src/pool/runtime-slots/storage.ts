@@ -26,6 +26,7 @@ const Membership = Schema.Struct({
   accounts: Schema.Array(Schema.String),
   dirty: Schema.Boolean,
   native: Schema.Boolean,
+  retired: Schema.optional(Schema.Struct({ resumeAfter: Schema.Number })),
 });
 const Memberships = Schema.Record(Schema.String, Membership);
 
@@ -42,7 +43,7 @@ export class RuntimeSlotStorage {
       const rows = Schema.decodeUnknownSync(Memberships)(
         (await transaction.get<unknown>(nativeMembershipKey)) ?? {},
       );
-      const policies: NativeMembershipPolicy[] = Object.entries(rows)
+      const allPolicies: NativeMembershipPolicy[] = Object.entries(rows)
         .map(([key, row]) => {
           if (key !== row.pool) throw new Error("Pool membership key mismatch");
           return {
@@ -56,7 +57,7 @@ export class RuntimeSlotStorage {
         })
         .sort((left, right) => left.pool.localeCompare(right.pool));
       const fingerprint = JSON.stringify(
-        policies.map(({ pool, organization, revision, accounts, dirty }) => ({
+        allPolicies.map(({ pool, organization, revision, accounts, dirty }) => ({
           pool,
           organization,
           revision,
@@ -90,7 +91,12 @@ export class RuntimeSlotStorage {
           throw new Error("Invalid runtime slot selection");
       }
       return work(
-        { ...(decoded === undefined ? {} : { selection: decoded }), policies, digest },
+        {
+          ...(decoded === undefined ? {} : { selection: decoded }),
+          policies: allPolicies.filter((policy) => !rows[policy.pool]!.retired),
+          denials: allPolicies.filter((policy) => rows[policy.pool]!.retired),
+          digest,
+        },
         transaction,
       );
     });

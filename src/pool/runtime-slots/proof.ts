@@ -6,6 +6,7 @@ import {
   type SlotIdentity,
   type SlotSnapshot,
 } from "./contract.ts";
+import { membershipTtlMs } from "../membership-contract.ts";
 
 export interface SlotClock {
   now(): number;
@@ -19,7 +20,10 @@ export function healthy(health: SlotHealth, identity: SlotIdentity, clock: SlotC
   return health;
 }
 export function currentPolicies(snapshot: SlotSnapshot, clock: SlotClock) {
-  if (snapshot.policies.some((policy) => policy.dirty || policy.expiresAt <= clock.now()))
+  if (
+    snapshot.policies.some((policy) => policy.dirty || policy.expiresAt <= clock.now()) ||
+    snapshot.denials.some((policy) => !policy.dirty || policy.accounts.length !== 0)
+  )
     throw new SlotRefused("policy");
 }
 
@@ -33,7 +37,13 @@ export async function proveSlot(
   currentPolicies(snapshot, clock);
   healthy(await driver.health(identity, AbortSignal.timeout(2_000)), identity, clock);
   await Promise.all(
-    snapshot.policies.map((policy) => driver.install(identity, policy, AbortSignal.timeout(2_000))),
+    [
+      ...snapshot.policies,
+      ...snapshot.denials.map((policy) => ({
+        ...policy,
+        expiresAt: clock.now() + membershipTtlMs,
+      })),
+    ].map((policy) => driver.install(identity, policy, AbortSignal.timeout(2_000))),
   );
   const health = healthy(
     await driver.health(identity, AbortSignal.timeout(2_000)),

@@ -211,7 +211,15 @@ export class NativeMemberships {
     check: (policy: NativeMembershipPolicy) => Promise<void>,
     complete: (assertCurrent: () => void) => Promise<void> = async () => {},
   ) {
-    return this.run((state) => proveCurrentMemberships(state, () => this.now(), check, complete));
+    return this.run((state) =>
+      proveCurrentMemberships(
+        state,
+        () => this.now(),
+        check,
+        complete,
+        (policy) => this.deps.install(policy),
+      ),
+    );
   }
   async inspect(pool: string) {
     const state = await this.deps.storage.get<Record<string, State>>(storageKey);

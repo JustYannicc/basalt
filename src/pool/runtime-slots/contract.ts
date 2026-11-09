@@ -93,6 +93,7 @@ export interface SlotDriver {
 export interface SlotSnapshot {
   selection?: SlotSelection;
   policies: readonly NativeMembershipPolicy[];
+  denials: readonly NativeMembershipPolicy[];
   digest: string;
 }
 export class SlotRefused extends Error {

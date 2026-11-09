@@ -16,7 +16,9 @@ export function barrier() {
   return { promise, resolve };
 }
 
-export async function stoppedFixture() {
+export async function stoppedFixture(
+  options: { install?: (policy: NativeMembershipPolicy) => Promise<void> } = {},
+) {
   let now = 1_000_000;
   let elapsed = 0;
   let running = false;
@@ -100,6 +102,7 @@ export async function stoppedFixture() {
     reconcile: async () => {},
     actual: async () => [],
     install: async (policy) => {
+      await options.install?.(policy);
       installed.set(policy.pool, structuredClone(policy));
     },
     abort() {},
