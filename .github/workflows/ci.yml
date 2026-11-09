@@ -1165,6 +1165,9 @@ jobs:
       - name: Verify migration ownership through signed apply verification and replay
         timeout-minutes: 5
         run: BASALT_SCOPE_PROOF_PATTERN="$(node scripts/ci/e2e-pattern.ts production-ops:migrations)" node scripts/production-ops/prove-scope.ts
+      - name: Verify Atlassian adoption and source preservation through signed operations
+        timeout-minutes: 5
+        run: BASALT_SCOPE_PROOF_PATTERN="$(node scripts/ci/e2e-pattern.ts production-ops:atlassian-adoption)" node scripts/production-ops/prove-scope.ts
       # One isolated proof (about 1m40s with its Cloud setup), so it keeps its own budget.
       - name: Verify abandoned connection removal through a reviewed plan
         timeout-minutes: 3
