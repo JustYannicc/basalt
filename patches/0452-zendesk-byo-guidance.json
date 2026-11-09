@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-zendesk-byo-guidance",
+  "file": "0452-zendesk-byo-guidance.patch",
+  "content_sha256": "21be2938d85ff802df1c8e3a95e1d699a33de7eaaa3194d98e29a3bd39c53718",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
