@@ -247,8 +247,12 @@ export const verifyGitLabConnections = ({
         const accounts = page.getByRole("region", { name: "Your accounts", exact: true });
         const gitlab = accounts.getByRole("region", { name: "GitLab", exact: true });
         await gitlab.waitFor();
-        // The MCP sign-in's row names the part it serves; a REST account needs no note.
-        await gitlab.getByText("For GitLab MCP", { exact: true }).first().waitFor();
+        // The catalog names each part's tools, so each row says what its account can't run.
+        await gitlab
+          .getByText("Can't run GitLab REST API tools.", { exact: true })
+          .first()
+          .waitFor();
+        await gitlab.getByText("Can't run GitLab MCP tools.", { exact: true }).first().waitFor();
         assert.equal(
           await accounts.getByRole("region", { name: "GitLab MCP", exact: true }).count(),
           0,

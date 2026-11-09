@@ -97,6 +97,8 @@ export function withGitLabInstances(feed: Feed): Feed {
           { method: "token", kind: "secrets", label: "Personal access token" },
         ],
         connectionGuidance: gitlabConnectionGuidance,
+        // MCP sign-in reaches only the MCP server's tools; a token or OAuth app reaches REST.
+        requirementTools: { signIn: "GitLab MCP tools", gitlab: "GitLab REST API tools" },
       };
     }),
   };
