@@ -1,0 +1,7 @@
+model {
+  extend basalt.catalog {
+    metadata {
+      constraint "The hosted database sign-in explicitly accepts every published supported resource and identity scope while preserving its requested minimum and required-grant confirmation. Unknown scope names remain refused. Excess-grant diagnostics include only bounded scope names, never token responses or credentials. The catalog does not duplicate the hosted client scope declaration."
+    }
+  }
+}

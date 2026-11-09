@@ -10,11 +10,42 @@ import {
   providerAccountContext,
 } from "./provider-destinations-modules.ts";
 import { oldDestination, oldMethods } from "./provider-destinations-oracle.ts";
+import type { ProviderAccountDestination } from "./provider-destinations-modules.ts";
+
+// Keep the frozen optimization oracle while naming the intentional install-routing changes.
+const installedDestination = (
+  destination: ProviderAccountDestination,
+  shape = "mixed",
+): ProviderAccountDestination =>
+  shape === "literal" && destination.kind !== "unavailable"
+    ? {
+        kind: "unavailable",
+        reason: "No connection method is available for this provider's required capabilities.",
+      }
+    : destination.kind !== "apps"
+      ? destination
+      : {
+          kind: "apps",
+          apps: destination.apps.flatMap((entry) => [
+            entry,
+            ...(entry.requirement === "contribution" ? [{ ...entry, requirement: "user" }] : []),
+            ...(entry.app === "app_pool" && entry.requirement === "primary"
+              ? [{ ...entry, requirement: "personal" }]
+              : []),
+          ]),
+        };
+const installedView = (view: Effect.Success<ReturnType<typeof oldMethods>>, shape = "mixed") => ({
+  ...view,
+  connections: view.connections.map((entry) => ({
+    ...entry,
+    destination: installedDestination(entry.destination, shape),
+  })),
+});
 
 for (const shape of ["mixed", "literal"] as const) {
   for (const manage of [true, false]) {
     for (const restricted of [false, true]) {
-      test(`${shape} 15-requirement pool methods are byte-identical (manage=${manage}, restricted=${restricted})`, async () => {
+      test(`${shape} 15-requirement pool methods preserve policy with installed-app routing (manage=${manage}, restricted=${restricted})`, async () => {
         await Effect.runPromise(
           fixture(
             ({ app }) =>
@@ -35,7 +66,7 @@ for (const shape of ["mixed", "literal"] as const) {
                     ),
                   );
                 }
-                const before = yield* oldMethods(app);
+                const before = installedView(yield* oldMethods(app), shape);
                 const after = yield* methods.providerAccountMethodView(app);
                 assert.deepEqual(after, before);
                 assert.equal(JSON.stringify(after), JSON.stringify(before));
@@ -54,7 +85,7 @@ for (const shape of ["mixed", "literal"] as const) {
                 assert.equal(chosen.includes("app_hidden_anthropic"), false);
                 assert.equal(chosen.includes("app_inactive"), false);
                 if (restricted) assert.equal(chosen.includes('"app_gemini"'), false);
-                if (manage) {
+                if (manage && shape === "mixed") {
                   assert.deepEqual(
                     after.connections.find((entry) => entry.requirement === "anthropic")
                       ?.destination,
@@ -66,6 +97,7 @@ for (const shape of ["mixed", "literal"] as const) {
                           name: "app_anthropic",
                           requirement: "contribution",
                         },
+                        { app: "app_anthropic", name: "app_anthropic", requirement: "user" },
                       ],
                     },
                   );
@@ -182,7 +214,7 @@ for (const manage of [true, false]) {
       fixture(
         ({ app, reads, reset }) =>
           Effect.gen(function* () {
-            const before = yield* oldMethods(app);
+            const before = installedView(yield* oldMethods(app));
             reset();
             const after = yield* methods.providerAccountMethodView(app);
             assert.equal(JSON.stringify(after), JSON.stringify(before));
@@ -207,7 +239,7 @@ test("standalone destination rechecks use the same rule and fresh reads", async 
         for (const requirement of [...Object.keys(app.requirements.accounts), "missing"]) {
           assert.deepEqual(
             yield* destinations.providerAccountDestination(app, requirement),
-            yield* oldDestination(app, requirement),
+            installedDestination(yield* oldDestination(app, requirement)),
           );
         }
         reset();

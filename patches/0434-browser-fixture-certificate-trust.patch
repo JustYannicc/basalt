@@ -1,0 +1,144 @@
+diff --git a/e2e/support/browser-launch.ts b/e2e/support/browser-launch.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/browser-launch.ts
+@@ -0,0 +1,64 @@
++/** Scenario certificates are trusted at launch; Chromium never has to retry a rejected handshake. */
++import { createHash, X509Certificate } from "node:crypto";
++import { chromium, type Browser, type BrowserType } from "playwright";
++import { Effect, FileSystem } from "effect";
++import { driver, type Target } from "./platform.ts";
++
++const trustedKeys = new WeakMap<Browser, string>();
++const certificateKey = (file: string) =>
++  Effect.gen(function* () {
++    const fs = yield* FileSystem.FileSystem;
++    const certificate = new X509Certificate(yield* fs.readFileString(file));
++    return createHash("sha256")
++      .update(certificate.publicKey.export({ type: "spki", format: "der" }))
++      .digest("base64");
++  });
++
++type LaunchOptions = { readonly headless: boolean; readonly slowMo: number };
++const acquireBrowser = (options: LaunchOptions, engine: BrowserType, key?: string) =>
++  Effect.acquireRelease(
++    driver("launch browser", () =>
++      engine.launch({
++        ...options,
++        ...(key === undefined ? {} : { args: [`--ignore-certificate-errors-spki-list=${key}`] }),
++      }),
++    ).pipe(
++      Effect.tap((browser) =>
++        Effect.sync(() => {
++          if (key !== undefined) trustedKeys.set(browser, key);
++        }),
++      ),
++    ),
++    (browser) => driver("close browser", () => browser.close()).pipe(Effect.orDie),
++  );
++
++/** A browser without a target remains usable for rendering saved evidence. */
++export const launchBrowser = (
++  options: LaunchOptions,
++  engine: BrowserType = chromium,
++  certificate?: string,
++) =>
++  Effect.gen(function* () {
++    const key =
++      certificate !== undefined && engine === chromium
++        ? yield* certificateKey(certificate)
++        : undefined;
++    return yield* acquireBrowser(options, engine, key);
++  });
++
++/** A suite may launch its shared browser before a case creates its own certificate. */
++export const fixtureBrowser = (shared: Browser, target: typeof Target.Service) =>
++  Effect.gen(function* () {
++    if (target.tlsCertificate === undefined || shared.browserType().name() !== "chromium")
++      return shared;
++    const key = yield* certificateKey(target.tlsCertificate);
++    if (trustedKeys.get(shared) === key) return shared;
++    return yield* acquireBrowser(
++      {
++        headless: target.headless ?? !target.metadata.interactive,
++        slowMo: target.recordingPaceMs,
++      },
++      chromium,
++      key,
++    );
++  });
+diff --git a/e2e/support/browser.ts b/e2e/support/browser.ts
+--- a/e2e/support/browser.ts
++++ b/e2e/support/browser.ts
+@@ -18,6 +18,7 @@
+   Layer,
+   Redacted,
+   Result,
++  Option,
+ } from "effect";
+ import { Target, driver, type DriverFailed } from "./platform.ts";
+ import { targetHosts } from "./role-hosts.ts";
+@@ -27,15 +28,7 @@
+ import { RecordingFocus } from "./recording-focus.ts";
+ import { captureUIObservations } from "./ui-observation.ts";
+ import { guardNavigation } from "./browser-navigation.ts";
+-
+-const launchBrowser = (
+-  options: { readonly headless: boolean; readonly slowMo: number },
+-  engine: BrowserType = chromium,
+-) =>
+-  Effect.acquireRelease(
+-    driver("launch browser", () => engine.launch(options)),
+-    (browser) => driver("close browser", () => browser.close()).pipe(Effect.orDie),
+-  );
++import { fixtureBrowser, launchBrowser } from "./browser-launch.ts";
+ 
+ /**
+  * Headless Chromium names itself "HeadlessChrome", which the dashboard server treats as a crawler
+@@ -58,6 +51,7 @@
+         slowMo: target.recordingPaceMs,
+       },
+       engine,
++      target.tlsCertificate,
+     );
+   });
+ 
+@@ -66,7 +60,16 @@
+   "e2e/BrowserDriver",
+ ) {
+   /** Rendering is never paced, even when the source recording was captured slowly. */
+-  static readonly layer = Layer.effect(BrowserDriver, launchBrowser({ headless: true, slowMo: 0 }));
++  static readonly layer = Layer.effect(
++    BrowserDriver,
++    Effect.flatMap(Effect.serviceOption(Target), (target) =>
++      launchBrowser(
++        { headless: true, slowMo: 0 },
++        chromium,
++        Option.getOrUndefined(target)?.tlsCertificate,
++      ),
++    ),
++  );
+   /** Instrument individual actions, including several actions inside one use call. */
+   static readonly captureLayer = Layer.effect(BrowserDriver, captureBrowser(chromium));
+   /** Safari's engine, for behavior that differs from Chromium. */
+@@ -89,10 +92,11 @@
+   static readonly layer = Layer.effect(
+     Browser,
+     Effect.gen(function* () {
+-      const browser = yield* BrowserDriver,
++      const sharedBrowser = yield* BrowserDriver,
+         target = yield* Target,
+         evidence = yield* Evidence,
+         recording = yield* RecordingFocus;
++      const browser = yield* fixtureBrowser(sharedBrowser, target);
+       const clock = yield* Clock.Clock;
+       const scope = yield* Effect.scope;
+       const navigations: { at: string; url: string; elapsedMs: number; page: number }[] = [];
+@@ -113,6 +117,7 @@
+       const context = yield* driver("create browser context", () =>
+         browser.newContext({
+           baseURL: targetHosts(target).browser,
++          // Playwright's APIRequestContext does not inherit Chromium's launch-time SPKI pin.
+           ...(target.tlsCertificate === undefined ? {} : { ignoreHTTPSErrors: true }),
+           viewport: { width: 1440, height: 960 },
+           ...visitorUserAgent(browser),

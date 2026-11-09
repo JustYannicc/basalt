@@ -65,12 +65,15 @@ test("account and pool jobs retain their owned scenarios, commands and execution
         "accountDisplayStatus",
         "accountHealth",
         "accountToolsHealth",
+        "appServiceSection",
         "catalogOAuthAccounts",
         "catalogOAuthClients",
         "executorAppCardAccount",
+        "executorExistingMember",
         "executorInstallationLoading",
         "executorKeyAccount",
         "executorKeyUnlinkSticks",
+        "executorLateMember",
         "groupedAccounts",
         "hostManagedAccounts",
         "hostedScopeRefusal",
@@ -112,6 +115,9 @@ test("account and pool jobs retain their owned scenarios, commands and execution
         "poolSharingUi",
         "poolUsageNavigation",
         "poolUsageUi",
+        "providerQuotaCapabilities",
+        "requirementToolsDesktop",
+        "requirementToolsPhone",
         "sentryBothDesktop",
         "sentryBothPhone",
         "sentryRegionalRecovery",
@@ -193,7 +199,8 @@ test("account and pool jobs retain their owned scenarios, commands and execution
   assert.equal(
     accounts.steps.filter(
       (step: { run?: string }) =>
-        step.run === "node --test scripts/pool-ui-tests/accounts-ready.test.mjs",
+        step.run ===
+        "node --test scripts/pool-ui-tests/accounts-ready.test.mjs scripts/pool-ui-tests/history-coverage.test.mjs",
     ).length,
     1,
   );

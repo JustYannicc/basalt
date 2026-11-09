@@ -11,7 +11,7 @@ import { Stack, evalStack } from "alchemy/Stack";
 import { releaseWorkers, type BarrierReceipt } from "./barrier.ts";
 import { BarrierRefusal, describeWorker, manifestDigest } from "./manifest.ts";
 import { describeContainer } from "./container.ts";
-import { readForwardPacket, encodedRecordHash } from "./forward-model.ts";
+import { readForwardPacket, encodedRecordHash, forwardAdoption } from "./forward-model.ts";
 import {
   writeForwardJournal,
   readForwardJournal,
@@ -24,6 +24,7 @@ import { openRecovery } from "./recovery-envelope.ts";
 import { withReleaseRuntime } from "./runtime.ts";
 import { attributes } from "./fixture.ts";
 import { containerRelease } from "./test/container-fixture.ts";
+import { refusalTable } from "./refusal-report.ts";
 
 const encryptionKey = "f".repeat(64);
 const newCandidate = "b".repeat(40);
@@ -41,37 +42,75 @@ const readHeader = Schema.decodeUnknownSync(
   }),
 );
 
-for (const drift of [false, true])
+for (const scenario of ["baseline", "worker-drift", "unchanged-image"])
   test(
-    drift
+    scenario === "worker-drift"
       ? "new candidate refuses unrelated live Worker drift before replacing an older incomplete journal"
-      : "new candidate resumes an older incomplete baseline journal before starting and completing its own release",
+      : scenario === "unchanged-image"
+        ? "new image release resumes an unchanged-image failure without an adoption write"
+        : "new candidate resumes an older incomplete baseline journal before starting and completing its own release",
     async (context) => {
       const directory = await mkdtemp(join(tmpdir(), "journal-candidate-"));
       context.after(() => rm(directory, { recursive: true, force: true }));
       const fixture = containerRelease();
+      const drift = scenario === "worker-drift";
+      const unchanged = scenario === "unchanged-image";
       const oldCandidate = fixture.manifest.candidate;
       assert.notEqual(oldCandidate, newCandidate);
-      const oldManifest = {
+      const oldSource = {
         ...fixture.manifest,
-        workers: fixture.manifest.workers.map(describeWorker),
-        containers: fixture.manifest.containers!.map(describeContainer),
+        containers: unchanged
+          ? [
+              {
+                ...fixture.frozen,
+                configuration: fixture.previous.configuration,
+                inputHash: fixture.frozen.baselineInputHash,
+                imageDigest: fixture.previous.hash!.digest!,
+                rolloutRequest: {
+                  ...fixture.frozen.rolloutRequest,
+                  targetConfiguration: fixture.previous.configuration,
+                },
+              },
+            ]
+          : fixture.manifest.containers,
+      };
+      const oldManifest = {
+        ...oldSource,
+        workers: oldSource.workers.map(describeWorker),
+        containers: oldSource.containers!.map(describeContainer),
       };
       const oldReceipt: BarrierReceipt = {
         schemaVersion: 2,
         candidate: oldCandidate,
-        manifest: manifestDigest(fixture.manifest),
+        manifest: manifestDigest(oldSource),
         ceilingMs: 750,
-        phase: "activation",
+        phase: unchanged ? "container-activation" : "activation",
         accepted: fixture.manifest.workers.map((worker) => ({
           worker: worker.id,
           versionId: `unserved-${worker.id}`,
           startupTimeMs: 100,
         })),
-        activated: [],
-        containers: [],
-        pending: { worker: "Api", versionId: "unserved-Api" },
-        failure: { reason: "placement-repair-baseline-drift", worker: "Api" },
+        activated: unchanged
+          ? fixture.manifest.workers.map((worker) => ({
+              worker: worker.id,
+              versionId: `unserved-${worker.id}`,
+            }))
+          : [],
+        containers: unchanged
+          ? [{ container: "PoolContainer", version: fixture.previous.version, unchanged: true }]
+          : [],
+        ...(unchanged
+          ? {
+              pendingContainer: {
+                container: "PoolContainer",
+                phase: "verification" as const,
+                version: fixture.previous.version,
+              },
+            }
+          : { pending: { worker: "Api", versionId: "unserved-Api" } }),
+        failure: unchanged
+          ? { reason: "container-serving-not-verified", worker: "PoolContainer" }
+          : { reason: "placement-repair-baseline-drift", worker: "Api" },
       };
       const saved: PersistedState = {
         resourceType: "Cloudflare.Container",
@@ -89,10 +128,44 @@ for (const drift of [false, true])
       const packet = readForwardPacket({
         schemaVersion: 1,
         manifest: oldManifest,
-        frozen: { ...oldManifest, containers: fixture.manifest.containers },
+        frozen: { ...oldManifest, containers: oldSource.containers },
         receipt: oldReceipt,
         nativeBefore: encodeState(saved),
       });
+      if (unchanged) {
+        assert.equal(packet.adoption, undefined);
+        assert.throws(
+          () =>
+            forwardAdoption(
+              {
+                ...packet,
+                adoption: {
+                  before: "c".repeat(64),
+                  after: "d".repeat(64),
+                  backup: {},
+                },
+              },
+              saved,
+              fixture.previous,
+            ),
+          /forward-native-after-drift/u,
+        );
+        assert.throws(
+          () => forwardAdoption(packet, { ...saved, downstream: [] }, fixture.previous),
+          (error) => {
+            assert.ok(error instanceof BarrierRefusal);
+            assert.equal(error.reason, "forward-native-after-drift");
+            const table = refusalTable(error);
+            assert.ok(table.includes(encodedRecordHash(saved)));
+            assert.ok(table.includes(encodedRecordHash({ ...saved, downstream: [] })));
+            assert.match(table, /native.recordHash/);
+            assert.match(table, /journal.adoption.before/);
+            assert.match(table, /journal.adoption.after/);
+            assert.match(table, /neither an exact unchanged native baseline nor a journaled/);
+            return true;
+          },
+        );
+      }
       await Effect.runPromise(
         Effect.gen(function* () {
           const memory = yield* InMemoryService();

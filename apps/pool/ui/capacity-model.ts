@@ -413,7 +413,7 @@ export function verdict(
       [
         sizingDetail,
         flagged
-          ? `${flagged} of ${facts.latest.last.accountCount} accounts count at a flagged 1x. If their real weight is higher, the shortfall is smaller than shown.`
+          ? `${flagged} of ${facts.latest.last.accountCount} accounts use a conservative 1x estimate. If their real weight is higher, the shortfall is smaller than shown.`
           : null,
       ]
         .filter(Boolean)
@@ -474,8 +474,9 @@ export interface PlanChip {
 export const weightSourceLabel: Record<CapacityWeightSource, string> = {
   "reference-plan": "plan table",
   "published-session-multiplier": "published multiplier",
+  "published-weekly-multiplier": "published weekly multiplier",
   "reported-absolute": "limit reported",
-  "unknown-plan": "plan unknown · 1x",
+  "unknown-plan": "conservative estimate · 1x",
 };
 
 export const planName = (plan: string | null, provider: string) =>
@@ -500,7 +501,7 @@ const forecastReasonLabels: Record<string, string> = {
   "partial-account-coverage": "some readings do not cover every account",
   "incomplete-current-week": "the current week is incomplete",
   "missing-account-reading": "an account has no current reading",
-  "unknown-account-weight": "an account weight is unknown",
+  "unknown-account-weight": "an account has only a conservative weight estimate",
   "missing-reset-time": "an account reset time is unknown",
   "unhealthy-account": "an account is unavailable",
   "backtest-insufficient": "there is not enough held-out history to check the forecast",
@@ -515,7 +516,7 @@ const forecastReasonLabels: Record<string, string> = {
 export const forecastReasons = (reasons: readonly string[]) =>
   reasons.map((reason) => forecastReasonLabels[reason] ?? reason.replaceAll("-", " "));
 
-/** The plans in the latest snapshot, flagged where the weight is the unknown-plan 1x fallback. */
+/** A conservative flag describes the saved weight, including readings from an older policy. */
 export function planChips(point: CapacityHistoryPoint | null): PlanChip[] {
   if (!point) return [];
   const groups = new Map<

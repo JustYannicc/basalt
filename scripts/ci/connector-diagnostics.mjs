@@ -60,6 +60,7 @@ const sources = new Set([
   "planetscale-sign-in.mjs",
   "vercel-sign-in.mjs",
   "elevenlabs-sign-in.mjs",
+  "neon-key-reuse.mjs",
   "slack-health.mjs",
   "catalog-compat.mjs",
   "elevenlabs-discovery.mjs",

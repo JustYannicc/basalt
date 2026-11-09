@@ -3,20 +3,25 @@ import { openEnvelope } from "./token.ts";
 
 export const deploymentReadinessPath = "/deployment-readiness";
 export const deploymentReadinessPrefix = "sbpdr1";
-export const RuntimeReady = Schema.Struct({
+const targetFields = {
   candidate: Schema.String,
   workerInput: Schema.String,
   imageHash: Schema.String,
+};
+export const RuntimeIdentity = Schema.Struct({ ...targetFields, instanceId: Schema.String });
+export type RuntimeIdentity = typeof RuntimeIdentity.Type;
+export type RuntimeTarget = Pick<RuntimeIdentity, "candidate" | "workerInput" | "imageHash">;
+export type ReadinessPhase = "adoption" | "runtime";
+export const RuntimeReady = Schema.Struct({
+  ...RuntimeIdentity.fields,
   desiredRevisionMatch: Schema.Literal(true),
-  instanceId: Schema.String,
   bootId: Schema.String,
   readyAt: Schema.Number,
 });
 export type RuntimeReady = typeof RuntimeReady.Type;
 const RequestTarget = Schema.Struct({
-  candidate: Schema.String,
-  workerInput: Schema.String,
-  imageHash: Schema.String,
+  ...targetFields,
+  phase: Schema.optional(Schema.Literals(["adoption", "runtime"])),
   at: Schema.Number,
   expiresAt: Schema.Number,
 });
@@ -24,9 +29,9 @@ const RequestTarget = Schema.Struct({
 /** Only the private service entrypoint calls this, with a short-lived deployment signature. */
 export async function handleDeploymentReadiness(
   request: Request,
-  target: Pick<RuntimeReady, "candidate" | "workerInput" | "imageHash">,
+  target: RuntimeTarget,
   secret: string,
-  ready: () => Promise<RuntimeReady>,
+  ready: (phase: ReadinessPhase) => Promise<unknown>,
   now = Date.now,
 ) {
   try {
@@ -54,13 +59,40 @@ export async function handleDeploymentReadiness(
       value.imageHash !== target.imageHash
     )
       return new Response(null, { status: 409 });
-    // The new entrypoint can still reach a Durable Object on the previous deployed version.
-    const receipt = decodeRuntimeReady(await ready(), target);
+    const phase = value.phase ?? "runtime";
+    const observed = await ready(phase);
+    if (phase === "adoption") {
+      const identity = decodeRuntimeIdentity(observed);
+      if (!sameRuntimeTarget(identity, target))
+        return Response.json(
+          { outcome: "adopting", observed: identity },
+          { status: 503, headers: { "Cache-Control": "no-store" } },
+        );
+      return Response.json(identity, { headers: { "Cache-Control": "no-store" } });
+    }
+    const receipt = decodeRuntimeReady(observed, target);
     return Response.json(receipt, { headers: { "Cache-Control": "no-store" } });
   } catch {
     return Response.json({ outcome: "readiness-error", stage: "readiness" }, { status: 503 });
   }
 }
+
+export function decodeRuntimeIdentity(value: unknown): RuntimeIdentity {
+  const identity = Schema.decodeUnknownSync(RuntimeIdentity)(value);
+  if (
+    !/^[a-f0-9]{40}$/.test(identity.candidate) ||
+    !/^[a-f0-9]{64}$/.test(identity.workerInput) ||
+    !/^[a-f0-9]{1,64}$/.test(identity.imageHash) ||
+    !/^[a-f0-9]{64}$/.test(identity.instanceId)
+  )
+    throw new Error("Invalid runtime code identity");
+  return identity;
+}
+
+export const sameRuntimeTarget = (identity: RuntimeTarget, target: RuntimeTarget) =>
+  identity.candidate === target.candidate &&
+  identity.workerInput === target.workerInput &&
+  identity.imageHash === target.imageHash;
 
 export function decodeRuntimeReady(
   value: unknown,
@@ -68,9 +100,7 @@ export function decodeRuntimeReady(
 ): RuntimeReady {
   const receipt = Schema.decodeUnknownSync(RuntimeReady)(value);
   if (
-    receipt.candidate !== target.candidate ||
-    receipt.workerInput !== target.workerInput ||
-    receipt.imageHash !== target.imageHash ||
+    !sameRuntimeTarget(receipt, target) ||
     !/^[a-f0-9]{64}$/.test(receipt.instanceId) ||
     !/^[a-zA-Z0-9-]{1,128}$/.test(receipt.bootId) ||
     !Number.isSafeInteger(receipt.readyAt) ||

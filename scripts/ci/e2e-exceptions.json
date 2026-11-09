@@ -140,7 +140,6 @@
       "cached-skills.spec.ts#cachedSkillsCustomCacheCancel": "aaba8da6d767a818f2f6f2102689167b281c3559b89c7de50ceaf92312ebf37b",
       "catalog-agent-search.spec.ts#catalogAgentSearch": "93725737bae3acf223bf28246280e62d0dc2cf9e6fbad1396434cf254452a61b",
       "catalog-agent-search.spec.ts#catalogCachedDocument": "cedec6345d32febef02a9dad39a9ac1647ad67e212c71dee91073b5189dca953",
-      "catalog-official-apps.spec.ts#catalogOfficialApps": "1ab4653697d8d4089b6b9da54c215fb8884bd7f37cbe1f32685db682d0c0f8ff",
       "chatgpt-sign-in.spec.ts#returns through the registered host to browser-bound PKCE state": "0333848dfe9099b1fc628d016dc5684ba1134a2fc1e6ac2b7c4e5b38a33c5aba",
       "ci-selection.spec.ts#a push to main runs every job's full pattern": "399c2096593743886905b55fd505c19cbd6237d10a1a5884ae15084044a69a3e",
       "ci-selection.spec.ts#a full run splits local and self-host by spec file and spreads Cloud over three runners": "399c2096593743886905b55fd505c19cbd6237d10a1a5884ae15084044a69a3e",
@@ -831,6 +830,12 @@
       "e2e/slack/native-claude.mjs": "6fab50824dc9663806161881a0c1119fc8027cd6c59dee4653de2b54751abc0e",
       "e2e/slack/run.ts": "4dd508462320a31b6dc1203619e153eb95eea1c206aff0959b2e97ed2492ca50",
       "e2e/slack/runtime.mjs": "658f1772f324271558253c3a19414538069bf344df5cc05e65f7c73949253779"
+    }
+  },
+  {
+    "reason": "catalogOfficialApps remains an inherited self-host scenario with no declared Basalt CI group. Reviewed for carry 0438: the existing catalog and install assertions stay intact; the added checks cover singular app text at 1280px and 390px, zero and multiple results, and horizontal overflow. The complete scenario passed locally on the composed batch. Keep this identity manual pending CI adoption; any prepared spec or target plan change requires renewed review.",
+    "entries": {
+      "catalog-official-apps.spec.ts#catalogOfficialApps": "c17487a082ef487deb15d21e214fd283f0e8c7832aefefda7023e09d617fe76a"
     }
   }
 ]

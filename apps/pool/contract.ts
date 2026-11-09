@@ -16,6 +16,8 @@ export function isControlPath(pathname: string): boolean {
 export interface Provider {
   readonly id: string;
   readonly name: string;
+  readonly protocol?: "typesafe-systemone";
+  readonly description?: string;
 }
 
 /**
@@ -64,6 +66,8 @@ export interface Account {
   readonly observedAt: string | null;
   /** Whether that reading is still current; a stale one keeps its last-known windows. */
   readonly freshness: ReadingFreshness;
+  /** Original quota deadline, so a retained view can age without changing its source time. */
+  readonly staleAt?: string | null;
   /** True when the last attempt to read limits failed, even if older readings remain. */
   readonly readingFailed: boolean;
   /** A current runtime credential refusal, kept separate from quota exhaustion or routing cooldown. */

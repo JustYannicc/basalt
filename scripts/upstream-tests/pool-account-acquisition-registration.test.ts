@@ -242,3 +242,23 @@ test("Claude status retries are bounded and preserve the runtime receipt without
   );
   assert.equal(starts, 1);
 });
+
+test("only methods with real Home quota collectors register observation callbacks", async () => {
+  const options = await registrations();
+  const registry = await Effect.runPromise(makeAcquisitionRegistry(options.registrations));
+  for (const capability of providerCapabilities.filter(
+    (entry) => entry.connection !== "unavailable",
+  )) {
+    const definition = await Effect.runPromise(providerDeclaration(providers[capability.lab]));
+    const identity = await Effect.runPromise(identifyProvider(definition, crypto));
+    for (const id of new Set([identity.identity, identity.legacy])) {
+      const registration = registry.current(id, capability.method);
+      assert.ok(registration, `${capability.lab}/${capability.method}`);
+      assert.equal(
+        typeof registration.driver.observeAccount === "function",
+        capability.quota === "home",
+        `${capability.lab}/${capability.method}`,
+      );
+    }
+  }
+});

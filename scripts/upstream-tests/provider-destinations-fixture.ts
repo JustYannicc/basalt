@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
-import { Crypto, Effect } from "effect";
+import { Crypto, Effect, Option, Redacted } from "effect";
+import { poolAccountAcquisition } from "../../.upstream/apps/hosted/server/src/implementation/pool-account-acquisition.ts";
 import { providerFixtureApps } from "./provider-destinations-apps.ts";
+import { providerApps } from "../../src/catalog/provider-apps/index.ts";
 import { SqlClient } from "effect/sql";
 import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.ts";
 import {
@@ -48,6 +50,7 @@ export const fixture = <A, E>(
     restricted?: boolean;
     catalog?: boolean;
     shape?: "mixed" | "literal";
+    native?: boolean;
   } = {},
 ) =>
   Effect.scoped(
@@ -109,7 +112,11 @@ export const fixture = <A, E>(
         yield* native`insert into hosted_app_access values (${candidate.id}, ${organization}, ${creator}, ${hidden ? "private" : "everyone"}, 'revision-1')`;
       }
       const entries = [...definitions.keys()]
-        .filter((family) => family !== "iflow")
+        .filter((family) =>
+          options.native
+            ? providerApps.some((app) => app.entry.id === `provider-${family}`)
+            : family !== "iflow",
+        )
         .map((family) => ({
           id: `provider-${family}`,
           package: `fixture-${family}`,
@@ -150,23 +157,28 @@ export const fixture = <A, E>(
             }),
         },
       } as unknown as Executor;
-      const registrations = ["codex", "apiKey"].map((method) => ({
-        provider: accounts.openai!.provider,
-        method,
-        current: true,
-        fetch: globalThis.fetch,
-        capabilities: ["inference"],
-        capabilityLabels: { inference: "Model inference" },
-        driver: {
-          id: method,
-          revision: "1",
-          importCredentials: () => Effect.void,
-          cancel: () => Effect.void,
-          remove: () => Effect.void,
-          start: () => Effect.die("unused"),
-          status: () => Effect.die("unused"),
-        },
-      }));
+      const registrations = options.native
+        ? (yield* poolAccountAcquisition(
+            Option.some(Redacted.make("ab".repeat(32))),
+            "https://pool.example",
+          ).pipe(Effect.provideService(Crypto.Crypto, crypto))).registrations
+        : ["codex", "apiKey"].map((method) => ({
+            provider: accounts.openai!.provider,
+            method,
+            current: true,
+            fetch: globalThis.fetch,
+            capabilities: ["inference"],
+            capabilityLabels: { inference: "Model inference" },
+            driver: {
+              id: method,
+              revision: "1",
+              importCredentials: () => Effect.void,
+              cancel: () => Effect.void,
+              remove: () => Effect.void,
+              start: () => Effect.die("unused"),
+              status: () => Effect.die("unused"),
+            },
+          }));
       const catalog = {
         list: Effect.gen(function* () {
           yield* read("catalog");

@@ -80,3 +80,41 @@ test("guard annotation and a broken reporter preserve the original failure", asy
     message: "The pool backend is unavailable. Try again later.",
   });
 });
+
+test("lease-window telemetry keeps signed bounds only for native policy failures", (t) => {
+  const reports: unknown[][] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => reports.push(args));
+  for (const leaseMs of [-60_000, 0, 60_000]) {
+    const error = new Error();
+    diagnosePoolFailure(error, {
+      guard: "native_policy_install",
+      failure: "response_status",
+      reason: "lease_window",
+      leaseMs,
+    });
+    failureResponse(error);
+    assert.deepEqual(reports.at(-1), [
+      "pool_guard_failure",
+      {
+        guard: "native_policy_install",
+        failure: "response_status",
+        reason: "lease_window",
+        leaseMs,
+      },
+    ]);
+  }
+  for (const diagnostic of [
+    { guard: "native_policy_install", reason: "lease_window", leaseMs: -60_001 },
+    { guard: "native_policy_install", reason: "lease_window", leaseMs: 60_001 },
+    { guard: "native_policy_install", reason: "lease_window", leaseMs: NaN },
+    { guard: "native_policy_install", reason: "lease_window", leaseMs: Infinity },
+    { guard: "native_policy_install", reason: "lease_window", leaseMs: 0.5 },
+    { guard: "native_policy_install", reason: "json", leaseMs: 50 },
+    { guard: "membership_read", reason: "lease_window", leaseMs: 50 },
+  ] as const) {
+    const error = new Error();
+    diagnosePoolFailure(error, { ...diagnostic, failure: "response_status" });
+    failureResponse(error);
+    assert.ok(!JSON.stringify(reports.at(-1)).includes("leaseMs"));
+  }
+});

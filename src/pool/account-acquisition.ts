@@ -2,7 +2,7 @@ import { removeHomeAccount, type AcknowledgedRemoval } from "./account-acquisiti
 import { acquisitionReceipt, acquisitionStep } from "./account-acquisition-failure.ts";
 import { signInFailure, submitAccountCallback } from "./account-acquisition-callback.ts";
 import { callbackOrigin } from "./account-acquisition-urls.ts";
-import providers from "./providers.json" with { type: "json" };
+import { availableProviderCapabilities } from "./provider-accounts/capabilities.ts";
 import type { HomeClient } from "./control.ts";
 import { object, rows, text, unavailable } from "./json.ts";
 import { acquisitionAssertion } from "./account-acquisition-assertion.ts";
@@ -102,7 +102,13 @@ export class HomeAccountAcquisitions {
       }
       if (value.action === "start") {
         const provider = text(value.provider);
-        if (!provider || !providers.some((entry) => entry.id === provider)) return unavailable();
+        if (
+          !provider ||
+          !availableProviderCapabilities.some(
+            (entry) => entry.backend === provider && entry.connection === "home-oauth",
+          )
+        )
+          return unavailable();
         const prior = Object.values(attempts).find(
           (entry) => entry.owner === owner && entry.operation === value.operation,
         );

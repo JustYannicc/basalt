@@ -1,0 +1,7 @@
+model {
+  extend basalt.pool {
+    metadata {
+      constraint "History names all retained requests and shows the latest retained request timestamp, never an ingestion or cursor-check watermark. An incomplete source read never claims pagination truncation without a remaining page cursor. Settings names its thirty-day UTC window and overview its selected seven- or thirty-day window. Usage database write failures leave closed asynchronous or synchronous counts in the runtime log while the bounded crash tail keeps only the fixed write-error template and an error class; database errors and request content never cross that projection."
+    }
+  }
+}

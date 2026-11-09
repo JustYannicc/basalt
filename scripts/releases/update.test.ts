@@ -317,10 +317,19 @@ test("fixture provider update reads the candidate source at its exact commit", a
   context.after(() => rmSync(root, { recursive: true, force: true }));
   const plan = await planUpdate(root, "home", fakeApi());
   const providers = plan.files.find((file) => file.path === "src/pool/providers.json")?.content;
-  assert.equal(
-    providers,
-    '[\n  {\n    "id": "claude",\n    "name": "Claude"\n  },\n  {\n    "id": "codex",\n    "name": "Codex"\n  },\n  {\n    "id": "gemini",\n    "name": "Gemini"\n  }\n]\n',
-  );
+  assert.ok(providers);
+  assert.deepEqual(JSON.parse(providers), [
+    { id: "claude", name: "Claude" },
+    { id: "codex", name: "Codex" },
+    { id: "gemini", name: "Gemini" },
+    {
+      id: "typesafe",
+      name: "Jev",
+      site: "typesafe.ai",
+      protocol: "typesafe-systemone",
+      description: "System One model provider. Not offered in chat model pickers.",
+    },
+  ]);
 });
 
 test("pool update plan preserves unrelated provider data and artifact pins", async (context) => {

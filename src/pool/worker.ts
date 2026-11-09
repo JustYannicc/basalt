@@ -32,6 +32,12 @@ import { OverviewPrices } from "./overview-prices.ts";
 import { managedCapPath, managedUsagePath, PoolUsage, summaryPath } from "./pool-usage.ts";
 import { timePoolRead } from "./read-timing.ts";
 import { inventoryCron, reportPoolInventory } from "./inventory.ts";
+import { probePool } from "./availability.ts";
+import { availabilityCron, validProbeTarget } from "./availability-config.ts";
+import { availabilityRuntime } from "./availability-runtime.ts";
+import { runAvailabilityProbe } from "./availability-schedule.ts";
+import { observeAutomaticPool } from "./automatic-observation.ts";
+import { automaticRecoveryAuthority } from "./automatic-authority.ts";
 import { reportPoolStorage } from "./inventory-storage.ts";
 import { migrateCodexWebSockets, type CodexWebSocketPlan } from "./codex-websockets.ts";
 import { captureHomeRequests } from "./model-history/capture.ts";
@@ -83,6 +89,8 @@ export interface PoolEnvironment extends TelemetryEnv, SentryEnv {
   POOL_IMAGE_HASH: string;
   POOL_DEPLOYMENT_KEY?: string;
   POOL_MODEL_HISTORY_ENABLED?: string;
+  POOL_AVAILABILITY_TARGET?: string;
+  POOL_AUTOMATIC_RECOVERY_TARGET?: string;
   TOOLS_SERVICE: Fetcher;
 }
 
@@ -117,6 +125,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
           return ctx.id.toString();
         },
         imageHash: env.POOL_IMAGE_HASH,
+        release: productionOpsRelease,
         running: () => ctx.container?.running ?? false,
         status: () => {
           if (!ctx.container) throw new Error("Pool container unavailable");
@@ -126,12 +135,16 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
             AbortSignal.timeout(2_000),
           );
         },
-        restart: async () => {
+        restart: async (beforeStop) => {
           this.managementReadyUntil = 0;
-          return (await this.lifecycle).restart();
+          return (await this.lifecycle).restart(beforeStop);
         },
       },
       ctx.storage,
+      Date.now,
+      automaticRecoveryAuthority(ctx.storage, env.POOL_AUTOMATIC_RECOVERY_TARGET, (pool) =>
+        this.automaticRecoveryCondition(pool),
+      ),
     );
     this.protection = new RuntimeProtection(this.modelStreams, {
       check: (signal) => {
@@ -195,6 +208,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       permissions: (pool, user) => this.computers.permissions(pool, user),
     });
     this.computers = new Computers({
+      retirePool: (pool, at) => this.memberships.retire(pool, at),
       storage: ctx.storage,
       home: new ComputerHome(
         new HomeClient(home, Date.now, () => this.control.invalidateViews()),
@@ -292,6 +306,36 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     return this.managementWarming;
   }
 
+  async availabilityProbe(pool: string) {
+    return probePool(pool, {
+      ...availabilityRuntime(
+        this.ctx.container,
+        this.env.POOL_MANAGEMENT_KEY,
+        this.env.POOL_APP_SIGNING_KEY,
+      ),
+      membership: (target) => this.memberships.inspect(target),
+    });
+  }
+
+  private automaticRecoveryCondition(pool: string) {
+    return observeAutomaticPool(pool, {
+      ...availabilityRuntime(
+        this.ctx.container,
+        this.env.POOL_MANAGEMENT_KEY,
+        this.env.POOL_APP_SIGNING_KEY,
+      ),
+      membership: (target) => this.memberships.inspect(target),
+    });
+  }
+
+  async automaticRecoveryObservation(pool: string) {
+    const [runtime, condition] = await Promise.all([
+      this.recovery.inspect(),
+      this.automaticRecoveryCondition(pool),
+    ]);
+    return { enabled: this.env.POOL_AUTOMATIC_RECOVERY_TARGET === pool, runtime, condition };
+  }
+
   async alarm() {
     await this.appModels.tick().catch(() => console.error("POOL_APP_MODEL_KEY_CLEANUP_PENDING"));
     await this.memberships.tick();
@@ -323,12 +367,18 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     await reportPoolStorage(this.ctx.storage);
   }
 
-  async deploymentReady() {
+  deploymentIdentity() {
     return {
       candidate: productionOpsRelease,
       workerInput: poolWorkerRevision,
       imageHash: this.env.POOL_IMAGE_HASH,
       instanceId: this.ctx.id.toString(),
+    };
+  }
+
+  async deploymentReady() {
+    return {
+      ...this.deploymentIdentity(),
       ...(await (await this.lifecycle).deploymentReady()),
     };
   }
@@ -390,8 +440,12 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     if (pathname === accountAcquisitionPath) return this.control.acquire(request);
     if (pathname === membershipPath) {
       try {
-        await this.memberships.reserve(request);
-        this.ctx.waitUntil(this.memberships.tick());
+        const recovery = await this.memberships.reserve(request);
+        this.ctx.waitUntil(
+          recovery
+            ? this.memberships.ensure(recovery.pool, recovery.organization).catch(() => {})
+            : this.memberships.tick(),
+        );
         return new Response(null, { status: 204 });
       } catch {
         return Response.json({ error: "membership_unavailable" }, { status: 503 });
@@ -559,6 +613,22 @@ function modelAuthResponse(status: 401 | 503, error: string): Response {
 export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
   async fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
+    if (path === "/automatic-recovery-observation") {
+      if (request.method !== "GET") return new Response(null, { status: 405 });
+      const pool = new URL(request.url).searchParams.get("pool") ?? undefined;
+      if (!validProbeTarget(pool)) return new Response(null, { status: 400 });
+      return Response.json(await singleton(this.env).automaticRecoveryObservation(pool), {
+        headers: { "Cache-Control": "no-store" },
+      });
+    }
+    if (path === "/availability") {
+      if (request.method !== "GET") return new Response(null, { status: 405 });
+      const pool = new URL(request.url).searchParams.get("pool") ?? undefined;
+      if (!validProbeTarget(pool)) return new Response(null, { status: 400 });
+      return Response.json(await singleton(this.env).availabilityProbe(pool), {
+        headers: { "Cache-Control": "no-store" },
+      });
+    }
     if (path === deploymentReadinessPath)
       return handleDeploymentReadiness(
         request,
@@ -568,7 +638,10 @@ export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
           imageHash: this.env.POOL_IMAGE_HASH,
         },
         this.env.POOL_DEPLOYMENT_KEY ?? "",
-        () => singleton(this.env).deploymentReady(),
+        (phase) =>
+          phase === "adoption"
+            ? singleton(this.env).deploymentIdentity()
+            : singleton(this.env).deploymentReady(),
       );
     if (path === runtimeRecoveryPath) return singleton(this.env).fetch(request);
     if ([historySchemaCatalogPath, historySchemaApplyPath, historyBackfillPath].includes(path))
@@ -606,6 +679,10 @@ export default {
     return handlePoolWorkerRequest(request, env);
   },
   async scheduled(event: ScheduledEvent, env: PoolEnvironment) {
+    if (event.cron === availabilityCron) {
+      await runAvailabilityProbe(env, (pool) => singleton(env).availabilityProbe(pool));
+      return;
+    }
     if (event.cron === inventoryCron) {
       await reportPoolInventory(env.POOL_AUTH_DATABASE);
       await singleton(env).migrationInventory();

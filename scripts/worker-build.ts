@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { deployEnvironment, requiredSecrets } from "./environment.ts";
 import { run } from "./process.ts";
+import { checkAppPagesRuntimeBundle } from "./app-pages-runtime-bundle.ts";
 import { checkMcpRuntimeBundle } from "./mcp-runtime-bundle.ts";
 
 const upstream = fileURLToPath(new URL("../.upstream/", import.meta.url));
@@ -40,3 +41,4 @@ run("bun", ["scripts/basalt-worker-sizes.ts"], cloud, {
   BASALT_RELEASE_ATTEMPT: credentials.BASALT_RELEASE_ATTEMPT,
 });
 checkMcpRuntimeBundle();
+checkAppPagesRuntimeBundle();

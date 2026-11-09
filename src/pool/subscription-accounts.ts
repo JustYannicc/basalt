@@ -1,9 +1,9 @@
 import type { Account } from "../../apps/pool/contract.ts";
 import providers from "./providers.json" with { type: "json" };
 
-/** The subscription catalog owns quota capacity; app API keys retain their routing membership. */
+/** Native models retain routing membership without counting as subscription capacity. */
 export function subscriptionAccounts(accounts: readonly Account[]): Account[] {
   return accounts.filter((account) =>
-    providers.some((provider) => provider.id === account.provider),
+    providers.some((provider) => provider.id === account.provider && !("protocol" in provider)),
   );
 }

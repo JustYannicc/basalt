@@ -477,8 +477,9 @@ export function WhoUses({
       )}
       {!personal && by === "person" && overview?.directory && (
         <p className="text-xs text-muted-foreground">
-          {overview.directory.activeCount} of {overview.directory.totalCount} people with pool
-          access made a request in these {days} days.
+          {overview.directory.activeCount} of {overview.directory.totalCount}{" "}
+          {overview.directory.totalCount === 1 ? "person" : "people"} with pool access made a
+          request in these {days} days.
         </p>
       )}
       {source?.ok && <Notes read={source.value} personal={personal !== undefined} />}
@@ -578,8 +579,9 @@ export function Money({
         {personDay?.status === "available" && (
           <span className="text-muted-foreground">
             Subscription value per active person per day: p50 {overviewAmount(personDay.p50)}, p90{" "}
-            {overviewAmount(personDay.p90)} across {personDay.activePeople} people and{" "}
-            {personDay.completeDays} complete days.
+            {overviewAmount(personDay.p90)} across {personDay.activePeople}{" "}
+            {personDay.activePeople === 1 ? "person" : "people"} and {personDay.completeDays}{" "}
+            complete days.
           </span>
         )}
         {(personal?.consistency ?? overview?.consistency) === "changed" && (

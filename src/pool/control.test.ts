@@ -1293,6 +1293,16 @@ test("pool view preserves app members and classifies subscriptions separately", 
     view.accounts.map(({ id }) => id),
     ["claude-seat", "codex-seat", "jev-key"],
   );
+  assert.deepEqual(
+    view.providers.find((provider) => provider.id === "typesafe"),
+    {
+      id: "typesafe",
+      name: "Jev",
+      site: "typesafe.ai",
+      protocol: "typesafe-systemone",
+      description: "System One model provider. Not offered in chat model pickers.",
+    },
+  );
   assert.deepEqual(view.subscriptionAccountIds, ["claude-seat", "codex-seat"]);
   const subscriptions = view.accounts.filter(({ id }) => view.subscriptionAccountIds?.includes(id));
   assert.equal(new Set(subscriptions.map(({ provider }) => provider)).size, 2);

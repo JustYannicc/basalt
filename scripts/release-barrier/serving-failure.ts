@@ -1,8 +1,10 @@
 import { BarrierRefusal } from "./refusal.ts";
 import { safeProviderFailure } from "./operation-failure.ts";
+import type { RuntimeIdentity, RuntimeTarget } from "../../src/pool/deployment-readiness.ts";
 
 export type ServingCheck =
   | "bridge-open"
+  | "code-adoption"
   | "instance-start"
   | "application-image"
   | "instance-image"
@@ -32,7 +34,15 @@ export interface ServingDiagnostic {
   expectedStatus?: number;
   elapsedMs?: number;
   observation?: ServingObservation;
+  codeIdentity?: { expected: RuntimeTarget; observed: RuntimeIdentity | null };
 }
+
+export const retryableServingFailure = (error: ServingFailure) =>
+  (error.serving.status !== undefined &&
+    (error.serving.status >= 500 || error.serving.status === 429)) ||
+  ["TypeError", "TimeoutError", "AbortError", "not-running", "not-ready"].includes(
+    error.serving.cause,
+  );
 
 export class ServingFailure extends BarrierRefusal {
   readonly serving: ServingDiagnostic;

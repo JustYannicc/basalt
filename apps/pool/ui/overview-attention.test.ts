@@ -6,6 +6,7 @@ import {
   accountsNeedingSomeone,
   bankedResetCount,
   bankedResetText,
+  peopleOfText,
 } from "./overview-attention.ts";
 
 const account = (id: string, overrides: Partial<Account> = {}): Account => ({
@@ -84,6 +85,15 @@ test("attention copy agrees with one account and one reset", () => {
   );
   assert.equal(bankedResetText(1), "1 banked reset available");
   assert.equal(bankedResetText(2), "2 banked resets available");
+});
+
+test("people counts take their noun from the total, not the active count", () => {
+  assert.equal(peopleOfText(1, 1), "1 of 1 person");
+  assert.equal(peopleOfText(0, 1), "0 of 1 person");
+  assert.equal(peopleOfText(1, 3), "1 of 3 people");
+  assert.equal(peopleOfText(0, 3), "0 of 3 people");
+  assert.equal(peopleOfText(3, 3), "3 of 3 people");
+  assert.equal(peopleOfText(0, 0), "0 of 0 people");
 });
 
 test("app members keep real health errors but do not need subscription quota readings", () => {

@@ -47,7 +47,8 @@
         "cloud": {
           "status": "scheduled"
         }
-      }
+      },
+      "managementApps": ["member"]
     },
     "accountSetDeclarations": {
       "fixtures": "actors",

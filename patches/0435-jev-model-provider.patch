@@ -1,0 +1,403 @@
+diff --git a/apps/hosted/server/src/implementation/pool-account-registry.ts b/apps/hosted/server/src/implementation/pool-account-registry.ts
+--- a/apps/hosted/server/src/implementation/pool-account-registry.ts
++++ b/apps/hosted/server/src/implementation/pool-account-registry.ts
+@@ -114,7 +114,7 @@
+             await send(context, "remove", { reference: Redacted.value(context.reference) });
+           else await remove(context);
+         },
+-        ...(capability.connection === "config-mirror"
++        ...(capability.quota !== "home"
+           ? {}
+           : {
+               observeAccount: async (context) => {
+@@ -158,7 +158,7 @@
+           method: capability.method,
+           capabilities: ["model-inference"],
+           ...(capability.protocol === "typesafe-systemone"
+-            ? { capabilityLabels: { "model-inference": "System One" } }
++            ? { capabilityLabels: { "model-inference": "System One model provider" } }
+             : {}),
+           current: true,
+           exposeHostReference: true,
+diff --git a/apps/hosted/server/src/implementation/account-observation-upkeep.ts b/apps/hosted/server/src/implementation/account-observation-upkeep.ts
+--- a/apps/hosted/server/src/implementation/account-observation-upkeep.ts
++++ b/apps/hosted/server/src/implementation/account-observation-upkeep.ts
+@@ -1,4 +1,4 @@
+-import { AccountId, OwnerId } from "@executor-js/sdk/core";
++import { AccountAcquisitionConfiguration, AccountId, OwnerId } from "@executor-js/sdk/core";
+ import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
+ import { HttpServerRequest, HttpServerResponse } from "effect/http";
+ import { HostedExecutor } from "../contracts/executor.ts";
+@@ -12,7 +12,14 @@
+   at: Schema.Finite,
+   expiresAt: Schema.Finite,
+ });
+-const Account = Schema.Struct({ account: AccountId, owner: OwnerId });
++const Account = Schema.Struct({
++  account: AccountId,
++  owner: OwnerId,
++  provider: Schema.String,
++  method: Schema.String,
++  driver: Schema.String,
++  revision: Schema.String,
++});
+ 
+ /**
+  * Refresh the retained usage report of every saved account with a current Home binding, including
+@@ -21,8 +28,10 @@
+ export const refreshHomeBoundObservations = Effect.gen(function* () {
+   const sql = yield* policyDatabase;
+   const executor = yield* Effect.flatten(HostedExecutor);
+-  // Only the model-provider driver owns usage. Connector accounts are never candidates.
+-  const rows = yield* sql`select a.id as account, a.owner from executor_accounts a
++  const { registrations } = yield* AccountAcquisitionConfiguration;
++  // A saved binding is not a quota capability. Only installed collectors are scheduled.
++  const rows = yield* sql`select a.id as account, a.owner, a.provider, a.method,
++    binding.driver, binding.driver_revision as revision from executor_accounts a
+     join executor_account_acquisitions binding on binding.account = a.id
+     where binding.driver = 'basalt-home' and binding.removal is null
+       and binding.owner = a.owner and binding.provider = a.provider
+@@ -30,10 +39,20 @@
+     order by a.id`;
+   const accounts = yield* Schema.decodeUnknownEffect(Schema.Array(Account))(rows);
+   yield* Effect.forEach(
+-    accounts,
+-    (account) =>
++    accounts.filter((account) =>
++      registrations.some(
++        (entry) =>
++          entry.current &&
++          entry.provider === account.provider &&
++          entry.method === account.method &&
++          entry.driver.id === account.driver &&
++          entry.driver.revision === account.revision &&
++          entry.driver.observeAccount !== undefined,
++      ),
++    ),
++    ({ account, owner }) =>
+       executor.accounts
+-        .refreshObservations({ ...account, apps: [] })
++        .refreshObservations({ account, owner, apps: [] })
+         .pipe(Effect.catch(() => Effect.logWarning("Native account observation refresh failed"))),
+     { concurrency: 4, discard: true },
+   );
+diff --git a/apps/hosted/server/src/implementation/account-observations.ts b/apps/hosted/server/src/implementation/account-observations.ts
+--- a/apps/hosted/server/src/implementation/account-observations.ts
++++ b/apps/hosted/server/src/implementation/account-observations.ts
+@@ -22,28 +22,44 @@
+   view: AccountObservationView,
+ ) =>
+   Effect.gen(function* () {
+-    const retained = view.reports[0];
+-    if (retained !== undefined)
+-      return { hasUsageReporter: true, usageReporterLabel: retained.source.label };
+     const binding = yield* executor[AccountAcquisitionHost].binding({ owner, account });
+     const absent = { hasUsageReporter: false, usageReporterLabel: null };
++    const previous = view.reports[0];
++    const retainedReporter =
++      previous === undefined
++        ? absent
++        : { hasUsageReporter: true, usageReporterLabel: previous.source.label };
+     if (
+       binding === undefined ||
+       binding.removal !== null ||
+       binding.account !== account ||
+       binding.owner !== owner
+     )
+-      return absent;
++      return retainedReporter;
+     const { registrations } = yield* AccountAcquisitionConfiguration;
+     const registered = registrations.find(
+       (entry) =>
++        entry.current &&
+         entry.provider === binding.provider &&
+         entry.method === binding.method &&
+         entry.driver.id === binding.driver &&
+-        entry.driver.revision === binding.driverRevision &&
+-        entry.driver.observeAccount !== undefined,
++        entry.driver.revision === binding.driverRevision,
+     );
+-    if (registered === undefined) return absent;
++    // Retain genuine history, but an empty row from a removed collector is not a reading.
++    const reports = view.reports.filter(
++      (report) =>
++        !(
++          registered !== undefined &&
++          registered.driver.observeAccount === undefined &&
++          report.source.kind === "driver" &&
++          report.source.id === registered.driver.id &&
++          report.result === null
++        ),
++    );
++    const retained = reports[0];
++    if (retained !== undefined)
++      return { hasUsageReporter: true, usageReporterLabel: retained.source.label, reports };
++    if (registered?.driver.observeAccount === undefined) return { ...absent, reports };
+     const sql = yield* policyDatabase;
+     const rows = yield* sql`select credential_generation as generation from executor_accounts
+       where id = ${account} and owner = ${owner} and provider = ${binding.provider} and method = ${binding.method}`;
+diff --git a/e2e/support/provider-apps-catalog.ts b/e2e/support/provider-apps-catalog.ts
+--- a/e2e/support/provider-apps-catalog.ts
++++ b/e2e/support/provider-apps-catalog.ts
+@@ -31,7 +31,7 @@
+   const fs = yield* FileSystem.FileSystem,
+     path = yield* Path.Path;
+   const sources = new Map<string, typeof Source.Type>();
+-  for (const lab of ["openai", "anthropic", "xai"]) {
++  for (const lab of ["openai", "anthropic", "xai", "jev", "gemini"]) {
+     const content = yield* fs.readFileString(
+       path.resolve("..", "src/catalog/provider-apps", `${lab}.json`),
+     );
+diff --git a/e2e/tests/provider-quota-capabilities.spec.ts b/e2e/tests/provider-quota-capabilities.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/provider-quota-capabilities.spec.ts
+@@ -0,0 +1,248 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { createHash, createHmac } from "node:crypto";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { Evidence } from "../support/evidence.ts";
++import { allowance } from "../support/account-observation-fixture.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { providerAccountProduct } from "../support/provider-account-product.ts";
++import { providerAppsCatalog } from "../support/provider-apps-catalog.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++const View = Schema.Struct({
++  hasUsageReporter: Schema.Boolean,
++  reports: Schema.Array(Schema.Json),
++});
++const Binding = Schema.Struct({ account: Resource });
++
++layer(HostedLive, { excludeTestServices: true })("Native provider quota capabilities", (it) => {
++  it.effect(scenarios.providerQuotaCapabilities.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          home = yield* providerAppsCatalog;
++        const browser = yield* Browser,
++          evidence = yield* Evidence;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const apps: string[] = [],
++          accounts: string[] = [];
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* serverControl("start");
++            for (const app of apps)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`);
++            for (const account of accounts)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
++          }).pipe(Effect.orDie),
++        );
++        yield* providerAccountProduct(home.origin, `${home.origin}/catalog/index.json`);
++        const providerFiles = home.sources
++          .get("jev")!
++          .files.find((file) => file.path === "providers.ts")!;
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "Native provider fixture pool",
++          files: [
++            appsManifest,
++            providerFiles,
++            {
++              path: "index.ts",
++              content: `import { defineApp, object, query, router } from "apps";
++import { providers } from "./providers.ts";
++export default defineApp({ app: { accounts: {
++  jev: providers.jev.many().requiring("model-inference"),
++  gemini: providers.gemini.many().requiring("model-inference")
++} } }, { tools: router({ present: query({ input: object({}) }, async (ctx) => ctx.app.accounts.jev.map(a => ({ id: a.id, fields: Object.keys(a.fields) }))) }) });`,
++            },
++          ],
++        });
++        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++        const pool = (yield* body(Resource, deployed)).id;
++        apps.push(pool);
++        yield* legacyStorage([
++          {
++            sql: "update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{basaltPools}', $1::jsonb)::text where id = $2",
++            params: [
++              JSON.stringify({ fixture: { app: pool, membership: "executor-links-v1" } }),
++              actors.organization.id,
++            ],
++          },
++        ]);
++        yield* serverControl("start");
++        for (const lab of ["jev", "gemini"]) {
++          const installed = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++            entry: `provider-${lab}`,
++            name: lab === "jev" ? "Jev" : "Gemini",
++          });
++          expect(installed.status, JSON.stringify(installed.body)).toBe(200);
++          const app = (yield* body(Resource, installed)).id;
++          apps.push(app);
++          let account: string;
++          if (lab === "jev") {
++            const saved = yield* api.request(
++              actors.owner,
++              "POST",
++              `${prefix}/apps/${app}/accounts/app/jev`,
++              {
++                creation: crypto.randomUUID(),
++                method: "apiKey",
++                fields: { token: "synthetic-jev-quota-key" },
++                label: "Jev fixture key",
++              },
++            );
++            expect(saved.status, JSON.stringify(saved.body)).toBe(200);
++            account = (yield* body(Resource, saved)).id;
++          } else {
++            const pending = yield* api.request(
++              actors.owner,
++              "POST",
++              `${prefix}/apps/${app}/accounts/app/gemini/connections`,
++              {},
++            );
++            const id = (yield* body(Resource, pending)).id;
++            const connect = `${prefix}/connections/${id}/interactive`;
++            expect(
++              (yield* api.request(actors.owner, "POST", `${connect}/start`, {
++                method: "geminiCli",
++              })).status,
++            ).toBe(200);
++            const connected = yield* api.request(actors.owner, "POST", `${connect}/submit`, {
++              value: "synthetic-callback",
++            });
++            expect(connected.status, JSON.stringify(connected.body)).toBe(200);
++            account = (yield* body(Binding, connected)).account.id;
++          }
++          accounts.push(account);
++          expect(
++            (yield* api.request(
++              actors.owner,
++              "PUT",
++              `${prefix}/apps/${pool}/accounts/app/${lab}/${account}`,
++            )).status,
++          ).toBe(200);
++        }
++        const tools = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/apps/${pool}/tools/call`,
++          { tool: "present", kind: "query", input: {} },
++        );
++        expect(tools.status, JSON.stringify(tools.body)).toBe(200);
++        expect(tools.body).toEqual([{ id: accounts[0], fields: ["token"] }]);
++        const source = `driver:${createHash("sha256").update("basalt-home").digest("hex")}`;
++        const snapshot = () =>
++          legacyStorage([
++            {
++              sql: "select account, data, checked_at, next_allowed_at, lease, lease_until from executor_account_observations where account in (select jsonb_array_elements_text($1::jsonb)) order by account",
++              params: [JSON.stringify(accounts)],
++            },
++          ]);
++        // These are the empty rows retained by the former, unsupported callbacks.
++        yield* legacyStorage([
++          {
++            sql: `insert into executor_account_observations (id, account, owner, source, generation, data, next_allowed_at)
++select a.id || ':' || a.credential_generation || ':' || $2, a.id, a.owner, $2, a.credential_generation,
++jsonb_build_object('kind','driver','id','basalt-home','version',b.driver_revision,'bindingRevision',b.revision,
++'result',null,'lastAttempt',null,'attemptSource',jsonb_build_object('version',b.driver_revision,'bindingRevision',b.revision)), '1970-01-01'
++from executor_accounts a join executor_account_acquisitions b on b.account = a.id
++where a.id in (select jsonb_array_elements_text($1::jsonb))`,
++            params: [JSON.stringify(accounts), source],
++          },
++        ]);
++        const stored = yield* snapshot();
++        expect(stored[0]).toHaveLength(2);
++        yield* serverControl("start");
++        yield* browser.login(actors.owner);
++        yield* browser.use("Open native providers and their linked accounts", (page) =>
++          page
++            .goto(`/org/${actors.organization.slug}/apps/${pool}?view=accounts`)
++            .then(() =>
++              page
++                .getByRole("region", { name: "Jev", exact: true })
++                .getByText("Jev fixture key", { exact: true })
++                .waitFor(),
++            ),
++        );
++        for (const width of [1280, 390]) {
++          yield* browser.use(`Capture native accounts at ${width}`, (page) =>
++            page
++              .setViewportSize({ width, height: 1000 })
++              .then(() => page.getByRole("region", { name: "Gemini", exact: true }).waitFor())
++              .then(() =>
++                page.screenshot({
++                  path: `${evidence.directory}/native-provider-rows-${width}.png`,
++                  fullPage: true,
++                }),
++              )
++              .then(() => page.evaluate(() => document.documentElement.scrollWidth))
++              .then((scrollWidth) => expect(scrollWidth).toBeLessThanOrEqual(width)),
++          );
++        }
++        for (const account of accounts) {
++          const path = `${prefix}/accounts/${account}/observations`;
++          const read = yield* body(View, yield* api.request(actors.owner, "GET", path));
++          expect(read).toMatchObject({ hasUsageReporter: false, reports: [] });
++          expect((yield* api.request(actors.owner, "POST", `${path}/refresh`)).status).toBe(200);
++          expect(
++            (yield* body(View, yield* api.request(actors.owner, "GET", path))).reports,
++          ).toEqual([]);
++        }
++        const methods = yield* api.request(
++          actors.owner,
++          "GET",
++          `${prefix}/apps/${pool}/accounts/methods`,
++        );
++        expect(methods.status).toBe(200);
++        expect(methods.body).toMatchObject({
++          native: [{ requirement: "jev", name: "System One model provider" }],
++        });
++        expect(
++          yield* browser.use("Unsupported accounts show no pending usage", (page) =>
++            page.getByText("Checking usage…", { exact: true }).count(),
++          ),
++        ).toBe(0);
++        const at = Date.now();
++        const payload = Buffer.from(
++          JSON.stringify({ action: "refresh-observations", at, expiresAt: at + 30_000 }),
++        ).toString("base64url");
++        const signature = createHmac("sha256", Buffer.from("ab".repeat(32), "hex"))
++          .update(`sbaa1.${payload}`)
++          .digest("base64url");
++        const calls = yield* home.calls;
++        expect(
++          (yield* api.request(actors.owner, "POST", "/api/internal/account-observations/refresh", {
++            envelope: `sbaa1.${payload}.${signature}`,
++          })).status,
++        ).toBe(204);
++        expect((yield* home.calls).filter((call) => call.action === "observe")).toEqual(
++          calls.filter((call) => call.action === "observe"),
++        );
++        expect((yield* home.calls).some((call) => call.action === "observe")).toBe(false);
++        expect(yield* snapshot()).toEqual(stored);
++        // A real retained reading remains available even after collection support is removed.
++        const history = allowance();
++        yield* legacyStorage([
++          {
++            sql: "update executor_account_observations set data = jsonb_set(data::jsonb, '{result}', $2::jsonb) where account = $1",
++            params: [accounts[0]!, JSON.stringify(history)],
++          },
++        ]);
++        const savedHistory = yield* snapshot();
++        yield* serverControl("start");
++        const retained = yield* body(
++          View,
++          yield* api.request(actors.owner, "GET", `${prefix}/accounts/${accounts[0]}/observations`),
++        );
++        expect(retained.reports).toEqual([expect.objectContaining({ result: history })]);
++        expect(yield* snapshot()).toEqual(savedHistory);
++      }),
++    ),
++  );
++});

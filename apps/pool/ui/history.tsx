@@ -24,6 +24,16 @@ function dateLabel(value: string | null): string | null {
   return new Intl.DateTimeFormat("en", { dateStyle: "medium", timeZone: "UTC" }).format(date);
 }
 
+function requestTime(value: string): string {
+  return (
+    new Intl.DateTimeFormat("en", {
+      dateStyle: "medium",
+      timeStyle: "medium",
+      timeZone: "UTC",
+    }).format(new Date(value)) + " UTC"
+  );
+}
+
 export function History({
   series,
   publicHistory,
@@ -106,9 +116,11 @@ export function History({
           filter.to ? `through ${filter.to}` : "to now",
         ].join(" · ")
       : loaded.firstAt
-        ? `All time · ${dateLabel(loaded.firstAt)} to ${dateLabel(loaded.series.coverage?.lastAt ?? loaded.bounds.to)}`
-        : "All time · no retained records"
-    : "All time";
+        ? loaded.series.coverage?.lastAt
+          ? `All retained · ${dateLabel(loaded.firstAt)} to ${dateLabel(loaded.series.coverage.lastAt)}`
+          : `All retained · since ${dateLabel(loaded.firstAt)}`
+        : "All retained · no records"
+    : "All retained";
 
   return (
     <div className="mx-auto flex min-h-dvh w-full max-w-[56rem] flex-col px-6 pb-16 max-[540px]:px-4">
@@ -141,7 +153,7 @@ export function History({
                 value={mode}
                 onChange={selectMode}
                 options={[
-                  { id: "all", label: "All time" },
+                  { id: "all", label: "All retained" },
                   { id: "dates", label: "From / To" },
                 ]}
               />
@@ -187,7 +199,14 @@ export function History({
                 Reload
               </Button>
             )}
-            {loaded?.series.asOf && <span>Captured through {dateLabel(loaded.series.asOf)}</span>}
+            {loaded?.series.coverage?.lastAt && (
+              <span>
+                Last retained request ·{" "}
+                <time dateTime={loaded.series.coverage.lastAt}>
+                  {requestTime(loaded.series.coverage.lastAt)}
+                </time>
+              </span>
+            )}
           </div>
         </section>
 

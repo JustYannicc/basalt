@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Zendesk setup describes company-owned OAuth clients through the actual custom-client form and displayed copyable callback values. Guidance must not require global registration, Marketplace preparation, or a templated client identifier. Existing public and paste clients, authorization mechanics and saved grant binding remain unchanged."
+    }
+  }
+}

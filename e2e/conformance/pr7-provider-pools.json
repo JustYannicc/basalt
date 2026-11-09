@@ -13,7 +13,7 @@
         {
           "scenario": "accountFamilyPools",
           "target": "self-host",
-          "job": "host-managed-accounts-cloud"
+          "job": "host-managed-accounts-runtime"
         }
       ]
     },

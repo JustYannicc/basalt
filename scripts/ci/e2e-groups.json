@@ -25,12 +25,12 @@
     "mode": "managed"
   },
   "host-managed-accounts-cloud:shared-account-families-and-consumer-capability-refusals": {
-    "job": "host-managed-accounts-cloud",
+    "job": "host-managed-accounts-runtime",
     "target": "local",
     "mode": "managed"
   },
   "host-managed-accounts-cloud:one-saved-provider-account-supplies-two-native-pools": {
-    "job": "host-managed-accounts-cloud",
+    "job": "host-managed-accounts-runtime",
     "target": "self-host",
     "mode": "managed"
   },

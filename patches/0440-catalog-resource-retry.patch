@@ -1,0 +1,548 @@
+diff --git a/apps/hosted/cloud/src/implementation/catalog-build-incident.ts b/apps/hosted/cloud/src/implementation/catalog-build-incident.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..3686bfcfe30e6c0de823f9cc130bda2ed591b72a
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/catalog-build-incident.ts
+@@ -0,0 +1,26 @@
++/** Only closed catalog resource diagnostics pass the direct error sink's privacy boundary. */
++import type { ErrorEvent } from "@sentry/core";
++
++export const catalogBuildIncident = (event: ErrorEvent) => {
++  if (!event.exception?.values?.some((value) => value.type === "CatalogBuildResourceFailed"))
++    return undefined;
++  const app = event.tags?.["executor.app.id"];
++  const cause = event.tags?.["executor.catalog.resource_failure"];
++  const phase = event.tags?.["executor.catalog.phase"];
++  const attempt = event.tags?.["executor.provisioning.attempt"];
++  if (
++    typeof app !== "string" ||
++    !/^app_[0-9a-f-]{36}$/i.test(app) ||
++    (cause !== "memory" && cause !== "capacity" && cause !== "unanswered") ||
++    (phase !== "requirements" && phase !== "deployment") ||
++    typeof attempt !== "string" ||
++    !/^[1-9][0-9]{0,2}$/.test(attempt)
++  )
++    return undefined;
++  return {
++    "executor.app.id": app,
++    "executor.catalog.resource_failure": cause,
++    "executor.catalog.phase": phase,
++    "executor.provisioning.attempt": attempt,
++  };
++};
+diff --git a/apps/hosted/cloud/src/implementation/compiler-resource-retry.ts b/apps/hosted/cloud/src/implementation/compiler-resource-retry.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..e525ee5aaa31af40790bd1b01a05dd82d2bbdc23
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/compiler-resource-retry.ts
+@@ -0,0 +1,27 @@
++/** Normalize compiler transport failures and retry one confirmed memory failure. */
++import { BuildMemoryExceeded, RuntimeBuildFailed, describeBuildCause } from "@executor-js/sdk/core";
++import type { RpcCallError } from "alchemy/Rpc";
++import { Effect, Schema } from "effect";
++import { requestCompile } from "./compiler-request.ts";
++
++export const retryCompilerRequest = <A, R>(request: Effect.Effect<A, RpcCallError, R>) =>
++  requestCompile(request).pipe(
++    Effect.catchTag("RpcCallError", (error) => {
++      const cause = error.cause;
++      return Effect.fail(
++        cause instanceof Error && /^Worker exceeded memory limit\.?$/.test(cause.message)
++          ? new BuildMemoryExceeded()
++          : new RuntimeBuildFailed({
++              stage: "compile",
++              message: describeBuildCause(cause instanceof Error ? cause : error),
++            }),
++      );
++    }),
++    // Service binding acquisition promises neither a fresh nor an exclusive isolate.
++    Effect.tapError((error) =>
++      Schema.is(BuildMemoryExceeded)(error)
++        ? Effect.annotateCurrentSpan("build.memory_retry", true)
++        : Effect.void,
++    ),
++    Effect.retry({ times: 1, while: Schema.is(BuildMemoryExceeded) }),
++  );
+diff --git a/apps/hosted/cloud/src/implementation/error-reporting.ts b/apps/hosted/cloud/src/implementation/error-reporting.ts
+index 12aa378c07744d06d152b78a2189628b8e541a5a..828d166d7071569cfa4f8d7b2e93e874e5c0139e 100644
+--- a/apps/hosted/cloud/src/implementation/error-reporting.ts
++++ b/apps/hosted/cloud/src/implementation/error-reporting.ts
+@@ -6,6 +6,7 @@ import { Cause, Context, Effect, ErrorReporter, Option, Schema, SchemaAST, Trace
+ import { CurrentUserId, CurrentOrganization } from "@executor-js/hosted-server";
+ import { isRequestRejection } from "@executor-js/telemetry/http";
+ import { recordedError } from "@executor-js/telemetry/recorded-failure";
++import { catalogBuildIncident } from "./catalog-build-incident.ts";
+ 
+ /**
+  * Client rejections stay in request telemetry and are not incidents: declared
+@@ -46,7 +47,9 @@ const Settings = Schema.Struct({
+ type SentrySettings = typeof Settings.Type;
+ 
+ const boundedLabel = (value: unknown, maxLength: number): string | undefined =>
+-  typeof value === "string" && value.length <= maxLength && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value)
++  typeof value === "string" &&
++  value.length <= maxLength &&
++  /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value)
+     ? value
+     : undefined;
+ 
+@@ -54,7 +57,10 @@ const opaqueUserId = (value: unknown): value is string =>
+   typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value);
+ 
+ const traceId = (value: unknown, length: number): string | undefined =>
+-  typeof value === "string" && value.length === length && /^[0-9a-f]+$/i.test(value) && !/^0+$/.test(value)
++  typeof value === "string" &&
++  value.length === length &&
++  /^[0-9a-f]+$/i.test(value) &&
++  !/^0+$/.test(value)
+     ? value.toLowerCase()
+     : undefined;
+ 
+@@ -69,14 +75,17 @@ export const sentryBeforeSend = (settings: SentrySettings) =>
+         const release = boundedLabel(settings.release, 128);
+         const environment = boundedLabel(settings.environment, 64);
+         const eventId = traceId(event.event_id, 32);
++        const catalog = catalogBuildIncident(event);
++        const failure = catalog === undefined ? "UnhandledFailure" : "CatalogBuildResourceFailed";
+         return {
+           ...(eventId === undefined ? {} : { event_id: eventId }),
+           timestamp: Date.now() / 1000,
+           level: "error",
+           platform: "javascript",
+-          message: "UnhandledFailure",
+-          exception: { values: [{ type: "UnhandledFailure" }] },
+-          fingerprint: ["basalt", "UnhandledFailure"],
++          message: failure,
++          exception: { values: [{ type: failure }] },
++          fingerprint: ["basalt", failure],
++          ...(catalog === undefined ? {} : { tags: catalog }),
+           type: undefined,
+           ...(release === undefined ? {} : { release }),
+           ...(environment === undefined ? {} : { environment }),
+@@ -189,10 +198,20 @@ export const withCloudSentry = <A, E, R>(
+             "executor.run.id",
+             "executor.operation.id",
+             "executor.attempt.id",
++            "executor.catalog.resource_failure",
++            "executor.catalog.phase",
+           ]) {
+             const value = span.value.attributes.get(key);
+             if (typeof value === "string") scope.setTag(key, value);
+           }
++          const attempt = span.value.attributes.get("executor.provisioning.attempt");
++          if (
++            typeof attempt === "number" &&
++            Number.isInteger(attempt) &&
++            attempt > 0 &&
++            attempt < 1000
++          )
++            scope.setTag("executor.provisioning.attempt", String(attempt));
+         }
+       }
+       // An app's own text reaches its caller, never an incident report.
+diff --git a/apps/hosted/cloud/src/infrastructure/provisioning.ts b/apps/hosted/cloud/src/infrastructure/provisioning.ts
+index 5f2d59a5e8270e3cdc36293c408e057350ff4918..73ee199bbb556eccd49dc0ccd4ef0e5ca97a4464 100644
+--- a/apps/hosted/cloud/src/infrastructure/provisioning.ts
++++ b/apps/hosted/cloud/src/infrastructure/provisioning.ts
+@@ -36,6 +36,7 @@ import {
+   workflowResultInput,
+ } from "./workflow-results.ts";
+ import { dispatchFailureReason, workflowInstanceId } from "../contracts/workflow-instance-id.ts";
++import { cloudSentry } from "../implementation/error-reporting.ts";
+ 
+ /** Each committed lifecycle action has its own workflow, so unrelated failures do not block setup. */
+ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
+@@ -49,6 +50,7 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
+     const domains = yield* AppDomainCoordinator.from(AppDomainController);
+     const meter = yield* BillingMeter.pipe(Effect.provide(yield* billingLive.pipe(Effect.orDie)));
+     const analytics = yield* cloudAnalytics;
++    const reportErrors = yield* cloudSentry;
+     // Default installation and member setup link accounts; wake webhook sources once committed. A
+     // workflow step is not placed, so it must not be the coordinator's first caller: it asks the
+     // placed handler to, in a step of its own that is retried until the handler has woken it.
+@@ -90,12 +92,14 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
+               const step = yield* Cloudflare.Workflows.WorkflowStep;
+               // Native callbacks start a new Effect fiber; carry the invocation's host bindings.
+               const context = yield* Effect.context<never>();
+-              const provisionWork = Effect.gen(function* () {
+-                const sql = yield* Effect.flatten(GroupDatabase);
+-                yield* provision(id, services).pipe(
+-                  Effect.provideService(SqlClient.SqlClient, sql),
+-                );
+-              }).pipe(
++              const provisionWork = reportErrors(
++                Effect.gen(function* () {
++                  const sql = yield* Effect.flatten(GroupDatabase);
++                  yield* provision(id, services).pipe(
++                    Effect.provideService(SqlClient.SqlClient, sql),
++                  );
++                }),
++              ).pipe(
+                 Effect.provideService(ScheduleWakeup, Effect.void),
+                 Effect.provide(executor),
+                 Effect.scoped,
+diff --git a/apps/hosted/cloud/src/infrastructure/runtime.ts b/apps/hosted/cloud/src/infrastructure/runtime.ts
+index 621d7cba3f19a59f922b72e3e134e5472adf935c..65f21073f4e2ea69891a260d95eb633c4de2a8ef 100644
+--- a/apps/hosted/cloud/src/infrastructure/runtime.ts
++++ b/apps/hosted/cloud/src/infrastructure/runtime.ts
+@@ -28,7 +28,8 @@ import { dataChanges } from "../implementation/data-changes.ts";
+ import { cacheRuntimeBuild, cachedRuntimeBuilds } from "../implementation/runtime-build-cache.ts";
+ import type { DurableObjectNamespace } from "@cloudflare/workers-types";
+ import { CloudCompileResult } from "../contracts/builds.ts";
+-import { requestCompile, withCompilerRequest } from "../implementation/compiler-request.ts";
++import { withCompilerRequest } from "../implementation/compiler-request.ts";
++import { retryCompilerRequest } from "../implementation/compiler-resource-retry.ts";
+ import { AppCompiler } from "./compiler.ts";
+ import { AppData } from "./app-data-worker.ts";
+ import type { AppDataSupervisor } from "./app-data.ts";
+@@ -149,7 +150,7 @@ export const cloudRuntime = Effect.fn(function* (
+         withActor(
+           Effect.gen(function* () {
+             const headers = Object.fromEntries(Object.entries(yield* traceHeaders));
+-            const result = yield* requestCompile(
++            const result = yield* retryCompilerRequest(
+               withCompilerRequest(compiler.request(), (request) =>
+                 withCompilerRequest(
+                   Effect.tryPromise({
+@@ -164,23 +165,6 @@ export const cloudRuntime = Effect.fn(function* (
+                 ),
+               ),
+             ).pipe(
+-              Effect.catchTag("RpcCallError", (error) => {
+-                const cause = error.cause;
+-                return Effect.fail(
+-                  cause instanceof Error && /^Worker exceeded memory limit\.?$/.test(cause.message)
+-                    ? new BuildMemoryExceeded()
+-                    : failed("compile", cause instanceof Error ? cause : error),
+-                );
+-              }),
+-              // Builds share a compiler isolate, so another build can exhaust its memory. The
+-              // runtime discards that isolate: one retry compiles alone on a fresh one, and a
+-              // build that cannot fit fails again.
+-              Effect.tapError((error) =>
+-                Schema.is(BuildMemoryExceeded)(error)
+-                  ? Effect.annotateCurrentSpan("build.memory_retry", true)
+-                  : Effect.void,
+-              ),
+-              Effect.retry({ times: 1, while: Schema.is(BuildMemoryExceeded) }),
+               Effect.flatMap(Schema.decodeUnknownEffect(CloudCompileResult)),
+               Effect.catchTag("SchemaError", (cause) => Effect.fail(failed("compile", cause))),
+               Effect.withSpan("runtime.cloud.compiler.request"),
+diff --git a/apps/hosted/cloud/src/infrastructure/telemetry.ts b/apps/hosted/cloud/src/infrastructure/telemetry.ts
+index 2799d3becc31972d04cf30df0ed05294562019d2..b4faf6a2be25f30d269919edc21a11a301500b6c 100644
+--- a/apps/hosted/cloud/src/infrastructure/telemetry.ts
++++ b/apps/hosted/cloud/src/infrastructure/telemetry.ts
+@@ -101,6 +101,11 @@ export const telemetryResources = Effect.gen(function* () {
+       title: "telemetry export failures",
+       query: `['${names.logs}'] | where ['resource.deployment.environment.name'] == '${stage}' | where body == 'Telemetry export failed' | summarize count()`,
+     },
++    {
++      id: "CatalogBuildResourceFailures",
++      title: "catalog app build resource failures",
++      query: `['${names.logs}'] | where ['resource.deployment.environment.name'] == '${stage}' | where body == 'Catalog app update resource failure' | summarize count() by app=tostring(['attributes.custom']['app']), cause=tostring(['attributes.custom']['cause']), attempt=tostring(['attributes.custom']['attempt']), job=tostring(['attributes.custom']['job']), trace=tostring(trace_id), phase=tostring(['attributes.custom']['phase'])`,
++    },
+   ]) {
+     yield* Axiom.Monitor(monitor.id, {
+       name: `Executor ${stage}: ${monitor.title}`,
+@@ -195,17 +200,21 @@ export const telemetryBindings = Effect.gen(function* () {
+     const version = yield* Config.NonEmptyString("EXECUTOR_BUILD_VERSION");
+     const environment = yield* Stage;
+     return {
+-      [binding]: Output.asOutput(Redacted.make(JSON.stringify({
+-        service: "executor-cloud",
+-        clock: "cloudflare-io",
+-        version,
+-        environment,
+-        strictPrivacy: true,
+-        traces: {
+-          url: direct.target.url,
+-          headers: { "x-sentry-auth": direct.target.authHeader },
+-        },
+-      }))),
++      [binding]: Output.asOutput(
++        Redacted.make(
++          JSON.stringify({
++            service: "executor-cloud",
++            clock: "cloudflare-io",
++            version,
++            environment,
++            strictPrivacy: true,
++            traces: {
++              url: direct.target.url,
++              headers: { "x-sentry-auth": direct.target.authHeader },
++            },
++          }),
++        ),
++      ),
+     };
+   }
+   const resources = yield* telemetryResources;
+diff --git a/apps/hosted/server/src/implementation/catalog-app-defaults.ts b/apps/hosted/server/src/implementation/catalog-app-defaults.ts
+index e46489ccc8588c4f67652e87b972767b45e9395b..f6ad90c11a0b958059ceb3116d1b7f19227fefc1 100644
+--- a/apps/hosted/server/src/implementation/catalog-app-defaults.ts
++++ b/apps/hosted/server/src/implementation/catalog-app-defaults.ts
+@@ -21,6 +21,7 @@ import { CatalogAppSweep } from "../contracts/catalog-app-updates.ts";
+ import { type OrganizationId, organizationOwner } from "../contracts/organization.ts";
+ import type { OrganizationDefaults } from "../contracts/organization-defaults.ts";
+ import { ScheduleWakeup } from "../contracts/schedules.ts";
++import { reportCatalogResourceFailure } from "./catalog-build-failure.ts";
+ import {
+   breakingChanges,
+   catalogEntryId,
+@@ -74,6 +75,8 @@ const decideCatalogApp = (
+   input: {
+     readonly owner: OwnerId;
+     readonly app: App;
++    readonly organization: OrganizationId;
++    readonly entry: string;
+     readonly current: ActiveSource;
+     readonly files: SourceFiles;
+     readonly recorded: Saved | undefined;
+@@ -104,7 +107,16 @@ const decideCatalogApp = (
+     // Compile without saving: requirements decide before anything, migrations included, runs.
+     // Built for the app, provider IDs are the ones a deploy would keep, so a reworded label
+     // breaks no account.
+-    const built = yield* executor.apps.build({ owner, name: app.name, files, app: app.id });
++    const built = yield* executor.apps.build({ owner, name: app.name, files, app: app.id }).pipe(
++      Effect.tapError((error) =>
++        reportCatalogResourceFailure(error, {
++          organization: input.organization,
++          app: app.id,
++          entry: input.entry,
++          phase: "requirements",
++        }),
++      ),
++    );
+     const breaks = breakingChanges(
+       yield* input.links,
+       app.requirements.accounts,
+@@ -122,7 +134,24 @@ const decideCatalogApp = (
+       // The build took a while; a person's deploy, activation or edit since then wins.
+       const fresh = yield* stillCurrent(executor, owner, app.id, active, recorded);
+       if (fresh === undefined) return undefined;
+-      return yield* deployCatalogSource(executor, owner, app.id, fresh, recorded, files, digest);
++      return yield* deployCatalogSource(
++        executor,
++        owner,
++        app.id,
++        fresh,
++        recorded,
++        files,
++        digest,
++      ).pipe(
++        Effect.tapError((error) =>
++          reportCatalogResourceFailure(error, {
++            organization: input.organization,
++            app: app.id,
++            entry: input.entry,
++            phase: "deployment",
++          }),
++        ),
++      );
+     }
+     // The offer keeps the recorded version, so the workspace recorded beside it is that version's.
+     return {
+@@ -183,6 +212,8 @@ export const sweepCatalogApp = <E, R>(
+       return yield* decideCatalogApp(executor, {
+         owner,
+         app,
++        organization,
++        entry,
+         current: heal.current,
+         files: prepared.files,
+         recorded,
+@@ -192,8 +223,8 @@ export const sweepCatalogApp = <E, R>(
+       Effect.catchTags({
+         CatalogImportFailed: () => Effect.succeed(undefined),
+         AppNotFound: () => Effect.succeed(undefined),
+-        VersionBuildFailed: () => unbuildable(entry),
+-        BuildMemoryExceeded: () => unbuildable(entry),
++        VersionBuildFailed: (error) =>
++          error.unanswered === true ? Effect.fail(error) : unbuildable(entry),
+       }),
+       Effect.flatMap((outcome: CatalogOutcome | undefined) =>
+         // An unchanged record needs no locked write.
+@@ -252,10 +283,13 @@ export const catalogAppDefaults = (
+             return saveCatalogRecord(executor, organization, app.id, recorded, outcome);
+           },
+         }).pipe(
+-          Effect.catch(() =>
+-            Effect.logWarning("Catalog app update failed; the job will retry", { entry }).pipe(
+-              Effect.andThen(Effect.sync(() => (failed = true))),
+-            ),
++          Effect.catch((error) =>
++            Effect.logWarning("Catalog app update failed; the job will retry", {
++              app: app.id,
++              organization,
++              entry,
++              cause: error._tag,
++            }).pipe(Effect.andThen(Effect.sync(() => (failed = true)))),
+           ),
+         );
+       }
+diff --git a/apps/hosted/server/src/implementation/catalog-build-failure.ts b/apps/hosted/server/src/implementation/catalog-build-failure.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..8980a6c7b12e632a92188b54e56c2e027646800f
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/catalog-build-failure.ts
+@@ -0,0 +1,53 @@
++/** Resource failures leave catalog source undecided and use the provisioning job's retry. */
++import {
++  BuildBusy,
++  BuildMemoryExceeded,
++  BuildUnanswered,
++  VersionBuildFailed,
++  type AppId,
++} from "@executor-js/sdk/core";
++import { Cause, Effect, ErrorReporter, Option, Schema } from "effect";
++import type { OrganizationId } from "../contracts/organization.ts";
++
++/** Background compiler exhaustion is an operational incident, not a deployer's 4xx rejection. */
++class CatalogBuildResourceFailed extends Schema.TaggedError<CatalogBuildResourceFailed>()(
++  "CatalogBuildResourceFailed",
++  {},
++) {}
++
++export const reportCatalogResourceFailure = (
++  error: unknown,
++  input: {
++    readonly organization: OrganizationId;
++    readonly app: AppId;
++    readonly entry: string;
++    readonly phase: "requirements" | "deployment";
++  },
++) =>
++  Effect.gen(function* () {
++    const cause = Schema.is(BuildMemoryExceeded)(error)
++      ? "memory"
++      : Schema.is(BuildBusy)(error)
++        ? "capacity"
++        : Schema.is(BuildUnanswered)(error) ||
++            (Schema.is(VersionBuildFailed)(error) && error.unanswered === true)
++          ? "unanswered"
++          : undefined;
++    if (cause === undefined) return;
++    const span = yield* Effect.currentSpan.pipe(Effect.option);
++    // The log exporter also carries the provisioning job and attempt annotations. The trace
++    // joins immediate compiler phase/isolate records even when memory exhaustion ends its span.
++    yield* Effect.logWarning("Catalog app update resource failure").pipe(
++      Effect.annotateLogs({
++        ...input,
++        cause,
++        trace: Option.isSome(span) ? span.value.traceId : null,
++      }),
++    );
++    yield* Effect.annotateCurrentSpan({
++      "executor.catalog.resource_failure": cause,
++      "executor.app.id": input.app,
++      "executor.catalog.phase": input.phase,
++    });
++    yield* ErrorReporter.report(Cause.fail(new CatalogBuildResourceFailed()));
++  });
+diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted/server/src/implementation/provisioning.ts
+index 1aef56c877a4b6c06aa74c4ddd4f6e733ce0e4aa..4d9fd473d48055614f7fe68dfe4b411d61f99d54 100644
+--- a/apps/hosted/server/src/implementation/provisioning.ts
++++ b/apps/hosted/server/src/implementation/provisioning.ts
+@@ -111,9 +111,11 @@ const attempt = <E, R>(
+     const { attempts } = yield* Schema.decodeUnknownEffect(Claimed)(rows[0]);
+     yield* Effect.annotateCurrentSpan({
+       "executor.provisioning.kind": job.kind,
++      "executor.provisioning.attempt": attempts,
+       ...(job.kind === "user" ? {} : { "executor.organization.id": job.organization_id }),
+     });
+     yield* run(job).pipe(
++      Effect.annotateLogs({ job: id, attempt: attempts }),
+       // Release only this attempt's own claim; a later claim belongs to another runner.
+       Effect.onExit((exit) =>
+         Exit.isSuccess(exit)
+diff --git a/packages/sdk/src/contracts/version.ts b/packages/sdk/src/contracts/version.ts
+index 518d4955d1c504c074017d232c316e1b910c523f..82de974f58187e06f4a54d265da460887861b073 100644
+--- a/packages/sdk/src/contracts/version.ts
++++ b/packages/sdk/src/contracts/version.ts
+@@ -116,6 +116,8 @@ export class VersionBuildFailed extends Schema.TaggedError<VersionBuildFailed>()
+     reason: Schema.String,
+     /** The build step that failed, when the runtime reported it. */
+     stage: Schema.optional(BuildStage),
++    /** The compiler did not answer; this failure does not judge the app's source. */
++    unanswered: Schema.optional(Schema.Literal(true)),
+     /** The first failing source location, when known. */
+     location: Schema.optional(SourceLocation),
+     /** The stage, location and underlying failure, such as the compiler's own errors. */
+diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
+index 7a5f80400888f6de9921a1851c412ffdfdd8bb1f..1cf8952ada6c10c473cdfd0832c872a0d95eafc3 100644
+--- a/packages/sdk/src/implementation/apps.ts
++++ b/packages/sdk/src/implementation/apps.ts
+@@ -1,3 +1,4 @@
++import { versionBuildFailed } from "./version-build-failure.ts";
+ import type { ResourceLifecycle } from "../contracts/executor.ts";
+ import { AppWorkflowsActive } from "../contracts/apps.ts";
+ import { AppWebhooksActive } from "../contracts/apps.ts";
+@@ -113,32 +114,6 @@ export const checkAppRemoval = (db: Query, input: Parameters<Executor["apps"]["r
+ 
+ /** Read a configured app, applying an optional owner constraint. */
+ 
+-/** Carry the runtime's stage, location and underlying failure to the deployer. */
+-const versionBuildFailed = (owner: OwnerId, name: string, error: RuntimeBuildFailed) => {
+-  const { stage, dependency, location } = error;
+-  const hint =
+-    dependency === undefined ? undefined : `Add ${dependency} to package.json dependencies.`;
+-  const detail =
+-    error.declaration !== undefined
+-      ? error.declaration.message
+-      : error.message.length > 0
+-        ? error.message
+-        : hint;
+-  // Compiler messages already begin with their location.
+-  const where =
+-    location === undefined || detail?.includes(location.file) === true
+-      ? ""
+-      : ` in ${location.file}${location.line === undefined ? "" : `:${location.line}${location.column === undefined ? "" : `:${location.column}`}`}`;
+-  return new VersionBuildFailed({
+-    owner,
+-    name,
+-    reason: hint ?? error.declaration?.message ?? "App build failed",
+-    stage,
+-    ...(location === undefined ? {} : { location }),
+-    message: `App build failed at the ${stage} stage${where}${detail === undefined ? "." : `: ${detail}`}`,
+-  });
+-};
+-
+ export const storedApp = (db: Query, input: Parameters<Executor["apps"]["get"]>[0]) =>
+   Effect.gen(function* () {
+     const row = yield* query(() =>
+diff --git a/packages/sdk/src/implementation/version-build-failure.ts b/packages/sdk/src/implementation/version-build-failure.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..535584c0963e77f1c35ca3e4911ea372429561dc
+--- /dev/null
++++ b/packages/sdk/src/implementation/version-build-failure.ts
+@@ -0,0 +1,30 @@
++import type { OwnerId } from "../contracts/shared.ts";
++import type { RuntimeBuildFailed } from "../contracts/runtime.ts";
++import { VersionBuildFailed } from "../contracts/version.ts";
++
++/** Carry the runtime's stage, location and underlying failure to the deployer. */
++export const versionBuildFailed = (owner: OwnerId, name: string, error: RuntimeBuildFailed) => {
++  const { stage, dependency, location } = error;
++  const hint =
++    dependency === undefined ? undefined : `Add ${dependency} to package.json dependencies.`;
++  const detail =
++    error.declaration !== undefined
++      ? error.declaration.message
++      : error.message.length > 0
++        ? error.message
++        : hint;
++  // Compiler messages already begin with their location.
++  const where =
++    location === undefined || detail?.includes(location.file) === true
++      ? ""
++      : ` in ${location.file}${location.line === undefined ? "" : `:${location.line}${location.column === undefined ? "" : `:${location.column}`}`}`;
++  return new VersionBuildFailed({
++    owner,
++    name,
++    reason: hint ?? error.declaration?.message ?? "App build failed",
++    stage,
++    ...(error.unanswered === true ? { unanswered: true } : {}),
++    ...(location === undefined ? {} : { location }),
++    message: `App build failed at the ${stage} stage${where}${detail === undefined ? "." : `: ${detail}`}`,
++  });
++};

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   assertProviderIdsMatch,
   buildProviderTable,
+  buildPoolProviderTable,
   extractOAuthProviderIds,
   renderProviderTable,
 } from "./pool-providers.ts";
@@ -86,4 +87,18 @@ test("keeps Kimi's regional login when both selectors use the same handler", () 
     () => extractOAuthProviderIds(source.replace('case "gamma"', 'case "kimi-ai"')),
     /Duplicate OAuth provider id: kimi-ai/,
   );
+});
+
+test("pool discovery includes native providers without inventing a chat protocol", () => {
+  const table = buildPoolProviderTable(["codex"], [{ id: "codex", name: "ChatGPT" }]);
+  assert.deepEqual(table, [
+    { id: "codex", name: "ChatGPT" },
+    {
+      id: "typesafe",
+      name: "Jev",
+      site: "typesafe.ai",
+      protocol: "typesafe-systemone",
+      description: "System One model provider. Not offered in chat model pickers.",
+    },
+  ]);
 });

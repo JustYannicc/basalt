@@ -256,13 +256,14 @@ test("an unlimited account reports its windows as unlimited instead of no readin
   );
 });
 
-test("mirrored API-limited accounts share interval collection and the same persisted cap", async () => {
-  const f = fixture({ provider: "typesafe", stale: true });
-  await f.check({ action: "observe", provider: "typesafe" });
-  const response = await f.check({ action: "observe", provider: "typesafe" });
-  const body = (await response!.json()) as { result: { observedAt: string } };
-  assert.equal(body.result.observedAt, new Date(now).toISOString());
-  assert.equal(f.calls.filter((path) => path.endsWith("/quota/collect")).length, 1);
+test("unsupported native accounts never schedule quota collection", async () => {
+  for (const provider of ["typesafe", "vertex", "gemini-cli", "devin", "kimi-ai"]) {
+    const f = fixture({ provider, stale: true });
+    const response = await f.check({ action: "observe", provider });
+    assert.deepEqual(await response!.json(), { result: null });
+    await f.check({ action: "check", provider });
+    assert.equal(f.calls.filter((path) => path.includes("/quota/")).length, 0, provider);
+  }
 });
 
 test("a first alarm collection publishes its new reading in the same pass", async () => {

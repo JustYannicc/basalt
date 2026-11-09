@@ -65,6 +65,23 @@
           "reason": "Local uses its configured instance API key."
         }
       }
+    },
+    "executorLateMember": {
+      "fixtures": "actors",
+      "title": "An invited member gets their own built-in access after the owner setup",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Retained self-host state and invitation registration use the runner-owned self-host product. Member identity and Apps behavior also run on Cloud."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no organization memberships."
+        }
+      }
     }
   },
   "runs": {
@@ -82,6 +99,9 @@
     ],
     "executorKeyUnlinkSticks": [
       "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ],
+    "executorLateMember": [
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
     ]
   },
   "inputs": [
@@ -94,11 +114,16 @@
     ".upstream/apps/hosted/server/src/implementation/account-sign-in.ts",
     ".upstream/apps/hosted/server/src/implementation/app-account-links.ts",
     ".upstream/apps/hosted/server/src/implementation/host-managed-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/member-defaults.ts",
+    ".upstream/apps/hosted/server/src/implementation/organization-defaults.ts",
+    ".upstream/apps/hosted/server/src/implementation/organization.ts",
     ".upstream/apps/hosted/server/src/implementation/pool-access-provenance.ts",
     ".upstream/apps/hosted/server/src/implementation/pool-account-recovery.ts",
     ".upstream/apps/hosted/server/src/implementation/pool-defaults.ts",
     ".upstream/apps/hosted/server/src/implementation/pool-records.ts",
+    ".upstream/apps/hosted/server/src/implementation/provisioning.ts",
     ".upstream/apps/hosted/server/src/implementation/resource-access.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-directory.ts",
     ".upstream/apps/hosted/web/src/contracts/resource-access.ts",
     ".upstream/apps/hosted/web/src/implementation/pages/app-detail.tsx",
     ".upstream/apps/local/server/src/contracts/dashboard.ts",

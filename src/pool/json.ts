@@ -1,3 +1,8 @@
+import {
+  isNativePolicyLeaseMs,
+  isNativePolicyReason,
+  type NativePolicyReason,
+} from "./native-policy-diagnostic.ts";
 import type { ControlError, ControlErrorCode } from "../../apps/pool/contract.ts";
 
 export type Json = Record<string, unknown>;
@@ -13,6 +18,8 @@ export interface PoolFailureDiagnostic {
     | "storage"
     | "unknown";
   backendStatus?: number;
+  reason?: NativePolicyReason;
+  leaseMs?: number;
 }
 const diagnostics = new WeakMap<object, PoolFailureDiagnostic>();
 const diagnosticGuards = new Set<PoolFailureDiagnostic["guard"]>([
@@ -31,6 +38,10 @@ const diagnosticFailures = new Set<PoolFailureDiagnostic["failure"]>([
   "unknown",
 ]);
 
+export function poolFailureDiagnostic(error: unknown): PoolFailureDiagnostic | undefined {
+  return typeof error === "object" && error !== null ? diagnostics.get(error) : undefined;
+}
+
 /** Annotate the original error without changing how model and control callers handle it. */
 export function diagnosePoolFailure(error: unknown, diagnostic: PoolFailureDiagnostic): unknown {
   const backendStatus = diagnostic.backendStatus;
@@ -44,6 +55,14 @@ export function diagnosePoolFailure(error: unknown, diagnostic: PoolFailureDiagn
     diagnostics.set(error, {
       guard: diagnostic.guard,
       failure: diagnostic.failure,
+      ...(diagnostic.guard === "native_policy_install" && isNativePolicyReason(diagnostic.reason)
+        ? { reason: diagnostic.reason }
+        : {}),
+      ...(diagnostic.guard === "native_policy_install" &&
+      diagnostic.reason === "lease_window" &&
+      isNativePolicyLeaseMs(diagnostic.leaseMs)
+        ? { leaseMs: diagnostic.leaseMs }
+        : {}),
       ...(typeof backendStatus === "number" &&
       Number.isInteger(backendStatus) &&
       backendStatus >= 100 &&
@@ -114,7 +133,7 @@ export class BackendFailure extends ControlFailure {
     this.backendStatus = status;
   }
 }
-export function failureResponse(error: unknown): Response {
+export function reportPoolFailure(error: unknown): void {
   const diagnostic =
     typeof error === "object" && error !== null ? diagnostics.get(error) : undefined;
   if (diagnostic && (!(error instanceof ControlFailure) || error.status === 503)) {
@@ -124,6 +143,10 @@ export function failureResponse(error: unknown): Response {
       /* Diagnostics must not change the refusal. */
     }
   }
+}
+
+export function failureResponse(error: unknown): Response {
+  reportPoolFailure(error);
   if (!(error instanceof ControlFailure)) return unavailableResponse();
   const response = json(error.response(), error.status);
   if (error.retryAfterSeconds !== undefined)

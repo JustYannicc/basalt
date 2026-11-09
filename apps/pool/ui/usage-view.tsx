@@ -77,8 +77,8 @@ export function Usage({
           </h2>
           <p className="max-w-[36rem] text-sm text-muted-foreground text-pretty">
             {mine
-              ? "Your requests through this pool in the last 30 days. Nobody else's show here."
-              : "Everyone's requests through this pool in the last 30 days."}{" "}
+              ? "Your requests through this pool in the last 30 UTC calendar days. Nobody else's show here."
+              : "Everyone's requests through this pool in the last 30 UTC calendar days."}{" "}
             Cost is what the same tokens would cost at API prices.
           </p>
         </div>

@@ -1,8 +1,11 @@
 import {
   decodeRuntimeReady,
+  decodeRuntimeIdentity,
+  sameRuntimeTarget,
   deploymentReadinessPath,
   deploymentReadinessPrefix,
   type RuntimeReady,
+  type ReadinessPhase,
 } from "../src/pool/deployment-readiness.ts";
 import { openPoolOperations, type PoolOperationsPlatform } from "./pool-operations.ts";
 import { signEnvelope } from "../src/pool/token.ts";
@@ -24,26 +27,53 @@ export async function openDeploymentReadiness(options: {
   connect?: (path: string) => Promise<PoolOperationsPlatform>;
 }) {
   const { service, close } = await openPoolOperations(options);
+  const request = async (signal: AbortSignal, phase: ReadinessPhase) => {
+    const at = Date.now();
+    const envelope = await signEnvelope(options.key, deploymentReadinessPrefix, {
+      ...options.target,
+      ...(phase === "adoption" ? { phase } : {}),
+      at,
+      expiresAt: at + 60_000,
+    });
+    return bounded(
+      service.fetch(
+        new Request(`http://pool-operations${deploymentReadinessPath}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ envelope }),
+          signal,
+        }),
+      ),
+      signal,
+    );
+  };
   return {
     close,
+    adoption: async (signal: AbortSignal) => {
+      const response = await request(signal, "adoption");
+      if (!response.ok && response.status !== 503) {
+        await bounded(response.body?.cancel() ?? Promise.resolve(), signal);
+        throw new ReadinessResponseError(response.status);
+      }
+      const body: unknown = await bounded(response.json(), signal);
+      if (!response.ok) {
+        if (
+          typeof body === "object" &&
+          body !== null &&
+          "outcome" in body &&
+          body.outcome === "adopting" &&
+          "observed" in body
+        )
+          return { adopted: false, observed: decodeRuntimeIdentity(body.observed) };
+        throw new ReadinessResponseError(response.status);
+      }
+      const identity = decodeRuntimeIdentity(body);
+      if (!sameRuntimeTarget(identity, options.target))
+        throw new Error("Deployment code identity does not match the target");
+      return { adopted: true, observed: identity };
+    },
     ready: async (signal: AbortSignal) => {
-      const at = Date.now();
-      const envelope = await signEnvelope(options.key, deploymentReadinessPrefix, {
-        ...options.target,
-        at,
-        expiresAt: at + 60_000,
-      });
-      const response = await bounded(
-        service.fetch(
-          new Request(`http://pool-operations${deploymentReadinessPath}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ envelope }),
-            signal,
-          }),
-        ),
-        signal,
-      );
+      const response = await request(signal, "runtime");
       if (!response.ok) {
         await bounded(response.body?.cancel() ?? Promise.resolve(), signal);
         throw new ReadinessResponseError(response.status);

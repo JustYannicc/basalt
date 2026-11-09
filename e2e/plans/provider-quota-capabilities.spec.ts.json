@@ -1,0 +1,34 @@
+{
+  "scenarios": {
+    "providerQuotaCapabilities": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "native Jev models and tool accounts coexist without unsupported quota reporters or lost history",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses synthetic provider responses and retained rows in a runner-owned product."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted native provider registrations and pool account selection."
+        }
+      }
+    }
+  },
+  "runs": {
+    "providerQuotaCapabilities": [
+      "host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"
+    ]
+  },
+  "inputs": [
+    "src/pool/provider-accounts/capabilities.ts",
+    "src/pool/providers.json",
+    ".upstream/apps/hosted/server/src/implementation/pool-account-registry.ts",
+    ".upstream/apps/hosted/server/src/implementation/account-observation-upkeep.ts",
+    ".upstream/apps/hosted/server/src/implementation/account-observations.ts"
+  ]
+}

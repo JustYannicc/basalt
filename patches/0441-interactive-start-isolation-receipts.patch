@@ -1,0 +1,1310 @@
+diff --git a/e2e/support/interactive-account-isolation.ts b/e2e/support/interactive-account-isolation.ts
+new file mode 100644
+index 0000000..9f539cf
+--- /dev/null
++++ b/e2e/support/interactive-account-isolation.ts
+@@ -0,0 +1,193 @@
++/** A real hosted app with unrelated legacy OAuth and a healthy sign-in backend. */
++import { expect } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { FetchHttpClient, HttpClient } from "effect/http";
++import { randomUUID } from "node:crypto";
++import { Actors } from "./actors.ts";
++import { Api, body } from "./api.ts";
++import { accountLinks, connectionsPath } from "./app-accounts.ts";
++import { appsManifest } from "./apps-release.ts";
++import { Resource } from "./contracts.ts";
++import { interactiveIsolationSource } from "./interactive-isolation-source.ts";
++import { oauthSetupIssuer } from "./oauth-setup-issuer.ts";
++import { settleWebhookSources } from "./webhook-sources.ts";
++
++const Authorization = Schema.Struct({ authorizationUrl: Schema.String });
++const SavedAccount = Schema.Struct({
++  id: Schema.String,
++  provider: Schema.String,
++  method: Schema.String,
++  label: Schema.String,
++  description: Schema.NullOr(Schema.String),
++});
++
++/** Check public values before decoding or retaining them, without printing a leaked value. */
++export const assertInteractivePrivate = (value: unknown) => {
++  const json = JSON.stringify(value);
++  for (const marker of [
++    "PRIVATE_PROVIDER_ERROR",
++    "PRIVATE_INTERACTIVE_ERROR",
++    "private-session-",
++    "synthetic-access-token",
++    "synthetic-refreshed-token-",
++    "synthetic-refresh-",
++    "synthetic-client-secret",
++    "synthetic-backend-key",
++  ])
++    expect(json.includes(marker), `Public response exposed the ${marker} marker`).toBe(false);
++};
++
++export const interactiveIsolationFixture = (
++  fault: Parameters<typeof interactiveIsolationSource>[2] = "none",
++) =>
++  Effect.gen(function* () {
++    const api = yield* Api,
++      actors = yield* Actors,
++      http = yield* HttpClient.HttpClient;
++    const issuer = yield* oauthSetupIssuer;
++    const backend = yield* oauthSetupIssuer;
++    yield* issuer.configure({ refreshTokens: true, expiresIn: 1, revocation: "recorded" });
++    const prefix = `/api/organizations/${actors.organization.id}`;
++    const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++      name: `Interactive isolation ${randomUUID().slice(0, 8)}`,
++      files: [
++        {
++          path: "index.ts",
++          content: interactiveIsolationSource(issuer.origin, backend.origin, fault),
++        },
++        appsManifest,
++      ],
++    });
++    assertInteractivePrivate(deployed.body);
++    expect(deployed.status).toBe(200);
++    const app = yield* body(Resource, deployed),
++      path = `${prefix}/apps/${app.id}`,
++      accounts: string[] = [];
++    yield* Effect.addFinalizer(() =>
++      Effect.gen(function* () {
++        expect((yield* api.request(actors.owner, "DELETE", path)).status).toBe(200);
++        for (const account of accounts)
++          expect(
++            (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`)).status,
++          ).toBe(200);
++      }).pipe(Effect.orDie),
++    );
++    const connectionPath = (id: string) => `${prefix}/connections/${id}`;
++    const pending = (slot = "identityCenter", scope: "app" | "user" = "user") =>
++      Effect.gen(function* () {
++        const response = yield* api.request(
++          actors.owner,
++          "POST",
++          connectionsPath(path, scope, slot),
++          {},
++        );
++        assertInteractivePrivate(response.body);
++        expect(response.status).toBe(200);
++        return yield* body(Resource, response);
++      });
++    const key = yield* pending("backend", "app");
++    const submitted = yield* api.request(actors.owner, "POST", `${connectionPath(key.id)}/submit`, {
++      method: "key",
++      fields: { token: "synthetic-backend-key" },
++    });
++    assertInteractivePrivate(submitted.body);
++    expect(submitted.status).toBe(200);
++    accounts.push((yield* body(Resource, submitted)).id);
++
++    const connectOAuth = (slot: "aws" | "identityCenter" = "aws") =>
++      Effect.gen(function* () {
++        const connection = yield* pending(slot);
++        const started = yield* api.request(
++          actors.owner,
++          "POST",
++          `${connectionPath(connection.id)}/oauth/start`,
++          { method: "oauth", label: `Synthetic ${slot}` },
++        );
++        assertInteractivePrivate(started.body);
++        expect(started.status).toBe(200);
++        const authorization = yield* body(Authorization, started);
++        const callbackUrl = yield* Effect.scoped(
++          Effect.gen(function* () {
++            const consent = yield* HttpClient.withScope(http).get(authorization.authorizationUrl);
++            expect(consent.status).toBe(302);
++            const callback = consent.headers.location;
++            if (callback === undefined) return yield* Effect.die("Issuer omitted its callback");
++            return callback;
++          }),
++        ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
++        const completed = yield* api.request(
++          actors.owner,
++          "POST",
++          `${connectionPath(connection.id)}/oauth/complete`,
++          { callbackUrl },
++        );
++        assertInteractivePrivate(completed.body);
++        expect(completed.status).toBe(200);
++        const account = yield* body(Resource, completed);
++        accounts.push(account.id);
++        yield* settleWebhookSources(actors.owner, path, (sources) =>
++          sources.some((source) => source.account === account.id && source.status !== "pending"),
++        );
++        return account.id;
++      });
++    const account = (id: string) =>
++      Effect.gen(function* () {
++        const response = yield* api.request(actors.owner, "GET", `${prefix}/accounts/${id}`);
++        assertInteractivePrivate(response.body);
++        expect(response.status).toBe(200);
++        return (yield* body(Schema.Struct({ account: SavedAccount }), response)).account;
++      });
++    const start = (id: string) =>
++      api.request(actors.owner, "POST", `${connectionPath(id)}/interactive/start`, {
++        method: "device",
++      });
++    const connection = (id: string) => api.request(actors.owner, "GET", connectionPath(id));
++    const cancel = (id: string) =>
++      api.request(actors.owner, "POST", `${connectionPath(id)}/interactive/cancel`);
++    const strict = () =>
++      api.request(actors.owner, "POST", `${path}/tools/call`, {
++        tool: "strict",
++        kind: "query",
++        input: {},
++      });
++    const counts = Effect.gen(function* () {
++      const legacy = yield* issuer.metrics,
++        healthy = yield* backend.metrics;
++      return {
++        refreshes: legacy.refreshes,
++        exchanges: legacy.tokenExchanges,
++        reads: legacy.resourceRequests.GET,
++        writes: legacy.resourceRequests.POST,
++        revocations: legacy.revocations.length,
++        backendReads: healthy.resourceRequests.GET,
++        backendAuthorized: healthy.resourceAuthorizations.every(
++          (authorization) => authorization === "Bearer synthetic-backend-key",
++        ),
++      };
++    });
++    return {
++      pending,
++      connectOAuth,
++      account,
++      start,
++      connection,
++      cancel,
++      strict,
++      counts,
++      pageUrl: (id: string) => `/org/${actors.organization.slug}/connections/${id}`,
++      links: () => accountLinks(actors.owner, path),
++      refuse: issuer
++        .configure({
++          tokenError: {
++            status: 400,
++            body: { error: "invalid_client", error_description: "PRIVATE_PROVIDER_ERROR" },
++          },
++        })
++        .pipe(
++          // The real server uses a live clock. Wait past this fixture's one-second token;
++          // expires_in: 0 means an unstated lifetime, not immediate expiry.
++          Effect.andThen(Effect.sleep("1200 millis")),
++        ),
++      recover: issuer.configure({ tokenError: null }),
++    };
++  });
+diff --git a/e2e/support/interactive-isolation-browser.ts b/e2e/support/interactive-isolation-browser.ts
+new file mode 100644
+index 0000000..c168453
+--- /dev/null
++++ b/e2e/support/interactive-isolation-browser.ts
+@@ -0,0 +1,49 @@
++/** Retain the real hosted connection dialog at desktop and phone widths. */
++import { Effect } from "effect";
++import { Actors } from "./actors.ts";
++import { Browser } from "./browser.ts";
++import { Evidence } from "./evidence.ts";
++
++export const captureInteractiveIsolation = (
++  url: string,
++  ready: boolean,
++  failure?: { readonly cause: string; readonly description: string },
++) =>
++  Effect.gen(function* () {
++    const actors = yield* Actors,
++      browser = yield* Browser,
++      evidence = yield* Evidence;
++    yield* browser.login(actors.owner);
++    yield* browser.use("Open the pending Identity Center connection", (page) => page.goto(url));
++    yield* browser.use("Choose Identity Center", (page) => page.getByRole("combobox").click());
++    yield* browser.use("Select the interactive method", (page) =>
++      page.getByRole("option", { name: "Identity Center", exact: true }).click(),
++    );
++    yield* browser.use("Start Identity Center sign-in", (page) =>
++      page.getByRole("button", { name: "Sign in with Identity Center", exact: true }).click(),
++    );
++    yield* browser.use("The connection shows its actual result", (page) =>
++      ready
++        ? page.getByLabel("Start URL", { exact: true }).waitFor()
++        : page
++            .getByText(
++              failure === undefined ? "Sign-in could not finish" : "Sign-in could not start",
++              { exact: true },
++            )
++            .waitFor(),
++    );
++    if (failure !== undefined)
++      yield* browser.use("The error explains the recorded cause", (page) =>
++        page.getByText(failure.description, { exact: true }).waitFor(),
++      );
++    for (const width of [1280, 390]) {
++      yield* browser.use("Set the evidence viewport", (page) =>
++        page.setViewportSize({ width, height: 900 }),
++      );
++      yield* evidence.attach(
++        `interactive-isolation-${failure?.cause ?? (ready ? "after" : "before")}-${width}.png`,
++        "image/png",
++        yield* browser.use("Capture the connection dialog", (page) => page.screenshot()),
++      );
++    }
++  });
+diff --git a/e2e/support/interactive-isolation-source.ts b/e2e/support/interactive-isolation-source.ts
+new file mode 100644
+index 0000000..38bceb4
+--- /dev/null
++++ b/e2e/support/interactive-isolation-source.ts
+@@ -0,0 +1,64 @@
++/** Authored app input for the hosted connection isolation scenarios. */
++export const interactiveIsolationSource = (
++  legacyOrigin: string,
++  backendOrigin: string,
++  fault: "none" | "handler" | "output" = "none",
++) => `import {
++  defineApp, defineProvider, oauth2, interactive, secrets, bearer,
++  object, string, query, router,
++  type ConnectContext, type QueryContext, type InteractiveStart, type InteractiveStatus
++} from "apps";
++const legacy = defineProvider({
++  name: "Synthetic legacy AWS",
++  hosts: [${JSON.stringify(new URL(legacyOrigin).host)}],
++  auth: { oauth: oauth2({ discover: ${JSON.stringify(legacyOrigin + "/mcp")} }) },
++});
++const identityCenter = defineProvider({
++  name: "Synthetic Identity Center",
++  auth: {
++    device: interactive({ label: "Identity Center" }),
++    oauth: oauth2({ discover: ${JSON.stringify(legacyOrigin + "/mcp")} }),
++  },
++});
++const backend = defineProvider({
++  name: "Synthetic sign-in backend",
++  hosts: [${JSON.stringify(new URL(backendOrigin).host)}],
++  auth: { key: secrets({
++    label: "Key", fields: object({ token: string() }),
++    request: ({ token }) => bearer(token),
++  }) },
++});
++const requirements = {
++  app: { accounts: { backend } },
++  user: { accounts: { aws: legacy.many(), identityCenter: identityCenter.many() } },
++};
++const handlers = {
++  start: async (ctx: ConnectContext<typeof requirements>): Promise<InteractiveStart> => {
++    const account = ctx.app.accounts.backend;
++    if (account === undefined) throw new Error("Missing synthetic backend");
++    const response = await ctx.fetch(${JSON.stringify(backendOrigin + "/resource")}, {
++      headers: account.headers(), signal: ctx.signal,
++    });
++    if (!response.ok) throw new Error("Synthetic backend refused start");
++    ${fault === "handler" ? 'throw new Error("PRIVATE_INTERACTIVE_ERROR synthetic-backend-key");' : ""}
++    return {
++      session: ${JSON.stringify(fault === "output" ? "" : "private-session-identity-center")},
++      form: { submitLabel: "Continue", fields: [{ name: "startUrl", label: "Start URL", type: "url" }] },
++    };
++  },
++  status: async (): Promise<InteractiveStatus> => ({ state: "waiting" }),
++  cancel: async () => {},
++};
++const strict = query({ input: object({}) }, async (ctx: QueryContext<typeof requirements>) => {
++  for (const account of ctx.user.accounts.aws) {
++    const response = await ctx.fetch(${JSON.stringify(legacyOrigin + "/resource")}, {
++      headers: { authorization: "Bearer " + account.fields.access_token }, signal: ctx.signal,
++    });
++    if (!response.ok) throw new Error("Synthetic legacy resource refused read");
++  }
++  return { read: "legacy-readable" };
++});
++export default defineApp(requirements, {
++  tools: router({ strict }),
++  connect: { identityCenter: handlers },
++});`;
+diff --git a/e2e/tests/interactive-account-isolation.spec.ts b/e2e/tests/interactive-account-isolation.spec.ts
+new file mode 100644
+index 0000000..82e82bc
+--- /dev/null
++++ b/e2e/tests/interactive-account-isolation.spec.ts
+@@ -0,0 +1,271 @@
++/** Hosted connection startup isolates unrelated OAuth failures and returns closed receipts. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Evidence } from "../support/evidence.ts";
++import { captureInteractiveIsolation } from "../support/interactive-isolation-browser.ts";
++import {
++  assertInteractivePrivate,
++  interactiveIsolationFixture,
++} from "../support/interactive-account-isolation.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Form = Schema.Struct({
++  form: Schema.Struct({
++    submitLabel: Schema.String,
++    fields: Schema.Array(
++      Schema.Struct({
++        name: Schema.String,
++        label: Schema.String,
++        type: Schema.String,
++      }),
++    ),
++  }),
++});
++const StrictFailure = Schema.Struct({
++  _tag: Schema.Literal("OAuthRenewalFailed"),
++  account: Schema.String,
++  reason: Schema.Literal("client_rejected"),
++  cause: Schema.Struct({
++    stage: Schema.Literal("refresh"),
++    status: Schema.Literal(400),
++    providerError: Schema.Literal("invalid_client"),
++  }),
++});
++const Receipt = Schema.Struct({
++  phase: Schema.Literals([
++    "request",
++    "state",
++    "credentials",
++    "attribution",
++    "oauth_start",
++    "oauth_status",
++    "oauth_callback",
++    "oauth_cancel",
++    "cleanup",
++  ]),
++  errorClass: Schema.Literals([
++    "runtime_unhealthy",
++    "transport",
++    "timeout",
++    "home_unavailable",
++    "home_rejected",
++    "invalid_code",
++    "binding_changed",
++    "invalid_response",
++    "internal",
++  ]),
++  retryable: Schema.Boolean,
++  step: Schema.Literal("start"),
++  boundary: Schema.Literals(["context", "handler", "output", "runtime"]),
++  cause: Schema.Literals([
++    "account_reconnect",
++    "account_renewal",
++    "handler_failed",
++    "type_error",
++    "invalid_output",
++    "storage",
++    "access_denied",
++    "timeout",
++    "transport",
++    "runtime_failed",
++    "operation_missing",
++    "invalid_input",
++    "unknown",
++  ]),
++  oauthRenewal: Schema.optionalKey(
++    Schema.Struct({
++      reason: Schema.Literal("client_rejected"),
++      cause: Schema.Struct({
++        stage: Schema.Literal("refresh"),
++        status: Schema.Literal(400),
++        providerError: Schema.Literal("invalid_client"),
++      }),
++    }),
++  ),
++});
++const Failure = Schema.Struct({
++  _tag: Schema.Literal("InteractiveConnectionFailed"),
++  reason: Schema.Literal("step"),
++  receipt: Receipt,
++});
++const RawReceipt = Schema.Struct({ receipt: Schema.Record(Schema.String, Schema.Unknown) });
++
++layer(HostedLive, { excludeTestServices: true })("Interactive account isolation", (it) => {
++  it.effect(scenarios.interactiveAccountIsolation.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const fixture = yield* interactiveIsolationFixture();
++        const evidence = yield* Evidence;
++        const legacy = yield* fixture.connectOAuth();
++        const previous = yield* fixture.account(legacy),
++          links = yield* fixture.links();
++        expect(links).toContainEqual(["aws", legacy]);
++        yield* fixture.refuse;
++        const pending = yield* fixture.pending();
++        const before = yield* fixture.counts;
++        const started = yield* fixture.start(pending.id);
++        assertInteractivePrivate(started.body);
++        const after = yield* fixture.counts;
++        // Retain the actual public failure before the RED assertion exits the scenario.
++        yield* evidence.json("interactive-start-isolation.json", {
++          slot: "identityCenter",
++          legacy,
++          status: started.status,
++          response: started.body,
++          deltas: {
++            refreshes: after.refreshes - before.refreshes,
++            exchanges: after.exchanges - before.exchanges,
++            reads: after.reads - before.reads,
++            writes: after.writes - before.writes,
++            revocations: after.revocations - before.revocations,
++            backendReads: after.backendReads - before.backendReads,
++          },
++        });
++        yield* captureInteractiveIsolation(fixture.pageUrl(pending.id), started.status === 200);
++        expect(started.status, "Unrelated legacy OAuth must not block the setup form").toBe(200);
++        expect(yield* body(Form, started)).toEqual({
++          form: {
++            submitLabel: "Continue",
++            fields: [{ name: "startUrl", label: "Start URL", type: "url" }],
++          },
++        });
++        expect(after.backendReads).toBe(before.backendReads + 1);
++        expect(after.backendAuthorized).toBe(true);
++        expect(after.refreshes - before.refreshes).toBeGreaterThanOrEqual(0);
++        expect(after.refreshes - before.refreshes).toBeLessThanOrEqual(1);
++        expect(after.exchanges).toBe(before.exchanges);
++        expect(after.reads).toBe(before.reads);
++        expect(after.writes).toBe(before.writes);
++        expect(after.revocations).toBe(before.revocations);
++        expect(yield* fixture.links()).toEqual(links);
++        expect(yield* fixture.account(legacy)).toEqual(previous);
++        const publicConnection = yield* fixture.connection(pending.id);
++        assertInteractivePrivate(publicConnection.body);
++        expect(publicConnection.status).toBe(200);
++
++        const strict = yield* fixture.strict();
++        assertInteractivePrivate(strict.body);
++        yield* evidence.json("interactive-isolation-strict-call.json", {
++          status: strict.status,
++          response: strict.body,
++        });
++        expect(
++          strict.status,
++          "Ordinary tool calls must still reject the broken OAuth account",
++        ).toBe(502);
++        expect(yield* body(StrictFailure, strict)).toEqual({
++          _tag: "OAuthRenewalFailed",
++          account: legacy,
++          reason: "client_rejected",
++          cause: { stage: "refresh", status: 400, providerError: "invalid_client" },
++        });
++        const afterStrict = yield* fixture.counts;
++        expect(afterStrict.reads).toBe(before.reads);
++        expect(afterStrict.writes).toBe(before.writes);
++        expect(afterStrict.revocations).toBe(before.revocations);
++        expect(yield* fixture.links()).toEqual(links);
++        expect(yield* fixture.account(legacy)).toEqual(previous);
++        const cancelled = yield* fixture.cancel(pending.id);
++        assertInteractivePrivate(cancelled.body);
++        expect(cancelled.status).toBe(200);
++      }),
++    ),
++  );
++
++  it.effect(scenarios.interactiveAccountStartReceipts.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const evidence = yield* Evidence;
++        const receipts = yield* Effect.forEach(
++          [
++            { fault: "none", boundary: "context", cause: "account_renewal" },
++            { fault: "handler", boundary: "handler", cause: "handler_failed" },
++            { fault: "output", boundary: "output", cause: "invalid_output" },
++          ] as const,
++          (row) =>
++            Effect.scoped(
++              Effect.gen(function* () {
++                const fixture = yield* interactiveIsolationFixture(row.fault);
++                const own =
++                  row.boundary === "context"
++                    ? yield* fixture.connectOAuth("identityCenter")
++                    : undefined;
++                const previous = own === undefined ? undefined : yield* fixture.account(own);
++                const links = yield* fixture.links();
++                if (own !== undefined) yield* fixture.refuse;
++                const pending = yield* fixture.pending();
++                const before = yield* fixture.counts;
++                const failed = yield* fixture.start(pending.id);
++                assertInteractivePrivate(failed.body);
++                const after = yield* fixture.counts;
++                yield* evidence.json(`interactive-start-${row.boundary}.json`, {
++                  status: failed.status,
++                  response: failed.body,
++                  backendReads: after.backendReads - before.backendReads,
++                });
++                expect(failed.status, `${row.boundary} must return a typed sign-in failure`).toBe(
++                  422,
++                );
++                const failure = yield* body(Failure, failed);
++                const raw = yield* body(RawReceipt, failed);
++                expect(Object.keys(raw.receipt).sort()).toEqual(
++                  [
++                    "boundary",
++                    "cause",
++                    "errorClass",
++                    "phase",
++                    "retryable",
++                    "step",
++                    ...(row.boundary === "context" ? ["oauthRenewal"] : []),
++                  ].sort(),
++                );
++                expect(failure.receipt).toMatchObject({
++                  step: "start",
++                  boundary: row.boundary,
++                  cause: row.cause,
++                });
++                if (row.boundary === "context")
++                  expect(failure.receipt.oauthRenewal).toEqual({
++                    reason: "client_rejected",
++                    cause: { stage: "refresh", status: 400, providerError: "invalid_client" },
++                  });
++                expect(after.backendReads - before.backendReads).toBe(
++                  row.boundary === "context" ? 0 : 1,
++                );
++                expect(after.backendAuthorized).toBe(true);
++                expect(after.reads).toBe(before.reads);
++                expect(after.writes).toBe(before.writes);
++                expect(after.revocations).toBe(before.revocations);
++                expect(yield* fixture.links()).toEqual(links);
++                if (own !== undefined) expect(yield* fixture.account(own)).toEqual(previous);
++                yield* captureInteractiveIsolation(fixture.pageUrl(pending.id), false, {
++                  cause: row.cause,
++                  description:
++                    row.boundary === "context"
++                      ? "The service did not accept the sign-in setup used to renew an account needed for this step."
++                      : row.boundary === "handler"
++                        ? "The app's code for this step stopped with an error."
++                        : "The app returned a result in the wrong format.",
++                });
++                const publicConnection = yield* fixture.connection(pending.id);
++                assertInteractivePrivate(publicConnection.body);
++                expect(publicConnection.status).toBe(200);
++                const cancelled = yield* fixture.cancel(pending.id);
++                assertInteractivePrivate(cancelled.body);
++                expect(cancelled.status).toBe(200);
++                return failure.receipt;
++              }),
++            ),
++          { concurrency: 1 },
++        );
++        expect(
++          new Set(receipts.map((receipt) => `${receipt.boundary}/${receipt.cause}`)).size,
++        ).toBe(3);
++      }),
++    ),
++  );
++});
+diff --git a/packages/apps/src/implementation/connect-failure.ts b/packages/apps/src/implementation/connect-failure.ts
+new file mode 100644
+index 0000000..e675ba6
+--- /dev/null
++++ b/packages/apps/src/implementation/connect-failure.ts
+@@ -0,0 +1,15 @@
++/** Connect failures cross the runtime as closed classes, never the handler's message. */
++import { AppDatabaseError, DatabaseLimitExceeded } from "@executor-js/app-data/contracts";
++import { Schema } from "effect";
++import { HostOperationFailed } from "../contracts/host.ts";
++
++export const connectFailure = (error: unknown) =>
++  Schema.is(AppDatabaseError)(error) || Schema.is(DatabaseLimitExceeded)(error)
++    ? new HostOperationFailed({ source: "storage", code: "interactive.storage" })
++    : error instanceof TypeError
++      ? new HostOperationFailed({
++          source: "app",
++          code: "interactive.type_error",
++          errorName: "TypeError",
++        })
++      : new HostOperationFailed({ source: "app", code: "interactive.handler_failed" });
+diff --git a/packages/apps/src/implementation/connect.ts b/packages/apps/src/implementation/connect.ts
+index c4adfad..fbf6970 100644
+--- a/packages/apps/src/implementation/connect.ts
++++ b/packages/apps/src/implementation/connect.ts
+@@ -26,6 +26,7 @@ import {
+ import { JsonValue } from "../contracts/schema.ts";
+ import { fromPromise, method, type PromiseMethods } from "./authoring.ts";
+ import type { Sql } from "../contracts/sql.ts";
++import { connectFailure } from "./connect-failure.ts";
+ 
+ type Slots<R extends AppRequirements> = RequirementSlots<R>["app"] & RequirementSlots<R>["user"];
+ type Methods<P> = P extends Provider<infer A> | ManyAccounts<infer A>
+@@ -200,6 +201,6 @@ export const dispatchConnect = <C>(
+       Schema.is(HostInputInvalid)(error) ||
+       Schema.is(HostOutputInvalid)(error)
+         ? error
+-        : new HostOperationFailed({}),
++        : connectFailure(error),
+     ),
+   );
+diff --git a/packages/sdk/src/contracts/interactive-accounts.ts b/packages/sdk/src/contracts/interactive-accounts.ts
+index 41970c8..2e03a5f 100644
+--- a/packages/sdk/src/contracts/interactive-accounts.ts
++++ b/packages/sdk/src/contracts/interactive-accounts.ts
+@@ -6,6 +6,9 @@ import { InteractiveInstructions, AccountInfo } from "apps/contracts";
+ import { UserFacingError } from "@executor-js/utils/user-facing-error";
+ import { Account } from "./account.ts";
+ import type { AppAccounts } from "./apps.ts";
++import { OAuthCheckEvidence } from "./account-check-failure.ts";
++import { RuntimeFailure } from "./runtime.ts";
++import { interactiveStepPresentation } from "./interactive-step-presentation.ts";
+ import {
+   AppId,
+   VersionId,
+@@ -41,6 +44,29 @@ export const AcquisitionFailureReceipt = /* @__PURE__ */ (() =>
+       "internal",
+     ]),
+     retryable: Schema.Boolean,
++    step: Schema.optionalKey(
++      Schema.Literals(["start", "status", "submit", "cancel", "check", "remove"]),
++    ),
++    boundary: Schema.optionalKey(Schema.Literals(["context", "runtime", "handler", "output"])),
++    cause: Schema.optionalKey(
++      Schema.Literals([
++        "account_reconnect",
++        "account_renewal",
++        "handler_failed",
++        "type_error",
++        "invalid_output",
++        "storage",
++        "access_denied",
++        "timeout",
++        "transport",
++        "runtime_failed",
++        "operation_missing",
++        "invalid_input",
++        "unknown",
++      ]),
++    ),
++    oauthRenewal: Schema.optionalKey(OAuthCheckEvidence),
++    runtimeReason: Schema.optionalKey(RuntimeFailure),
+   }))();
+ export type AcquisitionFailureReceipt = typeof AcquisitionFailureReceipt.Type;
+ 
+@@ -55,35 +81,38 @@ export const InteractiveConnectionFailed = /* @__PURE__ */ (() =>
+     recorded: ({ receipt }) =>
+       receipt === undefined
+         ? "InteractiveConnectionFailed"
+-        : `Acquisition ${receipt.phase}: ${receipt.errorClass}`,
+-    presentation: ({ receipt }) => ({
+-      title: "Sign-in could not finish",
+-      description:
+-        receipt === undefined
+-          ? "The app could not complete this sign-in step."
+-          : receipt.errorClass === "binding_changed"
+-            ? "A newer sign-in replaced this account connection."
+-            : receipt.errorClass === "invalid_code"
+-              ? "Paste the code xAI shows after sign-in, or a URL containing that code. The consent page address does not contain a code."
+-              : receipt.errorClass === "runtime_unhealthy"
+-                ? "The sign-in backend is temporarily unhealthy."
+-                : receipt.errorClass === "home_rejected"
+-                  ? "The sign-in backend rejected this step."
+-                  : receipt.errorClass === "timeout"
+-                    ? "The sign-in backend did not answer in time."
+-                    : `The sign-in backend could not finish the ${receipt.phase.replaceAll("_", " ")} step.`,
+-      retryable: receipt?.retryable ?? false,
+-      recovery: {
+-        action:
+-          receipt?.errorClass === "invalid_code"
+-            ? "Correct the code and try again in this sign-in."
+-            : receipt?.retryable
+-              ? "Try again after the sign-in backend recovers."
+-              : "Cancel this sign-in and start a new connection.",
+-        instructions:
+-          "Inspect the app's interactive connection handlers and backend. Keep its session private. Start a fresh connection after resolving the failure.",
++        : receipt.step === undefined
++          ? `Acquisition ${receipt.phase}: ${receipt.errorClass}`
++          : `Interactive ${receipt.step}: ${receipt.boundary ?? "unknown"}/${receipt.cause ?? "unknown"}`,
++    presentation: ({ receipt }) =>
++      interactiveStepPresentation(receipt) ?? {
++        title: "Sign-in could not finish",
++        description:
++          receipt === undefined
++            ? "The app could not complete this sign-in step."
++            : receipt.errorClass === "binding_changed"
++              ? "A newer sign-in replaced this account connection."
++              : receipt.errorClass === "invalid_code"
++                ? "Paste the code xAI shows after sign-in, or a URL containing that code. The consent page address does not contain a code."
++                : receipt.errorClass === "runtime_unhealthy"
++                  ? "The sign-in backend is temporarily unhealthy."
++                  : receipt.errorClass === "home_rejected"
++                    ? "The sign-in backend rejected this step."
++                    : receipt.errorClass === "timeout"
++                      ? "The sign-in backend did not answer in time."
++                      : `The sign-in backend could not finish the ${receipt.phase.replaceAll("_", " ")} step.`,
++        retryable: receipt?.retryable ?? false,
++        recovery: {
++          action:
++            receipt?.errorClass === "invalid_code"
++              ? "Correct the code and try again in this sign-in."
++              : receipt?.retryable
++                ? "Try again after the sign-in backend recovers."
++                : "Cancel this sign-in and start a new connection.",
++          instructions:
++            "Inspect the app's interactive connection handlers and backend. Keep its session private. Start a fresh connection after resolving the failure.",
++        },
+       },
+-    }),
+   }))();
+ export type InteractiveConnectionFailed = typeof InteractiveConnectionFailed.Type;
+ 
+diff --git a/packages/sdk/src/contracts/interactive-step-presentation.ts b/packages/sdk/src/contracts/interactive-step-presentation.ts
+new file mode 100644
+index 0000000..ad44d26
+--- /dev/null
++++ b/packages/sdk/src/contracts/interactive-step-presentation.ts
+@@ -0,0 +1,180 @@
++/** Step-specific recovery, using only closed diagnostics retained by the host. */
++import type { ErrorPresentation } from "@executor-js/utils/user-facing-error";
++
++import type { AcquisitionFailureReceipt } from "./interactive-accounts.ts";
++
++type StepReceipt = AcquisitionFailureReceipt;
++type Step = NonNullable<StepReceipt["step"]>;
++type Boundary = NonNullable<StepReceipt["boundary"]>;
++type Cause = NonNullable<StepReceipt["cause"]>;
++
++const steps: Record<Step, { readonly title: string; readonly verb: string }> = {
++  start: { title: "Sign-in could not start", verb: "start sign-in" },
++  status: { title: "Could not check sign-in progress", verb: "check sign-in progress" },
++  submit: { title: "Sign-in could not finish", verb: "finish sign-in" },
++  cancel: { title: "Could not cancel sign-in", verb: "cancel sign-in" },
++  check: { title: "Could not check this account", verb: "check this account" },
++  remove: { title: "Could not remove this account", verb: "remove this account" },
++};
++
++const boundaries: Record<Boundary, string> = {
++  context: "while preparing the request",
++  runtime: "in the app's runtime",
++  handler: "in the app's code",
++  output: "while reading the app's result",
++};
++
++type CauseCopy = {
++  readonly description: (step: Step, boundary: Boundary | undefined) => string;
++  /** Text when the receipt is retryable. Omitted means a retry cannot help. */
++  readonly retry?: string;
++  readonly fixed: (step: Step) => string;
++  readonly investigate: string;
++};
++
++const appFix = "The app needs a fix. Trying again will not help.";
++
++const causes: Record<Cause, CauseCopy> = {
++  account_reconnect: {
++    description: () => "An account this step depends on needs to be reconnected.",
++    fixed: () => "Reconnect that account from Accounts, then try again.",
++    investigate:
++      "Identify the dependency account whose health requires reconnection. Do not touch healthy accounts.",
++  },
++  account_renewal: {
++    description: () =>
++      "Access for an account this step depends on could not be renewed. The service may be unavailable, or it did not accept the renewal.",
++    retry: "Try again in a few minutes. If it keeps failing, check that account in Accounts.",
++    fixed: () => "Check that account in Accounts before trying again.",
++    investigate:
++      "Renewal failed. Distinguish a client-side refusal from a service outage. Do not treat it as an ended grant without evidence.",
++  },
++  handler_failed: {
++    description: () => "The app's code for this step stopped with an error.",
++    retry: "Try again. If it fails the same way, the app needs a fix.",
++    fixed: () => "The app needs a fix before this step can work.",
++    investigate: "Inspect the app's handler for this step and its logs.",
++  },
++  type_error: {
++    description: () => "The app's code for this step has a bug.",
++    fixed: () => appFix,
++    investigate: "The handler threw a TypeError. Find and fix the programming error.",
++  },
++  invalid_output: {
++    description: () => "The app returned a result in the wrong format.",
++    fixed: () => appFix,
++    investigate: "The handler's result failed its output schema. Compare it with the contract.",
++  },
++  storage: {
++    description: () => "Saved state for this step could not be read or written.",
++    retry: "Try again in a moment.",
++    fixed: () => "Try again later. Report it if it keeps happening.",
++    investigate: "Check the connection state storage for this step.",
++  },
++  access_denied: {
++    description: () => "Access was denied during this step.",
++    retry: "Try again. If it keeps failing, check this account's permissions.",
++    fixed: () => "Check this account's permissions, then try again.",
++    investigate:
++      "Find which party denied access. Do not assume the provider or revoked credentials.",
++  },
++  timeout: {
++    description: () => "This step did not finish in time.",
++    retry: "Try again.",
++    fixed: () => "Try again later.",
++    investigate: "Find which call in this step exceeded its deadline.",
++  },
++  transport: {
++    description: () => "A network request in this step failed before an answer arrived.",
++    retry: "Try again.",
++    fixed: () => "Try again later.",
++    investigate: "A request in this step got no response. Check network and runtime connectivity.",
++  },
++  runtime_failed: {
++    description: () => "The app stopped running before this step finished.",
++    retry: "Try again in a moment.",
++    fixed: () => "Try again later. If it keeps failing, the app needs a fix.",
++    investigate: "Inspect the app runtime's health and its exit for this step.",
++  },
++  operation_missing: {
++    description: (step) => `This app does not include a way to ${steps[step].verb}.`,
++    fixed: () => "The app needs an update. Trying again will not help.",
++    investigate: "The installed app version declares no handler for this step.",
++  },
++  invalid_input: {
++    description: (step) =>
++      step === "submit"
++        ? "The app did not accept what you entered."
++        : "The app did not accept the details for this step.",
++    fixed: (step) =>
++      step === "submit"
++        ? "Check what you entered and try again."
++        : "Check the details and try again.",
++    investigate: "The handler rejected its input. Compare the input with the method's form.",
++  },
++  unknown: {
++    description: (_, boundary) =>
++      boundary === undefined
++        ? "The cause was not recorded."
++        : `It failed ${boundaries[boundary]}. The cause was not recorded.`,
++    retry: "Try again. Report it if it fails the same way.",
++    fixed: () => "Report it if it keeps happening.",
++    investigate: "No cause was recorded. Use the step and boundary to find the failing call.",
++  },
++};
++
++const renewalDescriptions = {
++  client_rejected:
++    "The service did not accept the sign-in setup used to renew an account needed for this step.",
++  renewal_rejected:
++    "The service rejected a request to renew access for an account needed for this step.",
++  rate_limited: "The service is limiting requests to renew an account needed for this step.",
++  service_unavailable:
++    "The service was unavailable while renewing access for an account needed for this step.",
++  incompatible_response:
++    "The service returned an access renewal response that this app could not use.",
++};
++const runtimeDescriptions = {
++  "cold-start": "The app could not start.",
++  memory: "The app ran out of memory.",
++  cpu: "The app used too much processing time.",
++  timeout: "The app did not answer in time.",
++  overloaded: "The app is too busy to run this step.",
++  reset: "The app was restarted before this step finished.",
++  disconnected: "The connection to the app was lost.",
++  hung: "The app stopped responding.",
++  internal: "The app's runtime failed.",
++  "invalid-reply": "The app returned a result this server could not read.",
++  "too-large": "The app sent or received more data than this step allows.",
++  data: "The app's saved state could not be accessed.",
++  build: "The app's installed build could not be read.",
++  unsupported: "The app's installed build is incompatible with this server.",
++  managed: "The app needs an update before it can use this account's sign-in.",
++  unrecognized: "The app stopped for an unrecognized runtime reason.",
++} satisfies Record<NonNullable<StepReceipt["runtimeReason"]>, string>;
++
++/** Step-aware copy. Undefined keeps the existing presentation for receipts without a step. */
++export const interactiveStepPresentation = (
++  receipt: StepReceipt | undefined,
++): ErrorPresentation | undefined => {
++  if (receipt?.step === undefined) return undefined;
++  if (receipt.errorClass === "binding_changed" || receipt.errorClass === "invalid_code")
++    return undefined;
++  const { step, boundary } = receipt;
++  const cause = causes[receipt.cause ?? "unknown"];
++  const retry = receipt.retryable ? cause.retry : undefined;
++  return {
++    title: steps[step].title,
++    description:
++      receipt.oauthRenewal?.reason !== undefined
++        ? renewalDescriptions[receipt.oauthRenewal.reason]
++        : receipt.runtimeReason !== undefined
++          ? runtimeDescriptions[receipt.runtimeReason]
++          : cause.description(step, boundary),
++    retryable: retry !== undefined,
++    recovery: {
++      action: retry ?? cause.fixed(step),
++      instructions: `The ${step} step failed at the ${boundary ?? "unrecorded"} boundary with cause ${receipt.cause ?? "unknown"}. ${cause.investigate} Safe renewal evidence: ${JSON.stringify(receipt.oauthRenewal ?? {})}. Runtime reason: ${receipt.runtimeReason ?? "not recorded"}. Keep the session private.`,
++    },
++  };
++};
+diff --git a/packages/sdk/src/implementation/interactive-accounts.ts b/packages/sdk/src/implementation/interactive-accounts.ts
+index 12715b1..561a1d3 100644
+--- a/packages/sdk/src/implementation/interactive-accounts.ts
++++ b/packages/sdk/src/implementation/interactive-accounts.ts
+@@ -41,6 +41,7 @@ import {
+   interactiveStepMillis,
+   saveInteractiveAccount,
+ } from "./interactive-runner.ts";
++import { interactiveStepFailure } from "./interactive-step-failure.ts";
+ import type { makeAcquisitionConnect } from "./account-acquisition-connect.ts";
+ import { AccountAcquisitionUnavailable } from "../contracts/account-acquisition-driver.ts";
+ 
+@@ -144,7 +145,7 @@ export const makeInteractiveAccounts = (
+         return { state: "connected" as const, account: existing.state.account };
+       const previous = pendingInteractive(existing);
+       if (previous?.failed !== undefined) {
+-        if (previous.failureReceipt !== undefined)
++        if (previous.failureReceipt !== undefined && previous.driver !== undefined)
+           return yield* new InteractiveConnectionFailed({
+             reason: "step",
+             receipt: previous.failureReceipt,
+@@ -180,7 +181,11 @@ export const makeInteractiveAccounts = (
+       // Retain the actual invocation context before the handler can race with app deletion.
+       const invoke = yield* prepareContext(input, claimed.row, claimed.session, command);
+       const result = yield* invoke(command).pipe(
+-        Effect.flatMap(Schema.decodeUnknownEffect(InteractiveStatus)),
++        Effect.flatMap((value) =>
++          Schema.decodeUnknownEffect(InteractiveStatus)(value).pipe(
++            Effect.mapError((error) => interactiveStepFailure(command, "output", error)),
++          ),
++        ),
+         Effect.catch((error) => {
+           const changedBinding =
+             Schema.is(AccountAcquisitionUnavailable)(error) && error.reason === "changed";
+@@ -198,7 +203,7 @@ export const makeInteractiveAccounts = (
+                       : ("internal" as const),
+                     retryable: true,
+                   };
+-          if (receipt?.retryable) {
++          if (receipt?.retryable && claimed.session.driver !== undefined) {
+             if (step === "status")
+               return Effect.logWarning("INTERACTIVE_ACQUISITION_RETRY", receipt).pipe(
+                 Effect.as<InteractiveStatus>({ state: "waiting" }),
+@@ -420,7 +425,22 @@ export const makeInteractiveAccounts = (
+             step: "start",
+             input: { method: input.method, ...(savedRef === undefined ? {} : { ref: savedRef }) },
+           }).pipe(
+-            Effect.flatMap(Schema.decodeUnknownEffect(InteractiveStart)),
++            Effect.flatMap((value) =>
++              Schema.decodeUnknownEffect(InteractiveStart)(value).pipe(
++                Effect.mapError((error) =>
++                  interactiveStepFailure(
++                    {
++                      operation: "connect",
++                      slot: claimed.row.target.requirement,
++                      step: "start",
++                      input: { method: input.method },
++                    },
++                    "output",
++                    error,
++                  ),
++                ),
++              ),
++            ),
+             Effect.catch((error) =>
+               recordFailure(
+                 input,
+diff --git a/packages/sdk/src/implementation/interactive-runner.ts b/packages/sdk/src/implementation/interactive-runner.ts
+index 5e452d9..2aff52e 100644
+--- a/packages/sdk/src/implementation/interactive-runner.ts
++++ b/packages/sdk/src/implementation/interactive-runner.ts
+@@ -1,5 +1,5 @@
+ /** Run acquisition handlers through the ordinary app host, with current linked credentials. */
+-import { Clock, type Crypto, Effect, Redacted, Schema } from "effect";
++import { Clock, type Crypto, Effect, Redacted } from "effect";
+ import type { AccountInfo, ConnectCommand, InteractiveStatus } from "apps/contracts";
+ import { AccountId, StorageError, type OwnerId } from "../contracts/shared.ts";
+ import {
+@@ -13,34 +13,16 @@ import type { Runtime } from "../contracts/runtime.ts";
+ import type { ResourceLifecycle } from "../contracts/executor.ts";
+ import type { makeOAuth } from "./oauth.ts";
+ import { defaultLabel, ownedAccount, publicAccount } from "./accounts.ts";
+-import { snapshot, resolve, resolveRemoval } from "./tools.ts";
++import { snapshot, resolveConnecting, resolveRemoval } from "./tools.ts";
+ import { query, type Query } from "./database.ts";
+ import type { ConnectionRow } from "./connection-state.ts";
+ import { interactiveBinding } from "./interactive-state.ts";
+ import { acquisitionBinding, requireAcquisitionBinding } from "./account-acquisition-bindings.ts";
++import { failInteractiveStep } from "./interactive-step-failure.ts";
+ 
+ /** The limit includes credential resolution, app startup and the handler itself. */
+ export const interactiveStepMillis = 15_000;
+ 
+-/**
+- * A failed remove reaches the person as one generic failure, so log the cause's kind for
+- * operators: its tag and reason only, never its values. A removal may still succeed with another
+- * version afterwards.
+- */
+-const removeFailed = (command: ConnectCommand, version: string) => (error: unknown) => {
+-  if (command.step !== "remove") return Effect.void;
+-  const cause =
+-    typeof error === "object" && error !== null ? (error as Record<string, unknown>) : {};
+-  return Effect.logWarning("An interactive account's remove step failed").pipe(
+-    Effect.annotateLogs({
+-      slot: command.slot,
+-      version,
+-      error: typeof cause._tag === "string" ? cause._tag : "unknown",
+-      ...(typeof cause.reason === "string" ? { reason: cause.reason } : {}),
+-    }),
+-  );
+-};
+-
+ /** Resolve the retained handler and credentials before a local mutation can remove their rows. */
+ export const prepareInteractiveContext =
+   (db: Query, runtime: Runtime, resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"]) =>
+@@ -78,7 +60,7 @@ export const prepareInteractiveContext =
+       if (state.app.owner !== input.owner) return yield* new StorageError();
+       const context = yield* input.command.step === "remove"
+         ? resolveRemoval(state, resolveAccount)
+-        : resolve(state, resolveAccount);
++        : resolveConnecting(state, resolveAccount, input.acquisition.slot);
+       return (command: ConnectCommand) =>
+         Effect.gen(function* () {
+           const bound = Redacted.value(context.accounts);
+@@ -105,17 +87,11 @@ export const prepareInteractiveContext =
+           });
+         }).pipe(
+           Effect.timeout(interactiveStepMillis),
+-          Effect.tapError(removeFailed(command, input.acquisition.version)),
+-          Effect.mapError(() => new InteractiveConnectionFailed({ reason: "step" })),
++          Effect.catch(failInteractiveStep({ ...input, command }, "runtime")),
+         );
+     }).pipe(
+       Effect.timeout(interactiveStepMillis),
+-      Effect.tapError(removeFailed(input.command, input.acquisition.version)),
+-      Effect.mapError((error) =>
+-        Schema.is(StorageError)(error)
+-          ? error
+-          : new InteractiveConnectionFailed({ reason: "step" }),
+-      ),
++      Effect.catch(failInteractiveStep(input, "context")),
+       Effect.withSpan("sdk.connections.interactive.invoke"),
+     );
+ 
+diff --git a/packages/sdk/src/implementation/interactive-step-failure.ts b/packages/sdk/src/implementation/interactive-step-failure.ts
+new file mode 100644
+index 0000000..2f36f28
+--- /dev/null
++++ b/packages/sdk/src/implementation/interactive-step-failure.ts
+@@ -0,0 +1,140 @@
++/** Classify before the interactive runner discards a failure's private details. */
++import { Cause, Effect, Schema } from "effect";
++import {
++  HostInputInvalid,
++  HostOperationFailed,
++  HostOperationNotFound,
++  HostOutputInvalid,
++  type ConnectCommand,
++} from "apps/contracts";
++import {
++  InteractiveConnectionFailed,
++  type AcquisitionFailureReceipt,
++  type InteractiveBinding,
++} from "../contracts/interactive-accounts.ts";
++import { OAuthReconnectRequired, OAuthRenewalFailed } from "../contracts/oauth.ts";
++import {
++  RuntimeBuildUnavailable,
++  RuntimeProtocolFailed,
++  RuntimeProtocolUnsupported,
++} from "../contracts/runtime.ts";
++import { CredentialsError, StorageError } from "../contracts/shared.ts";
++import { accountCheckFailure } from "./account-check-failure.ts";
++
++type Boundary = NonNullable<AcquisitionFailureReceipt["boundary"]>;
++type FailureCause = NonNullable<AcquisitionFailureReceipt["cause"]>;
++
++/** Only the framework's fixed codes classify a handler error; arbitrary app codes stay private. */
++const handlerCause = (error: HostOperationFailed): FailureCause => {
++  switch (error.code) {
++    case "interactive.handler_failed":
++      return "handler_failed";
++    case "interactive.type_error":
++      return "type_error";
++    case "interactive.storage":
++      return "storage";
++    default:
++      return "unknown";
++  }
++};
++
++const failureCause = (error: unknown, boundary: Boundary): FailureCause => {
++  if (Cause.isTimeoutError(error)) return "timeout";
++  if (Schema.is(OAuthReconnectRequired)(error)) return "account_reconnect";
++  if (Schema.is(OAuthRenewalFailed)(error)) return "account_renewal";
++  if (Schema.is(CredentialsError)(error) || Schema.is(StorageError)(error)) return "storage";
++  if (Schema.is(HostOutputInvalid)(error) || (boundary === "output" && Schema.isSchemaError(error)))
++    return "invalid_output";
++  if (Schema.is(HostOperationNotFound)(error)) return "operation_missing";
++  if (Schema.is(HostInputInvalid)(error)) return "invalid_input";
++  if (Schema.is(HostOperationFailed)(error)) return handlerCause(error);
++  if (Schema.is(RuntimeProtocolFailed)(error)) {
++    if (error.reason === "timeout") return "timeout";
++    if (error.reason === "invalid-reply") return "invalid_output";
++    if (error.reason === "disconnected") return "transport";
++    return "runtime_failed";
++  }
++  if (Schema.is(RuntimeBuildUnavailable)(error) || Schema.is(RuntimeProtocolUnsupported)(error))
++    return "runtime_failed";
++  return "unknown";
++};
++
++export const interactiveStepFailure = (
++  command: ConnectCommand,
++  boundary: Boundary,
++  error: unknown,
++) => {
++  if (Schema.is(InteractiveConnectionFailed)(error)) return error;
++  const runtime = Schema.is(RuntimeProtocolFailed)(error)
++    ? error.reason
++    : Schema.is(RuntimeBuildUnavailable)(error)
++      ? "build"
++      : Schema.is(RuntimeProtocolUnsupported)(error)
++        ? "unsupported"
++        : undefined;
++  const oauthRenewal =
++    Schema.is(OAuthRenewalFailed)(error) || Schema.is(OAuthReconnectRequired)(error)
++      ? accountCheckFailure(error).oauthRenewal
++      : undefined;
++  const cause = failureCause(error, boundary);
++  const classifiedBoundary =
++    cause === "invalid_output"
++      ? "output"
++      : Schema.is(HostOperationFailed)(error) && cause !== "unknown"
++        ? "handler"
++        : boundary;
++  const receipt: AcquisitionFailureReceipt = {
++    phase: classifiedBoundary === "context" ? "credentials" : "request",
++    errorClass:
++      cause === "timeout"
++        ? "timeout"
++        : cause === "transport"
++          ? "transport"
++          : cause === "invalid_output"
++            ? "invalid_response"
++            : "internal",
++    retryable:
++      cause === "timeout" ||
++      cause === "transport" ||
++      (cause === "runtime_failed" && runtime !== "unsupported") ||
++      cause === "storage" ||
++      (Schema.is(OAuthRenewalFailed)(error) &&
++        (error.reason === "service_unavailable" || error.reason === "rate_limited")),
++    step: command.step,
++    boundary: classifiedBoundary,
++    cause,
++    ...(oauthRenewal === undefined ? {} : { oauthRenewal }),
++    ...(runtime === undefined ? {} : { runtimeReason: runtime }),
++  };
++  return new InteractiveConnectionFailed({ reason: "step", receipt });
++};
++
++/** The log and public failure share the same closed receipt. No cause value is serialized. */
++export const failInteractiveStep =
++  (
++    input: {
++      readonly acquisition: Pick<InteractiveBinding, "app" | "slot" | "version">;
++      readonly command: ConnectCommand;
++    },
++    boundary: Boundary,
++  ) =>
++  (error: unknown) => {
++    const failure = interactiveStepFailure(input.command, boundary, error);
++    const receipt = failure.receipt;
++    return Effect.logWarning("Interactive connection step failed").pipe(
++      Effect.annotateLogs({
++        app: input.acquisition.app,
++        version: input.acquisition.version,
++        slot: input.command.slot,
++        step: input.command.step,
++        boundary: receipt?.boundary ?? boundary,
++        cause: receipt?.cause ?? "unknown",
++        ...(receipt?.oauthRenewal?.reason === undefined
++          ? {}
++          : { renewal: receipt.oauthRenewal.reason }),
++        ...(receipt?.runtimeReason === undefined ? {} : { runtime: receipt.runtimeReason }),
++      }),
++      // A failed storage or authority check remains a host failure, never a partial account.
++      Effect.andThen(Effect.fail(Schema.is(StorageError)(error) ? error : failure)),
++    );
++  };
+diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
+index 9e28f65..66d9473 100644
+--- a/packages/sdk/src/implementation/tools.ts
++++ b/packages/sdk/src/implementation/tools.ts
+@@ -101,6 +101,7 @@ import {
+   type ToolSummary,
+   InvocationPrefetch,
+   InvocationSelection,
++  accountUnavailableError,
+   type PrefetchedInvocation,
+   type PrefetchHost,
+   type ToolRouter,
+@@ -423,6 +424,16 @@ export const resolve = (
+     Effect.catchTag("AccountUseRefused", () => Effect.fail(new StorageError())),
+   );
+ 
++/** Keep healthy dependencies while another slot connects, without passing failed bindings to it. */
++export const resolveConnecting = (
++  state: Effect.Success<ReturnType<typeof snapshot>>,
++  resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"],
++  slot: string,
++) =>
++  resolveFor(state, resolveAccount, "run", undefined, slot).pipe(
++    Effect.catchTag("AccountUseRefused", () => Effect.fail(new StorageError())),
++  );
++
+ /**
+  * Resolve current credentials only to remove what the app registered, as `resolve` does without
+  * app access. A refused account use stays `AccountUseRefused`: it lasts until access changes, so
+@@ -438,6 +449,7 @@ function resolveFor(
+   resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"],
+   use: "run" | "removal",
+   ahead?: RecheckAhead,
++  connecting?: string,
+ ) {
+   return Effect.gen(function* () {
+     const selections: Record<AccountScope, Record<string, HostAccountSlots[string]>> = {
+@@ -457,7 +469,9 @@ function resolveFor(
+       Exit.isSuccess(ahead.result) &&
+       recheckedFor(ahead, state, user, appUses)
+         ? resolveAccount({ kind: "run", app }, selected, ahead.result)
+-        : resolveAccount({ kind: use, app }, selected)
++        : // Discovery's per-account result already rechecks the whole selection's authority.
++          // Connecting consumes its failures here; none reaches the app runtime.
++          resolveAccount({ kind: use, app }, selected, undefined, connecting !== undefined)
+     ).pipe(Effect.mapError(appAccountReconnect(selected)));
+     const credentials = new Map(
+       selected.map(({ account }, index) => [account.id, resolvedFields[index]] as const),
+@@ -467,12 +481,29 @@ function resolveFor(
+         Effect.gen(function* () {
+           const bind = credentials.get(account.id);
+           if (bind === undefined) return yield* new StorageError();
+-          return bind(required.definition);
++          const value = bind(required.definition);
++          if (connecting !== undefined && value.unavailable !== undefined) {
++            if (slot === connecting) return yield* accountUnavailableError(value.unavailable);
++            yield* Effect.logWarning("Connection preparation omitted an unavailable account").pipe(
++              Effect.annotateLogs({
++                app: state.app.id,
++                version: state.version.id,
++                slot,
++                connecting,
++                account: value.id,
++                failure: value.unavailable.failure.kind,
++              }),
++            );
++            return undefined;
++          }
++          return value;
+         }),
+       );
+-      if (required.cardinality === "many") selections[required.scope][slot] = resolved;
++      const available = resolved.filter((account) => account !== undefined);
++      if (required.cardinality === "many") selections[required.scope][slot] = available;
+       else {
+-        const account = resolved[0];
++        const account = available[0];
++        if (account === undefined && connecting !== undefined && slot !== connecting) continue;
+         if (account === undefined)
+           return yield* Effect.fail(
+             new AccountRequired({

@@ -12,6 +12,7 @@ import { gitlabSource, withGitLabInstances } from "./gitlab.ts";
 import { slackSource, withSlackUserAuth } from "./slack.ts";
 import { miroSource, withMiroCapabilities } from "./miro.ts";
 import { elevenlabsSource, withElevenLabsSignIn } from "./elevenlabs.ts";
+import { neonSource } from "./neon.ts";
 import { sentrySource, withSentryConnections } from "./sentry.ts";
 import { vercelSource, withVercelSignIn } from "./vercel.ts";
 import { notionSource } from "./notion.ts";
@@ -25,6 +26,8 @@ import { googleMapsAddition } from "./google-maps/index.ts";
 import { workosSource, withWorkOSSignIn } from "./workos.ts";
 import { planetscaleSource, withPlanetScaleAccess } from "./planetscale.ts";
 import { clerkSource, withClerkSignIn } from "./clerk.ts";
+import { canvaSource } from "./canva.ts";
+import { plaidSource, withPlaidAccess } from "./plaid.ts";
 import { obsidian } from "./obsidian/index.ts";
 
 // AWS source stays in the catalog until maintainers identify a maintained destination.
@@ -96,9 +99,19 @@ export async function handleCatalog(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(elevenlabsSource)),
       { headers },
     );
+  if (relative === "apps/neon.json")
+    return new Response(
+      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(neonSource)),
+      { headers },
+    );
   if (relative === "apps/sentry.json")
     return new Response(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(sentrySource)),
+      { headers },
+    );
+  if (relative === "apps/canva.json")
+    return new Response(
+      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(canvaSource)),
       { headers },
     );
   if (relative === "apps/vercel.json")
@@ -119,6 +132,11 @@ export async function handleCatalog(
   if (relative === "apps/planetscale.json")
     return new Response(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(planetscaleSource)),
+      { headers },
+    );
+  if (relative === "apps/plaid.json")
+    return new Response(
+      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(plaidSource)),
       { headers },
     );
   if (relative === "apps/clerk.json")
@@ -160,14 +178,16 @@ export async function handleCatalog(
     if (!response.ok || response.status !== 200) return unavailable();
     let body: string;
     if (relative === "index.json") {
-      const upstream = withSentryConnections(
-        withPlanetScaleAccess(
-          withClerkSignIn(
-            withWorkOSSignIn(
-              withElevenLabsSignIn(
-                withVercelSignIn(
-                  withMiroCapabilities(
-                    withSlackUserAuth(withGitLabInstances((await response.json()) as Feed)),
+      const upstream = withPlaidAccess(
+        withSentryConnections(
+          withPlanetScaleAccess(
+            withClerkSignIn(
+              withWorkOSSignIn(
+                withElevenLabsSignIn(
+                  withVercelSignIn(
+                    withMiroCapabilities(
+                      withSlackUserAuth(withGitLabInstances((await response.json()) as Feed)),
+                    ),
                   ),
                 ),
               ),

@@ -4,6 +4,7 @@ const accounts = [
   "host-managed-accounts-pool",
   "host-managed-accounts-local",
   "host-managed-accounts-cloud",
+  "host-managed-accounts-runtime",
   "oauth-account-regressions",
   "pool-account-recovery",
   "contributed-accounts",
@@ -25,6 +26,7 @@ const accounts = [
   "planetscale-sign-in",
   "vercel-sign-in",
   "elevenlabs-sign-in",
+  "neon-key-reuse",
   "mcp-apps",
   "production-ops",
   "production-ops-migrations",
@@ -43,6 +45,7 @@ export const heavyJobs = [
   "host-managed-accounts-pool",
   "host-managed-accounts-local",
   "host-managed-accounts-cloud",
+  "host-managed-accounts-runtime",
   "oauth-account-regressions",
   "pool-account-recovery",
   "google-account-recovery",
@@ -67,6 +70,7 @@ export const heavyJobs = [
   "planetscale-sign-in",
   "vercel-sign-in",
   "elevenlabs-sign-in",
+  "neon-key-reuse",
   "mcp-apps",
   "account-acquisition",
   "account-usage",
@@ -116,11 +120,24 @@ export const sharedInputs = [
 
 export const areas = [
   {
+    paths: ["e2e/browser-fixture-certificate-trust.test.ts"],
+    jobs: ["planetscale-sign-in"],
+  },
+  {
     paths: ["e2e/workos-sign-in.mjs", "e2e/management-signin/**"],
     jobs: ["workos-sign-in", "clerk-sign-in"],
   },
   { paths: ["e2e/clerk-sign-in.mjs", "e2e/clerk-signin/**"], jobs: ["clerk-sign-in"] },
   { paths: ["e2e/gitlab-sign-in.mjs", "e2e/gitlab-signin/**"], jobs: ["gitlab-sign-in"] },
+  {
+    paths: [
+      "e2e/neon-key-reuse.mjs",
+      "e2e/neon-fixture.mjs",
+      "e2e/openapi-fixture.mjs",
+      "src/catalog/neon*",
+    ],
+    jobs: ["neon-key-reuse"],
+  },
   {
     paths: [
       "e2e/planetscale-sign-in.mjs",

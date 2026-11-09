@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { test } from "node:test";
-import { openEnvelope, signPoolToken } from "./token.ts";
-import { policyPrefix } from "./membership-contract.ts";
+import { openEnvelope, signEnvelope, signPoolToken } from "./token.ts";
+import { membershipPrefix, policyPrefix } from "./membership-contract.ts";
 
 const hooks = registerHooks({
   resolve(specifier, context, next) {
@@ -51,15 +51,44 @@ const cases = [
     failure: "response_status",
     backendStatus: 409,
   },
+  {
+    fault: "policy_reason",
+    guard: "native_policy_install",
+    failure: "response_status",
+    backendStatus: 400,
+    reason: "lease_window",
+    leaseMs: 15001,
+  },
+  {
+    fault: "policy_framing",
+    guard: "native_policy_install",
+    failure: "response_status",
+    backendStatus: 400,
+    reason: "json",
+  },
+  {
+    fault: "policy_unknown",
+    guard: "native_policy_install",
+    failure: "response_status",
+    backendStatus: 400,
+  },
   { fault: "policy_ack", guard: "native_policy_install", failure: "invalid_body" },
   { fault: "policy_transport", guard: "native_policy_install", failure: "transport" },
+  {
+    fault: "policy_renewal400",
+    guard: "native_policy_install",
+    failure: "response_status",
+    backendStatus: 400,
+  },
 ] as const;
 
 for (const scenario of cases)
   test(`pool view names ${scenario.fault} without exposing backend text and recovers on retry`, async (t) => {
     const reports: unknown[][] = [];
     t.mock.method(console, "error", (...args: unknown[]) => reports.push(args));
-    let fault = true;
+    let fault = scenario.fault !== "policy_renewal400";
+    let now = Date.now();
+    if (scenario.fault === "policy_renewal400") t.mock.method(Date, "now", () => now);
     const values = new Map<string, unknown>();
     const background: Promise<unknown>[] = [];
     const worker = new PoolContainer(
@@ -90,6 +119,30 @@ for (const scenario of cases)
                 if (fault && scenario.fault === "policy_transport") throw new Error(secret);
                 if (fault && scenario.fault === "policy_status")
                   return new Response(secret, { status: 409 });
+                if (
+                  fault &&
+                  ["policy_reason", "policy_unknown", "policy_framing"].includes(scenario.fault)
+                )
+                  return Response.json(
+                    {
+                      error:
+                        scenario.fault === "policy_framing"
+                          ? "invalid_projection_framing"
+                          : "invalid_projection",
+                      reason:
+                        scenario.fault === "policy_reason"
+                          ? "lease_window"
+                          : scenario.fault === "policy_framing"
+                            ? "json"
+                            : secret,
+                      accountIndex: 4,
+                      leaseMs: 15001,
+                      private: secret,
+                    },
+                    { status: 400 },
+                  );
+                if (fault && scenario.fault === "policy_renewal400")
+                  return Response.json({ error: "invalid_projection", secret }, { status: 400 });
                 if (fault && scenario.fault === "policy_ack")
                   return Response.json({ installed: true, revision: -1, secret });
                 const { projection } = (await request.json()) as { projection: string };
@@ -166,6 +219,39 @@ for (const scenario of cases)
           headers: { authorization: `Bearer ${token}`, "x-signalbox-caller": claims.owner },
         }),
       );
+    if (scenario.fault === "policy_renewal400") {
+      assert.equal((await read()).status, 200);
+      fault = true;
+      now += 2 * 60 * 60_000;
+      const retained = await read();
+      assert.equal(retained.status, 200, await retained.clone().text());
+      assert.equal(((await retained.json()) as { accounts: unknown[] }).accounts.length, 1);
+      assert.deepEqual(reports, [
+        [
+          "pool_guard_failure",
+          {
+            guard: "native_policy_install",
+            failure: "response_status",
+            backendStatus: 400,
+          },
+        ],
+      ]);
+      const reserved = await worker.fetch(
+        new Request("https://pool.invalid/pool/v1/membership", {
+          method: "POST",
+          body: JSON.stringify({
+            envelope: await signEnvelope(signingKey, membershipPrefix, {
+              pool: claims.pool,
+              organization: claims.organization,
+              at: now,
+              expiresAt: now + 30_000,
+            }),
+          }),
+        }),
+      );
+      assert.equal(reserved.status, 503);
+      reports.length = 0;
+    }
     const failed = await read();
     assert.equal(failed.status, 503);
     assert.deepEqual(await failed.json(), {
