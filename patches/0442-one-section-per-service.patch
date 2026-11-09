@@ -719,7 +719,7 @@ diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/package
 diff --git a/packages/ui/src/implementation/dashboard/name-account.tsx b/packages/ui/src/implementation/dashboard/name-account.tsx
 --- a/packages/ui/src/implementation/dashboard/name-account.tsx
 +++ b/packages/ui/src/implementation/dashboard/name-account.tsx
-@@ -136,8 +136,15 @@ export function NameAccountForm<E>({
+@@ -136,8 +136,17 @@ export function NameAccountForm<E>({
    const offered = identity?.resolving === false ? identity.name?.slice(0, 120) : undefined;
    const [suggestion, setSuggestion] = useState<string>();
    if (suggestion === undefined && offered !== undefined) setSuggestion(offered);
@@ -731,13 +731,15 @@ diff --git a/packages/ui/src/implementation/dashboard/name-account.tsx b/package
 +  const prefilled =
 +    provider === undefined ? undefined : providerAccountTitle(account, provider.definition);
 +  const label = draft ?? authored ?? suggestion ?? offered ?? prefilled ?? "";
-+  // An untouched default names nothing yet, so saving still waits for the check that may name it.
-+  const unnamed = label.trim() === "" || (draft === undefined && label === prefilled);
++  // An untouched default names nothing yet, so saving still waits for the check that may name it. A
++  // name someone authored is never replaced by the check, so it never waits.
++  const unnamed =
++    label.trim() === "" || (draft === undefined && authored === undefined && label === prefilled);
 +  const waiting = identity?.resolving && unnamed;
    const status = identity?.resolving
      ? "Checking account…"
      : identity?.failed && !authored && !suggestion && !offered
-@@ -158,8 +165,11 @@ export function NameAccountForm<E>({
+@@ -158,8 +167,11 @@ export function NameAccountForm<E>({
          const next = label.trim();
          if (pending || waiting) return;
          const described = accountDescriptionValue(description);
@@ -894,21 +896,17 @@ diff --git a/e2e/support/name-account.ts b/e2e/support/name-account.ts
 diff --git a/e2e/support/name-account-identity.ts b/e2e/support/name-account-identity.ts
 --- a/e2e/support/name-account-identity.ts
 +++ b/e2e/support/name-account-identity.ts
-@@ -144,10 +144,12 @@ export const nameAccountIdentityJourney = (width: number) =>
+@@ -144,7 +144,9 @@ export const nameAccountIdentityJourney = (width: number) =>
      yield* waitForEmail;
      yield* capture("settled");
      yield* evidence.json("initial-name-states.json", { pending, settled: yield* state });
 -    expect(pending.value, "a generated saved label never prefills the pending name").toBe("");
-+    // The pending name offers the title the account gets anyway, never its generated label, and
-+    // saving it keeps that label, so it need not wait for the check.
++    // The pending name offers the default title, but Save waits for the check that may name it.
++    // Keeping the untouched default after that check still preserves its generated label.
 +    expect(pending.value).toBe("OpenAI Subscription");
      expect(pending.placeholder).toBe("OpenAI Subscription");
      expect(pending.statuses).toEqual(["Checking account…"]);
--    expect(pending.disabled).toBe(true);
-+    expect(pending.disabled).toBe(false);
-     expect((yield* state).statuses).toEqual([]);
-     yield* dismiss;
- 
+     expect(pending.disabled).toBe(true);
 @@ -161,7 +163,8 @@ export const nameAccountIdentityJourney = (width: number) =>
      );
      yield* failure;
