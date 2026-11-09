@@ -3645,6 +3645,10 @@
       "entry": "plaid",
       "package": "@executor.sh/plaid",
       "methods": {
+        "clientCredentials": {
+          "kind": "deferred",
+          "message": "Use your Plaid Production client ID and secret. Production approval for at least one product is required; this method does not use browser sign-in."
+        },
         "oauth": {
           "kind": "deferred",
           "message": "Signalbox has not verified one-click sign-in for Plaid yet. You can connect with your own OAuth app."
