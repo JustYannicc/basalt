@@ -5,6 +5,7 @@ import { runtimeRecoveryPath, runtimeRecoveryPrefix } from "../../src/pool/runti
 import { signEnvelope } from "../../src/pool/token.ts";
 import { providerPins, observedPlan, pinDrift } from "./inventory.ts";
 import { recoveryPlanDigest, RecoveryWorkflowRefusal, type RecoveryPlan } from "./plan.ts";
+import type { AutomaticSample } from "../../src/pool/automatic-recovery.ts";
 
 const Receipt = Schema.Struct({
   operationId: Schema.String,
@@ -46,9 +47,10 @@ interface Dependencies {
   signingKey?: string;
   directory: string;
   now?: () => number;
+  automatic?: { pool: string; selection: string; samples: readonly AutomaticSample[] };
 }
 
-async function responseJson(response: Response) {
+export async function responseJson(response: Response) {
   if (!response.body) throw new RecoveryWorkflowRefusal("runtime-reply-empty");
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -151,7 +153,7 @@ export async function runReviewedRecovery(
   const at = deps.now?.() ?? Date.now();
   const envelope = await signEnvelope(deps.signingKey, runtimeRecoveryPrefix, {
     version: 1,
-    action: "restart-reviewed",
+    action: deps.automatic ? "restart-automatic" : "restart-reviewed",
     operationId: plan.operationId,
     release: plan.release,
     instanceId: plan.instanceId,
@@ -159,6 +161,7 @@ export async function runReviewedRecovery(
     bootId: plan.bootId,
     at,
     expiresAt: at + 60_000,
+    ...deps.automatic,
   });
   let receipt: Receipt;
   try {

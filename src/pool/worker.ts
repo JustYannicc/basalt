@@ -36,6 +36,8 @@ import { probePool } from "./availability.ts";
 import { availabilityCron, validProbeTarget } from "./availability-config.ts";
 import { availabilityRuntime } from "./availability-runtime.ts";
 import { runAvailabilityProbe } from "./availability-schedule.ts";
+import { observeAutomaticPool } from "./automatic-observation.ts";
+import { automaticRecoveryAuthority } from "./automatic-authority.ts";
 import { reportPoolStorage } from "./inventory-storage.ts";
 import { migrateCodexWebSockets, type CodexWebSocketPlan } from "./codex-websockets.ts";
 import { captureHomeRequests } from "./model-history/capture.ts";
@@ -88,6 +90,7 @@ export interface PoolEnvironment extends TelemetryEnv, SentryEnv {
   POOL_DEPLOYMENT_KEY?: string;
   POOL_MODEL_HISTORY_ENABLED?: string;
   POOL_AVAILABILITY_TARGET?: string;
+  POOL_AUTOMATIC_RECOVERY_TARGET?: string;
   TOOLS_SERVICE: Fetcher;
 }
 
@@ -138,6 +141,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         },
       },
       ctx.storage,
+      Date.now,
+      automaticRecoveryAuthority(ctx.storage, env.POOL_AUTOMATIC_RECOVERY_TARGET, (pool) =>
+        this.automaticRecoveryCondition(pool),
+      ),
     );
     this.protection = new RuntimeProtection(this.modelStreams, {
       check: (signal) => {
@@ -308,6 +315,25 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       ),
       membership: (target) => this.memberships.inspect(target),
     });
+  }
+
+  private automaticRecoveryCondition(pool: string) {
+    return observeAutomaticPool(pool, {
+      ...availabilityRuntime(
+        this.ctx.container,
+        this.env.POOL_MANAGEMENT_KEY,
+        this.env.POOL_APP_SIGNING_KEY,
+      ),
+      membership: (target) => this.memberships.inspect(target),
+    });
+  }
+
+  async automaticRecoveryObservation(pool: string) {
+    const [runtime, condition] = await Promise.all([
+      this.recovery.inspect(),
+      this.automaticRecoveryCondition(pool),
+    ]);
+    return { enabled: this.env.POOL_AUTOMATIC_RECOVERY_TARGET === pool, runtime, condition };
   }
 
   async alarm() {
@@ -587,6 +613,14 @@ function modelAuthResponse(status: 401 | 503, error: string): Response {
 export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
   async fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
+    if (path === "/automatic-recovery-observation") {
+      if (request.method !== "GET") return new Response(null, { status: 405 });
+      const pool = new URL(request.url).searchParams.get("pool") ?? undefined;
+      if (!validProbeTarget(pool)) return new Response(null, { status: 400 });
+      return Response.json(await singleton(this.env).automaticRecoveryObservation(pool), {
+        headers: { "Cache-Control": "no-store" },
+      });
+    }
     if (path === "/availability") {
       if (request.method !== "GET") return new Response(null, { status: 405 });
       const pool = new URL(request.url).searchParams.get("pool") ?? undefined;

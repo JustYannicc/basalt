@@ -23,7 +23,10 @@ const {
   PoolContainer: new (
     ctx: object,
     env: object,
-  ) => { availabilityProbe(pool: string): Promise<ProbeResult> };
+  ) => {
+    availabilityProbe(pool: string): Promise<ProbeResult>;
+    automaticRecoveryObservation(pool: string): Promise<unknown>;
+  };
   PoolOperations: {
     prototype: { fetch(this: { env: object }, request: Request): Promise<Response> };
   };
@@ -75,6 +78,9 @@ test("the scheduled Worker executes a passive real pool view and native revision
                 probeTarget = pool;
                 return object.availabilityProbe(pool);
               },
+              automaticRecoveryObservation(pool: string) {
+                return object.automaticRecoveryObservation(pool);
+              },
             };
           },
         };
@@ -83,6 +89,7 @@ test("the scheduled Worker executes a passive real pool view and native revision
   };
   const object = new PoolContainer(
     {
+      id: { toString: () => "a".repeat(64) },
       container: {
         running: true,
         setInactivityTimeout: async () => {},
@@ -141,4 +148,25 @@ test("the scheduled Worker executes a passive real pool view and native revision
   assert.equal(report.headers.get("Cache-Control"), "no-store");
   assert.deepEqual(await report.json(), { ok: true, failures: [] });
   assert.equal(messages.length, 2, "manual reads never send check-ins or change monitoring");
+  const automatic = await PoolOperations.prototype.fetch.call(
+    { env },
+    new Request(`https://operations/automatic-recovery-observation?pool=${state.pool}`),
+  );
+  assert.equal(automatic.status, 200);
+  assert.equal(automatic.headers.get("Cache-Control"), "no-store");
+  const observed = await automatic.json();
+  assert.equal(observed.enabled, false);
+  assert.equal(observed.condition, "healthy");
+  assert.equal(observed.runtime.bootId, "fixture-boot");
+  assert.equal(observed.runtime.instanceId, "a".repeat(64));
+  assert.equal(messages.length, 2);
+  assert.equal(
+    (
+      await worker.fetch(
+        new Request(`https://public/automatic-recovery-observation?pool=${state.pool}`),
+        env,
+      )
+    ).status,
+    404,
+  );
 });
