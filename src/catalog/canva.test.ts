@@ -47,7 +47,7 @@ test("Canva's corrected package serves without its publisher and replays exactly
 test("Canva's served handlers use the new resource and refuse old grants and unapproved writes", () => {
   const output = execFileSync(
     "bun",
-    [new URL("./canva-runtime.fixture.mjs", import.meta.url).pathname, root],
+    [new URL("./tests/canva-runtime.mjs", import.meta.url).pathname, root],
     {
       cwd: root,
       encoding: "utf8",
