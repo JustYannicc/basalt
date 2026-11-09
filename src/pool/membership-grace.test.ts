@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { NativeMemberships } from "./membership.ts";
 import { installNativePolicy } from "./native-policy-install.ts";
 import { modelMembership } from "./model-membership.ts";
+import { NativeStreams } from "./native-streams.ts";
 import {
   membershipPrefix,
   membershipTtlMs,
@@ -21,10 +22,12 @@ function fixture() {
   let now = Date.now();
   let fault: "none" | "install400" | "read" | "reconcile" = "none";
   let selected = ["saved-account"];
+  let actual: string[] | undefined;
   let native = true;
   let installed: NativeMembershipPolicy | undefined;
   const stored = new Map<string, unknown>();
   const aborted: string[] = [];
+  const streams = new NativeStreams();
   const container = {
     getTcpPort: () => ({
       fetch: async (_input: string, init: RequestInit) => {
@@ -64,7 +67,7 @@ function fixture() {
         })),
       };
     },
-    actual: async () => selected,
+    actual: async () => actual ?? selected,
     reconcile: async () => {
       if (fault === "reconcile") throw new Error("Home unavailable");
     },
@@ -72,18 +75,23 @@ function fixture() {
       installNativePolicy(container, { signingKey: key, managementKey: "fixture-only" }, policy),
     abort: (pool: string) => {
       aborted.push(pool);
+      streams.abortPool(pool);
     },
     schedule: async () => {},
   };
   return {
     dependencies,
     aborted,
+    streams,
     installed: () => installed,
     fault: (value: typeof fault) => {
       fault = value;
     },
     select: (value: string[]) => {
       selected = value;
+    },
+    actual: (value: string[] | undefined) => {
+      actual = value;
     },
     native: (value: boolean) => {
       native = value;
@@ -190,6 +198,32 @@ test("a failed first clean installation never creates last-known-good authority"
   f.fault("install400");
   await assert.rejects(memberships.ensure("pool", "organization"));
   await assert.rejects(memberships.authority("pool"), /refreshing/);
+});
+
+test("actual Home membership drift aborts active use before a dirty installation fails with 400", async () => {
+  const f = fixture();
+  const memberships = new NativeMemberships(f.dependencies);
+  await memberships.ensure("pool", "organization");
+  const active = f.streams.acquire("computer", "pool", new AbortController().signal);
+  const other = f.streams.acquire("other-computer", "other-pool", new AbortController().signal);
+  let closed = 0;
+  active.onClose(() => {
+    closed++;
+  });
+  f.actual(["saved-account", "unexpected-account"]);
+  f.fault("install400");
+  f.advance(membershipTtlMs + 1);
+  await assert.rejects(memberships.ensure("pool", "organization"));
+  assert.equal(active.signal.aborted, true);
+  assert.equal(closed, 1);
+  assert.equal(other.signal.aborted, false);
+  await assert.rejects(memberships.authority("pool"), /refreshing/);
+  f.actual(undefined);
+  f.fault("none");
+  await memberships.ensure("pool", "organization");
+  assert.deepEqual((await memberships.authority("pool"))?.accounts, ["saved-account"]);
+  assert.equal(active.signal.aborted, true);
+  other.release();
 });
 
 test("last acknowledged grace survives controller reactivation without extending its deadline", async () => {

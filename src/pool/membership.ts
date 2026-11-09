@@ -260,6 +260,7 @@ export class NativeMemberships {
         };
         state[pool] = next;
         await this.save(state);
+        if (!current.dirty && next.dirty) this.deps.abort(pool);
         return next;
       });
       if (!policy) continue;
