@@ -1,0 +1,36 @@
+{
+  "scenarios": {
+    "accountDiscoveryIsolation": {
+      "fixtures": "actors",
+      "title": "one failed account keeps static and healthy tools visible with its own recovery",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a controlled loopback OAuth issuer to refuse only the synthetic failing account."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises the shared SDK through hosted OAuth and account authority."
+        }
+      },
+      "legacyStorage": true
+    }
+  },
+  "runs": {
+    "accountDiscoveryIsolation": [
+      "declared:self-host"
+    ]
+  },
+  "inputs": [
+    "patches/0436-account-discovery-isolation.patch",
+    "framework-release.ts",
+    ".upstream/packages/sdk/src/implementation/tools.ts",
+    ".upstream/packages/sdk/src/implementation/oauth.ts",
+    ".upstream/packages/sdk/src/implementation/listings.ts",
+    ".upstream/packages/apps/src/implementation/host.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/tools.tsx"
+  ]
+}

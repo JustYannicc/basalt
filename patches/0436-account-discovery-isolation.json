@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-account-discovery-isolation",
+  "file": "0436-account-discovery-isolation.patch",
+  "content_sha256": "93c4b0721949657b5caf615d5fb0da0187e0ce83ac868e933a0e10171e9a7cdd",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
