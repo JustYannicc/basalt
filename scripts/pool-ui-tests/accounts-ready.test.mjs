@@ -947,7 +947,11 @@ test(
                     body,
                     weightPolicyRef ? /published weekly multiplier/ : /plan multiplier/,
                   );
-                  assert.match(body, new RegExp(`Nominal ${weightPolicyRef ? 30 : 60} Pro-eq`));
+                  assert.match(
+                    body,
+                    new RegExp(`Nominal ${weightPolicyRef ? 30 : 60} · reference`),
+                  );
+                  assert.match(body, /Unit: Pro-eq\./);
                   assert.doesNotMatch(body, /Max 20x counted conservatively/);
                 }
               }
