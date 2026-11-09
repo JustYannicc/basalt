@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Upstream sync evidence binds an exact repository commit, validated carry bytes and whole-filename order. Strict replay stops at the first failed carry and retains its failure and unattempted suffix before removing disposable source state. Replay never resets its input checkout or treats a diagnostic conflict resolution as a complete candidate."
+    }
+  }
+}
