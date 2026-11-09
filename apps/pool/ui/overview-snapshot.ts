@@ -4,14 +4,17 @@ import type { PoolView } from "../contract.ts";
 import type { Result } from "../index.ts";
 import type { PoolOverviewResult } from "../overview-contract.ts";
 
-/** A shared end instant is required; distinct capture watermarks are preserved as source freshness. */
+/**
+ * Capacity and usage must cover one range from one usage capture. `partial` and a further page only
+ * mean incomplete coverage. The server marks a changed capture `changed`, and the usage sections
+ * keep their own coverage notes, so coverage never withholds the capacity verdict.
+ */
 export function coherentOverview(
   capacity: PoolCapacityHistory,
   usage: PoolOverviewResult,
   range: { from: string; to: string },
 ): boolean {
   return (
-    !usage.partial &&
     usage.consistency === "consistent" &&
     usage.from === range.from &&
     usage.to === range.to &&
@@ -19,8 +22,6 @@ export function coherentOverview(
     usage.people.to === range.to &&
     usage.models.from === range.from &&
     usage.models.to === range.to &&
-    usage.people.next === null &&
-    usage.models.next === null &&
     usage.people.asOf === usage.models.asOf &&
     usage.people.asOf === usage.asOf &&
     capacity.to === Date.parse(range.to) &&
