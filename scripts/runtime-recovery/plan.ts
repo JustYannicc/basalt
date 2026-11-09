@@ -1,7 +1,9 @@
 import { Schema } from "effect";
 import { canonical, hash } from "../production-ops/artifact.ts";
 
-const uuid = Schema.String.check(Schema.isPattern(/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u));
+const uuid = Schema.String.check(
+  Schema.isPattern(/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u),
+);
 const hex = (length: number) =>
   Schema.String.check(Schema.isPattern(new RegExp(`^[a-f0-9]{${length}}$`, "u")));
 const positive = Schema.Int.check(Schema.isGreaterThan(0));
