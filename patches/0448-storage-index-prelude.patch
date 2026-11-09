@@ -160,3 +160,113 @@ index 8b20ee2ec..3dbd581ea 100644
  
          expect(plans).toEqual(
            [copies.work, copies.bobOld].toSorted().map((copy) => ({ id: copy, status: "copied" })),
+diff --git a/packages/sdk/scripts/check-storage-versions.ts b/packages/sdk/scripts/check-storage-versions.ts
+--- a/packages/sdk/scripts/check-storage-versions.ts
++++ b/packages/sdk/scripts/check-storage-versions.ts
+@@ -5,6 +5,7 @@
+  * tables exist. Loading the storage module runs the check on the real versions; first the same
+  * check runs on check-storage-versions-fixtures.ts, lists it must reject and ones it must accept.
+  */
++import type { AnySchema } from "fumadb-effect/schema";
+ import {
+   IndexOnlyVersionChangesTables,
+   trailingIndexVersions,
+@@ -12,10 +13,19 @@
+   storageSchemas,
+ } from "../src/implementation/storage-migrations.ts";
+ import { currentStorageSchema } from "../src/implementation/storage-current.ts";
+-import { fixtures, type Fixture } from "./check-storage-versions-fixtures.ts";
++import {
++  fixtures,
++  runtimeLayoutFixtures,
++  type Fixture,
++} from "./check-storage-versions-fixtures.ts";
+ 
+-if (storageSchemas.at(-1) !== currentStorageSchema)
+-  throw new Error("Runtime queries must use the migration registry's current schema");
++const runtimeLayoutIsCurrent = (schemas: ReadonlyArray<AnySchema>, current: AnySchema) => {
++  const trailing = trailingIndexVersions(schemas);
++  return schemas.findLast((entry) => !trailing.has(entry.version)) === current;
++};
++
++if (!runtimeLayoutIsCurrent(storageSchemas, currentStorageSchema))
++  throw new Error("Runtime queries must use the migration registry's current table layout");
+ 
+ const outcome = (fixture: Fixture) => {
+   try {
+@@ -33,6 +43,13 @@
+   const actual = outcome(fixture);
+   return actual === expected ? [] : [`${fixture.name}: expected ${expected}, got ${actual}`];
+ });
++for (const fixture of runtimeLayoutFixtures) {
++  const actual = runtimeLayoutIsCurrent(fixture.schemas, fixture.current);
++  if (actual !== fixture.accepts)
++    wrong.push(
++      `${fixture.name}: expected runtime layout ${fixture.accepts ? "accepted" : "rejected"}`,
++    );
++}
+ if (wrong.length > 0) {
+   console.error(
+     "The storage version check is wrong about these fixtures (packages/sdk/scripts/check-storage-versions-fixtures.ts):",
+@@ -45,3 +62,7 @@
+ console.log(
+   `Index-only storage versions change no tables; trailing: ${[...trailingStorageIndexVersions].join(", ") || "none"} (the check rejects ${rejected} fixtures and accepts ${fixtures.length - rejected}).`,
+ );
++
++console.log(
++  `Runtime layout matches the last non-index-only schema (${runtimeLayoutFixtures.length} runtime fixtures checked).`,
++);
+diff --git a/packages/sdk/scripts/check-storage-versions-fixtures.ts b/packages/sdk/scripts/check-storage-versions-fixtures.ts
+--- a/packages/sdk/scripts/check-storage-versions-fixtures.ts
++++ b/packages/sdk/scripts/check-storage-versions-fixtures.ts
+@@ -90,3 +90,50 @@
+     rejects: "1.0.0",
+   },
+ ];
++
++/** Runtime queries use the last table layout, not a trailing index-only version's marker. */
++export const runtimeLayoutFixtures = [
++  { name: "current layout without an index tail", schemas: [base], current: base, accepts: true },
++  {
++    name: "current layout before a validated index tail",
++    schemas: [base, indexOnlyVersion(base, "1.0.1", ownerIndex)],
++    current: base,
++    accepts: true,
++  },
++  {
++    name: "current layout before two validated index versions",
++    schemas: (() => {
++      const first = indexOnlyVersion(withTags, "1.0.2", ownerIndex);
++      return [base, withTags, first, indexOnlyVersion(first, "1.0.3", ownerIndex)];
++    })(),
++    current: withTags,
++    accepts: true,
++  },
++  {
++    name: "stale runtime layout before a new table",
++    schemas: [base, withTags],
++    current: base,
++    accepts: false,
++  },
++  {
++    name: "stale runtime layout before a new table and its index tail",
++    schemas: [base, withTags, indexOnlyVersion(withTags, "1.0.2", ownerIndex)],
++    current: base,
++    accepts: false,
++  },
++  (() => {
++    const index = indexOnlyVersion(base, "1.0.1", ownerIndex);
++    return {
++      name: "index marker used as the runtime layout",
++      schemas: [base, index],
++      current: index,
++      accepts: false,
++    };
++  })(),
++  { name: "missing runtime layout", schemas: [], current: base, accepts: false },
++] satisfies ReadonlyArray<{
++  name: string;
++  schemas: ReadonlyArray<AnySchema>;
++  current: AnySchema;
++  accepts: boolean;
++}>;
