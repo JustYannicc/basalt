@@ -12,6 +12,7 @@ import { gitlabSource, withGitLabInstances } from "./gitlab.ts";
 import { slackSource, withSlackUserAuth } from "./slack.ts";
 import { miroSource, withMiroCapabilities } from "./miro.ts";
 import { elevenlabsSource, withElevenLabsSignIn } from "./elevenlabs.ts";
+import { neonSource } from "./neon.ts";
 import { sentrySource, withSentryConnections } from "./sentry.ts";
 import { vercelSource, withVercelSignIn } from "./vercel.ts";
 import { notionSource } from "./notion.ts";
@@ -96,6 +97,11 @@ export async function handleCatalog(
   if (relative === "apps/elevenlabs.json")
     return new Response(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(elevenlabsSource)),
+      { headers },
+    );
+  if (relative === "apps/neon.json")
+    return new Response(
+      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(neonSource)),
       { headers },
     );
   if (relative === "apps/sentry.json")
