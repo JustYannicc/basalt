@@ -15,9 +15,21 @@ type Requirement = {
 type Entry = readonly [string, Requirement];
 type Method = { slot: string; requirement: Requirement; method: string; label: string };
 type Section = { requirement: string; method: string; title: string };
-const { serviceGroups, serviceMethods, servicePart, serviceTitle, toolLimits } = (await import(
-  new URL("service-groups.ts", dashboard).href
-)) as {
+const {
+  declaresEvery,
+  requirementLimits,
+  serviceGroups,
+  serviceMethods,
+  servicePart,
+  serviceTitle,
+  toolLimits,
+} = (await import(new URL("service-groups.ts", dashboard).href)) as {
+  declaresEvery: (tools: Record<string, string> | undefined, group: readonly Entry[]) => boolean;
+  requirementLimits: (
+    tools: Record<string, string> | undefined,
+    group: readonly Entry[],
+    slot: string,
+  ) => string | undefined;
   serviceGroups: (entries: readonly Entry[], mergeable: (entry: Entry) => boolean) => Entry[][];
   serviceMethods: (methods: readonly Method[]) => Method[];
   servicePart: (group: readonly Entry[], slot: string) => string | undefined;
@@ -214,4 +226,24 @@ test("a row says which declared tool sections it can't run, and only those of it
   );
   assert.equal(toolLimits(declared, group, "planetscale", "token"), undefined);
   assert.equal(toolLimits(undefined, group, "planetscaleSignIn", "signIn"), undefined);
+});
+
+test("a row says which other requirements' tools it can't run, only where all are named", () => {
+  const clerk: Entry[] = [
+    ["signIn", requirement("prv_mcp", "Clerk")],
+    ["clerk", requirement("prv_key", "Clerk")],
+  ];
+  const tools = { signIn: "Clerk account tools", clerk: "Clerk Backend API tools" };
+  assert.equal(declaresEvery(tools, clerk), true);
+  assert.equal(requirementLimits(tools, clerk, "signIn"), "Can't run Clerk Backend API tools.");
+  assert.equal(requirementLimits(tools, clerk, "clerk"), "Can't run Clerk account tools.");
+  // A requirement the catalog doesn't name leaves every row without a claim.
+  assert.equal(declaresEvery({ signIn: "Clerk account tools" }, clerk), false);
+  assert.equal(requirementLimits({ signIn: "Clerk account tools" }, clerk, "clerk"), undefined);
+  assert.equal(requirementLimits(undefined, clerk, "clerk"), undefined);
+  // Requirements that run the same tools never limit each other.
+  assert.equal(
+    requirementLimits({ signIn: "PlanetScale tools", clerk: "PlanetScale tools" }, clerk, "clerk"),
+    undefined,
+  );
 });

@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountPresentation {
+    metadata {
+      constraint "A catalog entry may name the tools each of its app's account requirements runs, by requirement. It describes the app only: it never declares credentials, changes providers or alters saved accounts. Where it names every requirement of a service section, each row says which of the other requirements' tools its account can't run, and each method in the section's connect menu says which tools it reaches. Where it names only some, rows make no such claim. Hosted and local read the field from the catalog entry they already load."
+    }
+  }
+}
