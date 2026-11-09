@@ -193,6 +193,7 @@ interface HistoryIndex {
   unclassifiedAccounts?: { account: string; provider: string }[];
   bankedReceipts?: Record<string, number>;
   demandFrom?: number;
+  demandSince?: number;
   demandShares?: Record<string, Record<string, { week: number; amount: number }[]>>;
   rollingUse?: Record<string, Record<string, RollingUseEvent[]>>;
   rollingChain?: Record<string, Record<string, RollingChainEntry>>;
@@ -660,9 +661,63 @@ export class CapacityHistory {
           dayWrites.set(day, history);
         }
       }
-      const demandShares = structuredClone(index.demandShares ?? {});
-      const rollingUse = structuredClone(index.rollingUse ?? {});
-      const rollingChain = structuredClone(index.rollingChain ?? {});
+      const previous = index.previous ?? [];
+      const priorLatestByKey = new Map(
+        (index.latest ?? previous).map((reading) => [readingKey(reading), reading]),
+      );
+      const latestByKey = new Map(priorLatestByKey);
+      const accountHash = async (account: string) => digest(`${pool}\u0000${account}`);
+      const hashedCurrent = await Promise.all(
+        validCurrent.map(async (reading) => ({
+          ...reading,
+          account: await accountHash(reading.account),
+        })),
+      );
+      for (const reading of hashedCurrent) {
+        for (const [key, old] of latestByKey)
+          if (
+            old.account === reading.account &&
+            old.provider === reading.provider &&
+            old.windowSeconds === reading.windowSeconds &&
+            key !== readingKey(reading)
+          )
+            latestByKey.delete(key);
+        latestByKey.set(readingKey(reading), reading);
+      }
+      const revisions = (readings: Iterable<CapacityReading>) => {
+        const groups = new Map<string, Set<string>>();
+        for (const reading of readings) {
+          const key = groupKey(
+            reading.provider,
+            reading.windowSeconds,
+            reading.mode,
+            reading.unit.id,
+          );
+          const values = groups.get(key) ?? new Set<string>();
+          values.add(reading.revision);
+          groups.set(key, values);
+        }
+        return new Map(
+          [...groups].map(([key, values]) => [key, JSON.stringify([...values].sort())]),
+        );
+      };
+      const oldRevisions = revisions(priorLatestByKey.values());
+      const changedPolicy =
+        hashedCurrent.some((reading) => {
+          const old = priorLatestByKey.get(readingKey(reading));
+          return old !== undefined && old.revision !== reading.revision;
+        }) ||
+        [...revisions(latestByKey.values())].some(
+          ([key, value]) => oldRevisions.has(key) && oldRevisions.get(key) !== value,
+        );
+      // Hourly demand has no revision provenance. Keep displayed history, but exclude the
+      // mixed transition hour and older training when its quota scale changes.
+      const demandSince = changedPolicy
+        ? Math.ceil(snapshot.at / hourMs) * hourMs
+        : index.demandSince;
+      const demandShares = structuredClone(changedPolicy ? {} : (index.demandShares ?? {}));
+      const rollingUse = structuredClone(changedPolicy ? {} : (index.rollingUse ?? {}));
+      const rollingChain = structuredClone(changedPolicy ? {} : (index.rollingChain ?? {}));
       const oldestShareWeek = weekOf(snapshot.at) - 13 * 7 * dayMs;
       const rollingCutoff = snapshot.at - 6 * 60 * 60_000;
       for (const accounts of Object.values(demandShares))
@@ -678,33 +733,10 @@ export class CapacityHistory {
           else if (rollingChain[group]?.[account]?.complete) accounts[account] = [];
           else delete accounts[account];
         }
-      const previous = index.previous ?? [];
-      const accountHash = async (account: string) => digest(`${pool}\u0000${account}`);
       const previousByKey = new Map(previous.map((reading) => [readingKey(reading), reading]));
-      const priorLatestByKey = new Map(
-        (index.latest ?? []).map((reading) => [readingKey(reading), reading]),
-      );
-      const latestByKey = new Map(priorLatestByKey);
-      const hashedCurrent = await Promise.all(
-        validCurrent.map(async (reading) => ({
-          ...reading,
-          account: await accountHash(reading.account),
-        })),
-      );
       const hashedCurrentBySource = new Map(
         validCurrent.map((reading, index) => [readingKey(reading), hashedCurrent[index]!]),
       );
-      for (const reading of hashedCurrent) {
-        for (const [key, old] of latestByKey)
-          if (
-            old.account === reading.account &&
-            old.provider === reading.provider &&
-            old.windowSeconds === reading.windowSeconds &&
-            key !== readingKey(reading)
-          )
-            latestByKey.delete(key);
-        latestByKey.set(readingKey(reading), reading);
-      }
       const nextAccountStates = snapshot.accountStates
         ? await Promise.all(
             snapshot.accountStates.map(async (state) => ({
@@ -1133,18 +1165,21 @@ export class CapacityHistory {
         const observedWeight = samples.reduce((total, sample) => total + sample.reading.full, 0);
         if (expectedWeight <= 0 || observedWeight <= 0) continue;
         for (const sample of samples) {
+          const sampleFrom = Math.max(sample.from, demandSince ?? sample.from);
+          if (sampleFrom >= sample.to) continue;
           const contributionId = await accountHash(sample.reading.account);
           const accounts = (demandShares[group] ??= {});
           const weeks = (accounts[contributionId] ??= []);
           const week = weekOf(sample.to);
           const current = weeks.find((entry) => entry.week === week);
-          if (current) current.amount += sample.delta;
-          else weeks.push({ week, amount: sample.delta });
-          const firstHour = hourOf(sample.from);
+          const contribution = sample.delta * ((sample.to - sampleFrom) / sample.elapsed);
+          if (current) current.amount += contribution;
+          else weeks.push({ week, amount: contribution });
+          const firstHour = hourOf(sampleFrom);
           for (let hour = firstHour; hour < sample.to; hour += hourMs) {
             const overlap = Math.max(
               0,
-              Math.min(sample.to, hour + hourMs) - Math.max(sample.from, hour),
+              Math.min(sample.to, hour + hourMs) - Math.max(sampleFrom, hour),
             );
             if (!overlap) continue;
             const demand = (sample.delta * overlap) / sample.elapsed;
@@ -1301,6 +1336,7 @@ export class CapacityHistory {
         bankedReceipts: Object.fromEntries(bankedReceipts),
         unclassifiedAccounts,
         demandFrom,
+        demandSince,
         demandShares,
         rollingUse,
         rollingChain,
@@ -1365,6 +1401,7 @@ export class CapacityHistory {
           refills: [],
         };
       const first = Math.max(
+        index.demandSince ?? index.fromHour,
         index.demandFrom ?? index.fromHour,
         from ?? index.demandFrom ?? index.fromHour,
       );
@@ -1401,14 +1438,16 @@ export class CapacityHistory {
             a.windowSeconds - b.windowSeconds ||
             a.unit.id.localeCompare(b.unit.id),
         );
-      const trackingSince = index.trackingSince ?? null;
+      const trackingSince = index.demandSince ?? index.trackingSince ?? null;
       const currentWeek = weekOf(index.lastAt);
       const firstWeek =
         trackingSince === null
           ? currentWeek
           : weekOf(trackingSince) + (trackingSince > weekOf(trackingSince) ? 7 * dayMs : 0);
       const completedWeeks = Math.max(0, Math.floor((currentWeek - firstWeek) / (7 * dayMs)));
-      const refills = histories.flatMap((history) => history.refills ?? []);
+      const refills = histories
+        .flatMap((history) => history.refills ?? [])
+        .filter((refill) => refill.at >= first);
       const oldestShareWeek = weekOf(index.lastAt) - 13 * 7 * dayMs;
       const accountDemandTotals: Record<string, Record<string, number>> = {};
       for (const [group, accounts] of Object.entries(index.demandShares ?? {})) {
