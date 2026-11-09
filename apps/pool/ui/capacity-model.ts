@@ -1,4 +1,5 @@
 import { accountPlanName } from "apps";
+import { supportedLimitWindows, type LimitAccount } from "./capacity-support.ts";
 import type {
   CapacityAggregate,
   CapacityForecast,
@@ -10,7 +11,7 @@ import type {
 } from "../capacity-contract.ts";
 
 // One line per provider window and unit. History preserves gaps; forecast and refill data stay
-// separate from measured points. A window a lab doesn't report simply has no line.
+// separate from measured points. Supported limits without readings keep an empty line.
 
 export const hourMs = 3_600_000;
 export const dayMs = 24 * hourMs;
@@ -27,6 +28,8 @@ export interface CapacityLine {
   readonly points: readonly CapacityHistoryPoint[];
   readonly forecast: CapacityForecast | null;
   readonly refills: readonly CapacityRefillEvent[];
+  /** Plan support only. An empty supported line contains no measured or inferred balance. */
+  readonly supportedAccounts?: number;
 }
 
 export interface CapacityLab {
@@ -47,7 +50,10 @@ export function windowLabel(seconds: number): string {
   return `${Math.round(seconds / 60)}-minute`;
 }
 
-export function capacityLabs(history: PoolCapacityHistory): CapacityLab[] {
+export function capacityLabs(
+  history: PoolCapacityHistory,
+  accounts: readonly LimitAccount[] = [],
+): CapacityLab[] {
   const labs = new Map<string, Map<string, CapacityHistoryPoint[]>>();
   for (const point of history.points) {
     const key = JSON.stringify([point.provider, point.windowSeconds, point.mode, point.unit.id]);
@@ -55,8 +61,17 @@ export function capacityLabs(history: PoolCapacityHistory): CapacityLab[] {
     labs.set(point.provider, lines);
     lines.set(key, [...(lines.get(key) ?? []), point]);
   }
+  const supported = new Map<string, Map<number, number>>();
+  for (const account of accounts) {
+    for (const seconds of supportedLimitWindows(account)) {
+      const windows = supported.get(account.provider) ?? new Map<number, number>();
+      windows.set(seconds, (windows.get(seconds) ?? 0) + 1);
+      supported.set(account.provider, windows);
+      if (!labs.has(account.provider)) labs.set(account.provider, new Map());
+    }
+  }
   return [...labs].map(([provider, lines]) => {
-    const built = [...lines].map(([key, points]) => {
+    const built: CapacityLine[] = [...lines].map(([key, points]) => {
       const first = points[0]!;
       const label = windowLabel(first.windowSeconds) + (first.mode ? ` · ${first.mode}` : "");
       const forecast =
@@ -85,6 +100,27 @@ export function capacityLabs(history: PoolCapacityHistory): CapacityLab[] {
         refills,
       };
     });
+    for (const [seconds, count] of supported.get(provider) ?? []) {
+      if (built.some((line) => line.windowSeconds === seconds)) continue;
+      const unit =
+        built[0]?.unit ??
+        (provider === "claude"
+          ? { id: "claude-pro-equivalent", label: "Pro-eq" }
+          : provider === "codex"
+            ? { id: "chatgpt-plus-equivalent", label: "Plus-eq" }
+            : { id: `${provider}-account-equivalent`, label: "account-eq" });
+      built.push({
+        key: JSON.stringify([provider, seconds, null, unit.id]),
+        windowSeconds: seconds,
+        mode: null,
+        unit,
+        label: windowLabel(seconds),
+        points: [],
+        forecast: null,
+        refills: [],
+        supportedAccounts: count,
+      });
+    }
     // Two units on one window would otherwise share a label.
     const named = built.map((line) =>
       built.some((other) => other !== line && other.label === line.label)
@@ -324,6 +360,17 @@ export function verdict(
   readonly detail: string | null;
 } {
   const forecast = line?.forecast;
+  if (line?.supportedAccounts && line.points.length === 0) {
+    return {
+      tone: "learn",
+      short: "No current reading",
+      text:
+        line.windowSeconds === 18_000
+          ? "This plan has a 5-hour allowance. When idle, the full allowance starts on next use."
+          : "This plan has a weekly allowance, but no current reading is available.",
+      detail: "A fresh reading will show how much remains.",
+    };
+  }
   if (
     line?.windowSeconds === 18_000 &&
     line.points.length > 0 &&

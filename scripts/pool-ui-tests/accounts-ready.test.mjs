@@ -61,6 +61,7 @@ const peopleCopyRef = process.env.POOL_UI_PEOPLE_COPY_REF;
 // Optional baseline: build that commit's overview-snapshot.ts and overview.tsx, which withheld a
 // same-snapshot learning verdict whenever usage coverage was partial.
 const learningRef = process.env.POOL_UI_LEARNING_REF;
+const limitSupportRef = process.env.POOL_UI_LIMIT_SUPPORT_REF;
 const historicalOverview = Boolean(planBaseline || peopleCopyRef || learningRef);
 const requestWindow = historicalOverview ? "in" : "· last";
 const baselineRef = sourceRef ?? peopleCopyRef ?? learningRef;
@@ -341,6 +342,12 @@ test(
         writeFileSync(
           join(app, file),
           execFileSync("git", ["-C", root, "show", `${learningRef}:apps/pool/${file}`]),
+        );
+    if (limitSupportRef)
+      for (const file of ["ui/overview.tsx", "ui/capacity-model.ts", "ui/capacity-view.tsx"])
+        writeFileSync(
+          join(app, file),
+          execFileSync("git", ["-C", root, "show", `${limitSupportRef}:apps/pool/${file}`]),
         );
     writeFileSync(
       join(app, "deployment.ts"),
@@ -885,6 +892,105 @@ test(
                 people: { members: [], activeCount: 0, totalCount: 3 },
               },
             );
+        },
+      );
+
+    for (const width of [1280, 390])
+      await t.test(
+        `supported five-hour choices survive missing current readings at ${width}px`,
+        async () => {
+          const view = poolView(Date.now(), {
+            source: "live",
+            observedAgo: 0,
+            savedAgo: 0,
+            left: [
+              [0.8, 0.8],
+              [0.8, 0.8],
+              [0.8, 0.8],
+            ],
+          });
+          view.value.accounts = view.value.accounts.map((account) => ({
+            ...account,
+            plan: account.provider === "claude" ? "Max 20x" : "Pro 20x",
+            windows: account.windows.filter((window) => window.windowSeconds === 604_800),
+          }));
+          viewResult = view;
+          await session(
+            async ({ page, frame, settled }) => {
+              await requests(1, false);
+              release();
+              await frame.locator("#capacity article").nth(1).waitFor();
+              for (const name of ["Claude", "Codex"]) {
+                const panel = frame.getByRole("article", { name, exact: true });
+                if (limitSupportRef) {
+                  assert.equal(
+                    await panel.getByRole("radio", { name: "5-hour", exact: true }).count(),
+                    0,
+                  );
+                } else {
+                  await panel.getByRole("radio", { name: "5-hour", exact: true }).click();
+                  await panel
+                    .getByRole("radio", { name: "5-hour", exact: true, checked: true })
+                    .waitFor();
+                  const body = await panel.innerText();
+                  assert.match(body, /No current reading/);
+                  assert.match(body, /When idle, the full allowance starts on next use/);
+                  assert.doesNotMatch(body, /Nominal|100%|80%|out now/);
+                  await panel.getByRole("radio", { name: "Weekly", exact: true }).click();
+                  await panel
+                    .getByRole("radio", { name: "Weekly", exact: true, checked: true })
+                    .waitFor();
+                  assert.match(await panel.innerText(), /Nominal/);
+                  await panel.getByRole("radio", { name: "5-hour", exact: true }).click();
+                }
+              }
+              assert.ok(
+                await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+              );
+              await page.locator("iframe").evaluate(
+                (iframe, height) => {
+                  iframe.style.height = `${height}px`;
+                },
+                await frame.evaluate(() => document.documentElement.scrollHeight),
+              );
+              await settled();
+              await capture(page, `supported-five-hour-${width}`);
+            },
+            {
+              viewport: { width, height: 1000 },
+              capacity: (input) => {
+                const result = capacityFixture(input);
+                result.value.readAt = input.to;
+                result.value.points = ["claude", "codex"].map((provider) => {
+                  const count = provider === "claude" ? 1 : 2;
+                  const reading = {
+                    remaining: count * 0.8,
+                    full: count,
+                    at: input.to,
+                    observedAt: { from: input.to, to: input.to },
+                    accountCount: count,
+                    knownWeightCount: count,
+                    unknownWeightCount: 0,
+                    weights: [],
+                  };
+                  return {
+                    provider,
+                    windowSeconds: 604_800,
+                    mode: null,
+                    unit: {
+                      id: `${provider}-reference`,
+                      label: provider === "claude" ? "Pro-eq" : "Plus-eq",
+                    },
+                    hour: Math.floor(input.to / hour) * hour,
+                    minimum: reading,
+                    last: reading,
+                    plans: [],
+                  };
+                });
+                return result;
+              },
+            },
+          );
         },
       );
 

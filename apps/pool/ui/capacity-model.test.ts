@@ -485,3 +485,41 @@ test("recognised Max 20x weekly readings use published weights while retained es
     ]);
   }
 });
+
+test("supported five-hour limits stay selectable without inventing measured capacity", () => {
+  const observed = history([point(0, 2)]);
+  const snapshot = structuredClone(observed);
+  const accounts = [{ provider: "claude", plan: "Max 20x", windows: [] }];
+  const labs = capacityLabs(observed, accounts);
+  assert.deepEqual(
+    labs[0]?.lines.map((line) => line.windowSeconds),
+    [604800, 18000],
+  );
+  const missing = labs[0]!.lines.find((line) => line.windowSeconds === 18000)!;
+  assert.deepEqual(missing.points, []);
+  assert.equal(missing.forecast, null);
+  assert.deepEqual(missing.refills, []);
+  assert.equal(missing.supportedAccounts, 1);
+  assert.equal(lineFacts(missing, observed.to).latest, null);
+  assert.equal(verdict(missing, lineFacts(missing, observed.to), 7).short, "No current reading");
+  assert.deepEqual(observed, snapshot);
+});
+
+test("limit support follows known subscription plans and never creates a measured point", () => {
+  const accounts = [
+    { provider: "codex", plan: "Pro 20x", windows: [] },
+    { provider: "claude", plan: "Future plan", windows: [] },
+    { provider: "typesafe", plan: "Pro", windows: [] },
+  ];
+  const labs = capacityLabs(history([]), accounts);
+  assert.deepEqual(
+    labs.map((lab) => lab.provider),
+    ["codex"],
+  );
+  assert.deepEqual(
+    labs[0]!.lines.map((line) => line.windowSeconds),
+    [604800, 18000],
+  );
+  assert.ok(labs[0]!.lines.every((line) => line.points.length === 0 && line.forecast === null));
+  assert.deepEqual(capacityLabs(history([]), []), []);
+});

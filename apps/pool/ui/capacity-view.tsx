@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import type { PoolCapacityHistory } from "../capacity-contract.ts";
-import type { Provider } from "../contract.ts";
+import type { Account, Provider } from "../contract.ts";
 import type { Result } from "../index.ts";
 import { providerName } from "./accounts.tsx";
 import { CapacityChart } from "./capacity-chart.tsx";
@@ -49,8 +49,12 @@ export interface LabSummary {
 }
 
 /** Each lab's verdict across all its windows: running out on any window counts. */
-export function labSummaries(history: PoolCapacityHistory, days: number): LabSummary[] {
-  return capacityLabs(history).map((lab) => {
+export function labSummaries(
+  history: PoolCapacityHistory,
+  days: number,
+  accounts: readonly Account[] = [],
+): LabSummary[] {
+  return capacityLabs(history, accounts).map((lab) => {
     const verdicts = lab.lines.map((line) => verdict(line, lineFacts(line, history.to), days));
     return {
       lab,
@@ -66,6 +70,7 @@ export function labSummaries(history: PoolCapacityHistory, days: number): LabSum
 export function CapacitySection({
   result,
   providers,
+  accounts = [],
   days,
   coherent,
   empty = false,
@@ -73,13 +78,14 @@ export function CapacitySection({
 }: {
   result: Result<PoolCapacityHistory> | undefined;
   providers: readonly Provider[];
+  accounts?: readonly Account[];
   days: number;
   coherent: boolean;
   /** The pool has no accounts now, so there is no capacity to show. */
   empty?: boolean;
   onRetry: () => void;
 }) {
-  const labs = result?.ok ? capacityLabs(result.value) : [];
+  const labs = result?.ok ? capacityLabs(result.value, accounts) : [];
   const [choices, setChoices] = useState<Readonly<Record<string, string>>>({});
   return (
     <section
@@ -93,8 +99,8 @@ export function CapacitySection({
         </h2>
         <p className="max-w-[38rem] text-sm text-muted-foreground text-pretty">
           Allowance left across each lab's accounts, last {days} days and the next 3. Where a lab
-          reports a 5-hour window too, it gets its own chart. Each lab has its own unit; they never
-          add up across labs.
+          has a 5-hour limit too, it stays available even before a reading. Each lab has its own
+          unit; they never add up across labs.
         </p>
       </div>
       {empty ? (
@@ -189,12 +195,14 @@ function Panel({
     facts.latest?.last.accountCount ??
     line.points.at(-1)?.raw?.last.accountCount ??
     line.points.at(-1)?.last.accountCount ??
+    line.supportedAccounts ??
     0;
   const color = labColor(lab.provider);
   const weekly = line.windowSeconds === 604_800;
-  const onlyReporting = !weekly && lab.fiveHourAccounts < lab.weeklyAccounts;
+  const unmeasured = Boolean(line.supportedAccounts && line.points.length === 0);
+  const onlyReporting = !unmeasured && !weekly && lab.fiveHourAccounts < lab.weeklyAccounts;
   const accountLabel =
-    !weekly && lab.weeklyAccounts > accounts
+    !unmeasured && !weekly && lab.weeklyAccounts > accounts
       ? `${accounts} of ${lab.weeklyAccounts} accounts report this window`
       : `${accounts} ${accounts === 1 ? "account" : "accounts"}`;
   const windowLines = lab.lines.filter(
@@ -298,25 +306,33 @@ function Panel({
           </p>
         )}
       </div>
-      <CapacityChart
-        line={displayLine}
-        from={history.from}
-        to={history.to}
-        now={history.to}
-        color={color}
-        facts={facts}
-        lab={name}
-      />
-      <div className="mt-2 flex flex-wrap items-start justify-between gap-2">
-        <Legend color={color} facts={facts} line={displayLine} />
-        {/* The verdict above says what matters; how the forecast got there stays one click down. */}
-        <Daily
-          line={displayLine}
-          from={history.from}
-          to={history.to}
-          forecast={coherent ? <ForecastCaption line={displayLine} /> : null}
-        />
-      </div>
+      {unmeasured ? (
+        <p className="rounded-lg border border-dashed border-input px-6 py-8 text-sm text-muted-foreground text-pretty">
+          Usage and forecasts will appear when the provider reports this window.
+        </p>
+      ) : (
+        <>
+          <CapacityChart
+            line={displayLine}
+            from={history.from}
+            to={history.to}
+            now={history.to}
+            color={color}
+            facts={facts}
+            lab={name}
+          />
+          <div className="mt-2 flex flex-wrap items-start justify-between gap-2">
+            <Legend color={color} facts={facts} line={displayLine} />
+            {/* The verdict above says what matters; how the forecast got there stays one click down. */}
+            <Daily
+              line={displayLine}
+              from={history.from}
+              to={history.to}
+              forecast={coherent ? <ForecastCaption line={displayLine} /> : null}
+            />
+          </div>
+        </>
+      )}
     </article>
   );
 }
