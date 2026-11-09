@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Account checks and usage attempts retain only a closed failure source, reason, validated optional provider HTTP status and failure time. Failed refreshes preserve the last successful reading; a first failure needs no reading. Management and transport failures never claim a provider status. Public health, usage, details and logs exclude raw responses, headers, credentials, backend references and vendor request IDs. Successful refreshes clear the prior attempt failure; old records retain their generic explanation."
+    }
+  }
+}
