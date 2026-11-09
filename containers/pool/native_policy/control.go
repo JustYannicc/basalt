@@ -155,8 +155,12 @@ func controlHandler() http.Handler {
 
 func handleInstall(writer http.ResponseWriter, request *http.Request) {
 	var body installRequest
-	if !decodeControlBody(writer, request, maxInstallBytes, &body) || body.Projection == "" {
-		writeControlJSON(writer, http.StatusBadRequest, map[string]any{"error": "invalid_projection"})
+	if !decodeControlBody(writer, request, maxInstallBytes, &body) {
+		writeControlJSON(writer, http.StatusBadRequest, projectionFailureBody(&projectionFailure{reason: "json"}))
+		return
+	}
+	if body.Projection == "" {
+		writeControlJSON(writer, http.StatusBadRequest, projectionFailureBody(&projectionFailure{reason: "envelope"}))
 		return
 	}
 	keys, errKeys := signingKeysFromEnvironment()
@@ -170,7 +174,7 @@ func handleInstall(writer http.ResponseWriter, request *http.Request) {
 		if errors.Is(errInstall, errStaleProjection) {
 			status = http.StatusConflict
 		}
-		writeControlJSON(writer, status, map[string]any{"error": "invalid_projection"})
+		writeControlJSON(writer, status, projectionFailureBody(errInstall))
 		return
 	}
 	writeControlJSON(writer, http.StatusOK, map[string]any{"installed": true, "revision": revision})

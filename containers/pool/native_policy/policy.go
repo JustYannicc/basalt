@@ -52,22 +52,26 @@ type pickDecision struct {
 }
 
 func decodeProjection(keys signingKeys, token string, now time.Time) (*policySnapshot, error) {
-	payload, errVerify := keys.verify(token, projectionPrefix)
+	payload, errVerify := keys.verifyReason(token, projectionPrefix)
 	if errVerify != nil {
-		return nil, errInvalidEnvelope
+		return nil, errVerify
 	}
 	var claims projectionClaims
-	if errDecode := decodeStrict(payload, &claims); errDecode != nil || !validProjection(claims) {
-		return nil, errInvalidEnvelope
+	if errDecode := decodeStrict(payload, &claims); errDecode != nil {
+		return nil, &projectionFailure{reason: "json"}
+	}
+	if failure := invalidProjectionClaims(claims); failure != nil {
+		return nil, failure
 	}
 	remaining := time.Duration(claims.ExpiresAt-now.UnixMilli()) * time.Millisecond
 	if remaining <= 0 || remaining > maxProjectionTTL {
-		return nil, errInvalidEnvelope
+		leaseMs := remaining.Milliseconds()
+		return nil, &projectionFailure{reason: "lease_window", leaseMs: &leaseMs}
 	}
 	allowed := make(map[string]struct{}, len(claims.Accounts))
-	for _, id := range claims.Accounts {
+	for index, id := range claims.Accounts {
 		if _, exists := allowed[id]; exists {
-			return nil, errInvalidEnvelope
+			return nil, &projectionFailure{reason: "duplicate_account", accountIndex: &index}
 		}
 		allowed[id] = struct{}{}
 	}
@@ -103,18 +107,27 @@ func decodeStrict(payload []byte, target any) error {
 	return nil
 }
 
-func validProjection(claims projectionClaims) bool {
-	if !safeIdentifier(claims.Pool) || !safeIdentifier(claims.Organization) ||
-		!safeRevision(claims.Revision) || !safeTimestamp(claims.ExpiresAt) ||
-		len(claims.Accounts) > maxAccountIDs {
-		return false
+func validProjection(claims projectionClaims) bool { return invalidProjectionClaims(claims) == nil }
+
+func invalidProjectionClaims(claims projectionClaims) *projectionFailure {
+	if !safeIdentifier(claims.Pool) || !safeIdentifier(claims.Organization) {
+		return &projectionFailure{reason: "identifier"}
 	}
-	for _, id := range claims.Accounts {
+	if !safeRevision(claims.Revision) {
+		return &projectionFailure{reason: "revision"}
+	}
+	if !safeTimestamp(claims.ExpiresAt) {
+		return &projectionFailure{reason: "expiry"}
+	}
+	if len(claims.Accounts) > maxAccountIDs {
+		return &projectionFailure{reason: "account_count"}
+	}
+	for index, id := range claims.Accounts {
 		if id == "" || len(id) > maxAccountIDBytes || strings.TrimSpace(id) != id {
-			return false
+			return &projectionFailure{reason: "account_id", accountIndex: &index}
 		}
 	}
-	return true
+	return nil
 }
 
 func validAssertion(claims assertionClaims) bool {
