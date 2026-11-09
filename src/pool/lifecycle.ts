@@ -26,7 +26,7 @@ export class PoolStartupDeadline extends Error {
 
 export interface RuntimeDriver {
   running(): boolean;
-  start(launch?: LaunchRecord): void;
+  start(launch?: LaunchRecord): void | Promise<void>;
   stop(): Promise<void>;
   keepAlive(milliseconds: number): Promise<void>;
   status(): Promise<PoolStatus>;
@@ -147,7 +147,7 @@ export class PoolLifecycle {
     const launch = await this.launch?.prepare(expected, intent);
     await beforeLaunch?.();
     if (this.driver.running()) throw new LaunchRefused("runtime-no-longer-stopped");
-    this.driver.start(launch);
+    await this.driver.start(launch);
   }
 
   private async awaitReady() {

@@ -1,0 +1,76 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import {
+  configurationDigest,
+  openConfiguration,
+  runtimeConfiguration,
+  sealConfiguration,
+  startupOptionsFingerprint,
+  runtimeStartOptions,
+} from "./runtime-slots/configuration.ts";
+
+test("admitted runtime configuration survives a controller settings change without exposing secrets", async () => {
+  const original = runtimeConfiguration({
+    POOL_DATABASE_URL: "postgresql://fixture@database.invalid/old",
+    POOL_MANAGEMENT_KEY: "fixture-old-key",
+    POOL_APP_SIGNING_KEY: "a".repeat(64),
+    POOL_IMAGE_HASH: "1".repeat(16),
+  });
+  const sealed = await sealConfiguration(original, "b".repeat(64), "exact-target");
+  assert.ok(!JSON.stringify(sealed).includes(original.databaseUrl));
+  assert.ok(!JSON.stringify(sealed).includes(original.managementKey));
+  const changed = { ...original, managementKey: "fixture-new-key", imageInput: "2".repeat(16) };
+  assert.notEqual(await configurationDigest(original), await configurationDigest(changed));
+  assert.deepEqual(await openConfiguration(sealed, "b".repeat(64), "exact-target"), original);
+});
+
+test("a retained startup capsule cannot be moved to another runtime or opened under a new key", async () => {
+  const configuration = runtimeConfiguration({
+    POOL_DATABASE_URL: "postgresql://fixture@database.invalid/pool",
+    POOL_MANAGEMENT_KEY: "fixture-key",
+    POOL_APP_SIGNING_KEY: "a".repeat(64),
+    POOL_IMAGE_HASH: "1".repeat(16),
+  });
+  const sealed = await sealConfiguration(configuration, "b".repeat(64), "first-target");
+  await assert.rejects(openConfiguration(sealed, "b".repeat(64), "different-target"));
+  await assert.rejects(openConfiguration(sealed, "c".repeat(64), "first-target"));
+  const modified = { ...sealed, ciphertext: `ff${sealed.ciphertext.slice(2)}` };
+  await assert.rejects(openConfiguration(modified, "b".repeat(64), "first-target"));
+});
+
+test("startup fingerprint binds every applied setting while launch credentials and OCI identity stay separate", async () => {
+  const configuration = runtimeConfiguration({
+    POOL_DATABASE_URL: "postgresql://fixture@database.invalid/pool",
+    POOL_MANAGEMENT_KEY: "fixture-key",
+    POOL_APP_SIGNING_KEY: "a".repeat(64),
+    POOL_IMAGE_HASH: "1".repeat(16),
+  });
+  const options = runtimeStartOptions(configuration),
+    expected = await configurationDigest(configuration);
+  assert.equal(
+    await startupOptionsFingerprint({
+      ...options,
+      env: Object.fromEntries(Object.entries(options.env).reverse()),
+    }),
+    expected,
+  );
+  assert.equal(
+    await startupOptionsFingerprint({
+      ...options,
+      env: { ...options.env, POOL_LAUNCH_GENERATION: "2", POOL_LAUNCH_TOKEN: "fixture-token" },
+    }),
+    expected,
+  );
+  assert.notEqual(await startupOptionsFingerprint({ ...options, enableInternet: false }), expected);
+  assert.notEqual(
+    await startupOptionsFingerprint({
+      ...options,
+      env: { ...options.env, EXTRA_START_FLAG: "changed" },
+    }),
+    expected,
+  );
+  assert.equal(
+    await configurationDigest({ ...configuration, imageInput: "2".repeat(16) }),
+    expected,
+  );
+});
