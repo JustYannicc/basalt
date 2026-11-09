@@ -173,7 +173,10 @@ test("aggregate gate invocation and exact inputs must unconditionally propagate 
     workflow.replace("    if: always()", "    if: success()"),
     workflow.replace("    if: always()", "    if: always()\n    continue-on-error: true"),
     workflow.replace("toJSON(needs)", "toJSON({})"),
-    workflow.replace("needs.select.outputs.jobs", "needs.select.outputs.other"),
+    workflow.replace(
+      "CI_JOBS: ${{ needs.select.outputs.jobs }}",
+      "CI_JOBS: ${{ needs.select.outputs.other }}",
+    ),
     workflow.replace("needs.select.outputs.boat_jobs", "needs.select.outputs.other"),
     workflow.replace("      - env:", "      - shell: bash -c {0}\n        env:"),
   ]) {
