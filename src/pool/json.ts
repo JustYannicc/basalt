@@ -31,6 +31,10 @@ const diagnosticFailures = new Set<PoolFailureDiagnostic["failure"]>([
   "unknown",
 ]);
 
+export function poolFailureDiagnostic(error: unknown): PoolFailureDiagnostic | undefined {
+  return typeof error === "object" && error !== null ? diagnostics.get(error) : undefined;
+}
+
 /** Annotate the original error without changing how model and control callers handle it. */
 export function diagnosePoolFailure(error: unknown, diagnostic: PoolFailureDiagnostic): unknown {
   const backendStatus = diagnostic.backendStatus;

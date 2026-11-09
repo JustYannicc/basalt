@@ -1,6 +1,12 @@
 import { poolGuard } from "./guard-failure.ts";
 import { poolDependency } from "./dependency-failure.ts";
-import { ControlFailure, object, text } from "./json.ts";
+import {
+  ControlFailure,
+  object,
+  text,
+  poolFailureDiagnostic,
+  type PoolFailureDiagnostic,
+} from "./json.ts";
 import { homeReferences } from "./home-references.ts";
 import { openEnvelope } from "./token.ts";
 import {
@@ -51,6 +57,7 @@ export class NativeMemberships {
   private queue: Promise<unknown> = Promise.resolve();
   private running = new Map<string, Promise<void>>();
   private ticking?: Promise<void>;
+  private failures = new Map<string, PoolFailureDiagnostic>();
   private deps: Dependencies;
   constructor(deps: Dependencies) {
     this.deps = {
@@ -162,6 +169,11 @@ export class NativeMemberships {
   async configured(): Promise<boolean> {
     return this.run(async (state) => Object.keys(state).length > 0);
   }
+  async inspect(pool: string) {
+    const state = await this.deps.storage.get<Record<string, State>>(storageKey);
+    const policy = state?.[pool];
+    return { policy, failure: this.failures.get(pool) };
+  }
   async ensure(pool: string, organization: string): Promise<void> {
     let current = await this.run(async (state) => state[pool]);
     if (!current) {
@@ -231,7 +243,20 @@ export class NativeMemberships {
   refresh(pool: string): Promise<void> {
     const active = this.running.get(pool);
     if (active) return active;
-    const task = this.repair(pool).finally(() => this.running.delete(pool));
+    const task = this.repair(pool)
+      .then(
+        () => {
+          this.failures.delete(pool);
+        },
+        (error: unknown) => {
+          this.failures.set(
+            pool,
+            poolFailureDiagnostic(error) ?? { guard: "membership_read", failure: "unknown" },
+          );
+          throw error;
+        },
+      )
+      .finally(() => this.running.delete(pool));
     this.running.set(pool, task);
     return task;
   }

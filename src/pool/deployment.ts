@@ -3,13 +3,15 @@ import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/imple
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Output from "alchemy/Output";
 import * as Command from "alchemy/Command";
-import { Config, Effect, Option } from "effect";
+import { Config, Effect, Option, Redacted } from "effect";
 import { fileURLToPath } from "node:url";
 import { verifyRuntimeDatabaseBudget } from "./database-budget.ts";
 import { poolDatabaseInfrastructure } from "./database.ts";
 import { poolWorkerDatabase } from "./worker-database.ts";
 import { telemetryBindings, workerObservability } from "../telemetry/deployment.ts";
+import { validSentryDsn } from "../telemetry/sentry-target.ts";
 import { inventoryCron } from "./inventory.ts";
+import { availabilityCron, validProbeTarget } from "./availability-config.ts";
 import { Api } from "../../.upstream/apps/hosted/cloud/src/infrastructure/api-worker.ts";
 
 // Alchemy beta.80 forwards these Cloudflare API fields but omits them from its type.
@@ -20,6 +22,13 @@ const euPlacement: Cloudflare.ContainerApplication.Constraints & {
 } = { jurisdiction: "eu", regions: ["EEUR", "WEUR"] };
 
 export const poolWorker = Effect.gen(function* () {
+  const probeTarget = yield* Config.String("POOL_AVAILABILITY_TARGET").pipe(Config.withDefault(""));
+  if (probeTarget && !validProbeTarget(probeTarget))
+    return yield* Effect.die(new Error("Invalid pool availability target"));
+  if (probeTarget && !validSentryDsn(Redacted.value(yield* Config.Redacted("SENTRY_DSN"))))
+    return yield* Effect.die(
+      new Error("Pool availability monitoring requires a valid Sentry destination"),
+    );
   const database = yield* poolDatabaseInfrastructure;
   const workerDatabase = yield* poolWorkerDatabase(database.workerOrigin);
   const image = Cloudflare.Container("PoolContainer", {
@@ -39,7 +48,7 @@ export const poolWorker = Effect.gen(function* () {
     main: fileURLToPath(new URL("./worker.ts", import.meta.url)),
     workersDev: false,
     compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
-    crons: ["*/5 * * * *", inventoryCron],
+    crons: ["*/5 * * * *", inventoryCron, ...(probeTarget ? [availabilityCron] : [])],
     observability: workerObservability,
     env: {
       PoolContainer: image,
@@ -62,6 +71,7 @@ export const poolWorker = Effect.gen(function* () {
           return hash.image;
         }),
       ),
+      ...(probeTarget ? { POOL_AVAILABILITY_TARGET: probeTarget } : {}),
     },
   });
   yield* verifyRuntimeDatabaseBudget("PoolBackendBudget", {

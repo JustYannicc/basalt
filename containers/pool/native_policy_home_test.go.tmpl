@@ -122,6 +122,10 @@ func TestNativePolicyPluginVetoesRealHomeDispatchAndPreservesBuiltinSelection(t 
 	assertion := testSignedEnvelope(t, "sbm-use1", testAssertion{
 		Pool: nativePool, Revision: 1, ExpiresAt: time.Now().Add(2 * time.Hour).UnixMilli(),
 	})
+	check := nativePolicyUDSRequest(t, instanceBefore.socketPath, "/check", map[string]any{"assertion": assertion})
+	if len(check) != 1 || check["ok"] != true {
+		t.Fatalf("loaded native admission check = %#v", check)
+	}
 	options := Options{Headers: http.Header{"X-Signalbox-Native-Policy": []string{assertion}}}
 
 	builtinManager := NewManager(nil, &RoundRobinSelector{}, nil)
