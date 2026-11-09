@@ -33,9 +33,9 @@ try {
   }
   globalThis.fetch = async (input, init) => {
     const request = new Request(input, init);
-    assert.equal(request.url, endpoint, "Every MCP request must use the documented resource");
+    assert.ok([endpoint, "https://mcp.canva.com/mcp"].includes(request.url));
     const authorized = request.headers.get("authorization") === "Bearer synthetic-canva-access";
-    calls.push({ authorized });
+    calls.push({ authorized, url: request.url });
     if (!authorized)
       return new Response("", { status: 401, headers: { "www-authenticate": "Bearer" } });
     if (request.method === "GET") return new Response("", { status: 405 });
@@ -76,6 +76,16 @@ try {
     } else throw new Error("Unexpected MCP method");
     return Response.json({ jsonrpc: "2.0", id: message.id, result });
   };
+  const published = JSON.parse(
+    await readFile(join(root, "src/catalog/canva.published.json"), "utf8"),
+  );
+  let originalIndex = published.files.find((file) => file.path === "index.ts").content;
+  for (const [name, file] of Object.entries(publicExports))
+    originalIndex = originalIndex.replaceAll(
+      JSON.stringify(name),
+      JSON.stringify(pathToFileURL(join(framework, file)).href),
+    );
+  await writeFile(join(directory, "original.ts"), originalIndex);
   const app = (await import(pathToFileURL(join(directory, "index.ts")).href)).default;
   const host = await import(pathToFileURL(join(framework, "host.ts")).href);
   const handler = host.createAppHandler(app);
@@ -88,12 +98,32 @@ try {
   };
   const invoke = async (command, accounts) => {
     const result = await request(command, accounts);
-    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.equal(result.status, 200, JSON.stringify({ command, result: result.body }));
     assert.equal(result.body.ok, true, JSON.stringify(result.body));
     return result.body.value;
   };
   const requirements = await invoke({ operation: "requirements" });
-  const definition = requirements.accounts.user.canvaMcp.definition;
+  const definition = requirements.accounts.user.canvaConnectMcp.definition;
+  const legacyDefinition = requirements.accounts.user.canvaMcp.definition;
+  const originalHandler = host.createAppHandler(
+    (await import(pathToFileURL(join(directory, "original.ts")).href)).default,
+  );
+  const originalResponse = await originalHandler(
+    new Request("https://fixture.invalid", {
+      method: "POST",
+      body: JSON.stringify({ operation: "requirements" }),
+    }),
+    host.hostContext({ app: {} }),
+  );
+  const originalRequirements = (await originalResponse.json()).value;
+  assert.deepEqual(legacyDefinition, originalRequirements.accounts.user.canvaMcp.definition);
+  assert.deepEqual(
+    requirements.accounts.user.canva.definition,
+    originalRequirements.accounts.user.canva.definition,
+  );
+
+  assert.equal(legacyDefinition.auth.oauth.discover, "https://mcp.canva.com/mcp");
+  assert.deepEqual(legacyDefinition.hosts, ["mcp.canva.com"]);
   assert.equal(definition.auth.oauth.discover, endpoint);
   assert.deepEqual(definition.hosts, ["api.canva.com"]);
   const account = {
@@ -102,11 +132,11 @@ try {
     method: "oauth",
     fields: { access_token: "synthetic-canva-access" },
   };
-  const accounts = { app: {}, user: { canva: [], canvaMcp: [account] } };
+  const accounts = { app: {}, user: { canva: [], canvaMcp: [], canvaConnectMcp: [account] } };
   assert.deepEqual(
     await invoke(
-      { operation: "account-check", requirement: "canvaMcp" },
-      { app: {}, user: { canvaMcp: account } },
+      { operation: "account-check", requirement: "canvaConnectMcp" },
+      { app: {}, user: { canvaConnectMcp: account } },
     ),
     {},
   );
@@ -130,30 +160,27 @@ try {
   assert.equal(write.body.ok, false);
   assert.equal(write.body.error._tag, "HostToolApprovalRequired");
   assert.equal(calls.filter((call) => call.rpc === "tools/call").length, beforeWrite);
-  const legacy = {
-    ...definition,
-    hosts: ["mcp.canva.com"],
-    auth: {
-      ...definition.auth,
-      oauth: { ...definition.auth.oauth, discover: "https://mcp.canva.com/mcp" },
-    },
-  };
   const beforeLegacy = calls.length;
-  const oldGrant = await request(
+  const legacyAccount = { ...account, id: "acc_canva_legacy", provider: legacyDefinition };
+  await invoke(
     { operation: "account-check", requirement: "canvaMcp" },
-    {
-      app: {},
-      user: { canvaMcp: { ...account, provider: legacy } },
-    },
+    { app: {}, user: { canvaMcp: legacyAccount } },
   );
-  assert.equal(oldGrant.body.ok, false);
-  assert.equal(oldGrant.body.error._tag, "HostAccountsInvalid");
-  assert.equal(
-    calls.length,
-    beforeLegacy,
-    "An old resource grant must never reach the new resource",
+  assert.ok(calls.length > beforeLegacy);
+  assert.ok(
+    calls
+      .slice(beforeLegacy)
+      .every((call) => !call.url || call.url === "https://mcp.canva.com/mcp"),
   );
-  console.log("Canva MCP health, discovery, read, write approval and legacy-grant refusal PASS");
+  const wrongSlot = await request(
+    { operation: "account-check", requirement: "canvaConnectMcp" },
+    { app: {}, user: { canvaConnectMcp: legacyAccount } },
+  );
+  assert.equal(wrongSlot.body.ok, false);
+  assert.equal(wrongSlot.body.error._tag, "HostAccountsInvalid");
+  console.log(
+    "Canva MCP health, discovery, read, write approval and legacy-account preservation PASS",
+  );
 } finally {
   await rm(directory, { recursive: true, force: true });
 }

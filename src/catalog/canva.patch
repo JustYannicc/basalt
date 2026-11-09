@@ -5,39 +5,61 @@
  ## MCP (`mcp`)
  
 -Canva's official remote MCP server at https://mcp.canva.com/mcp (the live tool list comes from the server; third-party counts range from 22 to about 40). It is the only route to design generation, editing transactions and import from URL, which the REST API lacks. Tools that are not marked read-only require approval.
-+Canva's official remote MCP server is `https://api.canva.com/connect/v1/mcp` (Streamable HTTP). Discovery, account health and tool calls all use that exact resource. Tools not marked read-only require approval; read the current tool list from the server rather than assuming a fixed count.
++Canva's official remote MCP server is `https://api.canva.com/connect/v1/mcp` (Streamable HTTP). New Canva Connect MCP accounts use that resource for discovery, account health and tool calls. Tools not marked read-only require approval; read the current tool list from the server rather than assuming a fixed count.
  
 -Auth is a separate "Canva MCP" account: OAuth 2.0 with PKCE, discovered from the server's RFC 9728 / RFC 8414 metadata, requesting the 16 scopes in `scopes_supported` (Canva tools report "Missing scopes" if one is not granted). MCP tokens only work against mcp.canva.com, so the Connect integration's client cannot be reused. Client registration is owned by the Executor host. Canva offers dynamic client registration and Client ID Metadata Documents (DCR is deprecated in favor of CIMD); this has not been confirmed with a real account, and Canva may restrict which MCP clients can register.
 +Each person authenticates with their own Canva account. In the [Developer Portal](https://www.canva.com/developers/apps), create an app, choose Outside Canva > Start integrating, enable Canva MCP under Integration methods, and use its client ID and client secret. Register the exact redirect URL shown by the host. The [official quickstart](https://www.canva.dev/docs/apps/quickstart/) documents these steps. A CIMD client needs Canva's redirect-registration approval; automatic DCR is not promised.
 +
 +OAuth endpoints and scopes come from the resource's protected-resource metadata. The host retains the grant and handles renewal. REST and MCP remain separate account requirements here; this change does not assume their scopes or access tokens are interchangeable.
 +
-+The legacy `mcp.canva.com` resource advertises a different authorization server. Its grants must not silently move to the new resource. Existing installations use the normal app-update review and connect flow; saved accounts and the REST provider are not rewritten.
++The legacy `mcp.canva.com` resource advertises a different authorization server. Existing Canva MCP accounts keep their original provider, requirement, OAuth method and endpoint. Connect a new Canva Connect MCP account for the documented resource. Saved accounts and the REST provider are not rewritten.
  
  ## Gaps
  
 --- a/index.ts
 +++ b/index.ts
-@@ -54,15 +54,14 @@
-   },
+@@ -69,8 +69,22 @@
+     mcpHealth(check, { url: mcpUrl, headers: { Authorization: `Bearer ${check.account.fields.access_token}` } }),
  });
  
--const mcpUrl = "https://mcp.canva.com/mcp";
-+const mcpUrl = "https://api.canva.com/connect/v1/mcp";
- 
--// Canva's MCP server has its own OAuth client registration (discovery + DCR/CIMD), separate from a
--// Connect API integration, and its tokens only work against mcp.canva.com.
++const connectMcpUrl = "https://api.canva.com/connect/v1/mcp";
++
 +// Canva MCP uses the Developer Portal app client and per-user OAuth for this resource.
- const canvaMcp = defineProvider({
-   name: "Canva MCP",
--  hosts: ["mcp.canva.com"],
++const canvaConnectMcp = defineProvider({
++  name: "Canva Connect MCP",
 +  hosts: ["api.canva.com"],
-   auth: {
--    // Scopes are the scopes_supported list from https://mcp.canva.com/.well-known/oauth-protected-resource.
++  auth: {
 +    // Discovery follows this resource's scoped protected-resource metadata.
-     oauth: oauth2({ discover: mcpUrl }),
-   },
-   health: (check) =>
++    oauth: oauth2({ discover: connectMcpUrl }),
++  },
++  health: (check) =>
++    mcpHealth(check, { url: connectMcpUrl, headers: { Authorization: `Bearer ${check.account.fields.access_token}` } }),
++});
++
+ export default defineApp(
+-  { user: { accounts: { canva: canva.many(), canvaMcp: canvaMcp.many() } }, icons },
++  { user: { accounts: { canva: canva.many(), canvaMcp: canvaMcp.many(), canvaConnectMcp: canvaConnectMcp.many() } }, icons },
+   async ({ user, cache, fetch, signal }) => ({
+     tools: router(
+       {
+@@ -91,11 +105,14 @@
+         ),
+         mcp: router(
+           await accountRouter(
+-            user?.accounts.canvaMcp ?? [],
+-            async (account) =>
++            [
++              ...(user?.accounts.canvaMcp ?? []).map((account) => ({ id: account.id, account, url: mcpUrl })),
++              ...(user?.accounts.canvaConnectMcp ?? []).map((account) => ({ id: account.id, account, url: connectMcpUrl })),
++            ],
++            async ({ account, url }) =>
+               withApprovals(
+                 await mcpRouter({
+-                  url: mcpUrl,
++                  url,
+                   account,
+                   headers: { Authorization: `Bearer ${account.fields.access_token}` },
+                   signal,
 --- a/package.json
 +++ b/package.json
 @@ -7,7 +7,7 @@

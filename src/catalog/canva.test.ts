@@ -44,7 +44,7 @@ test("Canva's corrected package serves without its publisher and replays exactly
   }
 });
 
-test("Canva's served handlers use the new resource and refuse old grants and unapproved writes", () => {
+test("Canva's served handlers preserve old accounts and use the new resource for new grants", () => {
   const output = execFileSync(
     "bun",
     [new URL("./tests/canva-runtime.mjs", import.meta.url).pathname, root],
@@ -54,5 +54,5 @@ test("Canva's served handlers use the new resource and refuse old grants and una
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
-  assert.match(output, /legacy-grant refusal PASS/);
+  assert.match(output, /legacy-account preservation PASS/);
 });
