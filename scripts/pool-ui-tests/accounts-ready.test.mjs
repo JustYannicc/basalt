@@ -765,7 +765,9 @@ test(
               if (!subscriptionsBaseline) {
                 assert.match(
                   text,
-                  new RegExp(`(?<!\\d)1 of 1 ${overviewNoun} active · 0 requests ${requestWindow} \\d+ days`),
+                  new RegExp(
+                    `(?<!\\d)1 of 1 ${overviewNoun} active · 0 requests ${requestWindow} \\d+ days`,
+                  ),
                 );
                 assert.match(
                   text,
@@ -854,7 +856,9 @@ test(
                 const text = await frame.locator("body").innerText();
                 assert.match(
                   text,
-                  new RegExp(`(?<!\\d)0 of 3 people active · 0 requests ${requestWindow} \\d+ days`),
+                  new RegExp(
+                    `(?<!\\d)0 of 3 people active · 0 requests ${requestWindow} \\d+ days`,
+                  ),
                 );
                 assert.match(
                   text,
@@ -1038,7 +1042,10 @@ test(
                 /partial|incomplete/i,
               );
               assert.equal(
-                await frame.locator("#who").getByText(/Showing the first 10 pages/).count(),
+                await frame
+                  .locator("#who")
+                  .getByText(/Showing the first 10 pages/)
+                  .count(),
                 0,
                 "Partial coverage without a next cursor has no pagination note",
               );
