@@ -558,7 +558,7 @@ test("limit support follows known subscription plans and never creates a measure
 });
 
 test("only a fresh provider value restores a current five-hour reading", () => {
-  const observed = history([point(0, 2), point(0, 4, { windowSeconds: 18000 })]);
+  const observed = { ...history([point(0, 2), point(0, 4, { windowSeconds: 18000 })]), to: start };
   const window = {
     id: "five_hour",
     label: "5 hours",
@@ -573,15 +573,56 @@ test("only a fresh provider value restores a current five-hour reading", () => {
     ])[0]!.lines.find((line) => line.windowSeconds === 18000)!;
     assert.equal(line.missingCurrentReading, true);
   }
-  for (const remainingRatio of [null, 0, 1]) {
+  for (const [remainingRatio, age] of [
+    [null, 0],
+    [0, 0],
+    [1, 0],
+    [1, 30 * 60_000 - 1],
+  ] as const) {
     const line = capacityLabs(observed, [
       {
         provider: "claude",
         plan: "Max 20x",
         freshness: "fresh",
-        windows: [{ ...window, remainingRatio }],
+        windows: [{ ...window, remainingRatio, observedAt: new Date(start - age).toISOString() }],
       },
     ])[0]!.lines.find((line) => line.windowSeconds === 18000)!;
     assert.equal(line.missingCurrentReading, remainingRatio === null);
+  }
+});
+
+test("fresh weekly collection never makes an expired or invalid five-hour value current", () => {
+  const observed = history([point(0, 2), point(0, 4, { windowSeconds: 18000 })]);
+  for (const observedAt of [
+    new Date(observed.to - 30 * 60_000).toISOString(),
+    new Date(observed.to - 31 * 60_000).toISOString(),
+    new Date(observed.to + 1).toISOString(),
+    null,
+    "invalid",
+  ]) {
+    const line = capacityLabs(observed, [
+      {
+        provider: "claude",
+        plan: "Max 20x",
+        freshness: "fresh",
+        windows: [
+          {
+            id: "five_hour",
+            label: "5 hours",
+            windowSeconds: 18000,
+            remainingRatio: 1,
+            resetAt: null,
+            observedAt,
+          },
+        ],
+      },
+    ])[0]!.lines.find((line) => line.windowSeconds === 18000)!;
+    assert.equal(line.missingCurrentReading, true, String(observedAt));
+    assert.equal(verdict(line, lineFacts(line, observed.to), 7).short, "No current 5-hour reading");
+    const parsed = Date.parse(observedAt ?? "");
+    assert.equal(
+      line.lastReadingAt,
+      Number.isFinite(parsed) && parsed <= observed.to ? parsed : start,
+    );
   }
 });

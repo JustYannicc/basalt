@@ -1116,79 +1116,99 @@ test(
       await t.test(
         `a fresh published view missing five-hour data shows only its last reading time at ${width}px`,
         async () => {
-          const f = quotaSamplingFixture(Date.now() - minute);
-          await f.usage.observe();
-          const previous = f.detail.windows.find(
-            (window) => window.window_seconds === 18_000,
-          ).observed_at;
-          f.detail.windows = f.detail.windows.filter((window) => window.window_seconds !== 18_000);
-          const id = f.credential.credential_id;
-          const accounts = accountsView(
-            [{ id, provider: "codex", label: "Synthetic Codex" }],
-            [f.detail],
-            new Set([id]),
-          );
-          assert.equal(accounts[0].freshness, "fresh");
-          assert.ok(accounts[0].windows.every((window) => window.windowSeconds !== 18_000));
-          viewResult = { ok: true, value: { ...f.view, accounts } };
-          await session(
-            async ({ page, frame, settled }) => {
-              release();
-              const panel = frame.getByRole("article", { name: "Codex", exact: true });
-              await panel.getByRole("radio", { name: "5-hour", exact: true }).click();
-              await panel
-                .getByRole("radio", { name: "5-hour", exact: true, checked: true })
-                .waitFor();
-              const body = await panel.innerText();
-              if (unknownReadingRef || limitSupportRef) {
-                assert.match(body, /Nominal/);
-              } else {
-                assert.match(body, /No current 5-hour reading/);
-                assert.ok(
-                  body.includes(
-                    `Last 5-hour reading: ${previous.slice(0, 16).replace("T", " ")} UTC.`,
-                  ),
-                );
-                assert.doesNotMatch(body, /\d+(?:\.\d+)?%|Nominal|idle|full allowance|out now/i);
-                assert.equal(
-                  await panel
-                    .locator('[role="group"][aria-label*="capacity. Measured history"]')
-                    .count(),
-                  0,
-                );
+          for (const expired of [false, true]) {
+            const now = Date.now();
+            const f = quotaSamplingFixture(now - (expired ? 31 : 1) * minute);
+            await f.usage.observe();
+            const previous = f.detail.windows.find(
+              (window) => window.window_seconds === 18_000,
+            ).observed_at;
+            if (expired) {
+              const current = new Date(now).toISOString();
+              f.credential.observed_at = current;
+              f.detail.collection.observed_at = current;
+              for (const window of f.detail.windows.filter(
+                (window) => window.window_seconds !== 18_000,
+              )) {
+                window.observed_at = current;
+                window.expires_at = new Date(now + 30 * minute).toISOString();
               }
-              await panel.getByRole("radio", { name: "Weekly", exact: true }).click();
-              await panel
-                .getByRole("radio", { name: "Weekly", exact: true, checked: true })
-                .waitFor();
-              assert.match(await panel.innerText(), /Nominal/);
-              await panel.getByRole("radio", { name: "5-hour", exact: true }).click();
-              await panel
-                .getByRole("radio", { name: "5-hour", exact: true, checked: true })
-                .waitFor();
-              assert.ok(
-                await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+            } else {
+              f.detail.windows = f.detail.windows.filter(
+                (window) => window.window_seconds !== 18_000,
               );
-              await page.locator("iframe").evaluate(
-                (iframe, height) => {
-                  iframe.style.height = `${height}px`;
-                },
-                await frame.evaluate(() => document.documentElement.scrollHeight),
-              );
-              await settled();
-              await capture(page, `unknown-five-hour-${width}`);
-            },
-            {
-              viewport: { width, height: 1000 },
-              capacity: async (input) => ({
-                ok: true,
-                value: await f.capacity(
-                  Math.floor((input.to - input.days * day) / hour) * hour,
-                  input.to,
-                ),
-              }),
-            },
-          );
+            }
+            const id = f.credential.credential_id;
+            const accounts = accountsView(
+              [{ id, provider: "codex", label: "Synthetic Codex" }],
+              [f.detail],
+              new Set([id]),
+            );
+            assert.equal(accounts[0].freshness, "fresh");
+            assert.equal(
+              accounts[0].windows.some((window) => window.windowSeconds === 18_000),
+              expired,
+            );
+            viewResult = { ok: true, value: { ...f.view, accounts } };
+            await session(
+              async ({ page, frame, settled }) => {
+                release();
+                const panel = frame.getByRole("article", { name: "Codex", exact: true });
+                await panel.getByRole("radio", { name: "5-hour", exact: true }).click();
+                await panel
+                  .getByRole("radio", { name: "5-hour", exact: true, checked: true })
+                  .waitFor();
+                const body = await panel.innerText();
+                if (unknownReadingRef || limitSupportRef) {
+                  assert.match(body, /Nominal/);
+                } else {
+                  assert.match(body, /No current 5-hour reading/);
+                  assert.ok(
+                    body.includes(
+                      `Last 5-hour reading: ${previous.slice(0, 16).replace("T", " ")} UTC.`,
+                    ),
+                  );
+                  assert.doesNotMatch(body, /\d+(?:\.\d+)?%|Nominal|idle|full allowance|out now/i);
+                  assert.equal(
+                    await panel
+                      .locator('[role="group"][aria-label*="capacity. Measured history"]')
+                      .count(),
+                    0,
+                  );
+                }
+                await panel.getByRole("radio", { name: "Weekly", exact: true }).click();
+                await panel
+                  .getByRole("radio", { name: "Weekly", exact: true, checked: true })
+                  .waitFor();
+                assert.match(await panel.innerText(), /Nominal/);
+                await panel.getByRole("radio", { name: "5-hour", exact: true }).click();
+                await panel
+                  .getByRole("radio", { name: "5-hour", exact: true, checked: true })
+                  .waitFor();
+                assert.ok(
+                  await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+                );
+                await page.locator("iframe").evaluate(
+                  (iframe, height) => {
+                    iframe.style.height = `${height}px`;
+                  },
+                  await frame.evaluate(() => document.documentElement.scrollHeight),
+                );
+                await settled();
+                await capture(page, `unknown-five-hour${expired ? "-expired" : ""}-${width}`);
+              },
+              {
+                viewport: { width, height: 1000 },
+                capacity: async (input) => ({
+                  ok: true,
+                  value: await f.capacity(
+                    Math.floor((input.to - input.days * day) / hour) * hour,
+                    input.to,
+                  ),
+                }),
+              },
+            );
+          }
         },
       );
 

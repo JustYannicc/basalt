@@ -15,6 +15,28 @@ const codexPlans = new Set([
   "prolite",
 ]);
 
+/** Home readings expire after 30 minutes; a quota reset does not renew the measurement. */
+export function hasCurrentLimitReading(
+  account: LimitAccount,
+  seconds: number,
+  at: number,
+): boolean {
+  return (
+    account.freshness === "fresh" &&
+    account.windows.some((window) => {
+      const observed = Date.parse(window.observedAt ?? "");
+      return (
+        window.windowSeconds === seconds &&
+        window.remainingRatio !== null &&
+        Number.isFinite(window.remainingRatio) &&
+        Number.isFinite(observed) &&
+        observed <= at &&
+        at - observed < 30 * 60_000
+      );
+    })
+  );
+}
+
 /** Plan support is separate from a current allowance measurement. Unknown plans need evidence. */
 export function supportedLimitWindows(account: LimitAccount): readonly number[] {
   const plan = account.plan?.trim().toLowerCase();

@@ -1,5 +1,9 @@
 import { accountPlanName } from "apps";
-import { supportedLimitWindows, type LimitAccount } from "./capacity-support.ts";
+import {
+  hasCurrentLimitReading,
+  supportedLimitWindows,
+  type LimitAccount,
+} from "./capacity-support.ts";
 import type {
   CapacityAggregate,
   CapacityForecast,
@@ -132,17 +136,13 @@ export function capacityLabs(
       const times = [
         ...line.points.map((point) => (point.raw?.last ?? point.last).observedAt.to),
         ...windows.map((window) => Date.parse(window.observedAt ?? "")),
-      ].filter(Number.isFinite);
+      ].filter((at) => Number.isFinite(at) && at <= history.to);
       return {
         ...line,
         ...(line.windowSeconds === 18_000 && members.length > 0
           ? {
-              missingCurrentReading: !members.some(
-                (account) =>
-                  account.freshness === "fresh" &&
-                  account.windows.some(
-                    (window) => window.windowSeconds === 18_000 && window.remainingRatio !== null,
-                  ),
+              missingCurrentReading: !members.some((account) =>
+                hasCurrentLimitReading(account, 18_000, history.to),
               ),
               ...(times.length > 0 ? { lastReadingAt: Math.max(...times) } : {}),
             }
