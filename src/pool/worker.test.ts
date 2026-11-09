@@ -805,6 +805,13 @@ test("an unhealthy warm runtime returns a retryable 503 before another model dis
     assert.equal(readinessCalls, 2, "warm failure does not enter the cold retry loop");
     assert.equal(modelCalls, 1, "unhealthy readiness prevents model dispatch");
     assert.match(JSON.stringify(errors), /POOL_GATEWAY_FAILURE/);
+    assert.partialDeepStrictEqual(
+      errors.find((entry) => entry[0] === "POOL_GATEWAY_FAILURE")?.[1],
+      {
+        guard: "runtime_readiness",
+        cause: "PoolRuntimeUnhealthy",
+      },
+    );
     assert.ok(!JSON.stringify(errors).includes("synthetic-private-key"));
     healthy = true;
     assert.equal((await worker.fetch(request())).status, 200);
