@@ -14,6 +14,32 @@ function unpack(init: RequestInit | undefined) {
   return { type: item.type, payload: JSON.parse(lines[2]!) };
 }
 
+function assertNoPrivateDiagnostics(messages: unknown) {
+  // Durations can contain the sentinel's digits without reporting that status.
+  assert.doesNotMatch(JSON.stringify(messages), /private-|(?<![\w.])10000(?![\w.])/);
+}
+
+test("the privacy assertion accepts a duration containing the status sentinel digits", () => {
+  assertNoPrivateDiagnostics([{ payload: { duration: 0.00014304100000001084 } }]);
+});
+
+test("the privacy assertion rejects private values and status sentinels in nested fields", () => {
+  for (const value of [
+    "private-target@private-host.invalid",
+    "private-secret",
+    10000,
+    "HTTP 10000",
+  ]) {
+    for (const message of [
+      { payload: { message: value } },
+      { payload: { contexts: { extra: [{ unexpected: value }] } } },
+      { payload: { [String(value)]: "otherwise safe" } },
+    ]) {
+      assert.throws(() => assertNoPrivateDiagnostics([message]), assert.AssertionError);
+    }
+  }
+});
+
 test("disabled monitoring opens no connection and invokes no probe", async (t) => {
   t.mock.method(globalThis, "fetch", async () => {
     assert.fail("disabled monitoring sent a request");
@@ -113,6 +139,6 @@ test("monitor error text and fields reject unbounded or private diagnostic input
   const event = messages.find((message) => message.type === "event")!.payload;
   assert.equal(event.contexts.pool_probe.failures.length, 8);
   assert.equal(event.contexts.pool_probe.check_in_id, receipt.id);
-  assert.doesNotMatch(JSON.stringify(messages), /private-|10000/);
+  assertNoPrivateDiagnostics(messages);
   assert.match(event.message, /runtime:unknown/);
 });
