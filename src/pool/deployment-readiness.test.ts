@@ -88,3 +88,21 @@ test("an old or malformed runtime never qualifies as target readiness", () => {
     receipt,
   );
 });
+
+for (const field of ["candidate", "workerInput", "imageHash"] as const)
+  test(`a previous Durable Object ${field} reports pending adoption`, async () => {
+    const signed = await signEnvelope(key, deploymentReadinessPrefix, {
+      ...target,
+      at: now,
+      expiresAt: now + 60_000,
+    });
+    const response = await handleDeploymentReadiness(
+      request(signed),
+      target,
+      key,
+      async () => ({ ...receipt, [field]: "previous-runtime" }),
+      () => now,
+    );
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { outcome: "readiness-error", stage: "readiness" });
+  });

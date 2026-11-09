@@ -30,7 +30,9 @@ const milestones = [
 const finalStart = milestones[4]!;
 const finalReady = milestones[8]!;
 
-function fixture(mode: "cycling" | "never-ready" | "never-allocated" = "cycling") {
+function fixture(
+  mode: "cycling" | "never-ready" | "never-allocated" | "adopting" | "old-runtime" = "cycling",
+) {
   let now = epoch;
   let startupAt = -1;
   const timers: { at: number; controller: AbortController }[] = [];
@@ -70,6 +72,16 @@ function fixture(mode: "cycling" | "never-ready" | "never-allocated" = "cycling"
           if (new URL(request.url).pathname === "/deployment-readiness") {
             readyRequests++;
             return handleDeploymentReadiness(request, target, key, async () => {
+              if (mode === "adopting" || mode === "old-runtime")
+                return {
+                  ...target,
+                  candidate:
+                    mode === "old-runtime" || now < epoch + 10_000 ? "e".repeat(40) : candidate,
+                  desiredRevisionMatch: true,
+                  instanceId,
+                  bootId: "final-boot",
+                  readyAt: now,
+                };
               if (mode !== "cycling") throw new Error("Synthetic runtime remains unready");
               if (readyRequests === 1) for (const at of milestones.slice(0, 4)) advanceTo(at);
               if (now >= finalStart && now < finalReady)
@@ -88,7 +100,7 @@ function fixture(mode: "cycling" | "never-ready" | "never-allocated" = "cycling"
             instanceId,
             imageHash: target.imageHash,
             running: true,
-            ready: mode === "cycling" && now >= finalReady,
+            ready: mode === "adopting" || (mode === "cycling" && now >= finalReady),
             bootId: "final-boot",
           });
         },
@@ -170,6 +182,27 @@ test("recorded b301 restart milestones reestablish the final boot inside unchang
   assert.equal(result.bootId, "final-boot");
   assert.ok(f.now >= finalReady);
   assert.ok(f.now - f.startupAt < 180_000);
+});
+
+test("a newly activated entrypoint waits for the old Durable Object to adopt the target", async () => {
+  const f = fixture("adopting");
+  const result = await atClock(f, f.run);
+  assert.equal(result.bootId, "final-boot");
+  assert.equal(f.now - epoch, 10_000);
+  assert.ok(f.now - f.startupAt < 180_000);
+});
+
+test("a Durable Object that never adopts the target refuses within the startup budget", async () => {
+  const f = fixture("old-runtime");
+  await atClock(f, async () =>
+    assert.rejects(f.run(), (error: unknown) => {
+      assert.ok(error instanceof ServingFailure);
+      assert.equal(error.serving.check, "deployment-readiness");
+      assert.equal(error.serving.status, 503);
+      assert.equal(f.now - f.startupAt, 180_000);
+      return true;
+    }),
+  );
 });
 
 test("never allocated refuses at the existing instance bound with the last state", async () => {
