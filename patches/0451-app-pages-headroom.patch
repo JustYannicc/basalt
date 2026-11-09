@@ -68,10 +68,10 @@ index 0000000000000000000000000000000000000000..68d6a306f0bffbff486934096b4b3768
 +};
 diff --git a/packages/apps/src/implementation/ui-document-native.ts b/packages/apps/src/implementation/ui-document-native.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..3a7a7b85f6ede3fd826ef001711c97d31ace93fd
+index 0000000000000000000000000000000000000000..475a6156eb58613d866317d351df35cd74558aad
 --- /dev/null
 +++ b/packages/apps/src/implementation/ui-document-native.ts
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,58 @@
 +/** Cloud uses workerd's HTML parser instead of uploading another HTML engine. */
 +import type {
 +  HTMLRewriter as NativeHTMLRewriter,
@@ -91,14 +91,15 @@ index 0000000000000000000000000000000000000000..3a7a7b85f6ede3fd826ef001711c97d3
 +    .on("*", {
 +      element(element) {
 +        const seen = new Set<string>();
-+        const attributes = Array.from(element.attributes)
-+          .filter(([name]) => {
-+            const key = name.toLowerCase();
-+            if (seen.has(key)) return false;
-+            seen.add(key);
-+            return true;
-+          })
-+          .map(([name, value]) => ({ name, value: decodeHTMLAttribute(value) }));
++        const attributes = [];
++        for (const [name, value] of element.attributes) {
++          if (name === undefined || value === undefined)
++            throw new Error("HTMLRewriter returned an invalid attribute");
++          const key = name.toLowerCase();
++          if (seen.has(key)) continue;
++          seen.add(key);
++          attributes.push({ name, value: decodeHTMLAttribute(value) });
++        }
 +        for (const [index, attribute] of rewrite
 +          .attributes(element.tagName === "feimage" ? "feImage" : element.tagName, attributes)
 +          .entries())
