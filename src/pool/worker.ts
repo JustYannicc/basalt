@@ -122,6 +122,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
           return ctx.id.toString();
         },
         imageHash: env.POOL_IMAGE_HASH,
+        release: productionOpsRelease,
         running: () => ctx.container?.running ?? false,
         status: () => {
           if (!ctx.container) throw new Error("Pool container unavailable");
@@ -131,9 +132,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
             AbortSignal.timeout(2_000),
           );
         },
-        restart: async () => {
+        restart: async (beforeStop) => {
           this.managementReadyUntil = 0;
-          return (await this.lifecycle).restart();
+          return (await this.lifecycle).restart(beforeStop);
         },
       },
       ctx.storage,

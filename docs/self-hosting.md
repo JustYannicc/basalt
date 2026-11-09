@@ -44,6 +44,14 @@ Required services are Cloudflare Workers, R2, Hyperdrive, native Email Sending, 
 
 Autumn billing, Axiom telemetry and Context.dev company suggestions are optional. When unconfigured, Basalt carries an upstream patch that allows product use without billing, exports no Axiom telemetry and skips company suggestions. It never substitutes hosted emulators. Sentry and PostHog configuration belongs to the analytics integration work.
 
+### Restart one exact pool runtime
+
+Use [Exact pool runtime recovery](../.github/workflows/pool-runtime-recovery.yml) on `main` when a reviewed incident plan calls for one restart. It uses the `production-release` environment and waits behind production releases. Keep `POOL_APP_SIGNING_KEY` in Actions.
+
+Prepare a non-secret [recovery plan](../scripts/runtime-recovery/plan.ts) from read-only provider inventory and the private runtime inspection. Review its exact release, deployment, image, resources, instance and current boot. Compute the approval digest with `bun scripts/runtime-recovery/entry.ts digest reviewed-plan.json`, then dispatch with that JSON as `plan_json` and its digest as `plan_sha256`.
+
+The workflow retains a dry run before submitting anything and refuses changed pins. Its result names the operation, previous and replacement boot, or every observed pin difference. A restart discards in-memory work, including the pending usage queue; it does not change the image or saved accounts. After an uncertain result, rerun that workflow to inspect the same durable receipt. Reruns cannot submit a restart. Do not create another operation to work around uncertainty.
+
 ## GitHub Actions secrets
 
 GitHub Actions is authoritative for every deploy input; Alchemy-generated credentials, encrypted Cloudflare state and its bootstrap secrets are managed runtime copies, with plaintext scratch allowed only on ephemeral Actions runners and never in the repo, logs, artifacts or persisted developer storage.
