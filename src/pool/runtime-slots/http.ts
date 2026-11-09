@@ -37,7 +37,7 @@ export async function handleRuntimeHandoff(
         result = await handoff.witness(value.target);
         break;
       case "adopt":
-        await handoff.adopt(value.proof);
+        result = await handoff.adopt(value.proof);
         break;
       case "stage":
         result = await handoff.stage(value.proof);

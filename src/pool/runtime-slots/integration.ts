@@ -1,4 +1,6 @@
 import { Schema } from "effect";
+import { observeUnattestedAdoption } from "./adoption-observation.ts";
+import type { UnattestedActive } from "./admission-proof.ts";
 import { RuntimeSlotAuthority } from "./authority.ts";
 import { configurationDigest, runtimeConfiguration } from "./configuration.ts";
 import { RuntimeSlots } from "./controller.ts";
@@ -157,6 +159,7 @@ export class RuntimeHandoff {
         { ...proof.target, bootId: proof.bootId },
         proof.selection.policyDigest,
       );
+      return await this.witness(proof.target, proof);
     } finally {
       this.adopting = undefined;
       finish();
@@ -178,8 +181,21 @@ export class RuntimeHandoff {
     await this.driver.attest(proof.target, envelope);
     return this.slots.promote(intent, () => this.authority.fresh(proof));
   }
-  witness(target: SlotTarget) {
-    return this.driver.witness(target);
+  async witness(target: SlotTarget, expected?: UnattestedActive) {
+    const value = await this.driver.witness(target);
+    const { kind } = Schema.decodeUnknownSync(Schema.Struct({ kind: Schema.String }))(value);
+    if (kind !== "unattested-active") return value;
+    return observeUnattestedAdoption(
+      {
+        controllerCode: this.controllerCode,
+        driver: this.driver,
+        storage: this.storage,
+        clock: slotClock,
+      },
+      target,
+      value,
+      expected,
+    );
   }
   warm(legacy: () => Promise<PoolStatus>) {
     return this.choose(

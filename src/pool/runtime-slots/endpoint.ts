@@ -183,7 +183,12 @@ export class RuntimeEndpoint {
     this.bound(target);
     const { record } = await this.store.read(target);
     return record.authorization.kind === "unattested-active"
-      ? { kind: "unattested-active" as const, controllerCode: this.code, identity: record.identity }
+      ? {
+          kind: "unattested-active" as const,
+          controllerCode: this.code,
+          identity: record.identity,
+          authorization: record.authorization,
+        }
       : { kind: "witness" as const, controllerCode: this.code, witness: record.witness };
   }
   attest(envelope: string) {

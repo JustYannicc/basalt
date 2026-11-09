@@ -53,7 +53,7 @@ const {
 } = await import(workerPath);
 hooks.deregister();
 
-export async function handoffWorker(options: { rotateSigningKey?: boolean } = {}) {
+export async function handoffWorker(options: { rotateSigningKey?: boolean; adopt?: boolean } = {}) {
   const oldTarget: SlotTarget = {
     format: "pool-runtime-slot-v1",
     controllerId: "a".repeat(64),
@@ -227,10 +227,15 @@ export async function handoffWorker(options: { rotateSigningKey?: boolean } = {}
     );
   };
   const preservation = await runtimeGrant(old, old.storage, "unattested-active");
-  const adopted = await command("adopt", { proof: preservation.envelope });
-  assert.equal(adopted.status, 200, await adopted.clone().text());
-  // Model and Home requests on the new code must keep the old runtime settings until promotion.
-  worker = new PoolContainer(old.ctx, { ...workerEnv, ...nextEnv });
+  let adoptionAck: unknown;
+  if (options.adopt !== false) {
+    const adopted = await command("adopt", { proof: preservation.envelope });
+    assert.equal(adopted.status, 200, await adopted.clone().text());
+    adoptionAck = await adopted.json();
+  }
+  const currentEnv = { ...workerEnv, ...(options.adopt === false ? {} : nextEnv) };
+  // Model and Home requests keep the admitted runtime settings after current bindings advance.
+  worker = new PoolContainer(old.ctx, currentEnv);
   const token = await signPoolToken(env.POOL_APP_SIGNING_KEY, claims);
   const view = async (fresh = true) => {
     const response = await worker.fetch(
@@ -286,6 +291,8 @@ export async function handoffWorker(options: { rotateSigningKey?: boolean } = {}
   return {
     old,
     candidate,
+    preservation,
+    adoptionAck,
     claims,
     policy,
     worker,
@@ -302,8 +309,7 @@ export async function handoffWorker(options: { rotateSigningKey?: boolean } = {}
     },
     reconstruct: (bound = true) => {
       worker = new PoolContainer(old.ctx, {
-        ...workerEnv,
-        ...nextEnv,
+        ...currentEnv,
         ...(!bound ? { PoolRuntime: undefined } : {}),
       });
       return worker;
