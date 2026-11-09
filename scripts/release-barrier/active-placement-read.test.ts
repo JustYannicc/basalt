@@ -30,6 +30,10 @@ for (const status of [429, 503, 403])
             result: {
               id: "active",
               resources: {
+                bindings: [
+                  { name: "POOL_IMAGE_HASH", type: "plain_text", text: "a".repeat(16) },
+                  { name: "PRIVATE_FIXTURE", type: "secret_text", text: "private-fixture" },
+                ],
                 script_runtime: { limits: { subrequests: 50000 } },
                 script: {
                   placement: {
@@ -75,6 +79,10 @@ for (const status of [429, 503, 403])
       assert.ok(Exit.isSuccess(result));
       assert.equal(attempts, 2);
       assert.equal(result.value.id, "active");
+      assert.deepEqual(result.value.bindings, [
+        { name: "POOL_IMAGE_HASH", type: "plain_text", text: "a".repeat(16) },
+      ]);
+      assert.doesNotMatch(JSON.stringify(result.value), /private-fixture/);
       assert.deepEqual(result.value.limits, { subrequests: 50000 });
     }
   });

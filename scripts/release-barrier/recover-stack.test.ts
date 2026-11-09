@@ -1,3 +1,4 @@
+import { readActivePlacements } from "./cloudflare.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Stack, evalStack } from "alchemy/Stack";
@@ -188,6 +189,19 @@ for (const scenario of [
             current_configuration: previous,
             target_configuration: app.configuration,
             status: "completed",
+          };
+        } else if (request.method === "GET" && url.pathname.includes("/versions/")) {
+          result = {
+            id: url.pathname.split("/").at(-1),
+            resources: {
+              bindings: [
+                {
+                  name: "POOL_IMAGE_HASH",
+                  type: "plain_text",
+                  text: proof.frozen.baselineInputHash,
+                },
+              ],
+            },
           };
         } else throw new Error("Unexpected SDK request in recovery proof");
         return HttpResponse.fromWeb(request, envelope(result));
@@ -434,6 +448,18 @@ for (const scenario of [
               },
               manifest: async () => {},
               io: {
+                placements: (worker, baseline) =>
+                  readActivePlacements(worker, baseline).pipe(
+                    Effect.provideService(HttpClient.HttpClient, sdk),
+                    Effect.provideService(
+                      Credentials,
+                      Effect.succeed({
+                        type: "apiToken",
+                        apiToken: Redacted.make("synthetic-never-sent"),
+                        apiBaseUrl: "https://fixture.invalid",
+                      }),
+                    ),
+                  ),
                 container: () => Effect.succeed(proof.metadata),
                 observeContainer: () => Effect.succeed(decodeApplication(app)),
                 baseline: (worker) =>

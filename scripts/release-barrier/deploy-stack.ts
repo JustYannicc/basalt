@@ -111,7 +111,9 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
                     baseline.some((version) => version.versionId === target.version),
                 );
                 const versions =
-                  repairTarget || needsPlacementProof(upload.previousSettings?.placement)
+                  upload.fqn === "PoolWorker" ||
+                  repairTarget ||
+                  needsPlacementProof(upload.previousSettings?.placement)
                     ? await run((io.placements ?? readActivePlacements)(upload.request, baseline))
                     : [];
                 const repair = repairTarget
@@ -144,7 +146,16 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
     for (const { frozen } of prepared.containers.values())
       assertJournaledBaselineInput(
         frozen,
-        prepared.captured.get("PoolWorker")?.previousSettings,
+        {
+          bindings: [
+            {
+              name: "POOL_IMAGE_HASH",
+              type: "plain_text",
+              text: manifest.workers.find((worker) => worker.id === "PoolWorker")
+                ?.baselineImageHash,
+            },
+          ],
+        },
         manifest.workers.find((worker) => worker.id === "PoolWorker"),
         options.forwardInput,
       );

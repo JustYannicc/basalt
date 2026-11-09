@@ -1,3 +1,11 @@
+import { observeContainer } from "./container-cloudflare.ts";
+import { containerSnapshot } from "./container.ts";
+import { probeWorkerSettings } from "./settings-probe.ts";
+import { settingsFromDeclarations } from "./candidate-settings.ts";
+import { recordedContainer } from "./forward-model.ts";
+import { containerKey } from "./forward-journal.ts";
+import { retiredPlacements } from "./placement-retirement.ts";
+import { reportBaselineProbe } from "./baseline-probe-report.ts";
 import { releaseEvidence } from "./evidence.ts";
 import { reportRefusal, refusalTable } from "./refusal-report.ts";
 import { mkdir, writeFile, appendFile } from "node:fs/promises";
@@ -52,6 +60,44 @@ try {
                 dryRun: true,
                 directory,
               }).pipe(Effect.provideService(State, Effect.succeed(readOnly)));
+              const { identity } = recordedContainer(yield* actual.get(containerKey(compiled)));
+              const observed = yield* observeContainer(identity);
+              const retired = yield* retiredPlacements(actual, compiled);
+              const preparation = yield* Effect.promise(() =>
+                probeWorkerSettings(
+                  environment.CLOUDFLARE_ACCOUNT_ID!,
+                  environment.CLOUDFLARE_API_TOKEN!,
+                  environment,
+                  undefined,
+                  async (workers) =>
+                    Effect.runPromise(
+                      settingsFromDeclarations(compiled, workers).pipe(
+                        Effect.map((rows) =>
+                          rows.map((row) => ({
+                            ...row,
+                            retiredPlacement: retired.includes(row.role),
+                          })),
+                        ),
+                        Effect.provideContext(compiled.services),
+                      ),
+                    ),
+                  undefined,
+                  {
+                    baseline: containerSnapshot(observed),
+                    baselineInputHash: reconciliation?.inputHash ?? identity.hash.image,
+                    forwardInput: reconciliation?.continuation,
+                  },
+                ),
+              );
+              yield* Effect.promise(() =>
+                reportBaselineProbe(
+                  preparation,
+                  resolve(directory, "preparation.json"),
+                  process.env.GITHUB_STEP_SUMMARY,
+                ),
+              );
+              if (preparation.some((row) => !row.ok))
+                throw new BarrierRefusal("preparation-probe-refused");
               return {
                 schemaVersion: 1,
                 nativeSchemaVersion: nativeState.nativeSchemaVersion,

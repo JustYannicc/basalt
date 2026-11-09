@@ -104,7 +104,7 @@ jobs:
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
-      - name: Compare every production Worker setting through the release client
+      - name: Compare every production Worker setting and container baseline through the release client
         run: |
           BASALT_RELEASE_ATTEMPT="$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')" \
             bun scripts/release-barrier/baseline-probe-entry.ts
@@ -167,7 +167,9 @@ jobs:
         if: always()
         with:
           name: baseline-probe
-          path: .local/baseline-probe.json
+          path: |
+            .local/baseline-probe.json
+            .local/forward-probe/preparation.json
           include-hidden-files: true
           if-no-files-found: warn
 

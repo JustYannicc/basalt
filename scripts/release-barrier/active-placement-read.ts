@@ -10,13 +10,22 @@ const responseSchema = Schema.Struct({
   result: Schema.Struct({
     id: Schema.String,
     resources: Schema.Struct({
+      bindings: Schema.optional(
+        Schema.Array(
+          Schema.Struct({
+            name: Schema.String,
+            type: Schema.String,
+            text: Schema.optional(Schema.String),
+          }),
+        ),
+      ),
       script: Schema.optional(Schema.Struct({ placement: Schema.optional(Schema.Unknown) })),
       script_runtime: Schema.optional(Schema.Struct({ limits: Schema.optional(Schema.Unknown) })),
     }),
   }),
 });
 
-/** The pinned SDK's version schema strips placement. Decode only the immutable placement and runtime limits needed by the repair guard. */
+/** The pinned SDK's version schema strips placement. Decode only the immutable placement, runtime limits and bindings needed by preparation guards. */
 export const readVersionPlacement = (accountId: string, scriptName: string, versionId: string) =>
   Effect.gen(function* () {
     const credentials = yield* yield* Credentials;
@@ -61,6 +70,9 @@ export const readVersionPlacement = (accountId: string, scriptName: string, vers
       return {
         id: versionId,
         placement: decoded.result.resources.script?.placement,
+        bindings: decoded.result.resources.bindings?.filter(
+          (binding) => binding.name === "POOL_IMAGE_HASH",
+        ),
         ...(decoded.result.resources.script_runtime?.limits === undefined
           ? {}
           : { limits: decoded.result.resources.script_runtime.limits }),
