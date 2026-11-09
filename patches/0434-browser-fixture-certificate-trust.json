@@ -7,5 +7,5 @@
   "database_sensitive": false,
   "workflow_sensitive": false,
   "remove_with": "upstream-browser-fixture-certificate-trust",
-  "requires": "Chromium fixture browsers must pin the scenario certificate public key at launch, including cases created after a shared browser. Preserve the context HTTPS setting required by Playwright APIRequestContext, which does not inherit Chromium launch options, and keep saved-evidence rendering targetless."
+  "requires": "Pin Chromium fixture certificate keys at launch, preserve APIRequestContext HTTPS handling, and render saved evidence without a target."
 }
