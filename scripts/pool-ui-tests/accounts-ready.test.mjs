@@ -53,17 +53,13 @@ const artifacts = process.env.POOL_UI_ARTIFACTS;
 const sourceRef = process.env.POOL_UI_SOURCE_REF;
 const planBaseline = process.env.POOL_UI_PLAN_BASELINE === "1";
 const subscriptionsBaseline = process.env.POOL_UI_SUBSCRIPTIONS_BASELINE === "1";
-<<<<<<< HEAD
 const freshnessRef = process.env.POOL_UI_FRESHNESS_REF;
 // Optional baseline: build that commit's overview.tsx and usage-groups.tsx to capture the old people copy.
 const peopleCopyRef = process.env.POOL_UI_PEOPLE_COPY_REF;
-const baselineRef = sourceRef ?? peopleCopyRef;
-=======
 // Optional baseline: build that commit's overview-snapshot.ts and overview.tsx, which withheld a
 // same-snapshot learning verdict whenever usage coverage was partial.
 const learningRef = process.env.POOL_UI_LEARNING_REF;
-const baselineRef = sourceRef ?? learningRef;
->>>>>>> refs/b40/inputs/750
+const baselineRef = sourceRef ?? peopleCopyRef ?? learningRef;
 const artifactLabel =
   process.env.POOL_UI_ARTIFACT_LABEL ??
   (baselineRef ? `before-${baselineRef.slice(0, 8)}` : "after");
@@ -324,7 +320,6 @@ test(
           join(app, file),
           execFileSync("git", ["-C", root, "show", `a434a2af:${`apps/pool/${file}`}`]),
         );
-<<<<<<< HEAD
     if (planBaseline)
       for (const file of ["ui/overview.tsx", "ui/capacity-model.ts", "ui/capacity-chart.tsx"])
         writeFileSync(
@@ -336,13 +331,12 @@ test(
         writeFileSync(
           join(app, file),
           execFileSync("git", ["-C", root, "show", `${peopleCopyRef}:apps/pool/${file}`]),
-=======
+        );
     if (learningRef)
       for (const file of ["ui/overview-snapshot.ts", "ui/overview.tsx"])
         writeFileSync(
           join(app, file),
           execFileSync("git", ["-C", root, "show", `${learningRef}:apps/pool/${file}`]),
->>>>>>> refs/b40/inputs/750
         );
     writeFileSync(
       join(app, "deployment.ts"),
@@ -386,13 +380,10 @@ test(
     // When set, fresh view requests are answered as they arrive instead of held.
     let answerFresh = false;
     let usageResult = emptyUsage;
-<<<<<<< HEAD
-    // When set, replaces the overview's people directory counts.
-    let directoryResult;
-=======
     // Reshapes the manager overview reply, e.g. into partial coverage of one snapshot.
     let overviewShape = (value) => value;
->>>>>>> refs/b40/inputs/750
+    // When set, replaces the overview's people directory counts.
+    let directoryResult;
     const answer = (entry) =>
       entry.response.end(
         JSON.stringify(entry.fresh && freshResult !== undefined ? freshResult : viewResult),
@@ -577,11 +568,8 @@ test(
       } = {},
     ) => {
       usageResult = usage;
-<<<<<<< HEAD
-      directoryResult = people;
-=======
       overviewShape = overview;
->>>>>>> refs/b40/inputs/750
+      directoryResult = people;
       capacityReply = capacity;
       holdCapacity = capacityHeld;
       member = personal;
@@ -879,7 +867,6 @@ test(
         },
       );
 
-<<<<<<< HEAD
     for (const width of [1280, 390])
       await t.test(`Claude weekly plan weights and retained estimates at ${width}px`, async () => {
         for (const retained of [false, true]) {
@@ -900,7 +887,81 @@ test(
           viewResult = { ok: true, value };
           const conservative = retained || planBaseline;
           const weight = capacityWeight("claude", "Max 20x", 604_800);
-=======
+          await session(
+            async ({ page, frame, settled }) => {
+              release();
+              await frame
+                .getByText("1 subscription account across 1 lab", { exact: true })
+                .waitFor();
+              await frame.locator("#capacity article").waitFor();
+              await settled();
+              const body = await frame.locator("body").innerText();
+              assert.ok(body.includes("Max 20x"), "Keep the provider's exact plan label");
+              assert.doesNotMatch(body, /Ultra/);
+              if (planBaseline) assert.match(body, /plan isn't recognised/);
+              else {
+                assert.doesNotMatch(body, /plan isn't recognised|plan unknown|flagged 1x/);
+                if (retained) {
+                  assert.match(body, /Max 20x counted conservatively/);
+                  assert.match(body, /conservative estimate · 1x/);
+                } else {
+                  assert.match(body, /published weekly multiplier/);
+                  assert.doesNotMatch(body, /Max 20x counted conservatively/);
+                }
+              }
+              assert.ok(
+                await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+              );
+              await page.locator("iframe").evaluate(
+                (iframe, height) => {
+                  iframe.style.height = `${height}px`;
+                },
+                await frame.evaluate(() => document.documentElement.scrollHeight),
+              );
+              await settled();
+              await capture(page, `claude-weekly-${retained ? "retained" : "published"}-${width}`);
+            },
+            {
+              viewport: { width, height: 1000 },
+              capacity: (input) => {
+                const result = capacityFixture(input);
+                const at = input.to;
+                const full = conservative ? 1 : weight.multiplier;
+                const reading = {
+                  remaining: full * 0.4,
+                  full,
+                  at,
+                  observedAt: { from: at, to: at },
+                  accountCount: 1,
+                  knownWeightCount: conservative ? 0 : 1,
+                  unknownWeightCount: conservative ? 1 : 0,
+                  weights: [
+                    {
+                      source: conservative ? "unknown-plan" : weight.source,
+                      revision: conservative ? "2026-10-30" : weight.revision,
+                      accountCount: 1,
+                    },
+                  ],
+                };
+                result.value.points = [
+                  {
+                    provider: "claude",
+                    windowSeconds: 604_800,
+                    mode: null,
+                    unit: { id: weight.unit.id, label: weight.unit.label },
+                    hour: Math.floor(at / hour) * hour,
+                    minimum: reading,
+                    last: reading,
+                    plans: [{ plan: "Max 20x", minimum: reading, last: reading }],
+                  },
+                ];
+                return result;
+              },
+            },
+          );
+        }
+      });
+
     // The live shape: usage coverage is partial, yet usage and capacity share one range and
     // capture, and capacity has no completed comparable week yet.
     for (const width of [1280, 390])
@@ -931,33 +992,10 @@ test(
               models: [{ ...total, provider: "codex", model: "Synthetic model" }],
             },
           };
->>>>>>> refs/b40/inputs/750
           await session(
             async ({ page, frame, settled }) => {
               release();
               await frame
-<<<<<<< HEAD
-                .getByText("1 subscription account across 1 lab", { exact: true })
-                .waitFor();
-              await frame.locator("#capacity article").waitFor();
-              await settled();
-              const body = await frame.locator("body").innerText();
-              assert.ok(body.includes("Max 20x"), "Keep the provider's exact plan label");
-              assert.doesNotMatch(body, /Ultra/);
-              if (planBaseline) assert.match(body, /plan isn't recognised/);
-              else {
-                assert.doesNotMatch(body, /plan isn't recognised|plan unknown|flagged 1x/);
-                if (retained) {
-                  assert.match(body, /Max 20x counted conservatively/);
-                  assert.match(body, /conservative estimate · 1x/);
-                } else {
-                  assert.match(body, /published weekly multiplier/);
-                  assert.doesNotMatch(body, /Max 20x counted conservatively/);
-                }
-              }
-              assert.ok(
-                await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
-=======
                 .getByText("3 subscription accounts across 2 labs", { exact: true })
                 .waitFor();
               await frame.getByRole("heading", { name: "Needs attention", exact: true }).waitFor();
@@ -1030,7 +1068,6 @@ test(
               assert.ok(
                 await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
                 "Overview fits at phone and desktop widths",
->>>>>>> refs/b40/inputs/750
               );
               await page.locator("iframe").evaluate(
                 (iframe, height) => {
@@ -1039,44 +1076,6 @@ test(
                 await frame.evaluate(() => document.documentElement.scrollHeight),
               );
               await settled();
-<<<<<<< HEAD
-              await capture(page, `claude-weekly-${retained ? "retained" : "published"}-${width}`);
-            },
-            {
-              viewport: { width, height: 1000 },
-              capacity: (input) => {
-                const result = capacityFixture(input);
-                const at = input.to;
-                const full = conservative ? 1 : weight.multiplier;
-                const reading = {
-                  remaining: full * 0.4,
-                  full,
-                  at,
-                  observedAt: { from: at, to: at },
-                  accountCount: 1,
-                  knownWeightCount: conservative ? 0 : 1,
-                  unknownWeightCount: conservative ? 1 : 0,
-                  weights: [
-                    {
-                      source: conservative ? "unknown-plan" : weight.source,
-                      revision: conservative ? "2026-10-30" : weight.revision,
-                      accountCount: 1,
-                    },
-                  ],
-                };
-                result.value.points = [
-                  {
-                    provider: "claude",
-                    windowSeconds: 604_800,
-                    mode: null,
-                    unit: { id: weight.unit.id, label: weight.unit.label },
-                    hour: Math.floor(at / hour) * hour,
-                    minimum: reading,
-                    last: reading,
-                    plans: [{ plan: "Max 20x", minimum: reading, last: reading }],
-                  },
-                ];
-=======
               await capture(page, `learning-overview-${width}`);
             },
             {
@@ -1134,18 +1133,12 @@ test(
                   busy: null,
                   bankedAvailable: null,
                 }));
->>>>>>> refs/b40/inputs/750
                 return result;
               },
             },
           );
-<<<<<<< HEAD
-        }
-      });
-=======
         },
       );
->>>>>>> refs/b40/inputs/750
 
     for (const width of [1440, 390])
       await t.test(`usage loads while capacity is held at ${width}px`, async () => {
