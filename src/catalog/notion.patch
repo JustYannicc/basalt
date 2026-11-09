@@ -285,7 +285,7 @@
    },
    "dependencies": {
 -    "apps": "0.0.1-beta.100",
-+    "apps": "0.0.1-beta.104-basalt.13",
++    "apps": "0.0.1-beta.104-basalt.14",
      "@modelcontextprotocol/sdk": "1.32.1"
    }
  }

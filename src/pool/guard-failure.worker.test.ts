@@ -51,6 +51,26 @@ const cases = [
     failure: "response_status",
     backendStatus: 409,
   },
+  {
+    fault: "policy_reason",
+    guard: "native_policy_install",
+    failure: "response_status",
+    backendStatus: 400,
+    reason: "lease_window",
+  },
+  {
+    fault: "policy_framing",
+    guard: "native_policy_install",
+    failure: "response_status",
+    backendStatus: 400,
+    reason: "json",
+  },
+  {
+    fault: "policy_unknown",
+    guard: "native_policy_install",
+    failure: "response_status",
+    backendStatus: 400,
+  },
   { fault: "policy_ack", guard: "native_policy_install", failure: "invalid_body" },
   { fault: "policy_transport", guard: "native_policy_install", failure: "transport" },
 ] as const;
@@ -90,6 +110,28 @@ for (const scenario of cases)
                 if (fault && scenario.fault === "policy_transport") throw new Error(secret);
                 if (fault && scenario.fault === "policy_status")
                   return new Response(secret, { status: 409 });
+                if (
+                  fault &&
+                  ["policy_reason", "policy_unknown", "policy_framing"].includes(scenario.fault)
+                )
+                  return Response.json(
+                    {
+                      error:
+                        scenario.fault === "policy_framing"
+                          ? "invalid_projection_framing"
+                          : "invalid_projection",
+                      reason:
+                        scenario.fault === "policy_reason"
+                          ? "lease_window"
+                          : scenario.fault === "policy_framing"
+                            ? "json"
+                            : secret,
+                      accountIndex: 4,
+                      leaseMs: 15001,
+                      private: secret,
+                    },
+                    { status: 400 },
+                  );
                 if (fault && scenario.fault === "policy_ack")
                   return Response.json({ installed: true, revision: -1, secret });
                 const { projection } = (await request.json()) as { projection: string };

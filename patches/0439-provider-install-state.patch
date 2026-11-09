@@ -1,0 +1,79 @@
+diff --git a/apps/hosted/server/src/implementation/provider-account-context.ts b/apps/hosted/server/src/implementation/provider-account-context.ts
+--- a/apps/hosted/server/src/implementation/provider-account-context.ts
++++ b/apps/hosted/server/src/implementation/provider-account-context.ts
+@@ -1,6 +1,13 @@
+ import { permittedAppIds, permitsAction } from "@executor-js/authorization";
+ import type { CatalogEntry } from "@executor-js/catalog/contracts";
+-import { StorageError, identifyProvider, type App, type AppId } from "@executor-js/sdk/core";
++import {
++  AccountAcquisitionConfiguration,
++  StorageError,
++  identifyProvider,
++  planAccountConsumerMethod,
++  type App,
++  type AppId,
++} from "@executor-js/sdk/core";
+ import { providerDeclaration } from "apps/host";
+ import { Crypto, Effect, Option } from "effect";
+ import { CurrentAuthorization } from "../contracts/authorization.ts";
+@@ -17,6 +24,7 @@
+   type ResourceAuthority,
+ } from "./resource-policy.ts";
+ import { recordedServiceInstalls } from "./service-install-records.ts";
++import { AccountListReads } from "./account-list-reads.ts";
+ 
+ type Slot = App["requirements"]["accounts"][string];
+ const unavailable = (reason: string) => ({ kind: "unavailable" as const, reason });
+@@ -109,18 +117,49 @@
+       family === undefined || found.some((plan) => plan.family !== family)
+         ? null
+         : { family, requirements: found.map((plan) => plan.requirement) };
++    const reads = yield* AccountListReads;
++    const covered = reads !== undefined && apps.every((candidate) => reads.apps.has(candidate.id));
++    const poolIds =
++      !covered && apps.length !== 0
++        ? yield* Effect.gen(function* () {
++            const sql = yield* policyDatabase;
++            return yield* sql`select app.id
++            from executor_apps app join organization o on app.owner = 'organization:' || o.id
++            where ${sql.in(
++              "app.id",
++              apps.map((candidate) => candidate.id),
++            )}
++              and exists (select 1 from jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) pool
++                where pool.value ->> 'app' = app.id)`;
++          })
++        : [];
++    const pools = covered ? reads.pools : new Set(poolIds.map((row) => row.id));
++    const { registrations } = yield* AccountAcquisitionConfiguration;
+     const destination = (requirement: string): ProviderAccountDestination => {
+       if (!requested.has(requirement))
+         throw new Error(`Provider account requirement was not prepared: ${requirement}`);
+       const plan = plans.get(requirement)!;
+       if (plan.kind === "unavailable") return plan;
+       if (!canManageAccounts) return unavailable("Account management access is required.");
++      const available = Object.keys(plan.slot.definition.auth).filter(
++        (method) =>
++          planAccountConsumerMethod(plan.slot, method, registrations).status === "available",
++      );
++      if (available.length === 0)
++        return unavailable(
++          "No connection method is available for this provider's required capabilities.",
++        );
+       const destinations = apps.flatMap((candidate) => {
+-        if (!installed(candidate, plan.entry)) return [];
++        if (candidate.activeVersion === null || pools.has(candidate.id)) return [];
+         const access = inventory?.access.get(candidate.id);
+-        return appRequirements(candidate).flatMap(([requirement, required]) =>
++        return Object.entries(candidate.requirements.accounts).flatMap(([requirement, required]) =>
+           required.provider === plan.slot.provider &&
+-          (required.contributed ? access?.canUse : access?.canManage)
++          (required.scope === "user" ||
++            (required.contributed ? access?.canUse : access?.canManage)) &&
++          available.some(
++            (method) =>
++              planAccountConsumerMethod(required, method, registrations).status === "available",
++          )
+             ? [{ app: candidate.id, name: candidate.name, requirement }]
+             : [],
+         );

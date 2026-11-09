@@ -15,6 +15,7 @@ from collections.abc import Callable
 from typing import Any
 
 from .pool_contract import native_policy_request
+from .policy_diagnostic import policy_failure
 from .runtime_signals import FailureCategory, report_failure
 
 READY_BIND = ("0.0.0.0", 8318)
@@ -227,21 +228,21 @@ class ReadyHandler(http.server.BaseHTTPRequestHandler):
         except ValueError:
             content_length = 0
         if content_length < 2 or content_length > MAX_POLICY_INSTALL_BYTES:
-            self._send(400, {"error": "invalid_projection"})
+            self._send(400, {"error": "invalid_projection_framing", "reason": "envelope"})
             return
         try:
             body = json.loads(
                 self.rfile.read(content_length), object_pairs_hook=_unique_object
             )
         except (ValueError, TypeError):
-            self._send(400, {"error": "invalid_projection"})
+            self._send(400, {"error": "invalid_projection_framing", "reason": "json"})
             return
         if (
             not isinstance(body, dict)
             or set(body) != {"projection"}
             or not isinstance(body["projection"], str)
         ):
-            self._send(400, {"error": "invalid_projection"})
+            self._send(400, {"error": "invalid_projection_framing", "reason": "envelope"})
             return
 
         status, result = native_policy_request(
@@ -257,7 +258,7 @@ class ReadyHandler(http.server.BaseHTTPRequestHandler):
             self._send(200, {"installed": True, "revision": revision})
             return
         if status in (400, 409):
-            self._send(status, {"error": "invalid_projection"})
+            self._send(status, policy_failure(result))
             return
         self._send(503, {"error": "policy_unavailable"})
 

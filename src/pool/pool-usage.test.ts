@@ -355,28 +355,33 @@ test("owner sees every audience member including zero usage and each cap, withou
   assert.deepEqual(f.audienceCalls, ["pool-a"]);
 });
 
-test("alarm samples Home collection status and each primary window's observation", async () => {
+test("alarm samples Home collection status and each detailed window's observation", async () => {
   const storage = new Memory();
   let clock = now;
   let reading: Json = {};
-  const client = new HomeClient(async (path) => {
-    const route = new URL(path, "https://home.example.test").pathname.slice(
-      "/v8/management".length,
-    );
-    if (route === "/channel-groups")
-      return Response.json({
-        channel_groups: [{ id: 1, channel_name: `${poolGroupPrefix}pool-a` }],
-      });
-    if (route === "/channel-group-details")
-      return Response.json({
-        channel_group_details: [{ id: 1, channel_group_id: 1, auth_id: "a" }],
-      });
-    if (route === "/capabilities") return Response.json({});
-    if (route === "/usage/records") return Response.json({ items: [], total: 0 });
-    if (route === "/credentials") return Response.json({ files: [{ id: "a", provider: "kimi" }] });
-    if (route === "/quota/credentials") return Response.json({ items: [reading] });
-    throw new Error(path);
-  });
+  const client = new HomeClient(
+    async (path) => {
+      const route = new URL(path, "https://home.example.test").pathname.slice(
+        "/v8/management".length,
+      );
+      if (route === "/channel-groups")
+        return Response.json({
+          channel_groups: [{ id: 1, channel_name: `${poolGroupPrefix}pool-a` }],
+        });
+      if (route === "/channel-group-details")
+        return Response.json({
+          channel_group_details: [{ id: 1, channel_group_id: 1, auth_id: "a" }],
+        });
+      if (route === "/capabilities") return Response.json({});
+      if (route === "/usage/records") return Response.json({ items: [], total: 0 });
+      if (route === "/credentials")
+        return Response.json({ files: [{ id: "a", provider: "kimi" }] });
+      if (route === "/quota/credentials/a")
+        return Response.json({ credential: reading, windows: reading.primary_windows });
+      throw new Error(path);
+    },
+    () => clock.getTime(),
+  );
   const usage = new PoolUsage({
     storage,
     client,
@@ -419,6 +424,8 @@ test("alarm samples Home collection status and each primary window's observation
   await usage.observe();
   assert.equal((await history.advice("pool-a", clock))[0]!.hoursRead, 0);
   reading = raw(clock);
+  // This fixture replaces the detail at the same clock instant as the previous read.
+  client.dropQuotaDetail("a");
   await usage.observe();
   assert.equal((await history.advice("pool-a", clock))[0]!.hoursRead, 1 / 12);
 });
@@ -434,46 +441,49 @@ test("the alarm forces an idle account's collection so later samples include its
     collection_status: "success",
     primary_windows: [],
   };
-  const client = new HomeClient(async (path) => {
-    const route = new URL(path, "https://home.example.test").pathname.slice(
-      "/v8/management".length,
-    );
-    if (route === "/channel-groups")
-      return Response.json({
-        channel_groups: [{ id: 1, channel_name: `${poolGroupPrefix}pool-a` }],
-      });
-    if (route === "/channel-group-details")
-      return Response.json({
-        channel_group_details: [{ id: 1, channel_group_id: 1, auth_id: "a" }],
-      });
-    if (route === "/capabilities") return Response.json({});
-    if (route === "/usage/records") return Response.json({ items: [], total: 0 });
-    if (route === "/credentials") return Response.json({ files: [{ id: "a", provider: "codex" }] });
-    if (route === "/quota/credentials") return Response.json({ items: [reading] });
-    if (route === "/quota/credentials/a")
-      return Response.json({ credential: reading, windows: reading.primary_windows });
-    if (route === "/quota/collect") {
-      collects++;
-      reading = {
-        ...reading,
-        observed_at: clock.toISOString(),
-        freshness: "fresh",
-        collection_status: "success",
-        last_attempt_at: clock.toISOString(),
-        primary_windows: [
-          {
-            id: "week",
-            status: "healthy",
-            remaining_ratio: 1,
-            window_seconds: 604800,
-            observed_at: clock.toISOString(),
-          },
-        ],
-      };
-      return Response.json({ accepted: 1, running: true }, { status: 202 });
-    }
-    throw new Error(path);
-  });
+  const client = new HomeClient(
+    async (path) => {
+      const route = new URL(path, "https://home.example.test").pathname.slice(
+        "/v8/management".length,
+      );
+      if (route === "/channel-groups")
+        return Response.json({
+          channel_groups: [{ id: 1, channel_name: `${poolGroupPrefix}pool-a` }],
+        });
+      if (route === "/channel-group-details")
+        return Response.json({
+          channel_group_details: [{ id: 1, channel_group_id: 1, auth_id: "a" }],
+        });
+      if (route === "/capabilities") return Response.json({});
+      if (route === "/usage/records") return Response.json({ items: [], total: 0 });
+      if (route === "/credentials")
+        return Response.json({ files: [{ id: "a", provider: "codex" }] });
+      if (route === "/quota/credentials/a")
+        return Response.json({ credential: reading, windows: reading.primary_windows });
+      if (route === "/quota/collect") {
+        collects++;
+        reading = {
+          ...reading,
+          observed_at: clock.toISOString(),
+          freshness: "fresh",
+          collection_status: "success",
+          last_attempt_at: clock.toISOString(),
+          primary_windows: [
+            {
+              id: "week",
+              status: "healthy",
+              remaining_ratio: 1,
+              window_seconds: 604800,
+              observed_at: clock.toISOString(),
+            },
+          ],
+        };
+        return Response.json({ accepted: 1, running: true }, { status: 202 });
+      }
+      throw new Error(path);
+    },
+    () => clock.getTime(),
+  );
   const collection = new QuotaCollection(storage, client, { now: () => clock.getTime() });
   const usage = new PoolUsage({
     storage,
@@ -535,7 +545,13 @@ test("alarm never collects connector credentials or explicitly unlimited model a
           { id: "unlimited", provider: "codex" },
         ],
       });
-    if (route === "/quota/credentials") return Response.json({ items: readings });
+    if (route.startsWith("/quota/credentials/")) {
+      const id = route.slice("/quota/credentials/".length);
+      const reading = readings.find((reading) => reading.credential_id === id);
+      return reading
+        ? Response.json({ credential: reading, windows: reading.primary_windows })
+        : new Response(null, { status: 404 });
+    }
     if (route === "/quota/collect") {
       collected.push(String(init?.body));
       return Response.json({ accepted: 1 });
@@ -554,41 +570,48 @@ test("alarm never collects connector credentials or explicitly unlimited model a
   assert.deepEqual(collected, []);
 });
 
-test("the existing alarm persists weighted capacity without extra Home reads and stale accounts leave gaps", async () => {
+test("the alarm shares detailed quota reads across pools and stale accounts leave gaps", async () => {
   const { CapacityHistory } = await import("./capacity/history.ts");
   const storage = new Memory();
   let clock = now,
     stale = false;
   const calls: string[] = [];
-  const client = new HomeClient(async (path) => {
-    const route = new URL(path, "https://home.example.test").pathname.slice(
-      "/v8/management".length,
-    );
-    calls.push(route);
-    if (route === "/channel-groups")
-      return Response.json({
-        channel_groups: [{ id: 1, channel_name: `${poolGroupPrefix}pool-a` }],
-      });
-    if (route === "/channel-group-details")
-      return Response.json({
-        channel_group_details: ["a", "b", "app-key"].map((id, index) => ({
-          id: index + 1,
-          channel_group_id: 1,
-          auth_id: id,
-        })),
-      });
-    if (route === "/capabilities") return Response.json({});
-    if (route === "/usage/records") return Response.json({ items: [], total: 0 });
-    if (route === "/credentials")
-      return Response.json({
-        files: ["a", "b", "app-key"].map((id) => ({
-          id,
-          provider: id === "app-key" ? "typesafe" : "claude",
-        })),
-      });
-    if (route === "/quota/credentials")
-      return Response.json({
-        items: ["a", "b"].map((id) => ({
+  const client = new HomeClient(
+    async (path) => {
+      const route = new URL(path, "https://home.example.test").pathname.slice(
+        "/v8/management".length,
+      );
+      calls.push(route);
+      if (route === "/channel-groups")
+        return Response.json({
+          channel_groups: ["pool-a", "pool-b"].map((pool, index) => ({
+            id: index + 1,
+            channel_name: `${poolGroupPrefix}${pool}`,
+          })),
+        });
+      if (route === "/channel-group-details")
+        return Response.json({
+          channel_group_details: [1, 2].flatMap((group) =>
+            ["a", "b", "app-key"].map((id, index) => ({
+              id: (group - 1) * 3 + index + 1,
+              channel_group_id: group,
+              auth_id: id,
+            })),
+          ),
+        });
+      if (route === "/capabilities") return Response.json({});
+      if (route === "/usage/records") return Response.json({ items: [], total: 0 });
+      if (route === "/credentials")
+        return Response.json({
+          files: ["a", "b", "app-key"].map((id) => ({
+            id,
+            provider: id === "app-key" ? "typesafe" : "claude",
+          })),
+        });
+      if (route.startsWith("/quota/credentials/")) {
+        const id = route.slice("/quota/credentials/".length);
+        if (id === "app-key") return new Response(null, { status: 404 });
+        const reading = {
           credential_id: id,
           plan: { name: "Max 5x" },
           freshness: stale && id === "b" ? "stale" : "fresh",
@@ -607,10 +630,13 @@ test("the existing alarm persists weighted capacity without extra Home reads and
               observed_at: clock.toISOString(),
             },
           ],
-        })),
-      });
-    throw new Error(path);
-  });
+        };
+        return Response.json({ credential: reading, windows: reading.primary_windows });
+      }
+      throw new Error(path);
+    },
+    () => clock.getTime(),
+  );
   const usage = new PoolUsage({
     storage,
     client,
@@ -621,16 +647,18 @@ test("the existing alarm persists weighted capacity without extra Home reads and
   await usage.observe();
   const points = await new CapacityHistory(storage).read("pool-a");
   assert.equal(points.length, 1);
+  assert.deepEqual(await new CapacityHistory(storage).read("pool-b"), points);
   assert.equal(points[0]!.last.remaining, 4);
   assert.equal(points[0]!.last.full, 10);
   assert.equal(points[0]!.last.accountCount, 2);
   const demand = await new CapacityHistory(storage).demandData("pool-a");
   assert.deepEqual(demand.unclassifiedProviders, []);
-  assert.equal(calls.filter((route) => route === "/quota/credentials").length, 1);
-  assert.equal(
-    calls.some((route) => route.startsWith("/quota/credentials/")),
-    false,
-  );
+  assert.equal(calls.filter((route) => route === "/quota/credentials").length, 0);
+  assert.deepEqual(calls.filter((route) => route.startsWith("/quota/credentials/")).sort(), [
+    "/quota/credentials/a",
+    "/quota/credentials/app-key",
+    "/quota/credentials/b",
+  ]);
   clock = new Date(clock.getTime() + 3_600_000);
   stale = true;
   await usage.observe();

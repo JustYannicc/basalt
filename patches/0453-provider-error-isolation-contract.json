@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-provider-error-isolation-contract",
+  "file": "0453-provider-error-isolation-contract.patch",
+  "content_sha256": "997785e4fa43684bcc332cb78dac11120cffec11f9cb67612cd35a22b080c14d",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

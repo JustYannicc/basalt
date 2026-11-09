@@ -10,7 +10,7 @@ import { HomeClient, poolGroupPrefix } from "./control.ts";
 import { accountsView } from "./accounts-view.ts";
 import { subscriptionAccounts } from "./subscription-accounts.ts";
 import type { PoolPermissions } from "./authorization.ts";
-import { fail, failureResponse, json, rows, text } from "./json.ts";
+import { fail, failureResponse, json, object, rows, text } from "./json.ts";
 import { LimitHistory } from "./limit-history.ts";
 import { CapacityHistory } from "./capacity/history.ts";
 import { capacityOverview } from "./capacity/overview.ts";
@@ -21,7 +21,12 @@ import { verifyPoolToken } from "./token.ts";
 import type { UsageStorage } from "./usage-storage.ts";
 import { UsageLedger } from "./usage-summary.ts";
 import { mapBounded } from "./bounded.ts";
-import { hasUsageLimits, needsQuotaCollection, type QuotaCollection } from "./quota-collection.ts";
+import {
+  collectionOf,
+  hasUsageLimits,
+  needsQuotaCollection,
+  type QuotaCollection,
+} from "./quota-collection.ts";
 
 // Personal summaries filter before aggregation. Pool managers can inspect the whole pool.
 
@@ -85,7 +90,7 @@ export class PoolUsage {
     );
   }
 
-  /** Alarm work: read new usage records, then sample every pool's limits from one read of Home. */
+  /** Alarm work shares one bounded set of full quota reads across every pool. */
   async observe(): Promise<void> {
     await this.sync();
     const { client } = this.deps;
@@ -105,10 +110,16 @@ export class PoolUsage {
     const ids = new Set([...pools.values()].flatMap((set) => [...set]));
     const [files, quota] = await Promise.all([
       client.data("/credentials").then((value) => rows(value.files)),
-      client.quota([...ids].sort()),
+      // The two-slot LIST summary can omit a five-hour allowance when weekly windows occupy it.
+      client.quota([...ids].sort(), true),
     ]);
     const now = this.deps.now?.() ?? new Date();
-    const byId = new Map(quota.map((reading) => [reading.credential_id, reading]));
+    const byId = new Map(
+      quota.map((reading) => [
+        object(reading.credential) ? reading.credential.credential_id : reading.credential_id,
+        reading,
+      ]),
+    );
     if (this.deps.collection) {
       await mapBounded(
         [...ids].filter(
@@ -128,17 +139,20 @@ export class PoolUsage {
     for (const [pool, accounts] of pools) {
       // Home v1.1.6 internal/cluster/quota_snapshots.go:129-150,195-214,
       // 812-828,1034-1091 retains windows after failed/partial probes. An account
-      // timestamp alone cannot establish freshness of every primary window.
+      // timestamp alone cannot establish freshness of every reported window.
       const readings = subscriptionAccounts(accountsView(files, quota, accounts)).map((account) => {
         const raw = byId.get(account.id),
-          windows = rows(raw?.primary_windows);
+          windows = rows(raw?.windows),
+          collection = collectionOf(raw ?? {});
         const times = [
           Date.parse(account.observedAt ?? ""),
           ...windows.map((window) => Date.parse(text(window.observed_at) ?? "")),
         ];
         const valid =
           account.freshness === "fresh" &&
-          ["success", "partial"].includes(text(raw?.collection_status) ?? "") &&
+          ["success", "partial"].includes(
+            text(collection.status ?? collection.collection_status) ?? "",
+          ) &&
           windows.length > 0 &&
           windows.every((window) =>
             ["healthy", "low", "exhausted"].includes(text(window.status) ?? ""),

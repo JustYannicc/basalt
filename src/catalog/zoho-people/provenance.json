@@ -1330,7 +1330,7 @@
       "documentationSha256": "194f905f34979078c54214ccc746519e5b57bdc800678c722093807902d369c6"
     }
   ],
-  "sourceSha256": "8b2b3c3a94c9464eb2f68914015132eeb38dce9df5a79dae7b1b0b828f5601cc",
+  "sourceSha256": "d9247b0c848d13247d9df42594e146c3bad4fe7be797aa1d9fbda61891330053",
   "mcp": {
     "documentation": "https://help.zoho.com/portal/en/kb/mcp/implementation-guide/articles/zoho-mcp-implementation-guide",
     "hosts": [
