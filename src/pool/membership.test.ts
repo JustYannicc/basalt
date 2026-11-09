@@ -354,6 +354,38 @@ test("one native account expands its exact multi-project Home reference into poo
   assert.deepEqual(f.installed.get("a")?.accounts, expected);
 });
 
+for (const operation of ["reconcile", "actual"] as const)
+  for (const empty of [false, true])
+    test(`host-confirmed native retirement survives ${operation} failure with ${empty ? "empty" : "changed"} membership`, async () => {
+      const f = fixture();
+      if (empty) f.native.set("a", []);
+      const read = f.deps.read;
+      let deleted = false,
+        reads = 0;
+      f.deps.read = async (pool, organization) => {
+        reads++;
+        return deleted
+          ? { pool, organization, native: false, accounts: [] }
+          : read(pool, organization);
+      };
+      f.deps[operation] = async () => {
+        throw new Error("Home unavailable");
+      };
+      const memberships = new NativeMemberships(f.deps);
+      await memberships.reserve(await f.request());
+      await assert.rejects(memberships.refresh("a"), /Home unavailable/);
+      await memberships.retire("a", f.deps.now());
+      deleted = true;
+      f.alarms.length = 0;
+      const previousReads = reads;
+      f.advance(120_000);
+      await new NativeMemberships(f.deps).tick();
+      assert.equal(reads, previousReads);
+      assert.deepEqual(f.alarms, []);
+      assert.equal(f.installed.get("a")?.dirty, true);
+      assert.deepEqual(f.installed.get("a")?.accounts, []);
+    });
+
 test("retirement survives reconstruction, retains denial and stops membership ticks", async () => {
   const f = fixture();
   let reads = 0;

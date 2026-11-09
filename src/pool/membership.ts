@@ -330,12 +330,20 @@ export class NativeMemberships {
           current.native !== snapshot.native ||
           !equal(current.accounts, accounts) ||
           (!valid && !current.dirty);
-        if (!changed) return current;
+        // Home repair can fail after the host confirms native ownership; deletion must still retire it.
+        if (!changed) {
+          if (!snapshot.native || current.nativeConfirmed === true) return current;
+          const confirmed = { ...current, nativeConfirmed: true };
+          state[pool] = confirmed;
+          await this.save(state);
+          return confirmed;
+        }
         // An observed selection change must veto old authority before fallible Home repair.
         const next: State = {
           ...current,
           accounts,
           native: snapshot.native,
+          nativeConfirmed: snapshot.native,
           dirty: true,
           revision: current.revision + 1,
           installedRevision: 0,
