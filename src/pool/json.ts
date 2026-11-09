@@ -1,4 +1,8 @@
-import { isNativePolicyReason, type NativePolicyReason } from "./native-policy-diagnostic.ts";
+import {
+  isNativePolicyLeaseMs,
+  isNativePolicyReason,
+  type NativePolicyReason,
+} from "./native-policy-diagnostic.ts";
 import type { ControlError, ControlErrorCode } from "../../apps/pool/contract.ts";
 
 export type Json = Record<string, unknown>;
@@ -15,6 +19,7 @@ export interface PoolFailureDiagnostic {
     | "unknown";
   backendStatus?: number;
   reason?: NativePolicyReason;
+  leaseMs?: number;
 }
 const diagnostics = new WeakMap<object, PoolFailureDiagnostic>();
 const diagnosticGuards = new Set<PoolFailureDiagnostic["guard"]>([
@@ -52,6 +57,11 @@ export function diagnosePoolFailure(error: unknown, diagnostic: PoolFailureDiagn
       failure: diagnostic.failure,
       ...(diagnostic.guard === "native_policy_install" && isNativePolicyReason(diagnostic.reason)
         ? { reason: diagnostic.reason }
+        : {}),
+      ...(diagnostic.guard === "native_policy_install" &&
+      diagnostic.reason === "lease_window" &&
+      isNativePolicyLeaseMs(diagnostic.leaseMs)
+        ? { leaseMs: diagnostic.leaseMs }
         : {}),
       ...(typeof backendStatus === "number" &&
       Number.isInteger(backendStatus) &&
