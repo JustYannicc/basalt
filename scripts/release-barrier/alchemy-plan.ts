@@ -1,7 +1,7 @@
 import { withOperation } from "./operation-failure.ts";
 import * as Apply from "alchemy/Apply";
 import * as Plan from "alchemy/Plan";
-import { havePropsChanged } from "alchemy/Diff";
+import { havePropsChanged, stripUnresolved } from "alchemy/Diff";
 import { hashDirectory } from "alchemy/Command/Memo";
 import type { ExecProps } from "alchemy/Command/Exec";
 import {
@@ -31,6 +31,8 @@ import { assertSupportedPlan, newVerification } from "./plan-admission.ts";
 import type { DeclaredChanges } from "./declared-change-schema.ts";
 import type { PreparedD1 } from "./declared-d1-types.ts";
 import type { PreparedBucket } from "./declared-buckets.ts";
+import { changedProps } from "./prop-diff.ts";
+import { workerActivationInputs } from "./activation-inputs.ts";
 export { assertSupportedPlan } from "./plan-admission.ts";
 
 const workerType = "Cloudflare.Worker";
@@ -88,7 +90,7 @@ export const preparePlan = (
                   if (!upload.proposed || !upload.previous || !upload.previousSettings)
                     refuse("missing-existing-worker", fqn);
                   captured.set(fqn, upload);
-                  inputs.set(fqn, { news: input.news, bindings: input.bindings });
+                  inputs.set(fqn, workerActivationInputs(input.news, input.bindings));
                   return upload.proposed!;
                 }),
             }),
@@ -268,14 +270,19 @@ export const finishPlan = (
             ...node.provider,
             reconcile: (input) =>
               Effect.sync(() => {
-                if (
-                  prepared.inputs.has(fqn) &&
-                  havePropsChanged(prepared.inputs.get(fqn), {
-                    news: input.news,
-                    bindings: input.bindings,
-                  })
-                )
-                  refuse("activation-input-drift", fqn);
+                const current =
+                  node.resource.Type === workerType
+                    ? workerActivationInputs(input.news, input.bindings)
+                    : { news: input.news, bindings: input.bindings };
+                if (prepared.inputs.has(fqn) && havePropsChanged(prepared.inputs.get(fqn), current))
+                  throw new BarrierRefusal("activation-input-drift", fqn, {
+                    fqn,
+                    type: node.resource.Type,
+                    changed: changedProps(
+                      stripUnresolved(prepared.inputs.get(fqn)),
+                      stripUnresolved(current),
+                    ),
+                  });
                 const result =
                   node.resource.Type === workerType
                     ? activated.get(fqn)

@@ -6,7 +6,9 @@ import {
   type UsageSummary,
 } from "../../apps/pool/contract.ts";
 import { readCap, readCaps, setCap } from "./caps.ts";
-import { accountsView, HomeClient, poolGroupPrefix } from "./control.ts";
+import { HomeClient, poolGroupPrefix } from "./control.ts";
+import { accountsView } from "./accounts-view.ts";
+import { subscriptionAccounts } from "./subscription-accounts.ts";
 import type { PoolPermissions } from "./authorization.ts";
 import { fail, failureResponse, json, rows, text } from "./json.ts";
 import { LimitHistory } from "./limit-history.ts";
@@ -127,7 +129,7 @@ export class PoolUsage {
       // Home v1.1.6 internal/cluster/quota_snapshots.go:129-150,195-214,
       // 812-828,1034-1091 retains windows after failed/partial probes. An account
       // timestamp alone cannot establish freshness of every primary window.
-      const readings = accountsView(files, quota, accounts).map((account) => {
+      const readings = subscriptionAccounts(accountsView(files, quota, accounts)).map((account) => {
         const raw = byId.get(account.id),
           windows = rows(raw?.primary_windows);
         const times = [

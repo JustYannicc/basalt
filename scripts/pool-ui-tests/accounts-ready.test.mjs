@@ -1,3 +1,4 @@
+import { PoolHome, HomeClient, accountsView } from "../../src/pool/control.ts";
 import { overviewFixture, capacityFixture } from "./overview-fixture.mjs";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -48,6 +49,7 @@ const emptyUsage = {
 const artifacts = process.env.POOL_UI_ARTIFACTS;
 // Optional baseline: build that commit's app.tsx, accounts.tsx and api.ts into the fixture instead of the working tree.
 const sourceRef = process.env.POOL_UI_SOURCE_REF;
+const subscriptionsBaseline = process.env.POOL_UI_SUBSCRIPTIONS_BASELINE === "1";
 const artifactLabel =
   process.env.POOL_UI_ARTIFACT_LABEL ?? (sourceRef ? `before-${sourceRef.slice(0, 8)}` : "after");
 if (artifacts)
@@ -182,6 +184,7 @@ test(
     let held = [];
     let heldCapacity = [];
     let holdCapacity = false;
+    let capacityReply = capacityFixture;
     let member = false;
     let holdPersonal = false;
     let heldPersonal = [];
@@ -281,6 +284,12 @@ test(
         writeFileSync(
           join(app, file),
           execFileSync("git", ["-C", root, "show", `${sourceRef}:apps/pool/${file}`]),
+        );
+    if (subscriptionsBaseline)
+      for (const file of ["ui/overview.tsx", "ui/overview-attention.ts"])
+        writeFileSync(
+          join(app, file),
+          execFileSync("git", ["-C", root, "show", `a434a2af:${`apps/pool/${file}`}`]),
         );
     writeFileSync(
       join(app, "deployment.ts"),
@@ -411,7 +420,7 @@ test(
               name === "usage"
                 ? usageResult
                 : name === "capacity"
-                  ? capacityFixture(input)
+                  ? capacityReply(input)
                   : name === "computerContext"
                     ? {
                         ok: true,
@@ -500,10 +509,12 @@ test(
         viewport = { width: 1100, height: 860 },
         usage = emptyUsage,
         capacityHeld = false,
+        capacity = capacityFixture,
         personal = false,
       } = {},
     ) => {
       usageResult = usage;
+      capacityReply = capacity;
       holdCapacity = capacityHeld;
       member = personal;
       heldCapacity = [];
@@ -565,6 +576,168 @@ test(
         await context.close();
       }
     };
+
+    for (const width of [1280, 390])
+      await t.test(
+        `subscription overview ignores app keys and uses singular copy at ${width}px`,
+        async () => {
+          const now = Date.now();
+          const iso = new Date(now).toISOString();
+          const files = [
+            { id: "claude-1", provider: "claude", label: "Review seat" },
+            { id: "claude-2", provider: "claude", label: "Writing seat" },
+            { id: "claude-3", provider: "claude", label: "Research seat" },
+            { id: "codex-1", provider: "codex", label: "Build seat" },
+            { id: "jev-key", provider: "typesafe", label: "App API key" },
+          ];
+          const quota = files.map(({ id, provider }) => ({
+            credential: {
+              credential_id: id,
+              plan: { name: provider === "claude" ? "Max 20x" : "Plus" },
+            },
+            collection: {
+              freshness: provider === "typesafe" ? "never" : "fresh",
+              status: provider === "typesafe" ? "unsupported" : "success",
+              observed_at: iso,
+            },
+            windows:
+              provider === "typesafe"
+                ? []
+                : [18_000, 604_800].map((seconds) => ({
+                    id:
+                      provider === "claude"
+                        ? seconds === 18_000
+                          ? "claude-five-hour"
+                          : "claude-seven-day"
+                        : `codex-${seconds}`,
+                    scope: "account",
+                    window_seconds: seconds,
+                    remaining_ratio: 0.8,
+                    observed_at: iso,
+                  })),
+            reset_credits: { available_count: id === "codex-1" ? 1 : 0, credits: [] },
+          }));
+          const home = new PoolHome(
+            new HomeClient(async (path) => {
+              if (path.endsWith("/channel-groups"))
+                return Response.json({
+                  channel_groups: [{ id: 1, channel_name: "signalbox-pool-overview-fixture" }],
+                });
+              if (path.includes("/channel-group-details?"))
+                return Response.json({
+                  channel_group_details: files.map(({ id }, index) => ({
+                    id: index + 1,
+                    channel_group_id: 1,
+                    auth_id: id,
+                  })),
+                });
+              if (path.endsWith("/credentials")) return Response.json({ files });
+              const detail = quota.find((row) =>
+                path.endsWith(`/quota/credentials/${row.credential.credential_id}`),
+              );
+              if (detail) return Response.json(detail);
+              throw Error("Unexpected synthetic Home request");
+            }),
+            "overview-fixture",
+          );
+          const value = await home.view(true);
+          assert.equal(value.accounts.length, 5);
+          assert.ok(value.accounts.some((account) => account.id === "jev-key"));
+          assert.equal(value.subscriptionAccountIds.length, 4);
+          if (subscriptionsBaseline)
+            value.accounts = accountsView(files, quota, new Set(files.map(({ id }) => id)));
+          viewResult = { ok: true, value };
+          await session(
+            async ({ page, frame, settled }) => {
+              release();
+              await frame
+                .getByText(
+                  `${subscriptionsBaseline ? 5 : 4} subscription accounts across ${subscriptionsBaseline ? 3 : 2} labs`,
+                  { exact: true },
+                )
+                .waitFor();
+              await frame.getByRole("heading", { name: "Needs attention", exact: true }).waitFor();
+              await frame.locator("#capacity article").nth(1).waitFor();
+              await settled();
+              assert.equal(await frame.locator("#capacity article").count(), 2);
+              const claude = frame.getByRole("article", { name: "Claude", exact: true });
+              await claude.getByRole("radio", { name: "5-hour", exact: true }).click();
+              await claude
+                .getByRole("radio", { name: "5-hour", exact: true, checked: true })
+                .waitFor();
+              await claude.getByRole("radio", { name: "Weekly", exact: true }).click();
+              await claude
+                .getByRole("radio", { name: "Weekly", exact: true, checked: true })
+                .waitFor();
+              const text = await frame.locator("body").innerText();
+              for (const title of [
+                "Do we have enough accounts?",
+                "Who uses what",
+                "API cost and subscription value",
+                "Needs attention",
+              ])
+                assert.ok(text.includes(title), `Approved r2 section: ${title}`);
+              assert.doesNotMatch(text, /This read is incomplete|Read incomplete/);
+              if (!subscriptionsBaseline) {
+                assert.doesNotMatch(text, /stale or missing readings|1 accounts|1 banked resets/);
+                const reset = frame.getByRole("link", {
+                  name: "1 banked reset available",
+                  exact: true,
+                });
+                assert.equal(
+                  await reset.getAttribute("href"),
+                  `${parentOrigin}/org/fixture/apps/pool?view=accounts`,
+                );
+              }
+              assert.ok(
+                await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+                "Overview fits at phone and desktop widths",
+              );
+              await page.locator("iframe").evaluate(
+                (iframe, height) => {
+                  iframe.style.height = `${height}px`;
+                },
+                await frame.evaluate(() => document.documentElement.scrollHeight),
+              );
+              await settled();
+              await capture(page, `subscription-overview-${width}`);
+            },
+            {
+              viewport: { width, height: 1000 },
+              capacity: (input) => {
+                const result = capacityFixture(input);
+                const at = input.to;
+                result.value.points = ["claude", "codex"].flatMap((provider) =>
+                  [18_000, 604_800].map((windowSeconds) => {
+                    const count = provider === "claude" ? 3 : 1;
+                    const reading = {
+                      remaining: 0.8 * count,
+                      full: count,
+                      at,
+                      observedAt: { from: at, to: at },
+                      accountCount: count,
+                      knownWeightCount: count,
+                      unknownWeightCount: 0,
+                      weights: [],
+                    };
+                    return {
+                      provider,
+                      windowSeconds,
+                      mode: null,
+                      unit: { id: `${provider}-equivalent`, label: "account-eq" },
+                      hour: Math.floor(at / hour) * hour,
+                      minimum: reading,
+                      last: reading,
+                      plans: [],
+                    };
+                  }),
+                );
+                return result;
+              },
+            },
+          );
+        },
+      );
 
     for (const width of [1440, 390])
       await t.test(`usage loads while capacity is held at ${width}px`, async () => {

@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { releaseEvidence } from "./evidence.ts";
 import { reportRefusal } from "./refusal-report.ts";
 import { fixture } from "./test/deploy-stack-fixture.ts";
+import { BarrierRefusal } from "./manifest.ts";
 
 for (const planFailure of ["read", "diff"] as const)
   test(`plan ${planFailure} refusal retains its logical resource and safe provider error`, async (context) => {
@@ -55,6 +56,21 @@ test("real Alchemy graph activates accepted IDs before the Api.hash-dependent li
   ]);
   assert.ok(proof.writes() > 0);
 });
+
+for (const finalizeDrift of ["binding", "uncovered-env", "props"] as const)
+  test(`finalization still refuses changed ${finalizeDrift} inputs after activation`, async () => {
+    const proof = fixture({ finalizeDrift });
+    const exit = await Effect.runPromiseExit(proof.effect);
+    assert.ok(Exit.isFailure(exit));
+    const failure = Cause.squash(exit.cause);
+    assert.ok(failure instanceof BarrierRefusal);
+    assert.equal(failure.reason, "activation-input-drift");
+    assert.equal(failure.worker, "Router");
+    assert.ok(failure.delta?.changed.length);
+    const table = JSON.stringify(failure.delta);
+    assert.match(table, finalizeDrift === "binding" ? /bindings/ : /news/);
+    assert.ok(proof.events.includes("activate:Router:accepted-Router"));
+  });
 
 for (const options of [{ newResource: true }, { omitCapture: true }]) {
   test(`incomplete preparation ${JSON.stringify(options)} never reaches upload or activation`, async () => {

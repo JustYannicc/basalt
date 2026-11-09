@@ -24,9 +24,10 @@ import { googleMapsAddition } from "./google-maps/index.ts";
 import { workosSource, withWorkOSSignIn } from "./workos.ts";
 import { planetscaleSource, withPlanetScaleAccess } from "./planetscale.ts";
 import { clerkSource, withClerkSignIn } from "./clerk.ts";
+import { obsidian } from "./obsidian/index.ts";
 
 // AWS source stays in the catalog until maintainers identify a maintained destination.
-const sourceAdditions: readonly Addition[] = [aws, zohoPeople, ...providerApps];
+const sourceAdditions: readonly Addition[] = [aws, zohoPeople, obsidian, ...providerApps];
 // GitLab sign-in moved into the one GitLab app. Installed copies still read their source.
 const retiredSources: readonly Addition[] = [gitlabMcp];
 const reviewedOAuth = oauthReviews(oauthReviewData);

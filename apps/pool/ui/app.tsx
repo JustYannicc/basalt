@@ -1,3 +1,4 @@
+import { overviewAccounts } from "./overview-accounts.ts";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PoolView } from "../contract.ts";
 import type { PoolApi } from "./api.ts";
@@ -77,8 +78,9 @@ export function App({
     };
   }, [api]);
 
-  const count = view?.accounts.length ?? 0;
-  const labs = new Set(view?.accounts.map((account) => account.provider)).size;
+  const subscriptions = overviewAccounts(view);
+  const count = subscriptions.length;
+  const labs = new Set(subscriptions.map((account) => account.provider)).size;
   const people = overview.usage?.ok ? overview.usage.value.directory.totalCount : undefined;
 
   if (route === "history")
@@ -173,7 +175,7 @@ export function App({
             </Button>
           </div>
         )}
-        {view?.accounts.length === 0 && <Empty view={view} accountsHref={accountsHref} />}
+        {view && count === 0 && <Empty view={view} accountsHref={accountsHref} />}
         {/* Usage renders from its own read; only that read says manager or member. */}
         {overview.usage === undefined ? (
           !error && <Skeleton />

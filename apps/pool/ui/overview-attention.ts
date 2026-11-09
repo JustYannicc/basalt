@@ -1,3 +1,4 @@
+import { overviewAccounts } from "./overview-accounts.ts";
 import type { PoolView } from "../contract.ts";
 
 export interface AccountProblem {
@@ -11,7 +12,7 @@ export interface AccountProblem {
 export function accountProblems(view: PoolView): AccountProblem[] {
   const signIn = view.accounts.filter((account) => account.credentialFailure === "unauthorized");
   const checks = view.accounts.filter((account) => account.readingFailed);
-  const readings = view.accounts.filter((account) => account.freshness !== "fresh");
+  const readings = overviewAccounts(view).filter((account) => account.freshness !== "fresh");
   const unavailable = view.accounts.filter(
     (account) => account.state !== "active" || account.credentialFailure === "unavailable",
   );
@@ -27,25 +28,34 @@ export function accountProblems(view: PoolView): AccountProblem[] {
     {
       kind: "sign-in" as const,
       count: signIn.length,
-      text: "accounts need sign-in",
+      text: signIn.length === 1 ? "account needs sign-in" : "accounts need sign-in",
       since: since(signIn),
     },
     {
       kind: "checks" as const,
       count: checks.length,
-      text: "accounts failed their latest usage check",
+      text:
+        checks.length === 1
+          ? "account failed its latest usage check"
+          : "accounts failed their latest usage check",
       since: since(checks),
     },
     {
       kind: "readings" as const,
       count: readings.length,
-      text: "accounts have stale or missing readings",
+      text:
+        readings.length === 1
+          ? "account has stale or missing readings"
+          : "accounts have stale or missing readings",
       since: since(readings),
     },
     {
       kind: "unavailable" as const,
       count: unavailable.length,
-      text: "accounts are unavailable or paused",
+      text:
+        unavailable.length === 1
+          ? "account is unavailable or paused"
+          : "accounts are unavailable or paused",
       since: since(unavailable),
     },
   ].filter((problem) => problem.count > 0);
@@ -65,3 +75,6 @@ export const accountsNeedingSomeone = (view: PoolView) =>
 
 export const bankedResetCount = (view: PoolView) =>
   view.accounts.reduce((sum, account) => sum + (account.bankedResets?.available ?? 0), 0);
+
+export const bankedResetText = (count: number) =>
+  `${count} banked ${count === 1 ? "reset" : "resets"} available`;
