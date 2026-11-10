@@ -92,6 +92,7 @@ export class PoolControl implements ControlAttribution {
       deps.home,
       () => this.now(),
       () => this.invalidateViews(),
+      storage,
     );
     this.acquisitions = new HomeAccountAcquisitions(
       storage,

@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "Each claimed Claude or Codex collection hands off its latest bounded source-field diagnostic independently of stdout and quota success. Home keeps at most 512 in-memory handoffs; the pool persists the closed projection in its own storage on collection reads. Only collection time, a closed provider and fixed presence, null, quantity-validity and five-hour-duration booleans are retained. Older probes cannot replace newer evidence. The existing authenticated pool view returns the diagnostic with its original attempt time, including after Home or pool restarts. No Home schema or database version changes. Absent or null quantities remain unknown; explicit zero without a reset remains measured zero. No raw response, amount, credential or token enters the diagnostic."
+    }
+  }
+}

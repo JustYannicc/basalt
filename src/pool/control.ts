@@ -1,3 +1,7 @@
+import {
+  retainCollectionDiagnostic,
+  type CollectionDiagnosticStorage,
+} from "./collection-diagnostic.ts";
 import { poolDependency } from "./dependency-failure.ts";
 import { PoolRuntimeUnhealthy } from "./lifecycle.ts";
 import { HomeTransportFailure } from "./json.ts";
@@ -238,14 +242,17 @@ export class HomeClient {
   private quotaDetails = new Map<string, { promise: Promise<Json | null>; expiresAt: number }>();
   private clock: () => number;
   private changed?: () => Promise<void>;
+  private diagnosticStorage?: CollectionDiagnosticStorage;
   constructor(
     fetchHome: HomeDependencies["home"],
     clock: () => number = Date.now,
     changed?: () => Promise<void>,
+    diagnosticStorage?: CollectionDiagnosticStorage,
   ) {
     this.fetchHome = fetchHome;
     this.clock = clock;
     this.changed = changed;
+    this.diagnosticStorage = diagnosticStorage;
   }
   async response(path: string, init?: RequestInit): Promise<Response> {
     const mutation =
@@ -277,12 +284,21 @@ export class HomeClient {
       if (response.status === 404) fail(404, "not_found", "The backend resource no longer exists.");
       throw new BackendFailure(response.status);
     }
+    let value: unknown;
     try {
-      const value: unknown = await response.json();
-      return object(value) ? value : unavailable();
+      value = await response.json();
     } catch {
       return unavailable();
     }
+    if (!object(value)) return unavailable();
+    const match = /^\/quota\/credentials\/([^/?]+)$/.exec(path);
+    return match ? this.retainDiagnostic(value, decodeURIComponent(match[1]!)) : value;
+  }
+  private retainDiagnostic(value: Json, id: string): Promise<Json> {
+    if (!object(value.credential) || value.credential.credential_id !== id) return unavailable();
+    return this.diagnosticStorage
+      ? retainCollectionDiagnostic(value, id, this.diagnosticStorage)
+      : Promise.resolve(value);
   }
   async allPoolGroups(signal?: AbortSignal): Promise<Group[]> {
     const groups = rows((await this.data("/channel-groups", { signal })).channel_groups)
@@ -404,7 +420,7 @@ export class HomeClient {
         ? Math.min(this.clock() + 60_000, probeAt)
         : this.clock() + 60_000;
       if (this.quotaDetails.get(id) === entry) entry.expiresAt = refreshAt;
-      return value;
+      return this.retainDiagnostic(value, id);
     })().catch((error: unknown) => {
       if (this.quotaDetails.get(id) === entry) this.quotaDetails.delete(id);
       throw error;

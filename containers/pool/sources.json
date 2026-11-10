@@ -86,6 +86,15 @@
             "mode": "manual",
             "requires": "Retire after pinned Home emits one bounded metadata-only record per claimed quota collection with account references and returned vendor window field paths and durations before parsing, and passes actual collector, omitted and unusable window, privacy and real-child container stdout regressions."
           }
+        },
+        {
+          "identity": "cliproxy-home-collection-field-presence",
+          "file": "0477-home-collection-field-presence.patch",
+          "sha256": "cb8ce3d5df4591ad328b552e7a11a0b987f99a77b3bf9c3fb81fb1b6f2ed0837",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after pinned Home exposes bounded per-collection field-presence, null and quantity-validity handoffs independently of logs, and the authenticated pool view preserves them in pool-owned storage without response bodies, amounts or credentials. Home database models and versions must remain unchanged."
+          }
         }
       ]
     },
