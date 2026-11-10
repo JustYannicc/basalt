@@ -90,7 +90,7 @@
         {
           "identity": "cliproxy-home-collection-field-presence",
           "file": "0477-home-collection-field-presence.patch",
-          "sha256": "cb8ce3d5df4591ad328b552e7a11a0b987f99a77b3bf9c3fb81fb1b6f2ed0837",
+          "sha256": "f6536bf13a9c9ed0eecb03fed93667d9ac401174be260a04ace2d4466b02e154",
           "retirement": {
             "mode": "manual",
             "requires": "Retire after pinned Home exposes bounded per-collection field-presence, null and quantity-validity handoffs independently of logs, and the authenticated pool view preserves them in pool-owned storage without response bodies, amounts or credentials. Home database models and versions must remain unchanged."
