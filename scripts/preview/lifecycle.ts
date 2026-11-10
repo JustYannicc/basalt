@@ -29,7 +29,6 @@ import {
   providerReadbacks,
   capturePreviewProviderInventory,
   verifyPreviewProvidersAbsent,
-  type PreviewProviderReadbacks,
 } from "./provider-absence.ts";
 
 const rootFromModule = fileURLToPath(new URL("../../", import.meta.url));
@@ -206,8 +205,8 @@ async function materializePreviewBrand(
   const metadata = await stat(path);
   const host = new URL(identity.origin).hostname;
   const domain = identity.origin.replace(/^https:\/\/app\.pr-[0-9]+\./, "");
-  const hostPattern = /(^  host: )"[^\"]+"(,?$)/m;
-  const zonePattern = /(^  zone: )"[^\"]+"(,?$)/m;
+  const hostPattern = /(^  host: )"[^"]+"(,?$)/m;
+  const zonePattern = /(^  zone: )"[^"]+"(,?$)/m;
   const hostMatches = original.match(new RegExp(hostPattern.source, "gm")) ?? [];
   const zoneMatches = original.match(new RegExp(zonePattern.source, "gm")) ?? [];
   if (hostMatches.length !== 1 || zoneMatches.length !== 1)
@@ -223,17 +222,23 @@ async function materializePreviewBrand(
     );
   if (changed === original) throw new Error("The preview brand build seam did not change");
   await writeFile(path, changed, { mode: metadata.mode & 0o777 });
+  let failed = false;
+  let failure: unknown;
   try {
     await action();
-  } finally {
-    const current = await readFile(path, "utf8");
-    if (current !== changed)
-      throw new Error(
-        "Preview brand source changed during the isolated build; restore it before retrying",
-      );
-    await writeFile(path, original, { mode: metadata.mode & 0o777 });
-    await chmod(path, metadata.mode & 0o777);
+  } catch (error) {
+    failed = true;
+    failure = error;
   }
+  // A changed seam is reported instead of the build's own failure and is left for review.
+  const current = await readFile(path, "utf8");
+  if (current !== changed)
+    throw new Error(
+      "Preview brand source changed during the isolated build; restore it before retrying",
+    );
+  await writeFile(path, original, { mode: metadata.mode & 0o777 });
+  await chmod(path, metadata.mode & 0o777);
+  if (failed) throw failure;
 }
 
 function liveServices(source: NodeJS.ProcessEnv): LifecycleServices {
