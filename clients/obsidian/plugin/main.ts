@@ -25,7 +25,11 @@ import { ConnectModal } from "./ui-connect.ts";
 import { BasaltSettingTab } from "./ui-settings.ts";
 import { watchRemoteChanges } from "../remote-wake.ts";
 
-const saveDebounceMs = 2_000;
+// Like Git: edits pile up in the working tree and one checkpoint commits them all. A checkpoint
+// runs after this long without edits, when Obsidian is hidden, or on Sync now.
+const idleCheckpointMs = 3 * 60_000;
+// Our own downloads fire vault events too; those aren't edits waiting to sync.
+const ownWriteMs = 2_000;
 const terminalAuthorization = /declined|expired|could not finish/iu;
 
 const message = (failure: unknown) =>
@@ -41,10 +45,17 @@ export default class BasaltSyncPlugin extends Plugin implements SyncHost {
   private authError: string | null = null;
   private pollTimer: number | null = null;
   private again = false;
+  /** Paths edited since the last checkpoint started. */
+  private dirty = new Set<string>();
+  // Edits made while Obsidian was closed, or left by a failed checkpoint, have no vault event.
+  // This stays set until a checkpoint succeeds, so they are never reported as synced.
+  private needsCheckpoint = true;
+  private active: Promise<void> | null = null;
+  private ownWrites = new Map<string, number>();
   private noteAbort: AbortController | null = null;
   private listeners = new Set<() => void>();
   private statusBar: HTMLElement | null = null;
-  private schedule!: Debouncer<[], void>;
+  private checkpointWhenIdle!: Debouncer<[], void>;
 
   get vaultName() {
     return this.app.vault.getName();
@@ -55,13 +66,16 @@ export default class BasaltSyncPlugin extends Plugin implements SyncHost {
   }
 
   async onload() {
-    this.schedule = debounce(() => void this.syncNow(), saveDebounceMs, true);
+    this.checkpointWhenIdle = debounce(() => void this.syncNow(), idleCheckpointMs, true);
     this.store = await openStore({
       load: () => this.loadData(),
       save: (data) => this.saveData(data),
     });
     this.local = createLocalVault<TFile>(this.app.vault, {
-      writing: (path) => this.local?.changed(path),
+      writing: (path) => {
+        this.ownWrites.set(path, Date.now());
+        this.local?.changed(path);
+      },
       recoveries: this.store.recoveries,
       transfers: this.store.transfers.get,
     });
@@ -116,6 +130,7 @@ export default class BasaltSyncPlugin extends Plugin implements SyncHost {
       this.statusBar.addClass("basalt-sync-statusbar");
       this.registerDomEvent(this.statusBar, "click", () => {
         if ((this.controller?.status().conflicts ?? 0) > 0) this.openConflicts();
+        else void this.syncNow();
       });
     }
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => void this.syncNow() });
@@ -139,19 +154,33 @@ export default class BasaltSyncPlugin extends Plugin implements SyncHost {
   }
 
   onunload() {
-    this.schedule?.cancel();
+    this.checkpointWhenIdle?.cancel();
     this.clearPoll();
     this.noteAbort?.abort();
     this.listeners.clear();
-    // close() aborts between batches; a sent-but-unconfirmed operation stays saved for receipt recovery.
-    void this.controller?.close();
+    const controller = this.controller;
+    // Best effort: Obsidian may quit before this finishes. Whatever doesn't land stays in the
+    // working tree and the next checkpoint commits it; close() aborts between batches and a
+    // sent-but-unconfirmed operation stays saved for receipt recovery.
+    const last = (async () => {
+      await this.active;
+      if (this.pendingWork()) await this.syncNow();
+    })();
+    void Promise.race([last, new Promise((done) => window.setTimeout(done, 5_000))]).finally(
+      () => void controller?.close(),
+    );
   }
 
   private start() {
     const touched = (path: string) => {
       this.local.changed(path);
+      const own = this.ownWrites.get(path);
+      this.ownWrites.delete(path);
       if (!safePath(path) || this.local.ignored(path)) return this.emit();
-      this.schedule();
+      if (own !== undefined && Date.now() - own < ownWriteMs) return;
+      this.dirty.add(path);
+      this.checkpointWhenIdle();
+      this.emit();
     };
     const { vault, workspace } = this.app;
     this.registerEvent(vault.on("create", (file) => touched(file.path)));
@@ -169,7 +198,7 @@ export default class BasaltSyncPlugin extends Plugin implements SyncHost {
         if (!file) return;
         this.noteAbort = new AbortController();
         this.attachments.noteOpened(file.path, this.noteAbort.signal).catch(() => this.emit());
-        this.schedule();
+        void this.pullNow();
       }),
     );
     this.registerEvent(
@@ -185,10 +214,15 @@ export default class BasaltSyncPlugin extends Plugin implements SyncHost {
         );
       }),
     );
+    // Leaving Obsidian is the one moment phones reliably give us, so it always checkpoints.
     this.registerDomEvent(document, "visibilitychange", () => {
-      if (document.visibilityState === "visible") this.schedule();
+      if (document.visibilityState === "visible") void this.pullNow();
+      else if (this.pendingWork()) void this.syncNow();
     });
-    this.registerDomEvent(window, "online", () => this.schedule());
+    this.registerDomEvent(window, "online", () => {
+      if (this.pendingWork()) void this.syncNow();
+      else void this.pullNow();
+    });
     this.register(
       watchRemoteChanges({
         repeat: (callback, milliseconds) => {
@@ -196,7 +230,8 @@ export default class BasaltSyncPlugin extends Plugin implements SyncHost {
           return () => window.clearInterval(timer);
         },
         available: () => document.visibilityState === "visible" && navigator.onLine,
-        sync: () => this.schedule(),
+        // A failed checkpoint retries on the same slow cadence instead of waiting for an edit.
+        pull: () => void (this.needsCheckpoint ? this.syncNow() : this.pullNow()),
       }),
     );
     if (this.controller?.authorization()) this.schedulePoll();
@@ -215,16 +250,17 @@ export default class BasaltSyncPlugin extends Plugin implements SyncHost {
   // SyncHost
 
   view(): StatusView {
+    const status = this.controller?.status() ?? {
+      state: "disconnected" as const,
+      queued: 0,
+      conflicts: 0,
+      unsupported: [],
+      error: null,
+      head: null,
+      importId: null,
+    };
     return describeStatus({
-      status: this.controller?.status() ?? {
-        state: "disconnected",
-        queued: 0,
-        conflicts: 0,
-        unsupported: [],
-        error: null,
-        head: null,
-        importId: null,
-      },
+      status: { ...status, queued: Math.max(status.queued, this.dirty.size) },
       attachments: this.attachments.summary(),
       recovered: this.local.recovered().length,
       lastSynced: this.store.lastSynced(),
@@ -241,26 +277,72 @@ export default class BasaltSyncPlugin extends Plugin implements SyncHost {
     return this.local.recovered();
   }
 
-  async syncNow() {
+  /** A checkpoint: one commit holding every local change, pushed at once. */
+  syncNow() {
+    return this.work(false);
+  }
+
+  /** A fetch: cloud changes come down and nothing is committed. */
+  pullNow() {
+    return this.work(true);
+  }
+
+  private pendingWork() {
+    return (
+      this.dirty.size > 0 || this.needsCheckpoint || (this.controller?.status().queued ?? 0) > 0
+    );
+  }
+
+  /** One piece of work at a time; a checkpoint asked for meanwhile runs right after it. */
+  private work(fetchOnly: boolean): Promise<void> {
+    if (this.active) {
+      if (!fetchOnly) this.again = true;
+      return this.active;
+    }
+    this.active = (async () => {
+      let checkpoint = !fetchOnly;
+      while (await this.once(checkpoint)) {
+        if (!this.again) break;
+        this.again = false;
+        checkpoint = true;
+      }
+    })().finally(() => {
+      this.active = null;
+    });
+    return this.active;
+  }
+
+  /** Returns false when the device can't sync right now. */
+  private async once(checkpoint: boolean) {
     const controller = this.controller;
-    if (!controller) return;
+    if (!controller) return false;
     const state = controller.status().state;
-    if (state === "disconnected" || state === "authorizing" || state === "paused") return;
+    if (state === "disconnected" || state === "authorizing" || state === "paused") return false;
     if (state === "syncing") {
-      this.again = true;
-      return;
+      // A conflict resolution runs outside this queue. Wait for it rather than drop this request;
+      // if something is still running, the next wake retries the checkpoint.
+      await controller.sync().catch(() => {});
+      if (controller.status().state === "syncing") {
+        if (checkpoint) this.needsCheckpoint = true;
+        return false;
+      }
+    }
+    const taken = checkpoint ? [...this.dirty] : [];
+    if (checkpoint) {
+      this.checkpointWhenIdle.cancel();
+      this.dirty.clear();
     }
     try {
-      await controller.sync();
-      if (!controller.status().error) await this.store.markSynced(Date.now());
+      await (checkpoint ? controller.sync() : controller.pull());
     } catch {
       // The controller keeps the failure in status().error; the UI shows it.
     }
+    const failed = !!controller.status().error;
+    if (checkpoint) this.needsCheckpoint = failed;
+    if (failed) for (const path of taken) this.dirty.add(path);
+    else if (!this.pendingWork()) await this.store.markSynced(Date.now());
     this.emit();
-    if (this.again) {
-      this.again = false;
-      this.schedule();
-    }
+    return true;
   }
 
   async connect(config: DeviceConfig) {

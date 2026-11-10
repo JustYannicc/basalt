@@ -30,6 +30,7 @@ test("only a clean device says synced", () => {
     input({ state: "attention", unsupported: ["photo.png"] }),
     input({ state: "conflict", conflicts: 1 }),
     input({}, { recovered: 2 }),
+    input({ queued: 3 }),
     input(
       {},
       {
@@ -63,6 +64,13 @@ test("an unfinished import never reports synced and retains confirmed progress a
   }
 });
 
+test("a choice still waiting never hides edits that haven't synced yet", () => {
+  const view = describeStatus(input({ state: "conflict", conflicts: 1, queued: 3 }));
+  assert.equal(view.title, "Needs a choice");
+  assert.match(view.detail, /3 changes still to sync/u);
+  assert.doesNotMatch(view.detail, /Everything else is synced/u);
+});
+
 test("unsynced files are named honestly, not as fully synced", () => {
   const view = describeStatus(input({ state: "attention", unsupported: ["photo.png", "doc.pdf"] }));
   assert.equal(view.title, "Needs attention");
@@ -76,6 +84,7 @@ test("each lifecycle state has its own truthful headline", () => {
   assert.equal(title({ state: "paused", queued: 3 }), "Sync paused");
   assert.equal(title({ state: "syncing", head: null }), "Importing this vault");
   assert.equal(title({ state: "syncing" }), "Syncing");
+  assert.equal(title({ queued: 3 }), "3 changes to sync");
   assert.equal(title({ state: "offline", error: "fetch failed", queued: 2 }), "Sync stopped");
   assert.equal(
     title({
