@@ -1,7 +1,7 @@
 // Generated from the deployment stack. Do not edit.
 deployment {
   stage deployed "Declared deployment" {
-    metadata { bindings "d61b916b08d63d1065463e866aa360d549ac5e4d882a99819bf0c2fe3db2b395" }
+    metadata { bindings "d497bfc59e26da604c9babedec15f380b92f86e5393f12e7d3473bff0ccfe1b4" }
     zone group-2703341ef73f1544 "Asset service" {
       storage resource-5feb83cf920a7484743f0f20b6120bffd7591b4d943a0e1b4182bdae81230638 "App Builds" {
         app = instanceOf assetsService {
@@ -231,11 +231,6 @@ deployment {
         app = instanceOf basalt.toolsGateway {
           metadata { resource "resource-c065d523336cd33212e7a04bdcda35d4954a2c8d97706d40fea5fb3cd8415928" }
         }
-        durableObject resource-0a96a0413bb4a118c657319edec9bb584c0d3732223de21255f4ba1356fe377c "Vault Drive" {
-          app = instanceOf basalt.vaultRecords {
-            metadata { resource "resource-0a96a0413bb4a118c657319edec9bb584c0d3732223de21255f4ba1356fe377c" }
-          }
-        }
         durableObject resource-bff4ef8687419c16e34ec9c049a08dc4a2f16603614af3ec7fb3ac59edd36fea "Tools state" {
           app = instanceOf basalt.toolsState {
             metadata { resource "resource-bff4ef8687419c16e34ec9c049a08dc4a2f16603614af3ec7fb3ac59edd36fea" }
@@ -287,7 +282,7 @@ deployment {
         }
       }
     }
-    zone group-1ed143201a5e9cf6 "Vault records" {
+    zone group-1ed143201a5e9cf6 "Vault attachments" {
       storage resource-cd59467e50adada42b7698d9672959dc006bc0ff06b9bfecd1e685d75e8c6cc6 "Vault Attachments" {
         app = instanceOf basalt.vaultRecords {
           metadata { resource "resource-cd59467e50adada42b7698d9672959dc006bc0ff06b9bfecd1e685d75e8c6cc6" }
@@ -529,7 +524,7 @@ views {
     autoLayout TopBottom
   }
   deployment view deployment_group_1ed143201a5e9cf6 {
-    title "Basalt/Deployment/Vault records"
+    title "Basalt/Deployment/Vault attachments"
     include deployed.group-1ed143201a5e9cf6.*
     autoLayout TopBottom
   }
