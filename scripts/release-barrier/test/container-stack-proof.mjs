@@ -45,7 +45,8 @@ const pinFiles = ["releases.json", "sources.json", "typesafe/go.mod", "typesafe/
 /** Real root declarations and native Plan/Apply run end to end. Only control-plane effects, builds and stored state are synthetic. */
 export const proveContainerStack = (source, recompile, scenario) =>
   Effect.gen(function* () {
-    const context = mkdtempSync(join(tmpdir(), "container-root-"));
+    const context = join(mkdtempSync(join(tmpdir(), "container-root-")), "containers/pool");
+    mkdirSync(context, { recursive: true });
     for (const file of execFileSync("git", ["ls-files", "containers/pool"], {
       cwd: root,
       encoding: "utf8",
@@ -96,6 +97,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
     const recordedBaseline = scenario.startsWith("recorded-baseline");
     const sameDigest = [
       "same-digest",
+      "relocated-context",
       "same-digest-unhealthy",
       "dependency-only",
       "recorded-baseline-same-digest",
@@ -356,6 +358,18 @@ export const proveContainerStack = (source, recompile, scenario) =>
     return yield* recompile((next) =>
       Effect.gen(function* () {
         stack = contextualize(next);
+        if (scenario === "relocated-context") {
+          const key = { stack: stack.name, stage: stack.stage, fqn: "PoolContainer" };
+          const saved = yield* memory.get(key);
+          assert.ok(saved && "props" in saved);
+          yield* memory.set({
+            ...key,
+            value: {
+              ...saved,
+              props: { ...saved.props, context: "/runner/temp/candidate/containers/pool/" },
+            },
+          });
+        }
         pins(without631);
         const intermediate = yield* run(Plan.make(stack));
         assert.equal(intermediate.resources.PoolContainer.action, "update");
@@ -376,7 +390,9 @@ export const proveContainerStack = (source, recompile, scenario) =>
           const { attr: _attr, ...creating } = saved;
           yield* memory.set({ ...key, value: { ...creating, status: "creating" } });
         }
-        pins(scenario === "dependency-only" ? production : "candidate");
+        pins(
+          ["dependency-only", "relocated-context"].includes(scenario) ? production : "candidate",
+        );
         const plan = yield* run(Plan.make(stack));
         assert.equal(plan.resources.PoolContainer.action, "update");
         if (["creating-runtime-ready", "creating-ready-late-rejection"].includes(scenario)) {
@@ -690,6 +706,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
           "updating-forward",
           "partial-worker-forward",
           "same-digest",
+          "relocated-context",
           "dependency-only",
           "new-runtime-ready",
           "creating-runtime-ready",

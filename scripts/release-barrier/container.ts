@@ -10,7 +10,7 @@ import {
   equalContainerValues,
   type PreparedContainerPublication,
 } from "alchemy/Cloudflare/Containers/ContainerPublicationHook";
-import { havePropsChanged } from "alchemy/Diff";
+import { containerDeclarationChanged } from "./container-declaration.ts";
 import { Config, Effect, Redacted } from "effect";
 import { inspectPoolImage } from "../deploy-safety/pool-image-metadata.ts";
 import { BarrierRefusal, canonical, digest } from "./manifest.ts";
@@ -140,7 +140,7 @@ export function assertImageOnlyPublication(
       changed: changedProps(expected, actual),
     });
   };
-  if (publication.id !== "PoolContainer" || !olds || havePropsChanged(props, olds))
+  if (publication.id !== "PoolContainer" || !olds || containerDeclarationChanged(props, olds))
     refuse("unsupported-container-declaration-change", olds, props);
   if (
     props.instanceType !== "basic" ||
