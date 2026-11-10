@@ -12,7 +12,11 @@ export interface ArtifactsApi {
   deleteNamespace(name: string): Promise<void>;
   listRepositories(namespace: string, cursor?: string): Promise<Page<Repository>>;
   deleteRepository(namespace: string, repository: string): Promise<void>;
-  listRepositoryTokens(namespace: string, repository: string, cursor?: string): Promise<Page<Token>>;
+  listRepositoryTokens(
+    namespace: string,
+    repository: string,
+    cursor?: string,
+  ): Promise<Page<Token>>;
   deleteToken(namespace: string, token: string): Promise<void>;
 }
 
@@ -50,9 +54,11 @@ async function failureBody(response: Response): Promise<unknown> {
 }
 
 async function apiFailure(response: Response, message: string, body?: unknown): Promise<Error> {
-  const envelope: unknown = body ?? await failureBody(response).catch(() => undefined);
-  const errors = typeof envelope === "object" && envelope !== null && "errors" in envelope
-    ? envelope.errors : undefined;
+  const envelope: unknown = body ?? (await failureBody(response).catch(() => undefined));
+  const errors =
+    typeof envelope === "object" && envelope !== null && "errors" in envelope
+      ? envelope.errors
+      : undefined;
   const codes = new Set<number>();
   if (Array.isArray(errors)) {
     for (const entry of errors.slice(0, 10)) {
@@ -74,26 +80,43 @@ async function apiFailure(response: Response, message: string, body?: unknown): 
   ] as const) {
     const value = response.headers.get(name);
     if (value === null || value.length > 256) continue;
-    const quotas = value.split(",").slice(0, 4).flatMap(item => {
-      const match = pattern.exec(item.trim());
-      if (!match) return [];
-      return [name === "ratelimit" ? `r=${match[1]};t=${match[2]}` : `q=${match[1]};w=${match[2]}`];
-    });
+    const quotas = value
+      .split(",")
+      .slice(0, 4)
+      .flatMap((item) => {
+        const match = pattern.exec(item.trim());
+        if (!match) return [];
+        return [
+          name === "ratelimit" ? `r=${match[1]};t=${match[2]}` : `q=${match[1]};w=${match[2]}`,
+        ];
+      });
     if (quotas.length) headers[name] = quotas.join(", ");
   }
   return new Error(`${message}; diagnostics=${JSON.stringify({ codes: [...codes], headers })}`);
 }
 
 /** The Cloudflare v4 envelope: `result` plus, on list routes, pagination `result_info`. */
-async function envelope<T>(response: Response, operation: string): Promise<{ result: T; result_info?: Record<string, unknown> }> {
-  if (!response.ok) throw await apiFailure(response, `Cloudflare Artifacts ${operation} failed with HTTP ${response.status}`);
+async function envelope<T>(
+  response: Response,
+  operation: string,
+): Promise<{ result: T; result_info?: Record<string, unknown> }> {
+  if (!response.ok)
+    throw await apiFailure(
+      response,
+      `Cloudflare Artifacts ${operation} failed with HTTP ${response.status}`,
+    );
   const body: unknown = await response.json();
   if (typeof body !== "object" || body === null || !("result" in body))
     throw new Error(`Cloudflare Artifacts ${operation} returned an invalid response`);
   if ("success" in body && body.success !== true)
     throw await apiFailure(response, `Cloudflare Artifacts ${operation} was rejected`, body);
   const info = "result_info" in body ? body.result_info : undefined;
-  return { result: body.result as T, ...(typeof info === "object" && info !== null ? { result_info: info as Record<string, unknown> } : {}) };
+  return {
+    result: body.result as T,
+    ...(typeof info === "object" && info !== null
+      ? { result_info: info as Record<string, unknown> }
+      : {}),
+  };
 }
 
 async function bodyResult<T>(response: Response, operation: string): Promise<T> {
@@ -120,12 +143,18 @@ export function cloudflareArtifactsApi(
     // Pages keep the envelope: the items are `result` and the next cursor is in `result_info`.
     const page = await envelope<T[]>(await request(target, "GET"), "list");
     const next = page.result_info?.cursor;
-    return { result: page.result, result_info: { cursor: typeof next === "string" ? next : undefined } };
+    return {
+      result: page.result,
+      result_info: { cursor: typeof next === "string" ? next : undefined },
+    };
   };
   return {
     listNamespaces: (cursor) => list(`${base}/namespaces`, cursor),
     createNamespace: async (name) => {
-      const response = await request(`${base}/namespaces`, "POST", { namespace: name, jurisdiction: "eu" });
+      const response = await request(`${base}/namespaces`, "POST", {
+        namespace: name,
+        jurisdiction: "eu",
+      });
       const result = await bodyResult<Namespace>(response, "namespace creation");
       if (typeof result?.namespace !== "string" || typeof result.jurisdiction !== "string")
         throw new Error("Cloudflare Artifacts namespace creation returned invalid attributes");
@@ -135,7 +164,10 @@ export function cloudflareArtifactsApi(
       const response = await request(`${base}/namespaces/${encodeURIComponent(name)}`, "DELETE");
       if (response.status === 404 || response.status === 204) return;
       if (!response.ok)
-        throw await apiFailure(response, `Cloudflare Artifacts namespace deletion failed with HTTP ${response.status}`);
+        throw await apiFailure(
+          response,
+          `Cloudflare Artifacts namespace deletion failed with HTTP ${response.status}`,
+        );
     },
     listRepositories: (namespace, cursor) =>
       list(`${base}/namespaces/${encodeURIComponent(namespace)}/repos`, cursor),
@@ -146,7 +178,10 @@ export function cloudflareArtifactsApi(
       );
       if ([202, 204, 404].includes(response.status)) return;
       if (!response.ok)
-        throw await apiFailure(response, `Cloudflare Artifacts repository deletion failed with HTTP ${response.status}`);
+        throw await apiFailure(
+          response,
+          `Cloudflare Artifacts repository deletion failed with HTTP ${response.status}`,
+        );
     },
     // The token route pages by number (`page`, `per_page`, `total_pages`), not by cursor. The page
     // number travels as the cursor so every list shares one loop.
@@ -161,7 +196,10 @@ export function cloudflareArtifactsApi(
       const totalPages = body.result_info?.total_pages;
       if (typeof totalPages !== "number" || !Number.isInteger(totalPages) || totalPages < 0)
         throw new Error("Cloudflare Artifacts token list has no page count");
-      return { result: body.result, result_info: { cursor: page < totalPages ? String(page + 1) : undefined } };
+      return {
+        result: body.result,
+        result_info: { cursor: page < totalPages ? String(page + 1) : undefined },
+      };
     },
     deleteToken: async (namespace, tokenId) => {
       const response = await request(
@@ -170,7 +208,10 @@ export function cloudflareArtifactsApi(
       );
       if ([202, 204, 404].includes(response.status)) return;
       if (!response.ok)
-        throw await apiFailure(response, `Cloudflare Artifacts token deletion failed with HTTP ${response.status}`);
+        throw await apiFailure(
+          response,
+          `Cloudflare Artifacts token deletion failed with HTTP ${response.status}`,
+        );
     },
   };
 }
@@ -186,10 +227,12 @@ async function allPages<T>(read: (cursor?: string) => Promise<Page<T>>): Promise
     if (!Array.isArray(page?.result)) throw new Error("Invalid Cloudflare Artifacts list response");
     results.push(...page.result);
     const next = page.result_info?.cursor || undefined;
-    if (next && seen.has(next)) throw new Error("Cloudflare Artifacts pagination repeated a cursor");
+    if (next && seen.has(next))
+      throw new Error("Cloudflare Artifacts pagination repeated a cursor");
     if (next) seen.add(next);
     // The docs do not define the last cursor; a provider that keeps issuing fresh ones must not hang a deploy.
-    if (next && seen.size >= maximumPages) throw new Error("Cloudflare Artifacts pagination did not end");
+    if (next && seen.size >= maximumPages)
+      throw new Error("Cloudflare Artifacts pagination did not end");
     cursor = next;
   } while (cursor);
   return results;
@@ -204,7 +247,8 @@ export async function euNamespaceExists(api: ArtifactsApi, name: string): Promis
 }
 
 export async function requireEuNamespaceAbsent(api: ArtifactsApi, name: string): Promise<void> {
-  if (await euNamespaceExists(api, name)) throw new Error("Preview Artifacts namespace is still present");
+  if (await euNamespaceExists(api, name))
+    throw new Error("Preview Artifacts namespace is still present");
 }
 
 /** Every page is inspected before creating a namespace with immutable EU jurisdiction. */
@@ -215,13 +259,18 @@ export async function ensureEuNamespace(api: ArtifactsApi, name: string): Promis
     throw new Error("Artifacts namespace must have immutable EU jurisdiction; deployment stopped");
 }
 
-const pause = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+const pause = (milliseconds: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
 /** Delete the per-stage repositories before its namespace and read back both absences. */
 export async function deleteEuNamespace(
   api: ArtifactsApi,
   name: string,
-  options: { readonly attempts?: number; readonly delayMs?: number; readonly wait?: (ms: number) => Promise<void> } = {},
+  options: {
+    readonly attempts?: number;
+    readonly delayMs?: number;
+    readonly wait?: (ms: number) => Promise<void>;
+  } = {},
 ): Promise<void> {
   const attempts = options.attempts ?? 30;
   const delay = options.delayMs ?? 1000;
@@ -234,7 +283,9 @@ export async function deleteEuNamespace(
   const repositories = await allPages((cursor) => api.listRepositories(name, cursor));
   for (const repository of repositories) {
     if (!repository.name) throw new Error("Invalid Artifacts repository list response");
-    const tokens = await allPages((cursor) => api.listRepositoryTokens(name, repository.name, cursor));
+    const tokens = await allPages((cursor) =>
+      api.listRepositoryTokens(name, repository.name, cursor),
+    );
     for (const token of tokens) {
       if (!token.id) throw new Error("Invalid Artifacts token list response");
       await api.deleteToken(name, token.id);
@@ -265,19 +316,25 @@ export async function deleteEuNamespace(
  */
 export function vaultNamespace(sourceNamespace: string): string {
   const name = `${sourceNamespace.replace(/-apps$/u, "")}-vaults`;
-  if (!/^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$/u.test(name)) throw new Error("Invalid Artifacts vault namespace");
+  if (!/^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$/u.test(name))
+    throw new Error("Invalid Artifacts vault namespace");
   return name;
 }
 
 /** Every namespace a stage owns, app sources first. */
-export const stageNamespaces = (sourceNamespace: string) => [sourceNamespace, vaultNamespace(sourceNamespace)];
+export const stageNamespaces = (sourceNamespace: string) => [
+  sourceNamespace,
+  vaultNamespace(sourceNamespace),
+];
 
 async function main(): Promise<void> {
   const account = process.env.CLOUDFLARE_ACCOUNT_ID;
   const token = process.env.CLOUDFLARE_API_TOKEN;
   if (!account || !token) throw new Error("Missing Cloudflare deploy credentials");
   const api = cloudflareArtifactsApi(account, token);
-  for (const namespace of stageNamespaces(process.env.CLOUD_SOURCE_NAMESPACE ?? deployment.sourceNamespace))
+  for (const namespace of stageNamespaces(
+    process.env.CLOUD_SOURCE_NAMESPACE ?? deployment.sourceNamespace,
+  ))
     await ensureEuNamespace(api, namespace);
   console.log("Artifacts namespaces use EU jurisdiction");
 }
