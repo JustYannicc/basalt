@@ -1,7 +1,7 @@
 model {
   extend basalt.modelGateway {
     metadata {
-      constraint "Home uses upstream subscription eligibility and percentage-presence rules for model provider quota. An omitted zero is usable only for a confirmed paid profile and a valid current weekly period without contradictory product usage. Partial components retain still-valid readings and their original expiry; profile failures preserve a known plan. Supported client identity and metadata-only collection signals remain intact. The backport adds no database model, column or portable format, and keeps database version 13."
+      constraint "Home uses upstream subscription eligibility and percentage-presence rules for model provider quota. An omitted zero is usable only for a confirmed paid profile and a valid current weekly period without contradictory product usage. Partial components retain still-valid readings and their original expiry; profile failures preserve a known plan. Supported client identity and metadata-only collection signals remain intact. The backport adds no database model, column or portable format, and keeps database version 13. Registry checks bind the carry's source and bytes to retirement on a supported upstream pin with paid, free, retained-window, client-identity and metadata-only collection regressions."
     }
   }
 }
