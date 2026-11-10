@@ -2,7 +2,24 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Effect } from "effect";
 import { TestClock } from "effect/testing";
-import { makeAppWorkerResidency } from "../../.upstream/packages/sdk/src/implementation/app-worker-residency.ts";
+
+// Workerd source is checked in the SDK project, under its own ambient types and compiler options.
+const {
+  makeAppWorkerResidency,
+}: {
+  makeAppWorkerResidency: (options: { limit: number; idleSeconds: number }) => {
+    hold: (
+      name: string,
+      unload: { run: Effect.Effect<boolean>; abandon: () => void },
+      waitUntil: (task: Promise<unknown>) => void,
+    ) => Effect.Effect<Effect.Effect<void>>;
+  };
+} = await import(
+  new URL(
+    "../../.upstream/packages/sdk/src/implementation/app-worker-residency.ts",
+    import.meta.url,
+  ).href
+);
 
 test("an idle selection refused while another selection of its app is busy stays tracked", async () => {
   const loaded = new Set<string>();
