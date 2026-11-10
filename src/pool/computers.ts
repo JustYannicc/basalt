@@ -147,9 +147,11 @@ export class Computers {
         if (owner) await directory.learn(claims, user);
         const intent = await signIntent(this.deps.signingKey, value);
         const computers = await this.listLocked(registry, user, owner ? undefined : claims.pool);
+        // The team id is only for the setup host's filter; the app and agents get the picker fields.
         const pools = directory
           .choices(user, value.expiresAt - setupTtl, claims)
-          .filter((pool) => owner || pool.id === claims.pool);
+          .filter((pool) => owner || pool.id === claims.pool)
+          .map(({ id, name, mine }) => ({ id, name, mine }));
         return json({
           intent,
           href: `${this.origin()}/setup#intent=${encodeURIComponent(intent)}`,
