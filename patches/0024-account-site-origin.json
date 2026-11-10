@@ -1,7 +1,7 @@
 {
   "identity": "basalt-account-site-origin",
   "file": "0024-account-site-origin.patch",
-  "content_sha256": "2e8ce5d2a910030025a0438569c94610810841d551023f2bf6acff22598cfc1f",
+  "content_sha256": "00ddead63b06d8efd034ed2bd1da2421930adfbb32bba20a57545427587ad4e8",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

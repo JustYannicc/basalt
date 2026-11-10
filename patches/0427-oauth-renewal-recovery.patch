@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/web/src/implementation/pages/account-actions.tsx b/apps/hosted/web/src/implementation/pages/account-actions.tsx
-index 674befface99254cb243a5833a29303a783ba7d4..bf914bb47fcef57374a884b32b3d40efaa35fffa 100644
+index 674beff..bf914bb 100644
 --- a/apps/hosted/web/src/implementation/pages/account-actions.tsx
 +++ b/apps/hosted/web/src/implementation/pages/account-actions.tsx
 @@ -4,7 +4,10 @@ import { AccountUsageSettings } from "./account-observations.tsx";
@@ -58,7 +58,7 @@ index 674befface99254cb243a5833a29303a783ba7d4..bf914bb47fcef57374a884b32b3d40ef
        <DropdownMenuItem onSelect={() => open("health")}>Check health</DropdownMenuItem>
        {access?.ownership.kind === "shared" && (
 diff --git a/apps/hosted/web/src/implementation/pages/accounts-client.tsx b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
-index d86c38f9efffd2f45cda722fe82bd01dad8c0a04..a675fadd4c42a1b7999efa044365d04d65088ee1 100644
+index d86c38f..a675fad 100644
 --- a/apps/hosted/web/src/implementation/pages/accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
 @@ -26,6 +26,8 @@ import { HostedAccountObservations, HostedAccountPlan } from "./account-observat
@@ -99,7 +99,7 @@ index d86c38f9efffd2f45cda722fe82bd01dad8c0a04..a675fadd4c42a1b7999efa044365d04d
                  setDialog({
                    account: account.id,
 diff --git a/packages/sdk/src/contracts/account-check-failure.ts b/packages/sdk/src/contracts/account-check-failure.ts
-index 3126abd71966782d63104ba4365f14ef5fb41928..0e96517a0e6651c36cf7308df093922d8fadec75 100644
+index 3126abd..0e96517 100644
 --- a/packages/sdk/src/contracts/account-check-failure.ts
 +++ b/packages/sdk/src/contracts/account-check-failure.ts
 @@ -1,8 +1,28 @@
@@ -133,7 +133,7 @@ index 3126abd71966782d63104ba4365f14ef5fb41928..0e96517a0e6651c36cf7308df093922d
        "RuntimeBuildUnavailable",
 diff --git a/packages/sdk/src/contracts/oauth-failure-evidence.ts b/packages/sdk/src/contracts/oauth-failure-evidence.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..1bd28e3e3b10876edf2ac9a43ddb1b34848861c1
+index 0000000..1bd28e3
 --- /dev/null
 +++ b/packages/sdk/src/contracts/oauth-failure-evidence.ts
 @@ -0,0 +1,65 @@
@@ -203,66 +203,63 @@ index 0000000000000000000000000000000000000000..1bd28e3e3b10876edf2ac9a43ddb1b34
 +    "renewal_rejected",
 +  ]))();
 diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
-index 76e8cf2f436da4822e11d825789a1fb3645e1466..67a2622bed025ce6d2d17c14399360fc52a69a18 100644
+index a44d66e..141ba35 100644
 --- a/packages/sdk/src/contracts/oauth.ts
 +++ b/packages/sdk/src/contracts/oauth.ts
-@@ -127,60 +127,12 @@ export const OAuthClientUnavailable = /* @__PURE__ */ (() =>
-   }))();
+@@ -167,57 +167,12 @@ export const OAuthClientUnavailable = /* @__PURE__ */ (() => ApiError.define({
+ }))();
  export type OAuthClientUnavailable = typeof OAuthClientUnavailable.Type;
  
 -/** Provider error codes that Executor may record. Other provider values are dropped. */
--export const OAuthProviderErrorCode = /* @__PURE__ */ (() =>
--  Schema.Literals([
--    "invalid_grant",
--    "invalid_client",
--    "invalid_request",
--    "invalid_scope",
--    "unauthorized_client",
--    "unsupported_grant_type",
--    "invalid_redirect_uri",
--    "invalid_client_metadata",
--    "access_denied",
--    "unsupported_response_type",
--    "server_error",
--    "temporarily_unavailable",
--  ]))();
+-export const OAuthProviderErrorCode = /* @__PURE__ */ (() => Schema.Literals([
+-  "invalid_grant",
+-  "invalid_client",
+-  "invalid_request",
+-  "invalid_scope",
+-  "unauthorized_client",
+-  "unsupported_grant_type",
+-  "invalid_redirect_uri",
+-  "invalid_client_metadata",
+-  "access_denied",
+-  "unsupported_response_type",
+-  "server_error",
+-  "temporarily_unavailable",
+-]))();
 -/** Response fields named by protocol validation. Values are never recorded. */
--export const OAuthResponseField = /* @__PURE__ */ (() =>
--  Schema.Literals([
--    "client_id",
--    "client_secret",
--    "client_secret_expires_at",
--    "access_token",
--    "token_type",
--    "expires_in",
--    "refresh_token",
--    "id_token",
--    "issuer",
--    "authorization_endpoint",
--    "token_endpoint",
--    "code_challenge_methods_supported",
--    "jwt_alg",
--    "scope",
--  ]))();
+-export const OAuthResponseField = /* @__PURE__ */ (() => Schema.Literals([
+-  "client_id",
+-  "client_secret",
+-  "client_secret_expires_at",
+-  "access_token",
+-  "token_type",
+-  "expires_in",
+-  "refresh_token",
+-  "id_token",
+-  "issuer",
+-  "authorization_endpoint",
+-  "token_endpoint",
+-  "code_challenge_methods_supported",
+-  "jwt_alg",
+-  "scope",
+-]))();
 -/**
 - * Safe protocol evidence for diagnosis. Fixed vocabularies only; never a body, message, or URL.
 - * Connections store it in recorded failures. Removing a value needs no data step: failures
 - * recorded with it are left out when read (notes/oauth.md, "Failure reasons").
 - */
--export const OAuthFailureCause = /* @__PURE__ */ (() =>
--  Schema.Struct({
--    stage: Schema.Literals([
--      "discover",
--      "register",
--      "authorize",
--      "exchange",
--      "clientCredentials",
--      "refresh",
--    ]),
--    status: Schema.optional(Schema.Int),
--    providerError: Schema.optional(OAuthProviderErrorCode),
--    field: Schema.optional(OAuthResponseField),
--  }))();
+-export const OAuthFailureCause = /* @__PURE__ */ (() => Schema.Struct({
+-  stage: Schema.Literals([
+-    "discover",
+-    "register",
+-    "authorize",
+-    "exchange",
+-    "clientCredentials",
+-    "refresh",
+-  ]),
+-  status: Schema.optional(Schema.Int),
+-  providerError: Schema.optional(OAuthProviderErrorCode),
+-  field: Schema.optional(OAuthResponseField),
+-}))();
 -export type OAuthFailureCause = typeof OAuthFailureCause.Type;
 +import { OAuthFailureCause, OAuthRenewalReason } from "./oauth-failure-evidence.ts";
 +export {
@@ -273,23 +270,88 @@ index 76e8cf2f436da4822e11d825789a1fb3645e1466..67a2622bed025ce6d2d17c14399360fc
  
  /** The protocol evidence of a failure: closed stages, codes and fields, and the HTTP status. */
  const causeEvidence = (cause: OAuthFailureCause) =>
-@@ -1309,13 +1261,7 @@ export const OAuthRenewalFailed = /* @__PURE__ */ (() =>
-        * this account's grant. `renewal_rejected`: any other OAuth error, including codes outside
-        * RFC 6749, which also does not say the grant has ended.
-        */
--      reason: Schema.Literals([
--        "service_unavailable",
--        "rate_limited",
--        "incompatible_response",
--        "client_rejected",
--        "renewal_rejected",
--      ]),
+@@ -1412,45 +1367,40 @@ export type OAuthReconnectRequired = typeof OAuthReconnectRequired.Type;
+  * Renewing a saved grant failed without the service saying the grant has ended. The grant,
+  * including its refresh token, is kept unchanged, and the next use renews it again.
+  */
+-export const OAuthRenewalFailed = /* @__PURE__ */ (() => UserFacingError.define({
+-  tag: "OAuthRenewalFailed",
+-  status: 502,
+-  fields: {
+-    account: AccountId,
+-    /**
+-     * `service_unavailable`: an outage or temporary refusal. `rate_limited`: HTTP 429, the
+-     * service limiting requests. `incompatible_response`: a response Executor could not use.
+-     * `client_rejected`: the service refused the OAuth client itself (`invalid_client`,
+-     * `unauthorized_client`, or a 401 client-authentication challenge), which says nothing about
+-     * this account's grant. `renewal_rejected`: any other OAuth error, including codes outside
+-     * RFC 6749, which also does not say the grant has ended.
+-     */
+-    reason: Schema.Literals([
+-      "service_unavailable",
+-      "rate_limited",
+-      "incompatible_response",
+-      "client_rejected",
+-      "renewal_rejected",
+-    ]),
+-    cause: Schema.optional(OAuthFailureCause),
+-    retryAfter: RetryAfter,
+-  },
+-  recorded: ({ reason, cause }) =>
+-    oauthRecorded("Renewing an account's access failed", reason, cause),
+-  presentation: ({ reason, cause, retryAfter }) =>
+-    withCause(
+-      (
+-        {
+-          rate_limited: {
+-            ...rateLimited(retryAfter, {
+-              description:
+-                "The service is limiting requests to renew this account’s access right now. The saved sign-in is kept, so the account does not need to reconnect.",
+-              action: "Try again",
+-              instructions:
+-                "The account’s saved OAuth grant, including its refresh token, is intact; do not reconnect, delete or replace the account. Retrying the operation renews the grant again.",
+-            }),
+-            retryable: true,
+-          },
++export const OAuthRenewalFailed = /* @__PURE__ */ (() =>
++  UserFacingError.define({
++    tag: "OAuthRenewalFailed",
++    status: 502,
++    fields: {
++      account: AccountId,
++      /**
++       * `service_unavailable`: an outage or temporary refusal. `rate_limited`: HTTP 429, the
++       * service limiting requests. `incompatible_response`: a response Executor could not use.
++       * `client_rejected`: the service refused the OAuth client itself (`invalid_client`,
++       * `unauthorized_client`, or a 401 client-authentication challenge), which says nothing about
++       * this account's grant. `renewal_rejected`: any other OAuth error, including codes outside
++       * RFC 6749, which also does not say the grant has ended.
++       */
 +      reason: OAuthRenewalReason,
-       cause: Schema.optional(OAuthFailureCause),
-       retryAfter: RetryAfter,
-     },
++      cause: Schema.optional(OAuthFailureCause),
++      retryAfter: RetryAfter,
++    },
++    recorded: ({ reason, cause }) =>
++      oauthRecorded("Renewing an account's access failed", reason, cause),
++    presentation: ({ reason, cause, retryAfter }) =>
++      withCause(
++        (
++          {
++            rate_limited: {
++              ...rateLimited(retryAfter, {
++                description:
++                  "The service is limiting requests to renew this account’s access right now. The saved sign-in is kept, so the account does not need to reconnect.",
++                action: "Try again",
++                instructions:
++                  "The account’s saved OAuth grant, including its refresh token, is intact; do not reconnect, delete or replace the account. Retrying the operation renews the grant again.",
++              }),
++              retryable: true,
++            },
+           service_unavailable: {
+             ...serviceUnavailable,
+             description:
 diff --git a/packages/sdk/src/implementation/account-check-failure.ts b/packages/sdk/src/implementation/account-check-failure.ts
-index 54647b357dfb5dc7e555e08a5a66f17fe88cf06b..aeadac1f37f6e7f5caa458b98dc8189b48d3280a 100644
+index 54647b3..aeadac1 100644
 --- a/packages/sdk/src/implementation/account-check-failure.ts
 +++ b/packages/sdk/src/implementation/account-check-failure.ts
 @@ -1,5 +1,5 @@
@@ -369,10 +431,10 @@ index 54647b357dfb5dc7e555e08a5a66f17fe88cf06b..aeadac1f37f6e7f5caa458b98dc8189b
    );
 +};
 diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
-index 6399a06b92459d720e3beba47faa241cd6cc101e..eda80749a6f16c6f9564c43c4bb6e13f5bbe891b 100644
+index 989d316..b1054c3 100644
 --- a/packages/sdk/src/implementation/account-health.ts
 +++ b/packages/sdk/src/implementation/account-health.ts
-@@ -158,6 +158,22 @@ const statusOf = (error: unknown): AccountCheckStatus =>
+@@ -160,6 +160,22 @@ const statusOf = (error: unknown): AccountCheckStatus =>
   * tells. Unclassified failures get a fixed retry message without exposing their causes.
   */
  const messageOf = (error: unknown, late: boolean): string | undefined => {
@@ -397,7 +459,7 @@ index 6399a06b92459d720e3beba47faa241cd6cc101e..eda80749a6f16c6f9564c43c4bb6e13f
    if (Schema.is(ProviderError)(error) && error.reason === "rejected") {
 diff --git a/packages/ui/src/contracts/account-check-recovery.ts b/packages/ui/src/contracts/account-check-recovery.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..d2006cd79bbc5e1a3e51ec0604b9643c92431cc7
+index 0000000..d2006cd
 --- /dev/null
 +++ b/packages/ui/src/contracts/account-check-recovery.ts
 @@ -0,0 +1,99 @@
@@ -501,7 +563,7 @@ index 0000000000000000000000000000000000000000..d2006cd79bbc5e1a3e51ec0604b9643c
 +  return apps.find((app) => offering.has(app.id) && canReconnect(app));
 +};
 diff --git a/packages/ui/src/implementation/dashboard/account-health-line.tsx b/packages/ui/src/implementation/dashboard/account-health-line.tsx
-index 2acc20765c4e18bf2a5d37b43893c5a059381e2b..da0e8636fdfa9d900f4e6f570112b06c25502979 100644
+index 2acc207..da0e863 100644
 --- a/packages/ui/src/implementation/dashboard/account-health-line.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-health-line.tsx
 @@ -7,7 +7,12 @@ import { Button, buttonVariants } from "../components/button.tsx";
@@ -589,7 +651,7 @@ index 2acc20765c4e18bf2a5d37b43893c5a059381e2b..da0e8636fdfa9d900f4e6f570112b06c
              )}
            </div>
 diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packages/ui/src/implementation/dashboard/account-health.tsx
-index 03414f2fa3491500a900b309d916758d4ff46b17..0f263b8473c362127f2e895ceba75e845a52f183 100644
+index 98d6db2..fda6c24 100644
 --- a/packages/ui/src/implementation/dashboard/account-health.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-health.tsx
 @@ -15,6 +15,11 @@ import { LocalTime, shortMoment } from "../components/local-time.tsx";
@@ -604,7 +666,7 @@ index 03414f2fa3491500a900b309d916758d4ff46b17..0f263b8473c362127f2e895ceba75e84
  
  import { AccountDisplayStatus } from "./account-status.tsx";
  import { ProviderIcon } from "./common.tsx";
-@@ -37,6 +42,14 @@ export const describeAccountCheck = (status: AccountCheckStatus) =>
+@@ -41,6 +46,14 @@ export const describeAccountCheck = (status: AccountCheckStatus) =>
      Match.exhaustive,
    );
  
@@ -619,7 +681,7 @@ index 03414f2fa3491500a900b309d916758d4ff46b17..0f263b8473c362127f2e895ceba75e84
  /** Capability comes from the retained driver, independently of its last result. */
  export const driverCanCheck = (driver: AccountDriverHealth | undefined) =>
    driver?.checkable === true;
-@@ -67,8 +80,9 @@ export function AccountCheckDot({ health }: { readonly health: AccountAppHealth
+@@ -71,8 +84,9 @@ export function AccountCheckDot({ health }: { readonly health: AccountAppHealth
        />
      );
  
@@ -631,7 +693,7 @@ index 03414f2fa3491500a900b309d916758d4ff46b17..0f263b8473c362127f2e895ceba75e84
    return (
      <span
        className={`size-1.5 shrink-0 rounded-full ${check.current ? tones[tone] : tones.muted}`}
-@@ -292,7 +306,8 @@ export function AccountCheckResult({
+@@ -330,7 +344,8 @@ export function AccountCheckResult({
    if (health.check === null)
      return <span className="text-[12px] text-muted-foreground">Not checked</span>;
    const displayStatus = "displayStatus" in health.check ? health.check.displayStatus : undefined;
@@ -641,7 +703,7 @@ index 03414f2fa3491500a900b309d916758d4ff46b17..0f263b8473c362127f2e895ceba75e84
    const badge = (
      <span
        className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${health.check.current ? pills[tone] : pills.muted}`}
-@@ -311,9 +326,14 @@ export function AccountCheckResult({
+@@ -350,9 +365,14 @@ export function AccountCheckResult({
            part="details"
          />
        )}
@@ -658,7 +720,7 @@ index 03414f2fa3491500a900b309d916758d4ff46b17..0f263b8473c362127f2e895ceba75e84
          </span>
        )}
      </>
-@@ -335,7 +355,7 @@ export function AccountCheckResult({
+@@ -374,7 +394,7 @@ export function AccountCheckResult({
    if (part === "details")
      return <span className="flex w-full min-w-0 flex-col gap-1">{details}</span>;
    if (part === "notes")
@@ -668,7 +730,7 @@ index 03414f2fa3491500a900b309d916758d4ff46b17..0f263b8473c362127f2e895ceba75e84
          {displayStatus !== undefined && (
            <AccountDisplayStatus
 diff --git a/packages/ui/src/implementation/dashboard/account-observation-details.tsx b/packages/ui/src/implementation/dashboard/account-observation-details.tsx
-index 75c998ffa43fa8ed6043f931f53da54b0b90815d..56e16531de31e18c835aaf5a935f870ad3291222 100644
+index 75c998f..56e1653 100644
 --- a/packages/ui/src/implementation/dashboard/account-observation-details.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-observation-details.tsx
 @@ -5,7 +5,8 @@ import type { DisplayFormat } from "../../contracts/display.ts";
@@ -720,7 +782,7 @@ index 75c998ffa43fa8ed6043f931f53da54b0b90815d..56e16531de31e18c835aaf5a935f870a
    };
    const read = (value: string, stale: boolean) => (
 diff --git a/packages/ui/src/implementation/dashboard/account-row-health.tsx b/packages/ui/src/implementation/dashboard/account-row-health.tsx
-index 7ae8a941330ea27b3fcb354dc5b43a8558ed66be..6dfa69f5814f5301fc827022f41ca2bb59d2cb39 100644
+index 7ae8a94..6dfa69f 100644
 --- a/packages/ui/src/implementation/dashboard/account-row-health.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-row-health.tsx
 @@ -7,7 +7,8 @@ import { accountNeedsSignIn, type AccountSummary } from "../../contracts/dashboa

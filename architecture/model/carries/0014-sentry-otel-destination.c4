@@ -1,0 +1,7 @@
+model {
+  extend basalt.telemetry {
+    metadata {
+      constraint "An explicit diagnostic destination overrides the platform collector using the same release and environment attributes. The telemetry export-off guard runs first, so configuring a direct destination cannot enable exports that deployment disabled."
+    }
+  }
+}

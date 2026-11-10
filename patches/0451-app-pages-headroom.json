@@ -1,7 +1,7 @@
 {
   "identity": "basalt-app-pages-headroom",
   "file": "0451-app-pages-headroom.patch",
-  "content_sha256": "024548fd64840577eb2512d2255dd79f8eddd6e3f67cc1bd820350a78695a93c",
+  "content_sha256": "531f84afd2e4fac0f86f476fe52d8c11a1254fc440c377e8bd7da8814a580cf9",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

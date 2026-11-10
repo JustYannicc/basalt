@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index 8006e2531bbd45ec73ba70bc05c7efd12c6434fc..00f7c0d26d1d1d90181e160f7364ae6b3ff10d41 100644
+index 7e039b7..ee2ed6d 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -40,6 +40,10 @@ import {
@@ -13,7 +13,7 @@ index 8006e2531bbd45ec73ba70bc05c7efd12c6434fc..00f7c0d26d1d1d90181e160f7364ae6b
  import { Billing } from "./contracts/billing.ts";
  import { BillingMeter } from "./contracts/billing-meter.ts";
  import { billingBindings } from "./infrastructure/billing.ts";
-@@ -588,6 +592,9 @@ export default Api.make(
+@@ -612,6 +616,9 @@ export default Api.make(
        HttpRouter.add("POST", "/api/:channel/submit", errorTunnel),
      );
      const routes = Layer.mergeAll(
@@ -22,9 +22,9 @@ index 8006e2531bbd45ec73ba70bc05c7efd12c6434fc..00f7c0d26d1d1d90181e160f7364ae6b
 +      ),
        HttpRouter.add("POST", "/api/internal/app-domains/resume", appDomains.control("resume")),
        HttpRouter.add("POST", "/api/internal/app-domains/drain", appDomains.control("drain")),
-       HttpRouter.add("POST", "/api/internal/v1-import/start", v1Import.start),
+       // Starting an import reads the allow table (`writes.ts`) from the product database.
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
-index 4b5e84185bca77e224fa4aac0fe1ddc02a264ebf..e648766727403a5affe9be703d8695e8e2a06775 100644
+index 19a80d9..dca2fb1 100644
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
 @@ -31,6 +31,7 @@
@@ -36,7 +36,7 @@ index 4b5e84185bca77e224fa4aac0fe1ddc02a264ebf..e648766727403a5affe9be703d8695e8
      "./pool-defaults": "./src/implementation/pool-defaults.ts",
      "./pool-app-upgrades": "./src/implementation/pool-app-upgrades.ts",
 diff --git a/apps/hosted/server/src/implementation/app-accounts.ts b/apps/hosted/server/src/implementation/app-accounts.ts
-index cb8c9159c6353288fac608a416d3255f096d62cc..5802a9d2c66a9eae589908587d6751a565b57cf5 100644
+index cb8c915..5802a9d 100644
 --- a/apps/hosted/server/src/implementation/app-accounts.ts
 +++ b/apps/hosted/server/src/implementation/app-accounts.ts
 @@ -1,5 +1,7 @@
@@ -78,7 +78,7 @@ index cb8c9159c6353288fac608a416d3255f096d62cc..5802a9d2c66a9eae589908587d6751a5
        app: input.app,
        account: input.account,
 diff --git a/apps/hosted/server/src/implementation/pool-access-hook.ts b/apps/hosted/server/src/implementation/pool-access-hook.ts
-index c880e1386469e28a93a989616ac87499ef3773c4..91a5658000ced787602892f86480f0e3148de6d8 100644
+index c880e13..91a5658 100644
 --- a/apps/hosted/server/src/implementation/pool-access-hook.ts
 +++ b/apps/hosted/server/src/implementation/pool-access-hook.ts
 @@ -9,6 +9,7 @@ import { GroupDatabase, GroupMemberId } from "../contracts/groups.ts";
@@ -106,7 +106,7 @@ index c880e1386469e28a93a989616ac87499ef3773c4..91a5658000ced787602892f86480f0e3
      memberRoleChanging: ({ organization, member, role }) =>
 diff --git a/apps/hosted/server/src/implementation/pool-membership-hook.ts b/apps/hosted/server/src/implementation/pool-membership-hook.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..ff2ab01110ca8e3e9ae897dafda4d3486966e22a
+index 0000000..ff2ab01
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-membership-hook.ts
 @@ -0,0 +1,51 @@
@@ -163,7 +163,7 @@ index 0000000000000000000000000000000000000000..ff2ab01110ca8e3e9ae897dafda4d348
 +  );
 diff --git a/apps/hosted/server/src/implementation/pool-membership.ts b/apps/hosted/server/src/implementation/pool-membership.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..84b15278fe81d53b064b728bf6107efa441492f8
+index 0000000..84b1527
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-membership.ts
 @@ -0,0 +1,171 @@
@@ -339,10 +339,10 @@ index 0000000000000000000000000000000000000000..84b15278fe81d53b064b728bf6107efa
 +  });
 +}).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 503 }))));
 diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
-index 445fb3db3d1ecdc82eed9ef75d737a6bcd5c4ba4..aa8560c9182f77606e6f69cf8c5fbd7ab76dc720 100644
+index fccabb2..2625283 100644
 --- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
 +++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
-@@ -672,10 +672,20 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
+@@ -732,10 +732,20 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
            // unlink and app removal all take links before sources, so leaving this to the account
            // row's cascade would take them in the opposite order and deadlock with removing an app
            // that links the account. Deleting the SDK account removes its access policy and grants.
@@ -363,7 +363,7 @@ index 445fb3db3d1ecdc82eed9ef75d737a6bcd5c4ba4..aa8560c9182f77606e6f69cf8c5fbd7a
            yield* (accessLifecycle.appRemoving?.(app) ?? Effect.void).pipe(
              Effect.provideService(SqlClient.SqlClient, sql),
            );
-@@ -732,7 +742,7 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
+@@ -792,7 +802,7 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
              if (!usable.has(input.account.id)) return yield* new AccountConnectionRefused(target);
            }
            const sources = yield* webhooks;
@@ -372,7 +372,7 @@ index 445fb3db3d1ecdc82eed9ef75d737a6bcd5c4ba4..aa8560c9182f77606e6f69cf8c5fbd7a
              input.account.owner,
              addLink(sql, sources, {
                app: input.app,
-@@ -746,6 +756,12 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
+@@ -806,6 +816,12 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
                Schema.is(AccountProvisioned)(error) ? error : new StorageError(),
              ),
            );
@@ -386,10 +386,10 @@ index 445fb3db3d1ecdc82eed9ef75d737a6bcd5c4ba4..aa8560c9182f77606e6f69cf8c5fbd7a
            Effect.catchTags({
              SqlError: () => new StorageError(),
 diff --git a/packages/sdk/src/contracts/account-acquisition-driver.ts b/packages/sdk/src/contracts/account-acquisition-driver.ts
-index ccca1671c771ae233f215a684bfb60e690c5fd5a..79bc4924080a30f93c1f348fba152b4d05275f84 100644
+index faae3d1..5498f30 100644
 --- a/packages/sdk/src/contracts/account-acquisition-driver.ts
 +++ b/packages/sdk/src/contracts/account-acquisition-driver.ts
-@@ -88,6 +88,8 @@ export interface AccountAcquisitionRegistration {
+@@ -95,6 +95,8 @@ export interface AccountAcquisitionRegistration {
    readonly method: string;
    /** Retain earlier revisions for pending attempts and saved bindings, without offering new connects. */
    readonly current: boolean;
@@ -398,7 +398,7 @@ index ccca1671c771ae233f215a684bfb60e690c5fd5a..79bc4924080a30f93c1f348fba152b4d
    readonly driver: AccountAcquisitionDriver;
    readonly fetch: typeof globalThis.fetch;
  }
-@@ -105,6 +107,8 @@ export const AccountAcquisitionConfiguration = Context.Reference<AccountAcquisit
+@@ -112,6 +114,8 @@ export const AccountAcquisitionConfiguration = Context.Reference<AccountAcquisit
  export interface AccountAcquisitionSource {
    readonly binding: AccountAcquisitionBinding;
    readonly source: { readonly kind: "driver"; readonly id: string; readonly version: string };
@@ -408,7 +408,7 @@ index ccca1671c771ae233f215a684bfb60e690c5fd5a..79bc4924080a30f93c1f348fba152b4d
      AccountAcquisitionBinding,
      StorageError | AccountNotFound | AccountAcquisitionUnavailable
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
-index 020b6c0d38fea967bddda0f68968c66c6577b717..e3d663d1d1b957e2eea625e0e1cadc7e3eccfa16 100644
+index 40372f0..5afb82e 100644
 --- a/packages/sdk/src/contracts/executor.ts
 +++ b/packages/sdk/src/contracts/executor.ts
 @@ -90,6 +90,10 @@ export interface AccountConnectionCompletion {
@@ -423,7 +423,7 @@ index 020b6c0d38fea967bddda0f68968c66c6577b717..e3d663d1d1b957e2eea625e0e1cadc7e
      readonly organization: string;
      /** Omitted when group membership or organization membership affects every app. */
 diff --git a/packages/sdk/src/implementation/account-acquisition-runtime.ts b/packages/sdk/src/implementation/account-acquisition-runtime.ts
-index 65c966767836f25dc99c3e636d0ad0ce37595bdc..4caabe846f95c60993cbf1fca2630b035069c3be 100644
+index 65c9667..4caabe8 100644
 --- a/packages/sdk/src/implementation/account-acquisition-runtime.ts
 +++ b/packages/sdk/src/implementation/account-acquisition-runtime.ts
 @@ -91,6 +91,13 @@ export const makeAcquisitionRuntime = (

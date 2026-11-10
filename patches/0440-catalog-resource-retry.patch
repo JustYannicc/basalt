@@ -1,6 +1,6 @@
 diff --git a/apps/hosted/cloud/src/implementation/catalog-build-incident.ts b/apps/hosted/cloud/src/implementation/catalog-build-incident.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..3686bfcfe30e6c0de823f9cc130bda2ed591b72a
+index 0000000..3686bfc
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/catalog-build-incident.ts
 @@ -0,0 +1,26 @@
@@ -32,7 +32,7 @@ index 0000000000000000000000000000000000000000..3686bfcfe30e6c0de823f9cc130bda2e
 +};
 diff --git a/apps/hosted/cloud/src/implementation/compiler-resource-retry.ts b/apps/hosted/cloud/src/implementation/compiler-resource-retry.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..e525ee5aaa31af40790bd1b01a05dd82d2bbdc23
+index 0000000..e525ee5
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/compiler-resource-retry.ts
 @@ -0,0 +1,27 @@
@@ -64,7 +64,7 @@ index 0000000000000000000000000000000000000000..e525ee5aaa31af40790bd1b01a05dd82
 +    Effect.retry({ times: 1, while: Schema.is(BuildMemoryExceeded) }),
 +  );
 diff --git a/apps/hosted/cloud/src/implementation/error-reporting.ts b/apps/hosted/cloud/src/implementation/error-reporting.ts
-index 12aa378c07744d06d152b78a2189628b8e541a5a..828d166d7071569cfa4f8d7b2e93e874e5c0139e 100644
+index 12aa378..828d166 100644
 --- a/apps/hosted/cloud/src/implementation/error-reporting.ts
 +++ b/apps/hosted/cloud/src/implementation/error-reporting.ts
 @@ -6,6 +6,7 @@ import { Cause, Context, Effect, ErrorReporter, Option, Schema, SchemaAST, Trace
@@ -141,10 +141,10 @@ index 12aa378c07744d06d152b78a2189628b8e541a5a..828d166d7071569cfa4f8d7b2e93e874
        }
        // An app's own text reaches its caller, never an incident report.
 diff --git a/apps/hosted/cloud/src/infrastructure/provisioning.ts b/apps/hosted/cloud/src/infrastructure/provisioning.ts
-index 5f2d59a5e8270e3cdc36293c408e057350ff4918..73ee199bbb556eccd49dc0ccd4ef0e5ca97a4464 100644
+index e705b10..b68aeef 100644
 --- a/apps/hosted/cloud/src/infrastructure/provisioning.ts
 +++ b/apps/hosted/cloud/src/infrastructure/provisioning.ts
-@@ -36,6 +36,7 @@ import {
+@@ -37,6 +37,7 @@ import {
    workflowResultInput,
  } from "./workflow-results.ts";
  import { dispatchFailureReason, workflowInstanceId } from "../contracts/workflow-instance-id.ts";
@@ -152,7 +152,7 @@ index 5f2d59a5e8270e3cdc36293c408e057350ff4918..73ee199bbb556eccd49dc0ccd4ef0e5c
  
  /** Each committed lifecycle action has its own workflow, so unrelated failures do not block setup. */
  export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
-@@ -49,6 +50,7 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
+@@ -50,6 +51,7 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
      const domains = yield* AppDomainCoordinator.from(AppDomainController);
      const meter = yield* BillingMeter.pipe(Effect.provide(yield* billingLive.pipe(Effect.orDie)));
      const analytics = yield* cloudAnalytics;
@@ -160,7 +160,7 @@ index 5f2d59a5e8270e3cdc36293c408e057350ff4918..73ee199bbb556eccd49dc0ccd4ef0e5c
      // Default installation and member setup link accounts; wake webhook sources once committed. A
      // workflow step is not placed, so it must not be the coordinator's first caller: it asks the
      // placed handler to, in a step of its own that is retried until the handler has woken it.
-@@ -90,12 +92,14 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
+@@ -91,12 +93,14 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
                const step = yield* Cloudflare.Workflows.WorkflowStep;
                // Native callbacks start a new Effect fiber; carry the invocation's host bindings.
                const context = yield* Effect.context<never>();
@@ -182,10 +182,10 @@ index 5f2d59a5e8270e3cdc36293c408e057350ff4918..73ee199bbb556eccd49dc0ccd4ef0e5c
                  Effect.provide(executor),
                  Effect.scoped,
 diff --git a/apps/hosted/cloud/src/infrastructure/runtime.ts b/apps/hosted/cloud/src/infrastructure/runtime.ts
-index 621d7cba3f19a59f922b72e3e134e5472adf935c..65f21073f4e2ea69891a260d95eb633c4de2a8ef 100644
+index bed4500..fed55fa 100644
 --- a/apps/hosted/cloud/src/infrastructure/runtime.ts
 +++ b/apps/hosted/cloud/src/infrastructure/runtime.ts
-@@ -28,7 +28,8 @@ import { dataChanges } from "../implementation/data-changes.ts";
+@@ -28,7 +28,8 @@ import { runtimeActor } from "../implementation/runtime-actor.ts";
  import { cacheRuntimeBuild, cachedRuntimeBuilds } from "../implementation/runtime-build-cache.ts";
  import type { DurableObjectNamespace } from "@cloudflare/workers-types";
  import { CloudCompileResult } from "../contracts/builds.ts";
@@ -195,7 +195,7 @@ index 621d7cba3f19a59f922b72e3e134e5472adf935c..65f21073f4e2ea69891a260d95eb633c
  import { AppCompiler } from "./compiler.ts";
  import { AppData } from "./app-data-worker.ts";
  import type { AppDataSupervisor } from "./app-data.ts";
-@@ -149,7 +150,7 @@ export const cloudRuntime = Effect.fn(function* (
+@@ -138,7 +139,7 @@ export const cloudRuntime = Effect.fn(function* (
          withActor(
            Effect.gen(function* () {
              const headers = Object.fromEntries(Object.entries(yield* traceHeaders));
@@ -204,7 +204,7 @@ index 621d7cba3f19a59f922b72e3e134e5472adf935c..65f21073f4e2ea69891a260d95eb633c
                withCompilerRequest(compiler.request(), (request) =>
                  withCompilerRequest(
                    Effect.tryPromise({
-@@ -164,23 +165,6 @@ export const cloudRuntime = Effect.fn(function* (
+@@ -153,23 +154,6 @@ export const cloudRuntime = Effect.fn(function* (
                  ),
                ),
              ).pipe(
@@ -229,10 +229,10 @@ index 621d7cba3f19a59f922b72e3e134e5472adf935c..65f21073f4e2ea69891a260d95eb633c
                Effect.catchTag("SchemaError", (cause) => Effect.fail(failed("compile", cause))),
                Effect.withSpan("runtime.cloud.compiler.request"),
 diff --git a/apps/hosted/cloud/src/infrastructure/telemetry.ts b/apps/hosted/cloud/src/infrastructure/telemetry.ts
-index 2799d3becc31972d04cf30df0ed05294562019d2..b4faf6a2be25f30d269919edc21a11a301500b6c 100644
+index 3c6109f..b94af6c 100644
 --- a/apps/hosted/cloud/src/infrastructure/telemetry.ts
 +++ b/apps/hosted/cloud/src/infrastructure/telemetry.ts
-@@ -101,6 +101,11 @@ export const telemetryResources = Effect.gen(function* () {
+@@ -115,6 +115,11 @@ export const telemetryResources = Effect.gen(function* () {
        title: "telemetry export failures",
        query: `['${names.logs}'] | where ['resource.deployment.environment.name'] == '${stage}' | where body == 'Telemetry export failed' | summarize count()`,
      },
@@ -244,9 +244,9 @@ index 2799d3becc31972d04cf30df0ed05294562019d2..b4faf6a2be25f30d269919edc21a11a3
    ]) {
      yield* Axiom.Monitor(monitor.id, {
        name: `Executor ${stage}: ${monitor.title}`,
-@@ -195,17 +200,21 @@ export const telemetryBindings = Effect.gen(function* () {
-     const version = yield* Config.NonEmptyString("EXECUTOR_BUILD_VERSION");
-     const environment = yield* Stage;
+@@ -220,17 +225,21 @@ export const telemetryBindings = Effect.gen(function* () {
+   if (direct.configured) {
+     if (!direct.target) return { [binding]: Output.asOutput(Redacted.make("null")) };
      return {
 -      [binding]: Output.asOutput(Redacted.make(JSON.stringify({
 -        service: "executor-cloud",
@@ -278,7 +278,7 @@ index 2799d3becc31972d04cf30df0ed05294562019d2..b4faf6a2be25f30d269919edc21a11a3
    }
    const resources = yield* telemetryResources;
 diff --git a/apps/hosted/server/src/implementation/catalog-app-defaults.ts b/apps/hosted/server/src/implementation/catalog-app-defaults.ts
-index e46489ccc8588c4f67652e87b972767b45e9395b..f6ad90c11a0b958059ceb3116d1b7f19227fefc1 100644
+index e46489c..f6ad90c 100644
 --- a/apps/hosted/server/src/implementation/catalog-app-defaults.ts
 +++ b/apps/hosted/server/src/implementation/catalog-app-defaults.ts
 @@ -21,6 +21,7 @@ import { CatalogAppSweep } from "../contracts/catalog-app-updates.ts";
@@ -382,7 +382,7 @@ index e46489ccc8588c4f67652e87b972767b45e9395b..f6ad90c11a0b958059ceb3116d1b7f19
        }
 diff --git a/apps/hosted/server/src/implementation/catalog-build-failure.ts b/apps/hosted/server/src/implementation/catalog-build-failure.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..8980a6c7b12e632a92188b54e56c2e027646800f
+index 0000000..8980a6c
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/catalog-build-failure.ts
 @@ -0,0 +1,53 @@
@@ -440,10 +440,10 @@ index 0000000000000000000000000000000000000000..8980a6c7b12e632a92188b54e56c2e02
 +    yield* ErrorReporter.report(Cause.fail(new CatalogBuildResourceFailed()));
 +  });
 diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted/server/src/implementation/provisioning.ts
-index 1aef56c877a4b6c06aa74c4ddd4f6e733ce0e4aa..4d9fd473d48055614f7fe68dfe4b411d61f99d54 100644
+index 68aaf8a..32f1279 100644
 --- a/apps/hosted/server/src/implementation/provisioning.ts
 +++ b/apps/hosted/server/src/implementation/provisioning.ts
-@@ -111,9 +111,11 @@ const attempt = <E, R>(
+@@ -112,9 +112,11 @@ const attempt = <E, R>(
      const { attempts } = yield* Schema.decodeUnknownEffect(Claimed)(rows[0]);
      yield* Effect.annotateCurrentSpan({
        "executor.provisioning.kind": job.kind,
@@ -456,7 +456,7 @@ index 1aef56c877a4b6c06aa74c4ddd4f6e733ce0e4aa..4d9fd473d48055614f7fe68dfe4b411d
        Effect.onExit((exit) =>
          Exit.isSuccess(exit)
 diff --git a/packages/sdk/src/contracts/version.ts b/packages/sdk/src/contracts/version.ts
-index 518d4955d1c504c074017d232c316e1b910c523f..82de974f58187e06f4a54d265da460887861b073 100644
+index 518d495..82de974 100644
 --- a/packages/sdk/src/contracts/version.ts
 +++ b/packages/sdk/src/contracts/version.ts
 @@ -116,6 +116,8 @@ export class VersionBuildFailed extends Schema.TaggedError<VersionBuildFailed>()
@@ -469,7 +469,7 @@ index 518d4955d1c504c074017d232c316e1b910c523f..82de974f58187e06f4a54d265da46088
      location: Schema.optional(SourceLocation),
      /** The stage, location and underlying failure, such as the compiler's own errors. */
 diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
-index 7a5f80400888f6de9921a1851c412ffdfdd8bb1f..1cf8952ada6c10c473cdfd0832c872a0d95eafc3 100644
+index 1681a6f..74ecf27 100644
 --- a/packages/sdk/src/implementation/apps.ts
 +++ b/packages/sdk/src/implementation/apps.ts
 @@ -1,3 +1,4 @@
@@ -512,7 +512,7 @@ index 7a5f80400888f6de9921a1851c412ffdfdd8bb1f..1cf8952ada6c10c473cdfd0832c872a0
      const row = yield* query(() =>
 diff --git a/packages/sdk/src/implementation/version-build-failure.ts b/packages/sdk/src/implementation/version-build-failure.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..535584c0963e77f1c35ca3e4911ea372429561dc
+index 0000000..535584c
 --- /dev/null
 +++ b/packages/sdk/src/implementation/version-build-failure.ts
 @@ -0,0 +1,30 @@

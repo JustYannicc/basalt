@@ -4932,7 +4932,7 @@ index 0000000..15b92e0
 +  };
 +};
 diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
-index aaebc8d..8d7d736 100644
+index aaebc8d..d3fe6ea 100644
 --- a/packages/sdk/src/implementation/oauth.ts
 +++ b/packages/sdk/src/implementation/oauth.ts
 @@ -1,7 +1,12 @@
@@ -5063,7 +5063,7 @@ index aaebc8d..8d7d736 100644
        if (client.unlisted === true && client.id !== reconnecting) continue;
        if (
          !same(server.authorization_endpoint, client.server.authorizationUrl) ||
-@@ -816,11 +832,21 @@ export const makeOAuth = (
+@@ -816,15 +832,25 @@ export const makeOAuth = (
      });
    };
  
@@ -5090,7 +5090,29 @@ index aaebc8d..8d7d736 100644
      Effect.gen(function* () {
        if (protocol === undefined || options === undefined)
          return yield* new OAuthSetupFailed({ reason: "unsupported" });
-@@ -843,11 +869,13 @@ export const makeOAuth = (
+-      return yield* setupOf(yield* storedProvider(input.provider), input);
++      return yield* setupOf(yield* storedProvider(input.provider), input, { skipOptionalMetadata, definition: targetDefinition });
+     });
+ 
+   const storedProvider = (id: ProviderId) =>
+@@ -837,17 +863,29 @@ export const makeOAuth = (
+   /** `resolveSetup` for a provider already read, or one an undeployed app declares. */
+   const setupOf = (
+     provider: Provider,
+-    input: { readonly method: string; readonly redirectUri?: string | undefined },
++    input: {
++      readonly method: string;
++      readonly redirectUri?: string | undefined;
++      readonly site?: string | undefined;
++      readonly connection?: import("../contracts/shared.ts").AccountConnectionId | undefined;
++      readonly owner?: OwnerId | undefined;
++    },
++    { skipOptionalMetadata = false, definition: targetDefinition }: {
++      readonly skipOptionalMetadata?: boolean;
++      readonly definition?: ProviderDefinition | undefined;
++    } = {},
+   ) =>
+     Effect.gen(function* () {
        if (protocol === undefined || options === undefined)
          return yield* new OAuthSetupFailed({ reason: "unsupported" });
        yield* Effect.annotateCurrentSpan("oauth.provider.id", provider.id);
@@ -5101,14 +5123,13 @@ index aaebc8d..8d7d736 100644
 +        ? definition.auth[input.method]
          : undefined;
 -      if (method === undefined || method.type !== "oauth2")
--        return yield* new AuthMethodInvalid({ provider: provider.id, method: input.method });
 +      if (declared === undefined || declared.type !== "oauth2")
-+        return yield* new AuthMethodInvalid({ provider: input.provider, method: input.method });
+         return yield* new AuthMethodInvalid({ provider: provider.id, method: input.method });
 +      const method = oauthMethodAtSite(declared, definition.site, input.site);
        const redirect =
          method.grant === "client_credentials" || input.redirectUri === undefined
            ? undefined
-@@ -860,7 +888,13 @@ export const makeOAuth = (
+@@ -860,7 +898,13 @@ export const makeOAuth = (
            ))
        )
          return yield* new OAuthSetupFailed({ reason: "invalid_redirect" });
@@ -5123,7 +5144,7 @@ index aaebc8d..8d7d736 100644
        // Import checks report the same choice for the providers they generate.
        const registration =
          discovered.grant === "authorization_code"
-@@ -881,7 +915,7 @@ export const makeOAuth = (
+@@ -881,7 +925,7 @@ export const makeOAuth = (
              });
        // Stored clients belong to the server the sign-in discovered, not to the provider.
        const issuer = oauthClientIssuer(discovered.server);
@@ -5132,7 +5153,7 @@ index aaebc8d..8d7d736 100644
      });
    type Resolved = Effect.Success<ReturnType<typeof resolveSetup>>;
  
-@@ -920,6 +954,7 @@ export const makeOAuth = (
+@@ -920,6 +964,7 @@ export const makeOAuth = (
    const enteredClient = (
      entered: { readonly clientId: string; readonly clientSecret?: string | undefined },
      discovered: Resolved["discovered"],
@@ -5140,7 +5161,7 @@ index aaebc8d..8d7d736 100644
    ) =>
      Effect.gen(function* () {
        if (discovered.tokenEndpointAuthMethod === "none" && entered.clientSecret !== undefined)
-@@ -930,7 +965,10 @@ export const makeOAuth = (
+@@ -930,7 +975,10 @@ export const makeOAuth = (
            discovered.tokenEndpointAuthMethod ??
            (entered.clientSecret === undefined
              ? "none"
@@ -5152,7 +5173,7 @@ index aaebc8d..8d7d736 100644
          ...(entered.clientSecret === undefined ? {} : { client_secret: entered.clientSecret }),
        }).pipe(Effect.mapError(() => new OAuthSetupFailed({ reason: "invalid_client" })));
      });
-@@ -1093,6 +1131,7 @@ export const makeOAuth = (
+@@ -1093,6 +1141,7 @@ export const makeOAuth = (
              ...(secret.client_secret === undefined ? {} : { clientSecret: secret.client_secret }),
            },
            resolved.discovered,
@@ -5160,7 +5181,7 @@ index aaebc8d..8d7d736 100644
          ));
        const use: OAuthClientUse = {
          id: row.id,
-@@ -1166,14 +1205,61 @@ export const makeOAuth = (
+@@ -1166,14 +1215,61 @@ export const makeOAuth = (
     * fits, or the service accepts the host's metadata document or registers clients. Reading
     * setup never registers a client.
     */
@@ -5225,7 +5246,7 @@ index aaebc8d..8d7d736 100644
        const mode =
          existing === undefined && firstParty === undefined && registration === "manual"
            ? ("client-required" as const)
-@@ -1451,7 +1537,7 @@ export const makeOAuth = (
+@@ -1451,7 +1547,7 @@ export const makeOAuth = (
            kind: "stored" as const,
            ...(yield* authorizedClientUse(existing.row, existing.secret, input, resolved)),
          };
@@ -5234,7 +5255,7 @@ index aaebc8d..8d7d736 100644
        if (firstParty !== undefined) return { kind: "firstParty" as const, firstParty };
        if (registration === "client_id_metadata_document") {
          const url =
-@@ -1617,6 +1703,7 @@ export const makeOAuth = (
+@@ -1617,6 +1713,7 @@ export const makeOAuth = (
              : { clientSecret: Redacted.value(choice.clientSecret) }),
          },
          discovered,
@@ -5242,7 +5263,7 @@ index aaebc8d..8d7d736 100644
        );
        // Entered credentials a stored client holds or held are that client, authorized as it and
        // used with its current details; saving them again would only duplicate it. Those of a
-@@ -1642,13 +1729,20 @@ export const makeOAuth = (
+@@ -1642,13 +1739,20 @@ export const makeOAuth = (
      input: typeof StartConnectionOAuth.Type & {
        readonly owner: OwnerId;
        readonly provider: ProviderId;
@@ -5265,7 +5286,7 @@ index aaebc8d..8d7d736 100644
        const { method, discovered } = resolved;
        const chosen = yield* chooseClient(input, resolved, existing);
        if (chosen.kind === "firstParty")
-@@ -1685,11 +1779,13 @@ export const makeOAuth = (
+@@ -1685,11 +1789,13 @@ export const makeOAuth = (
            owner: input.owner,
            provider: input.provider,
            method: input.method,
@@ -5279,7 +5300,7 @@ index aaebc8d..8d7d736 100644
            fields,
            response: method.response,
            ...expiry(completedAt, tokens.expires_in),
-@@ -1706,13 +1802,18 @@ export const makeOAuth = (
+@@ -1706,13 +1812,18 @@ export const makeOAuth = (
                existing === undefined
                  ? undefined
                  : yield* ownedAccount(tx, { account: account.id, owner: input.owner });
@@ -5304,7 +5325,7 @@ index aaebc8d..8d7d736 100644
                if (lifecycle) yield* lifecycle.accountCreated(saved);
              } else {
                // Connecting an existing account again starts a new credential generation.
-@@ -1816,6 +1917,7 @@ export const makeOAuth = (
+@@ -1816,6 +1927,7 @@ export const makeOAuth = (
      input: typeof StartConnectionOAuth.Type & {
        readonly owner: OwnerId;
        readonly provider: ProviderId;
@@ -5312,7 +5333,7 @@ index aaebc8d..8d7d736 100644
      },
      existing: Account | undefined,
      firstParty: { readonly client: FirstPartyOAuthClient; readonly scopes: readonly string[] },
-@@ -1826,7 +1928,7 @@ export const makeOAuth = (
+@@ -1826,7 +1938,7 @@ export const makeOAuth = (
        if (protocol === undefined) return yield* new OAuthClientUnavailable(input);
        if (redirect === undefined)
          return yield* new OAuthSetupFailed({ reason: "invalid_redirect" });
@@ -5321,7 +5342,7 @@ index aaebc8d..8d7d736 100644
        if (operator === undefined) return yield* new OAuthClientUnavailable(input);
        const { scopeSeparator, authorizationParams, resource } = firstParty.client.server;
        const authorization = yield* protocol
-@@ -1848,6 +1950,7 @@ export const makeOAuth = (
+@@ -1848,6 +1960,7 @@ export const makeOAuth = (
          account: existing?.id ?? AccountId.make(`acc_${yield* nextId}`),
          ...(existing === undefined ? {} : { reconnect: true }),
          firstParty: firstParty.client.id,
@@ -5329,7 +5350,7 @@ index aaebc8d..8d7d736 100644
          response,
        });
        return yield* saveAttempt(input, id, attempt, authorization.authorizationUrl);
-@@ -1860,7 +1963,7 @@ export const makeOAuth = (
+@@ -1860,7 +1973,7 @@ export const makeOAuth = (
          return { status: "completed" as const, account: saved.state.account };
        const connection = yield* requireOpen(input, saved);
        // Never discover or register a client for a provider the target app no longer requires.
@@ -5338,7 +5359,7 @@ index aaebc8d..8d7d736 100644
        const existing =
          connection.reconnectAccount === null
            ? undefined
-@@ -1871,6 +1974,7 @@ export const makeOAuth = (
+@@ -1871,6 +1984,7 @@ export const makeOAuth = (
        if (existing !== undefined && existing.method !== input.method)
          return yield* new AuthMethodInvalid({
            provider: connection.provider,
@@ -5346,7 +5367,7 @@ index aaebc8d..8d7d736 100644
            method: input.method,
          });
        const { label: requested, ...rest } = input;
-@@ -1880,10 +1984,12 @@ export const makeOAuth = (
+@@ -1880,10 +1994,12 @@ export const makeOAuth = (
            ...rest,
            owner: connection.owner,
            provider: connection.provider,
@@ -5360,7 +5381,7 @@ index aaebc8d..8d7d736 100644
        ).pipe(
          // Agents reading the request learn what the person connecting was shown.
          Effect.tapError((error) =>
-@@ -1907,7 +2013,19 @@ export const makeOAuth = (
+@@ -1907,7 +2023,19 @@ export const makeOAuth = (
        ) {
          return yield* new OAuthCompletionFailed({ reason: "account_unavailable" });
        }
@@ -5381,7 +5402,7 @@ index aaebc8d..8d7d736 100644
      });
  
    const failed = (reason: OAuthCompletionReason) => new OAuthCompletionFailed({ reason });
-@@ -2050,7 +2168,7 @@ export const makeOAuth = (
+@@ -2050,7 +2178,7 @@ export const makeOAuth = (
        if (attempt.reconnect) yield* reconnectTarget(db, attempt);
        // An attempt with the operator's client signs in with its current configuration only.
        const operating = isFirstPartyAttempt(attempt)
@@ -5390,7 +5411,7 @@ index aaebc8d..8d7d736 100644
              Effect.map((operator) =>
                operator === undefined ? undefined : { ...attempt, ...operator },
              ),
-@@ -2170,7 +2288,7 @@ export const makeOAuth = (
+@@ -2170,7 +2298,7 @@ export const makeOAuth = (
        );
        // The operator's client keeps no grant holding a scope it does not allow.
        if (isFirstPartyAttempt(attempt) && !grantAllowed(attempt.firstParty, tokens.scope)) {
@@ -5399,7 +5420,7 @@ index aaebc8d..8d7d736 100644
            refreshToken: tokens.refresh_token,
            accessToken: tokens.access_token,
          });
-@@ -2195,6 +2313,7 @@ export const makeOAuth = (
+@@ -2195,6 +2323,7 @@ export const makeOAuth = (
        );
        const completedAt = yield* Clock.currentTimeMillis;
        const issued = {
@@ -5407,7 +5428,7 @@ index aaebc8d..8d7d736 100644
          response: attempt.response,
          fields,
          redirectUri: attempt.redirectUri,
-@@ -2281,29 +2400,41 @@ export const makeOAuth = (
+@@ -2281,29 +2410,41 @@ export const makeOAuth = (
            // Read again after the remote exchange: deletion must win, and a concurrent rename must survive.
            const target = attempt.reconnect ? yield* reconnectTarget(tx, attempt) : undefined;
            const saved =
@@ -5461,7 +5482,7 @@ index aaebc8d..8d7d736 100644
              );
              if (lifecycle) yield* lifecycle.accountCreated(saved);
            }
-@@ -2526,6 +2657,7 @@ export const makeOAuth = (
+@@ -2526,6 +2667,7 @@ export const makeOAuth = (
                // reconnect, is never touched.
                yield* revokeRefused(
                  grant.firstParty,
@@ -5469,7 +5490,7 @@ index aaebc8d..8d7d736 100644
                  settled
                    ? { ...exceeded, refreshToken: exceeded.refreshToken ?? grant.refreshToken }
                    : exceeded,
-@@ -2877,7 +3009,7 @@ export const makeOAuth = (
+@@ -2877,7 +3019,7 @@ export const makeOAuth = (
    const authorized = (accounts: readonly StoredAccount[]) =>
      lifecycle === undefined || !Arr.isReadonlyArrayNonEmpty(accounts)
        ? Effect.succeed(undefined)
@@ -5478,7 +5499,7 @@ index aaebc8d..8d7d736 100644
    /** Fail unless the product still authorizes every one of `accounts` in `current`. */
    const enforced = (
      current: Effect.Effect<ReadonlySet<AccountId> | undefined, StorageError>,
-@@ -3015,7 +3147,7 @@ export const makeOAuth = (
+@@ -3015,7 +3157,7 @@ export const makeOAuth = (
            );
            /** The account as one slot's invocation sends it, under that slot's definition. */
            return (definition: ProviderDefinition) =>
@@ -5487,7 +5508,7 @@ index aaebc8d..8d7d736 100644
          }),
        ).pipe(Effect.provideService(GrantReadAhead, readAhead));
      });
-@@ -3153,11 +3285,12 @@ export const makeOAuth = (
+@@ -3153,11 +3295,12 @@ export const makeOAuth = (
     */
    const revokeRefused = (
      id: FirstPartyOAuthClientId,

@@ -1,7 +1,7 @@
 {
   "identity": "basalt-app-data-read-batching",
   "file": "0351-app-data-read-batching.patch",
-  "content_sha256": "cb5b9a0d283cb26eb4fb2eb6d51e070d118be4144806488906ea34cd509d7ac3",
+  "content_sha256": "7628bcda543d3549c348c00b25a3d0ad948f83c2971fad4873a976e221d2d5c6",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

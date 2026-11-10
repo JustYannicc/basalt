@@ -1,7 +1,7 @@
 {
   "identity": "basalt-interactive-start-isolation-receipts",
   "file": "0441-interactive-start-isolation-receipts.patch",
-  "content_sha256": "e02b1274d33b9485804a09d21b1e7e99f45779610b4d7815192f74a32aefb2b5",
+  "content_sha256": "cb38dcccbb8b20fa8de2d6414c72fbb22999b4c17a2352ee9b49a7ed2677535b",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

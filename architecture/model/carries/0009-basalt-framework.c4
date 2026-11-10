@@ -1,0 +1,7 @@
+model {
+  extend basalt.frameworkRelease {
+    metadata {
+      constraint "Production compilers and hosted test stages consume the same packed carried framework bytes. Every generated app source declares the served release identity. Historical Basalt framework assignments remain stable rather than borrowing a later protocol identity."
+    }
+  }
+}

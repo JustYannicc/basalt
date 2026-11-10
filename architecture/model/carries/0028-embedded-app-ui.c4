@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Private app screens use isolated opaque app origins and retain per-request session and app authorization. Only the app document receives the dashboard parent origin and ready message; asset responses retain their direct file path. Concurrent notice and index reads, inline version watching and normal refusal telemetry keep their existing ownership."
+    }
+  }
+}

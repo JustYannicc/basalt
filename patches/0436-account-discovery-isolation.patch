@@ -37,7 +37,7 @@ index 7650f54..2bf3bde 100644
        emptyManyRequirements(requirements).length > 0 ? (
          <Empty title="No accounts linked">
 diff --git a/apps/local/web/src/implementation/pages/app-tools.tsx b/apps/local/web/src/implementation/pages/app-tools.tsx
-index 45d3c77..7f0343f 100644
+index 9ec767b..7f0343f 100644
 --- a/apps/local/web/src/implementation/pages/app-tools.tsx
 +++ b/apps/local/web/src/implementation/pages/app-tools.tsx
 @@ -6,6 +6,7 @@ import { AccountNotFound, OAuthReconnectRequired, type App } from "@executor-js/
@@ -60,16 +60,17 @@ index 45d3c77..7f0343f 100644
  export function AppTools(props: AppToolsProps) {
    const readiness = appToolReadiness(props.app, props.requirements);
    switch (readiness.state) {
-@@ -67,19 +71,8 @@ export function AppTools(props: AppToolsProps) {
+@@ -67,20 +71,8 @@ export function AppTools(props: AppToolsProps) {
      case "missing":
        return <AccountSetup app={props.app} disconnected={false} />;
      case "reconnect":
 -      return (
 -        <AccountReconnect app={props.app} accounts={readiness.accounts} status="Needs sign-in" />
 -      );
+-    // A sign-in that expired or must be renewed by hand is `reconnect` above.
      case "rejected":
 -      return (
--        <AccountReconnect app={props.app} accounts={readiness.accounts} status="Sign-in rejected" />
+-        <AccountReconnect app={props.app} accounts={readiness.accounts} status="Credentials refused" />
 -      );
      case "unavailable":
 -      return (
@@ -80,7 +81,7 @@ index 45d3c77..7f0343f 100644
      case "ready":
        return <LiveAppTools {...props} />;
    }
-@@ -152,6 +145,7 @@ function LiveAppTools({ app, requirements, selected }: AppToolsProps) {
+@@ -153,6 +145,7 @@ function LiveAppTools({ app, requirements, selected }: AppToolsProps) {
        query={toolCatalogAtom(catalog)}
        detail={(tool) => toolDetailAtom({ ...catalog, tool: tool.name })}
        selected={selected}
@@ -8441,10 +8442,10 @@ index 0000000..249fd85
 +  }
 +}
 diff --git a/packages/apps/protocols/gates.json b/packages/apps/protocols/gates.json
-index 55e09f3..a25e389 100644
+index d2258ce..6b33fe1 100644
 --- a/packages/apps/protocols/gates.json
 +++ b/packages/apps/protocols/gates.json
-@@ -2,23 +2,129 @@
+@@ -2,28 +2,136 @@
    "adapted": [
      {
        "message": "tools",
@@ -8498,6 +8499,14 @@ index 55e09f3..a25e389 100644
 +        12
 +      ],
        "adapter": "Every adapter for protocols 1 to 12 sends a bundle its invocation's user accounts as the flat record it reads, in the invocation (whose accounts protocols 1 to 5 carry only there) and in workflow step contexts. Such a bundle declares no app requirements, so it has no app accounts."
+     },
+     {
+       "message": "accounts",
+-      "protocols": [13],
++      "protocols": [
++        13
++      ],
+       "adapter": "The protocol 13 adapter, which every earlier one shares, sends each account without its credential hosts that hold an underscore, which those bundles reject. A sealed handle keeps the hosts it was sealed for, and the outbound network checks those, so what the bundle reads changes nothing it does."
 +    },
 +    {
 +      "message": "invocation",
@@ -9511,7 +9520,7 @@ index 0000000..4ba121f
 +  readonly schemas: Partial<Record<MessageName, Schema.Top>>;
 +};
 diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/src/contracts/protocols/current.ts
-index 95698b3..ac339b4 100644
+index 3075f88..df9b1b8 100644
 --- a/packages/apps/src/contracts/protocols/current.ts
 +++ b/packages/apps/src/contracts/protocols/current.ts
 @@ -1,3 +1,4 @@
@@ -9519,7 +9528,7 @@ index 95698b3..ac339b4 100644
  import { DriveCommand, DriveReply } from "../drive.ts";
  import {
    AppCallCommand,
-@@ -229,6 +230,8 @@ export const DeclaredRequirements = Schema.Struct({
+@@ -237,6 +238,8 @@ export const DeclaredRequirements = Schema.Struct({
         * as an excess field.
         */
        sharedDefinitions: Schema.optionalKey(Schema.Literal(true)),
@@ -9528,7 +9537,7 @@ index 95698b3..ac339b4 100644
        mcpApps: Schema.optionalKey(Schema.Literal(true)),
      }),
    ),
-@@ -259,7 +262,7 @@ export type DeclaredRequirements = typeof DeclaredRequirements.Type;
+@@ -267,7 +270,7 @@ export type DeclaredRequirements = typeof DeclaredRequirements.Type;
   * declares hosts, its secret string fields are sealed handles, not values. The provider carries
   * the hosts and placements granted to this account.
   */
@@ -9537,7 +9546,7 @@ index 95698b3..ac339b4 100644
    id: AccountId,
    mcpEndpoint: Schema.optionalKey(Schema.String),
    site: Schema.optionalKey(Schema.String),
-@@ -272,9 +275,20 @@ export const ResolvedAccount = Schema.Struct({
+@@ -280,9 +283,20 @@ export const ResolvedAccount = Schema.Struct({
    generation: Schema.optionalKey(Schema.Int),
    /** Host-recorded grant scopes from the credential snapshot; absent means unknown. */
    oauthScopes: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -9560,7 +9569,7 @@ index 95698b3..ac339b4 100644
  export type ResolvedAccount = typeof ResolvedAccount.Type;
  
  /** One scope's resolved accounts by requirement; [] differs from a missing slot. */
-@@ -346,6 +360,7 @@ export class HostEvaluationFailed extends Schema.TaggedError<HostEvaluationFaile
+@@ -358,6 +372,7 @@ export class HostEvaluationFailed extends Schema.TaggedError<HostEvaluationFaile
  
  /** Why one router's tools could not be read. The rest of the app's catalog is unaffected. */
  export const HostRouterError = Schema.Union([
@@ -9568,7 +9577,7 @@ index 95698b3..ac339b4 100644
    ProviderError,
    McpError,
    SkillLoadFailed,
-@@ -595,6 +610,7 @@ export class HostOutputInvalid extends Schema.TaggedError<HostOutputInvalid>()(
+@@ -607,6 +622,7 @@ export class HostOutputInvalid extends Schema.TaggedError<HostOutputInvalid>()(
   * message with account secrets replaced; no stack or cause value is serialized.
   */
  export const HostError = Schema.Union([
@@ -9592,7 +9601,7 @@ index cec7bb1..12679b7 100644
 +  protocol39,
  ] as const;
 diff --git a/packages/apps/src/contracts/router.ts b/packages/apps/src/contracts/router.ts
-index c57ee3d..998b8c3 100644
+index bcd3cd4..b5d2591 100644
 --- a/packages/apps/src/contracts/router.ts
 +++ b/packages/apps/src/contracts/router.ts
 @@ -45,6 +45,8 @@ export interface AppRouter {
@@ -9605,16 +9614,16 @@ index c57ee3d..998b8c3 100644
  
  /**
 diff --git a/packages/apps/src/implementation/account-router.ts b/packages/apps/src/implementation/account-router.ts
-index fe5b7c5..184f7a0 100644
+index 505ea3c..394a92b 100644
 --- a/packages/apps/src/implementation/account-router.ts
 +++ b/packages/apps/src/implementation/account-router.ts
 @@ -1,4 +1,4 @@
--import { Effect } from "effect";
-+import { Effect, Result } from "effect";
+-import { Effect, Schema } from "effect";
++import { Effect, Result, Schema } from "effect";
  import type { AppOperation } from "../contracts/operations.ts";
  import type { AppNode, AppRouter, DynamicRouter } from "../contracts/router.ts";
  import { nativeRouter, routerDeclaration, type RouterDeclaration } from "./router.ts";
-@@ -32,6 +32,7 @@ const combineNode = (variants: ReadonlyMap<string, AppNode>): AppNode => {
+@@ -43,6 +43,7 @@ const combineNode = (variants: ReadonlyMap<string, AppNode>): AppNode => {
          kind: "router",
          ...accountMcpApps(routers),
          ...(first.meta === undefined ? {} : { meta: first.meta }),
@@ -9622,7 +9631,7 @@ index fe5b7c5..184f7a0 100644
          children: Object.fromEntries(
            [...keys].map((key) => {
              const children = new Map<string, AppNode>();
-@@ -80,23 +81,55 @@ export const accountRouter = <
+@@ -93,23 +94,55 @@ export const accountRouter = <
    Effect.runPromise(
      Effect.gen(function* () {
        const routers = new Map<string, AppNode>();
@@ -9776,7 +9785,7 @@ index e2c9c9e..6687a02 100644
          if (typeof value === "string" && /^exsec2?_[a-f0-9]+_$/u.test(value))
            handles.set(
 diff --git a/packages/apps/src/implementation/router-catalog.ts b/packages/apps/src/implementation/router-catalog.ts
-index 260e12e..b7e488b 100644
+index 3fdaf1f..e956511 100644
 --- a/packages/apps/src/implementation/router-catalog.ts
 +++ b/packages/apps/src/implementation/router-catalog.ts
 @@ -2,6 +2,7 @@
@@ -9787,7 +9796,7 @@ index 260e12e..b7e488b 100644
  import { mcpAppUiFields } from "../contracts/mcp-apps.ts";
  import { Cause, Effect, Option, Result, Schema } from "effect";
  import {
-@@ -32,6 +33,7 @@ import type { OperationSchedule } from "../contracts/schedules.ts";
+@@ -33,6 +34,7 @@ import type { OperationSchedule } from "../contracts/schedules.ts";
   * error's name and bounded message, with the given account secrets replaced.
   */
  export const safeFailure = (error: unknown, secrets: readonly string[]): HostRouterError => {
@@ -9795,21 +9804,27 @@ index 260e12e..b7e488b 100644
    const provider = parseProviderError(error);
    if (Option.isSome(provider)) return leavingProviderError(provider.value, secrets, "discover");
    const skills = parseSkillLoadFailed(error);
-@@ -347,6 +349,14 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
-       Effect.gen(function* () {
-         if (path !== "" || (wanted === undefined && node.meta !== undefined))
-           routers.push(yield* entry(path, node.meta));
-+        for (const [index, failure] of (node.failures ?? []).entries())
-+          routers.push(
-+            yield* entry(
-+              joinPath(path, `__account_source_${index}`),
-+              { title: "Unavailable account source", description: `Account ${failure.accountId}` },
-+              safeFailure(failure.error, secrets),
-+            ),
-+          );
-         for (const [key, child] of Object.entries(node.children)) {
-           const name = joinPath(path, key);
-           switch (child.kind) {
+@@ -406,6 +408,11 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
+           path !== "" || (wanted === undefined && node.meta !== undefined)
+             ? [yield* entry(path, node.meta)]
+             : [];
++        const failures = yield* Effect.forEach(node.failures ?? [], (failure, index) =>
++          entry(joinPath(path, `__account_source_${index}`),
++            { title: "Unavailable account source", description: `Account ${failure.accountId}` },
++            safeFailure(failure.error, secrets)),
++        );
+         const children = yield* Effect.forEach(
+           Object.entries(node.children),
+           ([key, value]) => child(value, joinPath(path, key), path),
+@@ -413,7 +420,7 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
+         );
+         return {
+           tools: children.flatMap((read) => read.tools),
+-          routers: [...own, ...children.flatMap((read) => read.routers)],
++          routers: [...own, ...failures, ...children.flatMap((read) => read.routers)],
+         };
+       });
+     if (root?.kind === "router") return yield* visit(root, "");
 diff --git a/packages/apps/src/implementation/unavailable-account.ts b/packages/apps/src/implementation/unavailable-account.ts
 new file mode 100644
 index 0000000..ccf1593
@@ -9941,7 +9956,7 @@ index 1bd28e3..da568ff 100644
 +  OAuthRenewalReason,
 +} from "apps/contracts";
 diff --git a/packages/sdk/src/contracts/tools.ts b/packages/sdk/src/contracts/tools.ts
-index 20795c9..00360a5 100644
+index 23a2c51..43ef4c5 100644
 --- a/packages/sdk/src/contracts/tools.ts
 +++ b/packages/sdk/src/contracts/tools.ts
 @@ -1,3 +1,5 @@
@@ -9950,7 +9965,7 @@ index 20795c9..00360a5 100644
  import { AccountDeviceOffline, AccountExecutionUnavailable } from "./account-target.ts";
  import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
  import {
-@@ -1229,19 +1231,39 @@ export const evaluationFailure = (
+@@ -1523,19 +1525,39 @@ export const evaluationFailure = (
   * discovery. A provider failure here names no account; a call into the router attributes it to
   * the selected account.
   */
@@ -10023,7 +10038,7 @@ index 69ee479..5582aac 100644
    return failed.length === 0 ? undefined : bounded([...new Set(failed)].join(" "));
  };
 diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
-index b732d87..e8792b5 100644
+index 4ae29ff..7292b20 100644
 --- a/packages/sdk/src/implementation/app-protocols.ts
 +++ b/packages/sdk/src/implementation/app-protocols.ts
 @@ -12,6 +12,7 @@ import {
@@ -10034,7 +10049,7 @@ index b732d87..e8792b5 100644
    type HostAccount,
    type HostAccountSlots,
    type HostAccounts,
-@@ -323,6 +324,11 @@ const protocolOAuthScopes: AppProtocol = {
+@@ -361,6 +362,11 @@ const protocolOAuthScopes: AppProtocol = {
    version: oauthScopesProtocol,
    nodeEntry: nodeAppEntry(oauthScopesProtocol),
  };
@@ -10046,7 +10061,7 @@ index b732d87..e8792b5 100644
  
  /**
   * Bundles of protocol 12 and earlier read one flat record of requirements and accounts. They
-@@ -555,6 +561,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
+@@ -594,6 +600,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
      protocol37,
      protocol38,
      protocolOAuthScopes,
@@ -10055,7 +10070,7 @@ index b732d87..e8792b5 100644
      protocol.version,
      protocol.version >= 36
 diff --git a/packages/sdk/src/implementation/app-runner.ts b/packages/sdk/src/implementation/app-runner.ts
-index 4a5ff78..9d212da 100644
+index 0ab77b1..b71c53e 100644
 --- a/packages/sdk/src/implementation/app-runner.ts
 +++ b/packages/sdk/src/implementation/app-runner.ts
 @@ -13,6 +13,7 @@ import type { Fetcher, WorkerLoader } from "@cloudflare/workers-types";
@@ -10066,7 +10081,7 @@ index 4a5ff78..9d212da 100644
    ElicitationReply,
    HostResponse,
    type HostRequest,
-@@ -884,6 +885,17 @@ export const makeAppRunner = (host: AppRunnerHost) => {
+@@ -904,6 +905,17 @@ export const makeAppRunner = (host: AppRunnerHost) => {
                bundleAccounts(protocol, invocation.app, host.credentialKey, projected),
              ),
            );
@@ -10085,10 +10100,10 @@ index 4a5ff78..9d212da 100644
          const body = protocol.invocation({
            command: invocation.command,
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index 9b1c120..90a4e36 100644
+index 26d7b51..eedd5cf 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
-@@ -440,6 +440,7 @@ export const createExecutor = (
+@@ -448,6 +448,7 @@ export const createExecutor = (
          background: options.background,
          declarations,
          resolveAccount: oauth.resolveSelected,
@@ -10097,10 +10112,10 @@ index 9b1c120..90a4e36 100644
          search,
        }),
 diff --git a/packages/sdk/src/implementation/credential-handles.ts b/packages/sdk/src/implementation/credential-handles.ts
-index c379bad..fbbcb1f 100644
+index 50fbccd..24c91cc 100644
 --- a/packages/sdk/src/implementation/credential-handles.ts
 +++ b/packages/sdk/src/implementation/credential-handles.ts
-@@ -197,10 +197,12 @@ const sealValue = (
+@@ -202,10 +202,12 @@ const sealValue = (
  };
  
  const sealAccount = (
@@ -10114,7 +10129,7 @@ index c379bad..fbbcb1f 100644
      const hosts = account.provider.hosts;
      // A provider without hosts has not opted in: its app code reads real values. A managed
      // account always reaches app code sealed.
-@@ -240,7 +242,10 @@ const sealAccount = (
+@@ -245,7 +247,10 @@ const sealAccount = (
        ).pipe(Effect.map((sealed) => [name, sealed] as const)),
      );
      // SAFETY: sealing replaces strings with strings and keeps every other JSON value.
@@ -10171,10 +10186,10 @@ index 0000000..d8816eb
 +  }),
 +});
 diff --git a/packages/sdk/src/implementation/listings.ts b/packages/sdk/src/implementation/listings.ts
-index 84ad643..9295e72 100644
+index dcea1c1..76a7588 100644
 --- a/packages/sdk/src/implementation/listings.ts
 +++ b/packages/sdk/src/implementation/listings.ts
-@@ -145,6 +145,7 @@ export const makeListings = (options: {
+@@ -186,6 +186,7 @@ export const makeListings = (options: {
    readonly background: BackgroundWork | undefined;
    readonly declarations: Declarations;
    readonly resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"];
@@ -10182,12 +10197,12 @@ index 84ad643..9295e72 100644
    readonly policy?: ToolListingPolicy;
    /** Keeps evaluated listings as search rows. */
    readonly search: ToolSearch;
-@@ -162,14 +163,22 @@ export const makeListings = (options: {
+@@ -210,6 +211,18 @@ export const makeListings = (options: {
      search
        .write(state, ToolSearchListing.make(id), listing, at)
        .pipe(Effect.catchCause(() => Effect.logWarning("Tool search rows were not saved")));
 +  const partial = (routers: readonly ToolRouter[]) =>
-+    routers.some((router) => router.error?._tag === "AccountUnavailable");
++    routers.some((router) => router.error?._tag === "AccountUnavailable" || (router.path === "" && router.error !== undefined));
 +  const evaluateCurrent = (state: InvocationSnapshot, evaluate: Evaluate, read: ListingRead) =>
 +    (read.resolved === undefined
 +      ? resolve(
@@ -10198,7 +10213,11 @@ index 84ad643..9295e72 100644
 +        )
 +      : Effect.succeed(read.resolved)
 +    ).pipe(Effect.flatMap(evaluate));
-   const readAt = (state: InvocationSnapshot, evaluate: Evaluate, read: ListingRead = {}) =>
+   /** Keep a renewal of `id`'s rows, stamped with its start, so an app cache change since forgets it. */
+   const renewal = (
+     id: string,
+@@ -236,11 +249,7 @@ export const makeListings = (options: {
+   ) =>
      Effect.gen(function* () {
        const identity = { app: state.app.id, version: state.version.id };
 -      const evaluated = (
@@ -10210,9 +10229,9 @@ index 84ad643..9295e72 100644
        const now = yield* Clock.currentTimeMillis;
        if (policy.maxStaleMillis <= 0) return { listing: yield* evaluated, at: now };
        const id = yield* options.declarations.key("tools.list", state);
-@@ -393,7 +402,11 @@ export const makeListings = (options: {
-           ),
-         );
+@@ -469,7 +478,11 @@ export const makeListings = (options: {
+       // the check this starts, if one is due, reads when that was.
+       if (read.followChanges !== false) yield* options.declarations.followChanges(state.app.id);
        const early = yield* keptListing;
 -      if (early?.value instanceof Listed && servable(early.at))
 +      if (
@@ -10221,9 +10240,9 @@ index 84ad643..9295e72 100644
 +        servable(early.at)
 +      )
          return yield* serve(early.at, early.value, "memory");
-       // Another isolate's listing, unless an invalidation seen here replaced it. It is kept
-       // here too when it fits. A remembered failure here does not hide it.
-@@ -408,7 +421,7 @@ export const makeListings = (options: {
+       // What runs before this read looks beyond this process and in memory again, or, as
+       // `earlier`, before its caller read search rows. An evaluation that ends keeps its listing
+@@ -488,7 +501,7 @@ export const makeListings = (options: {
                )
                  return undefined;
                const decoded = yield* decodeListing(recalled.json).pipe(Effect.option);
@@ -10232,9 +10251,9 @@ index 84ad643..9295e72 100644
                const listed = new Listed(decoded.value);
                yield* cache.set(id, {
                  kind: "value",
-@@ -450,7 +463,11 @@ export const makeListings = (options: {
-       // what is kept never misses both.
-       const before = cache.pending(id);
+@@ -527,7 +540,11 @@ export const makeListings = (options: {
+             );
+       // The durable read yielded, and an evaluation may have ended meanwhile.
        const kept = yield* keptListing;
 -      if (kept?.value instanceof Listed && servable(kept.at))
 +      if (
@@ -10245,14 +10264,14 @@ index 84ad643..9295e72 100644
          return yield* serve(kept.at, kept.value, "memory");
        // A remembered failure spares a reader with a wait bound, such as MCP discovery, from
        // waiting on the evaluation again. A reader prepared to wait, such as the dashboard,
-@@ -501,9 +518,22 @@ export const makeListings = (options: {
-         attributes: { "executor.app.id": state.app.id },
-       }),
-     );
+@@ -655,11 +672,24 @@ export const makeListings = (options: {
+       );
+       if (!(yield* background(work))) cache.renewed();
+     });
 +  // A kept healthy listing can outlive a revoked grant. Re-evaluate discovery with its
 +  // credential-free binding, after the normal resolver rechecks the complete authority set.
-+  const current = (state: InvocationSnapshot, evaluate: Evaluate, read: ListingRead) =>
-+    readAt(state, evaluate, read).pipe(
++  const current = (state: InvocationSnapshot, evaluate: Evaluate, read: ListingRead, earlier?: PendingLoad) =>
++    readAt(state, evaluate, read, earlier).pipe(
 +      Effect.catchTag("OAuthReconnectRequired", (error) =>
 +        state.version.requirements.capabilities?.unavailableAccounts === true
 +          ? Effect.all({
@@ -10263,23 +10282,20 @@ index 84ad643..9295e72 100644
 +      ),
 +    );
    return {
+     /** The host API revision this version's invocations are bound to; listings are keyed by it. */
+     hostApi: options.declarations.hostApi,
      read: (state: InvocationSnapshot, evaluate: Evaluate, read: ListingRead = {}) =>
 -      readAt(state, evaluate, read).pipe(Effect.map(({ listing }) => listing)),
 +      current(state, evaluate, read).pipe(Effect.map(({ listing }) => listing)),
      /**
-      * Keep the listing `read` would serve as search rows, and name them. Rows are current when an
-      * evaluation started within `maxStaleMillis`, as a kept listing a reader that does not refresh
-@@ -527,14 +557,22 @@ export const makeListings = (options: {
-           memory.at > kept.at;
-         if (
-           kept !== undefined &&
-+          !partial(kept.routers) &&
-           now - kept.at < policy.maxStaleMillis &&
-           !cache.outdated(state.app.id, kept.at) &&
-           !newer
+      * The listing a reader that does not refresh would be served without evaluating, in two steps:
+      * the one kept in this process is read now, and the returned lookup answers with it, or, only
+@@ -772,10 +802,17 @@ export const makeListings = (options: {
+           // Written only for the search that evaluated them; see `partial`.
+           !partial(kept.routers)
          ) {
--          yield* options.declarations.authorize(state);
-+          const usable = yield* options.declarations.authorize(state).pipe(
+-          yield* Effect.fromResult(access);
++          const usable = yield* Effect.fromResult(access).pipe(
 +            Effect.as(true),
 +            Effect.catchTag("OAuthReconnectRequired", (error) =>
 +              state.version.requirements.capabilities?.unavailableAccounts === true
@@ -10291,73 +10307,65 @@ index 84ad643..9295e72 100644
            // it is written again like a missing one.
 -          if (kept.superseded === null || (yield* search.revive(listing))) {
 +          if (usable && (kept.superseded === null || (yield* search.revive(listing)))) {
-             yield* Effect.annotateCurrentSpan("executor.search.rows", "kept");
-             return { listing, routers: kept.routers };
-           }
-@@ -560,7 +598,7 @@ export const makeListings = (options: {
-               }),
-             );
-           }).pipe(Effect.withSpan("sdk.tools.searchable.cold-fill"));
--        const found = yield* readAt(state, gated, { ...read, retain: false });
-+        const found = yield* current(state, gated, { ...read, retain: false });
+             const aged = now - kept.at >= policy.renewMillis;
+             const last = yield* cache.get(renewalKey(id));
+             // The latest renewal started since these rows were evaluated.
+@@ -808,7 +845,7 @@ export const makeListings = (options: {
+                 ? "partial"
+                 : "stale",
+         );
+-        const found = yield* readAt(state, gated, { ...read, retain: false }, running);
++        const found = yield* current(state, gated, { ...read, retain: false }, running);
          yield* search
            .write(state, listing, found.listing, found.at)
            .pipe(
 diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
-index ddf271e..c6b564f 100644
+index 7097a53..263fbf9 100644
 --- a/packages/sdk/src/implementation/oauth.ts
 +++ b/packages/sdk/src/implementation/oauth.ts
 @@ -1,3 +1,4 @@
 +import { unavailableAccount } from "./discovery-accounts.ts";
  import { normalizeOAuthScopes, oauthScopeClosure } from "../contracts/oauth-scopes.ts";
  import { projectOAuthFields as project } from "./oauth-fields.ts";
- import type { AppAccountUse, ResourceLifecycle } from "../contracts/executor.ts";
-@@ -3697,6 +3698,7 @@ export const makeOAuth = (
+ import { CurrentActor, type AppAccountUse, type ResourceLifecycle } from "../contracts/executor.ts";
+@@ -3827,6 +3828,7 @@ export const makeOAuth = (
        use,
        selected,
      ),
 +    discovery = false,
    ) =>
-     Effect.flatMap(authority, (checked) =>
-       Effect.gen(function* () {
-@@ -3704,7 +3706,7 @@ export const makeOAuth = (
-         // Without grant rows the caller read in its own batch, the selection's grants are read
-         // here in one query and stand in for each grant's first read, as the caller's would.
-         const readAhead = (yield* GrantReadAhead) ?? (yield* selectionGrants(selected));
--        return yield* Effect.forEach(selected, ({ account, provider }) =>
-+        return yield* Effect.forEach(selected, ({ account, provider, ...uses }) =>
-           Effect.gen(function* () {
-             const credential = yield* resolveAuthorized(
-               account,
-@@ -3717,7 +3719,26 @@ export const makeOAuth = (
-             /** The account as one slot's invocation sends it, under that slot's definition. */
-             return (definition: ProviderDefinition) =>
-               invocationAccount(account, definition, credential, firstPartyClients, sitePolicy);
--          }),
-+          }).pipe(
-+            Effect.catchTags({
-+              OAuthReconnectRequired: (error) =>
-+                discovery && use.kind === "run"
-+                  ? recheck.pipe(
-+                      Effect.as((definition: ProviderDefinition) =>
-+                        unavailableAccount(account, definition, error, uses),
-+                      ),
-+                    )
-+                  : Effect.fail(error),
-+              OAuthRenewalFailed: (error) =>
-+                discovery && use.kind === "run"
-+                  ? recheck.pipe(
-+                      Effect.as((definition: ProviderDefinition) =>
-+                        unavailableAccount(account, definition, error, uses),
-+                      ),
-+                    )
-+                  : Effect.fail(error),
-+            }),
-+          ),
-         ).pipe(Effect.provideService(GrantReadAhead, readAhead));
-       }),
-     );
-@@ -4123,6 +4144,11 @@ export const makeOAuth = (
+     Effect.gen(function* () {
+       const supplied = yield* GrantReadAhead;
+@@ -3838,7 +3840,7 @@ export const makeOAuth = (
+           ? yield* inOrder(authority, selectionGrants(selected))
+           : [yield* authority, supplied];
+       const recheck = selectionAuthorized(use, selected);
+-      return yield* Effect.forEach(selected, ({ account, provider }) =>
++      return yield* Effect.forEach(selected, ({ account, provider, ...uses }) =>
+         Effect.gen(function* () {
+           const credential = yield* resolveAuthorized(
+             use.kind,
+@@ -3852,7 +3854,18 @@ export const makeOAuth = (
+           /** The account as one slot's invocation sends it, under that slot's definition. */
+           return (definition: ProviderDefinition) =>
+             invocationAccount(account, definition, credential, firstPartyClients, sitePolicy);
+-        }),
++        }).pipe(Effect.catchTags({
++          OAuthReconnectRequired: (error) =>
++            discovery && use.kind === "run"
++              ? recheck.pipe(Effect.as((definition: ProviderDefinition) =>
++                  unavailableAccount(account, definition, error, uses)))
++              : Effect.fail(error),
++          OAuthRenewalFailed: (error) =>
++            discovery && use.kind === "run"
++              ? recheck.pipe(Effect.as((definition: ProviderDefinition) =>
++                  unavailableAccount(account, definition, error, uses)))
++              : Effect.fail(error),
++        })),
+       ).pipe(Effect.provideService(GrantReadAhead, readAhead));
+     });
+   /**
+@@ -4379,6 +4392,11 @@ export const makeOAuth = (
      resolve: (account: StoredAccount, provider: ProviderDefinition) => resolve(account, provider),
      resolveOwnedFirstParty,
      resolveSelected,
@@ -10368,9 +10376,9 @@ index ddf271e..c6b564f 100644
 +    ) => resolveSelected(use, selected, authority, true),
      renewRejected,
      usable: (account: StoredAccount, provider: ProviderDefinition) =>
-       usable([{ account, provider }]),
+       usableAll([{ account, provider }]),
 diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
-index fbdbf4f..9e28f65 100644
+index 67b56ad..a8e0c22 100644
 --- a/packages/sdk/src/implementation/tools.ts
 +++ b/packages/sdk/src/implementation/tools.ts
 @@ -1,3 +1,4 @@
@@ -10378,7 +10386,7 @@ index fbdbf4f..9e28f65 100644
  import { bindToolPolicy } from "./tool-policy.ts";
  import type { ToolPolicyHook } from "../contracts/tool-policy.ts";
  import type { AppApprovedConfiguration } from "../contracts/app-calls.ts";
-@@ -542,7 +543,7 @@ const renewRefused = (
+@@ -578,7 +579,7 @@ const renewRefused = (
      const used = scopedSlots(accounts)
        .flatMap(([, value]) => (isMany(value) ? value : [value]))
        .find((account) => account.id === accountId);
@@ -10387,7 +10395,7 @@ index fbdbf4f..9e28f65 100644
      // Renewal authorizes the account and, once it settles, every account of the invocation and
      // the app for the current actor, as `resolve` does: they all run the app's code again.
      const usedFields = used.fields;
-@@ -641,6 +642,11 @@ type Renewal = "renewed" | RenewalFailure;
+@@ -677,6 +678,11 @@ type Renewal = "renewed" | RenewalFailure;
  const runtimeFailure = (identity: { app: AppId; version: VersionId; tool: ToolName }) =>
    Match.type<Exclude<CallError, ProviderError>>().pipe(
      Match.tagsExhaustive({
@@ -10399,19 +10407,27 @@ index fbdbf4f..9e28f65 100644
        OpenapiResponseError: ({ code, status, message, recovery }) =>
          new ToolCallFailed({
            ...identity,
-@@ -774,7 +780,10 @@ const summarizeTool = ({
+@@ -769,6 +775,7 @@ const detailSource = ({ source }: { readonly source?: AppFailure["source"] }): C
+ const failureSource = Match.type<CallError>().pipe(
+   Match.withReturnType<CallFailureSource>(),
+   Match.tagsExhaustive({
++    AccountUnavailable: () => "other",
+     ProviderError: () => "upstream",
+     OpenapiResponseError: () => "upstream",
+     McpError: () => "upstream",
+@@ -870,7 +877,10 @@ const summarizeTool = ({
  /** Live calls return completion or a durable approval request. Resume trusts the supplied SDK decision. */
  export const makeTools = (
    storage: ExecutorRuntimeDatabase,
--  oauth: Pick<ReturnType<typeof makeOAuth>, "resolveSelected" | "renewRejected" | "usable">,
+-  oauth: Pick<ReturnType<typeof makeOAuth>, "resolveSelected" | "renewRejected" | "usableAll">,
 +  oauth: Pick<
 +    ReturnType<typeof makeOAuth>,
-+    "resolveSelected" | "resolveDiscoverySelected" | "renewRejected" | "usable"
++    "resolveSelected" | "resolveDiscoverySelected" | "renewRejected" | "usableAll"
 +  >,
    clients: ReadonlyMap<string, FirstPartyOAuthClient>,
    sitePolicy: UrlPolicy,
    runtime: Runtime,
-@@ -807,6 +816,7 @@ export const makeTools = (
+@@ -903,6 +913,7 @@ export const makeTools = (
          };
    };
    const resolveAccount = oauth.resolveSelected;
@@ -10419,7 +10435,7 @@ index fbdbf4f..9e28f65 100644
    const approvals = makeToolApprovals(db, credentials, crypto, storage.reactivity.inTransaction);
    const countCall = makeToolCallAccounting(storage.accountTraffic, background);
    /** Renew an account the service refused without repeating what it refused; undefined when none was. */
-@@ -1314,6 +1324,31 @@ export const makeTools = (
+@@ -1425,6 +1436,31 @@ export const makeTools = (
    /** Evaluate every tool of the catalog with schemas, sorted by name, for the listing store. */
    const listingOf = (state: InvocationSnapshot) => (context: InvocationContext) =>
      inspectRenewing(state, context, (context) => runtime.inspect(inspection(state, context))).pipe(
@@ -10451,7 +10467,7 @@ index fbdbf4f..9e28f65 100644
        Effect.map(toListing(state)),
        Effect.tap((listing) =>
          observeTools(
-@@ -1438,9 +1473,12 @@ export const makeTools = (
+@@ -1588,9 +1624,12 @@ export const makeTools = (
            accountTargets?.requireCloud(distinctSelection(state).map(({ account }) => account)) ??
              Effect.void
          );
@@ -10467,7 +10483,7 @@ index fbdbf4f..9e28f65 100644
          return yield* listingOf(state)(context);
        }).pipe(Effect.withSpan("sdk.tools.loadNow")),
      /** Keep the target's current listing as search rows; see `Listings.searchable`. */
-@@ -1527,9 +1565,12 @@ export const makeTools = (
+@@ -1678,9 +1717,12 @@ export const makeTools = (
            accountTargets?.requireCloud(distinctSelection(state).map(({ account }) => account)) ??
              Effect.void
          );

@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "MCP App views retain the invoking principal, grant, source, app version and selected accounts for resource reads, callbacks and approval resumes. Generated renderer assets and paths use the same carried contracts. View approval includes the call index; pure offer production remains separate from effectful backend search and its request-owned profile context."
+    }
+  }
+}

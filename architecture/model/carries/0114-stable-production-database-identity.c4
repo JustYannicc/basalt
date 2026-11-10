@@ -1,0 +1,7 @@
+model {
+  extend basalt.productionOps {
+    metadata {
+      constraint "Production-operation plans bind the normalized direct database origin, persistent database UUID and transaction-observed login role OID, plus server identity when available. Proxy routing, credentials and URL options cannot identify the target. Restore requires identity rotation before new plans; stale-plan failures retain their closed reason through every composite cause."
+    }
+  }
+}

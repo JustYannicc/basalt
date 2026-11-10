@@ -16,10 +16,10 @@ index e41cb24..b321946 100644
      return yield* withCatalogAppDefaults(executor, catalogFeed, pools);
    });
 diff --git a/apps/hosted/cloud/src/infrastructure/product.ts b/apps/hosted/cloud/src/infrastructure/product.ts
-index 21ef0fb..7bc6e94 100644
+index ee1dafb..77bb1a0 100644
 --- a/apps/hosted/cloud/src/infrastructure/product.ts
 +++ b/apps/hosted/cloud/src/infrastructure/product.ts
-@@ -96,6 +96,7 @@ export const cloudProduct = Effect.fn(function* (
+@@ -97,6 +97,7 @@ export const cloudProduct = Effect.fn(function* (
                    client: cachedFeedClient(apiOrigin, feedUrl.value, egress.client),
                  },
                },
@@ -28,7 +28,7 @@ index 21ef0fb..7bc6e94 100644
        );
      }).pipe(
 diff --git a/apps/hosted/server/src/contracts/organization-defaults.ts b/apps/hosted/server/src/contracts/organization-defaults.ts
-index aa062a9..ef1bc09 100644
+index 8280bf8..63c2d25 100644
 --- a/apps/hosted/server/src/contracts/organization-defaults.ts
 +++ b/apps/hosted/server/src/contracts/organization-defaults.ts
 @@ -31,9 +31,24 @@ export class OrganizationDefaultsPending extends Schema.TaggedError<Organization
@@ -236,94 +236,6 @@ index af5e329..f594e08 100644
 +        }
        });
    });
-diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted/server/src/implementation/provisioning.ts
-index 1c0aef7..1aef56c 100644
---- a/apps/hosted/server/src/implementation/provisioning.ts
-+++ b/apps/hosted/server/src/implementation/provisioning.ts
-@@ -2,12 +2,18 @@
- import { StorageError } from "@executor-js/sdk/core";
- import { Effect, Exit, Schedule, Schema } from "effect";
- import { SqlClient } from "effect/sql";
--import { PoolTokenRotation, poolRotationJobPrefix } from "../contracts/pool-defaults.ts";
-+import {
-+  PoolBundleTarget,
-+  PoolTokenRotation,
-+  poolBundleJobPrefix,
-+  poolRotationJobPrefix,
-+} from "../contracts/pool-defaults.ts";
- import { CatalogAppSweep, catalogAppJobPrefix } from "../contracts/catalog-app-updates.ts";
- import { OrganizationId } from "../contracts/organization.ts";
- import {
-   OrganizationDefaults,
-   OrganizationDefaultsPending,
-+  PoolSetupPending,
- } from "../contracts/organization-defaults.ts";
- 
- /** Parsed durable event; constraints in the table mirror these variants. */
-@@ -123,10 +129,15 @@ const attempt = <E, R>(
-     Effect.tapError((error) =>
-       Schema.is(OrganizationDefaultsPending)(error)
-         ? Effect.logDebug("Member setup is waiting for team installation", { job: id })
--        : Effect.logWarning("Provisioning step failed", {
--            job: id,
--            reason: Schema.is(StorageError)(error) ? "storage" : "dependency",
--          }),
-+        : Schema.is(PoolSetupPending)(error)
-+          ? Effect.logInfo("Pool setup is waiting for the deploy to finish", {
-+              job: id,
-+              reason: error.reason,
-+            })
-+          : Effect.logWarning("Provisioning step failed", {
-+              job: id,
-+              reason: Schema.is(StorageError)(error) ? "storage" : "dependency",
-+            }),
-     ),
-     Effect.mapError(() => new ProvisioningFailed()),
-     Effect.withSpan("hosted.provision"),
-@@ -164,12 +175,17 @@ const installTeam = (organization: OrganizationId, requireVerifiedEmail: boolean
-     for (const member of yield* managers(organization, requireVerifiedEmail))
-       yield* initialize(organization, member).pipe(
-         Effect.catch((error) =>
--          Effect.logWarning("Member setup after team installation failed", {
--            job: id,
--            reason: Schema.is(Schema.Struct({ _tag: Schema.String }))(error)
--              ? error._tag
--              : "unknown",
--          }),
-+          Schema.is(PoolSetupPending)(error)
-+            ? Effect.logInfo("Pool setup is waiting for the deploy to finish", {
-+                job: id,
-+                reason: error.reason,
-+              })
-+            : Effect.logWarning("Member setup after team installation failed", {
-+                job: id,
-+                reason: Schema.is(Schema.Struct({ _tag: Schema.String }))(error)
-+                  ? error._tag
-+                  : "unknown",
-+              }),
-         ),
-       );
-   });
-@@ -191,6 +207,11 @@ export const provision = (id: string, services: ProvisioningServices) =>
-           const initialize = yield* OrganizationDefaults;
-           const rotationOnly = job.id.startsWith(poolRotationJobPrefix);
-           const catalogOnly = job.id.startsWith(catalogAppJobPrefix);
-+          // `<prefix><bundle>:reconcile-<n>:<uuid>`: the target is everything before the uuid.
-+          const tagged = job.id.startsWith(poolBundleJobPrefix)
-+            ? job.id.slice(poolBundleJobPrefix.length)
-+            : undefined;
-+          const bundle = tagged?.slice(0, tagged.lastIndexOf(":"));
-           if (!rotationOnly && !catalogOnly) yield* services.member?.(job.user_id) ?? Effect.void;
-           const [member] = yield* managers(
-             job.organization_id,
-@@ -201,6 +222,7 @@ export const provision = (id: string, services: ProvisioningServices) =>
-           if (member !== undefined)
-             yield* initialize(job.organization_id, member).pipe(
-               Effect.provideService(PoolTokenRotation, rotationOnly),
-+              Effect.provideService(PoolBundleTarget, bundle),
-               Effect.provideService(CatalogAppSweep, catalogOnly),
-             );
-           return;
 diff --git a/apps/hosted/server/src/implementation/pool-worker-gate.ts b/apps/hosted/server/src/implementation/pool-worker-gate.ts
 new file mode 100644
 index 0000000..37601a5
@@ -385,3 +297,91 @@ index 0000000..37601a5
 +      reason: revision ? "key-version" : keyVersion ? "worker-revision" : "worker-revision-and-key",
 +    });
 +  });
+diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted/server/src/implementation/provisioning.ts
+index 6a75327..68aaf8a 100644
+--- a/apps/hosted/server/src/implementation/provisioning.ts
++++ b/apps/hosted/server/src/implementation/provisioning.ts
+@@ -3,12 +3,18 @@ import { StorageError } from "@executor-js/sdk/core";
+ import { Effect, Exit, Schedule, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
+ import { traceFailure } from "@executor-js/telemetry/failed-span";
+-import { PoolTokenRotation, poolRotationJobPrefix } from "../contracts/pool-defaults.ts";
++import {
++  PoolBundleTarget,
++  PoolTokenRotation,
++  poolBundleJobPrefix,
++  poolRotationJobPrefix,
++} from "../contracts/pool-defaults.ts";
+ import { CatalogAppSweep, catalogAppJobPrefix } from "../contracts/catalog-app-updates.ts";
+ import { OrganizationId } from "../contracts/organization.ts";
+ import {
+   OrganizationDefaults,
+   OrganizationDefaultsPending,
++  PoolSetupPending,
+ } from "../contracts/organization-defaults.ts";
+ 
+ /** Parsed durable event; constraints in the table mirror these variants. */
+@@ -124,10 +130,15 @@ const attempt = <E, R>(
+     Effect.tapError((error) =>
+       Schema.is(OrganizationDefaultsPending)(error)
+         ? Effect.logDebug("Member setup is waiting for team installation", { job: id })
+-        : Effect.logWarning("Provisioning step failed", {
+-            job: id,
+-            reason: Schema.is(StorageError)(error) ? "storage" : "dependency",
+-          }),
++        : Schema.is(PoolSetupPending)(error)
++          ? Effect.logInfo("Pool setup is waiting for the deploy to finish", {
++              job: id,
++              reason: error.reason,
++            })
++          : Effect.logWarning("Provisioning step failed", {
++              job: id,
++              reason: Schema.is(StorageError)(error) ? "storage" : "dependency",
++            }),
+     ),
+     Effect.mapError(() => new ProvisioningFailed()),
+     Effect.withSpan("hosted.provision"),
+@@ -165,12 +176,17 @@ const installTeam = (organization: OrganizationId, requireVerifiedEmail: boolean
+     for (const member of yield* managers(organization, requireVerifiedEmail))
+       yield* initialize(organization, member).pipe(
+         Effect.catch((error) =>
+-          Effect.logWarning("Member setup after team installation failed", {
+-            job: id,
+-            reason: Schema.is(Schema.Struct({ _tag: Schema.String }))(error)
+-              ? error._tag
+-              : "unknown",
+-          }),
++          Schema.is(PoolSetupPending)(error)
++            ? Effect.logInfo("Pool setup is waiting for the deploy to finish", {
++                job: id,
++                reason: error.reason,
++              })
++            : Effect.logWarning("Member setup after team installation failed", {
++                job: id,
++                reason: Schema.is(Schema.Struct({ _tag: Schema.String }))(error)
++                  ? error._tag
++                  : "unknown",
++              }),
+         ),
+       );
+   });
+@@ -192,6 +208,11 @@ export const provision = (id: string, services: ProvisioningServices) =>
+           const initialize = yield* OrganizationDefaults;
+           const rotationOnly = job.id.startsWith(poolRotationJobPrefix);
+           const catalogOnly = job.id.startsWith(catalogAppJobPrefix);
++          // `<prefix><bundle>:reconcile-<n>:<uuid>`: the target is everything before the uuid.
++          const tagged = job.id.startsWith(poolBundleJobPrefix)
++            ? job.id.slice(poolBundleJobPrefix.length)
++            : undefined;
++          const bundle = tagged?.slice(0, tagged.lastIndexOf(":"));
+           if (!rotationOnly && !catalogOnly) yield* services.member?.(job.user_id) ?? Effect.void;
+           const [member] = yield* managers(
+             job.organization_id,
+@@ -202,6 +223,7 @@ export const provision = (id: string, services: ProvisioningServices) =>
+           if (member !== undefined)
+             yield* initialize(job.organization_id, member).pipe(
+               Effect.provideService(PoolTokenRotation, rotationOnly),
++              Effect.provideService(PoolBundleTarget, bundle),
+               Effect.provideService(CatalogAppSweep, catalogOnly),
+             );
+           return;

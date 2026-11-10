@@ -9919,7 +9919,7 @@ index 67eff31..2338d1a 100644
    "webhook-register",
    "webhook-handle",
 diff --git a/packages/sdk/src/implementation/app-runtime.ts b/packages/sdk/src/implementation/app-runtime.ts
-index e5c49a3..596b14e 100644
+index 672d8a0..93c16bc 100644
 --- a/packages/sdk/src/implementation/app-runtime.ts
 +++ b/packages/sdk/src/implementation/app-runtime.ts
 @@ -437,6 +437,8 @@ export const appRuntime = (host: AppRuntimeHost) =>
@@ -11620,7 +11620,7 @@ index f976201..ea5217f 100644
    });
  
 diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
-index 8d7d736..fc8b349 100644
+index d3fe6ea..0e1bfda 100644
 --- a/packages/sdk/src/implementation/oauth.ts
 +++ b/packages/sdk/src/implementation/oauth.ts
 @@ -36,6 +36,7 @@ import {
@@ -11631,7 +11631,7 @@ index 8d7d736..fc8b349 100644
    lockConnection,
    recordSignInFailure,
    startSignIn,
-@@ -1793,63 +1794,70 @@ export const makeOAuth = (
+@@ -1803,63 +1804,70 @@ export const makeOAuth = (
          const encryptedCredentials = yield* encrypt(account.id, fields);
          const encryptedGrant = yield* encrypt(account.id, grant);
          const ready = `ready_${yield* nextId}`;
@@ -11756,7 +11756,7 @@ index 8d7d736..fc8b349 100644
          );
          return { status: "completed" as const, account: saved };
        }
-@@ -2375,111 +2383,115 @@ export const makeOAuth = (
+@@ -2385,111 +2393,115 @@ export const makeOAuth = (
          ).pipe(Effect.flatMap((grant) => encrypt(attempt.account, grant)));
        const encryptedCredentials = yield* encrypt(attempt.account, fields);
        const ready = `ready_${yield* nextId}`;
@@ -11970,7 +11970,7 @@ index 8d7d736..fc8b349 100644
        );
      });
  
-@@ -2506,7 +2518,10 @@ export const makeOAuth = (
+@@ -2516,7 +2528,10 @@ export const makeOAuth = (
        if (rejected !== undefined)
          yield* Effect.annotateCurrentSpan("oauth.renewal.trigger", "credentials_rejected");
        // Secrets the user brought.
@@ -11982,7 +11982,7 @@ index 8d7d736..fc8b349 100644
          return {
            fields: yield* credentials.decrypt(account.id, account.encryptedCredentials),
            firstParty: undefined,
-@@ -2964,7 +2979,9 @@ export const makeOAuth = (
+@@ -2974,7 +2989,9 @@ export const makeOAuth = (
        const granted = [
          ...new Set(
            checks
@@ -11993,7 +11993,7 @@ index 8d7d736..fc8b349 100644
              .map(({ account }) => account.id),
          ),
        ];
-@@ -2978,7 +2995,8 @@ export const makeOAuth = (
+@@ -2988,7 +3005,8 @@ export const makeOAuth = (
        for (const { account, provider } of checks) {
          // The provider of the account checked last: on failure, the one that failed.
          yield* Effect.annotateCurrentSpan("oauth.provider.id", account.provider);

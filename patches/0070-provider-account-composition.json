@@ -1,7 +1,7 @@
 {
   "identity": "basalt-provider-account-composition",
   "file": "0070-provider-account-composition.patch",
-  "content_sha256": "161d8a7932903712cec81a8f83331ca63026aeaa991f8be660f05569a0a13e52",
+  "content_sha256": "77279c5202ea48b1cd89fd9b84978015a6b4224efb9d416526d4d6f0542dd44a",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

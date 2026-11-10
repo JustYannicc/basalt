@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.contributionApi {
+    metadata {
+      constraint "Pool management uses native app audiences, groups and organization roles. Per-person usage reads and weekly-cap writes hold current management authority through the signed pool operation without granting app use or private-account access. Responses omit serving-account references; failed writes retain drafts, and deployment preserves existing audience and activation markers."
+    }
+  }
+}

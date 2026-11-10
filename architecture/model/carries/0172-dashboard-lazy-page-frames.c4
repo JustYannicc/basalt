@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Whole-page client loading keeps the destination frame, heading and description while controls load. Accounts and other lazy views share their retained component identity and current resource read atoms. Fallbacks use the inventory skeleton without discarding existing navigation, transition or access checks."
+    }
+  }
+}

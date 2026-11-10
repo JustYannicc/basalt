@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.appCalls {
+    metadata {
+      constraint "App model calls use invocation-owned callbacks and the host's signed pool binding rather than credentials in app code. The runner reply carries model availability alongside load, elicitation and workflow controls and maps values through the current encoded lifecycle contract. Durable workflow mutations remain subject to their receipt gate."
+    }
+  }
+}

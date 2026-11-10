@@ -1,22 +1,11 @@
-diff --git a/packages/ui/src/implementation/dashboard/catalog.tsx b/packages/ui/src/implementation/dashboard/catalog.tsx
---- a/packages/ui/src/implementation/dashboard/catalog.tsx
-+++ b/packages/ui/src/implementation/dashboard/catalog.tsx
-@@ -201,7 +201,7 @@
-           placeholder="Search apps…"
-         />
-         <span className="muted text-muted-foreground">
--          {entries.length.toLocaleString("en-US")} apps
-+          {entries.length.toLocaleString("en-US")} {entries.length === 1 ? "app" : "apps"}
-         </span>
-         {focused !== undefined && (
-           <Button variant="outline" size="sm" onClick={() => setOnly(undefined)}>
 diff --git a/e2e/tests/catalog-official-apps.spec.ts b/e2e/tests/catalog-official-apps.spec.ts
+index 67f5632..b64c7d9 100644
 --- a/e2e/tests/catalog-official-apps.spec.ts
 +++ b/e2e/tests/catalog-official-apps.spec.ts
-@@ -276,6 +276,60 @@
-         yield* browser.use("Open Add app", (page) =>
-           page.goto(`/org/${actors.organization.slug}/apps/add`),
+@@ -306,6 +306,60 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
+             .then(() => layout(page, ".catalog-row")),
          );
+         expect(loaded).toEqual(placeholder);
 +        const oneApp = "1 app";
 +        const appCount = (page: Page) => page.locator(".list-toolbar .muted");
 +        const listed = (page: Page) => page.locator(".catalog-row");
@@ -74,3 +63,16 @@ diff --git a/e2e/tests/catalog-official-apps.spec.ts b/e2e/tests/catalog-officia
          yield* browser.use("Search the catalog", (page) =>
            page.getByPlaceholder("Search apps…").fill("synthetic"),
          );
+diff --git a/packages/ui/src/implementation/dashboard/catalog.tsx b/packages/ui/src/implementation/dashboard/catalog.tsx
+index e315fde..b5f3fc7 100644
+--- a/packages/ui/src/implementation/dashboard/catalog.tsx
++++ b/packages/ui/src/implementation/dashboard/catalog.tsx
+@@ -194,7 +194,7 @@ export function CatalogPage<E, IE>({
+             <CatalogCountSkeleton />
+           ) : (
+             <span className="muted min-w-20 text-muted-foreground tabular-nums">
+-              {entries.length.toLocaleString("en-US")} apps
++              {entries.length.toLocaleString("en-US")} {entries.length === 1 ? "app" : "apps"}
+             </span>
+           )}
+           {focused !== undefined && (

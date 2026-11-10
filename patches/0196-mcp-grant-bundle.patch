@@ -1,18 +1,18 @@
 diff --git a/apps/hosted/cloud/scripts/worker-sizes.ts b/apps/hosted/cloud/scripts/worker-sizes.ts
+index 9ae869d..ec86e9f 100644
 --- a/apps/hosted/cloud/scripts/worker-sizes.ts
 +++ b/apps/hosted/cloud/scripts/worker-sizes.ts
-@@ -325,9 +325,7 @@
-             }),
+@@ -342,7 +342,7 @@ const buildWorkers = (target: Target) =>
            );
-           if (Exit.isFailure(exit))
--            failures.push(
+           if (Exit.isFailure(exit)) {
+             failures.push(
 -              `${target.stage} ${resource.LogicalId}: ${Cause.pretty(exit.cause).split("\n")[0]}`,
--            );
-+            failures.push(`${target.stage} ${resource.LogicalId}: ${Cause.pretty(exit.cause)}`);
-         }
-         return failures;
-       }),
++              `${target.stage} ${resource.LogicalId}: ${Cause.pretty(exit.cause)}`,
+             );
+             continue;
+           }
 diff --git a/apps/hosted/cloud/src/infrastructure/mcp-auth.ts b/apps/hosted/cloud/src/infrastructure/mcp-auth.ts
+index b70ee89..cbd64d5 100644
 --- a/apps/hosted/cloud/src/infrastructure/mcp-auth.ts
 +++ b/apps/hosted/cloud/src/infrastructure/mcp-auth.ts
 @@ -2,7 +2,7 @@
@@ -21,10 +21,10 @@ diff --git a/apps/hosted/cloud/src/infrastructure/mcp-auth.ts b/apps/hosted/clou
    McpAuthentication,
 -  authOptions,
 +  mcpAuthOptions,
+   recordCaller,
    type HostedOAuthOrigins,
    mcpBrowserGrantError,
-   mcpBearerAccess,
-@@ -11,6 +11,7 @@
+@@ -12,6 +12,7 @@ import {
  import { BetterAuthApiError, isAPIErrorLike } from "@alchemy.run/better-auth";
  import { RuntimeContext } from "alchemy";
  import { betterAuth } from "better-auth/minimal";
@@ -32,7 +32,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/mcp-auth.ts b/apps/hosted/clou
  import { Config, Effect, Layer, Option, Redacted } from "effect";
  import type { SqlClient } from "effect/sql";
  import { cloudSessionCookiePrefix } from "../contracts/browser.ts";
-@@ -26,10 +27,26 @@
+@@ -27,10 +28,26 @@ import { invocationSql } from "./invocation-database.ts";
  import { cloudSecrets, v1McpForwardSecret } from "./secrets.ts";
  import { cloudHosts } from "./stage.ts";
  
@@ -62,7 +62,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/mcp-auth.ts b/apps/hosted/clou
   */
  const mcpGrantAuth = (
    { origin, resourceOrigins, issuer }: HostedOAuthOrigins,
-@@ -38,7 +55,7 @@
+@@ -39,7 +56,7 @@ const mcpGrantAuth = (
    nativeSigningKey: Option.Option<Redacted.Redacted<string>>,
    nativePoolOrigin: Option.Option<string>,
  ) => {
@@ -71,7 +71,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/mcp-auth.ts b/apps/hosted/clou
      {
        url: origin,
        resourceOrigins,
-@@ -51,7 +68,7 @@
+@@ -52,7 +69,7 @@ const mcpGrantAuth = (
    );
    return betterAuth({
      ...base,
@@ -81,9 +81,10 @@ diff --git a/apps/hosted/cloud/src/infrastructure/mcp-auth.ts b/apps/hosted/clou
      secret,
      advanced: {
 diff --git a/apps/hosted/server/src/implementation/auth.ts b/apps/hosted/server/src/implementation/auth.ts
+index 83a759f..50af8ab 100644
 --- a/apps/hosted/server/src/implementation/auth.ts
 +++ b/apps/hosted/server/src/implementation/auth.ts
-@@ -81,7 +81,7 @@
+@@ -82,7 +82,7 @@ export const authSettings = Config.all({
   * Shared session and protocol defaults; each host supplies its sign-in policy and its
   * organization plugin, so no host builds an organization plugin it then discards.
   */
@@ -92,7 +93,7 @@ diff --git a/apps/hosted/server/src/implementation/auth.ts b/apps/hosted/server/
    settings: Pick<Effect.Success<typeof authSettings>, "url" | "oauthRedirectUri"> & {
      /** The origins of MCP and API OAuth resources; `url` stays the browser origin. */
      readonly resourceOrigins: ResourceOrigins;
-@@ -104,7 +104,6 @@
+@@ -105,7 +105,6 @@ export const authOptions = (
      account: { encryptOAuthTokens: true },
      onAPIError: { errorURL: `${settings.url}/login` },
      plugins: [
@@ -100,7 +101,7 @@ diff --git a/apps/hosted/server/src/implementation/auth.ts b/apps/hosted/server/
        explicitOrganizationAuth,
        organizationInvitationRole,
        apiKeys,
-@@ -150,6 +149,12 @@
+@@ -151,6 +150,12 @@ export const authOptions = (
      },
    }) satisfies BetterAuthOptions;
  
@@ -114,19 +115,15 @@ diff --git a/apps/hosted/server/src/implementation/auth.ts b/apps/hosted/server/
  export const sessionPrincipal = (
    session: {
 diff --git a/apps/hosted/server/src/index.ts b/apps/hosted/server/src/index.ts
+index d04c2ba..994f62b 100644
 --- a/apps/hosted/server/src/index.ts
 +++ b/apps/hosted/server/src/index.ts
-@@ -20,7 +20,12 @@
-   RequireUser,
-   CurrentPrincipal,
- } from "./contracts/auth.ts";
+@@ -42,7 +42,7 @@ export {
+   type SecurityAuditOutcome,
+ } from "./contracts/security-audit.ts";
+ export { audited, recordSecurityAudit } from "./implementation/security-audit.ts";
 -export { authOptions, authSettings, sessionPrincipal } from "./implementation/auth.ts";
-+export {
-+  authOptions,
-+  mcpAuthOptions,
-+  authSettings,
-+  sessionPrincipal,
-+} from "./implementation/auth.ts";
++export { authOptions, mcpAuthOptions, authSettings, sessionPrincipal } from "./implementation/auth.ts";
  export * from "./contracts/organization.ts";
  export { organizationRoleHooks } from "./implementation/organization-roles.ts";
  export {

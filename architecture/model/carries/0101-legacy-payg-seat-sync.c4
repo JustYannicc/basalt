@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Legacy pay-as-you-go organizations keep their existing subscription while seat synchronization verifies current membership usage. Missing billing balance can bypass seat confirmation only for the contact-sales Enterprise path; purchasable plans still refuse when seats cannot be confirmed."
+    }
+  }
+}

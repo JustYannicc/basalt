@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Physical database fixtures wait for committed account-producing pool and member jobs before writing synthetic pool metadata or cloning their baseline. PostgreSQL commit notifications trigger fresh readiness reads. Runner-owned locks cover cloning and account and receipt snapshots and release before target selection or failure cleanup."
+    }
+  }
+}

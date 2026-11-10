@@ -133,10 +133,10 @@ index 01062bf..09d1668 100644
      for (const { account } of replaced) {
        const bindings =
 diff --git a/apps/hosted/server/src/implementation/mcp-connections.ts b/apps/hosted/server/src/implementation/mcp-connections.ts
-index bd020a7..7839d5e 100644
+index b3ce0e7..b194170 100644
 --- a/apps/hosted/server/src/implementation/mcp-connections.ts
 +++ b/apps/hosted/server/src/implementation/mcp-connections.ts
-@@ -95,6 +95,7 @@ const resolveApp = (
+@@ -96,6 +96,7 @@ const resolveApp = (
            Effect.catchTags({
              OrganizationForbidden: () => Effect.fail(invalid("app")),
              RequirementMismatch: () => Effect.fail(invalid("account")),
@@ -250,7 +250,7 @@ index f311100..ad5059b 100644
  export const requireProviderAccountMethod = (app: App, requirement: string, method: string) =>
    Effect.gen(function* () {
 diff --git a/apps/hosted/web/src/implementation/pages/oauth-callback.tsx b/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
-index 02d846c..97f1a42 100644
+index 478e4df..11abf70 100644
 --- a/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
 +++ b/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
 @@ -15,7 +15,7 @@ import { useContext, useEffect, useRef, useState } from "react";
@@ -298,7 +298,7 @@ index 02d846c..97f1a42 100644
          fixPrompt: Option.match(error, {
            onSome: (value) =>
              recovery === "configuration" && UserFacingError.is(value) && value.agentFixable
-@@ -200,11 +193,9 @@ export function OAuthCallbackPage() {
+@@ -202,11 +195,9 @@ export function OAuthCallbackPage() {
        }
        detail={
          state.status === "failed" &&
@@ -312,7 +312,7 @@ index 02d846c..97f1a42 100644
            </div>
          )
        }
-@@ -214,7 +205,13 @@ export function OAuthCallbackPage() {
+@@ -216,7 +207,13 @@ export function OAuthCallbackPage() {
            pending={pending}
            recovery={state.status === "cancelled" ? "cancelled" : state.recovery}
            fixPrompt={state.status === "failed" ? state.fixPrompt : undefined}
@@ -327,7 +327,7 @@ index 02d846c..97f1a42 100644
          />
        )}
      </ConnectionStatusPage>
-@@ -227,12 +224,14 @@ function OAuthRecoveryActions({
+@@ -229,12 +226,14 @@ function OAuthRecoveryActions({
    recovery,
    fixPrompt,
    partial = false,
@@ -342,9 +342,9 @@ index 02d846c..97f1a42 100644
  }) {
    const brand = useProductBrand();
    if (Option.isNone(pending))
-@@ -244,7 +243,7 @@ function OAuthRecoveryActions({
-   const context = pending.value;
-   // Entered clients are saved only after a successful sign-in, so a retry reopens their fields.
+@@ -249,7 +248,7 @@ function OAuthRecoveryActions({
+   // their fields.
+   const registered = context.registeredClient;
    const retry =
 -    recovery === "restart" || recovery === "client"
 +    canRetry && (recovery === "restart" || recovery === "client")
@@ -746,7 +746,7 @@ index 0000000..4d4c84f
 +    };
 +  });
 diff --git a/e2e/support/managed-server.ts b/e2e/support/managed-server.ts
-index 5156be2..9e5ebc6 100644
+index c727ba0..aef22fa 100644
 --- a/e2e/support/managed-server.ts
 +++ b/e2e/support/managed-server.ts
 @@ -86,6 +86,8 @@ export const OperatorSettings = Schema.Struct({
@@ -779,10 +779,10 @@ index 42722c5..dc125bc 100644
    });
    const calls = yield* Ref.make<readonly (typeof Acquisition.Type)[]>([]);
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 0f9d9b5..46fba55 100644
+index 0aed34a..989c6a4 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -223,6 +223,16 @@ export const scenarios = plan({
+@@ -229,6 +229,16 @@ export const scenarios = plan({
        cloud: scheduled,
      },
    },
@@ -799,7 +799,7 @@ index 0f9d9b5..46fba55 100644
    accountIdentityPolicy: {
      fixtures: "actors",
      file: "account-identity-policy.spec.ts",
-@@ -245,6 +255,7 @@ export const scenarios = plan({
+@@ -251,6 +261,7 @@ export const scenarios = plan({
      },
    },
    accountIdentityRows: {
@@ -807,7 +807,7 @@ index 0f9d9b5..46fba55 100644
      file: "account-identity-screens.spec.ts",
      title: "Verified account rows retain five app bindings and add a covered app without consent",
      targets: {
-@@ -267,6 +278,58 @@ export const scenarios = plan({
+@@ -273,6 +284,58 @@ export const scenarios = plan({
        cloud: na("Synthetic OAuth issuer uses loopback."),
      },
    },
@@ -866,7 +866,7 @@ index 0f9d9b5..46fba55 100644
    accountConsentBatch: {
      file: "account-consent.spec.ts",
      title:
-@@ -287,6 +350,16 @@ export const scenarios = plan({
+@@ -293,6 +356,16 @@ export const scenarios = plan({
        cloud: na("The synthetic authorization server listens on loopback."),
      },
    },
@@ -5990,7 +5990,7 @@ index 0000000..74258fd
 +  readonly schemas: Partial<Record<MessageName, Schema.Top>>;
 +};
 diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/src/contracts/protocols/current.ts
-index ff6bd5f..8477c24 100644
+index 8e8542a..bdbc68c 100644
 --- a/packages/apps/src/contracts/protocols/current.ts
 +++ b/packages/apps/src/contracts/protocols/current.ts
 @@ -15,6 +15,7 @@ import { AccountObservationResult } from "../account-observation.ts";
@@ -6001,7 +6001,7 @@ index ff6bd5f..8477c24 100644
  import { McpAppViewObservation, McpAppUi } from "../mcp-apps.ts";
  import { ConnectCommand } from "../connect.ts";
  import { ProviderSite } from "@executor-js/utils/account-site";
-@@ -159,6 +160,7 @@ export const DeclaredAuthMethod = Schema.Union([
+@@ -167,6 +168,7 @@ export const DeclaredAuthMethod = Schema.Union([
  /** A credential-free provider declaration with the hosts its credentials may be sent to. */
  export const DeclaredProvider = Schema.Struct({
    name: Schema.NonEmptyString,
@@ -6009,7 +6009,7 @@ index ff6bd5f..8477c24 100644
    auth: Schema.Record(Schema.NonEmptyString, DeclaredAuthMethod),
    site: Schema.optionalKey(ProviderSite),
    hosts: Schema.optionalKey(Schema.Array(CredentialHost)),
-@@ -169,6 +171,7 @@ export type DeclaredProvider = typeof DeclaredProvider.Type;
+@@ -177,6 +179,7 @@ export type DeclaredProvider = typeof DeclaredProvider.Type;
  /** One requirement: its provider, how many accounts it takes, and whether it has a check. */
  export const DeclaredAccountSlot = Schema.Struct({
    definition: DeclaredProvider,
@@ -6274,7 +6274,7 @@ index 0000000..5754252
 +  defaultValue: () => ({ recipes: defaultAccountFamilies }),
 +});
 diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/apps.ts
-index 456fc2f..711dd6a 100644
+index 5b20258..5817bb8 100644
 --- a/packages/sdk/src/contracts/apps.ts
 +++ b/packages/sdk/src/contracts/apps.ts
 @@ -54,6 +54,8 @@ export const AccountRequirement = Schema.Struct({
@@ -6287,7 +6287,7 @@ index 456fc2f..711dd6a 100644
    contributed: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
    /** This version's provider defines an account check for the slot. */
 diff --git a/packages/sdk/src/contracts/index.ts b/packages/sdk/src/contracts/index.ts
-index 112c3e0..53e7229 100644
+index e6e521d..9c68f6a 100644
 --- a/packages/sdk/src/contracts/index.ts
 +++ b/packages/sdk/src/contracts/index.ts
 @@ -2,6 +2,7 @@ export * from "./account-observation.ts";
@@ -6425,10 +6425,10 @@ index c5b6035..56fc3c8 100644
 +  return requested.filter((scope) => !covered.has(key(scope)));
  };
 diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
-index 3cda5ee..df3daf4 100644
+index 6b46fa3..38a22b5 100644
 --- a/packages/sdk/src/contracts/oauth.ts
 +++ b/packages/sdk/src/contracts/oauth.ts
-@@ -471,6 +471,8 @@ export const allowedScopes = (client: FirstPartyOAuthClient) =>
+@@ -519,6 +519,8 @@ export const allowedScopes = (client: FirstPartyOAuthClient) =>
  /** Network transport and client identity belong to the product hosting this SDK. */
  export interface OAuthOptions {
    readonly httpClient: HttpClient.HttpClient;
@@ -6437,7 +6437,7 @@ index 3cda5ee..df3daf4 100644
    readonly clientName: string;
    /** Host transport policy for callbacks, discovery and every token request. */
    readonly urlPolicy: UrlPolicy;
-@@ -780,14 +782,25 @@ export const OAuthCompletionFailed = UserFacingError.define({
+@@ -920,7 +922,11 @@ export const OAuthCompletionFailed = UserFacingError.define({
    fields: {
      /** A consumed attempt always needs a new sign-in. */
      reason: OAuthCompletionReason,
@@ -6449,22 +6449,24 @@ index 3cda5ee..df3daf4 100644
      grantedScopesKnown: Schema.optional(Schema.Boolean),
      cause: Schema.optional(OAuthFailureCause),
      serviceError: Schema.optional(OAuthServiceError),
-     retryAfter: RetryAfter,
+@@ -929,7 +935,15 @@ export const OAuthCompletionFailed = UserFacingError.define({
+     resource: Schema.optional(OAuthResourceIndicator),
    },
    recorded: ({ reason, cause }) => oauthRecorded("Sign-in completion failed", reason, cause),
--  presentation: ({ reason, cause, serviceError, retryAfter }) =>
+-  presentation: ({ reason, cause, serviceError, retryAfter, resource }) =>
 +  presentation: ({
 +    reason,
 +    cause,
 +    serviceError,
 +    retryAfter,
++    resource,
 +    grantedScopesKnown,
 +    scopeNamesOmitted,
 +  }) =>
      withCause(
        (
          {
-@@ -877,13 +890,20 @@ export const OAuthCompletionFailed = UserFacingError.define({
+@@ -1019,13 +1033,20 @@ export const OAuthCompletionFailed = UserFacingError.define({
              instructions:
                "Read the account and its current grant state, then start a fresh connection. Do not replay this callback or replace the newer grant.",
            }),
@@ -6596,10 +6598,10 @@ index 0000000..f5d1653
 +    }),
 +  );
 diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
-index 85e045c..15bd64b 100644
+index 72bf77f..738eba2 100644
 --- a/packages/sdk/src/implementation/app-protocols.ts
 +++ b/packages/sdk/src/implementation/app-protocols.ts
-@@ -306,6 +306,7 @@ const protocol23: AppProtocol = { ...protocol20, version: 23, nodeEntry: nodeApp
+@@ -344,6 +344,7 @@ const protocol23: AppProtocol = { ...protocol20, version: 23, nodeEntry: nodeApp
  const protocol24: AppProtocol = { ...protocol23, version: 24, nodeEntry: nodeAppEntry(24) };
  const protocol25: AppProtocol = { ...protocol24, version: 25, nodeEntry: nodeAppEntry(25) };
  const protocol26: AppProtocol = { ...protocol25, version: 26, nodeEntry: nodeAppEntry(26) };
@@ -6607,7 +6609,7 @@ index 85e045c..15bd64b 100644
  
  /**
   * Bundles of protocol 12 and earlier read one flat record of requirements and accounts. They
-@@ -528,6 +529,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
+@@ -567,6 +568,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
      protocol24,
      protocol25,
      protocol26,
@@ -6616,10 +6618,10 @@ index 85e045c..15bd64b 100644
  );
  
 diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
-index 2e7812b..4573efc 100644
+index 0597953..6f767f5 100644
 --- a/packages/sdk/src/implementation/apps.ts
 +++ b/packages/sdk/src/implementation/apps.ts
-@@ -481,6 +481,7 @@ export const makeApps = (
+@@ -484,6 +484,7 @@ export const makeApps = (
              scope,
              provider,
              cardinality: value.cardinality,
@@ -6627,7 +6629,7 @@ index 2e7812b..4573efc 100644
              contributed: scope === "app" && value.contributed === true,
              health: value.health,
              interactiveHealth: value.interactiveHealth,
-@@ -507,6 +508,7 @@ export const makeApps = (
+@@ -510,6 +511,7 @@ export const makeApps = (
                scope,
                provider,
                cardinality,
@@ -6635,7 +6637,7 @@ index 2e7812b..4573efc 100644
                contributed,
                health,
                interactiveHealth,
-@@ -518,6 +520,7 @@ export const makeApps = (
+@@ -521,6 +523,7 @@ export const makeApps = (
                  provider: provider.id,
                  definition: provider.definition,
                  cardinality,
@@ -6737,10 +6739,10 @@ index 40bf469..9348a64 100644
        db.updateMany("accounts", {
          where: (b) => b("id", "=", account.id),
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index 482362e..567177c 100644
+index 7b5d71e..0f96934 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
-@@ -99,6 +99,11 @@ export const createExecutor = (
+@@ -105,6 +105,11 @@ export const createExecutor = (
        options.credentials ?? (yield* aesGcmCredentials(options.secret, globalThis.crypto));
      const db = database(options.database);
      const acquisition = options.acquisition ?? (yield* AccountAcquisitionConfiguration);
@@ -6752,7 +6754,7 @@ index 482362e..567177c 100644
      const acquisitionRegistry = yield* makeAcquisitionRegistry(acquisition.registrations).pipe(
        Effect.orDie,
      );
-@@ -271,7 +276,7 @@ export const createExecutor = (
+@@ -278,7 +283,7 @@ export const createExecutor = (
        workflows.controls,
        options.hooks,
      );
@@ -6761,7 +6763,7 @@ index 482362e..567177c 100644
        db,
        credentials,
        crypto,
-@@ -280,6 +285,13 @@ export const createExecutor = (
+@@ -287,6 +292,13 @@ export const createExecutor = (
        options.hooks,
        makeAcquisitionConnect(db, credentials, acquisitionRegistry),
      );
@@ -6775,7 +6777,7 @@ index 482362e..567177c 100644
      const connections = makeAccountConnections(db, credentials, crypto, options.hooks, sitePolicy);
      const { add, replaceCredentials, readCredentials, ...accountOperations } = makeAccounts(
        db,
-@@ -444,6 +456,7 @@ export const createExecutor = (
+@@ -462,6 +474,7 @@ export const createExecutor = (
        accountConnections: {
          ...connections,
          ...oauth.connections,
@@ -6783,7 +6785,7 @@ index 482362e..567177c 100644
          ...makeConnectionInteractive(db, interactive, options.hooks),
          cancel: (input) =>
            Effect.gen(function* () {
-@@ -460,16 +473,25 @@ export const createExecutor = (
+@@ -478,16 +491,25 @@ export const createExecutor = (
          submit: (input) =>
            interactive
              .clearAttempt({ ...input, type: "secrets" })
@@ -6970,7 +6972,7 @@ index 1a5f25c..4e8620e 100644
            }
            const account = accounts[0];
 diff --git a/packages/sdk/src/implementation/oauth-protocol-native.ts b/packages/sdk/src/implementation/oauth-protocol-native.ts
-index 7a5e4ca..a4521e1 100644
+index 5333cb6..004f3eb 100644
 --- a/packages/sdk/src/implementation/oauth-protocol-native.ts
 +++ b/packages/sdk/src/implementation/oauth-protocol-native.ts
 @@ -34,6 +34,7 @@ import {
@@ -6981,7 +6983,7 @@ index 7a5e4ca..a4521e1 100644
  import {
    challengeDiagnostics,
    descriptionLength,
-@@ -1345,25 +1346,37 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
+@@ -1393,25 +1394,37 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
      });
  
    return {
@@ -7032,7 +7034,7 @@ index 7a5e4ca..a4521e1 100644
          const profile = yield* request(async (settings) => {
            const response = await settings[oauth.customFetch](endpoint.href, {
              method: "GET",
-@@ -1376,19 +1389,16 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
+@@ -1424,19 +1437,16 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
              throw new OAuthProtocolFailed({ reason: "invalid_response" });
            return response.json();
          });
@@ -7059,7 +7061,7 @@ index 7a5e4ca..a4521e1 100644
          };
        }).pipe(Effect.withSpan("oauth.identify")),
      discover: (method: OAuthMethod) =>
-@@ -1447,7 +1457,8 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
+@@ -1495,7 +1505,8 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
            yield* allowedEndpoints(resolved.server);
            return { ...resolved, ...requestEncoding, grant: "client_credentials" as const };
          }
@@ -7107,12 +7109,12 @@ index 0000000..ba983ea
 +  };
 +};
 diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
-index 385601f..b1cd83d 100644
+index ab53dcf..797de52 100644
 --- a/packages/sdk/src/implementation/oauth.ts
 +++ b/packages/sdk/src/implementation/oauth.ts
 @@ -1,6 +1,8 @@
  import { projectOAuthFields as project } from "./oauth-fields.ts";
- import type { AppAccountUse, ResourceLifecycle } from "../contracts/executor.ts";
+ import { CurrentActor, type AppAccountUse, type ResourceLifecycle } from "../contracts/executor.ts";
  import { missingOAuthScopes, oauthIdentityConsent } from "../contracts/oauth-families.ts";
 +import { AccountFamilyConfiguration } from "../contracts/account-family-recipes.ts";
 +import { requireAccountConsumerMethod } from "./account-consumer-plan.ts";
@@ -7127,7 +7129,7 @@ index 385601f..b1cd83d 100644
    type Crypto,
    Effect,
    Exit,
-@@ -1733,7 +1736,10 @@ export const makeOAuth = (
+@@ -1840,7 +1843,10 @@ export const makeOAuth = (
            existing,
            {
              ...chosen.firstParty,
@@ -7139,7 +7141,7 @@ index 385601f..b1cd83d 100644
            },
            resolved.redirect,
            method.response,
-@@ -2018,6 +2024,7 @@ export const makeOAuth = (
+@@ -2126,6 +2132,7 @@ export const makeOAuth = (
        const connection = yield* requireOpen(input, saved);
        // Never discover or register a client for a provider the target app no longer requires.
        const provider = yield* requireTargetProvider(db, connection);
@@ -7147,7 +7149,7 @@ index 385601f..b1cd83d 100644
        const existing =
          connection.reconnectAccount === null
            ? undefined
-@@ -2202,6 +2209,22 @@ export const makeOAuth = (
+@@ -2310,6 +2317,22 @@ export const makeOAuth = (
        // including a refusal or changed target that rolled back the account it signed in to: the
        // claimed sign-in cannot complete again, so the request reads failed until a new one starts.
        return yield* exchangeClaimed(protocol, input, callback, id, attempt, legacySavedClient).pipe(
@@ -7170,7 +7172,7 @@ index 385601f..b1cd83d 100644
          Effect.tapError((error) =>
            Schema.is(OAuthCompletionFailed)(error) ||
            Schema.is(AccountConnectionRefused)(error) ||
-@@ -2578,6 +2601,14 @@ export const makeOAuth = (
+@@ -2695,6 +2718,14 @@ export const makeOAuth = (
                attempt,
                attemptId: id,
                grant: yield* decodedGrantOf(generation),
@@ -7185,7 +7187,7 @@ index 385601f..b1cd83d 100644
              });
              yield* query(() =>
                tx.updateMany("oauthAttempts", {
-@@ -2724,8 +2755,12 @@ export const makeOAuth = (
+@@ -2844,8 +2875,12 @@ export const makeOAuth = (
              grant.identity === undefined ||
              grant.identityId !== account.identityId ||
              grant.grantedScopes === undefined ||
@@ -7201,10 +7203,10 @@ index 385601f..b1cd83d 100644
              return yield* reconnect("grant_unusable");
          }
 diff --git a/packages/sdk/src/implementation/provider.ts b/packages/sdk/src/implementation/provider.ts
-index 4b0c4b4..afafbc5 100644
+index ff2e1c6..3849a53 100644
 --- a/packages/sdk/src/implementation/provider.ts
 +++ b/packages/sdk/src/implementation/provider.ts
-@@ -135,8 +135,9 @@ export const identifyProvider = (definition: ProviderDefinition, crypto: Crypto.
+@@ -136,8 +136,9 @@ export const identifyProvider = (definition: ProviderDefinition, crypto: Crypto.
        Effect.mapError(() => new StorageError()),
      );
      const { hosts: _hosts, site: _site, ...shared } = parsed;

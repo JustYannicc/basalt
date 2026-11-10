@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Hosted and local Human in the loop pages list authorized pending workflow questions and answer through the existing recipient-bound input APIs. Browser-only forms load after hydration, and custom displays reuse MCP App authorization. Route generation preserves the current route tree; the queue's outer preload list stays empty rather than importing browser-only views on the server."
+    }
+  }
+}

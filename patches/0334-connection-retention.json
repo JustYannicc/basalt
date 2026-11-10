@@ -1,7 +1,7 @@
 {
   "identity": "basalt-connection-retention",
   "file": "0334-connection-retention.patch",
-  "content_sha256": "5da1057c54ddad8ffa222bb355fe151693c247d6b05acddd6f9f732e9db1456a",
+  "content_sha256": "5269619f0f50ad598d131915d8768d95deb81de427c7420319e3fba8b24578b5",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

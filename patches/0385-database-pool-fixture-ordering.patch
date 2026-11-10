@@ -1,16 +1,9 @@
 diff --git a/apps/hosted/testing/database-pool-fixture.ts b/apps/hosted/testing/database-pool-fixture.ts
+index 481761b..3d6c89a 100644
 --- a/apps/hosted/testing/database-pool-fixture.ts
 +++ b/apps/hosted/testing/database-pool-fixture.ts
-@@ -37,6 +37,7 @@ import {
-   Effect,
-   Cause,
-   Context,
-+  Deferred,
-   Exit,
-   Fiber,
-   FileSystem,
-@@ -51,12 +52,14 @@ import { LocalDatabaseUrl } from "../cloud/src/contracts/database.ts";
-
+@@ -53,12 +53,14 @@ import { LocalDatabaseUrl } from "../cloud/src/contracts/database.ts";
+ 
  const cases = [
    "use-once",
 +  "use-once-delayed",
@@ -23,8 +16,8 @@ diff --git a/apps/hosted/testing/database-pool-fixture.ts b/apps/hosted/testing/
 +  "sibling-delayed",
    "batch",
  ] as const;
-
-@@ -67,7 +70,7 @@ const cancelRequestCode = 80877102;
+ 
+@@ -69,7 +71,7 @@ const cancelRequestCode = 80877102;
   * A TCP proxy to the database that counts `CancelRequest`s and, with `dropCancels`, closes their
   * connections without passing them on, as a cancel lost on the way does.
   */
@@ -33,7 +26,7 @@ diff --git a/apps/hosted/testing/database-pool-fixture.ts b/apps/hosted/testing/
    Effect.acquireRelease(
      Effect.callback<{ readonly server: Net.Server; readonly cancels: { count: number } }>(
        (resume) => {
-@@ -95,7 +98,48 @@ const proxy = (target: URL, dropCancels: boolean) =>
+@@ -97,7 +99,48 @@ const proxy = (target: URL, dropCancels: boolean) =>
              upstream.on("error", () => client.destroy());
              client.on("error", () => upstream.destroy());
              upstream.write(first);
@@ -83,7 +76,7 @@ diff --git a/apps/hosted/testing/database-pool-fixture.ts b/apps/hosted/testing/
            });
          });
          server.on("close", () => {
-@@ -155,6 +199,7 @@ const command = Command.make("database-pool-fixture", {
+@@ -159,6 +202,7 @@ const command = Command.make("database-pool-fixture", {
            readonly multiplex?: boolean;
            readonly maxConnections: number;
            readonly cancels?: "dropped" | "delivered";
@@ -91,7 +84,7 @@ diff --git a/apps/hosted/testing/database-pool-fixture.ts b/apps/hosted/testing/
          }): Effect.Effect<
            { readonly pool: PgPool.PgPool; readonly cancels: { count: number } },
            never,
-@@ -164,7 +209,11 @@ const command = Command.make("database-pool-fixture", {
+@@ -168,7 +212,11 @@ const command = Command.make("database-pool-fixture", {
              let url = target;
              let cancels = { count: 0 };
              if (options.cancels !== undefined) {
@@ -104,8 +97,8 @@ diff --git a/apps/hosted/testing/database-pool-fixture.ts b/apps/hosted/testing/
                const address = proxied.server.address();
                if (address === null || typeof address === "string")
                  return yield* Effect.die("The proxy has no port");
-@@ -228,12 +277,19 @@ const command = Command.make("database-pool-fixture", {
-
+@@ -245,12 +293,17 @@ const command = Command.make("database-pool-fixture", {
+ 
          const result: Record<string, unknown> = yield* Effect.gen(function* () {
            switch (args.case) {
 -            case "use-once": {
@@ -113,7 +106,7 @@ diff --git a/apps/hosted/testing/database-pool-fixture.ts b/apps/hosted/testing/
 +            case "use-once-delayed": {
                yield* adminQuery(`CREATE TABLE ${table} (id serial PRIMARY KEY)`);
                yield* Effect.addFinalizer(() => adminQuery(`DROP TABLE IF EXISTS ${table}`));
-               yield* holdLock;
+               yield* holdLock(lockKey);
                // Cancels never land, so the abandoned lock wait keeps its connection refusing.
 -              const { pool: shared } = yield* pool({ maxConnections: 4, cancels: "dropped" });
 +              const { pool: shared } = yield* pool({
@@ -121,51 +114,33 @@ diff --git a/apps/hosted/testing/database-pool-fixture.ts b/apps/hosted/testing/
 +                cancels: "dropped",
 +                readyDelay: args.case === "use-once-delayed" ? 30 : 0,
 +              });
-+              // The lock must not reach the shared connection before the INSERT.
-+              const inserted = yield* Deferred.make<void>();
                // One group: a callback inserts, then reads after its sibling on the same connection
-               // has given up on a lock wait. The read is refused unsent; the insert was sent.
-               const [twoStatements, sibling] = yield* PgPool.grouped(
-@@ -244,12 +300,13 @@ const command = Command.make("database-pool-fixture", {
-                         connection
-                           .query(`INSERT INTO ${table} DEFAULT VALUES`, [], false)
-                           .pipe(
-+                            Effect.ensuring(Deferred.succeed(inserted, undefined)),
-                             Effect.andThen(Effect.sleep("150 millis")),
-                             Effect.andThen(connection.query("SELECT 1", [], false)),
-                           ),
-                       )
-                       .pipe(Effect.exit),
--                    Effect.sleep("20 millis").pipe(Effect.andThen(lockWait(shared, 40))),
-+                    Deferred.await(inserted).pipe(Effect.andThen(lockWait(shared, 40))),
-                   ],
-                   { concurrency: "unbounded" },
-                 ),
-@@ -507,10 +564,17 @@ const command = Command.make("database-pool-fixture", {
+               // has given up on a lock wait. The read is refused unsent; the insert was sent. Each
+               // sibling starts once its callback has the group's connection, so its lock wait goes
+@@ -538,9 +591,15 @@ const command = Command.make("database-pool-fixture", {
                  },
                };
              }
 -            case "sibling": {
 +            case "sibling":
 +            case "sibling-delayed": {
-               yield* holdLock;
+               yield* holdLock(lockKey);
 -              const { pool: shared } = yield* pool({ maxConnections: 4, cancels: "dropped" });
 +              const { pool: shared } = yield* pool({
-+                maxConnections: 4,
-+                cancels: "dropped",
++                maxConnections: 4, cancels: "dropped",
 +                readyDelay: args.case === "sibling-delayed" ? 30 : 0,
 +              });
-               const start = Date.now();
-+              // Connection startup must finish before the two statements race to the wire.
++              // Finish connection startup before exercising the queued lock race.
 +              yield* pid(shared);
-               // A sibling queued behind the awaited statement gives up on its lock wait; its
-               // cancel never lands, so draining it takes the 5 s bound.
-               const [awaited, abandoned] = yield* PgPool.grouped(
+               // The awaited statement waits on a second lock, the gate, so a sibling queued behind
+               // it gives up on its lock wait while it still runs. The sibling's cancel never lands,
+               // so draining it takes the 5 s bound. The gate opens once the sibling has given up.
 diff --git a/e2e/tests/cloud-database-placement.spec.ts b/e2e/tests/cloud-database-placement.spec.ts
+index 3b9a431..aa96fc9 100644
 --- a/e2e/tests/cloud-database-placement.spec.ts
 +++ b/e2e/tests/cloud-database-placement.spec.ts
-@@ -1281,12 +1281,22 @@ return listed;`;
-
+@@ -1328,12 +1328,22 @@ return listed;`;
+ 
            // A callback's second statement is refused after a sibling on its connection gave up;
            // the callback's insert was sent, so the callback is not run again.
 -          const once = yield* step("A callback that sent a statement runs once", "use-once");
@@ -190,13 +165,13 @@ diff --git a/e2e/tests/cloud-database-placement.spec.ts b/e2e/tests/cloud-databa
 +            );
 +            expect(once.firstRead, "A callback refused before sending runs again").toBe("ok");
 +          }
-
+ 
            const nested = yield* step("A hold inside a hold uses its connection", "held-nested");
            expect(nested.split, "Rounds whose inner hold took another connection").toBe(0);
-@@ -1352,13 +1362,25 @@ return listed;`;
+@@ -1399,13 +1409,25 @@ return listed;`;
            expect(delivered.next, "A delivered cancel drains at once").toBeLessThan(1_000);
            expect(delivered.sameConnection, "A drained connection is kept").toBe(true);
-
+ 
 -          const sibling = yield* step(
 -            "A statement that finished does not wait for its group's drain",
 -            "sibling",
@@ -223,6 +198,6 @@ diff --git a/e2e/tests/cloud-database-placement.spec.ts b/e2e/tests/cloud-databa
 +              "The sibling gave up while the awaited statement was running",
 +            ).toBeLessThan(awaitedReturned);
 +          }
-
+ 
            // A tool call's `BEGIN … COMMIT` batch (`PgConnection.pipelined`) runs inside a hold:
            // there it uses one connection and one snapshot, and outside one it writes nothing. A

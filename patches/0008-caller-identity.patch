@@ -3276,9 +3276,18 @@ index 29114ce..67eff31 100644
            ...(invocation.replay === undefined ? {} : { replay: invocation.replay }),
            ...(invocation.deadline === undefined ? {} : { deadline: invocation.deadline }),
 diff --git a/packages/sdk/src/implementation/app-runtime.ts b/packages/sdk/src/implementation/app-runtime.ts
-index d0dbf30..e5c49a3 100644
+index d0dbf30..672d8a0 100644
 --- a/packages/sdk/src/implementation/app-runtime.ts
 +++ b/packages/sdk/src/implementation/app-runtime.ts
+@@ -162,7 +162,7 @@ export const appRuntime = (host: AppRuntimeHost) =>
+       input: {
+         readonly app: string;
+         readonly build: BuildId;
+-        readonly hostApi: HostApiCheck | undefined;
++        readonly hostApi?: HostApiCheck | undefined;
+         readonly database: boolean;
+         readonly observeRevision?: (revision: number) => void;
+       } & HostContext,
 @@ -187,6 +187,7 @@ export const appRuntime = (host: AppRuntimeHost) =>
              database: input.database,
              command,

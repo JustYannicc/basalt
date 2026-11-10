@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.appCalls {
+    metadata {
+      constraint "Nested app calls use invocation-owned app-call and tool-policy callbacks through the normal target authorization and decoded-input path. Lifecycle requests and replies retain current schema and encoded WorkflowRun handling. Uncertain mutations refuse replay, and validation diagnostics do not expose submitted values."
+    }
+  }
+}

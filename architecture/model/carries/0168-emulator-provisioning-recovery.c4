@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "External test-service provisioning and cleanup use one typed four-attempt policy within a thirty-second budget. Cleanup retains per-service failure diagnostics, bounded concurrency and discard behavior. Scenario requests stay single-attempt and exhausted failures remain visible rather than reclassified as setup success."
+    }
+  }
+}

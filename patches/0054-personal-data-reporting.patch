@@ -1,18 +1,20 @@
 diff --git a/apps/hosted/cloud/src/infrastructure/background-jobs.ts b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
+index c6e1e0c..2a9fb9f 100644
 --- a/apps/hosted/cloud/src/infrastructure/background-jobs.ts
 +++ b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
-@@ -27,6 +27,7 @@
+@@ -28,6 +28,7 @@ export const BackgroundJob = Schema.Literals([
    "billing-reconcile",
    "agent-grant-expiry",
    "pool-migration-inventory",
 +  "personal-data-reporting",
  ]);
  export type BackgroundJob = typeof BackgroundJob.Type;
-
+ 
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+index c31cfc5..7e039b7 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
-@@ -14,7 +14,11 @@
+@@ -14,7 +14,11 @@ import {
  } from "@executor-js/hosted-server/app-ui";
  import { cloudAppUiBase } from "./contracts/app-ui.ts";
  import { cloudAppDomains } from "./infrastructure/app-domains.ts";
@@ -25,17 +27,17 @@ diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
  import { AppWorkflows } from "./infrastructure/workflows.ts";
  import { cloudDataSteps } from "./infrastructure/data-steps.ts";
  import { reportHostPoolInventory } from "./infrastructure/pool-inventory.ts";
-@@ -90,6 +94,7 @@
- } from "./infrastructure/background-jobs.ts";
+@@ -92,6 +96,7 @@ import {
+ import { handledJob, jobCompleted, jobFailed } from "./contracts/job-outcome.ts";
  import { cloudEgress } from "./infrastructure/executor.ts";
  import { withBatchExecution } from "./infrastructure/batch-execution.ts";
 +import { cloudEmulators } from "./infrastructure/emulators.ts";
  import { cloudProduct } from "./infrastructure/product.ts";
  import { cloudAuthDatabase } from "./infrastructure/auth-database.ts";
  import { EventCleanup, sqlCancellation } from "./infrastructure/event-cleanup.ts";
-@@ -401,6 +406,13 @@
-       Effect.scoped,
-       Effect.catch(() => Effect.logWarning("Idle agent grant expiry failed")),
+@@ -422,6 +427,13 @@ export default Api.make(
+       Effect.as(jobCompleted),
+       handledJob(Effect.logWarning("Idle agent grant expiry failed")),
      );
 +    const personalDataReporting = Effect.flatten(HostedExecutor).pipe(
 +      Effect.flatMap((sdk) => sdk[PersonalDataReportingHost].run),
@@ -47,7 +49,7 @@ diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
      const jobs = yield* cloudBackgroundJobs;
      yield* jobs.schedule(
        "* * * * *",
-@@ -419,6 +431,23 @@
+@@ -440,6 +452,23 @@ export default Api.make(
      );
      yield* jobs.schedule("17 4 * * *", "billing-reconcile", "agent-grant-expiry");
      yield* jobs.schedule("13 * * * *", "pool-migration-inventory");
@@ -71,18 +73,19 @@ diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
      const backgroundJobs = {
        "organization-removal": organizationRemovals,
        provisioning: dispatch,
-@@ -432,6 +461,7 @@
+@@ -453,6 +482,7 @@ export default Api.make(
        "billing-reconcile": billingReconcile,
        "agent-grant-expiry": agentGrantExpiry,
        "pool-migration-inventory": reportHostPoolInventory.pipe(Effect.provide(executor)),
 +      "personal-data-reporting": personalDataReporting,
      } satisfies Record<BackgroundJob, unknown>;
-
+ 
      const egress = yield* cloudEgress;
 diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
+index baf28d1..f779d17 100644
 --- a/apps/hosted/self-host/src/implementation/executor-services.ts
 +++ b/apps/hosted/self-host/src/implementation/executor-services.ts
-@@ -9,6 +9,7 @@
+@@ -9,6 +9,7 @@ import {
    createExecutor,
    toEffectRuntime,
    makeExecutorStorage,
@@ -90,7 +93,7 @@ diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/app
    WorkflowHost,
    RepositoryHost,
    makeDeclarationCache,
-@@ -182,6 +183,12 @@
+@@ -190,6 +191,12 @@ export const selfHostExecutorServices = <E, R>(
            Effect.repeat(Schedule.spaced("5 seconds")),
          ),
        );
@@ -104,9 +107,10 @@ diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/app
          executor,
          origin,
 diff --git a/apps/local/server/src/implementation/server.ts b/apps/local/server/src/implementation/server.ts
+index 183519a..9560e4a 100644
 --- a/apps/local/server/src/implementation/server.ts
 +++ b/apps/local/server/src/implementation/server.ts
-@@ -29,6 +29,7 @@
+@@ -29,6 +29,7 @@ import { SqlClient } from "effect/sql";
  /** Local host composition. The SDK owns operations; this package owns local resources and access. */
  import {
    WorkflowHost,
@@ -114,35 +118,37 @@ diff --git a/apps/local/server/src/implementation/server.ts b/apps/local/server/
    RepositoryHost,
    type Executor,
    AccountNotFound,
-@@ -247,6 +248,12 @@
-         executor[WorkflowHost].reconcile.pipe(
-           Effect.catch(() => Effect.logWarning("Workflow queue reconciliation failed")),
+@@ -256,6 +257,12 @@ export const localApi = (
            Effect.repeat(Schedule.spaced("5 seconds")),
-+        ),
-+      );
+         ),
+       );
 +      yield* Effect.forkScoped(
 +        executor[PersonalDataReportingHost].run.pipe(
 +          Effect.catch(() => Effect.logWarning("Personal-data reporting failed")),
 +          Effect.repeat(Schedule.spaced("15 minutes")),
-         ),
-       );
++        ),
++      );
        const scheduleConcurrency = yield* Config.Number("EXECUTOR_SCHEDULE_CONCURRENCY").pipe(
+         Config.withDefault(defaultScheduleWorkerOptions.concurrency),
+       );
 diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
+index a17bd20..d7c213a 100644
 --- a/e2e/ci-selection.ts
 +++ b/e2e/ci-selection.ts
-@@ -103,7 +103,7 @@
+@@ -105,7 +105,7 @@ const jobs = {
      runner: 3,
-
+ 
      pattern:
--      "Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud pool migration inventory|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)",
-+      "Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|scheduled personal-data reports refresh identity|personal-data reports use each organization|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud pool migration inventory|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)",
+-      "Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud pool migration inventory|Cloud cron jobs record their outcome|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|Cloud's schedule coordinator keeps nine slow scheduled runs|a webhook source reconciling for an activation that another supersedes|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)|Hosted MCP operation and bearer-check spans name|Hosted management API request spans name only|Hosted request spans record the client, the credential|Cloud's gateway names an authenticated MCP request's organization",
++      "Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|scheduled personal-data reports refresh identity|personal-data reports use each organization|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud pool migration inventory|Cloud cron jobs record their outcome|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|Cloud's schedule coordinator keeps nine slow scheduled runs|a webhook source reconciling for an activation that another supersedes|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)|Hosted MCP operation and bearer-check spans name|Hosted management API request spans name only|Hosted request spans record the client, the credential|Cloud's gateway names an authenticated MCP request's organization",
    },
    // Cloud's hosts: role hosts, the edge and sign-in on `app.`. Run in `cloud-product`, their
    // load kept the team installation's workflow span from arriving within its 30-second wait, so
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+index a302c53..88201d5 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
-@@ -29,6 +29,7 @@
+@@ -31,6 +31,7 @@ import { freePort } from "./ports.ts";
  import {
    OperatorOAuthFixture,
    operatorOAuthFile,
@@ -150,7 +156,7 @@ diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
    v1FirstPartyClients,
    v1FirstPartyCredentials,
  } from "./operator-oauth.ts";
-@@ -43,6 +44,7 @@
+@@ -45,6 +46,7 @@ export const v1SyntheticCloudMailClientId = "synthetic-v1-cloud-mail-client";
   */
  const operatorOAuthClients = (fixture: typeof OperatorOAuthFixture.Type) => {
    const origin = `http://127.0.0.1:${fixture.port}`;
@@ -158,7 +164,7 @@ diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
    return {
      EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: JSON.stringify([
        {
-@@ -57,10 +59,30 @@
+@@ -59,10 +61,30 @@ const operatorOAuthClients = (fixture: typeof OperatorOAuthFixture.Type) => {
          defaultScopes: ["mail.read"],
          placement: { hosts: [`127.0.0.1:${fixture.port}`] },
        },
@@ -189,7 +195,7 @@ diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
      // v1's client IDs: the same as v2's for the clients v1's connections move to, and another for
      // the test client, so a v1 grant of it is a client the import must not move it to.
      V1_FIRST_PARTY_CLIENT_IDS: JSON.stringify({
-@@ -187,6 +209,7 @@
+@@ -194,6 +216,7 @@ export const startCloudEnvironment = (input: {
        clientId: "first-party-client",
        clientSecret: randomBytes(16).toString("hex"),
        v1Port: yield* freePort,
@@ -197,7 +203,7 @@ diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
      });
      const operatorOAuthPath = `${directory}/${operatorOAuthFile}`;
      yield* fs.writeFileString(operatorOAuthPath, JSON.stringify(operatorOAuth), { mode: 0o600 });
-@@ -282,6 +305,7 @@
+@@ -299,6 +322,7 @@ export const startCloudEnvironment = (input: {
        CLOUD_DEV_DATABASE_PASSWORD: databasePassword,
        CLOUD_DEV_EXTERNAL_DATABASE: "true",
        EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(fixture).services),
@@ -206,9 +212,10 @@ diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
        V1_MEMBERSHIP_CHECK_SINCE: new Date(yield* Clock.currentTimeMillis).toISOString(),
        V1_DATABASE_URL: `postgresql://${v1DatabaseReader}:${v1ReaderPassword}@127.0.0.1:${input.databasePort}/executor_v1?sslmode=disable`,
 diff --git a/e2e/support/managed-server.ts b/e2e/support/managed-server.ts
+index 34ff916..2687c6a 100644
 --- a/e2e/support/managed-server.ts
 +++ b/e2e/support/managed-server.ts
-@@ -70,6 +70,10 @@
+@@ -70,6 +70,10 @@ export const OperatorSettings = Schema.Struct({
    EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: Schema.optionalKey(Schema.String),
    EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_ID: Schema.optionalKey(Schema.String),
    EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_SECRET: Schema.optionalKey(Schema.String),
@@ -220,9 +227,10 @@ diff --git a/e2e/support/managed-server.ts b/e2e/support/managed-server.ts
    EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: Schema.optionalKey(Schema.String),
    EXECUTOR_OAUTH_NOTION_CLIENT_ID: Schema.optionalKey(Schema.String),
 diff --git a/e2e/support/oauth-setup-issuer.ts b/e2e/support/oauth-setup-issuer.ts
+index a95752f..799eb02 100644
 --- a/e2e/support/oauth-setup-issuer.ts
 +++ b/e2e/support/oauth-setup-issuer.ts
-@@ -10,7 +10,7 @@
+@@ -10,7 +10,7 @@ import {
    sign,
  } from "node:crypto";
  import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
@@ -230,8 +238,8 @@ diff --git a/e2e/support/oauth-setup-issuer.ts b/e2e/support/oauth-setup-issuer.
 +import { Context, Deferred, Effect, Layer, Option, Schema } from "effect";
  import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
  import { tokenRequestParameters } from "./client-credentials-issuer.ts";
-
-@@ -37,6 +37,10 @@
+ 
+@@ -37,6 +37,10 @@ const McpMessage = Schema.Struct({
    id: Schema.optional(Schema.Union([Schema.Number, Schema.String])),
    method: Schema.String,
  });
@@ -239,10 +247,10 @@ diff --git a/e2e/support/oauth-setup-issuer.ts b/e2e/support/oauth-setup-issuer.
 +  accounts: Schema.Array(Schema.Struct({ accountId: Schema.String, updatedAt: Schema.String })),
 +});
 +type ReportingRequest = typeof ReportingRequest.Type;
-
+ 
  /**
   * The port the next issuer listens on. Zero, the default, lets the system assign one; a Cloud
-@@ -209,6 +213,23 @@
+@@ -211,6 +215,23 @@ export const oauthSetupIssuer = Effect.gen(function* () {
     * service does. An unissued token is refused with 401.
     */
    let resourceTokens: "any" | "issued" = "any";
@@ -266,7 +274,7 @@ diff --git a/e2e/support/oauth-setup-issuer.ts b/e2e/support/oauth-setup-issuer.
    /**
     * The `scope` member of token responses; undefined omits it. A grant is given the scope its
     * authorization request asked for, or `defaults` when it asked for none, as services that
-@@ -566,7 +587,14 @@
+@@ -577,7 +598,14 @@ export const oauthSetupIssuer = Effect.gen(function* () {
                    ).toString("base64url");
          const accessToken = refreshing
            ? `synthetic-refreshed-token-${refreshes}`
@@ -282,7 +290,7 @@ diff --git a/e2e/support/oauth-setup-issuer.ts b/e2e/support/oauth-setup-issuer.
          if (refreshing) refreshedAccessTokens.add(accessToken);
          issuedAccessTokens.add(accessToken);
          // Every sign-in issues the same first token; a new sign-in makes it valid again.
-@@ -576,6 +604,7 @@
+@@ -587,6 +615,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
              ? `synthetic-refresh-${randomUUID()}`
              : undefined;
          if (refreshToken !== undefined) {
@@ -290,11 +298,10 @@ diff --git a/e2e/support/oauth-setup-issuer.ts b/e2e/support/oauth-setup-issuer.
            refreshGrants.set(refreshToken, clientId);
            refreshOrigins.set(refreshToken, refreshing ? "refresh" : "sign-in");
          }
-@@ -649,6 +678,65 @@
-           });
+@@ -661,6 +690,65 @@ export const oauthSetupIssuer = Effect.gen(function* () {
          }),
        ),
-+    ),
+     ),
 +    HttpRouter.add(
 +      "GET",
 +      "/me",
@@ -353,10 +360,11 @@ diff --git a/e2e/support/oauth-setup-issuer.ts b/e2e/support/oauth-setup-issuer.
 +          { headers: { "cycle-period": "7" } },
 +        );
 +      }),
-     ),
++    ),
      HttpRouter.add(
        "GET",
-@@ -1029,12 +1117,42 @@
+       "/mcp",
+@@ -1042,12 +1130,42 @@ export const oauthSetupIssuer = Effect.gen(function* () {
        readonly scopeGrant?: typeof scopeGrant | null;
        /** Which access tokens the resource accepts. */
        readonly resourceTokens?: typeof resourceTokens;
@@ -399,7 +407,7 @@ diff --git a/e2e/support/oauth-setup-issuer.ts b/e2e/support/oauth-setup-issuer.
          if (input.tokenRequestFormat !== undefined) tokenRequestFormat = input.tokenRequestFormat;
          if (input.mcpStatus !== undefined)
            mcpStatus = input.mcpStatus === null ? undefined : input.mcpStatus;
-@@ -1168,6 +1286,8 @@
+@@ -1193,6 +1311,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
        revokedRefreshTokens: [...revokedRefreshTokens],
        resourceRequests: { ...resourceRequests },
        resourceAuthorizations: [...resourceAuthorizations],
@@ -409,9 +417,10 @@ diff --git a/e2e/support/oauth-setup-issuer.ts b/e2e/support/oauth-setup-issuer.
    };
  });
 diff --git a/e2e/support/operator-oauth.ts b/e2e/support/operator-oauth.ts
+index 4abd407..9ee0668 100644
 --- a/e2e/support/operator-oauth.ts
 +++ b/e2e/support/operator-oauth.ts
-@@ -12,9 +12,16 @@
+@@ -12,9 +12,16 @@ export const OperatorOAuthFixture = Schema.Struct({
    clientId: Schema.String,
    clientSecret: Schema.String,
    v1Port: Schema.Number,
@@ -425,11 +434,12 @@ diff --git a/e2e/support/operator-oauth.ts b/e2e/support/operator-oauth.ts
 +  clientId: "synthetic-reporting-client",
 +  clientSecret: "synthetic-reporting-secret",
 +} as const;
-
+ 
  /** The synthetic credentials of each client in `v1FirstPartyClients`, by ID. */
  export const v1FirstPartyCredentials = {
 diff --git a/e2e/support/personal-data-reporting-clients.ts b/e2e/support/personal-data-reporting-clients.ts
 new file mode 100644
+index 0000000..a97be0d
 --- /dev/null
 +++ b/e2e/support/personal-data-reporting-clients.ts
 @@ -0,0 +1,130 @@
@@ -565,6 +575,7 @@ new file mode 100644
 +  }).pipe(Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 150 }));
 diff --git a/e2e/support/personal-data-reporting.ts b/e2e/support/personal-data-reporting.ts
 new file mode 100644
+index 0000000..c66aee5
 --- /dev/null
 +++ b/e2e/support/personal-data-reporting.ts
 @@ -0,0 +1,230 @@
@@ -798,10 +809,138 @@ new file mode 100644
 +    accountPath: `${prefix}/accounts/${account}`,
 +  };
 +});
+diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+index e05ef6f..998bc51 100644
+--- a/e2e/support/profile-removal-rollback.ts
++++ b/e2e/support/profile-removal-rollback.ts
+@@ -47,8 +47,8 @@ export const profileAppCopiesPending = (
+ ];
+ 
+ /**
+- * Undo SDK 4.0.18 through 4.0.14 and label the database 4.0.13, as an upgrade from the version
+- * before app accounts finds it: webhook sources count no retries, schedules and webhook sources always have
++ * Undo the SDK additions after 4.0.13 and label the fixture database 4.0.13, as the version before
++ * app accounts finds it: webhook sources count no retries, schedules and webhook sources always have
+  * an actor, workflow runs record no scope, and start keys are unique per app and actor without one.
+  * The host's link step (hosted `9_app_account_links`, local `2_app_account_links`) ships with app
+  * accounts and runs after the SDK steps, so it is left to the caller: one that undoes it removes its
+@@ -57,6 +57,7 @@ export const profileAppCopiesPending = (
+ export const beforeAppAccounts = (): ReadonlyArray<{ readonly sql: string }> => [
+   { sql: "DROP TABLE executor_account_observations" },
+   { sql: "DROP TABLE executor_app_views" },
++  { sql: "DROP TABLE executor_account_reports" },
+   { sql: "ALTER TABLE executor_accounts DROP COLUMN site" },
+   { sql: "ALTER TABLE executor_webhook_sources DROP COLUMN retries" },
+   { sql: "DROP INDEX executor_schedules_app" },
+diff --git a/e2e/support/reporting-upgrade-fixture.ts b/e2e/support/reporting-upgrade-fixture.ts
+new file mode 100644
+index 0000000..f1a1727
+--- /dev/null
++++ b/e2e/support/reporting-upgrade-fixture.ts
+@@ -0,0 +1,98 @@
++/** Real observation and MCP view records that must survive the reporting-only upgrade. */
++import { expect } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { body } from "./api.ts";
++import { observationFixture, ObservationView } from "./account-observation-fixture.ts";
++import { App } from "./contracts.ts";
++import { McpClient } from "./mcp-client.ts";
++import { mcpAppFiles } from "./mcp-app-fixture.ts";
++
++const Key = Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) });
++const Captured = Schema.Struct({
++  views: Schema.Array(Schema.Struct({ id: Schema.String })),
++});
++const Shown = Schema.Struct({
++  "executor/app-view": Schema.Struct({
++    input: Schema.Struct({ text: Schema.String }),
++    result: Schema.Struct({
++      structuredContent: Schema.Struct({ source: Schema.String, text: Schema.String }),
++    }),
++  }),
++});
++
++export const reportingUpgradeFixture = Effect.gen(function* () {
++  const observation = yield* observationFixture();
++  expect((yield* observation.refresh()).status).toBe(200);
++  const before = yield* observation
++    .read()
++    .pipe(Effect.flatMap((response) => body(ObservationView, response)));
++  expect(before.reports).toHaveLength(1);
++  const saved = before.reports[0]?.result;
++  expect(saved).not.toBeNull();
++  const { api, actors, prefix } = observation;
++  const key = yield* api
++    .request(actors.owner, "POST", "/api/auth/api-key/create", {
++      name: "Reporting upgrade MCP retention",
++    })
++    .pipe(Effect.flatMap((response) => body(Key, response)));
++  yield* Effect.addFinalizer(() =>
++    api
++      .request(actors.owner, "POST", "/api/auth/api-key/delete", {
++        keyId: key.id,
++      })
++      .pipe(Effect.orDie),
++  );
++  const app = yield* api
++    .request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++      name: "Reporting upgrade retained MCP view",
++      files: mcpAppFiles,
++    })
++    .pipe(Effect.flatMap((response) => body(App, response)));
++  const mcp = yield* McpClient;
++  const connect = () =>
++    mcp.connect(key.key, "reporting-upgrade-retention", {
++      organization: actors.organization.id,
++      mode: "native",
++      ui: true,
++    });
++  const client = yield* connect();
++  const execution = yield* client.use("Capture the pre-upgrade MCP view", (client, signal) =>
++    client.callTool(
++      {
++        name: "execute",
++        arguments: {
++          code: `return await tools[${JSON.stringify(app.slug)}].alpha.open({ text: "Retained across 4.0.18 to 4.0.19" });`,
++        },
++      },
++      undefined,
++      { signal },
++    ),
++  );
++  const captured = yield* Schema.decodeUnknownEffect(Captured)(execution.structuredContent);
++  const view = captured.views[0];
++  if (view === undefined) return yield* Effect.die("The public MCP call did not retain its view");
++  return {
++    verify: Effect.gen(function* () {
++      const after = yield* observation
++        .read()
++        .pipe(Effect.flatMap((response) => body(ObservationView, response)));
++      expect(after.reports).toHaveLength(1);
++      expect(after.reports[0]?.result).toEqual(saved);
++      const restarted = yield* connect();
++      const shown = yield* restarted.use(
++        "Read the same MCP view after storage upgrade",
++        (client, signal) =>
++          client.callTool({ name: "show-app", arguments: { view: view.id } }, undefined, {
++            signal,
++          }),
++      );
++      expect(shown.isError, JSON.stringify(shown.content)).not.toBe(true);
++      const payload = (yield* Schema.decodeUnknownEffect(Shown)(shown._meta))["executor/app-view"];
++      expect(payload.input).toEqual({ text: "Retained across 4.0.18 to 4.0.19" });
++      expect(payload.result.structuredContent).toEqual({
++        source: "Alpha",
++        text: "Retained across 4.0.18 to 4.0.19",
++      });
++    }),
++  };
++});
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index a1505c7..10e14ac 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -2660,6 +2660,77 @@
+@@ -3214,6 +3214,77 @@ export const scenarios = plan({
        local: na("The shared SDK and account view are exercised through hosted APIs."),
      },
    },
@@ -879,7 +1018,7 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
    mcpAccountHealth: {
      fixtures: "actors",
      file: "mcp-account-health.spec.ts",
-@@ -7753,10 +7824,11 @@
+@@ -8857,10 +8928,11 @@ export const scenarios = plan({
    },
    accountStatusStorage: {
      fixtures: "actors",
@@ -892,10 +1031,91 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
      targets: {
        "self-host": scheduled,
        cloud: na("Uses isolated PGlite metadata."),
+diff --git a/e2e/tests/account-observation-migration.spec.ts b/e2e/tests/account-observation-migration.spec.ts
+index 7871f1b..b7d77c5 100644
+--- a/e2e/tests/account-observation-migration.spec.ts
++++ b/e2e/tests/account-observation-migration.spec.ts
+@@ -18,6 +18,7 @@ layer(HostedLive, { excludeTestServices: true })("Observation storage upgrade",
+         yield* legacyStorage([
+           { sql: "DROP TABLE hosted_account_observation_access" },
+           { sql: "DROP TABLE executor_account_observations" },
++          { sql: "DROP TABLE executor_account_reports" },
+           { sql: "UPDATE private_executor_settings SET value = '4.0.17' WHERE key = 'version'" },
+           { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 10" },
+         ]);
+@@ -35,7 +36,7 @@ layer(HostedLive, { excludeTestServices: true })("Observation storage upgrade",
+             sql: "SELECT table_name FROM information_schema.tables WHERE table_name IN ('executor_account_observations', 'hosted_account_observation_access') ORDER BY table_name",
+           },
+         ]);
+-        expect(versions).toEqual([{ value: "4.0.18" }]);
++        expect(versions).toEqual([{ value: "4.0.19" }]);
+         expect(steps).toEqual([{ name: "account_observations" }]);
+         expect(tables).toEqual([
+           { table_name: "executor_account_observations" },
+diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status-storage.spec.ts
+index ea1cd28..7184376 100644
+--- a/e2e/tests/account-status-storage.spec.ts
++++ b/e2e/tests/account-status-storage.spec.ts
+@@ -1,4 +1,4 @@
+-/** Display status stays in health JSON when the separate observation table is added. */
++/** Reporting upgrades preserve selected sites, credentials and checked account status. */
+ import { expect, layer } from "@effect/vitest";
+ import { Effect } from "effect";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+@@ -7,6 +7,8 @@ import { legacyStorage } from "../support/legacy-storage.ts";
+ import { serverControl } from "../support/server-control.ts";
+ import { statusAccount } from "../support/status-account.ts";
+ import { scenarios } from "../test-plan.ts";
++import { McpClient } from "../support/mcp-client.ts";
++import { reportingUpgradeFixture } from "../support/reporting-upgrade-fixture.ts";
+ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
+   it.effect(scenarios.accountStatusStorage.title, (context) =>
+     withHostedCase(
+@@ -14,6 +16,21 @@ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
+       Effect.gen(function* () {
+         const fixture = yield* statusAccount(accountStatusSource);
+         expect((yield* fixture.check()).status).toBe(200);
++        const inherited = yield* reportingUpgradeFixture;
++        // Rebuild only the previous reporting-free layout; its selected site and health stay saved.
++        const site = "https://retained-account.example.test";
++        yield* legacyStorage([
++          { sql: "DROP TABLE executor_account_reports" },
++          {
++            sql: "UPDATE executor_accounts SET site = $1 WHERE id = $2",
++            params: [site, fixture.account],
++          },
++          { sql: "UPDATE private_executor_settings SET value = '4.0.18' WHERE key = 'version'" },
++        ]);
++        yield* serverControl("start");
++        yield* inherited.verify;
++        expect((yield* fixture.read()).body).toMatchObject({ account: { site } });
++        expect((yield* fixture.check()).status).toBe(200);
+         const [version, columns, records] = yield* legacyStorage([
+           { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
+           {
+@@ -24,7 +41,7 @@ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
+             params: [fixture.account],
+           },
+         ]);
+-        expect(version).toEqual([{ value: "4.0.18" }]);
++        expect(version).toEqual([{ value: "4.0.19" }]);
+         expect(columns).toEqual([]);
+         expect(records).toEqual([
+           {
+@@ -75,7 +92,7 @@ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
+           ],
+         ]);
+         yield* serverControl("start");
+-      }),
++      }).pipe(Effect.provide(McpClient.layer)),
+     ),
+   );
+ });
 diff --git a/e2e/tests/app-accounts-upgrade.spec.ts b/e2e/tests/app-accounts-upgrade.spec.ts
+index e1a72b6..c9e41e9 100644
 --- a/e2e/tests/app-accounts-upgrade.spec.ts
 +++ b/e2e/tests/app-accounts-upgrade.spec.ts
-@@ -281,7 +281,7 @@
+@@ -281,7 +281,7 @@ const upgradeFlow = <E, R>(
        before: { schedulesBefore, sourcesBefore, runsBefore, linksBefore, stepBefore },
        after: { version, step, scopes, nullable, schedulesAfter, sourcesAfter, linksAfter },
      });
@@ -905,9 +1125,10 @@ diff --git a/e2e/tests/app-accounts-upgrade.spec.ts b/e2e/tests/app-accounts-upg
      // The member's user link as it was, and the app link without a subject.
      expect(linksAfter).toEqual([
 diff --git a/e2e/tests/legacy-profile-schedules.spec.ts b/e2e/tests/legacy-profile-schedules.spec.ts
+index 61fef99..d52cbdf 100644
 --- a/e2e/tests/legacy-profile-schedules.spec.ts
 +++ b/e2e/tests/legacy-profile-schedules.spec.ts
-@@ -630,7 +630,7 @@
+@@ -630,7 +630,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
            { sql: "SELECT id, status FROM executor_profile_app_copies ORDER BY id" },
          ]);
          expect(ledger).toEqual([{ name: "app_account_links" }]);
@@ -917,9 +1138,10 @@ diff --git a/e2e/tests/legacy-profile-schedules.spec.ts b/e2e/tests/legacy-profi
            [copies.work, copies.bobOld].toSorted().map((copy) => ({ id: copy, status: "copied" })),
          );
 diff --git a/e2e/tests/legacy-targetless-connections.spec.ts b/e2e/tests/legacy-targetless-connections.spec.ts
+index 3457c78..99df5d8 100644
 --- a/e2e/tests/legacy-targetless-connections.spec.ts
 +++ b/e2e/tests/legacy-targetless-connections.spec.ts
-@@ -132,7 +132,7 @@
+@@ -132,7 +132,7 @@ const expectUpgraded = (
    ids: Ids,
  ) => {
    expect(column).toEqual([{ is_nullable: "NO", column_default: null }]);
@@ -929,9 +1151,10 @@ diff --git a/e2e/tests/legacy-targetless-connections.spec.ts b/e2e/tests/legacy-
    expect(connections).toEqual([{ id: template, target: "object" }]);
    expect(attempts).toEqual([{ id: ids.unrelatedAttempt }]);
 diff --git a/e2e/tests/oauth-client-issuer-migration.spec.ts b/e2e/tests/oauth-client-issuer-migration.spec.ts
+index 5f74fee..573a449 100644
 --- a/e2e/tests/oauth-client-issuer-migration.spec.ts
 +++ b/e2e/tests/oauth-client-issuer-migration.spec.ts
-@@ -361,7 +361,7 @@
+@@ -361,7 +361,7 @@ layer(TestLive, { excludeTestServices: true })("OAuth client issuer migration",
            },
          ]);
          yield* serverControl("start");
@@ -942,6 +1165,7 @@ diff --git a/e2e/tests/oauth-client-issuer-migration.spec.ts b/e2e/tests/oauth-c
            { client: ids.a },
 diff --git a/e2e/tests/personal-data-reporting-cadence.spec.ts b/e2e/tests/personal-data-reporting-cadence.spec.ts
 new file mode 100644
+index 0000000..55bf28a
 --- /dev/null
 +++ b/e2e/tests/personal-data-reporting-cadence.spec.ts
 @@ -0,0 +1,124 @@
@@ -1071,6 +1295,7 @@ new file mode 100644
 +});
 diff --git a/e2e/tests/personal-data-reporting-clients.spec.ts b/e2e/tests/personal-data-reporting-clients.spec.ts
 new file mode 100644
+index 0000000..2b23663
 --- /dev/null
 +++ b/e2e/tests/personal-data-reporting-clients.spec.ts
 @@ -0,0 +1,214 @@
@@ -1290,6 +1515,7 @@ new file mode 100644
 +);
 diff --git a/e2e/tests/personal-data-reporting.spec.ts b/e2e/tests/personal-data-reporting.spec.ts
 new file mode 100644
+index 0000000..4564c6f
 --- /dev/null
 +++ b/e2e/tests/personal-data-reporting.spec.ts
 @@ -0,0 +1,367 @@
@@ -1661,9 +1887,10 @@ new file mode 100644
 +  );
 +});
 diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
+index e9e23d2..f15fbdd 100644
 --- a/packages/sdk/src/contracts/account.ts
 +++ b/packages/sdk/src/contracts/account.ts
-@@ -85,6 +85,8 @@
+@@ -85,6 +85,8 @@ export const AccountHealth = Schema.Struct({
    account: AccountId,
    info: Schema.NullOr(AccountInfo),
    infoCheckedAt: Schema.NullOr(Schema.Date),
@@ -1673,23 +1900,24 @@ diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/
  });
  export type AccountHealth = typeof AccountHealth.Type;
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
+index 357c4aa..b0af070 100644
 --- a/packages/sdk/src/contracts/executor.ts
 +++ b/packages/sdk/src/contracts/executor.ts
-@@ -290,6 +290,13 @@
-   readonly durable?: import("./declarations.ts").DurableDeclarations;
-   /** Overrides of `defaultToolListingPolicy`. */
-   readonly toolListings?: Partial<import("./declarations.ts").ToolListingPolicy>;
-+}
-+
+@@ -308,6 +308,13 @@ export interface HostApi {
+   readonly reads: (requirements: import("./apps.ts").AppRequirements) => boolean;
+ }
+ 
 +/** Host-only scheduled reporting of personal-data accounts for configured OAuth registrations. */
 +export const PersonalDataReportingHost = Symbol("executor.PersonalDataReportingHost");
 +export interface PersonalDataReportingHost {
 +  /** Process bounded due work; interrupted leases become available after their stored expiry. */
 +  readonly run: Effect.Effect<void, StorageError>;
- }
-
++}
++
  /** Caller-owned database, blobs, Git and execution; constructors do not migrate or close them. */
-@@ -480,6 +487,7 @@
+ export interface ExecutorInputs {
+   /** Executor tables, app data and the catalog live here. Migrated by the host before use. */
+@@ -498,6 +505,7 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
    readonly [RepositoryHost]: RepositoryHost;
    readonly [StorageHost]: StorageHost;
    readonly [InteractiveHost]: import("./interactive-accounts.ts").InteractiveHost;
@@ -1697,7 +1925,7 @@ diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts
    readonly [PrefetchHost]: PrefetchHost;
    readonly [AppViewsHost]: AppViewsHost;
    readonly [AppSourceHost]: AppSourceHost;
-@@ -510,6 +518,7 @@
+@@ -528,6 +536,7 @@ export type PromiseExecutor = Promisify<
      | typeof RepositoryHost
      | typeof InteractiveHost
      | typeof StorageHost
@@ -1706,12 +1934,14 @@ diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts
      | typeof AppViewsHost
      | typeof AppSourceHost
 diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
+index cf9397d..0d39328 100644
 --- a/packages/sdk/src/contracts/oauth.ts
 +++ b/packages/sdk/src/contracts/oauth.ts
-@@ -394,6 +394,20 @@
+@@ -440,6 +440,20 @@ export const FirstPartyOAuthClientId = Schema.String.check(
+ ).pipe(Schema.brand("FirstPartyOAuthClientId"));
  export type FirstPartyOAuthClientId = typeof FirstPartyOAuthClientId.Type;
-
- /**
+ 
++/**
 + * A host-owned account reporting protocol for one OAuth registration. Endpoints and the subject
 + * ID field are reviewed configuration; no app-authored provider can redirect reporting traffic.
 + */
@@ -1725,11 +1955,10 @@ diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oa
 +});
 +export type PersonalDataReporting = typeof PersonalDataReporting.Type;
 +
-+/**
+ /**
   * An OAuth client the instance's operator provides, such as one-click Google sign-in. It is offered
   * for a provider method only when the method's authorization and token endpoints are exactly the
-  * client's and the scopes it asks for are among `allowedScopes`; scopes the method only discovered
-@@ -418,6 +432,8 @@
+@@ -465,6 +479,8 @@ export const FirstPartyOAuthClient = Schema.Struct({
    /** Every scope a sign-in may ask for and a grant may hold. Defaults to `defaultScopes`. */
    allowedScopes: Schema.optionalKey(Schema.Array(ScopeToken)),
    placement: ManagedPlacement,
@@ -1739,17 +1968,18 @@ diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oa
     * Withheld from new sign-ins: offered only to reconnect an account whose grant it issued. Its
     * grants keep renewing, so an operator can stop offering a client without stranding them.
 diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
+index 6f831c1..a03eff6 100644
 --- a/packages/sdk/src/implementation/account-health.ts
 +++ b/packages/sdk/src/implementation/account-health.ts
-@@ -73,6 +73,7 @@
+@@ -75,6 +75,7 @@ type CheckRow = {
    readonly infoCheckedAt: Date | null;
    readonly message: string | null;
  };
 +type ReportState = { readonly status: string };
-
+ 
  /** The slot whose provider check covers this account in the app's active version. */
  const checkedSlot = (
-@@ -154,6 +155,7 @@
+@@ -157,6 +158,7 @@ export const makeAccountHealth = (
      apps: readonly App[],
      rows: readonly CheckRow[],
      acquired?: InteractiveBinding,
@@ -1757,7 +1987,7 @@ diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/sr
    ) =>
      Effect.gen(function* () {
        const latest = rows
-@@ -169,6 +171,7 @@
+@@ -172,6 +174,7 @@ export const makeAccountHealth = (
            : acquired?.accountInfo === undefined
              ? null
              : new Date(acquired.acquiredAt),
@@ -1765,23 +1995,23 @@ diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/sr
          apps: yield* Effect.forEach(apps, (app) =>
            Effect.gen(function* () {
              const row = rows.find((item) => item.app === app.id);
-@@ -211,11 +214,15 @@
-       const rows = yield* query(() =>
-         db.findMany("accountChecks", { where: (b) => b("account", "=", account.id) }),
+@@ -222,11 +225,15 @@ export const makeAccountHealth = (
+           query(() => db.findMany("accountChecks", { where: (b) => b("account", "=", id) })),
+         ),
        );
 +      const report = yield* query(() =>
-+        db.findFirst("accountReports", { where: (b) => b("id", "=", account.id) }),
++        db.findFirst("accountReports", { where: (b) => b("id", "=", stored.id) }),
 +      );
        return yield* project(
-         account,
+         stored,
          apps,
          rows,
-         yield* interactiveBinding(db, { account: account.id, owner: account.owner }),
+         yield* interactiveBinding(db, { account: stored.id, owner: stored.owner }),
 +        report === null ? undefined : { status: report.status },
        );
      });
-
-@@ -242,6 +249,10 @@
+ 
+@@ -250,6 +257,10 @@ export const makeAccountHealth = (
          accounts: ids,
          ...(input.owner === undefined ? {} : { owner: input.owner }),
        });
@@ -1790,9 +2020,9 @@ diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/sr
 +      );
 +      const reports = new Map(reportRows.map((row) => [row.id, row.status]));
        const linked = [...new Set(input.links.map((link) => link.app))];
-       const apps = linked.length === 0 ? [] : yield* listApps({ ids: linked });
-       return yield* Effect.forEach(accounts, (account) =>
-@@ -252,6 +263,7 @@
+       const [rows, apps] = yield* inOrder(
+         query(() => db.findMany("accountChecks", { where: (b) => b("account", "in", ids) })),
+@@ -263,6 +274,7 @@ export const makeAccountHealth = (
            ),
            rows.filter((row) => row.account === account.id),
            acquired.get(account.id),
@@ -1801,9 +2031,10 @@ diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/sr
        );
      }).pipe(Effect.withSpan("sdk.accounts.listHealth"));
 diff --git a/packages/sdk/src/implementation/accounts.ts b/packages/sdk/src/implementation/accounts.ts
+index f37fcf6..f276cb9 100644
 --- a/packages/sdk/src/implementation/accounts.ts
 +++ b/packages/sdk/src/implementation/accounts.ts
-@@ -269,6 +269,10 @@
+@@ -337,6 +337,10 @@ export const makeAccounts = (
              yield* query(() =>
                tx.deleteMany("accountChecks", { where: (b) => b("account", "=", input.account) }),
              );
@@ -1815,9 +2046,10 @@ diff --git a/packages/sdk/src/implementation/accounts.ts b/packages/sdk/src/impl
                tx.deleteMany("accountObservations", {
                  where: (b) => b("account", "=", input.account),
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+index 94b9121..7907599 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
-@@ -28,7 +28,12 @@
+@@ -28,7 +28,12 @@ import { initializeAppRepository, recoverAppRepositories } from "./initial-sourc
  import { makeWorkflowRuns } from "./workflows.ts";
  /** Compose native operations once for in-process and HTTP callers. */
  import { Crypto, Effect } from "effect";
@@ -1831,15 +2063,15 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
  import {
    AppCodeId,
    AppId,
-@@ -59,6 +64,7 @@
+@@ -65,6 +70,7 @@ import { makeDeclarationCache, makeDeclarations } from "./declarations.ts";
  import { makeListings } from "./listings.ts";
  import { makeToolSearch } from "./tool-search.ts";
  import { makeEvents } from "./events.ts";
 +import { makePersonalDataReporting } from "./personal-data-reporting.ts";
  import { AppEventSink, RuntimeProtocolFailed, type Runtime } from "../contracts/runtime.ts";
  import { defaultUrlPolicy } from "@executor-js/utils/url-policy";
-
-@@ -118,6 +124,15 @@
+ 
+@@ -124,6 +130,15 @@ export const createExecutor = (
        options.hooks,
        options.background,
      );
@@ -1855,7 +2087,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
      const declarations = makeDeclarations({
        cache,
        durable: options.cache?.durable,
-@@ -282,6 +297,7 @@
+@@ -300,6 +315,7 @@ export const createExecutor = (
          read: options.database.reactivity.read,
          write: options.database.reactivity.write,
        },
@@ -1864,9 +2096,10 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
        [AppViewsHost]: makeAppViews(options.database.appViews, credentials, crypto),
        [AppSourceHost]: { dispatch: tools.mcpAppSource },
 diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/implementation/database.ts
+index cc9a267..40cd636 100644
 --- a/packages/sdk/src/implementation/database.ts
 +++ b/packages/sdk/src/implementation/database.ts
-@@ -6,7 +6,7 @@
+@@ -8,7 +8,7 @@ import type { ExecutorDatabase } from "./storage.ts";
  /** Bound query handle sharing the host connection and reactive transaction context. */
  export type Query = ReturnType<typeof database>;
  /** Select the latest migrated storage schema. */
@@ -1874,11 +2107,12 @@ diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/impl
 +export const database = (storage: ExecutorDatabase) => storage.orm("4.0.19");
  /**
   * Run a lazy native query without leaking SQL or driver details. The query's own
-  * FumaDB span covers the same interval, so this boundary adds no span of its own.
+  * `sql.execute` spans cover the same interval, so this boundary adds no span of its own.
 diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
+index 0e1bfda..6b0c864 100644
 --- a/packages/sdk/src/implementation/oauth.ts
 +++ b/packages/sdk/src/implementation/oauth.ts
-@@ -2932,6 +2932,48 @@
+@@ -3078,6 +3078,49 @@ export const makeOAuth = (
        // A refusal is the storage failure callers that do not distinguish it have always seen.
        Effect.catchTag("AccountUseRefused", () => Effect.fail(new StorageError())),
      );
@@ -1913,6 +2147,7 @@ diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/impleme
 +        );
 +      yield* verifyOwner();
 +      const credential = yield* resolveAuthorized(
++        "resolve",
 +        account,
 +        provider,
 +        undefined,
@@ -1927,18 +2162,19 @@ diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/impleme
    /**
     * Running the app's code needs the current actor to use the app; removing what the app
     * registered, or checking an account, does not. To run it, the actor's app access, its use of
-@@ -3375,6 +3417,7 @@
+@@ -3678,6 +3721,7 @@ export const makeOAuth = (
      },
      findOAuth,
      resolve: (account: StoredAccount, provider: ProviderDefinition) => resolve(account, provider),
 +    resolveOwnedFirstParty,
      resolveSelected,
      renewRejected,
-     usable,
+     usableAll,
 diff --git a/packages/sdk/src/implementation/owner-moves.ts b/packages/sdk/src/implementation/owner-moves.ts
+index 8d35aa5..0f45d0d 100644
 --- a/packages/sdk/src/implementation/owner-moves.ts
 +++ b/packages/sdk/src/implementation/owner-moves.ts
-@@ -76,6 +76,7 @@
+@@ -76,6 +76,7 @@ const decodeObject = Schema.decodeUnknownEffect(JsonObject);
  const ownerTables = [
    "apps",
    "accounts",
@@ -1947,20 +2183,22 @@ diff --git a/packages/sdk/src/implementation/owner-moves.ts b/packages/sdk/src/i
    "profiles",
    "schedules",
 diff --git a/packages/sdk/src/implementation/owners.ts b/packages/sdk/src/implementation/owners.ts
+index aa40249..01b0be3 100644
 --- a/packages/sdk/src/implementation/owners.ts
 +++ b/packages/sdk/src/implementation/owners.ts
-@@ -159,6 +159,9 @@
+@@ -158,6 +158,9 @@ export const makeOwners = (db: Query): Executor["owners"] => ({
+           yield* query(() => tx.deleteMany("apps", { where: (b) => b("owner", "=", owner) }));
          }
          if (accountIds.length > 0) {
-           yield* query(() =>
++          yield* query(() =>
 +            tx.deleteMany("accountReports", { where: (b) => b("id", "in", accountIds) }),
 +          );
-+          yield* query(() =>
+           yield* query(() =>
              tx.deleteMany("accountChecks", { where: (b) => b("account", "in", accountIds) }),
            );
-           yield* query(() =>
 diff --git a/packages/sdk/src/implementation/personal-data-reporting-close.ts b/packages/sdk/src/implementation/personal-data-reporting-close.ts
 new file mode 100644
+index 0000000..bd5b2d3
 --- /dev/null
 +++ b/packages/sdk/src/implementation/personal-data-reporting-close.ts
 @@ -0,0 +1,144 @@
@@ -2110,6 +2348,7 @@ new file mode 100644
 +};
 diff --git a/packages/sdk/src/implementation/personal-data-reporting-http.ts b/packages/sdk/src/implementation/personal-data-reporting-http.ts
 new file mode 100644
+index 0000000..b5a5780
 --- /dev/null
 +++ b/packages/sdk/src/implementation/personal-data-reporting-http.ts
 @@ -0,0 +1,205 @@
@@ -2320,6 +2559,7 @@ new file mode 100644
 +  );
 diff --git a/packages/sdk/src/implementation/personal-data-reporting-state.ts b/packages/sdk/src/implementation/personal-data-reporting-state.ts
 new file mode 100644
+index 0000000..223813a
 --- /dev/null
 +++ b/packages/sdk/src/implementation/personal-data-reporting-state.ts
 @@ -0,0 +1,236 @@
@@ -2561,6 +2801,7 @@ new file mode 100644
 +};
 diff --git a/packages/sdk/src/implementation/personal-data-reporting.ts b/packages/sdk/src/implementation/personal-data-reporting.ts
 new file mode 100644
+index 0000000..528dacd
 --- /dev/null
 +++ b/packages/sdk/src/implementation/personal-data-reporting.ts
 @@ -0,0 +1,745 @@
@@ -3310,9 +3551,10 @@ new file mode 100644
 +  return { run };
 +};
 diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sdk/src/implementation/storage-migrations.ts
+index 2ec6962..fcdec07 100644
 --- a/packages/sdk/src/implementation/storage-migrations.ts
 +++ b/packages/sdk/src/implementation/storage-migrations.ts
-@@ -18,6 +18,7 @@
+@@ -18,6 +18,7 @@ import {
    version4015Tables,
    version4016Tables,
    version4017Tables,
@@ -3320,23 +3562,23 @@ diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sd
    appScheduleIndex,
    scopedRunKeyIndex,
    version402Tables,
-@@ -29,6 +30,7 @@
-   version4Tables,
+@@ -30,6 +31,7 @@ import {
    storedOAuthClientIndexes,
    storedOAuthClientIssuerIndexes,
+   queueReadIndexes,
 +  accountReportIndexes,
  } from "./storage-schema.ts";
-
+ 
  /** Indexes the 4.0.1 step added. Released steps never change; later indexes join their own step. */
-@@ -84,6 +86,7 @@
-   ...storedOAuthClientIndexes,
+@@ -86,6 +88,7 @@ export const currentIndexes = [
    ...boundedReadIndexes,
    ...storedOAuthClientIssuerIndexes,
+   ...queueReadIndexes,
 +  ...accountReportIndexes,
  ] as const;
-
+ 
  /** Versions built by {@link indexOnlyVersion}. */
-@@ -697,6 +700,26 @@
+@@ -702,6 +705,26 @@ export const storageSchemas = [
        }),
      },
    }),
@@ -3361,9 +3603,10 @@ diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sd
 +      ),
 +  }),
  ] as const;
-
+ 
  /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */
 diff --git a/packages/sdk/src/implementation/storage-schema.ts b/packages/sdk/src/implementation/storage-schema.ts
+index 1e0e773..0d8022e 100644
 --- a/packages/sdk/src/implementation/storage-schema.ts
 +++ b/packages/sdk/src/implementation/storage-schema.ts
 @@ -1,3 +1,4 @@
@@ -3371,10 +3614,10 @@ diff --git a/packages/sdk/src/implementation/storage-schema.ts b/packages/sdk/sr
  import { WorkflowRunId } from "../contracts/workflows.ts";
  import { AppSlug } from "../contracts/app-slug.ts";
  import { AccountScope } from "../contracts/apps.ts";
-@@ -864,6 +865,47 @@
+@@ -864,6 +865,47 @@ export const version4017Tables = {
    }),
  };
-
+ 
 +/** Per-registration personal-data reporting state; the subject ID is encrypted at rest. */
 +const accountReports = table("executor_account_reports", {
 +  /** This row follows one saved account connection, but deliberately survives upstream closure. */
@@ -3420,9 +3663,10 @@ diff --git a/packages/sdk/src/implementation/storage-schema.ts b/packages/sdk/sr
   * Start keys are unique per app, actor and scope from 4.0.14, so a run started without a caller
   * and one started with a caller never share a key. It replaces `executor_workflow_runs_context_key`.
 diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/implementation/storage.ts
+index db0d8d9..6541190 100644
 --- a/packages/sdk/src/implementation/storage.ts
 +++ b/packages/sdk/src/implementation/storage.ts
-@@ -22,7 +22,7 @@
+@@ -25,7 +25,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
      const sql = yield* SqlClient.SqlClient;
      const reactivity = yield* makeReactiveStore({ namespace: "executor" });
      const client = executorDatabase.client(sqlAdapter({ provider: options.provider }));
@@ -3431,16 +3675,7 @@ diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/imple
      const checkMigration = Effect.gen(function* () {
        const migrator = yield* client.createMigrator;
        const version = yield* migrator.version;
-@@ -47,7 +47,7 @@
-             yield* Effect.forEach(currentIndexes, (statement) => sql.unsafe(statement).unprepared, {
-               discard: true,
-             });
--          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.18")));
-+          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.19")));
-           return;
-         }
-         // Execute every registered upgrade in order. A direct diff to latest can skip
-@@ -77,7 +77,7 @@
+@@ -80,7 +80,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
        Effect.mapError(() => new StorageError()),
      );
      return {
@@ -3450,9 +3685,10 @@ diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/imple
        // Search rows are derived data no reactive reader watches, ranked by SQL the ORM cannot express.
        toolSearch: makeToolSearchStore(sql),
 diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packages/ui/src/implementation/dashboard/account-health.tsx
+index b4e9f58..a5a5899 100644
 --- a/packages/ui/src/implementation/dashboard/account-health.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-health.tsx
-@@ -199,6 +199,11 @@
+@@ -206,6 +206,11 @@ export function AccountHealthPanel<E>({
    });
    return (
      <div className="flex flex-col gap-4">
@@ -3465,9 +3701,10 @@ diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packa
          <p className="text-[13px] text-muted-foreground">
            <AccountIdentity info={health.info} />
 diff --git a/playground/sdk/storage.ts b/playground/sdk/storage.ts
+index 550f464..b73ee7c 100644
 --- a/playground/sdk/storage.ts
 +++ b/playground/sdk/storage.ts
-@@ -10,7 +10,7 @@
+@@ -10,7 +10,7 @@ export const storageWalkthrough = () =>
        Effect.gen(function* () {
          const storage = yield* makeExecutorStorage({ provider: "postgresql" });
          yield* storage.migrate;
@@ -3476,205 +3713,3 @@ diff --git a/playground/sdk/storage.ts b/playground/sdk/storage.ts
          const createdAt = new Date("2026-01-01T00:00:00.000Z");
          const version = yield* Schema.decodeUnknownEffect(StoredVersion)({
            id: "dpl_example",
-diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
---- a/e2e/support/profile-removal-rollback.ts
-+++ b/e2e/support/profile-removal-rollback.ts
-@@ -47,8 +47,8 @@
- ];
-
- /**
-- * Undo SDK 4.0.18 through 4.0.14 and label the database 4.0.13, as an upgrade from the version
-- * before app accounts finds it: webhook sources count no retries, schedules and webhook sources always have
-+ * Undo the SDK additions after 4.0.13 and label the fixture database 4.0.13, as the version before
-+ * app accounts finds it: webhook sources count no retries, schedules and webhook sources always have
-  * an actor, workflow runs record no scope, and start keys are unique per app and actor without one.
-  * The host's link step (hosted `9_app_account_links`, local `2_app_account_links`) ships with app
-  * accounts and runs after the SDK steps, so it is left to the caller: one that undoes it removes its
-@@ -57,6 +57,7 @@
- export const beforeAppAccounts = (): ReadonlyArray<{ readonly sql: string }> => [
-   { sql: "DROP TABLE executor_account_observations" },
-   { sql: "DROP TABLE executor_app_views" },
-+  { sql: "DROP TABLE executor_account_reports" },
-   { sql: "ALTER TABLE executor_accounts DROP COLUMN site" },
-   { sql: "ALTER TABLE executor_webhook_sources DROP COLUMN retries" },
-   { sql: "DROP INDEX executor_schedules_app" },
-diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status-storage.spec.ts
---- a/e2e/tests/account-status-storage.spec.ts
-+++ b/e2e/tests/account-status-storage.spec.ts
-@@ -1,4 +1,4 @@
--/** Display status stays in health JSON when the separate observation table is added. */
-+/** Reporting upgrades preserve selected sites, credentials and checked account status. */
- import { expect, layer } from "@effect/vitest";
- import { Effect } from "effect";
- import { HostedLive, withHostedCase } from "../support/case.ts";
-@@ -7,12 +7,29 @@
- import { serverControl } from "../support/server-control.ts";
- import { statusAccount } from "../support/status-account.ts";
- import { scenarios } from "../test-plan.ts";
-+import { McpClient } from "../support/mcp-client.ts";
-+import { reportingUpgradeFixture } from "../support/reporting-upgrade-fixture.ts";
- layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
-   it.effect(scenarios.accountStatusStorage.title, (context) =>
-     withHostedCase(
-       context,
-       Effect.gen(function* () {
-         const fixture = yield* statusAccount(accountStatusSource);
-+        expect((yield* fixture.check()).status).toBe(200);
-+        const inherited = yield* reportingUpgradeFixture;
-+        // Rebuild only the previous reporting-free layout; its selected site and health stay saved.
-+        const site = "https://retained-account.example.test";
-+        yield* legacyStorage([
-+          { sql: "DROP TABLE executor_account_reports" },
-+          {
-+            sql: "UPDATE executor_accounts SET site = $1 WHERE id = $2",
-+            params: [site, fixture.account],
-+          },
-+          { sql: "UPDATE private_executor_settings SET value = '4.0.18' WHERE key = 'version'" },
-+        ]);
-+        yield* serverControl("start");
-+        yield* inherited.verify;
-+        expect((yield* fixture.read()).body).toMatchObject({ account: { site } });
-         expect((yield* fixture.check()).status).toBe(200);
-         const [version, columns, records] = yield* legacyStorage([
-           { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
-@@ -24,7 +41,7 @@
-             params: [fixture.account],
-           },
-         ]);
--        expect(version).toEqual([{ value: "4.0.18" }]);
-+        expect(version).toEqual([{ value: "4.0.19" }]);
-         expect(columns).toEqual([]);
-         expect(records).toEqual([
-           {
-@@ -75,7 +92,7 @@
-           ],
-         ]);
-         yield* serverControl("start");
--      }),
-+      }).pipe(Effect.provide(McpClient.layer)),
-     ),
-   );
- });
-diff --git a/e2e/tests/account-observation-migration.spec.ts b/e2e/tests/account-observation-migration.spec.ts
---- a/e2e/tests/account-observation-migration.spec.ts
-+++ b/e2e/tests/account-observation-migration.spec.ts
-@@ -18,6 +18,7 @@
-         yield* legacyStorage([
-           { sql: "DROP TABLE hosted_account_observation_access" },
-           { sql: "DROP TABLE executor_account_observations" },
-+          { sql: "DROP TABLE executor_account_reports" },
-           { sql: "UPDATE private_executor_settings SET value = '4.0.17' WHERE key = 'version'" },
-           { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 10" },
-         ]);
-@@ -35,7 +36,7 @@
-             sql: "SELECT table_name FROM information_schema.tables WHERE table_name IN ('executor_account_observations', 'hosted_account_observation_access') ORDER BY table_name",
-           },
-         ]);
--        expect(versions).toEqual([{ value: "4.0.18" }]);
-+        expect(versions).toEqual([{ value: "4.0.19" }]);
-         expect(steps).toEqual([{ name: "account_observations" }]);
-         expect(tables).toEqual([
-           { table_name: "executor_account_observations" },
-diff --git a/e2e/support/reporting-upgrade-fixture.ts b/e2e/support/reporting-upgrade-fixture.ts
-new file mode 100644
---- /dev/null
-+++ b/e2e/support/reporting-upgrade-fixture.ts
-@@ -0,0 +1,98 @@
-+/** Real observation and MCP view records that must survive the reporting-only upgrade. */
-+import { expect } from "@effect/vitest";
-+import { Effect, Schema } from "effect";
-+import { body } from "./api.ts";
-+import { observationFixture, ObservationView } from "./account-observation-fixture.ts";
-+import { App } from "./contracts.ts";
-+import { McpClient } from "./mcp-client.ts";
-+import { mcpAppFiles } from "./mcp-app-fixture.ts";
-+
-+const Key = Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) });
-+const Captured = Schema.Struct({
-+  views: Schema.Array(Schema.Struct({ id: Schema.String })),
-+});
-+const Shown = Schema.Struct({
-+  "executor/app-view": Schema.Struct({
-+    input: Schema.Struct({ text: Schema.String }),
-+    result: Schema.Struct({
-+      structuredContent: Schema.Struct({ source: Schema.String, text: Schema.String }),
-+    }),
-+  }),
-+});
-+
-+export const reportingUpgradeFixture = Effect.gen(function* () {
-+  const observation = yield* observationFixture();
-+  expect((yield* observation.refresh()).status).toBe(200);
-+  const before = yield* observation
-+    .read()
-+    .pipe(Effect.flatMap((response) => body(ObservationView, response)));
-+  expect(before.reports).toHaveLength(1);
-+  const saved = before.reports[0]?.result;
-+  expect(saved).not.toBeNull();
-+  const { api, actors, prefix } = observation;
-+  const key = yield* api
-+    .request(actors.owner, "POST", "/api/auth/api-key/create", {
-+      name: "Reporting upgrade MCP retention",
-+    })
-+    .pipe(Effect.flatMap((response) => body(Key, response)));
-+  yield* Effect.addFinalizer(() =>
-+    api
-+      .request(actors.owner, "POST", "/api/auth/api-key/delete", {
-+        keyId: key.id,
-+      })
-+      .pipe(Effect.orDie),
-+  );
-+  const app = yield* api
-+    .request(actors.owner, "POST", `${prefix}/apps/deploy`, {
-+      name: "Reporting upgrade retained MCP view",
-+      files: mcpAppFiles,
-+    })
-+    .pipe(Effect.flatMap((response) => body(App, response)));
-+  const mcp = yield* McpClient;
-+  const connect = () =>
-+    mcp.connect(key.key, "reporting-upgrade-retention", {
-+      organization: actors.organization.id,
-+      mode: "native",
-+      ui: true,
-+    });
-+  const client = yield* connect();
-+  const execution = yield* client.use("Capture the pre-upgrade MCP view", (client, signal) =>
-+    client.callTool(
-+      {
-+        name: "execute",
-+        arguments: {
-+          code: `return await tools[${JSON.stringify(app.slug)}].alpha.open({ text: "Retained across 4.0.18 to 4.0.19" });`,
-+        },
-+      },
-+      undefined,
-+      { signal },
-+    ),
-+  );
-+  const captured = yield* Schema.decodeUnknownEffect(Captured)(execution.structuredContent);
-+  const view = captured.views[0];
-+  if (view === undefined) return yield* Effect.die("The public MCP call did not retain its view");
-+  return {
-+    verify: Effect.gen(function* () {
-+      const after = yield* observation
-+        .read()
-+        .pipe(Effect.flatMap((response) => body(ObservationView, response)));
-+      expect(after.reports).toHaveLength(1);
-+      expect(after.reports[0]?.result).toEqual(saved);
-+      const restarted = yield* connect();
-+      const shown = yield* restarted.use(
-+        "Read the same MCP view after storage upgrade",
-+        (client, signal) =>
-+          client.callTool({ name: "show-app", arguments: { view: view.id } }, undefined, {
-+            signal,
-+          }),
-+      );
-+      expect(shown.isError, JSON.stringify(shown.content)).not.toBe(true);
-+      const payload = (yield* Schema.decodeUnknownEffect(Shown)(shown._meta))["executor/app-view"];
-+      expect(payload.input).toEqual({ text: "Retained across 4.0.18 to 4.0.19" });
-+      expect(payload.result.structuredContent).toEqual({
-+        source: "Alpha",
-+        text: "Retained across 4.0.18 to 4.0.19",
-+      });
-+    }),
-+  };
-+});

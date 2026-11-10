@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/src/compiler.ts b/apps/hosted/cloud/src/compiler.ts
-index 73ea1e2..5e4de70 100644
+index b0b3433..bc4886b 100644
 --- a/apps/hosted/cloud/src/compiler.ts
 +++ b/apps/hosted/cloud/src/compiler.ts
 @@ -1,157 +1,40 @@
@@ -49,7 +49,7 @@ index 73ea1e2..5e4de70 100644
        ...(yield* cloudObservability),
        workersDev: false,
        build: workerBuild("compiler"),
-       compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
+       compatibility: { date: "2026-09-08", flags: ["nodejs_compat", "no_brotli_content_encoding"] },
 -      env: yield* telemetryBindings,
 +      env: {
 +        ...(yield* telemetryBindings),
@@ -618,10 +618,10 @@ index 0000000..135d348
 +    } satisfies CloudCompiler;
 +  });
 diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
-index 3d91bd0..0b960a3 100644
+index 680916b..cf24f2a 100644
 --- a/e2e/ci-selection.ts
 +++ b/e2e/ci-selection.ts
-@@ -355,6 +355,16 @@ const notRunInCi: Partial<
+@@ -357,6 +357,16 @@ const notRunInCi: Partial<
      reason:
        "The Basalt production-ops job runs the concrete registered migration through signed HTTP.",
    },
@@ -639,13 +639,13 @@ index 3d91bd0..0b960a3 100644
      targets: ["cloud"],
      reason:
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
-index b548a9a..c958104 100644
+index af53218..bc86879 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
-@@ -312,7 +314,33 @@ export const startCloudEnvironment = (input: {
+@@ -325,7 +325,33 @@ export const startCloudEnvironment = (input: {
        mode: 0o600,
      });
-     yield* Effect.addFinalizer(() => fs.remove(v1Forward).pipe(Effect.orDie));
+     yield* Effect.addFinalizer(() => fs.remove(v1Handoff).pipe(Effect.orDie));
 +    const cacheFramework =
 +      process.env.BASALT_E2E_COMPILER_CACHE_INHERITED === "1"
 +        ? path.resolve(".local/basalt-framework")
@@ -761,10 +761,10 @@ index 035c73f..1382421 100644
      "released",
      "error",
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index fa6e7ff..6eb6fa8 100644
+index 07d2f73..6d4debb 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -3601,6 +3601,26 @@ export const scenarios = plan({
+@@ -4267,6 +4267,26 @@ export const scenarios = plan({
        local: na("This scenario measures the Cloud catalog installation path."),
      },
    },
@@ -894,7 +894,7 @@ index 0000000..ce3d2c7
 +  },
 +);
 diff --git a/e2e/tests/cloud-compiler.spec.ts b/e2e/tests/cloud-compiler.spec.ts
-index dd61523..8e3a987 100644
+index dd61523..98ec4c1 100644
 --- a/e2e/tests/cloud-compiler.spec.ts
 +++ b/e2e/tests/cloud-compiler.spec.ts
 @@ -15,6 +15,58 @@ import { stalledPackage } from "../support/npm-registry.ts";

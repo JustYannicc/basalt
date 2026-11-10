@@ -1,0 +1,7 @@
+model {
+  extend basalt.deployment {
+    metadata {
+      constraint "Container reconciliation compares the observed image digest with retained publication evidence even when input hashes match. Both source and compiled deployment-provider paths perform that check. State-store probe refusals, recovered instance identity and native plan patches remain authoritative rather than triggering an implicit replacement."
+    }
+  }
+}

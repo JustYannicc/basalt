@@ -1,4 +1,5 @@
 diff --git a/apps/hosted/cloud/src/infrastructure/billing-catalog-seed.ts b/apps/hosted/cloud/src/infrastructure/billing-catalog-seed.ts
+index 591625e..152f41f 100644
 --- a/apps/hosted/cloud/src/infrastructure/billing-catalog-seed.ts
 +++ b/apps/hosted/cloud/src/infrastructure/billing-catalog-seed.ts
 @@ -1,3 +1,7 @@
@@ -20,7 +21,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/billing-catalog-seed.ts b/apps
  import type {
    BillingCatalogDeclaration,
    BillingPlanDeclaration,
-@@ -15,10 +19,16 @@
+@@ -15,10 +19,16 @@ import type {
  /** Seeding is deployment provisioning; its failures never carry the endpoint or its key. */
  export class BillingCatalogSeedFailed extends Schema.TaggedError<BillingCatalogSeedFailed>()(
    "BillingCatalogSeedFailed",
@@ -39,7 +40,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/billing-catalog-seed.ts b/apps
    }
  }
  
-@@ -75,26 +85,52 @@
+@@ -75,26 +85,52 @@ export const seedBillingCatalog = (
    secretKey: Redacted.Redacted<string>,
    declaration: BillingCatalogDeclaration,
  ) =>
@@ -112,9 +113,10 @@ diff --git a/apps/hosted/cloud/src/infrastructure/billing-catalog-seed.ts b/apps
      Effect.withSpan("billing.provisionCatalog"),
    );
 diff --git a/e2e/check-boundary.ts b/e2e/check-boundary.ts
+index fb47553..147e47c 100644
 --- a/e2e/check-boundary.ts
 +++ b/e2e/check-boundary.ts
-@@ -17,6 +17,7 @@
+@@ -18,6 +18,7 @@ const allowed = new Set([
    "vitest",
    "vitest/config",
    "effect/http",
@@ -122,7 +124,7 @@ diff --git a/e2e/check-boundary.ts b/e2e/check-boundary.ts
    "effect/cli",
    "effect",
    "effect/encoding",
-@@ -73,6 +74,12 @@
+@@ -74,6 +75,12 @@ const check = Effect.gen(function* () {
              allowed.has(specifier)
            )
              return;
@@ -136,9 +138,10 @@ diff --git a/e2e/check-boundary.ts b/e2e/check-boundary.ts
            // Application implementations remain forbidden; only this listener adapter may import it.
            if (
 diff --git a/e2e/emulator-failures.config.ts b/e2e/emulator-failures.config.ts
+index d960770..39fae85 100644
 --- a/e2e/emulator-failures.config.ts
 +++ b/e2e/emulator-failures.config.ts
-@@ -2,5 +2,12 @@
+@@ -2,5 +2,12 @@ import { defineConfig } from "vitest/config";
  
  /** Fails emulator calls against a local stand-in for emulators.dev, the way the harness makes them. */
  export default defineConfig({
@@ -153,9 +156,10 @@ diff --git a/e2e/emulator-failures.config.ts b/e2e/emulator-failures.config.ts
 +  },
  });
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+index e0ba489..4d6e955 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
-@@ -17,7 +17,7 @@
+@@ -18,7 +18,7 @@ import { HttpClient } from "effect/http";
  import { startAnalyticsCollector } from "./analytics-collector.ts";
  import { serveShardedOtlpCollector } from "./otlp-collector.ts";
  import { randomBytes } from "node:crypto";
@@ -164,17 +168,17 @@ diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
  import {
    createV1Database,
    startCloudPostgres,
-@@ -212,7 +212,8 @@
-     yield* Effect.addFinalizer(() =>
+@@ -253,7 +253,7 @@ export const startCloudEnvironment = (input: {
        Effect.forEach(
          Object.values(Redacted.value(fixture).services),
--        (service) => emulatorRequest(service.baseUrl, "/_emulate/reset", {}),
-+        (service) =>
-+          provisionEmulatorRequest(service.baseUrl, "/_emulate/reset", {}, Schema.Unknown),
-         { concurrency: 5 },
-       ).pipe(Effect.asVoid, Effect.orDie),
-     );
+         (service) =>
+-          emulatorRequest(service.baseUrl, "/_emulate/reset", {}).pipe(
++          provisionEmulatorRequest(service.baseUrl, "/_emulate/reset", {}, Schema.Unknown).pipe(
+             Effect.catch(() => Console.error("Could not reset one external test emulator.")),
+           ),
+         { concurrency: 5, discard: true },
 diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
+index 1af610c..b89ca00 100644
 --- a/e2e/support/emulators.ts
 +++ b/e2e/support/emulators.ts
 @@ -1,4 +1,9 @@
@@ -187,7 +191,7 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
    Config,
    Context,
    Effect,
-@@ -9,7 +14,7 @@
+@@ -9,7 +14,7 @@ import {
    Schedule,
    Schema,
  } from "effect";
@@ -196,7 +200,7 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
  import { createHash, randomUUID } from "node:crypto";
  import { Target } from "./platform.ts";
  import { roleHost } from "./role-hosts.ts";
-@@ -197,6 +202,11 @@
+@@ -248,6 +253,11 @@ class EmulatorFailed extends Schema.TaggedError<EmulatorFailed>()("EmulatorFaile
    emulator: Schema.optional(Schema.String),
    status: Schema.optional(Schema.Number),
    reason: Schema.optional(Schema.Literals(["timeout", "request", "invalid response"])),
@@ -208,7 +212,7 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
    /** Cloudflare's request id: finds the request in emulators.dev's Workers Logs. */
    ray: Schema.optional(Schema.String),
    /** emulators.dev's own failure report, reduced to its diagnostic fields. */
-@@ -207,6 +217,7 @@
+@@ -258,6 +268,7 @@ class EmulatorFailed extends Schema.TaggedError<EmulatorFailed>()("EmulatorFaile
      const detail = [
        this.status === undefined ? this.reason : `HTTP ${this.status}`,
        this.ray === undefined ? undefined : `cf-ray ${this.ray}`,
@@ -216,7 +220,7 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
      ].filter((part) => part !== undefined);
      const words = (parts: ReadonlyArray<string | undefined>) =>
        parts.filter((part) => part !== undefined).join(" ");
-@@ -281,7 +292,7 @@
+@@ -332,7 +343,7 @@ export const withoutEmulatorTracing = <A, E, R>(effect: Effect.Effect<A, E, R>)
   * body can quote tokens, sign-in codes and addresses. Client tracing is off for these requests,
   * because its span records the full URL as `url.full` and `server.address`.
   */
@@ -225,7 +229,7 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
    origin: string,
    path: string,
    payload?: unknown,
-@@ -299,32 +310,115 @@
+@@ -350,33 +361,116 @@ export const emulatorRequest = (
        let request = HttpClientRequest.make(method)(`${origin}${path}`);
        if (token !== undefined)
          request = HttpClientRequest.setHeader(request, "authorization", `Bearer ${token}`);
@@ -297,7 +301,7 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
 -    ),
    );
  };
-+
+ 
 +export const emulatorRequest = (...args: Parameters<typeof emulatorRequestAttempt>) =>
 +  emulatorRequestAttempt(...args).pipe(
 +    Effect.map(({ body }) => body),
@@ -352,10 +356,11 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
 +        attempts,
 +      }),
 +  );
- 
++
  /**
   * Provision actual hosted instances and credentials through emulators.dev's control plane, for a
-@@ -335,10 +429,13 @@
+  * Cloud deployment at `origin`. Cloud's providers return sign-in to its edge, which stands in
+@@ -386,10 +480,13 @@ export const createEmulatorFixture = (origin: string) =>
    Effect.gen(function* () {
      const instance = `executor-onboarding-${randomUUID()}`;
      const create = (service: string) =>
@@ -373,7 +378,7 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
        );
      const oauth = (service: "google" | "github") =>
        Effect.gen(function* () {
-@@ -378,15 +475,15 @@
+@@ -429,15 +526,15 @@ export const createEmulatorFixture = (origin: string) =>
      const keyed = (service: string, token?: string) =>
        Effect.gen(function* () {
          const instance = yield* create(service);
@@ -400,6 +405,7 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
        });
 diff --git a/e2e/tests/emulator-fixture-provisioning.spec.ts b/e2e/tests/emulator-fixture-provisioning.spec.ts
 new file mode 100644
+index 0000000..48fdf3e
 --- /dev/null
 +++ b/e2e/tests/emulator-fixture-provisioning.spec.ts
 @@ -0,0 +1,116 @@
@@ -521,6 +527,7 @@ new file mode 100644
 +});
 diff --git a/e2e/tests/emulator-provisioning.spec.ts b/e2e/tests/emulator-provisioning.spec.ts
 new file mode 100644
+index 0000000..74da701
 --- /dev/null
 +++ b/e2e/tests/emulator-provisioning.spec.ts
 @@ -0,0 +1,262 @@
@@ -787,6 +794,7 @@ new file mode 100644
 +  );
 +});
 diff --git a/packages/utils/package.json b/packages/utils/package.json
+index 9f94e31..da0e74c 100644
 --- a/packages/utils/package.json
 +++ b/packages/utils/package.json
 @@ -4,6 +4,7 @@
@@ -799,6 +807,7 @@ diff --git a/packages/utils/package.json b/packages/utils/package.json
      "./url-policy": "./src/url-policy.ts",
 diff --git a/packages/utils/src/provisioning-request.ts b/packages/utils/src/provisioning-request.ts
 new file mode 100644
+index 0000000..98ed172
 --- /dev/null
 +++ b/packages/utils/src/provisioning-request.ts
 @@ -0,0 +1,53 @@

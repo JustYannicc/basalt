@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Encrypted workflow mode stores parameters and step outcomes in the encrypted result store and gives the runtime opaque references and hashed step names. Retained unencrypted runs keep their original driver. Import workflows retain their billing meter and environment while using the encrypted result runner."
+    }
+  }
+}

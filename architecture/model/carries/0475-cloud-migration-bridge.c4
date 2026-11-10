@@ -1,0 +1,7 @@
+model {
+  extend basalt.deployment {
+    metadata {
+      constraint "Cloud journal IDs 8, 9 and 10 preserve production receipts, database identity and tool policies; upstream operations 8 through 13 append as 14 through 19. Hosted IDs 1 through 18 keep their meanings. Every fresh production attempt from the old tools pin to the v2 tools pin reads exactly one public.private_executor_settings version row and requires the unchanged 4.0.29 marker before guardMigration or numbered migrations. Missing, duplicate, mismatched, unreadable or unretained evidence refuses the exact candidate and attempt with a safe receipt; preview and self-host do not inherit production policy. Product SQL rollback, independent Better Auth commits, source-write frontiers and post-commit provisioning retain their existing boundaries."
+    }
+  }
+}

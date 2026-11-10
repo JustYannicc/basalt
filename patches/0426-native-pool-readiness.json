@@ -1,7 +1,7 @@
 {
   "identity": "executor-native-pool-readiness",
   "file": "0426-native-pool-readiness.patch",
-  "content_sha256": "5fabac167d38195a221becfe4e090b42e866f95e59084ad04507d9fcd51e556c",
+  "content_sha256": "e69c9b5019a247bf71e54eb36c33d6c941ed30eeb9456cff88bf8d759c11b269",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

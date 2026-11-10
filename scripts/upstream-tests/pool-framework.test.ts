@@ -75,6 +75,15 @@ test(
     assert.equal(JSON.parse(files["framework-reference.json"]!).version, poolFrameworkVersion);
     const { appProtocol } = await load("packages/sdk/src/implementation/app-protocols.ts");
     await Effect.runPromise(appProtocol(runtime.protocol));
+    const { admitFramework } = await load("packages/sdk/src/implementation/framework-provenance.ts");
+    const admitted = await Effect.runPromise(admitFramework({
+      framework: { version: runtime.version, modules: runtime.server },
+      protocol: runtime.protocol,
+      browser: runtime.browser,
+    }));
+    assert.equal(admitted.version, poolFrameworkVersion);
+    assert.equal(admitted.protocol, frameworkProtocol);
+
     const author = await load("packages/apps/dist/js/index.js");
     const host = await load("packages/apps/dist/js/host.js");
     const handler = host.createAppHandler(

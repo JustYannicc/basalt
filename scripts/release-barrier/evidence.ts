@@ -20,6 +20,7 @@ import type { VerificationAdmission } from "./plan-admission.ts";
 import { sealRecovery } from "./recovery-envelope.ts";
 import { declaredEvidence } from "./declared-evidence.ts";
 import { classEvidence } from "./class-evidence.ts";
+import { executorMarkerSummary } from "./executor-marker-evidence.ts";
 
 const write = async (directory: string, name: string, value: unknown) => {
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -47,7 +48,8 @@ export function releaseEvidence(directory: string, candidate: string, encryption
     ...declared,
     expansion: classes.expansion,
     async summary(path: string | undefined, disposition: "complete" | "failed") {
-      const text = classes.summary() + declared.summary(disposition, latest?.activated ?? []);
+      const marker = await executorMarkerSummary(directory, candidate, process.env.BASALT_RELEASE_ATTEMPT);
+      const text = classes.summary() + declared.summary(disposition, latest?.activated ?? []) + marker;
       if (path && text) await appendFile(path, text);
     },
     async desired(value: unknown) {

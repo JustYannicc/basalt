@@ -27,10 +27,10 @@ index 692775b..02f37f8 100644
      Effect.catchTags({
        OrganizationForbidden: () => Effect.succeed(false),
 diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/server/src/implementation/accounts.ts
-index 9a11464..d691d32 100644
+index 9766a37..052ad95 100644
 --- a/apps/hosted/server/src/implementation/accounts.ts
 +++ b/apps/hosted/server/src/implementation/accounts.ts
-@@ -121,6 +121,7 @@ export const getAccount = Effect.gen(function* () {
+@@ -123,6 +123,7 @@ export const getAccount = Effect.gen(function* () {
    const [status] = yield* visibleAccountStatuses([
      { account: metadata, health: visibleHealth(health, apps) },
    ]);
@@ -38,7 +38,7 @@ index 9a11464..d691d32 100644
    return {
      ...status!,
      provider,
-@@ -130,7 +131,8 @@ export const getAccount = Effect.gen(function* () {
+@@ -132,7 +133,8 @@ export const getAccount = Effect.gen(function* () {
      canManage: access.canManage,
      canReconnect:
        access.canManage &&
@@ -49,17 +49,17 @@ index 9a11464..d691d32 100644
  });
  /** Keep only the checks of apps the caller can see. */
 diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
-index bba0c10..366f1eb 100644
+index b3efc26..da8e59e 100644
 --- a/apps/hosted/server/src/implementation/app-ui.ts
 +++ b/apps/hosted/server/src/implementation/app-ui.ts
-@@ -740,6 +740,7 @@ export const hostedAppUi = <R = never>(
-         // The page names the caller's own accounts; the app's are not theirs to see.
-         accountIds: accounts?.user,
-         accounts: yield* appUiPhase("document-account-notice", accountNotice),
-+        accountsHref: fix.href,
-         parentOrigin: addresses.embedded ? addresses.dashboardOrigin : undefined,
-         version: version.id,
-         asset: (path) => assets(version, path),
+@@ -764,6 +764,7 @@ export const hostedAppUi = <R = never>(
+       // The page names the caller's own accounts; the app's are not theirs to see.
+       accountIds: accounts?.user,
+       accounts: notice,
++      accountsHref: fix.href,
+       parentOrigin: addresses.embedded ? addresses.dashboardOrigin : undefined,
+       version: version.id,
+       asset: (path) => (path === "index.html" ? index : assets(version, path)),
 diff --git a/apps/local/server/src/implementation/app-ui.ts b/apps/local/server/src/implementation/app-ui.ts
 index 347ec73..fbe0f22 100644
 --- a/apps/local/server/src/implementation/app-ui.ts
@@ -8706,10 +8706,10 @@ index 0000000..50bebb1
 +]);
 +export type ConnectCommand = typeof ConnectCommand.Type;
 diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/src/contracts/protocols/current.ts
-index 924cfde..38c3576 100644
+index 5235bd4..303789f 100644
 --- a/packages/apps/src/contracts/protocols/current.ts
 +++ b/packages/apps/src/contracts/protocols/current.ts
-@@ -137,7 +137,12 @@ export const DeclaredAuthMethod = Schema.Union([
+@@ -145,7 +145,12 @@ export const DeclaredAuthMethod = Schema.Union([
      response: JsonObject,
      ...exposure,
    }),
@@ -8769,7 +8769,7 @@ index 0b1f052..b178c0f 100644
              case "secrets":
                auth.set(name, {
 diff --git a/packages/apps/src/implementation/mcp-catalog.ts b/packages/apps/src/implementation/mcp-catalog.ts
-index b57ff85..f81eba1 100644
+index f0d08ce..11d6b0b 100644
 --- a/packages/apps/src/implementation/mcp-catalog.ts
 +++ b/packages/apps/src/implementation/mcp-catalog.ts
 @@ -61,13 +61,16 @@ const makeMcpCatalog = (options: McpCatalogOptions, kinds: OperationKinds, profi
@@ -9080,10 +9080,10 @@ index 06a2705..754207d 100644
                app: input.target.app,
                slot: input.target.requirement,
 diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
-index 1422ecd..5cc8634 100644
+index 36bd78c..831d66c 100644
 --- a/packages/sdk/src/implementation/app-protocols.ts
 +++ b/packages/sdk/src/implementation/app-protocols.ts
-@@ -314,6 +314,7 @@ const protocol33: AppProtocol = { ...protocol31, version: 33, nodeEntry: nodeApp
+@@ -352,6 +352,7 @@ const protocol33: AppProtocol = { ...protocol31, version: 33, nodeEntry: nodeApp
  const protocol34: AppProtocol = { ...protocol33, version: 34, nodeEntry: nodeAppEntry(34) };
  const protocol35: AppProtocol = { ...protocol34, version: 35, nodeEntry: nodeAppEntry(35) };
  const protocol36: AppProtocol = { ...protocol35, version: 36, nodeEntry: nodeAppEntry(36) };
@@ -9091,7 +9091,7 @@ index 1422ecd..5cc8634 100644
  
  /**
   * Bundles of protocol 12 and earlier read one flat record of requirements and accounts. They
-@@ -543,6 +544,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
+@@ -582,6 +583,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
      protocol34,
      protocol35,
      protocol36,
@@ -9099,7 +9099,7 @@ index 1422ecd..5cc8634 100644
    ].map((protocol) => [
      protocol.version,
      protocol.version >= 36
-@@ -587,7 +589,27 @@ const withoutUiProfile = (command: HostRequest): HostRequest => {
+@@ -626,7 +628,27 @@ const withoutUiProfile = (command: HostRequest): HostRequest => {
  export const appProtocol = (
    version: number,
  ): Effect.Effect<AppProtocol, RuntimeProtocolUnsupported> => {
@@ -9128,7 +9128,7 @@ index 1422ecd..5cc8634 100644
    return protocol === undefined
      ? Effect.fail(
          new RuntimeProtocolUnsupported({ protocol: version, supported: supportedProtocols }),
-@@ -631,6 +653,11 @@ export const interactiveProtocolAdditions = [
+@@ -670,6 +692,11 @@ export const interactiveProtocolAdditions = [
  ];
  
  export const interactiveProtocolAdaptations = [

@@ -65,7 +65,7 @@ index 2c95e7f..30e249a 100644
        and exists (select 1 from executor_deployments d where d.code = app.code
          and d.requirements::jsonb -> 'accounts' -> 'pool' ->> 'provider' = a.provider)
 diff --git a/apps/hosted/server/src/contracts/api.ts b/apps/hosted/server/src/contracts/api.ts
-index 562c186..3be0bb3 100644
+index 2e2a36b..ba9620b 100644
 --- a/apps/hosted/server/src/contracts/api.ts
 +++ b/apps/hosted/server/src/contracts/api.ts
 @@ -4,6 +4,7 @@ import { HostedWorkflowInputs } from "./workflow-inputs.ts";
@@ -76,7 +76,7 @@ index 562c186..3be0bb3 100644
  import { HostedOAuthClients } from "./oauth-clients.ts";
  import { HostedSchedules } from "./schedules.ts";
  import { HostedAppAccess, HostedAppManagementApi, HostedFrameworkApi } from "./app-management.ts";
-@@ -183,6 +184,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
+@@ -189,6 +190,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
      HostedGroups,
      HostedResourceAccess,
      HostedPoolUsage,
@@ -185,7 +185,7 @@ index 0000000..975fec1
 +  )
 +  .middleware(RequireOrganization);
 diff --git a/apps/hosted/server/src/implementation/api.ts b/apps/hosted/server/src/implementation/api.ts
-index 421266d..2f25bf9 100644
+index bc6162c..c500d66 100644
 --- a/apps/hosted/server/src/implementation/api.ts
 +++ b/apps/hosted/server/src/implementation/api.ts
 @@ -10,6 +10,7 @@ import { hostedAppAccess } from "../app-management.ts";
@@ -196,7 +196,7 @@ index 421266d..2f25bf9 100644
  import { hostedOAuthClientHandlers } from "./oauth-clients.ts";
  import { hostedScheduleHandlers } from "./schedules.ts";
  /** Shared hosted handlers. No Cloudflare, Node, or local-product dependencies. */
-@@ -84,6 +85,7 @@ export const hostedHandlers = Layer.mergeAll(
+@@ -85,6 +86,7 @@ export const hostedHandlers = Layer.mergeAll(
    hostedGroupHandlers,
    hostedResourceAccessHandlers,
    hostedPoolUsageHandlers,
@@ -832,10 +832,10 @@ index 0000000..ef65db3
 +  handlers.handle("create", ({ payload }) => createPool(payload)),
 +);
 diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted/server/src/implementation/provisioning.ts
-index bb59522..1c0aef7 100644
+index f2d05e2..6a75327 100644
 --- a/apps/hosted/server/src/implementation/provisioning.ts
 +++ b/apps/hosted/server/src/implementation/provisioning.ts
-@@ -146,8 +146,10 @@ const managers = (
+@@ -147,8 +147,10 @@ const managers = (
        and (${user ?? null}::text is null or member."userId" = ${user ?? null}::text)
        and ((member.role in ('owner', 'admin') and (${requireVerifiedEmail} = false or "user"."emailVerified" = true))
          or (${rotationOnly} = true and ${user ?? null}::text is not null and exists (
@@ -849,11 +849,11 @@ index bb59522..1c0aef7 100644
    });
  
 diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
-index 369f6c0..b7701f8 100644
+index 8b8d758..5401b0e 100644
 --- a/apps/hosted/web/src/contracts/errors.ts
 +++ b/apps/hosted/web/src/contracts/errors.ts
-@@ -59,6 +59,8 @@ const errorMessage = Match.type<HostedError>().pipe(
-     AppAccessDenied: () => "You do not have permission to change this app.",
+@@ -60,6 +60,8 @@ const errorMessage = Match.type<HostedError>().pipe(
+     FullListingNameRequired: (error) => `${error.description} ${error.recovery.action}`,
      AppSlugTaken: () => "Another app name produces this address. Choose a different name.",
      AppNameTaken: () => "An app already uses this name. Choose another name.",
 +    PoolCreationUnavailable: ({ message }) => message,
@@ -862,7 +862,7 @@ index 369f6c0..b7701f8 100644
        "This app changed while you were editing. Reload its source and try again.",
      AppDataNotFound: () => "This data operation is no longer available. Reload the app.",
 diff --git a/apps/hosted/web/src/implementation/pages/add-app.tsx b/apps/hosted/web/src/implementation/pages/add-app.tsx
-index ad8a6b0..8aa97a2 100644
+index 241d0ff..d97530f 100644
 --- a/apps/hosted/web/src/implementation/pages/add-app.tsx
 +++ b/apps/hosted/web/src/implementation/pages/add-app.tsx
 @@ -1,6 +1,6 @@
@@ -870,10 +870,10 @@ index ad8a6b0..8aa97a2 100644
  import { HostedFailure, useDashboardAtoms } from "../components/dashboard-bindings.tsx";
 -import { Link } from "@tanstack/react-router";
 +import { Link, useNavigate } from "@tanstack/react-router";
- import { Button } from "@executor-js/ui/components/button";
  import { CatalogPage as Catalog } from "@executor-js/ui/dashboard/catalog";
- import { HugeiconsIcon } from "@hugeicons/react";
-@@ -12,6 +12,7 @@ export function AddAppPage() {
+ import { useOrganizationRoute } from "../components/organization.tsx";
+ import { MakeYourOwn, AddAppBack } from "../components/add-app.tsx";
+@@ -10,6 +10,7 @@ export function AddAppPage() {
    const atoms = useDashboardAtoms();
    useAtomMount(atoms.catalog);
    const { slug: organizationSlug } = useOrganizationRoute();
@@ -881,7 +881,7 @@ index ad8a6b0..8aa97a2 100644
    return (
      <Catalog
        query={atoms.catalog}
-@@ -19,13 +20,20 @@ export function AddAppPage() {
+@@ -17,13 +18,20 @@ export function AddAppPage() {
        mutation={atoms.install}
        InstallFailure={HostedFailure}
        inventory={atoms.inventory}
@@ -903,9 +903,9 @@ index ad8a6b0..8aa97a2 100644
 +          {children}
          </Link>
        )}
-       back={
+       back={<AddAppBack organizationSlug={organizationSlug} />}
 diff --git a/apps/local/web/src/implementation/pages/catalog.tsx b/apps/local/web/src/implementation/pages/catalog.tsx
-index b0ddcfd..09dde33 100644
+index 891ca70..bcc662c 100644
 --- a/apps/local/web/src/implementation/pages/catalog.tsx
 +++ b/apps/local/web/src/implementation/pages/catalog.tsx
 @@ -1,6 +1,6 @@
@@ -914,7 +914,7 @@ index b0ddcfd..09dde33 100644
 -import { Link } from "@tanstack/react-router";
 +import { Link, useNavigate } from "@tanstack/react-router";
  import { CatalogPage as Catalog } from "@executor-js/ui/dashboard/catalog";
- import { Button } from "@executor-js/ui/components/button";
+ import { MakeYourOwn } from "../components/add-app.tsx";
  import { HugeiconsIcon } from "@hugeicons/react";
 @@ -8,6 +8,7 @@ import { ArrowLeft02Icon } from "@hugeicons/core-free-icons";
  
@@ -1295,10 +1295,10 @@ index 7ad5acc..3ae1e98 100644
      ],
    );
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 202a23f..dc91eb1 100644
+index b101678..982728f 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -8472,6 +8472,30 @@ export const scenarios = plan({
+@@ -9660,6 +9660,30 @@ export const scenarios = plan({
        local: na("Uses hosted organization audiences and roles."),
      },
    },
@@ -1630,7 +1630,7 @@ index 0000000..3af0834
 +  );
 +});
 diff --git a/e2e/tests/catalog-official-apps.spec.ts b/e2e/tests/catalog-official-apps.spec.ts
-index c4917ed..e717cce 100644
+index 24457fe..67f5632 100644
 --- a/e2e/tests/catalog-official-apps.spec.ts
 +++ b/e2e/tests/catalog-official-apps.spec.ts
 @@ -68,11 +68,11 @@ layer(HostedLive, { excludeTestServices: true })("Official app catalog", (it) =>
@@ -1647,7 +1647,7 @@ index c4917ed..e717cce 100644
            officialApps.mismatched.name,
          ]);
          const mail = entries.find((entry) => entry.id === officialApps.mail.id);
-@@ -320,20 +320,9 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
+@@ -350,20 +350,9 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
          yield* browser.use("Add the renamed app", (page) =>
            page.getByRole("dialog").getByRole("button", { name: "Add app", exact: true }).click(),
          );
@@ -1670,7 +1670,7 @@ index c4917ed..e717cce 100644
          const added = (yield* body(
            Inventory,
            yield* api.request(actors.owner, "GET", `${prefix}/inventory`),
-@@ -342,10 +331,17 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
+@@ -372,10 +361,17 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
          yield* Effect.addFinalizer(() =>
            api.request(actors.owner, "DELETE", `${prefix}/apps/${added.id}`).pipe(Effect.orDie),
          );
@@ -1683,7 +1683,7 @@ index c4917ed..e717cce 100644
 +        yield* browser.checkpoint("The added app opens its own account setup");
  
          // A fresh visit still knows both apps are installed.
--        yield* browser.use("Reload Add app", (page) => page.reload());
+-        yield* browser.use("Reload the app catalog", (page) => page.reload());
 +        yield* browser.use("Revisit Add app", (page) =>
 +          page.goto(`/org/${actors.organization.slug}/apps/add`),
 +        );
@@ -1979,7 +1979,7 @@ index 4652bea..f0574d8 100644
  export { detectMcpAccess } from "./implementation/detection.ts";
  export { deployedCopy } from "./implementation/install.ts";
 diff --git a/packages/ui/src/contracts/dashboard.ts b/packages/ui/src/contracts/dashboard.ts
-index d2e9f51..a2c5898 100644
+index c3b0070..7755e5c 100644
 --- a/packages/ui/src/contracts/dashboard.ts
 +++ b/packages/ui/src/contracts/dashboard.ts
 @@ -110,6 +110,8 @@ export interface AppVersionsProps<E> {
@@ -2250,7 +2250,7 @@ index 0000000..81f1596
 +}
 diff --git a/packages/ui/src/implementation/dashboard/catalog-row-actions.tsx b/packages/ui/src/implementation/dashboard/catalog-row-actions.tsx
 new file mode 100644
-index 0000000..8c41e4b
+index 0000000..f53d9b7
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/catalog-row-actions.tsx
 @@ -0,0 +1,242 @@
@@ -2310,7 +2310,7 @@ index 0000000..8c41e4b
 +        <Button
 +          type="button"
 +          variant="outline"
-+          size="sm"
++          size="sm" className="min-w-21"
 +          aria-label={`Add ${label}`}
 +          disabled={adding}
 +          onClick={onAdd}
@@ -2322,7 +2322,7 @@ index 0000000..8c41e4b
 +  return (
 +    <div className={actionsClass}>
 +      {instances.length === 1 ? (
-+        <Button variant="outline" size="sm" asChild title={`Open ${only.name}`}>
++        <Button variant="outline" size="sm" className="min-w-21" asChild title={`Open ${only.name}`}>
 +          {open(only, "Open")}
 +        </Button>
 +      ) : (
@@ -2332,7 +2332,7 @@ index 0000000..8c41e4b
 +            <Button
 +              type="button"
 +              variant="outline"
-+              size="sm"
++              size="sm" className="min-w-21"
 +              aria-label={`Open ${label}: choose one of ${instances.length}`}
 +            >
 +              Open
@@ -2497,7 +2497,7 @@ index 0000000..8c41e4b
 +  );
 +}
 diff --git a/packages/ui/src/implementation/dashboard/catalog.tsx b/packages/ui/src/implementation/dashboard/catalog.tsx
-index 0699a14..972f42b 100644
+index 01e06c6..00e7030 100644
 --- a/packages/ui/src/implementation/dashboard/catalog.tsx
 +++ b/packages/ui/src/implementation/dashboard/catalog.tsx
 @@ -1,6 +1,6 @@
@@ -2508,7 +2508,7 @@ index 0699a14..972f42b 100644
  import { Cause, Effect, Exit, Option, Predicate } from "effect";
  import type { App } from "@executor-js/sdk";
  import type { CatalogEntry, CatalogConnectionNotice } from "@executor-js/catalog/contracts";
-@@ -25,6 +25,11 @@ import { Input } from "../components/input.tsx";
+@@ -26,6 +26,11 @@ import { Input } from "../components/input.tsx";
  import { useIncrementalList } from "./incremental-list.tsx";
  import { useProductBrand } from "../hooks/product-brand.ts";
  import { appDisplayName } from "../../contracts/product-brand.ts";
@@ -2520,7 +2520,7 @@ index 0699a14..972f42b 100644
  
  /**
   * The installed copy of each catalog package, by package name. Installs record the catalog package
-@@ -61,12 +66,12 @@ export function useCatalogInstall<IE>(
+@@ -62,12 +67,12 @@ export function useCatalogInstall<IE>(
  }
  
  /**
@@ -2539,16 +2539,16 @@ index 0699a14..972f42b 100644
   */
  export function CatalogPage<E, IE>({
    query,
-@@ -77,6 +82,7 @@ export function CatalogPage<E, IE>({
-   action,
+@@ -79,6 +84,7 @@ export function CatalogPage<E, IE>({
+   create,
    inventory,
    open,
 +  onInstalled,
  }: QueryProps<readonly CatalogEntry[], E> & {
    /** The install command for one catalog entry; each row has its own. */
    readonly mutation: (entry: string) => MutationProps<InstallApp, AppSummary, IE>["mutation"];
-@@ -85,41 +91,33 @@ export function CatalogPage<E, IE>({
-   readonly action?: ReactNode;
+@@ -90,41 +96,33 @@ export function CatalogPage<E, IE>({
+   readonly create?: ReactNode;
    /** The apps already installed; a failed read just leaves every row on Add. */
    readonly inventory: Query<Inventory, unknown>;
 -  /** A link to the installed app, rendered inside the row's Open button. */
@@ -2605,7 +2605,7 @@ index 0699a14..972f42b 100644
        setAdding((current) => {
          const next = new Set(current);
          next.delete(entry.id);
-@@ -127,13 +125,43 @@ export function CatalogPage<E, IE>({
+@@ -132,13 +130,43 @@ export function CatalogPage<E, IE>({
        });
      }
    };
@@ -2651,7 +2651,7 @@ index 0699a14..972f42b 100644
      .filter((entry) =>
        `${entry.name} ${entry.package} ${entry.category ?? ""} ${entry.description}`
          .toLowerCase()
-@@ -186,42 +214,46 @@ export function CatalogPage<E, IE>({
+@@ -186,39 +214,35 @@ export function CatalogPage<E, IE>({
        ) : (
          <>
            <div className="catalog-list border-t border-t-border">
@@ -2695,7 +2695,7 @@ index 0699a14..972f42b 100644
 -                {(() => {
 -                  const installed = installedByPackage.get(entry.package);
 -                  return installed ? (
--                    <Button variant="outline" size="sm" asChild>
+-                    <Button variant="outline" size="sm" className="min-w-21" asChild>
 -                      {open(installed)}
 -                    </Button>
 -                  ) : (
@@ -2703,6 +2703,7 @@ index 0699a14..972f42b 100644
 -                      type="button"
 -                      variant="outline"
 -                      size="sm"
+-                      className="min-w-21"
 -                      aria-label={`Add ${entryName(entry)}`}
 -                      disabled={adding.has(entry.id)}
 -                      onClick={() => void add(entry, entry.name)}
@@ -2717,6 +2718,9 @@ index 0699a14..972f42b 100644
 +            })}
            </div>
            {visible.sentinel}
+           {create && (
+@@ -228,6 +252,13 @@ export function CatalogPage<E, IE>({
+           )}
          </>
        )}
 +      <AddAnotherDialog

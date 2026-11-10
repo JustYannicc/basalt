@@ -1,257 +1,5 @@
-diff --git a/packages/catalog/src/contracts/catalog.ts b/packages/catalog/src/contracts/catalog.ts
---- a/packages/catalog/src/contracts/catalog.ts
-+++ b/packages/catalog/src/contracts/catalog.ts
-@@ -55,6 +55,12 @@ export const CatalogEntry = Schema.Struct({
-   oauthDeferrals: Schema.optionalKey(Schema.Array(CatalogOAuthDeferral)),
-   connectionGuidance: Schema.optionalKey(Schema.Array(CatalogConnectionGuidance)),
-   toolSections: Schema.optionalKey(Schema.Array(CatalogToolSection)),
-+  /**
-+   * The tools each account requirement runs, by requirement, where the app feeds its requirements
-+   * different tools, such as "Clerk MCP tools" for a sign-in and "Clerk REST API tools" for a
-+   * key. It only describes the app; it never declares credentials or changes saved accounts.
-+   */
-+  requirementTools: Schema.optionalKey(Schema.Record(Schema.NonEmptyString, Schema.NonEmptyString)),
-   category: Schema.optionalKey(Schema.String),
-   icons: Schema.Array(CatalogIcon),
-   /** Optional operator notes; they do not change the installed app or its provider. */
-diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
---- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
-+++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-@@ -92,9 +92,10 @@ import { requirementTitles } from "./requirement-titles.ts";
- import {
-   serviceGroups,
-   serviceMethods,
--  servicePart,
-   serviceTitle,
--  toolLimits,
-+  namesEveryRequirement,
-+  rowNote,
-+  type RequirementTools,
-   type ServiceMethod,
-   type ToolSectionLimit,
- } from "./service-groups.ts";
-@@ -661,6 +662,7 @@ export function AppAccounts<E>({
-   methods,
-   connections,
-   toolSections,
-+  requirementTools,
-   Failure,
- }: {
-   readonly app: App;
-@@ -683,6 +685,8 @@ export function AppAccounts<E>({
-    * section holds several requirements of a service, the other accounts say they can't run them.
-    */
-   readonly toolSections?: readonly ToolSectionLimit[] | undefined;
-+  /** The tools each requirement runs, from the app's catalog listing. */
-+  readonly requirementTools?: RequirementTools | undefined;
-   readonly Failure: ComponentType<FailureProps<E>>;
- }) {
-   useRevalidateChecks(
-@@ -734,6 +738,7 @@ export function AppAccounts<E>({
-           methods={methods}
-           connections={connections}
-           toolSections={toolSections}
-+          requirementTools={requirementTools}
-           showProvisionedProblems={repairs.app}
-           Failure={Failure}
-         />
-@@ -750,6 +755,7 @@ export function AppAccounts<E>({
-           methods={methods}
-           connections={connections}
-           toolSections={toolSections}
-+          requirementTools={requirementTools}
-           showProvisionedProblems={repairs.user}
-           Failure={Failure}
-         />
-@@ -767,6 +773,7 @@ interface ScopeProps<E> {
-   readonly methods?: RequirementMethods | undefined;
-   readonly connections?: RequirementConnections | undefined;
-   readonly toolSections?: readonly ToolSectionLimit[] | undefined;
-+  readonly requirementTools?: RequirementTools | undefined;
-   readonly Failure: ComponentType<FailureProps<E>>;
- }
- 
-@@ -1133,9 +1140,10 @@ function ServiceView<E>({
-     group.flatMap(([slot, requirement]) => methodStates(props.methods, slot, requirement)),
-   );
-   const note = (slot: string) => (method: string) =>
--    [servicePart(group, slot), toolLimits(props.toolSections, group, slot, method)]
--      .filter((part) => part !== undefined)
--      .join(" · ") || undefined;
-+    rowNote(group, slot, method, {
-+      requirementTools: props.requirementTools,
-+      toolSections: props.toolSections,
-+    });
-   return (
-     <section
-       aria-label={title}
-@@ -1209,6 +1217,7 @@ function ServiceConnect<E>({
-   title,
-   methods,
-   connections,
-+  requirementTools,
- }: ScopeProps<E> & {
-   readonly group: readonly RequirementEntry[];
-   readonly edit: LinkEditing<E>;
-@@ -1219,6 +1228,7 @@ function ServiceConnect<E>({
-   const states = group.flatMap(([slot, requirement]) =>
-     methodStates(methods, slot, requirement).map((state) => ({ ...state, slot, requirement })),
-   );
-+  const tools = namesEveryRequirement(requirementTools, group) ? requirementTools : undefined;
-   const entries = serviceMethods(
-     states.flatMap((state) =>
-       state.reason === undefined
-@@ -1228,6 +1238,7 @@ function ServiceConnect<E>({
-               requirement: state.requirement,
-               method: state.name,
-               label: state.label,
-+              ...(tools === undefined ? {} : { tools: tools[state.slot] }),
-             },
-           ]
-         : [],
-@@ -1318,9 +1329,24 @@ function ServiceMethodItem<E>({
-   readonly onConnect: (entry: ServiceMethod) => void;
- }) {
-   const allowed = useCanAdd(edit, entry.slot);
-+  const toolsId = useId();
-   return (
--    <DropdownMenuItem disabled={!allowed} onSelect={() => onConnect(entry)}>
--      {entry.label}
-+    // The method's label names the item; the tools it reaches describe it.
-+    <DropdownMenuItem
-+      disabled={!allowed}
-+      onSelect={() => onConnect(entry)}
-+      aria-label={entry.label}
-+      textValue={entry.label}
-+      {...(entry.tools === undefined ? {} : { "aria-describedby": toolsId })}
-+    >
-+      <span className="grid min-w-0">
-+        {entry.label}
-+        {entry.tools !== undefined && (
-+          <span id={toolsId} className="text-xs text-muted-foreground">
-+            {entry.tools}
-+          </span>
-+        )}
-+      </span>
-     </DropdownMenuItem>
-   );
- }
-diff --git a/packages/ui/src/implementation/dashboard/service-groups.ts b/packages/ui/src/implementation/dashboard/service-groups.ts
---- a/packages/ui/src/implementation/dashboard/service-groups.ts
-+++ b/packages/ui/src/implementation/dashboard/service-groups.ts
-@@ -72,12 +72,15 @@ export interface ServiceMethod {
-   readonly requirement: AccountRequirement;
-   readonly method: string;
-   readonly label: string;
-+  /** The tools the method's requirement runs, where the catalog names them. */
-+  readonly tools?: string | undefined;
- }
- 
- /**
-  * The service's connect menu, from each requirement's open methods in declaration order. A label
-  * another requirement of the same name already offers is left out, since both open the same kind
-- * of sign-in and the earlier requirement is the one the app declares first. Where requirements of
-+ * of sign-in and the earlier requirement is the one the app declares first, unless the catalog
-+ * names different tools for them; their tools then tell them apart. Where requirements of
-  * different names offer the same label, each names its requirement, such as "API key · Neon MCP".
-  */
- export const serviceMethods = (methods: readonly ServiceMethod[]): readonly ServiceMethod[] => {
-@@ -86,10 +89,17 @@ export const serviceMethods = (methods: readonly ServiceMethod[]): readonly Serv
-     (entry, index) =>
-       !methods
-         .slice(0, index)
--        .some((earlier) => earlier.label === entry.label && nameOf(earlier) === nameOf(entry)),
-+        .some(
-+          (earlier) =>
-+            earlier.label === entry.label &&
-+            nameOf(earlier) === nameOf(entry) &&
-+            earlier.tools === entry.tools,
-+        ),
-   );
-   return kept.map((entry) =>
--    kept.some((other) => other !== entry && other.label === entry.label)
-+    kept.some(
-+      (other) => other !== entry && other.label === entry.label && nameOf(other) !== nameOf(entry),
-+    )
-       ? { ...entry, label: `${entry.label} · ${nameOf(entry)}` }
-       : entry,
-   );
-@@ -98,30 +108,59 @@ export const serviceMethods = (methods: readonly ServiceMethod[]): readonly Serv
- /** The fields of a catalog tool section that say which requirement and method run its tools. */
- export type ToolSectionLimit = Pick<CatalogToolSection, "requirement" | "method" | "title">;
- 
-+/** The tools each requirement of an app runs, by requirement, from its catalog listing. */
-+export type RequirementTools = Readonly<Record<string, string>>;
-+
-+/** The catalog names the tools of every requirement in the section. */
-+export const namesEveryRequirement = (
-+  tools: RequirementTools | undefined,
-+  group: readonly RequirementEntry[],
-+) => tools !== undefined && group.every(([slot]) => tools[slot] !== undefined);
-+
-+/**
-+ * Which part of its service an account serves, where the section joins requirements of different
-+ * names, such as "For GitLab MCP"; nothing for the part the section is named after.
-+ */
-+export const servicePart = (group: readonly RequirementEntry[], slot: string) => {
-+  const name = group.find(([other]) => other === slot)?.[1].definition.name.trim();
-+  return name === undefined || name === serviceTitle(group) ? undefined : `For ${name}`;
-+};
-+
- /**
-- * What an account of one requirement and method can't run beside the rest of its service: each
-- * declared tool section of the group's requirements that needs another requirement or method.
-+ * A row's note in a service section for an account of one requirement and method. Where the
-+ * catalog names the tools of every requirement in the section, the note says which of the others'
-+ * tools the account can't run, in place of naming the part it serves where the others run
-+ * different tools; it joins the declared tool
-+ * sections of the section's requirements that need another requirement or method into the same
-+ * sentence. No row claims a limit the app doesn't declare.
-  */
--export const toolLimits = (
--  sections: readonly ToolSectionLimit[] | undefined,
-+export const rowNote = (
-   group: readonly RequirementEntry[],
-   slot: string,
-   method: string,
-+  catalog: {
-+    readonly requirementTools?: RequirementTools | undefined;
-+    readonly toolSections?: readonly ToolSectionLimit[] | undefined;
-+  },
- ) => {
--  const titles = (sections ?? []).flatMap((section) =>
-+  const tools = catalog.requirementTools;
-+  const named =
-+    tools !== undefined && namesEveryRequirement(tools, group)
-+      ? group.flatMap(([other]) =>
-+          other === slot || tools[other] === tools[slot] ? [] : [tools[other]!],
-+        )
-+      : [];
-+  const sections = (catalog.toolSections ?? []).flatMap((section) =>
-     group.some(([other]) => other === section.requirement) &&
-     !(section.requirement === slot && section.method === method)
-       ? [section.title]
-       : [],
-   );
--  return titles.length === 0 ? undefined : `Can't run ${[...new Set(titles)].join(" or ")}.`;
--};
--
--/**
-- * Which part of its service an account serves, where the section joins requirements of different
-- * names, such as "For GitLab MCP"; nothing for the part the section is named after.
-- */
--export const servicePart = (group: readonly RequirementEntry[], slot: string) => {
--  const name = group.find(([other]) => other === slot)?.[1].definition.name.trim();
--  return name === undefined || name === serviceTitle(group) ? undefined : `For ${name}`;
-+  const titles = [...new Set([...named, ...sections])];
-+  const limit = titles.length === 0 ? undefined : `Can't run ${titles.join(" or ")}.`;
-+  return (
-+    [named.length > 0 ? undefined : servicePart(group, slot), limit]
-+      .filter((part) => part !== undefined)
-+      .join(" · ") || undefined
-+  );
- };
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+index 0d02da8..580f955 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 @@ -466,6 +466,7 @@ export function AppAccounts({
@@ -263,9 +11,10 @@ diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/
          appAccounts={scopeAccounts(
            "app",
 diff --git a/apps/local/web/src/implementation/pages/app-accounts.tsx b/apps/local/web/src/implementation/pages/app-accounts.tsx
+index 79df756..fae6bed 100644
 --- a/apps/local/web/src/implementation/pages/app-accounts.tsx
 +++ b/apps/local/web/src/implementation/pages/app-accounts.tsx
-@@ -61,7 +61,7 @@ export function AppAccounts({
+@@ -62,7 +62,7 @@ export function AppAccounts({
    /** Every saved account. */
    readonly accounts: readonly AccountSummary[];
  }) {
@@ -274,7 +23,7 @@ diff --git a/apps/local/web/src/implementation/pages/app-accounts.tsx b/apps/loc
    const registry = useContext(RegistryContext);
    const revalidate = (account: AccountId) => {
      const check = checkAccountAtom(account);
-@@ -152,6 +152,7 @@ export function AppAccounts({
+@@ -157,6 +157,7 @@ export function AppAccounts({
          app={app}
          accounts={accounts}
          toolSections={toolSections}
@@ -283,6 +32,7 @@ diff --git a/apps/local/web/src/implementation/pages/app-accounts.tsx b/apps/loc
          appAccounts={scopeAccounts("app", appLinks)}
          yourAccounts={scopeAccounts("user", userLinks)}
 diff --git a/apps/local/web/src/implementation/pages/catalog-connection-guidance.ts b/apps/local/web/src/implementation/pages/catalog-connection-guidance.ts
+index 934752d..9f648df 100644
 --- a/apps/local/web/src/implementation/pages/catalog-connection-guidance.ts
 +++ b/apps/local/web/src/implementation/pages/catalog-connection-guidance.ts
 @@ -18,7 +18,13 @@ export function useCatalogConnectionMetadata(id: AppId) {
@@ -302,6 +52,7 @@ diff --git a/apps/local/web/src/implementation/pages/catalog-connection-guidance
  export function useCatalogConnectionGuidance(app: AppId, requirement: string) {
 diff --git a/e2e/support/requirement-tools-catalog.ts b/e2e/support/requirement-tools-catalog.ts
 new file mode 100644
+index 0000000..7ed9799
 --- /dev/null
 +++ b/e2e/support/requirement-tools-catalog.ts
 @@ -0,0 +1,70 @@
@@ -377,6 +128,7 @@ new file mode 100644
 +});
 diff --git a/e2e/tests/requirement-tools.spec.ts b/e2e/tests/requirement-tools.spec.ts
 new file mode 100644
+index 0000000..edd923f
 --- /dev/null
 +++ b/e2e/tests/requirement-tools.spec.ts
 @@ -0,0 +1,137 @@
@@ -517,3 +269,259 @@ new file mode 100644
 +      ),
 +    );
 +});
+diff --git a/packages/catalog/src/contracts/catalog.ts b/packages/catalog/src/contracts/catalog.ts
+index 71ab243..e618878 100644
+--- a/packages/catalog/src/contracts/catalog.ts
++++ b/packages/catalog/src/contracts/catalog.ts
+@@ -55,6 +55,12 @@ export const CatalogEntry = Schema.Struct({
+   oauthDeferrals: Schema.optionalKey(Schema.Array(CatalogOAuthDeferral)),
+   connectionGuidance: Schema.optionalKey(Schema.Array(CatalogConnectionGuidance)),
+   toolSections: Schema.optionalKey(Schema.Array(CatalogToolSection)),
++  /**
++   * The tools each account requirement runs, by requirement, where the app feeds its requirements
++   * different tools, such as "Clerk MCP tools" for a sign-in and "Clerk REST API tools" for a
++   * key. It only describes the app; it never declares credentials or changes saved accounts.
++   */
++  requirementTools: Schema.optionalKey(Schema.Record(Schema.NonEmptyString, Schema.NonEmptyString)),
+   category: Schema.optionalKey(Schema.String),
+   icons: Schema.Array(CatalogIcon),
+   /** Optional operator notes; they do not change the installed app or its provider. */
+diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+index 2c69c20..c0dda60 100644
+--- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -93,9 +93,10 @@ import { requirementTitles } from "./requirement-titles.ts";
+ import {
+   serviceGroups,
+   serviceMethods,
+-  servicePart,
+   serviceTitle,
+-  toolLimits,
++  namesEveryRequirement,
++  rowNote,
++  type RequirementTools,
+   type ServiceMethod,
+   type ToolSectionLimit,
+ } from "./service-groups.ts";
+@@ -709,6 +710,7 @@ export function AppAccounts<E>({
+   methods,
+   connections,
+   toolSections,
++  requirementTools,
+   Failure,
+ }: {
+   readonly app: App;
+@@ -731,6 +733,8 @@ export function AppAccounts<E>({
+    * section holds several requirements of a service, the other accounts say they can't run them.
+    */
+   readonly toolSections?: readonly ToolSectionLimit[] | undefined;
++  /** The tools each requirement runs, from the app's catalog listing. */
++  readonly requirementTools?: RequirementTools | undefined;
+   readonly Failure: ComponentType<FailureProps<E>>;
+ }) {
+   const appChecking = useRevalidateChecks(
+@@ -783,6 +787,7 @@ export function AppAccounts<E>({
+           methods={methods}
+           connections={connections}
+           toolSections={toolSections}
++          requirementTools={requirementTools}
+           showProvisionedProblems={repairs.app}
+           Failure={Failure}
+         />
+@@ -800,6 +805,7 @@ export function AppAccounts<E>({
+           methods={methods}
+           connections={connections}
+           toolSections={toolSections}
++          requirementTools={requirementTools}
+           showProvisionedProblems={repairs.user}
+           Failure={Failure}
+         />
+@@ -817,6 +823,7 @@ interface ScopeProps<E> {
+   readonly methods?: RequirementMethods | undefined;
+   readonly connections?: RequirementConnections | undefined;
+   readonly toolSections?: readonly ToolSectionLimit[] | undefined;
++  readonly requirementTools?: RequirementTools | undefined;
+   readonly Failure: ComponentType<FailureProps<E>>;
+ }
+ 
+@@ -1187,9 +1194,10 @@ function ServiceView<E>({
+     group.flatMap(([slot, requirement]) => methodStates(props.methods, slot, requirement)),
+   );
+   const note = (slot: string) => (method: string) =>
+-    [servicePart(group, slot), toolLimits(props.toolSections, group, slot, method)]
+-      .filter((part) => part !== undefined)
+-      .join(" · ") || undefined;
++    rowNote(group, slot, method, {
++      requirementTools: props.requirementTools,
++      toolSections: props.toolSections,
++    });
+   return (
+     <section
+       aria-label={title}
+@@ -1263,6 +1271,7 @@ function ServiceConnect<E>({
+   title,
+   methods,
+   connections,
++  requirementTools,
+ }: ScopeProps<E> & {
+   readonly group: readonly RequirementEntry[];
+   readonly edit: LinkEditing<E>;
+@@ -1273,6 +1282,7 @@ function ServiceConnect<E>({
+   const states = group.flatMap(([slot, requirement]) =>
+     methodStates(methods, slot, requirement).map((state) => ({ ...state, slot, requirement })),
+   );
++  const tools = namesEveryRequirement(requirementTools, group) ? requirementTools : undefined;
+   const entries = serviceMethods(
+     states.flatMap((state) =>
+       state.reason === undefined
+@@ -1282,6 +1292,7 @@ function ServiceConnect<E>({
+               requirement: state.requirement,
+               method: state.name,
+               label: state.label,
++              ...(tools === undefined ? {} : { tools: tools[state.slot] }),
+             },
+           ]
+         : [],
+@@ -1372,9 +1383,24 @@ function ServiceMethodItem<E>({
+   readonly onConnect: (entry: ServiceMethod) => void;
+ }) {
+   const allowed = useCanAdd(edit, entry.slot);
++  const toolsId = useId();
+   return (
+-    <DropdownMenuItem disabled={!allowed} onSelect={() => onConnect(entry)}>
+-      {entry.label}
++    // The method's label names the item; the tools it reaches describe it.
++    <DropdownMenuItem
++      disabled={!allowed}
++      onSelect={() => onConnect(entry)}
++      aria-label={entry.label}
++      textValue={entry.label}
++      {...(entry.tools === undefined ? {} : { "aria-describedby": toolsId })}
++    >
++      <span className="grid min-w-0">
++        {entry.label}
++        {entry.tools !== undefined && (
++          <span id={toolsId} className="text-xs text-muted-foreground">
++            {entry.tools}
++          </span>
++        )}
++      </span>
+     </DropdownMenuItem>
+   );
+ }
+diff --git a/packages/ui/src/implementation/dashboard/service-groups.ts b/packages/ui/src/implementation/dashboard/service-groups.ts
+index 8b324f8..777cf89 100644
+--- a/packages/ui/src/implementation/dashboard/service-groups.ts
++++ b/packages/ui/src/implementation/dashboard/service-groups.ts
+@@ -72,12 +72,15 @@ export interface ServiceMethod {
+   readonly requirement: AccountRequirement;
+   readonly method: string;
+   readonly label: string;
++  /** The tools the method's requirement runs, where the catalog names them. */
++  readonly tools?: string | undefined;
+ }
+ 
+ /**
+  * The service's connect menu, from each requirement's open methods in declaration order. A label
+  * another requirement of the same name already offers is left out, since both open the same kind
+- * of sign-in and the earlier requirement is the one the app declares first. Where requirements of
++ * of sign-in and the earlier requirement is the one the app declares first, unless the catalog
++ * names different tools for them; their tools then tell them apart. Where requirements of
+  * different names offer the same label, each names its requirement, such as "API key · Neon MCP".
+  */
+ export const serviceMethods = (methods: readonly ServiceMethod[]): readonly ServiceMethod[] => {
+@@ -86,10 +89,17 @@ export const serviceMethods = (methods: readonly ServiceMethod[]): readonly Serv
+     (entry, index) =>
+       !methods
+         .slice(0, index)
+-        .some((earlier) => earlier.label === entry.label && nameOf(earlier) === nameOf(entry)),
++        .some(
++          (earlier) =>
++            earlier.label === entry.label &&
++            nameOf(earlier) === nameOf(entry) &&
++            earlier.tools === entry.tools,
++        ),
+   );
+   return kept.map((entry) =>
+-    kept.some((other) => other !== entry && other.label === entry.label)
++    kept.some(
++      (other) => other !== entry && other.label === entry.label && nameOf(other) !== nameOf(entry),
++    )
+       ? { ...entry, label: `${entry.label} · ${nameOf(entry)}` }
+       : entry,
+   );
+@@ -98,30 +108,59 @@ export const serviceMethods = (methods: readonly ServiceMethod[]): readonly Serv
+ /** The fields of a catalog tool section that say which requirement and method run its tools. */
+ export type ToolSectionLimit = Pick<CatalogToolSection, "requirement" | "method" | "title">;
+ 
++/** The tools each requirement of an app runs, by requirement, from its catalog listing. */
++export type RequirementTools = Readonly<Record<string, string>>;
++
++/** The catalog names the tools of every requirement in the section. */
++export const namesEveryRequirement = (
++  tools: RequirementTools | undefined,
++  group: readonly RequirementEntry[],
++) => tools !== undefined && group.every(([slot]) => tools[slot] !== undefined);
++
++/**
++ * Which part of its service an account serves, where the section joins requirements of different
++ * names, such as "For GitLab MCP"; nothing for the part the section is named after.
++ */
++export const servicePart = (group: readonly RequirementEntry[], slot: string) => {
++  const name = group.find(([other]) => other === slot)?.[1].definition.name.trim();
++  return name === undefined || name === serviceTitle(group) ? undefined : `For ${name}`;
++};
++
+ /**
+- * What an account of one requirement and method can't run beside the rest of its service: each
+- * declared tool section of the group's requirements that needs another requirement or method.
++ * A row's note in a service section for an account of one requirement and method. Where the
++ * catalog names the tools of every requirement in the section, the note says which of the others'
++ * tools the account can't run, in place of naming the part it serves where the others run
++ * different tools; it joins the declared tool
++ * sections of the section's requirements that need another requirement or method into the same
++ * sentence. No row claims a limit the app doesn't declare.
+  */
+-export const toolLimits = (
+-  sections: readonly ToolSectionLimit[] | undefined,
++export const rowNote = (
+   group: readonly RequirementEntry[],
+   slot: string,
+   method: string,
++  catalog: {
++    readonly requirementTools?: RequirementTools | undefined;
++    readonly toolSections?: readonly ToolSectionLimit[] | undefined;
++  },
+ ) => {
+-  const titles = (sections ?? []).flatMap((section) =>
++  const tools = catalog.requirementTools;
++  const named =
++    tools !== undefined && namesEveryRequirement(tools, group)
++      ? group.flatMap(([other]) =>
++          other === slot || tools[other] === tools[slot] ? [] : [tools[other]!],
++        )
++      : [];
++  const sections = (catalog.toolSections ?? []).flatMap((section) =>
+     group.some(([other]) => other === section.requirement) &&
+     !(section.requirement === slot && section.method === method)
+       ? [section.title]
+       : [],
+   );
+-  return titles.length === 0 ? undefined : `Can't run ${[...new Set(titles)].join(" or ")}.`;
+-};
+-
+-/**
+- * Which part of its service an account serves, where the section joins requirements of different
+- * names, such as "For GitLab MCP"; nothing for the part the section is named after.
+- */
+-export const servicePart = (group: readonly RequirementEntry[], slot: string) => {
+-  const name = group.find(([other]) => other === slot)?.[1].definition.name.trim();
+-  return name === undefined || name === serviceTitle(group) ? undefined : `For ${name}`;
++  const titles = [...new Set([...named, ...sections])];
++  const limit = titles.length === 0 ? undefined : `Can't run ${titles.join(" or ")}.`;
++  return (
++    [named.length > 0 ? undefined : servicePart(group, slot), limit]
++      .filter((part) => part !== undefined)
++      .join(" · ") || undefined
++  );
+ };

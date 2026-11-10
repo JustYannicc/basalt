@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountRecovery {
+    metadata {
+      constraint "Partial workspace consent records only reviewed requested, granted and missing scope names and preserves saved account identity and links for retry. CurrentActor and identity consent remain authoritative; missing-scope evidence augments recovery without converting a failed sign-in into a replacement grant."
+    }
+  }
+}

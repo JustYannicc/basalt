@@ -96,10 +96,10 @@ index 4a61670..4cf13e4 100644
  });
  
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
-index f908f6f..f44b581 100644
+index 195ce5a..866177e 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
-@@ -21,6 +21,7 @@ import { randomBytes } from "node:crypto";
+@@ -22,6 +22,7 @@ import { randomBytes } from "node:crypto";
  import { createEmulatorFixture, EmulatorFixture, provisionEmulatorRequest } from "./emulators.ts";
  import {
    createV1Database,
@@ -107,7 +107,7 @@ index f908f6f..f44b581 100644
    startCloudPostgres,
    v1DatabaseReader,
    v1DatabaseWriter,
-@@ -273,6 +274,8 @@ export const startCloudEnvironment = (input: {
+@@ -279,6 +280,8 @@ export const startCloudEnvironment = (input: {
      // Every scenario of this Cloud exports to these collectors; see `serveShardedOtlpCollector`.
      const collector = yield* serveShardedOtlpCollector(directory, collectorShards);
      const databasePassword = randomBytes(24).toString("hex");
@@ -116,15 +116,15 @@ index f908f6f..f44b581 100644
      const operatorOAuth = OperatorOAuthFixture.make({
        port: yield* freePort,
        clientId: "first-party-client",
-@@ -420,6 +423,7 @@ export const startCloudEnvironment = (input: {
-       ...(input.npmRegistry === undefined ? {} : { EXECUTOR_NPM_REGISTRY: input.npmRegistry }),
+@@ -436,6 +439,7 @@ export const startCloudEnvironment = (input: {
+         : { EXECUTOR_CATALOG_URL: `${input.catalogs}/catalog/index.json` }),
        CLOUD_DEV_DATABASE_PORT: String(databasePort),
        CLOUD_DEV_DATABASE_PASSWORD: databasePassword,
 +      CLOUD_DEV_DATABASE_RUNTIME_PASSWORD: runtimePassword,
        CLOUD_DEV_EXTERNAL_DATABASE: "true",
        EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(fixture).services),
        ...(mapsRoutes === undefined
-@@ -551,6 +555,7 @@ export const startCloudEnvironment = (input: {
+@@ -568,6 +572,7 @@ export const startCloudEnvironment = (input: {
        databasePort: databaseBackendPort,
        ...(alternatePort === undefined ? {} : { alternatePort }),
        databasePassword,
@@ -132,7 +132,7 @@ index f908f6f..f44b581 100644
        dockerEnv,
        log: `${directory}/postgres.log`,
      });
-@@ -721,6 +726,7 @@ export const startCloudEnvironment = (input: {
+@@ -738,6 +743,7 @@ export const startCloudEnvironment = (input: {
          : yield* productionOpsDatabaseFixture({
              container,
              databasePassword,
@@ -140,7 +140,7 @@ index f908f6f..f44b581 100644
              directory,
              dockerEnv,
            });
-@@ -728,8 +734,8 @@ export const startCloudEnvironment = (input: {
+@@ -745,8 +751,8 @@ export const startCloudEnvironment = (input: {
        CLOUD_DEV_DATABASE_PORT: String(next === "alternate" ? alternatePort : databasePort),
        BASALT_E2E_DATABASE_ORIGIN: next,
        BASALT_E2E_OPS_RELEASE: next === "release" ? "replacement-release" : "reviewed-release",
@@ -151,7 +151,7 @@ index f908f6f..f44b581 100644
      });
      const prepareBinding = (next: string) =>
        Effect.gen(function* () {
-@@ -744,7 +750,7 @@ export const startCloudEnvironment = (input: {
+@@ -761,7 +767,7 @@ export const startCloudEnvironment = (input: {
                  container,
                  "sh",
                  "-c",
@@ -161,7 +161,7 @@ index f908f6f..f44b581 100644
                { env: dockerEnv, extendEnv: false, stdout: "ignore", stderr: "ignore" },
              ),
 diff --git a/e2e/support/cloud-postgres.ts b/e2e/support/cloud-postgres.ts
-index 2c9c62e..6a36df1 100644
+index a33f0d5..f9ac2c1 100644
 --- a/e2e/support/cloud-postgres.ts
 +++ b/e2e/support/cloud-postgres.ts
 @@ -12,6 +12,13 @@ import { Clock, Console, Effect, FileSystem, Schedule, Schema, Stream } from "ef
@@ -191,7 +191,7 @@ index 2c9c62e..6a36df1 100644
    readonly dockerEnv: DockerEnv;
    /** Receives the server's output. */
    readonly log: string;
-@@ -252,6 +265,24 @@ export const startCloudPostgres = (input: {
+@@ -270,6 +283,24 @@ export const startCloudPostgres = (input: {
          ),
          Effect.retry({ schedule: Schedule.spaced("1 second"), times: 90 }),
        );

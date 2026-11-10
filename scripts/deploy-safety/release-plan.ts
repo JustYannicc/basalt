@@ -16,11 +16,13 @@ import {
 import { SafetyGateError, stableStringify, type PinSummary } from "./contracts.ts";
 import { PlanetScaleSafety } from "./planetscale-safety.ts";
 import { assertNoReleaseHold, requirePlanetScaleEnvironment } from "./runtime.ts";
+import { executorMarkerPrecondition, type ExecutorMarkerPrecondition } from "./executor-marker.ts";
 
 export type ReleasePlan = {
   report: ClassificationReport;
   ledger: DeploymentLedger;
   manualRequired: boolean;
+  executorMarker?: ExecutorMarkerPrecondition;
 };
 
 const trustedRepositoryRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
@@ -123,7 +125,7 @@ export async function classifyCurrentRelease(candidateRef = currentCommit()): Pr
   const report = await classifyRefs(trustedRepositoryRoot, baseCommit, candidateRef, api);
   if (report.base.gitCommit !== baseCommit || report.candidate.gitCommit !== candidateRef)
     throw new SafetyGateError("Release classifier did not return the requested exact commits");
-  return { report, ledger: keepRollForwardGates(ledger, report), manualRequired: report.databaseChanged || report.workflowChanged };
+  return { report, ledger: keepRollForwardGates(ledger, report), manualRequired: report.databaseChanged || report.workflowChanged, executorMarker: executorMarkerPrecondition(report) };
 }
 
 export async function classifyManualRollbackCandidate(candidateRef: string): Promise<ReleasePlan> {

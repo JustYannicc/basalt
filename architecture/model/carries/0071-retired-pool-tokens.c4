@@ -1,0 +1,7 @@
+model {
+  extend basalt.productionOps {
+    metadata {
+      constraint "Retiring legacy pool tokens requires a fresh organization-scoped inventory, exact reviewed account IDs and unchanged database and row checksums. Only supported plain-secret provenance qualifies; identity, OAuth and acquisition-backed accounts refuse. Encrypted checkpoints precede writes, the journal and host-account change commit together, and an uncertain result resumes through its receipt without deleting retained Home credentials or other memberships."
+    }
+  }
+}

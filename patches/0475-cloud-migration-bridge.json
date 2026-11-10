@@ -1,0 +1,9 @@
+{
+  "identity": "cloud-migration-bridge",
+  "file": "0475-cloud-migration-bridge.patch",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false,
+  "content_sha256": "ae984e0c49cc2c0f40788c487fb827fcb6939b45d88a99b96b018a53f6e1e5a4"
+}

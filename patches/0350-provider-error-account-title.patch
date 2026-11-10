@@ -89,7 +89,7 @@ index 11b33ed..9f34380 100644
          asOwner(
            input.owner,
 diff --git a/apps/local/web/src/implementation/pages/app-tools.tsx b/apps/local/web/src/implementation/pages/app-tools.tsx
-index bec3084..45d3c77 100644
+index 06bf126..9ec767b 100644
 --- a/apps/local/web/src/implementation/pages/app-tools.tsx
 +++ b/apps/local/web/src/implementation/pages/app-tools.tsx
 @@ -1,4 +1,4 @@
@@ -98,25 +98,26 @@ index bec3084..45d3c77 100644
  import { AsyncResult } from "effect/reactivity";
  import { Failure } from "../components/common.tsx";
  import { useAtomValue } from "@effect/atom-react";
-@@ -68,15 +68,11 @@ export function AppTools(props: AppToolsProps) {
+@@ -68,16 +68,12 @@ export function AppTools(props: AppToolsProps) {
        return <AccountSetup app={props.app} disconnected={false} />;
      case "reconnect":
        return (
 -        <AccountReconnect app={props.app.id} accounts={readiness.accounts} status="Needs sign-in" />
 +        <AccountReconnect app={props.app} accounts={readiness.accounts} status="Needs sign-in" />
        );
+     // A sign-in that expired or must be renewed by hand is `reconnect` above.
      case "rejected":
        return (
 -        <AccountReconnect
 -          app={props.app.id}
 -          accounts={readiness.accounts}
--          status="Sign-in rejected"
+-          status="Credentials refused"
 -        />
-+        <AccountReconnect app={props.app} accounts={readiness.accounts} status="Sign-in rejected" />
++        <AccountReconnect app={props.app} accounts={readiness.accounts} status="Credentials refused" />
        );
      case "unavailable":
        return (
-@@ -95,7 +91,7 @@ function AccountReconnect({
+@@ -96,7 +92,7 @@ function AccountReconnect({
    accounts,
    status,
  }: {
@@ -125,7 +126,7 @@ index bec3084..45d3c77 100644
    readonly accounts: ReadonlyArray<DashboardAccount>;
    readonly status: string;
  }) {
-@@ -109,7 +105,7 @@ function AccountReconnect({
+@@ -110,7 +106,7 @@ function AccountReconnect({
            <HugeiconsIcon icon={Key01Icon} strokeWidth={2} size={18} aria-hidden />
            <div>
              <h2>
@@ -134,7 +135,7 @@ index bec3084..45d3c77 100644
                <span className="sign-in-status text-sign-in-warning text-[11px] font-medium whitespace-nowrap [.app-account-setup_h2_&]:ml-2">
                  {status}
                </span>
-@@ -117,7 +113,7 @@ function AccountReconnect({
+@@ -118,7 +114,7 @@ function AccountReconnect({
              <p>Sign in again to load tools.</p>
            </div>
            <Button asChild>
@@ -143,7 +144,7 @@ index bec3084..45d3c77 100644
                Reconnect
              </Link>
            </Button>
-@@ -147,7 +143,7 @@ function LiveAppTools({ app, requirements, selected }: AppToolsProps) {
+@@ -148,7 +144,7 @@ function LiveAppTools({ app, requirements, selected }: AppToolsProps) {
        .flatMap((entry) => entry.linked)
        .find((account) => account.id === reconnect.value.account);
      if (account !== undefined)
@@ -282,7 +283,7 @@ index f182db3..b7b6870 100644
          expect(new Set(ids).size).toBe(1);
          expect(new Set(bindings).size).toBe(5);
 diff --git a/e2e/tests/provider-errors.spec.ts b/e2e/tests/provider-errors.spec.ts
-index 11d2138..911549a 100644
+index 56d4185..be2e0fc 100644
 --- a/e2e/tests/provider-errors.spec.ts
 +++ b/e2e/tests/provider-errors.spec.ts
 @@ -1,3 +1,4 @@
@@ -290,7 +291,7 @@ index 11d2138..911549a 100644
  import { expect, layer } from "@effect/vitest";
  import { Clock, Effect, Schema } from "effect";
  import { Actors } from "../support/actors.ts";
-@@ -111,7 +112,7 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
+@@ -132,7 +133,7 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
        }).pipe(Effect.orDie),
      );
      // Connecting from the app links each account; the account array uses every linked one.
@@ -299,7 +300,7 @@ index 11d2138..911549a 100644
        Effect.gen(function* () {
          const connection = yield* body(
            Resource,
-@@ -121,12 +122,13 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
+@@ -142,12 +143,13 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
            actors.owner,
            "POST",
            `${prefix}/connections/${connection.id}/submit`,
@@ -315,7 +316,7 @@ index 11d2138..911549a 100644
      const affected = accounts[1];
      if (affected === undefined) return yield* Effect.die("Missing second account");
      const tool =
-@@ -160,7 +162,11 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
+@@ -181,7 +183,11 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
          expect(parsed).toMatchObject({
            reason,
            status,
@@ -328,7 +329,7 @@ index 11d2138..911549a 100644
            ...(phase === undefined ? {} : { phase }),
          });
          expect(JSON.stringify(response.body)).not.toMatch(
-@@ -275,6 +281,7 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
+@@ -330,6 +336,7 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
          failure: { source: "app", errorName: "Error", message: providerSecretMarker },
        });
      }
@@ -336,7 +337,7 @@ index 11d2138..911549a 100644
      if (kind !== "graphql") return;
      for (const [code, reason] of [
        ["UNAUTHENTICATED", "unauthorized"],
-@@ -322,7 +329,7 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
+@@ -377,7 +384,7 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
      );
      expect(
        yield* browser.use("Account is named", (page) => page.getByRole("alert").textContent()),
@@ -569,11 +570,11 @@ index 0000000..e658113
 +  );
 +};
 diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
-index 0ca0086..dcb5053 100644
+index e5303bb..adcccad 100644
 --- a/packages/sdk/src/contracts/account.ts
 +++ b/packages/sdk/src/contracts/account.ts
 @@ -17,6 +17,7 @@ import type { App, AppAccounts } from "./apps.ts";
- import { AccountId, AppId, JsonObject, OwnerId, ProviderId } from "./shared.ts";
+ import { AccountId, AppId, JsonObject, OwnerId, ProviderId, WebhookId } from "./shared.ts";
  import { AuthMethodInvalid, AuthMethodName, Provider, ProviderNotFound } from "./provider.ts";
  import { SiteOrigin } from "@executor-js/utils/account-site";
 +import { providerAccountTitle } from "./account-title.ts";
@@ -599,7 +600,7 @@ index 0ca0086..dcb5053 100644
    });
  
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
-index 5444854..a132b8f 100644
+index 5b3de71..83cde2d 100644
 --- a/packages/sdk/src/contracts/executor.ts
 +++ b/packages/sdk/src/contracts/executor.ts
 @@ -43,7 +43,7 @@ import type {
@@ -626,7 +627,7 @@ index 5444854..a132b8f 100644
      input: {
        readonly app: AppId;
 diff --git a/packages/sdk/src/contracts/index.ts b/packages/sdk/src/contracts/index.ts
-index d6f848f..35939fe 100644
+index aa23b89..c2f2d53 100644
 --- a/packages/sdk/src/contracts/index.ts
 +++ b/packages/sdk/src/contracts/index.ts
 @@ -1,3 +1,5 @@
@@ -636,7 +637,7 @@ index d6f848f..35939fe 100644
  export * from "./account-observation.ts";
  export * from "./models.ts";
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index 5770859..78216eb 100644
+index 57bafa4..bd43f93 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
 @@ -1,3 +1,5 @@
@@ -645,10 +646,10 @@ index 5770859..78216eb 100644
  import type { ExecutorRuntimeDatabase } from "./storage-runtime.ts";
  import { AccountTargetsHost } from "../contracts/account-target.ts";
  import { makeAccountTargets } from "./account-targets.ts";
-@@ -365,6 +367,14 @@ export const createExecutor = (
-       options.workflowInputUrl,
-       options.toolPolicy,
-     );
+@@ -361,6 +363,14 @@ export const createExecutor = (
+       lifecycle: options.hooks,
+       hostApi: options.hostApi,
+     });
 +    const providerFailure = appProviderFailure({
 +      db,
 +      lifecycle: options.hooks,
@@ -657,10 +658,18 @@ index 5770859..78216eb 100644
 +          .health({ account: account.id, owner: account.owner, apps: [] })
 +          .pipe(Effect.catchTag("AccountNotFound", () => Effect.succeed({ info: null }))),
 +    });
-     const webhooks = makeWebhooks(
+     const workflows = makeWorkflowRuns(
        options.database,
        runtime,
-@@ -373,6 +383,7 @@ export const createExecutor = (
+@@ -368,6 +378,7 @@ export const createExecutor = (
+       credentials,
+       crypto,
+       declarations,
++      providerFailure,
+       options.workflows,
+       options.workflowInputUrl,
+       options.toolPolicy,
+@@ -380,6 +391,7 @@ export const createExecutor = (
        crypto,
        options.webhookOrigin ?? options.origin,
        declarations,
@@ -668,7 +677,7 @@ index 5770859..78216eb 100644
        workflows.controls,
        options.hooks,
      );
-@@ -408,6 +419,7 @@ export const createExecutor = (
+@@ -415,6 +427,7 @@ export const createExecutor = (
          policy: toolListings,
          search,
        }),
@@ -676,7 +685,7 @@ index 5770859..78216eb 100644
        workflows.controls,
        options.hooks,
        makeAppConfirmations(db, appConnectionStore, options.appCalls),
-@@ -801,7 +813,7 @@ export const createExecutor = (
+@@ -819,7 +832,7 @@ export const createExecutor = (
        appConnections: appConnectionStore.operations,
        publications: catalog.publications,
        registry: catalog.registry,
@@ -814,7 +823,7 @@ index c9e8b85..e5b7b8c 100644
 +
 +export type ProviderFailure = ReturnType<typeof appProviderFailure>;
 diff --git a/packages/sdk/src/implementation/skills.ts b/packages/sdk/src/implementation/skills.ts
-index 9219302..83ca45b 100644
+index 1570224..3245d94 100644
 --- a/packages/sdk/src/implementation/skills.ts
 +++ b/packages/sdk/src/implementation/skills.ts
 @@ -1,6 +1,6 @@
@@ -833,8 +842,8 @@ index 9219302..83ca45b 100644
  ) => {
    const snapshot = (input: typeof AppSkillInputs.list.Type, read: CatalogReadOptions = {}) =>
      Effect.gen(function* () {
-@@ -99,14 +100,16 @@ export const makeSkills = (
-                     .skills({ app: app.id, build: state.version.build, sources, ...context })
+@@ -105,14 +106,16 @@ export const makeSkills = (
+                     })
                      .pipe(
                        // A service's rejection names the selected account, as in tool listing.
 -                      Effect.mapError((error) =>
@@ -859,7 +868,7 @@ index 9219302..83ca45b 100644
                      ),
                  {
 diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
-index 716cca4..8458bfa 100644
+index c5320e0..050f3b7 100644
 --- a/packages/sdk/src/implementation/tools.ts
 +++ b/packages/sdk/src/implementation/tools.ts
 @@ -5,7 +5,7 @@ import { AppViewUnavailable, type AppSourceHost } from "../contracts/app-views.t
@@ -871,7 +880,7 @@ index 716cca4..8458bfa 100644
  import { invocationAccount } from "./provider.ts";
  import type { FirstPartyOAuthClient } from "../contracts/oauth.ts";
  import type { UrlPolicy } from "@executor-js/utils/url-policy";
-@@ -629,14 +629,9 @@ type CallError = Effect.Error<ReturnType<Runtime["call"] | Runtime["query"] | Ru
+@@ -665,14 +665,9 @@ type CallError = Effect.Error<ReturnType<Runtime["call"] | Runtime["query"] | Ru
  type Renewal = "renewed" | RenewalFailure;
  
  /** The typed error of a failed call. */
@@ -888,7 +897,7 @@ index 716cca4..8458bfa 100644
        OpenapiResponseError: ({ code, status, message, recovery }) =>
          new ToolCallFailed({
            ...identity,
-@@ -785,6 +780,7 @@ export const makeTools = (
+@@ -881,6 +876,7 @@ export const makeTools = (
    credentials: Credentials,
    crypto: Crypto.Crypto,
    listings: Listings,
@@ -896,32 +905,34 @@ index 716cca4..8458bfa 100644
    workflows?: (state: InvocationSnapshot) => WorkflowHostControls,
    lifecycle?: ResourceLifecycle,
    configurationApproved?: (
-@@ -873,9 +869,10 @@ export const makeTools = (
+@@ -969,18 +965,18 @@ export const makeTools = (
      error: Effect.Error<ReturnType<typeof runtime.index>>,
      renewal?: Renewal,
    ) =>
 -    Schema.is(ProviderError)(error)
 -      ? appProviderFailure(state, error, renewal)
 -      : evaluationFailure({ app: state.app.id, version: state.version.id }, error);
+-  /** Fail with a catalog evaluation's typed error, telling the caller's observer its source. */
 +    Effect.gen(function* () {
 +      if (Schema.is(ProviderError)(error)) return yield* providerFailure(state, error, renewal);
 +      return yield* evaluationFailure({ app: state.app.id, version: state.version.id }, error);
 +    });
++  /** Keep the runtime's source attribution before enriching its public failure. */
+   const failCatalog = (
+     state: InvocationSnapshot,
+     error: Effect.Error<ReturnType<typeof runtime.index>>,
+     renewal?: Renewal,
+-  ) =>
+-    observeFailure(failureSource(error)).pipe(
+-      Effect.andThen(Effect.fail(catalogFailure(state, error, renewal))),
+-    );
++  ) => observeFailure(failureSource(error)).pipe(
++    Effect.andThen(catalogFailure(state, error, renewal)),
++  );
    /**
     * Run a tool, live or approved, and renew an account the service refuses. A 401 means the
     * service did not perform the refused request, but an earlier request in the same call may
-@@ -940,8 +937,8 @@ export const makeTools = (
-         renewRefused(oauth, clients, sitePolicy, state, context, error).pipe(
-           Effect.flatMap((renewed) =>
-             renewed === undefined
--              ? Effect.fail(catalogFailure(state, error))
--              : inspect(renewed).pipe(Effect.mapError((error) => catalogFailure(state, error))),
-+              ? catalogFailure(state, error)
-+              : inspect(renewed).pipe(Effect.catch((error) => catalogFailure(state, error))),
-           ),
-         ),
-       ),
-@@ -983,7 +980,7 @@ export const makeTools = (
+@@ -1089,7 +1085,7 @@ export const makeTools = (
          )?.error;
          if (failed !== undefined)
            return yield* Schema.is(ProviderError)(failed)
@@ -930,25 +941,7 @@ index 716cca4..8458bfa 100644
              : evaluationFailure({ app: state.app.id, version: state.version.id }, failed);
          return yield* new ToolNotFound({
            app: state.app.id,
-@@ -1006,7 +1003,7 @@ export const makeTools = (
-     inspectTool(state, name, context).pipe(
-       Effect.catch((error) =>
-         renewOnce(state, context, error).pipe(
--          Effect.flatMap((renewal) => Effect.fail(catalogFailure(state, error, renewal))),
-+          Effect.flatMap((renewal) => catalogFailure(state, error, renewal)),
-         ),
-       ),
-       Effect.flatMap(found(state, name)),
-@@ -1361,7 +1358,7 @@ export const makeTools = (
-     runtime.inspect(inspection(state, context)).pipe(
-       Effect.catch((error) =>
-         renewOnce(state, context, error).pipe(
--          Effect.flatMap((renewal) => Effect.fail(catalogFailure(state, error, renewal))),
-+          Effect.flatMap((renewal) => catalogFailure(state, error, renewal)),
-         ),
-       ),
-       Effect.map(toListing(state)),
-@@ -1527,7 +1524,7 @@ export const makeTools = (
+@@ -1679,7 +1675,7 @@ export const makeTools = (
          )?.error;
          if (failed !== undefined)
            return yield* Schema.is(ProviderError)(failed)
@@ -957,21 +950,21 @@ index 716cca4..8458bfa 100644
              : evaluationFailure({ app: state.app.id, version: state.version.id }, failed);
          yield* Effect.annotateCurrentSpan("executor.tools.source", "live");
          yield* (
-@@ -1770,7 +1767,9 @@ export const makeTools = (
-               options?.issuer,
+@@ -1926,7 +1922,9 @@ export const makeTools = (
              );
            }
+           yield* observeFailure(failureSource(result.failure));
 -          return yield* Effect.fail(runtimeFailure(identity, state, renewal)(result.failure));
 +          return yield* Schema.is(ProviderError)(result.failure)
 +            ? providerFailure(state, result.failure, renewal)
 +            : runtimeFailure(identity)(result.failure);
          }).pipe(
-           Effect.mapError((failure) =>
-             // Only a query's renewal fails a call itself (`executeRenewing`), and a query keeps
-@@ -1944,13 +1943,13 @@ export const makeTools = (
-                       execute,
+           Effect.catch((failure) =>
+             // Only a confirmed read's renewal fails a call itself (`executeRenewing`), and a
+@@ -2111,13 +2109,13 @@ export const makeTools = (
                      );
-                     if (Result.isFailure(result))
+                     if (Result.isFailure(result)) {
+                       yield* observeFailure(failureSource(result.failure));
 -                      return yield* Effect.fail(
 -                        runtimeFailure(
 -                          { app: saved.app, version: saved.version, tool: saved.tool },
@@ -986,11 +979,11 @@ index 716cca4..8458bfa 100644
 +                            version: saved.version,
 +                            tool: saved.tool,
 +                          })(result.failure);
+                     }
                      const value = result.success;
                      if (!toolError && kind === "mutation" && configurationApproved !== undefined)
-                       yield* configurationApproved({
 diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/implementation/webhooks.ts
-index a77a303..5c8c521 100644
+index 9a3d370..50175d7 100644
 --- a/packages/sdk/src/implementation/webhooks.ts
 +++ b/packages/sdk/src/implementation/webhooks.ts
 @@ -1,5 +1,5 @@
@@ -1000,7 +993,7 @@ index a77a303..5c8c521 100644
  import { AppProviderFailed, mayHaveWritten } from "../contracts/tools.ts";
  import { CurrentActor, type ResourceLifecycle } from "../contracts/executor.ts";
  import type { WorkflowHostControls } from "apps/contracts";
-@@ -112,6 +112,7 @@ export const makeWebhooks = (
+@@ -306,6 +306,7 @@ export const makeWebhooks = (
    crypto: Crypto.Crypto,
    origin: string | undefined,
    declarations: Declarations,
@@ -1008,7 +1001,7 @@ index a77a303..5c8c521 100644
    workflows?: (state: InvocationSnapshot) => WorkflowHostControls,
    lifecycle?: ResourceLifecycle,
  ) => {
-@@ -259,22 +260,30 @@ export const makeWebhooks = (
+@@ -454,22 +455,30 @@ export const makeWebhooks = (
          command,
        })
        .pipe(
@@ -1049,7 +1042,7 @@ index a77a303..5c8c521 100644
        const value = yield* declarations.read(
          "webhooks",
          state,
-@@ -287,11 +296,11 @@ export const makeWebhooks = (
+@@ -483,11 +492,11 @@ export const makeWebhooks = (
                ...context,
                command: { operation: "webhooks" },
              })
@@ -1062,8 +1055,8 @@ index a77a303..5c8c521 100644
 +        Effect.catch(failed),
        );
      });
-   const outsideTransaction = storage.reactivity.inTransaction.pipe(
-@@ -490,10 +499,11 @@ export const makeWebhooks = (
+   /**
+@@ -763,10 +772,11 @@ export const makeWebhooks = (
          })
          .pipe(
            Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(HostedWebhook))),
@@ -1079,6 +1072,43 @@ index a77a303..5c8c521 100644
            ),
          );
        const hook = catalog.find((hook) => hook.name === parsed.name);
+diff --git a/packages/sdk/src/implementation/workflows.ts b/packages/sdk/src/implementation/workflows.ts
+index c0f2296..fc6ce44 100644
+--- a/packages/sdk/src/implementation/workflows.ts
++++ b/packages/sdk/src/implementation/workflows.ts
+@@ -48,7 +48,7 @@ import { invocationScope, scopedSelection } from "./selection.ts";
+ import type { Declarations } from "./declarations.ts";
+ import { ownsDatabase } from "../contracts/apps.ts";
+ import { AppEvaluationFailed, evaluationFailure } from "../contracts/tools.ts";
+-import { appProviderFailure } from "./provider-error.ts";
++import type { ProviderFailure } from "./provider-error.ts";
+ 
+ const StoredRun = Schema.Struct({
+   id: WorkflowRunId,
+@@ -153,6 +153,7 @@ export const makeWorkflowRuns = (
+   credentials: Credentials,
+   crypto: Crypto.Crypto,
+   declarations: Declarations,
++  providerFailure: ProviderFailure,
+   backend?: WorkflowRuntime,
+   reviewUrl?: import("../contracts/executor.ts").ExecutorInputs["workflowInputUrl"],
+   standingPolicy?: ToolPolicyHook,
+@@ -788,11 +789,10 @@ export const makeWorkflowRuns = (
+               command: { operation: "workflows" },
+             })
+             .pipe(
+-              Effect.mapError((error) =>
+-                Schema.is(ProviderError)(error)
+-                  ? appProviderFailure(state, error)
+-                  : evaluationFailure(identity, error, "Workflow evaluation failed"),
+-              ),
++              Effect.catch((error) => Effect.gen(function* () {
++                if (Schema.is(ProviderError)(error)) return yield* providerFailure(state, error);
++                return yield* Effect.fail(evaluationFailure(identity, error, "Workflow evaluation failed"));
++              })),
+             ),
+         );
+         return yield* Schema.decodeUnknownEffect(Schema.Array(HostedWorkflow))(value).pipe(
 diff --git a/packages/ui/src/contracts/account-identities.ts b/packages/ui/src/contracts/account-identities.ts
 index 5844e33..295f331 100644
 --- a/packages/ui/src/contracts/account-identities.ts
@@ -1381,10 +1411,10 @@ index 1d94857..d04cb7d 100644
                          traffic={traffic}
                        />
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index e50fafe..2d0b41e 100644
+index 68addae..c8e0b06 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-@@ -24,7 +24,11 @@ import {
+@@ -34,7 +34,11 @@ import {
    type FailureProps,
    type Query,
  } from "../../contracts/dashboard.ts";
@@ -1397,9 +1427,9 @@ index e50fafe..2d0b41e 100644
  import { AppProviderIcon, ProviderIcon } from "./common.tsx";
  import { AccountCheckResult } from "./account-health.tsx";
  import {
-@@ -1671,6 +1675,9 @@ function AccountStatus({
+@@ -1745,6 +1749,9 @@ function AccountStatus({
      <AccountHealthCell
-       health={appRowHealth(row, row.bindings[0]!)}
+       health={health}
        appName={() => appDisplayName(app, brand)}
 +      accountName={(account) =>
 +        requirementAccountTitle(account, Object.values(app.requirements.accounts))

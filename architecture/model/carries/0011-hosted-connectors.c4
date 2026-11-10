@@ -1,0 +1,7 @@
+model {
+  extend basalt.catalog {
+    metadata {
+      constraint "Catalog source stays available without optional hosted credentials. A hosted OAuth client is offered only with a complete configured credential pair and its reviewed scopes and token placement. Connection notices precede authorization and survive pending callback recovery and client editing; identity sign-in clients remain separate."
+    }
+  }
+}

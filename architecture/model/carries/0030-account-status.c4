@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountPresentation {
+    metadata {
+      constraint "Account health exposes sanitized status and caller-visible identity independently of credential access. Missing checks, stale checks, active checks and failed rechecks remain distinct. Batched reads and versioned host API dispatch retain lifecycle authority; newly created managed accounts use the trusted provisioning link path instead of reusing a saved account."
+    }
+  }
+}

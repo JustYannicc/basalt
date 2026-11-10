@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Provider-family metadata describes compatible sign-in options without changing provider IDs or granting credential use. Host-reviewed OAuth recipes preserve client, resource, placement and confirmed scope coverage. Refusal presentations retain resource and known-scope evidence instead of inferring unreported permissions from family membership."
+    }
+  }
+}

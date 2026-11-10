@@ -1,13 +1,14 @@
 diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.tsx b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.tsx
+index bdfc6d7..d09496d 100644
 --- a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.tsx
 +++ b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.tsx
 @@ -1,4 +1,5 @@
- import { createFileRoute, Outlet, useChildMatches, useLocation } from "@tanstack/react-router";
+ import { createFileRoute, Outlet, redirect, useChildMatches, useLocation } from "@tanstack/react-router";
 +import { useState } from "react";
  import { DashboardEntryPending } from "@executor-js/hosted-web/entry";
  import { CloudPagePending } from "../components/page-pending.tsx";
  import { ErrorTrackingProvider } from "@executor-js/ui/dashboard/error-tracking";
-@@ -55,9 +56,19 @@
+@@ -73,9 +74,19 @@ function OrganizationPending() {
  /**
   * The router reuses one unkeyed child match, and its Suspense boundary, across pages. A page that
   * suspends there keeps the previous page mounted under display:none, and that page's subscriptions
@@ -30,6 +31,7 @@ diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSl
 +  return <Outlet key={next.key} />;
  }
 diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.tsx b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.tsx
+index 8c8a98b..2e57483 100644
 --- a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.tsx
 +++ b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.tsx
 @@ -1,4 +1,5 @@
@@ -38,7 +40,7 @@ diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizati
  import { DashboardEntryPending } from "@executor-js/hosted-web/entry";
  import { PagePending } from "@executor-js/hosted-web/page-pending";
  import { DashboardShell } from "@executor-js/hosted-web/shell";
-@@ -38,9 +39,19 @@
+@@ -38,9 +39,19 @@ function OrganizationPending() {
  /**
   * The router reuses one unkeyed child match, and its Suspense boundary, across pages. A page that
   * suspends there keeps the previous page mounted under display:none, and that page's subscriptions
@@ -61,9 +63,10 @@ diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizati
 +  return <Outlet key={next.key} />;
  }
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index e0414e1..7b4652f 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -111,6 +111,26 @@
+@@ -117,6 +117,26 @@ const plan = <Name extends string>(scenarios: { readonly [_ in Name]: typeof Tes
  
  /** Scenario names and applicability used by both test declarations and test selection. */
  export const scenarios = plan({
@@ -91,9 +94,10 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
      fixtures: "actors",
      file: "first-entry-reveal.spec.ts",
 diff --git a/e2e/tests/first-entry-reveal.spec.ts b/e2e/tests/first-entry-reveal.spec.ts
+index 13aec91..8e5a743 100644
 --- a/e2e/tests/first-entry-reveal.spec.ts
 +++ b/e2e/tests/first-entry-reveal.spec.ts
-@@ -6,6 +6,7 @@
+@@ -6,6 +6,7 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
  import { Evidence } from "../support/evidence.ts";
  import { openInApp, openThroughBrowser } from "../support/in-app-navigation.ts";
  import { firstEntryPages, observeFirstEntry } from "../support/first-entry-reveal-probe.ts";
@@ -101,7 +105,7 @@ diff --git a/e2e/tests/first-entry-reveal.spec.ts b/e2e/tests/first-entry-reveal
  import { scenarios } from "../test-plan.ts";
  
  /**
-@@ -73,4 +74,45 @@
+@@ -73,4 +74,45 @@ layer(HostedLive, { excludeTestServices: true })("First entry reveal", (it) => {
        ),
      );
    }

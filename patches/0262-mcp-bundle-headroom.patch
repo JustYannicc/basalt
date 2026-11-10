@@ -1,7 +1,8 @@
 diff --git a/packages/sdk/src/contracts/account-connection.ts b/packages/sdk/src/contracts/account-connection.ts
+index f9176e1..cb4cefd 100644
 --- a/packages/sdk/src/contracts/account-connection.ts
 +++ b/packages/sdk/src/contracts/account-connection.ts
-@@ -346,177 +346,178 @@
+@@ -346,177 +346,178 @@ const interactiveErrors = [
    AccountAcquisitionUnavailable,
  ] as const;
  /** SDK account setup surface, independent of any dashboard, MCP transport or browser session. */
@@ -355,12 +356,13 @@ diff --git a/packages/sdk/src/contracts/account-connection.ts b/packages/sdk/src
 +      }),
 +    ))();
 diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
+index c50a03b..1086a36 100644
 --- a/packages/sdk/src/contracts/account.ts
 +++ b/packages/sdk/src/contracts/account.ts
-@@ -345,166 +345,167 @@
+@@ -413,166 +413,167 @@ export const AccountSignIn = Schema.Union([
  ]);
  export type AccountSignIn = typeof AccountSignIn.Type;
-
+ 
 -export const AccountsGroup = HttpApiGroup.make("accounts")
 -  .add(
 -    HttpApiEndpoint.get("observations", "/v1/accounts/:account/observations", {
@@ -688,9 +690,10 @@ diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/
 +      ),
 +    ))();
 diff --git a/packages/sdk/src/contracts/app-data.ts b/packages/sdk/src/contracts/app-data.ts
+index e2a9832..aafa258 100644
 --- a/packages/sdk/src/contracts/app-data.ts
 +++ b/packages/sdk/src/contracts/app-data.ts
-@@ -69,24 +69,25 @@
+@@ -69,24 +69,25 @@ export const AppDataErrors = Schema.Union(errors);
  /** Full current query result; revisions belong to the current server process. */
  export const AppDataSnapshot = Schema.Struct({ revision: Schema.Int, value: Json });
  /** JSON operation endpoints; subscriptions are composed by the serving host. */
@@ -738,11 +741,12 @@ diff --git a/packages/sdk/src/contracts/app-data.ts b/packages/sdk/src/contracts
 +      }),
 +    ))();
 diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/apps.ts
+index a177b5d..fda86af 100644
 --- a/packages/sdk/src/contracts/apps.ts
 +++ b/packages/sdk/src/contracts/apps.ts
-@@ -558,213 +558,217 @@
+@@ -579,213 +579,217 @@ const versionOptions = {
  export const LegacyVersionEndpoints = ["deployments", "deployment"] as const;
-
+ 
  /** Creating and deploying share a build pipeline; copies own independent source. */
 -export const AppsGroup = HttpApiGroup.make("apps")
 -  .add(
@@ -776,6 +780,12 @@ diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/app
 +        payload: AppInputs.create,
 +        success: App,
 +        error: [StorageError, ...sourceErrors, AppNameTaken, AppSlugTaken],
++      }),
++      HttpApiEndpoint.get("workspace", "/v1/apps/:app/workspace", {
++        params: appParams,
++        query: ownerQuery,
++        success: SourceSnapshot,
++        error: [StorageError, ...sourceErrors, AppNotFound],
        }),
 -      success: Schema.NullOr(CredentialCheck),
 -      error: [StorageError, AppNotFound, AuthMethodInvalid, AccountFieldsInvalid],
@@ -845,12 +855,6 @@ diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/app
 -      payload: AppInputs.deploy,
 -      success: Schema.Struct({ app: DeployedApp, version: VersionMetadata }).pipe(
 -        withLegacyKeys({ version: "deployment" }),
-+      HttpApiEndpoint.get("workspace", "/v1/apps/:app/workspace", {
-+        params: appParams,
-+        query: ownerQuery,
-+        success: SourceSnapshot,
-+        error: [StorageError, ...sourceErrors, AppNotFound],
-+      }),
 +      HttpApiEndpoint.post("commit", "/v1/apps/:app/commits", {
 +        params: appParams,
 +        payload: AppInputs.commit.mapFields((fields) => ({
@@ -993,7 +997,7 @@ diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/app
 -      ],
 -    }).annotate(
 -      OpenApi.Description,
--      "Activate a retained version in the same code lineage. Managed webhooks re-register for it; calls validate their accounts against the active requirements. expectedVersion rejects a concurrent activation. The former field names `deployment` and `expectedDeployment` are still accepted.",
+-      "Activate a retained version in the same code lineage. Managed webhooks re-register for it, except that a manual one whose setup the version still serves keeps its callback URL and secret; calls validate their accounts against the active requirements. expectedVersion rejects a concurrent activation. The former field names `deployment` and `expectedDeployment` are still accepted.",
 -    ),
 -  )
 -  .add(
@@ -1129,7 +1133,7 @@ diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/app
 +        ],
 +      }).annotate(
 +        OpenApi.Description,
-+        "Activate a retained version in the same code lineage. Managed webhooks re-register for it; calls validate their accounts against the active requirements. expectedVersion rejects a concurrent activation. The former field names `deployment` and `expectedDeployment` are still accepted.",
++        "Activate a retained version in the same code lineage. Managed webhooks re-register for it, except that a manual one whose setup the version still serves keeps its callback URL and secret; calls validate their accounts against the active requirements. expectedVersion rejects a concurrent activation. The former field names `deployment` and `expectedDeployment` are still accepted.",
 +      ),
 +    )
 +    .add(
@@ -1166,11 +1170,12 @@ diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/app
 +      ),
 +    ))();
 diff --git a/packages/sdk/src/contracts/oauth-clients.ts b/packages/sdk/src/contracts/oauth-clients.ts
+index d88a4b1..5bfb7e9 100644
 --- a/packages/sdk/src/contracts/oauth-clients.ts
 +++ b/packages/sdk/src/contracts/oauth-clients.ts
-@@ -195,77 +195,78 @@
+@@ -195,77 +195,78 @@ export const OAuthMethodIssuer = Schema.Struct({
  export type OAuthMethodIssuer = typeof OAuthMethodIssuer.Type;
-
+ 
  /** Stored OAuth clients, independent of any product's sharing policy. */
 -export const OAuthClientsGroup = HttpApiGroup.make("oauthClients")
 -  .add(
@@ -1315,15 +1320,16 @@ diff --git a/packages/sdk/src/contracts/oauth-clients.ts b/packages/sdk/src/cont
 +        "Remove an OAuth client so no new connection can use it. Accounts already connected with it keep the copy their grant holds and keep renewing, but cannot sign in with its credentials again: a reconnect needs another client.",
 +      ),
 +    ))();
-
+ 
  /**
   * Host-only: moving the saved clients of earlier versions, and recording the authorization server
 diff --git a/packages/sdk/src/contracts/owner.ts b/packages/sdk/src/contracts/owner.ts
+index 2de9248..559c92a 100644
 --- a/packages/sdk/src/contracts/owner.ts
 +++ b/packages/sdk/src/contracts/owner.ts
-@@ -35,27 +35,28 @@
+@@ -35,27 +35,28 @@ export const OwnerInputs = {
  };
-
+ 
  /** Ownership is a storage primitive, not authorization; the caller decides who may do this. */
 -export const OwnersGroup = HttpApiGroup.make("owners")
 -  .add(
@@ -1368,15 +1374,16 @@ diff --git a/packages/sdk/src/contracts/owner.ts b/packages/sdk/src/contracts/ow
 +        "Delete every record belonging to one owner: configured apps, app records, stopped webhooks, saved accounts and their credentials, retained versions, pending connections, pending approvals, schedules with their run history and completed workflow runs. Remove live webhook subscriptions and finish or terminate active workflows first. Repeating removal is safe.",
 +      ),
 +    ))();
-
+ 
  /** Host-only: moving owners' records to another owner, outside the HTTP and Promise facades. */
  export const OwnerMovesHost = Symbol("executor.OwnerMoves");
 diff --git a/packages/sdk/src/contracts/publications.ts b/packages/sdk/src/contracts/publications.ts
+index 6a7eedd..6a87649 100644
 --- a/packages/sdk/src/contracts/publications.ts
 +++ b/packages/sdk/src/contracts/publications.ts
-@@ -15,84 +15,86 @@
+@@ -15,84 +15,86 @@ import { StorageError } from "./shared.ts";
  import { sourceErrors } from "./source.ts";
-
+ 
  /** Publishing retains a reviewed revision and exposes it in this executor's catalog. */
 -export const PublicationsGroup = HttpApiGroup.make("publications")
 -  .add(
@@ -1487,7 +1494,7 @@ diff --git a/packages/sdk/src/contracts/publications.ts b/packages/sdk/src/contr
 +        error: [RegistryError],
 +      }).annotate(OpenApi.Description, "Remove a listing. Installed copies keep their source."),
 +    ))();
-
+ 
  /** Public registry reads expose selected release source, never private app Git history. */
 -export const RegistryGroup = HttpApiGroup.make("registry")
 -  .add(
@@ -1541,9 +1548,10 @@ diff --git a/packages/sdk/src/contracts/publications.ts b/packages/sdk/src/contr
 +      ),
 +    ))();
 diff --git a/packages/sdk/src/contracts/schedules.ts b/packages/sdk/src/contracts/schedules.ts
+index ea6bf79..4def79e 100644
 --- a/packages/sdk/src/contracts/schedules.ts
 +++ b/packages/sdk/src/contracts/schedules.ts
-@@ -223,102 +223,103 @@
+@@ -223,102 +223,103 @@ export const ScheduleErrors = [
    AppProviderFailed,
  ] as const;
  /** Local SDK serving routes. Hosted products wrap these operations in their own authority. */
@@ -1744,11 +1752,12 @@ diff --git a/packages/sdk/src/contracts/schedules.ts b/packages/sdk/src/contract
 +      }),
 +    ))();
 diff --git a/packages/sdk/src/contracts/skills.ts b/packages/sdk/src/contracts/skills.ts
+index 9670b7e..14f2c6f 100644
 --- a/packages/sdk/src/contracts/skills.ts
 +++ b/packages/sdk/src/contracts/skills.ts
-@@ -125,39 +125,40 @@
+@@ -125,39 +125,40 @@ export const AppSkillErrors = [
  ] as const;
-
+ 
  /** Programmatic skill routes; serving products authorize the app and its accounts. */
 -export const AppSkillsGroup = HttpApiGroup.make("skills")
 -  .add(
@@ -1823,9 +1832,10 @@ diff --git a/packages/sdk/src/contracts/skills.ts b/packages/sdk/src/contracts/s
 +      ),
 +    ))();
 diff --git a/packages/sdk/src/contracts/tools.ts b/packages/sdk/src/contracts/tools.ts
+index 8fc87cd..d7e17bd 100644
 --- a/packages/sdk/src/contracts/tools.ts
 +++ b/packages/sdk/src/contracts/tools.ts
-@@ -1811,107 +1811,108 @@
+@@ -2150,107 +2150,108 @@ export const ToolInputs = {
   * elicitation response, pins the saved version and rejects changed account identities. Unknown
   * requests fail; repeated resumes report already-consumed while the marker is retained.
   */
@@ -2036,9 +2046,10 @@ diff --git a/packages/sdk/src/contracts/tools.ts b/packages/sdk/src/contracts/to
 +      }),
 +    ))();
 diff --git a/packages/sdk/src/contracts/webhooks.ts b/packages/sdk/src/contracts/webhooks.ts
+index f745447..6b5635d 100644
 --- a/packages/sdk/src/contracts/webhooks.ts
 +++ b/packages/sdk/src/contracts/webhooks.ts
-@@ -243,119 +243,126 @@
+@@ -276,119 +276,126 @@ export interface WebhookSourceDispatcher {
  /** Host-created delivery envelope; public callback senders supply only the enclosed request. */
  export const DeliverWebhook = Schema.Struct({ ...subscription, request: WebhookRequestData });
  /** Programmatic management surfaces are shared with the normal Executor management app. */
@@ -2281,9 +2292,10 @@ diff --git a/packages/sdk/src/contracts/webhooks.ts b/packages/sdk/src/contracts
 +      }),
 +    ))();
 diff --git a/packages/sdk/src/contracts/workflow-inputs.ts b/packages/sdk/src/contracts/workflow-inputs.ts
+index 8e19ab6..b8da75d 100644
 --- a/packages/sdk/src/contracts/workflow-inputs.ts
 +++ b/packages/sdk/src/contracts/workflow-inputs.ts
-@@ -36,43 +36,47 @@
+@@ -36,43 +36,47 @@ export const UpdateWorkflowInputEvidence = Schema.Struct({
    evidence: WorkflowInputEvidence,
  });
  const path = "/v1/apps/:app/workflow-inputs/:id";
@@ -2372,10 +2384,11 @@ diff --git a/packages/sdk/src/contracts/workflow-inputs.ts b/packages/sdk/src/co
 +      }),
 +    ))();
 diff --git a/packages/sdk/src/contracts/workflows.ts b/packages/sdk/src/contracts/workflows.ts
+index 430975c..34a67ba 100644
 --- a/packages/sdk/src/contracts/workflows.ts
 +++ b/packages/sdk/src/contracts/workflows.ts
-@@ -88,55 +88,58 @@
-
+@@ -98,55 +98,58 @@ export const WorkflowDefinitionErrors = [
+ 
  const path = "/v1/apps/:app/workflow-runs";
  /** Flat transport groups are projected beneath executor.apps in the public SDK. */
 -export const AppWorkflowsGroup = HttpApiGroup.make("appWorkflows").add(
@@ -2385,7 +2398,7 @@ diff --git a/packages/sdk/src/contracts/workflows.ts b/packages/sdk/src/contract
 -      withLegacyKeys({ version: "deployment" }),
 -    ),
 -    success: Schema.Array(HostedWorkflow),
--    error: WorkflowErrors,
+-    error: WorkflowDefinitionErrors,
 -  }),
 -);
 -/** Lifecycle operations start quickly and return a retained run identity. */
@@ -2400,20 +2413,21 @@ diff --git a/packages/sdk/src/contracts/workflows.ts b/packages/sdk/src/contract
 -        withLegacyKeys({ version: "deployment" }),
 -      ),
 -      success: WorkflowRun,
-+      query: Schema.Struct({
-+        accounts: AppAccountsQuery,
-+        version: Schema.optional(VersionId),
-+      }).pipe(withLegacyKeys({ version: "deployment" })),
-+      success: Schema.Array(HostedWorkflow),
-       error: WorkflowErrors,
-     }),
+-      error: WorkflowErrors,
+-    }),
 -  )
 -  .add(
 -    HttpApiEndpoint.get("get", `${path}/:run`, {
 -      params: WorkflowTarget.fields,
 -      success: WorkflowRun,
 -      error: WorkflowErrors,
--    }),
++      query: Schema.Struct({
++        accounts: AppAccountsQuery,
++        version: Schema.optional(VersionId),
++      }).pipe(withLegacyKeys({ version: "deployment" })),
++      success: Schema.Array(HostedWorkflow),
++      error: WorkflowDefinitionErrors,
+     }),
 -  )
 -  .add(
 -    HttpApiEndpoint.get("pinned", `${path}/:run/pinned`, {

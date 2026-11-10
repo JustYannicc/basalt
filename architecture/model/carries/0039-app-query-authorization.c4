@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Every app-origin request reads current session expiry, parent session and scoped app authority. The app-query auth adapter does not perform expired-verification cleanup, while dashboard sign-in retains that cleanup. Disabling cleanup never removes impersonation or session-validation columns from the adapter."
+    }
+  }
+}

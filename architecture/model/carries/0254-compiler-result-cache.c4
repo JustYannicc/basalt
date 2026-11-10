@@ -1,7 +1,7 @@
 model {
   extend basalt.build {
     metadata {
-      constraint "Production compiler cache reuse requires matching source, framework release and intact output; test stages bypass inherited production cache settings."
+      constraint "Production compiler cache reuse requires matching source, framework release and intact output; test stages bypass inherited production cache settings. Only eligible release bindings enable reuse; inherited production settings cannot enable it in tests. Private v1 handoff files remain environment-owned and are removed during scope cleanup."
     }
   }
 }

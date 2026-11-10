@@ -11,10 +11,10 @@ index d4789bc..6d081da 100644
          success: Schema.NullOr(CredentialCheck),
          error: [
 diff --git a/apps/hosted/web/src/contracts/accounts.ts b/apps/hosted/web/src/contracts/accounts.ts
-index 4de6f1d..49e3b79 100644
+index f02702a..0638f5f 100644
 --- a/apps/hosted/web/src/contracts/accounts.ts
 +++ b/apps/hosted/web/src/contracts/accounts.ts
-@@ -229,11 +229,17 @@ export const checkCredentialsAtom = HostedClient.runtime.fn(
+@@ -232,11 +232,17 @@ export const checkCredentialsAtom = HostedClient.runtime.fn(
      readonly provider: ProviderId;
      readonly method: string;
      readonly fields: typeof AccountFieldsInput.Type;
@@ -34,7 +34,7 @@ index 4de6f1d..49e3b79 100644
      ),
  );
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
-index 68b83d5..e67e311 100644
+index b90e68c..241b818 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 @@ -581,6 +581,7 @@ type ConnectionDialog = {
@@ -123,10 +123,10 @@ index 68b83d5..e67e311 100644
        start={(input) =>
          account !== undefined ||
 diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
-index 7ae92cd..e2fb419 100644
+index 45fd8ce..81649be 100644
 --- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
 +++ b/apps/hosted/web/src/implementation/pages/connect-account.tsx
-@@ -258,8 +258,11 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -271,8 +271,11 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
    oauthDeferrals,
    connectionGuidance,
    requirement,
@@ -138,28 +138,28 @@ index 7ae92cd..e2fb419 100644
    readonly mcpEndpoint?:
      | {
          readonly configuredMethod?: string | undefined;
-@@ -338,6 +341,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
-     readonly issuer: typeof HttpUrl.Type;
-   }>();
-   const [method, setMethod] = useState(initialMethod);
+@@ -353,6 +356,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+     readonly clientId: string;
+     readonly id: OAuthClientId;
+   }>(undefined);
 +  const selectedSite = site ?? chosenSite;
    // Reconnects keep their name; a new account is named once saved.
    const saved = (value: Account) => {
      if (!account)
-@@ -368,7 +372,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -419,7 +423,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
            (entry) => entry.requirement === requirement && entry.method === method,
          )
        }
 -      site={site}
 +      site={selectedSite}
        {...(account ? { account } : {})}
-       initialMethod={method}
+       initialMethod={initialMethod}
        onMethodChange={onMethodChange}
-@@ -380,7 +384,13 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
-         ? {}
-         : {
-             check: (input: AccountSubmission) =>
--              checkCredentials({ organization, app, provider: provider.id, ...input }),
+@@ -433,7 +437,13 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+             check: {
+               app,
+               run: (input: AccountSubmission) =>
+-                checkCredentials({ organization, app, provider: provider.id, ...input }),
 +              checkCredentials({
 +                organization,
 +                app,
@@ -167,14 +167,14 @@ index 7ae92cd..e2fb419 100644
 +                ...input,
 +                ...(selectedSite === undefined ? {} : { site: selectedSite }),
 +              }),
+             },
            })}
        onSaved={saved}
-       {...(onPendingChange ? { onPendingChange } : {})}
 diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
-index efafa57..936c56d 100644
+index c4fbd72..49fbc14 100644
 --- a/apps/local/server/src/contracts/dashboard.ts
 +++ b/apps/local/server/src/contracts/dashboard.ts
-@@ -951,6 +951,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+@@ -952,6 +952,7 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
            provider: ProviderId,
            method: AuthMethodName,
            fields: AccountFieldsInput,
@@ -206,7 +206,7 @@ index e5ad178..72db321 100644
      ),
  );
 diff --git a/apps/local/web/src/implementation/pages/account-form.tsx b/apps/local/web/src/implementation/pages/account-form.tsx
-index 218c70c..370d3c2 100644
+index ab9ffe0..05ed66f 100644
 --- a/apps/local/web/src/implementation/pages/account-form.tsx
 +++ b/apps/local/web/src/implementation/pages/account-form.tsx
 @@ -48,14 +48,18 @@ type AppAccountFormProps = {
@@ -296,25 +296,25 @@ index 218c70c..370d3c2 100644
        {...(account ? { account } : {})}
        Failure={Failure}
        submitLabel={account ? "Save credentials" : "Add account"}
-@@ -227,7 +248,12 @@ function BoundAppAccountForm({
-       {...(checkWith
-         ? {
-             check: (input: AccountSubmission) =>
--              checkCredentials({ app, provider: provider.id, ...input }),
+@@ -229,7 +250,12 @@ function BoundAppAccountForm({
+             check: {
+               app,
+               run: (input: AccountSubmission) =>
+-                checkCredentials({ app, provider: provider.id, ...input }),
 +              checkCredentials({
 +                app,
 +                provider: provider.id,
 +                ...input,
 +                ...(selectedSite === undefined ? {} : { site: selectedSite }),
 +              }),
+             },
            }
          : {})}
-       oauth={(props) => (
 diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/apps.ts
-index a5dffa2..b87828b 100644
+index 9749062..993053a 100644
 --- a/packages/sdk/src/contracts/apps.ts
 +++ b/packages/sdk/src/contracts/apps.ts
-@@ -502,6 +502,8 @@ export const AppInputs = {
+@@ -505,6 +505,8 @@ export const AppInputs = {
      provider: ProviderId,
      method: AuthMethodName,
      fields: AccountFieldsInput,
@@ -323,7 +323,7 @@ index a5dffa2..b87828b 100644
    }),
    create: Schema.Struct({ owner: OwnerId, name: AppName, files: SourceFiles }),
    workspace: Schema.Struct({ app: AppId, owner: Schema.optional(OwnerId) }),
-@@ -597,6 +599,7 @@ export const AppsGroup = /* @__PURE__ */ (() =>
+@@ -598,6 +600,7 @@ export const AppsGroup = /* @__PURE__ */ (() =>
            provider: AppInputs.checkCredentials.fields.provider,
            method: AppInputs.checkCredentials.fields.method,
            fields: AppInputs.checkCredentials.fields.fields,
@@ -332,10 +332,10 @@ index a5dffa2..b87828b 100644
          success: Schema.NullOr(CredentialCheck),
          error: [StorageError, AppNotFound, AuthMethodInvalid, AccountFieldsInvalid],
 diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
-index 3fec624..6399a06 100644
+index c7eedc8..989d316 100644
 --- a/packages/sdk/src/implementation/account-health.ts
 +++ b/packages/sdk/src/implementation/account-health.ts
-@@ -36,7 +36,12 @@ import {
+@@ -38,7 +38,12 @@ import {
    type OwnerId,
  } from "../contracts/shared.ts";
  import { AppNotFound } from "../contracts/apps.ts";
@@ -349,7 +349,7 @@ index 3fec624..6399a06 100644
  import { StoredVersion, type StoredAccount } from "../contracts/storage.ts";
  import { accountMetadata, storedAccount } from "./accounts.ts";
  import { interactiveBinding, interactiveBindings } from "./interactive-state.ts";
-@@ -51,6 +56,7 @@ import { query, type Query } from "./database.ts";
+@@ -53,6 +58,7 @@ import { inOrder, query, type Query } from "./database.ts";
  import type { makeOAuth } from "./oauth.ts";
  import type { FirstPartyOAuthClient } from "../contracts/oauth.ts";
  import type { UrlPolicy } from "@executor-js/utils/url-policy";
@@ -357,7 +357,7 @@ index 3fec624..6399a06 100644
  
  /** The one account an account check binds, in its requirement's scope. */
  const checkedAccounts = (scope: AccountScope, slot: string, account: HostAccount): HostAccounts =>
-@@ -529,6 +535,22 @@ export const makeAccountHealth = (
+@@ -541,6 +547,22 @@ export const makeAccountHealth = (
        const version = yield* Schema.decodeUnknownEffect(StoredVersion)(row).pipe(
          Effect.mapError(() => new StorageError()),
        );
@@ -380,7 +380,7 @@ index 3fec624..6399a06 100644
        const deadline = (yield* Clock.currentTimeMillis) + checkMillis - reportMillis;
        const outcome = yield* runtime
          .checkAccount({
-@@ -539,8 +561,9 @@ export const makeAccountHealth = (
+@@ -552,8 +574,9 @@ export const makeAccountHealth = (
            accounts: Redacted.make(
              checkedAccounts(target.required.scope, target.slot, {
                id: unsavedAccount,

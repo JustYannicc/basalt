@@ -456,10 +456,10 @@ index 50c34fc..0000000
 -      : { family, requirements: found.map((match) => match.requirement) };
 -  }).pipe(Effect.mapError(() => new StorageError()));
 diff --git a/apps/hosted/server/src/implementation/resource-policy.ts b/apps/hosted/server/src/implementation/resource-policy.ts
-index dce1a1b..939caef 100644
+index bd74c3b..b97c47a 100644
 --- a/apps/hosted/server/src/implementation/resource-policy.ts
 +++ b/apps/hosted/server/src/implementation/resource-policy.ts
-@@ -457,6 +457,7 @@ export const requireCurrentAppAccess = (app: AppId, action: "read" | "manage" |
+@@ -465,6 +465,7 @@ export const requireCurrentAppAccess = (app: AppId, action: "read" | "manage" |
      if (!permitsAppAction(checked.access, action)) return yield* new OrganizationForbidden();
      return checked;
    });
@@ -467,8 +467,8 @@ index dce1a1b..939caef 100644
  const permitsAppAction = (access: typeof AppAccess.Type, action: "read" | "manage" | "use") =>
    action === "use"
      ? access.canUse
-@@ -550,11 +551,17 @@ export const visibleApps = (apps: readonly App[]) =>
-   Effect.flatMap(currentResourceAuthority, (actor) => visibleAppsAs(actor, apps));
+@@ -569,11 +570,17 @@ export const visibleApps = (apps: readonly App[]) =>
+   });
  /** {@link visibleApps} for an actor already resolved in this operation. */
  export const visibleAppsAs = (actor: ResourceAuthority, apps: readonly App[]) =>
 +  Effect.map(visibleAppsWithAccessAs(actor, apps), (visible) => visible.apps);

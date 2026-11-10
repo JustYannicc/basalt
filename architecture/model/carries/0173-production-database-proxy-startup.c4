@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The production-operation test proxy binds its retained loopback listener before allocating the backend and uses the actual held port in runtime bindings and fixture replies. Scope cleanup owns listener and backend lifetime. Startup errors retain closed OS codes only, and catalog configuration remains independent of proxy address selection."
+    }
+  }
+}

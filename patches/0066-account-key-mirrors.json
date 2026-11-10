@@ -1,7 +1,7 @@
 {
   "identity": "basalt-account-key-mirrors",
   "file": "0066-account-key-mirrors.patch",
-  "content_sha256": "8576066ae0f8752c9e39b07d65e65fa68ef3caac058d1d88388b51547896a416",
+  "content_sha256": "216e32e5b8c250ba7327eaafce9b1f07bba4edb9e649e268d4d19e50f83e793a",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

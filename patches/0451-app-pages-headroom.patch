@@ -1,6 +1,6 @@
 diff --git a/apps/hosted/cloud/src/infrastructure/app-pages-platform.ts b/apps/hosted/cloud/src/infrastructure/app-pages-platform.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..b3e3035fc97d4db211c5b844615beffce18d457c
+index 0000000..b3e3035
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/app-pages-platform.ts
 @@ -0,0 +1,6 @@
@@ -11,7 +11,7 @@ index 0000000000000000000000000000000000000000..b3e3035fc97d4db211c5b844615beffc
 +
 +export const layer = Layer.mergeAll(NodeCrypto.layer, NodePath.layer);
 diff --git a/apps/hosted/cloud/src/infrastructure/worker-build.ts b/apps/hosted/cloud/src/infrastructure/worker-build.ts
-index f536c8449a5153342f9113cb9274a20e2222407e..f816871fedebafb14935802acefe446eddd0048f 100644
+index 4373d4b..b74aefe 100644
 --- a/apps/hosted/cloud/src/infrastructure/worker-build.ts
 +++ b/apps/hosted/cloud/src/infrastructure/worker-build.ts
 @@ -1,3 +1,4 @@
@@ -19,10 +19,10 @@ index f536c8449a5153342f9113cb9274a20e2222407e..f816871fedebafb14935802acefe446e
  /** Rolldown output rules for each Worker: upload only reachable modules, within a budget. */
  import * as NodeServices from "@effect/platform-node/NodeServices";
  import type { WorkerProps } from "alchemy/Cloudflare";
-@@ -169,6 +170,30 @@ export const workerBuild = (worker: WorkerName): NonNullable<WorkerProps["build"
-               input: {
-                 resolve: {
-                   alias: {
+@@ -197,6 +198,30 @@ export const workerBuild = (
+           resolve: {
+             alias: {
+               ...(options.localTestHooks === true ? localTestHooks() : {}),
 +                    // App pages use workerd's parser and only the platform services they consume.
 +                    ...(worker === "app-pages"
 +                      ? {
@@ -47,12 +47,12 @@ index f536c8449a5153342f9113cb9274a20e2222407e..f816871fedebafb14935802acefe446e
 +                          ).resolve("entities/decode"),
 +                        }
 +                      : {}),
-                     "@executor-js/sdk/oauth-protocol": new URL(
-                       "./oauth-protocol.ts",
-                       import.meta.url,
+               ...(worker === "oauth-wire" ? {} : {
+                 "@executor-js/sdk/oauth-protocol": fileURLToPath(new URL("./oauth-protocol.ts", import.meta.url)),
+               }),
 diff --git a/packages/apps/src/implementation/ui-document-decode.ts b/packages/apps/src/implementation/ui-document-decode.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..68d6a306f0bffbff486934096b4b3768c4037ab7
+index 0000000..68d6a30
 --- /dev/null
 +++ b/packages/apps/src/implementation/ui-document-decode.ts
 @@ -0,0 +1,10 @@
@@ -68,7 +68,7 @@ index 0000000000000000000000000000000000000000..68d6a306f0bffbff486934096b4b3768
 +};
 diff --git a/packages/apps/src/implementation/ui-document-native.ts b/packages/apps/src/implementation/ui-document-native.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..475a6156eb58613d866317d351df35cd74558aad
+index 0000000..475a615
 --- /dev/null
 +++ b/packages/apps/src/implementation/ui-document-native.ts
 @@ -0,0 +1,58 @@
@@ -132,7 +132,7 @@ index 0000000000000000000000000000000000000000..475a6156eb58613d866317d351df35cd
 +};
 diff --git a/packages/apps/src/implementation/ui-document-resources.ts b/packages/apps/src/implementation/ui-document-resources.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..d793622d4c3ac7c94a4e1092521829c74be4e7b6
+index 0000000..d793622
 --- /dev/null
 +++ b/packages/apps/src/implementation/ui-document-resources.ts
 @@ -0,0 +1,152 @@
@@ -289,7 +289,7 @@ index 0000000000000000000000000000000000000000..d793622d4c3ac7c94a4e1092521829c7
 +  };
 +};
 diff --git a/packages/apps/src/implementation/ui-document.ts b/packages/apps/src/implementation/ui-document.ts
-index 8c3659727e38c13bc74e8e54ceb2c86a2469ceec..c294d8f31f847617e2df3f46fda28d3ec34db19c 100644
+index 8c36597..c294d8f 100644
 --- a/packages/apps/src/implementation/ui-document.ts
 +++ b/packages/apps/src/implementation/ui-document.ts
 @@ -1,14 +1,8 @@
@@ -461,7 +461,7 @@ index 8c3659727e38c13bc74e8e54ceb2c86a2469ceec..c294d8f31f847617e2df3f46fda28d3e
    return serialize(document);
  };
 diff --git a/packages/apps/src/implementation/ui-serving.ts b/packages/apps/src/implementation/ui-serving.ts
-index 8a4e39512ff4213c66bfe6381ed4880addf8a1cc..4bed39eb7508881647279a12630787a24705364b 100644
+index 8a4e395..4bed39e 100644
 --- a/packages/apps/src/implementation/ui-serving.ts
 +++ b/packages/apps/src/implementation/ui-serving.ts
 @@ -108,13 +108,14 @@ export const appDocument = <E, R>(options: {

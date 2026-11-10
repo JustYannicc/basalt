@@ -1,7 +1,7 @@
 model {
-  extend basalt.build {
+  extend basalt.toolsGateway.appCalls {
     metadata {
-      constraint "App mutations require durable receipts that bind approval to the exact operation and caller before provider execution."
+      constraint "App mutations require durable receipts that bind approval to the exact operation and caller before provider execution. The workflow context supplies the current host API revision, and the create wrapper forwards the same context into each step's optional host-owned call receipt rather than rebuilding authority from app input."
     }
   }
 }

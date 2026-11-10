@@ -1,0 +1,2981 @@
+diff --git a/apps/hosted/cloud/src/contracts/builds.ts b/apps/hosted/cloud/src/contracts/builds.ts
+index 27adb58..d3f334e 100644
+--- a/apps/hosted/cloud/src/contracts/builds.ts
++++ b/apps/hosted/cloud/src/contracts/builds.ts
+@@ -3,6 +3,7 @@ import {
+   BuildBusy,
+   RuntimeBuildFailed,
+   RuntimeProtocolUnsupported,
++  FrameworkProvenanceRefused,
+   RuntimeAppsDependencyMissing,
+   type CodeFiles,
+ } from "@executor-js/sdk/core";
+@@ -58,6 +59,7 @@ export const CloudCompileResult = /* @__PURE__ */ (() =>
+         BuildBusy,
+         RuntimeBuildFailed,
+         RuntimeProtocolUnsupported,
++        FrameworkProvenanceRefused,
+         RuntimeAppsDependencyMissing,
+       ]),
+     }),
+diff --git a/apps/hosted/cloud/src/implementation/compiler-runtime.ts b/apps/hosted/cloud/src/implementation/compiler-runtime.ts
+index 135d348..b1c91c5 100644
+--- a/apps/hosted/cloud/src/implementation/compiler-runtime.ts
++++ b/apps/hosted/cloud/src/implementation/compiler-runtime.ts
+@@ -109,6 +109,7 @@ export const compilerRuntime = (env: Readonly<Record<string, unknown>>) =>
+             BuildBusy: (error) => Effect.succeed({ ok: false as const, error }),
+             RuntimeBuildFailed: (error) => Effect.succeed({ ok: false as const, error }),
+             RuntimeProtocolUnsupported: (error) => Effect.succeed({ ok: false as const, error }),
++            FrameworkProvenanceRefused: (error) => Effect.succeed({ ok: false as const, error }),
+             RuntimeAppsDependencyMissing: (error) => Effect.succeed({ ok: false as const, error }),
+           }),
+           Effect.flatMap(Schema.encodeEffect(CloudCompileResult)),
+diff --git a/apps/hosted/cloud/src/implementation/runtime-build-cache.ts b/apps/hosted/cloud/src/implementation/runtime-build-cache.ts
+index 2b2f7c1..b5e2b10 100644
+--- a/apps/hosted/cloud/src/implementation/runtime-build-cache.ts
++++ b/apps/hosted/cloud/src/implementation/runtime-build-cache.ts
+@@ -2,7 +2,7 @@
+  * Private cache of immutable executable builds, read by the app runner in the AppData Worker.
+  * Invocation context never enters this store.
+  */
+-import { type BuildId, RuntimeBuildUnavailable } from "@executor-js/sdk/core";
++import { type BuildId, RuntimeBuildUnavailable, FrameworkProvenanceRefused } from "@executor-js/sdk/core";
+ import {
+   type FrameworkIdentity,
+   InlinedWorkerBuild,
+@@ -164,7 +164,7 @@ const readOnce = <A, R>(
+   part: { readonly value: (entry: Entry) => A | undefined; readonly entry: (value: A) => Entry },
+   read: Effect.Effect<
+     { readonly value: A; readonly source: "hit" | "miss" },
+-    RuntimeBuildUnavailable,
++    RuntimeBuildUnavailable | FrameworkProvenanceRefused,
+     R
+   >,
+   deadline: number,
+@@ -364,7 +364,7 @@ export const cachedRuntimeBuilds = <R>(
+     ) => Effect.Effect<StoredWorkerBuild, RuntimeBuildUnavailable, R>;
+     readonly framework: (
+       identity: FrameworkIdentity,
+-    ) => Effect.Effect<RetainedFramework, RuntimeBuildUnavailable, R>;
++    ) => Effect.Effect<RetainedFramework, RuntimeBuildUnavailable | FrameworkProvenanceRefused, R>;
+   },
+   background: (write: Effect.Effect<void>) => Effect.Effect<void>,
+ ) => {
+@@ -394,7 +394,7 @@ export const cachedRuntimeBuilds = <R>(
+       yield* Effect.annotateCurrentSpan("executor.build.framework_cache", source);
+       return value;
+     });
+-  return (build: BuildId): Effect.Effect<LoadedWorkerBuild, RuntimeBuildUnavailable, R> =>
++  return (build: BuildId): Effect.Effect<LoadedWorkerBuild, RuntimeBuildUnavailable | FrameworkProvenanceRefused, R> =>
+     Effect.gen(function* () {
+       const deadline = (yield* Clock.currentTimeMillis) + readTimeout;
+       const { value, source, bytes } = yield* readOnce(
+@@ -419,7 +419,7 @@ export const cachedRuntimeBuilds = <R>(
+         "executor.build.cache": source,
+         "executor.build.record_accounted_bytes": bytes,
+       });
+-      return yield* linkWorkerBuild(value, (identity) => framework(identity, deadline));
++      return yield* linkWorkerBuild(value, (identity) => framework(identity, deadline), build);
+     }).pipe(
+       Effect.tap(() =>
+         Effect.annotateCurrentSpan({
+diff --git a/apps/hosted/cloud/src/infrastructure/runtime.ts b/apps/hosted/cloud/src/infrastructure/runtime.ts
+index fed55fa..a442749 100644
+--- a/apps/hosted/cloud/src/infrastructure/runtime.ts
++++ b/apps/hosted/cloud/src/infrastructure/runtime.ts
+@@ -6,6 +6,7 @@ import {
+   BuildMemoryExceeded,
+   BuildBusy,
+   RuntimeProtocolUnsupported,
++  FrameworkProvenanceRefused,
+   describeBuildCause,
+   RuntimeAppsDependencyMissing,
+   ownsDatabase,
+@@ -197,7 +198,7 @@ export const cloudRuntime = Effect.fn(function* (
+                   ? "queued"
+                   : Schema.is(BuildMemoryExceeded)(error)
+                     ? "compile"
+-                    : Schema.is(RuntimeProtocolUnsupported)(error)
++                    : (Schema.is(RuntimeProtocolUnsupported)(error) || Schema.is(FrameworkProvenanceRefused)(error))
+                       ? "protocol"
+                       : Schema.is(RuntimeAppsDependencyMissing)(error)
+                         ? "dependencies"
+diff --git a/bun.lock b/bun.lock
+index a9df614..3615d6e 100644
+--- a/bun.lock
++++ b/bun.lock
+@@ -490,7 +490,7 @@
+     },
+     "packages/apps": {
+       "name": "apps",
+-      "version": "0.0.1-beta.104-basalt.1",
++      "version": "0.0.1-beta.104-basalt.16",
+       "dependencies": {
+         "@cfworker/json-schema": "4.1.1",
+         "@csstools/css-tokenizer": "4.0.2",
+diff --git a/packages/apps/package.json b/packages/apps/package.json
+index 59f10c4..b0e97a5 100644
+--- a/packages/apps/package.json
++++ b/packages/apps/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "apps",
+-  "version": "0.0.1-beta.104-basalt.14",
++  "version": "0.0.1-beta.104-basalt.16",
+   "private": true,
+   "description": "TypeScript apps with typed tools, accounts, storage, and UI.",
+   "type": "module",
+diff --git a/packages/apps/src/contracts/host.ts b/packages/apps/src/contracts/host.ts
+index dc6ff16..d9d996f 100644
+--- a/packages/apps/src/contracts/host.ts
++++ b/packages/apps/src/contracts/host.ts
+@@ -98,6 +98,7 @@ export {
+   frameworkProtocol,
+   oauthScopesProtocol,
+   unavailableAccountsProtocol,
++  credentialHostsProtocol,
+ } from "./protocol-version.ts";
+ export { current as protocol35 } from "./protocols/35.ts";
+ export { current as protocol39 } from "./protocols/39.ts";
+diff --git a/packages/apps/src/contracts/protocol-version.ts b/packages/apps/src/contracts/protocol-version.ts
+index f6c4af9..2476de8 100644
+--- a/packages/apps/src/contracts/protocol-version.ts
++++ b/packages/apps/src/contracts/protocol-version.ts
+@@ -7,4 +7,6 @@
+ export const oauthScopesProtocol = 39;
+ /** Unavailable account bindings exist only for discovery. */
+ export const unavailableAccountsProtocol = 40;
+-export const frameworkProtocol = unavailableAccountsProtocol;
++/** Credential hosts may contain underscores without changing retained validation. */
++export const credentialHostsProtocol = 42;
++export const frameworkProtocol = credentialHostsProtocol;
+diff --git a/packages/apps/src/contracts/protocols/40.ts b/packages/apps/src/contracts/protocols/40.ts
+new file mode 100644
+index 0000000..c6c0287
+--- /dev/null
++++ b/packages/apps/src/contracts/protocols/40.ts
+@@ -0,0 +1,751 @@
++import { AccountUnavailable } from "../account-unavailable.ts";
++import { DriveCommand, DriveReply } from "../drive.ts";
++import {
++  AppCallCommand,
++  AppCallReply,
++  DeclaredAppDependencies,
++  AppToolPolicyCommand,
++  AppToolPolicyReplayReply as AppToolPolicyReply,
++} from "../app-calls.ts";
++import { DeclaredModels, ModelCommand, ModelReply } from "../models.ts";
++import { AccountObservationResult } from "../account-observation.ts";
++/**
++ * The host protocol this framework speaks: every message that crosses between a host and an app
++ * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
++ *
++ * This module is live. The framework and the SDK read the current boundary from here, through
++ * `../host.ts`. `bun run check` records it in `packages/apps/protocols/<frameworkProtocol>.json` and
++ * checks that it stays compatible with every released protocol in `released.ts`: a host that speaks
++ * this module must keep running every bundle a released protocol retained. A change that no longer
++ * does so is a break: freeze this module's previous content as `<frameworkProtocol>.ts`, raise the
++ * number, and give the host an adapter for the frozen one. See notes/apps-publishing.md.
++ *
++ * The frozen protocol modules beside this one are records of released boundaries. Nothing here
++ * imports them, so a change here never edits a released protocol.
++ */
++import { Effect, Schema } from "effect";
++import { AccountFamily } from "../account-family.ts";
++import { McpAppViewObservation, McpAppUi } from "../mcp-apps.ts";
++import { ConnectCommand } from "../connect.ts";
++import { ProviderSite } from "@executor-js/utils/account-site";
++import { CacheCommand, CacheReply } from "@executor-js/app-cache/contracts";
++const frameworkProtocol = 40;
++import {
++  DatabaseFieldReserved,
++  DatabaseLimitExceeded,
++  DatabaseSchema,
++} from "@executor-js/app-data/contracts";
++import { OpenapiResponseError } from "../api-response-error.ts";
++import {
++  ApprovalElicitation,
++  ElicitationFailed,
++  ElicitationReply,
++  FormElicitation,
++} from "../elicitation.ts";
++import { DeclaredEvents, EmittedEvents } from "../events.ts";
++import { FailureDetail, UpstreamError } from "../failure.ts";
++import { AccountCheckResult, OAuth2Config } from "../provider.ts";
++import { ProviderError } from "../provider-error.ts";
++import { RouterIcon } from "../router.ts";
++import { AppIcons } from "../icons.ts";
++import { Placements } from "../placement.ts";
++import { OperationSchedule } from "../schedules.ts";
++import { AccountId, JsonObject, JsonValue } from "../schema.ts";
++import { AppSkillName, AppSkills } from "../skills.ts";
++import { ToolAnnotations } from "../tools.ts";
++import { WebhookCommand } from "../webhook-protocol.ts";
++import {
++  WorkflowCommand,
++  WorkflowControlCommand,
++  WorkflowFailure,
++  WorkflowReplay,
++  DriveWorkflowRpcCommand as WorkflowRpcCommand,
++  WorkflowRpcResult,
++  WorkflowRunId,
++} from "../workflows.ts";
++
++/** An MCP failure as it crosses the host boundary. Apps throw the author-facing class from `apps/mcp`. */
++export class McpError extends Schema.TaggedError<McpError>()("McpError", {
++  phase: Schema.Literals(["connect", "discover", "call", "schema", "transport"]),
++  reason: Schema.Literals([
++    "request",
++    "unauthorized",
++    "invalid_response",
++    "timeout",
++    "invalid_input",
++  ]),
++  status: Schema.optional(Schema.Number),
++  /** The JSON-RPC error the server stated. */
++  upstream: Schema.optional(UpstreamError),
++  /**
++   * The refused request carried the session ID the server issued at initialization, so a 404 reads
++   * as a session the server may have lost. Chooses the explanation only; the host never decides from
++   * it whose side a failure is on.
++   */
++  session: Schema.optional(Schema.Literal(true)),
++}) {}
++
++/** A skill loader failure as it crosses the host boundary. Apps throw the author-facing class from `apps/skills`. */
++export class SkillLoadFailed extends Schema.TaggedError<SkillLoadFailed>()("SkillLoadFailed", {
++  reason: Schema.Literals([
++    "source",
++    "request",
++    "rate_limited",
++    "document",
++    "limit",
++    "changed",
++    "encoding",
++  ]),
++  message: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
++  status: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 599 }))),
++  /** What the service's answer points to as missing: the repository, or the branch or tag. */
++  missing: Schema.optional(Schema.Literals(["repository", "ref"])),
++}) {}
++
++/**
++ * Where a provider's credentials may be sent: an exact host, `host:port`, or `*.` followed by a
++ * domain, matching exactly one more label. Lowercase, without a scheme or path.
++ */
++// Keep this schema local; importing a frozen protocol evaluates its whole message graph in Workers.
++export const CredentialHost = Schema.String.check(
++  Schema.isPattern(
++    /^(\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$/,
++  ),
++);
++
++/**
++ * Field names an auth method exposes to app code, and where its secret fields may be sent. Every
++ * other string field is secret.
++ */
++const exposure = {
++  /** Not secret: app code reads the real value and forms show it. */
++  plain: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++  /** Secret, but app code reads the real value, for signing and similar uses. */
++  raw: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++  /**
++   * The only places the outbound network substitutes this method's secret fields: whole header
++   * values and query parameters, each an exact template. Part of the provider's identity. In an
++   * invocation, an account's provider carries the placements granted to that account, which can
++   * be narrower than the app's declaration.
++   */
++  request: Schema.optionalKey(Placements),
++};
++
++/** Serializable authentication declarations interpreted by the trusted host. */
++export const DeclaredAuthMethod = Schema.Union([
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[4].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("interactive"),
++    label: Schema.String,
++    reconnect: Schema.optionalKey(Schema.Literal(true)),
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("secrets"),
++    provisioned: Schema.optionalKey(Schema.Literal(true)),
++    label: Schema.String,
++    fields: JsonObject,
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[0].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[1].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[2].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[3].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
++]);
++
++/** A credential-free provider declaration with the hosts its credentials may be sent to. */
++export const DeclaredProvider = Schema.Struct({
++  name: Schema.NonEmptyString,
++  family: Schema.optionalKey(AccountFamily),
++  auth: Schema.Record(Schema.NonEmptyString, DeclaredAuthMethod),
++  site: Schema.optionalKey(ProviderSite),
++  hosts: Schema.optionalKey(Schema.Array(CredentialHost)),
++});
++/** Credential-free provider declaration; content matching remains host policy. */
++export type DeclaredProvider = typeof DeclaredProvider.Type;
++
++/** One requirement: its provider, how many accounts it takes, and whether it has a check. */
++export const DeclaredAccountSlot = Schema.Struct({
++  definition: DeclaredProvider,
++  capabilities: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++  cardinality: Schema.Literals(["one", "many"]),
++  contributed: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
++  /**
++   * The slot's provider defines an account check. Kept beside the definition, not in it, so
++   * adding or editing a check never changes the provider's identity.
++   */
++  health: Schema.optionalKey(Schema.Literal(true)),
++  /** This slot can check app-acquired references through connect.check. */
++  interactiveHealth: Schema.optionalKey(Schema.Literal(true)),
++  hostAcquisition: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++});
++export type DeclaredAccountSlot = typeof DeclaredAccountSlot.Type;
++
++/** One scope's requirements, by name. */
++export const DeclaredAccountSlots = Schema.Record(Schema.NonEmptyString, DeclaredAccountSlot);
++export type DeclaredAccountSlots = typeof DeclaredAccountSlots.Type;
++
++/** Account slots available without binding accounts or evaluating the app factory. */
++export const DeclaredRequirements = Schema.Struct({
++  drive: Schema.optionalKey(Schema.Literal(true)),
++  models: Schema.optionalKey(DeclaredModels),
++  dependencies: Schema.optionalKey(DeclaredAppDependencies),
++  /** Protocol support of this retained framework build, not an author-declared requirement. */
++  capabilities: Schema.optionalKey(
++    Schema.Struct({
++      skills: Schema.Literal(true),
++      /** Accepts inspect detail and tools. Earlier builds reject both as excess fields. */
++      toolIndex: Schema.optionalKey(Schema.Literal(true)),
++      /** Accepts skills sources and reports whether the catalog includes a live loader. */
++      skillSources: Schema.optionalKey(Schema.Literal(true)),
++      /** Accepts scheduled inspection. Earlier builds reject it as an excess field. */
++      scheduledTools: Schema.optionalKey(Schema.Literal(true)),
++      /**
++       * Accepts inspect definitions and answers it with a shared catalog. Earlier builds reject it
++       * as an excess field.
++       */
++      sharedDefinitions: Schema.optionalKey(Schema.Literal(true)),
++      /** Accepts unavailable account bindings during inspect only. */
++      unavailableAccounts: Schema.optionalKey(Schema.Literal(true)),
++      mcpApps: Schema.optionalKey(Schema.Literal(true)),
++    }),
++  ),
++  /**
++   * The document database an app of protocol 9 or earlier declared. Apps of this protocol declare
++   * `sql` instead; the field remains so requirements read from older retained builds keep their meaning.
++   */
++  database: Schema.optionalKey(DatabaseSchema),
++  /**
++   * Requirements by scope. `app` requirements are filled by the accounts the app's managers link for everyone,
++   * for every caller and for background work; `user` requirements by each caller's linked
++   * accounts. A name is used in one scope only. Bundles of protocol 12 and earlier declare user
++   * requirements only.
++   */
++  accounts: Schema.Struct({ app: DeclaredAccountSlots, user: DeclaredAccountSlots }),
++  /** The build has SQL files in `migrations/` and owns a raw SQLite database. */
++  sql: Schema.optionalKey(Schema.Literal(true)),
++  /** The events the app declares, so a host lists them without evaluating the app. */
++  events: Schema.optionalKey(DeclaredEvents),
++  /** The icons the app declares, so a host shows them without evaluating the app. */
++  icons: Schema.optionalKey(AppIcons),
++});
++/** Parsed declared account requirements. */
++export type DeclaredRequirements = typeof DeclaredRequirements.Type;
++
++/**
++ * Host-resolved credentials for one stable saved account. Never a request DTO. When the provider
++ * declares hosts, its secret string fields are sealed handles, not values. The provider carries
++ * the hosts and placements granted to this account.
++ */
++export const ResolvedAccountMetadata = Schema.Struct({
++  id: AccountId,
++  mcpEndpoint: Schema.optionalKey(Schema.String),
++  site: Schema.optionalKey(Schema.String),
++  provider: DeclaredProvider,
++  method: Schema.NonEmptyString,
++  /**
++   * Changes when the account is reconnected or its credentials replaced, not on renewal. Hosts
++   * send it since credential generations; `apps@0.0.1-beta.0` and `beta.1` ignore it.
++   */
++  generation: Schema.optionalKey(Schema.Int),
++  /** Host-recorded grant scopes from the credential snapshot; absent means unknown. */
++  oauthScopes: Schema.optionalKey(Schema.Array(Schema.String)),
++});
++/** A credential-free discovery binding is distinct from a resolved credential. */
++export const ResolvedAccount = Schema.Union([
++  Schema.Struct({
++    ...ResolvedAccountMetadata.fields,
++    fields: JsonObject,
++    unavailable: Schema.optionalKey(Schema.Never),
++  }),
++  Schema.Struct({
++    ...ResolvedAccountMetadata.fields,
++    unavailable: AccountUnavailable,
++    fields: Schema.optionalKey(Schema.Never),
++  }),
++]);
++export type ResolvedAccount = typeof ResolvedAccount.Type;
++
++/** One scope's resolved accounts by requirement; [] differs from a missing slot. */
++export const ResolvedAccountSlots = Schema.Record(
++  Schema.NonEmptyString,
++  Schema.Union([ResolvedAccount, Schema.Array(ResolvedAccount)]),
++);
++export type ResolvedAccountSlots = typeof ResolvedAccountSlots.Type;
++
++/**
++ * An invocation's accounts by scope, resolved by the trusted caller. `user` is absent for work
++ * without a caller, such as an app schedule or an app-account webhook: its context has no `user`.
++ */
++export const ResolvedAccounts = Schema.Struct({
++  app: ResolvedAccountSlots,
++  user: Schema.optionalKey(ResolvedAccountSlots),
++});
++/** Parsed host selections, kept redacted until native account binding. */
++export type ResolvedAccounts = typeof ResolvedAccounts.Type;
++
++/** Trusted approval for one decoded call. Never accepted in public command JSON. */
++export const TrustedToolApproval = Schema.Struct({ tool: Schema.NonEmptyString, input: JsonValue });
++export type TrustedToolApproval = typeof TrustedToolApproval.Type;
++
++/** Absolute Unix time in milliseconds; remote hosts enforce it inside the operation transaction. */
++export const InvocationDeadline = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
++
++/**
++ * Serializable live tool metadata; executable callbacks never cross this boundary. `name` is the
++ * tool's full dotted path. `router` is the path of the router that owns it, omitted at the root.
++ * `readOnly` marks a query; a tool without it is a mutation.
++ */
++export const HostedTool = Schema.Struct({
++  schedules: Schema.optionalKey(Schema.Array(OperationSchedule)),
++  name: Schema.NonEmptyString,
++  router: Schema.optionalKey(Schema.NonEmptyString),
++  tags: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++  description: Schema.String,
++  inputSchema: JsonObject,
++  readOnly: Schema.optionalKey(Schema.Boolean),
++  title: Schema.optionalKey(Schema.String),
++  outputSchema: Schema.optionalKey(JsonObject),
++  annotations: Schema.optionalKey(ToolAnnotations),
++  _meta: Schema.optionalKey(JsonObject),
++  ui: Schema.optionalKey(McpAppUi),
++});
++/** Parsed live tool description. */
++export type HostedTool = typeof HostedTool.Type;
++
++/** Catalog entry without schemas. Browsing lists these and reads one full tool on selection. */
++export const HostedToolSummary = HostedTool.mapFields(
++  ({ inputSchema: _input, outputSchema: _output, _meta, ...fields }) => fields,
++);
++export type HostedToolSummary = typeof HostedToolSummary.Type;
++
++/**
++ * The module or declared capability shape could not be hosted. The detail names what the app
++ * declared wrongly; declarations bind no accounts.
++ */
++export class HostDeclarationInvalid extends Schema.TaggedError<HostDeclarationInvalid>()(
++  "HostDeclarationInvalid",
++  FailureDetail,
++) {}
++/** Fresh app evaluation failed before calling a tool. */
++export class HostEvaluationFailed extends Schema.TaggedError<HostEvaluationFailed>()(
++  "HostEvaluationFailed",
++  FailureDetail,
++) {}
++
++/** Why one router's tools could not be read. The rest of the app's catalog is unaffected. */
++export const HostRouterError = Schema.Union([
++  AccountUnavailable,
++  ProviderError,
++  McpError,
++  SkillLoadFailed,
++  HostDeclarationInvalid,
++  HostEvaluationFailed,
++]);
++export type HostRouterError = typeof HostRouterError.Type;
++
++/**
++ * One router in a live catalog. `path` is "" for the app's root router. `skill` names the skill
++ * that carries this router's instructions. A router with `error` lists none of its tools.
++ */
++export const HostedRouter = Schema.Struct({
++  path: Schema.String,
++  title: Schema.optionalKey(Schema.String),
++  description: Schema.optionalKey(Schema.String),
++  icons: Schema.optionalKey(Schema.Array(RouterIcon)),
++  tags: Schema.optionalKey(Schema.Record(Schema.NonEmptyString, Schema.String)),
++  skill: Schema.optionalKey(AppSkillName),
++  error: Schema.optionalKey(HostRouterError),
++});
++export type HostedRouter = typeof HostedRouter.Type;
++
++/** A live evaluation's tools and the routers that group them. */
++export const HostedCatalog = Schema.Struct({
++  tools: Schema.Array(HostedTool),
++  routers: Schema.Array(HostedRouter),
++});
++export type HostedCatalog = typeof HostedCatalog.Type;
++
++/** A catalog without tool schemas. Browsing lists these and reads one full tool on selection. */
++export const HostedCatalogSummary = Schema.Struct({
++  tools: Schema.Array(HostedToolSummary),
++  routers: Schema.Array(HostedRouter),
++});
++export type HostedCatalogSummary = typeof HostedCatalogSummary.Type;
++
++/** A tool schema whose `$defs` a shared catalog sends once, beside its tools. */
++export const SharedSchemaKey = Schema.Literals(["inputSchema", "outputSchema"]);
++export type SharedSchemaKey = typeof SharedSchemaKey.Type;
++
++/**
++ * A tool of a shared catalog. The `$defs` of each schema `shared` names is the position of its
++ * entries in the catalog's `defs`; the tool's other fields are as `HostedTool`'s.
++ */
++export const HostedSharedTool = Schema.Struct({
++  ...HostedTool.fields,
++  shared: Schema.optionalKey(Schema.Array(SharedSchemaKey)),
++});
++export type HostedSharedTool = typeof HostedSharedTool.Type;
++
++/**
++ * A catalog that sends each `$defs` its tools' schemas hold once, and each definition in them
++ * once. Routers such as the OpenAPI importer give every tool the definitions its schemas reach,
++ * which for a densely connected document is most of the document again for each tool, under the
++ * same few hundred `$defs`. Putting each tool's `$defs` back gives the `HostedCatalog` the bundle
++ * evaluated. Only builds that declare the sharedDefinitions capability send it, and only when
++ * the inspection asks.
++ */
++export const HostedSharedCatalog = Schema.Struct({
++  tools: Schema.Array(HostedSharedTool),
++  routers: Schema.Array(HostedRouter),
++  definitions: Schema.Array(JsonValue),
++  /** Each distinct `$defs`, its entries naming positions in `definitions`. */
++  defs: Schema.Array(Schema.Record(Schema.String, Schema.Int)),
++});
++export type HostedSharedCatalog = typeof HostedSharedCatalog.Type;
++
++/**
++ * A skill catalog and whether any of it came from `dynamicSkills`. Without a live loader the
++ * catalog is determined by the build and its evaluation inputs; with one it reflects a publisher.
++ * `cached` says the loader read through the app cache, so the cache's freshness and invalidation
++ * govern its publisher reads.
++ */
++export const SkillSources = Schema.Struct({
++  skills: AppSkills,
++  dynamic: Schema.Boolean,
++  cached: Schema.optionalKey(Schema.Boolean),
++});
++export type SkillSources = typeof SkillSources.Type;
++/** Either response shape; `dynamic` is unknown for builds that predate skillSources. */
++export const SkillCatalogResponse = Schema.Union([SkillSources, AppSkills]);
++
++/** Whether a tool reads or writes. */
++export const ToolKind = Schema.Literals(["query", "mutation"]);
++
++/**
++ * Check one account for one declared slot. The invocation supplies only that slot, in its scope,
++ * as a single account even when the slot takes many. The app factory is not evaluated.
++ */
++export const AccountCheckCommand = Schema.Struct({
++  operation: Schema.Literal("account-check"),
++  requirement: Schema.NonEmptyString,
++});
++export type AccountCheckCommand = typeof AccountCheckCommand.Type;
++export const AccountObserveCommand = Schema.Struct({
++  operation: Schema.Literal("account-observe"),
++  requirement: Schema.NonEmptyString,
++});
++
++/** Apply the build's pending SQL migrations. No accounts are bound and the app is not evaluated. */
++export const MigrateCommand = Schema.Struct({ operation: Schema.Literal("migrate") });
++export type MigrateCommand = typeof MigrateCommand.Type;
++
++/** The migrations this command applied, oldest first, by position and file path. Empty when the database was current. */
++export const MigrateResult = Schema.Array(
++  Schema.Struct({ id: Schema.Int, name: Schema.NonEmptyString }),
++);
++export type MigrateResult = typeof MigrateResult.Type;
++
++/** Framework-owned dispatch, independent of app-authored HTTP routing. */
++export const HostRequest = Schema.Union([
++  ...ConnectCommand.members,
++  WorkflowCommand,
++  WebhookCommand,
++  Schema.Struct({ operation: Schema.Literal("requirements") }),
++  Schema.Struct({
++    operation: Schema.Literal("inspect"),
++    uiProfile: Schema.optionalKey(Schema.Literal(true)),
++    /** Omit schemas. Only builds that declare the toolIndex capability accept this. */
++    detail: Schema.optionalKey(Schema.Literal("summary")),
++    /** Describe only these tools. Only builds that declare the toolIndex capability accept this. */
++    tools: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++    /**
++     * Describe only declared operations that have schedules, without dynamic tool discovery.
++     * Only builds that declare the scheduledTools capability accept this.
++     */
++    scheduled: Schema.optionalKey(Schema.Literal(true)),
++    /**
++     * Answer with a HostedSharedCatalog, each shared `$defs` entry sent once. Only builds that
++     * declare the sharedDefinitions capability accept this.
++     */
++    definitions: Schema.optionalKey(Schema.Literal("shared")),
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("skills"),
++    /** Answer with SkillSources. Only builds that declare the skillSources capability accept this. */
++    sources: Schema.optionalKey(Schema.Literal(true)),
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("query"),
++    name: Schema.NonEmptyString,
++    input: JsonValue,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("mutate"),
++    name: Schema.NonEmptyString,
++    input: JsonValue,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("call"),
++    tool: Schema.NonEmptyString,
++    /**
++     * The caller's claim; the bundle rejects a call whose tool has the other kind. The host omits
++     * it for a tool its catalog does not list, and then opens storage for writing.
++     */
++    kind: Schema.optionalKey(ToolKind),
++    input: JsonValue,
++    audience: Schema.optionalKey(Schema.Literal("app")),
++    uiProfile: Schema.optionalKey(Schema.Literal(true)),
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("app-resource"),
++    tool: Schema.NonEmptyString,
++    input: JsonValue,
++    source: Schema.String,
++    selection: JsonValue,
++    uri: Schema.NonEmptyString,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("app-callback"),
++    tool: Schema.NonEmptyString,
++    input: JsonValue,
++    source: Schema.String,
++    selection: JsonValue,
++    name: Schema.NonEmptyString,
++    arguments: JsonValue,
++  }),
++  AccountCheckCommand,
++  AccountObserveCommand,
++  MigrateCommand,
++]);
++/** Parsed portable dispatch request. */
++export type HostRequest = typeof HostRequest.Type;
++
++/** The dispatch request did not match the protocol. */
++export class HostRequestInvalid extends Schema.TaggedError<HostRequestInvalid>()(
++  "HostRequestInvalid",
++  {},
++) {}
++/** Host-supplied accounts did not satisfy the declared slots or native method schemas. */
++export class HostAccountsInvalid extends Schema.TaggedError<HostAccountsInvalid>()(
++  "HostAccountsInvalid",
++  {},
++) {}
++/** No query or mutation matched the requested name. */
++export class HostOperationNotFound extends Schema.TaggedError<HostOperationNotFound>()(
++  "HostOperationNotFound",
++  {},
++) {}
++/** An app operation failed. Carries the app's own error name, code, fields and bounded message. */
++export class HostOperationFailed extends Schema.TaggedError<HostOperationFailed>()(
++  "HostOperationFailed",
++  FailureDetail,
++) {}
++/** The freshly evaluated catalog did not contain the requested tool. */
++export class HostToolNotFound extends Schema.TaggedError<HostToolNotFound>()(
++  "HostToolNotFound",
++  {},
++) {}
++/** The tool exists but is a query called as a mutation, or the reverse. Nothing ran. */
++export class HostKindMismatch extends Schema.TaggedError<HostKindMismatch>()("HostKindMismatch", {
++  tool: Schema.NonEmptyString,
++  requested: ToolKind,
++  actual: ToolKind,
++}) {}
++/** One failing input location and its expected shape; never the supplied value. */
++export const InputProblem = Schema.String.check(Schema.isMaxLength(512));
++/** Input decoding reports at most this many problems. */
++export const maxInputProblems = 10;
++/** Native input decoding failed; supplied values are omitted. Builds before problems were reported send none. */
++export class HostInputInvalid extends Schema.TaggedError<HostInputInvalid>()("HostInputInvalid", {
++  problems: Schema.optionalKey(
++    Schema.Array(InputProblem).check(Schema.isMaxLength(maxInputProblems)),
++  ),
++}) {}
++/** The tool's approval policy blocked this call before its tool body ran. */
++export class HostToolBlocked extends Schema.TaggedError<HostToolBlocked>()("HostToolBlocked", {}) {}
++/** Policy elicitation plus decoded input. No tool body ran; the host owns delivery and resumption. */
++export class HostToolApprovalRequired extends Schema.TaggedError<HostToolApprovalRequired>()(
++  "HostToolApprovalRequired",
++  { input: JsonValue, elicitation: ApprovalElicitation },
++) {}
++/** The tool's approval policy failed or returned an invalid decision. Author failures remain private. */
++export class HostToolPolicyFailed extends Schema.TaggedError<HostToolPolicyFailed>()(
++  "HostToolPolicyFailed",
++  {},
++) {}
++/** A tool result was not JSON; the result is never included in the error. */
++export class HostOutputInvalid extends Schema.TaggedError<HostOutputInvalid>()(
++  "HostOutputInvalid",
++  {},
++) {}
++
++/**
++ * Safe error envelope. Author failures carry only their name, code, scalar fields and bounded
++ * message with account secrets replaced; no stack or cause value is serialized.
++ */
++export const HostError = Schema.Union([
++  AccountUnavailable,
++  OpenapiResponseError,
++  ProviderError,
++  McpError,
++  SkillLoadFailed,
++  WorkflowFailure,
++  HostRequestInvalid,
++  HostAccountsInvalid,
++  HostDeclarationInvalid,
++  HostEvaluationFailed,
++  HostOperationNotFound,
++  HostOperationFailed,
++  DatabaseLimitExceeded,
++  DatabaseFieldReserved,
++  HostToolNotFound,
++  HostInputInvalid,
++  HostOutputInvalid,
++  HostToolBlocked,
++  HostToolApprovalRequired,
++  HostToolPolicyFailed,
++  ElicitationFailed,
++  HostKindMismatch,
++]);
++/** Expected host failures. */
++export type HostError = typeof HostError.Type;
++
++/** Portable response envelope; callers parse the success value for their operation. */
++export const HostResponse = Schema.Union([
++  Schema.Struct({
++    ok: Schema.Literal(true),
++    value: JsonValue,
++    /** Account branches that ran, distinct from all accounts available to the app. */
++    accountsUsed: Schema.optionalKey(Schema.Array(AccountId)),
++    toolError: Schema.optionalKey(Schema.Literal(true)),
++    appView: Schema.optionalKey(McpAppViewObservation),
++    /** The occurrences this invocation emitted, kept only because it succeeded. */
++    events: Schema.optionalKey(EmittedEvents),
++  }),
++  Schema.Struct({
++    ok: Schema.Literal(false),
++    error: HostError,
++    accountsUsed: Schema.optionalKey(Schema.Array(AccountId)),
++  }),
++]);
++/** Parsed response envelope. */
++export type HostResponse = typeof HostResponse.Type;
++
++/**
++ * The JSON body the host sends to a bundle's generated server entry. The entry is compiled into
++ * the retained build, so this shape is part of the protocol too.
++ */
++export const HostInvocation = Schema.Struct({
++  command: HostRequest,
++  accounts: ResolvedAccounts,
++  /** Trusted host identity; never part of the public command. */
++  caller: Schema.optionalKey(Schema.NonEmptyString),
++  approval: Schema.optionalKey(TrustedToolApproval),
++  replay: Schema.optionalKey(WorkflowReplay),
++  deadline: Schema.optionalKey(InvocationDeadline),
++  workflowRun: Schema.optionalKey(WorkflowRunId),
++});
++export type HostInvocation = typeof HostInvocation.Type;
++
++/**
++ * Who sends each message. The host must keep accepting everything a released protocol's bundles
++ * send (`bundle`), and must send a released protocol's bundles only what they accept, or gate the
++ * addition on something the bundle declared (`host`). Names a released protocol used and this one
++ * dropped, such as `tools`, keep their direction here.
++ */
++export const messageDirections = {
++  invocation: "host",
++  request: "host",
++  accounts: "host",
++  elicitationReply: "host",
++  workflowStepReply: "host",
++  cacheReply: "host",
++  response: "bundle",
++  requirements: "bundle",
++  catalog: "bundle",
++  catalogSummary: "bundle",
++  sharedCatalog: "bundle",
++  tools: "bundle",
++  toolSummaries: "bundle",
++  skills: "bundle",
++  elicitationRequest: "bundle",
++  workflowStep: "bundle",
++  workflowControl: "bundle",
++  appCall: "bundle",
++  appCallReply: "host",
++  appToolPolicy: "bundle",
++  appToolPolicyReply: "host",
++  driveCommand: "bundle",
++  driveReply: "host",
++  modelRequest: "bundle",
++  modelReply: "host",
++  cacheCommand: "bundle",
++  accountCheck: "bundle",
++  accountObservation: "bundle",
++  migrate: "bundle",
++} as const satisfies Record<string, "host" | "bundle">;
++/** A message name every protocol so far has used. */
++export type MessageName = keyof typeof messageDirections;
++
++/** Every message of the current protocol. The snapshot records them by name. */
++export const current = {
++  version: frameworkProtocol,
++  schemas: {
++    invocation: HostInvocation,
++    request: HostRequest,
++    response: HostResponse,
++    requirements: DeclaredRequirements,
++    catalog: HostedCatalog,
++    catalogSummary: HostedCatalogSummary,
++    sharedCatalog: HostedSharedCatalog,
++    skills: SkillCatalogResponse,
++    elicitationRequest: FormElicitation,
++    elicitationReply: ElicitationReply,
++    workflowStep: WorkflowRpcCommand,
++    workflowStepReply: WorkflowRpcResult,
++    workflowControl: WorkflowControlCommand,
++    appCall: AppCallCommand,
++    appCallReply: AppCallReply,
++    appToolPolicy: AppToolPolicyCommand,
++    appToolPolicyReply: AppToolPolicyReply,
++    driveCommand: DriveCommand,
++    driveReply: DriveReply,
++    modelRequest: ModelCommand,
++    modelReply: ModelReply,
++    cacheCommand: CacheCommand,
++    cacheReply: CacheReply,
++    accountCheck: AccountCheckResult,
++    accountObservation: Schema.NullOr(AccountObservationResult),
++    accounts: ResolvedAccounts,
++    migrate: MigrateResult,
++  },
++} as const satisfies {
++  readonly version: number;
++  readonly schemas: Partial<Record<MessageName, Schema.Top>>;
++};
+diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/src/contracts/protocols/released.ts
+index 12679b7..59a993a 100644
+--- a/packages/apps/src/contracts/protocols/released.ts
++++ b/packages/apps/src/contracts/protocols/released.ts
+@@ -1,3 +1,4 @@
++import { current as protocol40 } from "./40.ts";
+ import { current as protocol39 } from "./39.ts";
+ import { current as protocol38 } from "./38.ts";
+ import { current as protocol37 } from "./37.ts";
+@@ -82,4 +83,5 @@ export const releasedProtocols = [
+   protocol37,
+   protocol38,
+   protocol39,
++  protocol40,
+ ] as const;
+diff --git a/packages/sdk/src/contracts/account-check-failure.ts b/packages/sdk/src/contracts/account-check-failure.ts
+index baaef4b..19045c6 100644
+--- a/packages/sdk/src/contracts/account-check-failure.ts
++++ b/packages/sdk/src/contracts/account-check-failure.ts
+@@ -63,6 +63,7 @@ export const AccountCheckFailure = /* @__PURE__ */ (() =>
+       "RuntimeBuildUnavailable",
+       "RuntimeProtocolFailed",
+       "RuntimeProtocolUnsupported",
++      "FrameworkProvenanceRefused",
+       "HostRequestInvalid",
+       "HostDeclarationInvalid",
+       "HostAccountsInvalid",
+diff --git a/packages/sdk/src/contracts/framework-provenance.ts b/packages/sdk/src/contracts/framework-provenance.ts
+new file mode 100644
+index 0000000..2254312
+--- /dev/null
++++ b/packages/sdk/src/contracts/framework-provenance.ts
+@@ -0,0 +1,21 @@
++/** Host-approved release evidence. App manifests and stored labels cannot grant admission. */
++import { Schema } from "effect";
++
++const Sha256 = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
++
++/** The immutable source artifact reviewed by the host, including retained inventory evidence. */
++export const FrameworkReleaseSource = Schema.Struct({
++  origin: Schema.Literal("basalt"),
++  revision: Schema.NonEmptyString,
++  sha256: Sha256,
++});
++
++/** Exact server, browser, protocol and source identity of an approved Basalt framework. */
++export const FrameworkProvenance = Schema.Struct({
++  version: Schema.NonEmptyString,
++  sha256: Sha256,
++  protocol: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
++  browserSha256: Sha256,
++  source: FrameworkReleaseSource,
++});
++export type FrameworkProvenance = typeof FrameworkProvenance.Type;
+diff --git a/packages/sdk/src/contracts/runtime.ts b/packages/sdk/src/contracts/runtime.ts
+index eb27814..058e660 100644
+--- a/packages/sdk/src/contracts/runtime.ts
++++ b/packages/sdk/src/contracts/runtime.ts
+@@ -374,6 +374,32 @@ export class RuntimeProtocolUnsupported extends Schema.TaggedError<RuntimeProtoc
+     return this.message;
+   }
+ }
++/** A framework failed the host's source-bound release admission before authored code ran. */
++export class FrameworkProvenanceRefused extends Schema.TaggedError<FrameworkProvenanceRefused>()(
++  "FrameworkProvenanceRefused",
++  {
++    reason: Schema.Literals([
++      "missing-identity",
++      "unknown-identity",
++      "conflicting-lineage",
++      "protocol-mismatch",
++      "content-mismatch",
++    ]),
++    build: Schema.optionalKey(Schema.String),
++    version: Schema.optionalKey(Schema.String),
++    protocol: Schema.optionalKey(Schema.Int),
++    declaredHash: Schema.optionalKey(Schema.String),
++    computedHash: Schema.optionalKey(Schema.String),
++    comparison: Schema.NonEmptyString,
++  },
++) {
++  override get message() {
++    return `Framework ${this.version ?? "(missing version)"}, protocol ${this.protocol ?? "(missing)"}, declared SHA-256 ${this.declaredHash ?? "(missing)"}, computed SHA-256 ${this.computedHash ?? "(unavailable)"}${this.build === undefined ? "" : `, build ${this.build}`} was refused (${this.reason}): ${this.comparison}`;
++  }
++  get [RecordedMessage]() {
++    return this.message;
++  }
++}
+ /**
+  * The app's `package.json` declares no `apps` version. Every app declares the exact release it uses;
+  * `version` is the one this host ships, which new apps pin.
+@@ -393,7 +419,8 @@ export class RuntimeAppsDependencyMissing extends Schema.TaggedError<RuntimeApps
+ export type RuntimeLoadError =
+   | RuntimeBuildUnavailable
+   | RuntimeProtocolFailed
+-  | RuntimeProtocolUnsupported;
++  | RuntimeProtocolUnsupported
++  | FrameworkProvenanceRefused;
+ 
+ /** Framework-facing operations, independent of Node or Cloudflare bindings. */
+ 
+@@ -421,6 +448,7 @@ export interface Runtime<Requirements = never> {
+     | RuntimeBuildFailed
+     | RuntimeProtocolUnsupported
+     | RuntimeAppsDependencyMissing
++    | FrameworkProvenanceRefused
+     | BuildBusy
+     | BuildMemoryExceeded,
+     Requirements
+diff --git a/packages/sdk/src/contracts/tools.ts b/packages/sdk/src/contracts/tools.ts
+index 43ef4c5..1089b0f 100644
+--- a/packages/sdk/src/contracts/tools.ts
++++ b/packages/sdk/src/contracts/tools.ts
+@@ -43,6 +43,7 @@ import {
+   runtimeFailures,
+   RuntimeProtocolFailed,
+   RuntimeProtocolUnsupported,
++  FrameworkProvenanceRefused,
+ } from "./runtime.ts";
+ import type { CatalogReadOptions } from "./declarations.ts";
+ import type { Executor } from "./executor.ts";
+@@ -910,6 +911,7 @@ export const EvaluationRuntime = Schema.Union([
+     failure: Schema.optional(RuntimeFailure),
+   }),
+   Schema.Struct({ kind: Schema.Literal("build") }),
++  Schema.Struct({ kind: Schema.Literal("provenance"), error: FrameworkProvenanceRefused }),
+   Schema.Struct({
+     kind: Schema.Literal("protocol"),
+     protocol: Schema.Int,
+@@ -1038,6 +1040,13 @@ const runtimePresentation = (runtime: EvaluationRuntime): CausePresentation => {
+       );
+       return { title: "Tools could not be loaded", description: loaded(description), ...rest };
+     }
++    case "provenance":
++      return {
++        title: "App framework was refused",
++        description: loaded(runtime.error.message),
++        recovery: { action: "Ask the instance maintainer to verify this retained framework before retrying.", instructions: `${loadingInstructions} Preserve the exact build and framework objects. Compare their hashes and source evidence with the approved release registry; do not relabel or overwrite them.` },
++        retryable: false,
++      };
+     case "protocol":
+       return {
+         title: "App build is not supported",
+@@ -1069,6 +1078,8 @@ const recordedRuntime = (runtime: EvaluationRuntime) => {
+       return `the app's Worker failed (${runtime.failure ?? "unreported"})`;
+     case "build":
+       return "the app's build could not be read";
++    case "provenance":
++      return `the app's framework was refused (${runtime.error.reason})`;
+     case "protocol":
+       return "the app's build uses a host protocol this host does not run";
+     case "framework":
+@@ -1084,6 +1095,7 @@ const evaluationRuntime = (error: unknown): EvaluationRuntime | undefined => {
+       ...(error.reason === undefined ? {} : { failure: error.reason }),
+     };
+   if (Schema.is(RuntimeBuildUnavailable)(error)) return { kind: "build" };
++  if (Schema.is(FrameworkProvenanceRefused)(error)) return { kind: "provenance", error };
+   if (Schema.is(RuntimeProtocolUnsupported)(error))
+     return { kind: "protocol", protocol: error.protocol, supported: error.supported };
+   if (Schema.is(HostRequestInvalid)(error))
+diff --git a/packages/sdk/src/contracts/worker-build.ts b/packages/sdk/src/contracts/worker-build.ts
+index 8a03ec9..3b33bdf 100644
+--- a/packages/sdk/src/contracts/worker-build.ts
++++ b/packages/sdk/src/contracts/worker-build.ts
+@@ -1,6 +1,9 @@
+ /** Retained Worker code and optional private browser asset metadata. */
+ import { UiAsset } from "./runtime.ts";
+ import { Effect, Schema } from "effect";
++import { FrameworkProvenance } from "./framework-provenance.ts";
++
++export { FrameworkProvenance, FrameworkReleaseSource } from "./framework-provenance.ts";
+ 
+ export { WorkerBundle } from "@executor-js/app-data/worker-bundle";
+ import { WorkerBundle } from "@executor-js/app-data/worker-bundle";
+@@ -28,6 +31,8 @@ export const WorkerFramework = /* @__PURE__ */ (() =>
+   Schema.Struct({
+     version: Schema.NonEmptyString,
+     modules: Schema.Record(Schema.String, Schema.String),
++    /** Added by host admission, never taken from the selected package's runtime.json. */
++    provenance: Schema.optionalKey(FrameworkProvenance),
+   }))();
+ export type WorkerFramework = typeof WorkerFramework.Type;
+ 
+@@ -47,6 +52,7 @@ export const RetainedFramework = /* @__PURE__ */ (() =>
+   Schema.Struct({
+     ...FrameworkIdentity.fields,
+     modules: WorkerFramework.fields.modules,
++    provenance: Schema.optionalKey(FrameworkProvenance),
+   }))();
+ export type RetainedFramework = typeof RetainedFramework.Type;
+ 
+@@ -93,5 +99,7 @@ export const LoadedWorkerBuild = /* @__PURE__ */ (() =>
+   Schema.Struct({
+     ...WorkerBundle.fields,
+     protocol: AppProtocolVersion,
++    /** Older transports decode, but execution refuses until the host proves the identity. */
++    framework: Schema.optionalKey(FrameworkProvenance),
+   }))();
+ export type LoadedWorkerBuild = typeof LoadedWorkerBuild.Type;
+diff --git a/packages/sdk/src/contracts/workerd-host.ts b/packages/sdk/src/contracts/workerd-host.ts
+index 49df064..790cdfd 100644
+--- a/packages/sdk/src/contracts/workerd-host.ts
++++ b/packages/sdk/src/contracts/workerd-host.ts
+@@ -22,6 +22,7 @@ import {
+   RuntimeAppsDependencyMissing,
+   RuntimeBuildFailed,
+   RuntimeProtocolUnsupported,
++  FrameworkProvenanceRefused,
+ } from "./runtime.ts";
+ import type { RpcTarget } from "capnweb";
+ 
+@@ -89,6 +90,7 @@ export const CompileWorkerResult = /* @__PURE__ */ (() => Schema.Union([
+     error: Schema.Union([
+       RuntimeBuildFailed,
+       RuntimeProtocolUnsupported,
++      FrameworkProvenanceRefused,
+       RuntimeAppsDependencyMissing,
+     ]),
+   }),
+diff --git a/packages/sdk/src/implementation/app-protocol-accounts.ts b/packages/sdk/src/implementation/app-protocol-accounts.ts
+new file mode 100644
+index 0000000..97e5df1
+--- /dev/null
++++ b/packages/sdk/src/implementation/app-protocol-accounts.ts
+@@ -0,0 +1,55 @@
++import { Effect } from "effect";
++import type {
++  HostAccounts,
++  ResolvedAccount,
++  ResolvedAccounts,
++  ResolvedAccountSlots,
++} from "apps/contracts";
++import { RuntimeProtocolFailed, runtimeFailures } from "../contracts/runtime.ts";
++import type { AppProtocol } from "./app-protocols.ts";
++import { sealAccounts, unsealedAccounts } from "./credential-handles.ts";
++
++const strictAccount = (account: ResolvedAccount): ResolvedAccount => {
++  const hosts = account.provider.hosts;
++  return hosts?.some((host) => host.includes("_"))
++    ? {
++        ...account,
++        provider: { ...account.provider, hosts: hosts.filter((host) => !host.includes("_")) },
++      }
++    : account;
++};
++
++const strictSlots = (slots: ResolvedAccountSlots): ResolvedAccountSlots =>
++  Object.fromEntries(
++    Object.entries(slots).map(([slot, selected]) => [
++      slot,
++      "provider" in selected ? strictAccount(selected) : selected.map(strictAccount),
++    ]),
++  );
++
++/** Retained bundles reject underscore metadata; their sealed handles retain the actual grant. */
++export const retainedCredentialHosts = (accounts: ResolvedAccounts): ResolvedAccounts => ({
++  app: strictSlots(accounts.app),
++  ...(accounts.user === undefined ? {} : { user: strictSlots(accounts.user) }),
++});
++
++/** Invocation and Workflow accounts cross the same boundary after credential sealing. */
++export const bundleAccounts = (
++  protocol: Pick<AppProtocol, "accounts" | "sealedCredentials">,
++  app: string,
++  key: Effect.Effect<CryptoKey>,
++  accounts: HostAccounts,
++): Effect.Effect<ResolvedAccounts, RuntimeProtocolFailed> => {
++  const prepared = protocol.sealedCredentials
++    ? sealAccounts(accounts, { app, key })
++    : Effect.gen(function* () {
++        const unsealed = unsealedAccounts(accounts);
++        if (unsealed !== undefined) return unsealed;
++        yield* Effect.annotateCurrentSpan({
++          "executor.runtime.failure": "managed",
++          "executor.runtime.cause": runtimeFailures.managed,
++        });
++        return yield* new RuntimeProtocolFailed({ reason: "managed" });
++      });
++  return prepared.pipe(Effect.map(protocol.accounts));
++};
+diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
+index 7292b20..b6c1cd9 100644
+--- a/packages/sdk/src/implementation/app-protocols.ts
++++ b/packages/sdk/src/implementation/app-protocols.ts
+@@ -13,14 +13,13 @@ import {
+   protocol3,
+   oauthScopesProtocol,
+   unavailableAccountsProtocol,
++  credentialHostsProtocol,
+   type HostAccount,
+   type HostAccountSlots,
+   type HostAccounts,
+   type HostInvocation,
+   type HostRequest,
+-  type ResolvedAccount,
+   type ResolvedAccounts,
+-  type ResolvedAccountSlots,
+   type WorkflowExecution,
+ } from "apps/contracts";
+ import type { SourceTextFile as SourceFile } from "../contracts/source.ts";
+@@ -28,6 +27,7 @@ import { RuntimeProtocolUnsupported } from "../contracts/runtime.ts";
+ import { appBridge, nodeAppEntry } from "./worker-bridge.ts";
+ import { retainedMcpAccounts } from "./mcp-endpoint-protocol.ts";
+ import { withoutOAuthScopeMetadata } from "./app-protocol-oauth-scopes.ts";
++import { retainedCredentialHosts } from "./app-protocol-accounts.ts";
+ 
+ /** One released host protocol, seen from this host. */
+ export interface AppProtocol {
+@@ -84,6 +84,7 @@ const protocol21: AppProtocol = {
+   workflow: (execution) => execution,
+   concurrentData: true,
+   sealedCredentials: true,
++  accounts: retainedCredentialHosts,
+ };
+ 
+ const protocol20: AppProtocol = {
+@@ -98,6 +99,7 @@ const protocol20: AppProtocol = {
+   workflow: (execution) => execution,
+   concurrentData: true,
+   sealedCredentials: true,
++  accounts: retainedCredentialHosts,
+ };
+ 
+ /** Account observations are a separate optional read operation. */
+@@ -112,6 +114,7 @@ const protocol19: AppProtocol = {
+   workflow: (execution) => execution,
+   concurrentData: true,
+   sealedCredentials: true,
++  accounts: retainedCredentialHosts,
+ };
+ 
+ /** Protocol 18 adds source-bound MCP Apps resources and callbacks. */
+@@ -129,6 +132,7 @@ const protocol18: AppProtocol = {
+   workflow: (execution) => execution,
+   concurrentData: true,
+   sealedCredentials: true,
++  accounts: retainedCredentialHosts,
+ };
+ 
+ /** Protocol 17 adds display status and app-owned account checks. */
+@@ -146,6 +150,7 @@ const protocol17: AppProtocol = {
+   workflow: (execution) => execution,
+   concurrentData: true,
+   sealedCredentials: true,
++  accounts: retainedCredentialHosts,
+ };
+ 
+ /** Protocol 16 adds app-owned interactive account acquisition. */
+@@ -174,6 +179,7 @@ const protocol16: AppProtocol = {
+   }),
+   concurrentData: true,
+   sealedCredentials: true,
++  accounts: retainedCredentialHosts,
+ };
+ 
+ /** Protocol 15 adds the frozen account site and its provider rule. */
+@@ -201,38 +207,9 @@ const protocol15: AppProtocol = {
+   }),
+   concurrentData: true,
+   sealedCredentials: true,
+-  accounts: (accounts) => retainedAccounts(accounts),
++  accounts: retainedCredentialHosts,
+ };
+ 
+-/** A credential host with an underscore, which bundles of protocol 13 and earlier reject. */
+-const underscored = (host: string) => host.includes("_");
+-
+-const withoutUnderscoredHosts = (account: ResolvedAccount): ResolvedAccount => {
+-  const hosts = account.provider.hosts;
+-  return hosts?.some(underscored) === true
+-    ? { ...account, provider: { ...account.provider, hosts: hosts.filter((h) => !underscored(h)) } }
+-    : account;
+-};
+-
+-const slotsWithoutUnderscoredHosts = (slots: ResolvedAccountSlots): ResolvedAccountSlots =>
+-  Object.fromEntries(
+-    Object.entries(slots).map(([slot, selected]) => [
+-      slot,
+-      "provider" in selected
+-        ? withoutUnderscoredHosts(selected)
+-        : selected.map(withoutUnderscoredHosts),
+-    ]),
+-  );
+-
+-/** Retained Basalt bundles keep the strict credential-host grammar. */
+-const retainedAccounts = (accounts: ResolvedAccounts): ResolvedAccounts =>
+-  accounts.user === undefined
+-    ? { app: slotsWithoutUnderscoredHosts(accounts.app) }
+-    : {
+-        app: slotsWithoutUnderscoredHosts(accounts.app),
+-        user: slotsWithoutUnderscoredHosts(accounts.user),
+-      };
+-
+ const withoutProvisionedAccount = (account: HostAccount): HostAccount => ({
+   ...account,
+   provider: {
+@@ -368,6 +345,13 @@ const protocolUnavailableAccounts: AppProtocol = {
+   nodeEntry: nodeAppEntry(unavailableAccountsProtocol),
+ };
+ 
++const protocolCredentialHosts: AppProtocol = {
++  ...protocolUnavailableAccounts,
++  version: credentialHostsProtocol,
++  nodeEntry: nodeAppEntry(credentialHostsProtocol),
++  accounts: (accounts) => accounts,
++};
++
+ /**
+  * Bundles of protocol 12 and earlier read one flat record of requirements and accounts. They
+  * declare no app requirements, so they have no app accounts: the host sends them the invocation's
+@@ -484,6 +468,7 @@ const protocol6: AppProtocol = {
+   version: 6,
+   nodeEntry: nodeAppEntry(6),
+   sealedCredentials: false,
++  accounts: retainedCredentialHosts,
+ };
+ 
+ /** Protocol 5 has the same commands; its OAuth declarations lack a metadata URL override. */
+@@ -601,6 +586,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
+     protocol38,
+     protocolOAuthScopes,
+     protocolUnavailableAccounts,
++    protocolCredentialHosts,
+   ].map((protocol) => [
+     protocol.version,
+     protocol.version >= 36
+@@ -627,6 +613,12 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
+ /** Protocols this host builds and runs. */
+ export const supportedProtocols: readonly number[] = [...protocols.keys()];
+ 
++export const credentialHostProtocolAdaptations = [{
++  message: "accounts",
++  protocols: supportedProtocols.filter((version) => version >= 6 && version < credentialHostsProtocol),
++  adapter: "retainedCredentialHosts runs after credential sealing in every retained Basalt invocation and Workflow account context",
++}];
++
+ export const mcpEndpointProtocolAdaptations = [
+   {
+     message: "accounts",
+diff --git a/packages/sdk/src/implementation/app-runner.ts b/packages/sdk/src/implementation/app-runner.ts
+index 6117ea6..dfede84 100644
+--- a/packages/sdk/src/implementation/app-runner.ts
++++ b/packages/sdk/src/implementation/app-runner.ts
+@@ -48,16 +48,19 @@ import { invocationTelemetry, invocationStatus } from "./app-telemetry.ts";
+ import {
+   describeBuildCause,
+   RuntimeProtocolFailed,
++  FrameworkProvenanceRefused,
+   runtimeFailures,
+   type RuntimeFailure,
+ } from "../contracts/runtime.ts";
+ import type { LoadedWorkerBuild, WorkerBundle } from "../contracts/worker-build.ts";
+ import type { StartedPart } from "../contracts/runtime.ts";
++import type { FrameworkProvenance } from "../contracts/framework-provenance.ts";
++import { FrameworkProvenanceRegistry, admitLoadedFramework, selectFrameworkProtocol, sameFrameworkProvenance } from "./framework-provenance.ts";
+ import { appCacheNamespace, type HostApiCheck } from "../contracts/host-api.ts";
+ import { appProtocol, type AppProtocol } from "./app-protocols.ts";
+ import { appFacetBridge, appNetworkModuleName, appRpcBridge } from "./worker-bridge.ts";
+ import { appNetworkModule } from "./app-network.ts";
+-import { sealAccounts, unsealedAccounts } from "./credential-handles.ts";
++import { bundleAccounts } from "./app-protocol-accounts.ts";
+ import { AppRpcEntrypoint, AppRpcInvocation } from "./worker-elicitation.ts";
+ import { invocationWorkflow } from "./worker-workflow-rpc.ts";
+ import { type AppWorkerResidency, namedWorker } from "./app-worker-residency.ts";
+@@ -260,13 +263,18 @@ const failed = (reason: RuntimeFailure, cause?: unknown, explain = false) =>
+     ),
+   );
+ export const failedFrom = (explain: boolean) => (cause: unknown) =>
+-  failed(classify(cause), cause, explain);
++  Effect.gen(function* () {
++    if (Schema.is(FrameworkProvenanceRefused)(cause)) return yield* cause;
++    return yield* failed(classify(cause), cause, explain);
++  });
+ /** Reading a build is the host's own work; its failure is Executor's text and recorded as it is. */
+-const failedBuild = (cause: unknown) =>
+-  Effect.annotateCurrentSpan({
++const failedBuild = (cause: unknown) => Effect.gen(function* () {
++  if (Schema.is(FrameworkProvenanceRefused)(cause)) return yield* cause;
++  return yield* Effect.annotateCurrentSpan({
+     "executor.runtime.failure": "build",
+     "executor.runtime.cause": describeBuildCause(cause),
+   }).pipe(Effect.andThen(Effect.fail(new RuntimeProtocolFailed({ reason: "build" }))));
++});
+ /**
+  * A data supervisor failure. Its own typed failures are Executor's text and recorded as they are;
+  * anything else is classified like an app Worker's failure.
+@@ -290,7 +298,7 @@ const attempt = <A>(work: () => Promise<A>, explain = false) =>
+  * one before calling it. A Cloud isolate can reach a Worker that another isolate started; it reads
+  * that build once to learn its protocol.
+  */
+-const protocols = new Map<string, AppProtocol>();
++const protocols = new Map<string, { protocol: AppProtocol; framework: FrameworkProvenance }>();
+ const protocolLimit = 4096;
+ /**
+  * First reads of builds whose protocol is not known yet, by build, with the read build once it
+@@ -312,17 +320,20 @@ const readCheck = "10 millis";
+  */
+ const readWait = 10_000;
+ 
+-/** Record a build's protocol from its read. */
++/** Only an admitted immutable framework can populate the build cache. */
+ const learn = (build: string, loaded: LoadedWorkerBuild) =>
+-  appProtocol(loaded.protocol).pipe(
+-    Effect.catch(() => failed("unsupported")),
+-    Effect.map((protocol) => {
+-      protocols.set(build, protocol);
++  admitLoadedFramework(loaded, { build, ...(protocols.has(build) ? { previous: protocols.get(build)!.framework } : {}) }).pipe(
++    Effect.flatMap((framework) => appProtocol(framework.protocol).pipe(
++      Effect.catchTag("RuntimeProtocolUnsupported", () => failed("unsupported")),
++      Effect.map((protocol) => ({ protocol, framework })),
++    )),
++    Effect.map((admitted) => {
++      protocols.set(build, admitted);
+       if (protocols.size > protocolLimit) {
+         const oldest = protocols.keys().next();
+         if (oldest.done !== true) protocols.delete(oldest.value);
+       }
+-      return protocol;
++      return admitted.protocol;
+     }),
+   );
+ 
+@@ -340,14 +351,24 @@ const protocolOf = (
+ ) =>
+   Effect.gen(function* () {
+     const started = yield* Clock.currentTimeMillis;
++    const registry = yield* FrameworkProvenanceRegistry;
+     while (true) {
+       const known = protocols.get(build);
+       const shared = reads.get(build);
+-      if (known !== undefined) {
++      if (known !== undefined && registry.some((release) => sameFrameworkProvenance(release, known.framework))) {
+         protocols.delete(build);
+         protocols.set(build, known);
+         const loaded = shared?.loaded;
+-        return { protocol: known, load: loaded === undefined ? load : async () => loaded };
++        return {
++          protocol: known.protocol,
++          load: loaded === undefined ? async () => {
++            const next = await load();
++            await Effect.runPromise(selectFrameworkProtocol(next, { build, previous: known.framework }).pipe(
++              Effect.provideService(FrameworkProvenanceRegistry, registry),
++            ));
++            return next;
++          } : async () => loaded,
++        };
+       }
+       // Another call's read failed or was cancelled, or has not finished in time: read it here.
+       if (shared === undefined || (yield* Clock.currentTimeMillis) - started >= readWait) break;
+@@ -413,31 +434,13 @@ export const appWorker = (
+ export const runsInFacet = (invocation: Pick<AppInvocation, "database" | "command">) =>
+   invocation.database && dataOperations.has(invocation.command.operation);
+ 
+-/**
+- * The accounts a bundle of this protocol reads. A bundle that reads sealed handles gets the
+- * secret fields of providers with hosts, and every string of a managed account, sealed. An
+- * earlier bundle reads every field as a real value, so it gets accounts as they are, and an
+- * invocation of it with a managed account fails without reaching it.
+- */
+-const bundleAccounts = (
+-  protocol: AppProtocol,
+-  app: string,
+-  key: Effect.Effect<CryptoKey>,
+-  accounts: HostAccounts,
+-): Effect.Effect<ResolvedAccounts, RuntimeProtocolFailed> => {
+-  if (protocol.sealedCredentials)
+-    return sealAccounts(accounts, { app, key }).pipe(Effect.map(protocol.accounts));
+-  const unsealed = unsealedAccounts(accounts);
+-  return unsealed === undefined ? failed("managed") : Effect.succeed(protocol.accounts(unsealed));
+-};
+-
+ /**
+  * A workflow whose steps read their accounts as this app's invocations do, through
+  * `bundleAccounts`. The host resolves current credentials for each step.
+  */
+ const boundWorkflow = (
+   execution: WorkflowExecution,
+-  accounts: (resolved: HostAccounts) => Effect.Effect<ResolvedAccounts, RuntimeProtocolFailed>,
++  accounts: (resolved: HostAccounts) => Effect.Effect<ResolvedAccounts, RuntimeProtocolFailed | FrameworkProvenanceRefused>,
+ ): WorkflowExecution => ({
+   ...execution,
+   resolve: () =>
+@@ -659,7 +662,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
+               ),
+             catch: (cause) => cause,
+           }).pipe(
+-            Effect.catch((cause): Effect.Effect<never, RuntimeProtocolFailed | ColdStartFailed> =>
++            Effect.catch((cause): Effect.Effect<never, RuntimeProtocolFailed | FrameworkProvenanceRefused | ColdStartFailed> =>
+               name !== null && failedColdStart(cause)
+                 ? Effect.fail(new ColdStartFailed())
+                 : failedFrom(options.explain)(cause),
+@@ -743,7 +746,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
+    */
+   const start = (
+     ...args: Parameters<typeof startOnce>
+-  ): Effect.Effect<unknown, RuntimeProtocolFailed> =>
++  ): Effect.Effect<unknown, RuntimeProtocolFailed | FrameworkProvenanceRefused> =>
+     startOnce(...args).pipe(
+       Effect.catchTag("ColdStartFailed", () =>
+         startOnce(...args).pipe(
+@@ -759,8 +762,8 @@ export const makeAppRunner = (host: AppRunnerHost) => {
+     explain: boolean,
+   ) =>
+     Effect.gen(function* () {
+-      const protocol = yield* appProtocol(bundle.protocol).pipe(
+-        Effect.catch((cause) => failed("unsupported", cause, explain)),
++      const protocol = yield* selectFrameworkProtocol(bundle).pipe(
++        Effect.catchTag("RuntimeProtocolUnsupported", (cause) => failed("unsupported", cause, explain)),
+       );
+       const command = { operation: "requirements" } as const;
+       const reply = yield* start(null, async () => bundle, {
+diff --git a/packages/sdk/src/implementation/app-runtime.ts b/packages/sdk/src/implementation/app-runtime.ts
+index 3054311..402ee53 100644
+--- a/packages/sdk/src/implementation/app-runtime.ts
++++ b/packages/sdk/src/implementation/app-runtime.ts
+@@ -44,6 +44,7 @@ import {
+   IsolateTiming,
+   RuntimeCallTimings,
+   RuntimeProtocolFailed,
++  FrameworkProvenanceRefused,
+   type RuntimeCallTiming,
+   type RuntimeProtocolUnsupported,
+   type Runtime,
+@@ -54,7 +55,7 @@ import { Json, type BuildId } from "../contracts/shared.ts";
+ import type { LoadedWorkerBuild } from "../contracts/worker-build.ts";
+ import type { BlobStore } from "../contracts/blobs.ts";
+ import { appWorker, type AppCapabilities, type AppInvocation } from "./app-runner.ts";
+-import { appProtocol } from "./app-protocols.ts";
++import { selectFrameworkProtocol } from "./framework-provenance.ts";
+ import { invocationElicitation } from "./worker-elicitation.ts";
+ import { invocationModels } from "./worker-model-rpc.ts";
+ import { invocationWorkflowControls } from "./worker-workflow-rpc.ts";
+@@ -83,13 +84,13 @@ export const buildLoadSpan = "runtime.app.build.load";
+  */
+ export const invocationBuildLoader = <R>(
+   invocation: Pick<AppInvocation, "app" | "build" | "database" | "command" | "accounts" | "run">,
+-  read: Effect.Effect<LoadedWorkerBuild, RuntimeBuildUnavailable, R>,
++  read: Effect.Effect<LoadedWorkerBuild, RuntimeBuildUnavailable | FrameworkProvenanceRefused, R>,
+ ): Effect.Effect<
+   {
+     readonly load: AppCapabilities["load"];
+     readonly refused: <A, E, R2>(
+       invoked: Effect.Effect<A, E | RuntimeProtocolFailed, R2>,
+-    ) => Effect.Effect<A, E | RuntimeProtocolFailed | RuntimeProtocolUnsupported, R2>;
++    ) => Effect.Effect<A, E | RuntimeProtocolFailed | RuntimeProtocolUnsupported | FrameworkProvenanceRefused, R2>;
+   },
+   RuntimeProtocolFailed,
+   R | Scope.Scope
+@@ -103,20 +104,25 @@ export const invocationBuildLoader = <R>(
+     const worker = yield* appWorker(invocation).pipe(
+       Effect.mapError(() => new RuntimeProtocolFailed()),
+     );
+-    let unsupported: RuntimeProtocolUnsupported | undefined;
++    let refusal: RuntimeProtocolUnsupported | FrameworkProvenanceRefused | undefined;
+     return {
+       load: () =>
+         Effect.runPromiseWith(services)(
+           read.pipe(
+             Effect.tap((loaded) =>
+-              appProtocol(loaded.protocol).pipe(
++              selectFrameworkProtocol(loaded, { build: invocation.build }).pipe(
+                 Effect.tapError((error) =>
+                   Effect.sync(() => {
+-                    unsupported = error;
++                    refusal = error;
+                   }),
+                 ),
+               ),
+             ),
++            Effect.tapError((error) =>
++              Effect.sync(() => {
++                if (Schema.is(FrameworkProvenanceRefused)(error)) refusal = error;
++              }),
++            ),
+             Effect.withSpan(buildLoadSpan, {
+               attributes: {
+                 "executor.app.id": invocation.app,
+@@ -131,7 +137,7 @@ export const invocationBuildLoader = <R>(
+         ),
+       refused: (invoked) =>
+         invoked.pipe(
+-          Effect.catchTag("RuntimeProtocolFailed", (error) => Effect.fail(unsupported ?? error)),
++          Effect.catchTag("RuntimeProtocolFailed", (error) => Effect.fail(refusal ?? error)),
+         ),
+     };
+   });
+@@ -148,12 +154,12 @@ export interface AppRuntimeHost {
+   /** Read one retained build, with the protocol its framework speaks, from this host's store. */
+   readonly loadBuild: (
+     build: BuildId,
+-  ) => Effect.Effect<LoadedWorkerBuild, RuntimeBuildUnavailable, BlobStore>;
++  ) => Effect.Effect<LoadedWorkerBuild, RuntimeBuildUnavailable | FrameworkProvenanceRefused, BlobStore>;
+   /** Deliver one invocation to the runner, wherever it runs. */
+   readonly invoke: (
+     invocation: AppInvocation,
+     capabilities: AppCapabilities,
+-  ) => Effect.Effect<unknown, RuntimeProtocolFailed | RuntimeProtocolUnsupported>;
++  ) => Effect.Effect<unknown, RuntimeProtocolFailed | RuntimeProtocolUnsupported | FrameworkProvenanceRefused>;
+   readonly build: Runtime<BlobStore>["build"];
+   readonly asset: NonNullable<Runtime<BlobStore>["asset"]>;
+   readonly changes: (app: string) => Stream.Stream<number, RuntimeProtocolFailed>;
+diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
+index 74ecf27..28ff7a9 100644
+--- a/packages/sdk/src/implementation/apps.ts
++++ b/packages/sdk/src/implementation/apps.ts
+@@ -35,6 +35,7 @@ import {
+   RuntimeBuildFailed,
+   RuntimeAppsDependencyMissing,
+   RuntimeProtocolUnsupported,
++  FrameworkProvenanceRefused,
+   type Runtime,
+ } from "../contracts/runtime.ts";
+ import { AppCodeId, AppId, VersionId, OwnerId, StorageError } from "../contracts/shared.ts";
+@@ -356,6 +357,8 @@ export const makeApps = (
+                       reason: `${error.message} Declare a supported apps version.`,
+                       message: `${error.message} Declare a supported apps version.`,
+                     })
++                  : Schema.is(FrameworkProvenanceRefused)(error)
++                    ? new VersionBuildFailed({ owner, name, reason: error.message, message: error.message })
+                   : Schema.is(RuntimeAppsDependencyMissing)(error)
+                     ? new VersionBuildFailed({
+                         owner,
+diff --git a/packages/sdk/src/implementation/basalt-framework-releases.ts b/packages/sdk/src/implementation/basalt-framework-releases.ts
+new file mode 100644
+index 0000000..7fe47a0
+--- /dev/null
++++ b/packages/sdk/src/implementation/basalt-framework-releases.ts
+@@ -0,0 +1,27 @@
++/** Exact reviewed publication bytes. New builds must match; they never grant themselves admission. */
++import type { FrameworkProvenance } from "../contracts/framework-provenance.ts";
++const releases: readonly FrameworkProvenance[] = [
++  {
++    "version": "0.0.1-beta.104-basalt.13",
++    "sha256": "4820bfe41e955ad2f684e82fc56083899603ad7e71125b05bf2a01e3959638b4",
++    "protocol": 39,
++    "browserSha256": "bcac44f049ab9b8ce6f7ce5cdec89b637c0226fb1d176c6b080d9cde56dbe126",
++    "source": {
++      "origin": "basalt",
++      "revision": "92dacc187d657426a121441241189cc9734ea1f8",
++      "sha256": "5fc439a9ad05bd999e5df2e4ed4fe6f6cb05288920e8d6a646651c5d684c55f0"
++    }
++  },
++  {
++    "version": "0.0.1-beta.104-basalt.16",
++    "sha256": "8620f39052102d1f58e9041e808efd9aadb139fda19a6e8693f5fba7713841ce",
++    "protocol": 42,
++    "browserSha256": "e1e0f8c54a07acf946053720ab96fe317f2edad34aa3e84018c55e1e2162d777",
++    "source": {
++      "origin": "basalt",
++      "revision": "source-sha256:8e7758e84e7e6191704c04ecad2ac4085fddf965864d1681fac9e68ad3fb83cc",
++      "sha256": "260e8e20fb86937127deb3efcd3301c49c9e1f2bd6a303966f83c2990d111134"
++    }
++  }
++];
++export const approvedFrameworkReleases = Object.freeze(releases.map((release) => Object.freeze({ ...release, source: Object.freeze({ ...release.source }) })));
+diff --git a/packages/sdk/src/implementation/framework-identity.ts b/packages/sdk/src/implementation/framework-identity.ts
+new file mode 100644
+index 0000000..13a2e3b
+--- /dev/null
++++ b/packages/sdk/src/implementation/framework-identity.ts
+@@ -0,0 +1,18 @@
++/** Canonical module identity, independent of JSON storage encoding. */
++import { Effect } from "effect";
++import type { FrameworkIdentity, WorkerFramework } from "../contracts/worker-build.ts";
++
++/** Shared by publication, admission and the retained-framework migration. */
++export const frameworkIdentity = (framework: Pick<WorkerFramework, "version" | "modules">) =>
++  Effect.promise(async () => {
++    const canonical = JSON.stringify(
++      Object.keys(framework.modules)
++        .sort()
++        .map((name) => [name, framework.modules[name]]),
++    );
++    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
++    const sha256 = Array.from(new Uint8Array(digest), (byte) =>
++      byte.toString(16).padStart(2, "0"),
++    ).join("");
++    return { version: framework.version, sha256 } satisfies FrameworkIdentity;
++  });
+diff --git a/packages/sdk/src/implementation/framework-provenance.ts b/packages/sdk/src/implementation/framework-provenance.ts
+new file mode 100644
+index 0000000..8bf27d1
+--- /dev/null
++++ b/packages/sdk/src/implementation/framework-provenance.ts
+@@ -0,0 +1,199 @@
++/** Source-bound Basalt admission shared by compilation, retained loading and runners. */
++import { Context, Effect, Schema } from "effect";
++import {
++  FrameworkProvenance,
++  type FrameworkProvenance as Provenance,
++} from "../contracts/framework-provenance.ts";
++import { FrameworkProvenanceRefused } from "../contracts/runtime.ts";
++import type {
++  FrameworkIdentity,
++  LoadedWorkerBuild,
++  WorkerBundle,
++  WorkerFramework,
++} from "../contracts/worker-build.ts";
++import { frameworkIdentity } from "./framework-identity.ts";
++import { appProtocol } from "./app-protocols.ts";
++import { approvedFrameworkReleases } from "./basalt-framework-releases.ts";
++
++/** Only host initialization supplies reviewed release artifacts; public build input cannot. */
++export const FrameworkProvenanceRegistry = Context.Reference<readonly Provenance[]>(
++  "basalt/FrameworkProvenanceRegistry",
++  { defaultValue: () => approvedFrameworkReleases },
++);
++
++/** Snapshot host-owned inputs so later mutation cannot change an admitted release. */
++export const frameworkProvenanceRegistry = (releases: readonly Provenance[]) =>
++  Schema.decodeUnknownEffect(Schema.Array(FrameworkProvenance))(releases).pipe(
++    Effect.map((decoded) =>
++      Object.freeze(
++        decoded.map((release) =>
++          Object.freeze({ ...release, source: Object.freeze({ ...release.source }) }),
++        ),
++      ),
++    ),
++  );
++
++export const sameFrameworkProvenance = (left: Provenance, right: Provenance) =>
++  left.version === right.version &&
++  left.sha256 === right.sha256 &&
++  left.protocol === right.protocol &&
++  left.browserSha256 === right.browserSha256 &&
++  left.source.origin === right.source.origin &&
++  left.source.revision === right.source.revision &&
++  left.source.sha256 === right.source.sha256;
++
++interface AdmissionInput {
++  readonly framework: Pick<WorkerFramework, "version" | "modules">;
++  readonly protocol: number;
++  readonly identity?: FrameworkIdentity;
++  readonly claimed?: Provenance;
++  readonly browser?: Readonly<Record<string, string>>;
++  readonly build?: string;
++}
++
++/** Recompute bytes before comparing the exact release tuple and its approved source origin. */
++export const admitFramework = (input: AdmissionInput) =>
++  Effect.gen(function* () {
++    const computed = yield* frameworkIdentity(input.framework);
++    const fields = {
++      version: input.framework.version,
++      protocol: input.protocol,
++      computedHash: computed.sha256,
++      ...(input.build === undefined ? {} : { build: input.build }),
++      ...(input.identity === undefined ? {} : { declaredHash: input.identity.sha256 }),
++    };
++    const refuse = (reason: FrameworkProvenanceRefused["reason"], comparison: string) =>
++      new FrameworkProvenanceRefused({ ...fields, reason, comparison });
++    if (!input.framework.version || Object.keys(input.framework.modules).length === 0)
++      return yield* refuse("missing-identity", "The framework has no version or server modules.");
++    if (input.identity !== undefined) {
++      if (input.identity.version !== computed.version)
++        return yield* refuse(
++          "conflicting-lineage",
++          `Build version ${input.identity.version} differs from framework version ${computed.version}.`,
++        );
++      if (input.identity.sha256 !== computed.sha256)
++        return yield* refuse("content-mismatch", "The stored server hash differs from its module bytes.");
++    }
++    const registry = yield* FrameworkProvenanceRegistry;
++    const releases = registry.filter((release) => release.version === computed.version);
++    if (releases.length === 0)
++      return yield* refuse("unknown-identity", "No approved source-bound release has this version and server hash.");
++    const release = releases[0]!;
++    if (
++      !Schema.is(FrameworkProvenance)(release) ||
++      releases.some((other) => !Schema.is(FrameworkProvenance)(other) || !sameFrameworkProvenance(release, other))
++    )
++      return yield* refuse("conflicting-lineage", "The host registry has conflicting release evidence for this version.");
++    if (release.sha256 !== computed.sha256)
++      return yield* refuse(
++        "content-mismatch",
++        `Approved server SHA-256 ${release.sha256} differs from the computed server hash.`,
++      );
++    if (release.protocol !== input.protocol)
++      return yield* refuse(
++        "protocol-mismatch",
++        `Approved protocol ${release.protocol} differs from recorded protocol ${input.protocol}.`,
++      );
++    if (input.claimed !== undefined && (!Schema.is(FrameworkProvenance)(input.claimed) || !sameFrameworkProvenance(release, input.claimed)))
++      return yield* refuse("conflicting-lineage", "The supplied release tuple or source origin differs from the host registry.");
++    if (input.browser !== undefined) {
++      const browser = yield* frameworkIdentity({ version: computed.version, modules: input.browser });
++      if (browser.sha256 !== release.browserSha256)
++        return yield* refuse(
++          "content-mismatch",
++          `Approved browser SHA-256 ${release.browserSha256} differs from computed browser SHA-256 ${browser.sha256}.`,
++        );
++    }
++    return Object.freeze({ ...release, source: Object.freeze({ ...release.source }) });
++  });
++
++/** Framework paths are release-owned. A non-string module at one is not published framework code. */
++export const inlinedFramework = (bundle: WorkerBundle, version: string, build?: string) =>
++  Effect.gen(function* () {
++    const modules: Record<string, string> = {};
++    for (const [name, module] of Object.entries(bundle.modules)) {
++      if (!name.startsWith("node_modules/apps/") || !name.endsWith(".js")) continue;
++      if (typeof module !== "string" || name.split("/").includes(".."))
++        return yield* new FrameworkProvenanceRefused({
++          reason: "content-mismatch",
++          version,
++          ...(build === undefined ? {} : { build }),
++          comparison: `Framework module ${name} is not a published JavaScript module.`,
++        });
++      modules[name] = module;
++    }
++    return { version, modules };
++  });
++
++/** Format 1 has no trustworthy label: match exact inlined bytes to approved immutable evidence. */
++export const admitInlinedFramework = (bundle: WorkerBundle, protocol: number, build?: string) =>
++  Effect.gen(function* () {
++    const framework = yield* inlinedFramework(bundle, "unlabelled", build);
++    const computed = yield* frameworkIdentity(framework);
++    if (Object.keys(framework.modules).length === 0)
++      return yield* new FrameworkProvenanceRefused({
++        reason: "missing-identity",
++        protocol,
++        computedHash: computed.sha256,
++        ...(build === undefined ? {} : { build }),
++        comparison: "The inlined build has no published framework modules.",
++      });
++    const registry = yield* FrameworkProvenanceRegistry;
++    const releases = registry.filter((release) => release.sha256 === computed.sha256);
++    const release = releases[0];
++    if (release === undefined || !Schema.is(FrameworkProvenance)(release) || releases.some((other) => !Schema.is(FrameworkProvenance)(other) || !sameFrameworkProvenance(release, other)))
++      return yield* new FrameworkProvenanceRefused({
++        reason: release === undefined ? "unknown-identity" : "conflicting-lineage",
++        protocol,
++        computedHash: computed.sha256,
++        ...(build === undefined ? {} : { build }),
++        comparison: "The exact inlined framework has no unambiguous approved Basalt release or inventory evidence.",
++      });
++    return yield* admitFramework({
++      framework: { ...framework, version: release.version },
++      protocol,
++      ...(build === undefined ? {} : { build }),
++    });
++  });
++
++/** Revalidate transports as well as storage. A tuple is evidence only after byte comparison. */
++export const admitLoadedFramework = (
++  loaded: LoadedWorkerBuild,
++  options: { readonly build?: string; readonly previous?: Provenance } = {},
++) =>
++  Effect.gen(function* () {
++    const claimed = loaded.framework;
++    if (claimed === undefined || !Schema.is(FrameworkProvenance)(claimed))
++      return yield* new FrameworkProvenanceRefused({
++        reason: "missing-identity",
++        protocol: loaded.protocol,
++        ...(options.build === undefined ? {} : { build: options.build }),
++        comparison: "The loaded build carries no valid framework tuple.",
++      });
++    const framework = yield* inlinedFramework(loaded, claimed.version, options.build);
++    const admitted = yield* admitFramework({
++      framework,
++      protocol: loaded.protocol,
++      identity: claimed,
++      claimed,
++      ...(options.build === undefined ? {} : { build: options.build }),
++    });
++    if (options.previous !== undefined && !sameFrameworkProvenance(options.previous, admitted))
++      return yield* new FrameworkProvenanceRefused({
++        reason: "conflicting-lineage",
++        version: admitted.version,
++        protocol: loaded.protocol,
++        declaredHash: options.previous.sha256,
++        computedHash: admitted.sha256,
++        ...(options.build === undefined ? {} : { build: options.build }),
++        comparison: "An immutable build changed its previously admitted framework tuple.",
++      });
++    return admitted;
++  });
++
++/** The shared runner hook. Numeric protocol alone never selects a Basalt adapter. */
++export const selectFrameworkProtocol = (
++  loaded: LoadedWorkerBuild,
++  options: { readonly build?: string; readonly previous?: Provenance } = {},
++) => admitLoadedFramework(loaded, options).pipe(Effect.flatMap((release) => appProtocol(release.protocol)));
+diff --git a/packages/sdk/src/implementation/remote-app-runner.ts b/packages/sdk/src/implementation/remote-app-runner.ts
+index 24297a4..1a36c06 100644
+--- a/packages/sdk/src/implementation/remote-app-runner.ts
++++ b/packages/sdk/src/implementation/remote-app-runner.ts
+@@ -25,6 +25,7 @@ import {
+   RuntimeFailure,
+   RuntimeProtocolFailed,
+   RuntimeProtocolUnsupported,
++  FrameworkProvenanceRefused,
+   type RuntimeBuildUnavailable,
+ } from "../contracts/runtime.ts";
+ import { BuildId } from "../contracts/shared.ts";
+@@ -43,6 +44,7 @@ import { invocationBuildLoader } from "./app-runtime.ts";
+ import { asciiJson } from "./ascii-json.ts";
+ import { AppCallWorkflow } from "./app-call-context.ts";
+ import { observeRunner, runnerPhase } from "./runner-progress.ts";
++import { admitLoadedFramework } from "./framework-provenance.ts";
+ 
+ type Callback = (input: unknown) => Promise<unknown>;
+ 
+@@ -99,6 +101,7 @@ const RemoteResult = Schema.fromJsonString(
+       message: Schema.optionalKey(Schema.String),
+       /** The build's protocol is one this runner does not run; only its load finds that out. */
+       unsupported: Schema.optionalKey(RuntimeProtocolUnsupported),
++      provenance: Schema.optionalKey(FrameworkProvenanceRefused),
+     }),
+   ]),
+ );
+@@ -380,7 +383,9 @@ const localCapabilities = (remote: RemoteCapabilities, load: () => Promise<Loade
+  * where its text is: past the boundary the caller would see only that the call failed.
+  */
+ const refused = (error: unknown) =>
+-  Schema.is(RuntimeProtocolUnsupported)(error)
++  Schema.is(FrameworkProvenanceRefused)(error)
++    ? { ok: false as const, provenance: error }
++    : Schema.is(RuntimeProtocolUnsupported)(error)
+     ? { ok: false as const, unsupported: error }
+     : Schema.is(RuntimeProtocolFailed)(error)
+       ? {
+@@ -417,7 +422,7 @@ export const runnerReply = (
+  */
+ export const serveAppRunner = (
+   runner: AppRunner,
+-  read: (build: BuildId) => Effect.Effect<LoadedWorkerBuild, RuntimeBuildUnavailable>,
++  read: (build: BuildId) => Effect.Effect<LoadedWorkerBuild, RuntimeBuildUnavailable | FrameworkProvenanceRefused>,
+ ): RemoteAppRunner<Effect.Effect<string>> => ({
+   invoke: (invocation, capabilities) =>
+     runnerReply(
+@@ -454,6 +459,7 @@ export const serveAppRunner = (
+   declare: (bundle, headers) =>
+     runnerReply(
+       Schema.decodeUnknownEffect(encodedBuild)(bundle).pipe(
++        Effect.tap(admitLoadedFramework),
+         Effect.flatMap((bundle) => runner.declare(bundle, headers)),
+         Effect.map((value) => ({ value })),
+       ),
+@@ -476,12 +482,14 @@ export const runnerResult = <E>(effect: Effect.Effect<string, E>, hostApi?: stri
+       ),
+     ),
+     Effect.flatMap(
+-      (reply): Effect.Effect<unknown, RuntimeProtocolFailed | RuntimeProtocolUnsupported> =>
++      (reply): Effect.Effect<unknown, RuntimeProtocolFailed | RuntimeProtocolUnsupported | FrameworkProvenanceRefused> =>
+         reply.ok
+           ? hostApi === undefined || reply.hostApi === hostApi
+             ? Effect.succeed(reply.value)
+             : Effect.fail(new RuntimeProtocolFailed({ reason: "unsupported" }))
+-          : reply.unsupported !== undefined
++          : reply.provenance !== undefined
++            ? Effect.fail(reply.provenance)
++            : reply.unsupported !== undefined
+             ? Effect.fail(reply.unsupported)
+             : Effect.fail(
+                 new RuntimeProtocolFailed({
+diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
+index de81b5d..9c54b2b 100644
+--- a/packages/sdk/src/implementation/tools.ts
++++ b/packages/sdk/src/implementation/tools.ts
+@@ -791,6 +791,7 @@ const runtimeFailure = (identity: { app: AppId; version: VersionId; tool: ToolNa
+               }`,
+             }),
+       RuntimeProtocolUnsupported: (error) => evaluationFailure(identity, error, error.message),
++      FrameworkProvenanceRefused: (error) => evaluationFailure(identity, error, error.message),
+     }),
+   );
+ 
+@@ -834,6 +835,7 @@ const failureSource = Match.type<CallError>().pipe(
+     RuntimeProtocolFailed: () => "runtime",
+     RuntimeBuildUnavailable: () => "runtime",
+     RuntimeProtocolUnsupported: () => "runtime",
++    FrameworkProvenanceRefused: () => "runtime",
+     HostRequestInvalid: () => "runtime",
+     HostAccountsInvalid: () => "other",
+     ElicitationFailed: () => "other",
+diff --git a/packages/sdk/src/implementation/worker-build-migration.ts b/packages/sdk/src/implementation/worker-build-migration.ts
+index a576a8f..650099f 100644
+--- a/packages/sdk/src/implementation/worker-build-migration.ts
++++ b/packages/sdk/src/implementation/worker-build-migration.ts
+@@ -7,10 +7,9 @@
+  * This module owns its own copy of the inlined schema: it is migration code, and stays after the
+  * runtime reader of inlined builds is removed.
+  */
+-import { sourceText } from "../contracts/source.ts";
+ import { Effect, Option, Schema } from "effect";
+ import { type BlobKey, BlobStore } from "../contracts/blobs.ts";
+-import { UiAsset } from "../contracts/runtime.ts";
++import { FrameworkProvenanceRefused, UiAsset } from "../contracts/runtime.ts";
+ import type { BuildId, VersionId } from "../contracts/shared.ts";
+ import {
+   AppProtocolVersion,
+@@ -20,7 +19,7 @@ import {
+   RetainedWorkerBuild,
+   WorkerBundle,
+ } from "../contracts/worker-build.ts";
+-import { readVersionSource } from "./version-source.ts";
++import { admitInlinedFramework } from "./framework-provenance.ts";
+ import {
+   buildKey,
+   decodeJson,
+@@ -44,85 +43,8 @@ const InlinedBuild = Schema.Struct({
+ });
+ type InlinedBuild = typeof InlinedBuild.Type;
+ 
+-/**
+- * The published `apps` releases, by the SHA-256 of their `runtime.json` server modules as
+- * `frameworkIdentity` computes it. Releases with identical server modules share a hash; they are
+- * listed oldest first. Releases without `runtime.json` (before beta.0, and the unrelated `apps`
+- * packages published from 0.5.0) never supplied a framework. Computed from the npm archives; the
+- * step has shipped once this is merged, so this table never changes.
+- */
+-const publishedFrameworks: Readonly<Record<string, readonly [string, ...string[]]>> = {
+-  ac37ae3a48936a12ae82ef0c766b76fa522a253a2ad4885e564b49f26cf64f1a: ["0.0.1-beta.0"],
+-  dd50512f5b1ca9a2e031f32893eeea38952830c6ee8a0c552b16434910eced34: ["0.0.1-beta.1"],
+-  cbee15d2475813cf048047e9035d7e80ce978ffa4afa5a5416d82de5e52c4fef: [
+-    "0.0.1-beta.2",
+-    "0.0.1-beta.3",
+-  ],
+-  "12edbc344f2d30c6fa26a375f6f0bb4f81209cf5b91e267d3bf7d6d76057fd8d": ["0.0.1-beta.4"],
+-  be7c95f196974a191d86a87caa5f05280eabec24837e193745c869223308e834: ["0.0.1-beta.5"],
+-  "511e9b71bdea313b7d323a89bfd098036724a80e46f595ca64463949a0b78984": ["0.0.1-beta.6"],
+-  ec95ce08f7281b76beb17e98ab14311f0c1d4b67da39e2eaa16dce3f50c7a664: [
+-    "0.0.1-beta.7",
+-    "0.0.1-beta.8",
+-  ],
+-  d651df2ee21717fc5ae2c28d68878d98dff8179ebdc7698f2fc20b58111d3ca5: ["0.0.1-beta.9"],
+-  "8420607ab82145cbb87d23ebff6b310ebc1fdedb7dd3823b4695d60953ca86ec": ["0.0.1-beta.10"],
+-  "824e06d49ee29c3f9ffad9c838bf261187de0fe89883aa0b4dd80794d3af361c": ["0.0.1-beta.11"],
+-  e909e2e379f2936da84c28193d5329cc42fc7f60d67f6749298db27f6ae99004: ["0.0.1-beta.12"],
+-  e9953ea5ddab7bc990507bee83d74af6ddd048d31747106b1f564b8f0fbefd24: ["0.0.1-beta.13"],
+-  "74a1f039e15458cc224a436d86d380bc86b67a3926839f0e19a0f36136b73a61": ["0.0.1-beta.14"],
+-  "045c7cf02b2cabbd29b6a92df16e81ddf2e733aa2efaab7380cfbe1c44dda8b7": ["0.0.1-beta.15"],
+-  "0302e2436c4f8323ebaf028d62295778e9a3e47cbc67526902236d88f8a16a55": ["0.0.1-beta.16"],
+-};
+-
+-/** An exact npm version: no range, tag or URL. */
+-const exactVersion = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+-const Manifest = Schema.fromJsonString(
+-  Schema.Struct({
+-    dependencies: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+-  }),
+-);
+-
+-/** The `apps` release an app version's retained source declares, if it can be read. */
+-const declaredApps = (version: VersionId) =>
+-  Effect.gen(function* () {
+-    const files = yield* readVersionSource(yield* BlobStore, version);
+-    const manifest = sourceText(files, "package.json");
+-    if (manifest === undefined) return undefined;
+-    const declared = Schema.decodeUnknownOption(Manifest)(manifest).pipe(
+-      Option.map((value) => value.dependencies?.apps),
+-      Option.getOrUndefined,
+-    );
+-    return typeof declared === "string" ? declared : undefined;
+-  }).pipe(Effect.orElseSucceed(() => undefined));
+-
+-/**
+- * Where a framework's version label came from: the published release with its hash, the exact
+- * version the app version declares, or neither. The hash alone decides which object a build links.
+- */
+-export type FrameworkLabelSource = "release" | "declared" | "unreleased";
+-
+-/**
+- * Label a framework hash: the published release with that hash (the declared one when several
+- * releases share it, otherwise the oldest); else the app version's declared `dependencies.apps`
+- * when it is an exact version; else `unreleased`.
+- */
+-const frameworkLabel = (sha256: string, version: VersionId) =>
+-  Effect.gen(function* () {
+-    const releases = publishedFrameworks[sha256];
+-    if (releases !== undefined) {
+-      if (releases.length === 1) return { version: releases[0], source: "release" as const };
+-      const declared = yield* declaredApps(version);
+-      return {
+-        version: declared !== undefined && releases.includes(declared) ? declared : releases[0],
+-        source: "release" as const,
+-      };
+-    }
+-    const declared = yield* declaredApps(version);
+-    return declared !== undefined && exactVersion.test(declared)
+-      ? { version: declared, source: "declared" as const }
+-      : { version: "unreleased", source: "unreleased" as const };
+-  });
++/** Historical label sources are descriptive only; admission uses approved immutable evidence. */
++export type FrameworkLabelSource = "release" | "declared" | "unreleased" | "approved";
+ 
+ /**
+  * - `already-split`: `<build>/worker.json` exists and links a framework whose content matches its
+@@ -189,15 +111,16 @@ const verifyStored = (build: BuildId, inlined: InlinedBuild | undefined) =>
+   Effect.gen(function* () {
+     const stored = yield* loadStoredWorkerBuild(build);
+     if (stored.format !== 2) return yield* new SplitMismatch({ reason: "record is not split" });
+-    const framework = yield* loadWorkerFramework(stored.framework);
++    const framework = yield* loadWorkerFramework(stored.framework, build);
+     const content = yield* frameworkIdentity({
+       version: framework.version,
+       modules: framework.modules,
+     });
+     if (content.sha256 !== stored.framework.sha256)
+       return yield* new SplitMismatch({ reason: "framework content does not match its hash" });
++    const loaded = yield* loadWorkerBuild(build);
+     if (inlined === undefined) return;
+-    const reason = verify(inlined, yield* loadWorkerBuild(build), stored);
++    const reason = verify(inlined, loaded, stored);
+     if (reason !== undefined) return yield* new SplitMismatch({ reason });
+   });
+ 
+@@ -216,11 +139,11 @@ export interface BuildSplit {
+ /**
+  * Split one build. Apply writes the framework if absent (checking an existing one's hash), then
+  * the record last, and verifies the read-back. Report does the same reads and checks in memory and
+- * writes nothing. `version` is any version of the build, for its declared `apps` version.
++ * writes nothing. The version argument stays for callers; declared dependencies grant no admission.
+  */
+ export const splitInlinedWorkerBuild = (
+   build: BuildId,
+-  version: VersionId,
++  _version: VersionId,
+   mode: "report" | "apply",
+ ) =>
+   Effect.gen(function* () {
+@@ -244,9 +167,8 @@ export const splitInlinedWorkerBuild = (
+         ),
+       );
+       if (checked === undefined) return { outcome: "already-split", ...sizes } satisfies BuildSplit;
+-      // A record the step wrote but whose check failed is rewritten from `<build>.json`.
+-      if (inlined === undefined || Option.isNone(inlined))
+-        return { outcome: "failed", reason: checked, ...sizes } satisfies BuildSplit;
++      // Existing objects are immutable. A failed admission needs reviewed evidence or repair authority.
++      return { outcome: "failed", reason: checked, ...sizes } satisfies BuildSplit;
+     }
+     if (inlined === undefined) return { outcome: "missing" } satisfies BuildSplit;
+     if (Option.isNone(inlined))
+@@ -266,9 +188,9 @@ export const splitInlinedWorkerBuild = (
+       version: "unlabelled",
+       modules: frameworkModules,
+     });
+-    const label = yield* frameworkLabel(sha256, version);
+-    const identity: FrameworkIdentity = { version: label.version, sha256 };
+-    const framework: RetainedFramework = { ...identity, modules: frameworkModules };
++    const admitted = yield* admitInlinedFramework(source, source.protocol, build);
++    const identity: FrameworkIdentity = { version: admitted.version, sha256 };
++    const framework: RetainedFramework = { ...identity, modules: frameworkModules, provenance: admitted };
+     const record: RetainedWorkerBuild = {
+       format: 2,
+       mainModule: source.mainModule,
+@@ -283,7 +205,7 @@ export const splitInlinedWorkerBuild = (
+     const frameworkLocation = yield* frameworkKey(identity);
+     const frameworkStored = yield* blobs.exists(frameworkLocation);
+     const result = {
+-      framework: { ...identity, label: label.source },
++      framework: { ...identity, label: "approved" as const },
+       frameworkStored,
+       ...sizes,
+       recordBytes: recordBody.byteLength,
+@@ -306,7 +228,7 @@ export const splitInlinedWorkerBuild = (
+     }
+ 
+     if (mode === "report") {
+-      const linked = yield* linkWorkerBuild(record, () => Effect.succeed(framework));
++      const linked = yield* linkWorkerBuild(record, () => Effect.succeed(framework), build);
+       const reason = verify(source, linked, record);
+       return (
+         reason === undefined
+@@ -332,10 +254,12 @@ export const splitInlinedWorkerBuild = (
+     ) satisfies BuildSplit;
+   }).pipe(
+     // Storage failures leave the item to retry; the next pass reads everything again.
+-    Effect.catch(() =>
++    Effect.catch((error) =>
+       Effect.succeed({
+         outcome: "failed",
+-        reason: "storage or encoding failed",
++        reason: Schema.is(FrameworkProvenanceRefused)(error)
++          ? error.message
++          : "storage or encoding failed",
+       } satisfies BuildSplit),
+     ),
+     Effect.map((split): BuildSplit => split),
+diff --git a/packages/sdk/src/implementation/worker-build-storage.ts b/packages/sdk/src/implementation/worker-build-storage.ts
+index 108ff81..8a93b9e 100644
+--- a/packages/sdk/src/implementation/worker-build-storage.ts
++++ b/packages/sdk/src/implementation/worker-build-storage.ts
+@@ -3,13 +3,16 @@
+  * and the identity of the framework it links; loading a build reads both and links them.
+  */
+ import { BlobKey, BlobStore } from "../contracts/blobs.ts";
+-import { RuntimeBuildFailed, RuntimeBuildUnavailable } from "../contracts/runtime.ts";
++import { FrameworkProvenanceRefused, RuntimeBuildFailed, RuntimeBuildUnavailable } from "../contracts/runtime.ts";
+ import type { BuildId } from "../contracts/shared.ts";
+ import type { UiBuildFile } from "../contracts/ui-build.ts";
+ import type { RuntimeAsset } from "../contracts/runtime.ts";
+ import { asciiJson } from "./ascii-json.ts";
+ import { publicFileAsset, readPublicManifest } from "./public-files.ts";
+ import { Effect, Option, Schema } from "effect";
++import { frameworkIdentity } from "./framework-identity.ts";
++import { admitFramework, admitInlinedFramework, admitLoadedFramework } from "./framework-provenance.ts";
++export { frameworkIdentity } from "./framework-identity.ts";
+ import {
+   type FrameworkIdentity,
+   InlinedWorkerBuild,
+@@ -38,28 +41,14 @@ export const encodeJson = <S extends Schema.Codec<unknown, unknown>>(schema: S,
+ export const decodeJson = <S extends Schema.Codec<unknown, unknown>>(schema: S, body: Uint8Array) =>
+   Schema.decodeUnknownEffect(Schema.fromJsonString(schema))(new TextDecoder().decode(body));
+ 
+-/** The SHA-256 of a framework's server modules, by name, independent of their stored encoding. */
+-export const frameworkIdentity = (framework: WorkerFramework) =>
+-  Effect.promise(async () => {
+-    const canonical = JSON.stringify(
+-      Object.keys(framework.modules)
+-        .sort()
+-        .map((name) => [name, framework.modules[name]]),
+-    );
+-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
+-    const sha256 = Array.from(new Uint8Array(digest), (byte) =>
+-      byte.toString(16).padStart(2, "0"),
+-    ).join("");
+-    return { version: framework.version, sha256 } satisfies FrameworkIdentity;
+-  });
+-
+ /** The complete Worker code: the app's modules with the framework's linked beside them. */
+ export const assembleWorkerBundle = (
+   bundle: WorkerBundle,
+-  framework: Pick<WorkerFramework, "modules">,
+-): WorkerBundle => ({
++  framework: Pick<WorkerFramework, "modules" | "provenance">,
++): WorkerBundle & Pick<LoadedWorkerBuild, "framework"> => ({
+   mainModule: bundle.mainModule,
+   modules: { ...bundle.modules, ...framework.modules },
++  ...(framework.provenance === undefined ? {} : { framework: framework.provenance }),
+ });
+ 
+ /**
+@@ -76,8 +65,13 @@ const retainFramework = (framework: WorkerFramework) =>
+       "executor.build.framework": `${identity.version}-${identity.sha256}`,
+       "executor.build.framework_stored": stored,
+     });
+-    const retained: RetainedFramework = { ...identity, modules: framework.modules };
+-    if (!stored) yield* blobs.put(location, yield* encodeJson(RetainedFramework, retained));
++    const retained: RetainedFramework = {
++      ...identity,
++      modules: framework.modules,
++      ...(framework.provenance === undefined ? {} : { provenance: framework.provenance }),
++    };
++    if (stored) yield* loadWorkerFramework(identity);
++    else yield* blobs.put(location, yield* encodeJson(RetainedFramework, retained));
+     return retained;
+   });
+ 
+@@ -94,7 +88,13 @@ export const retainWorkerBuild = (
+ ) =>
+   Effect.gen(function* () {
+     const blobs = yield* BlobStore;
+-    const retained = yield* retainFramework(framework);
++    const provenance = yield* admitFramework({
++      framework,
++      protocol: bundle.protocol,
++      ...(framework.provenance === undefined ? {} : { claimed: framework.provenance }),
++      build,
++    });
++    const retained = yield* retainFramework({ ...framework, provenance });
+     const identity: FrameworkIdentity = { version: retained.version, sha256: retained.sha256 };
+     if (ui !== undefined)
+       yield* Effect.forEach(
+@@ -123,7 +123,8 @@ export const retainWorkerBuild = (
+     yield* blobs.put(yield* buildKey(build), body);
+     return { record, framework: retained };
+   }).pipe(
+-    Effect.mapError(() => new RuntimeBuildFailed({ stage: "retain" })),
++    Effect.mapError((error) => Schema.is(FrameworkProvenanceRefused)(error)
++      ? error : new RuntimeBuildFailed({ stage: "retain" })),
+     Effect.withSpan("runtime.cloud.retain"),
+   );
+ 
+@@ -147,16 +148,46 @@ export const loadStoredWorkerBuild = (build: BuildId) =>
+   );
+ 
+ /** One stored framework. A record names only frameworks written before it, so absence is a fault. */
+-export const loadWorkerFramework = (identity: FrameworkIdentity) =>
++export const loadWorkerFramework = (identity: FrameworkIdentity, build?: BuildId) =>
+   Effect.gen(function* () {
+     const blobs = yield* BlobStore;
+     const found = yield* blobs.get(yield* frameworkKey(identity));
+-    if (Option.isNone(found)) return yield* new RuntimeBuildUnavailable();
+-    const framework = yield* decodeJson(RetainedFramework, found.value);
+-    if (framework.sha256 !== identity.sha256) return yield* new RuntimeBuildUnavailable();
++    const fields = {
++      version: identity.version,
++      declaredHash: identity.sha256,
++      ...(build === undefined ? {} : { build }),
++    };
++    if (Option.isNone(found)) return yield* new FrameworkProvenanceRefused({
++      ...fields,
++      reason: "missing-identity",
++      comparison: "The build's referenced framework object is missing.",
++    });
++    const framework = yield* decodeJson(RetainedFramework, found.value).pipe(
++      Effect.mapError(() => new FrameworkProvenanceRefused({
++        ...fields,
++        reason: "content-mismatch",
++        comparison: "The referenced framework object does not decode.",
++      })),
++    );
++    const computed = yield* frameworkIdentity(framework);
++    if (framework.version !== identity.version || framework.sha256 !== identity.sha256)
++      return yield* new FrameworkProvenanceRefused({
++        ...fields,
++        computedHash: computed.sha256,
++        reason: "conflicting-lineage",
++        comparison: `Stored framework tuple ${framework.version}/${framework.sha256} differs from the build reference.`,
++      });
++    if (computed.sha256 !== identity.sha256)
++      return yield* new FrameworkProvenanceRefused({
++        ...fields,
++        computedHash: computed.sha256,
++        reason: "content-mismatch",
++        comparison: "The referenced framework's server bytes differ from its declared hash.",
++      });
+     return framework;
+   }).pipe(
+-    Effect.mapError(() => new RuntimeBuildUnavailable()),
++    Effect.mapError((error) => Schema.is(FrameworkProvenanceRefused)(error)
++      ? error : new RuntimeBuildUnavailable()),
+     Effect.withSpan("runtime.build.framework", {
+       attributes: { "executor.build.framework": `${identity.version}-${identity.sha256}` },
+     }),
+@@ -166,24 +197,48 @@ export const loadWorkerFramework = (identity: FrameworkIdentity) =>
+ export const linkWorkerBuild = <E, R>(
+   stored: StoredWorkerBuild,
+   framework: (identity: FrameworkIdentity) => Effect.Effect<RetainedFramework, E, R>,
+-): Effect.Effect<LoadedWorkerBuild, E, R> =>
+-  stored.format === 1
+-    ? Effect.succeed({
++  build?: BuildId,
++): Effect.Effect<LoadedWorkerBuild, E | FrameworkProvenanceRefused, R> =>
++  Effect.gen(function* () {
++    if (stored.format === 1) {
++      const admitted = yield* admitInlinedFramework(stored, stored.protocol, build);
++      return {
+         mainModule: stored.mainModule,
+         modules: stored.modules,
+         protocol: stored.protocol,
+-      })
+-    : framework(stored.framework).pipe(
+-        Effect.map((linked) => ({
+-          ...assembleWorkerBundle(stored, linked),
+-          protocol: stored.protocol,
+-        })),
+-      );
++        framework: admitted,
++      };
++    }
++    const linked = yield* framework(stored.framework);
++    const admitted = yield* admitFramework({
++      framework: linked,
++      identity: stored.framework,
++      protocol: stored.protocol,
++      ...(linked.provenance === undefined ? {} : { claimed: linked.provenance }),
++      ...(build === undefined ? {} : { build }),
++    });
++    if (linked.sha256 !== stored.framework.sha256)
++      return yield* new FrameworkProvenanceRefused({
++        reason: "conflicting-lineage",
++        version: stored.framework.version,
++        protocol: stored.protocol,
++        declaredHash: linked.sha256,
++        computedHash: admitted.sha256,
++        ...(build === undefined ? {} : { build }),
++        comparison: "The stored framework hash differs from the build's framework reference.",
++      });
++    const loaded = {
++      ...assembleWorkerBundle(stored, { ...linked, provenance: admitted }),
++      protocol: stored.protocol,
++    };
++    yield* admitLoadedFramework(loaded, build === undefined ? {} : { build });
++    return loaded;
++  });
+ 
+ /** The complete code a runner cold-starts: the build's record linked with its framework. */
+ export const loadWorkerBuild = (build: BuildId) =>
+   loadStoredWorkerBuild(build).pipe(
+-    Effect.flatMap((stored) => linkWorkerBuild(stored, loadWorkerFramework)),
++    Effect.flatMap((stored) => linkWorkerBuild(stored, (identity) => loadWorkerFramework(identity, build), build)),
+   );
+ 
+ /** The product authenticates access; this capability serves only assets listed in the immutable build. */
+diff --git a/packages/sdk/src/implementation/worker-build.ts b/packages/sdk/src/implementation/worker-build.ts
+index 68fc0ac..7881885 100644
+--- a/packages/sdk/src/implementation/worker-build.ts
++++ b/packages/sdk/src/implementation/worker-build.ts
+@@ -5,6 +5,7 @@ import {
+   describeBuildCause,
+   RuntimeAppsDependencyMissing,
+   RuntimeBuildFailed,
++  FrameworkProvenanceRefused,
+ } from "../contracts/runtime.ts";
+ import type { CodeFiles } from "../contracts/source.ts";
+ import { prepareUiBuild } from "./ui-build.ts";
+@@ -12,6 +13,7 @@ import { Effect, Option, Path, Schema } from "effect";
+ import type { Plugin } from "esbuild";
+ import { PublishedAppFramework, WorkerBundle } from "../contracts/worker-build.ts";
+ import { appProtocol } from "./app-protocols.ts";
++import { admitFramework } from "./framework-provenance.ts";
+ import { binaryFilePaths } from "./worker-binary-files.ts";
+ import { browserBuild } from "./worker-browser-build.ts";
+ import { sourceImports } from "./worker-source-imports.ts";
+@@ -131,14 +133,22 @@ const selectedFramework = (filesystem: InMemoryFileSystem) =>
+             name.split("/").includes(".."),
+         )
+       )
+-        return yield* new RuntimeBuildFailed({ stage: "dependencies", dependency: "apps" });
++        return yield* new FrameworkProvenanceRefused({
++          reason: "content-mismatch",
++          version: selected.version,
++          protocol: selected.protocol,
++          comparison: "The selected framework contains a module outside its published JavaScript paths.",
++        });
+     }
+     return selected;
+   }).pipe(
+     Effect.mapError((error) =>
+-      Schema.is(RuntimeBuildFailed)(error)
++      Schema.is(FrameworkProvenanceRefused)(error)
+         ? error
+-        : new RuntimeBuildFailed({ stage: "dependencies", dependency: "apps" }),
++        : new FrameworkProvenanceRefused({
++            reason: "missing-identity",
++            comparison: "The selected apps package has no valid runtime.json framework identity.",
++          }),
+     ),
+   );
+ 
+@@ -170,6 +180,12 @@ export const prepareWorkerApp = (files: CodeFiles, host: WorkerHost, resolveAll
+     );
+     if (!(yield* dependencies.framework))
+       return yield* new RuntimeAppsDependencyMissing({ version: apps.version });
++    const selected = yield* selectedFramework(filesystem);
++    yield* admitFramework({
++      framework: { version: selected.version, modules: selected.server },
++      protocol: selected.protocol,
++      browser: selected.browser,
++    });
+     if (resolveAll) yield* dependencies.prepare;
+     return { filesystem, dependencies };
+   });
+@@ -184,7 +200,12 @@ export const compileWorkerApp = (
+   Effect.gen(function* () {
+     const { filesystem, dependencies } = prepared ?? (yield* prepareWorkerApp(files, host, false));
+     const selected = yield* selectedFramework(filesystem);
+-    const protocol = yield* appProtocol(selected.protocol);
++    const provenance = yield* admitFramework({
++      framework: { version: selected.version, modules: selected.server },
++      protocol: selected.protocol,
++      browser: selected.browser,
++    });
++    const protocol = yield* appProtocol(provenance.protocol);
+     const entry = "__executor_worker.ts";
+     filesystem.write(entry, protocol.workerEntry);
+     const plan = yield* prepareUiBuild(files, publicPaths);
+@@ -252,7 +273,7 @@ export const compileWorkerApp = (
+     const ui = browser === undefined ? undefined : yield* browser.finish();
+     return {
+       bundle,
+-      framework: { version: selected.version, modules: selected.server },
++      framework: { version: selected.version, modules: selected.server, provenance },
+       ui,
+       protocol: selected.protocol,
+       // Locates this build's declaration failures; never retained with it.
+diff --git a/packages/sdk/src/implementation/worker-source-map.ts b/packages/sdk/src/implementation/worker-source-map.ts
+index 711a2ec..f2ec4c6 100644
+--- a/packages/sdk/src/implementation/worker-source-map.ts
++++ b/packages/sdk/src/implementation/worker-source-map.ts
+@@ -7,7 +7,7 @@ import type { Plugin } from "esbuild";
+ import { Schema } from "effect";
+ import { DatabaseFieldReserved } from "apps/contracts";
+ import type { SourceFiles, SourceLocation } from "../contracts/version.ts";
+-import { boundBuildMessage, describeBuildCause, RuntimeBuildFailed } from "../contracts/runtime.ts";
++import { boundBuildMessage, describeBuildCause, RuntimeBuildFailed, FrameworkProvenanceRefused } from "../contracts/runtime.ts";
+ 
+ /** The bundler reads source from its `virtual:` namespace; report the authored path. */
+ const sourcePath = (file: string) => file.replace(/^virtual:/, "");
+@@ -81,6 +81,7 @@ export const declarationFailed = (
+   cause: unknown,
+   build: { readonly mainModule: string; readonly sourceMap: string; readonly files: SourceFiles },
+ ) => {
++  if (Schema.is(FrameworkProvenanceRefused)(cause)) return cause;
+   const described = describeBuildCause(cause);
+   let map: TraceMap | undefined;
+   let location: SourceLocation | undefined;
+diff --git a/packages/sdk/src/implementation/workerd-apps.ts b/packages/sdk/src/implementation/workerd-apps.ts
+index d7753f1..c8a4f6f 100644
+--- a/packages/sdk/src/implementation/workerd-apps.ts
++++ b/packages/sdk/src/implementation/workerd-apps.ts
+@@ -43,7 +43,7 @@ import {
+   type EvaluatedCommand,
+ } from "@executor-js/app-data/evaluated";
+ 
+-import { RuntimeBuildFailed, RuntimeProtocolFailed } from "../contracts/runtime.ts";
++import { RuntimeBuildFailed, RuntimeProtocolFailed, FrameworkProvenanceRefused } from "../contracts/runtime.ts";
+ import type { Executor } from "../contracts/executor.ts";
+ import type { DurableDeclarations } from "../contracts/declarations.ts";
+ import { runtimeAdapter } from "./runtime.ts";
+@@ -172,7 +172,7 @@ export const workerdApps = (options: {
+     readonly workflows: WorkflowRuntime;
+     readonly declarations: DurableDeclarations;
+   },
+-  RuntimeBuildFailed | WorkerdMigrationRequired | WorkflowFailure,
++  RuntimeBuildFailed | FrameworkProvenanceRefused | WorkerdMigrationRequired | WorkflowFailure,
+   Scope.Scope
+ > =>
+   Effect.gen(function* () {
+@@ -387,7 +387,7 @@ export const workerdApps = (options: {
+       const error = Cause.squash(cause);
+       if (Cause.hasInterrupts(cause)) return Effect.interrupt;
+       return Effect.fail(
+-        Schema.is(WorkerdMigrationRequired)(error) || Schema.is(RuntimeBuildFailed)(error)
++        Schema.is(WorkerdMigrationRequired)(error) || Schema.is(RuntimeBuildFailed)(error) || Schema.is(FrameworkProvenanceRefused)(error)
+           ? error
+           : engineFailure(),
+       );
+diff --git a/packages/sdk/src/implementation/workerd-client.ts b/packages/sdk/src/implementation/workerd-client.ts
+index 1c0a95e..22b885f 100644
+--- a/packages/sdk/src/implementation/workerd-client.ts
++++ b/packages/sdk/src/implementation/workerd-client.ts
+@@ -138,11 +138,7 @@ export const workerdHostHandler = (options: {
+                 },
+               }),
+             );
+-            return yield* Schema.encodeEffect(LoadedWorkerBuild)({
+-              mainModule: bundle.mainModule,
+-              modules: bundle.modules,
+-              protocol: bundle.protocol,
+-            });
++            return yield* Schema.encodeEffect(LoadedWorkerBuild)(bundle);
+           }
+           case "model": {
+             const context = yield* host.context(command.run);
+@@ -291,11 +287,7 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
+     const rpc = transport.rpc;
+     const runtime = yield* appRuntime({
+       name: "runtime.workerd",
+-      loadBuild: (build) =>
+-        loadWorkerBuild(build).pipe(
+-          provideBlobs,
+-          Effect.map(({ mainModule, modules, protocol }) => ({ mainModule, modules, protocol })),
+-        ),
++      loadBuild: (build) => loadWorkerBuild(build).pipe(provideBlobs),
+       invoke: (invocation, capabilities) =>
+         Effect.gen(function* () {
+           // A workflow body runs in the apps Worker's own workflow engine, never through a call.
+diff --git a/packages/sdk/src/implementation/workerd-entry.ts b/packages/sdk/src/implementation/workerd-entry.ts
+index 14d88ee..876089c 100644
+--- a/packages/sdk/src/implementation/workerd-entry.ts
++++ b/packages/sdk/src/implementation/workerd-entry.ts
+@@ -65,6 +65,7 @@ import {
+   RuntimeAppsDependencyMissing,
+   RuntimeBuildFailed,
+   RuntimeProtocolUnsupported,
++  FrameworkProvenanceRefused,
+ } from "../contracts/runtime.ts";
+ import {
+   decodeWorkflowFailure,
+@@ -341,6 +342,7 @@ class AppApi extends RpcTarget {
+             error:
+               Schema.is(RuntimeBuildFailed)(error) ||
+               Schema.is(RuntimeProtocolUnsupported)(error) ||
++              Schema.is(FrameworkProvenanceRefused)(error) ||
+               Schema.is(RuntimeAppsDependencyMissing)(error)
+                 ? error
+                 : buildFailed("compile", error),
+diff --git a/packages/sdk/src/workerd.ts b/packages/sdk/src/workerd.ts
+index 24a2177..30a352f 100644
+--- a/packages/sdk/src/workerd.ts
++++ b/packages/sdk/src/workerd.ts
+@@ -1,5 +1,7 @@
+ /** Portable workerd app compilation, protocol adapters, and immutable build storage. */
+ export * from "./contracts/worker-build.ts";
++export * from "./contracts/framework-provenance.ts";
++export { FrameworkProvenanceRegistry, frameworkProvenanceRegistry, admitFramework, admitLoadedFramework, selectFrameworkProtocol } from "./implementation/framework-provenance.ts";
+ export {
+   assembleWorkerBundle,
+   frameworkIdentity,
+diff --git a/scripts/check-app-protocols.ts b/scripts/check-app-protocols.ts
+index b048aee..9463913 100644
+--- a/scripts/check-app-protocols.ts
++++ b/scripts/check-app-protocols.ts
+@@ -37,6 +37,7 @@ import { releasedProtocols } from "../packages/apps/src/contracts/protocols/rele
+ import {
+   accountSiteAdaptations,
+   mcpEndpointProtocolAdaptations,
++  credentialHostProtocolAdaptations,
+   interactiveProtocolAdditions,
+   mcpAppsProtocolAdditions,
+   observationProtocolAdditions,
+@@ -593,6 +594,7 @@ const gates: Gates = {
+     ...accountSiteAdaptations,
+     ...interactiveProtocolAdaptations,
+     ...mcpEndpointProtocolAdaptations,
++    ...credentialHostProtocolAdaptations,
+   ],
+   additions: [
+     ...recordedGates.additions,
+diff --git a/packages/apps/protocols/13.json b/packages/apps/protocols/13.json
+index 3799ce3a47c27b9444f06f71b2c5ae3af5356ae9..557e4e97fc53128f161d6ef0b5af33e7771c24fb 100644
+GIT binary patch
+delta 117
+zcmdmWh;z+e&JBr=r#DD4%1myUr7*pKpV4cw!fo%(JWq8bFom}tkYN15I=w)GDQub^
+rquTTdrcB(E_kA?jK8ckvjSo{j&=_r=$p(Ln+ZmM@w=*g+S=s{tR)#7m
+
+delta 112
+zcmZ3pmvh%4&JBr=d9yR~Qk?Vi(lU#3Q&Toi{5_9xyQnauHqUeiLq?_P4Ni<E(;w_+
+mRGYr;JR|q?b<B(gn?*i)absxPEQTR8kFgzS63{fJ>D~bEkSovt
+
+diff --git a/packages/apps/protocols/42.json b/packages/apps/protocols/42.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..783950188bbde673abb323fce66558f41eee84ed
+GIT binary patch
+literal 194252
+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
+
+literal 0
+HcmV?d00001
+

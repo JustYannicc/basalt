@@ -1,4 +1,5 @@
 diff --git a/apps/hosted/testing/production-ops-provisioning-fixture.ts b/apps/hosted/testing/production-ops-provisioning-fixture.ts
+index 907de25..8a7cf5c 100644
 --- a/apps/hosted/testing/production-ops-provisioning-fixture.ts
 +++ b/apps/hosted/testing/production-ops-provisioning-fixture.ts
 @@ -1,4 +1,4 @@
@@ -7,7 +8,7 @@ diff --git a/apps/hosted/testing/production-ops-provisioning-fixture.ts b/apps/h
  import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
  import * as NodeServices from "@effect/platform-node/NodeServices";
  import { Client } from "pg";
-@@ -7,6 +7,7 @@
+@@ -7,6 +7,7 @@ import { LocalDatabaseUrl } from "../cloud/src/contracts/database.ts";
  
  class ProvisioningFixtureFailed extends Data.TaggedError("ProvisioningFixtureFailed") {}
  const Configuration = Schema.fromJsonString(Schema.Struct({ database: Schema.String }));
@@ -15,7 +16,7 @@ diff --git a/apps/hosted/testing/production-ops-provisioning-fixture.ts b/apps/h
  const Counts = Schema.Array(
    Schema.Struct({ pending: Schema.Number, failed: Schema.Number, completed: Schema.Number }),
  );
-@@ -76,19 +77,34 @@
+@@ -76,19 +77,34 @@ NodeRuntime.runMain(
                const seen = revision;
                const [counts] = Schema.decodeUnknownSync(Counts)(
                  (
@@ -55,10 +56,11 @@ diff --git a/apps/hosted/testing/production-ops-provisioning-fixture.ts b/apps/h
                );
                if (counts === undefined || counts.failed !== 0)
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+index bc86879..fdf69d5 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
-@@ -261,7 +261,9 @@
-       ).pipe(Effect.asVoid, Effect.orDie),
+@@ -267,7 +267,9 @@ export const startCloudEnvironment = (input: {
+       ),
      );
      const emulators = `${directory}/emulators.json`;
 -    yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(routesFixture)), { mode: 0o600 });
@@ -68,7 +70,7 @@ diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
      yield* Effect.addFinalizer(() => fs.remove(emulators).pipe(Effect.orDie));
      const analyticsPort = yield* startAnalyticsCollector(directory);
      // Every scenario of this Cloud exports to these collectors; see `serveShardedOtlpCollector`.
-@@ -745,6 +747,7 @@
+@@ -807,6 +809,7 @@ export const startCloudEnvironment = (input: {
          | "without-server"
          | "target"
          | "inspect-target"
@@ -76,7 +78,7 @@ diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
          | "release",
      ) =>
        Effect.gen(function* () {
-@@ -754,6 +757,10 @@
+@@ -816,6 +819,10 @@ export const startCloudEnvironment = (input: {
            databaseProxy === undefined
          )
            return yield* new CloudStartFailed({ operation: "Runtime binding control is disabled" });
@@ -88,9 +90,10 @@ diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
            if (next !== "original" && next !== prebootBinding)
              return yield* new CloudStartFailed({
 diff --git a/e2e/support/cloud-runtime-control.ts b/e2e/support/cloud-runtime-control.ts
+index 6cd46de..065187f 100644
 --- a/e2e/support/cloud-runtime-control.ts
 +++ b/e2e/support/cloud-runtime-control.ts
-@@ -24,6 +24,7 @@
+@@ -24,6 +24,7 @@ const Change = Schema.Struct({
      "without-server",
      "target",
      "inspect-target",
@@ -99,9 +102,10 @@ diff --git a/e2e/support/cloud-runtime-control.ts b/e2e/support/cloud-runtime-co
    ]),
  });
 diff --git a/e2e/support/production-ops-database-fixture.ts b/e2e/support/production-ops-database-fixture.ts
+index ae4d675..43d1878 100644
 --- a/e2e/support/production-ops-database-fixture.ts
 +++ b/e2e/support/production-ops-database-fixture.ts
-@@ -105,40 +105,49 @@
+@@ -105,40 +105,49 @@ export const productionOpsDatabaseFixture = (input: {
            ),
          );
        });
@@ -183,7 +187,7 @@ diff --git a/e2e/support/production-ops-database-fixture.ts b/e2e/support/produc
          // pg_dump and the baseline reads must observe the same account and receipt rows.
          // SHARE permits the dump's reads but blocks every writer until both states are captured.
          const commands = yield* Queue.unbounded<string, Cause.Done>();
-@@ -316,5 +325,5 @@
+@@ -316,5 +325,5 @@ export const productionOpsDatabaseFixture = (input: {
            )
          : Effect.succeed(0),
      );
@@ -191,9 +195,10 @@ diff --git a/e2e/support/production-ops-database-fixture.ts b/e2e/support/produc
 +    return { role, target, state, disconnected, provisioned: provisioning(true) };
    });
 diff --git a/e2e/support/production-ops-rows.ts b/e2e/support/production-ops-rows.ts
+index 73c4fcf..1a84698 100644
 --- a/e2e/support/production-ops-rows.ts
 +++ b/e2e/support/production-ops-rows.ts
-@@ -6,6 +6,7 @@
+@@ -6,6 +6,7 @@ import { Target } from "./platform.ts";
  import { cloudLocks } from "./cloud-locks.ts";
  import { productionOpsAccount } from "./production-ops-account.ts";
  import { FixtureActors, fixtureRequest } from "../sdk/fixtures.ts";
@@ -201,7 +206,7 @@ diff --git a/e2e/support/production-ops-rows.ts b/e2e/support/production-ops-row
  
  /** All direct rows are synthetic and confined to the managed Cloud's disposable database. */
  export const productionOpsRows = Effect.gen(function* () {
-@@ -23,6 +24,12 @@
+@@ -23,6 +24,12 @@ export const productionOpsRows = Effect.gen(function* () {
      label: "Operations foreign organization",
    }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(FixtureActors)));
    const original = yield* productionOpsAccount(actors.owner, actors.organization.id);

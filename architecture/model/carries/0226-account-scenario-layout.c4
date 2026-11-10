@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Account proofs select shared row, name, health and detail contracts instead of obsolete cell layouts. Cases using unrelated services declare distinct providers so identity grouping cannot merge their fixtures. Individual failed checks remain visible in Details even when another consumer has a current healthy result."
+    }
+  }
+}

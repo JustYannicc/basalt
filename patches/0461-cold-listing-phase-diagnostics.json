@@ -1,7 +1,7 @@
 {
   "identity": "basalt-cold-listing-phase-diagnostics",
   "file": "0461-cold-listing-phase-diagnostics.patch",
-  "content_sha256": "25770525e721793d6d1671dd113269f8e9e5d623609a80c27e314ef7617c2bc6",
+  "content_sha256": "a025e290fc89f3f86d3f22ba8ed737ac92451b3fb13d13990dd95cc6438824d4",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

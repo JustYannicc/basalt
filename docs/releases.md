@@ -47,6 +47,8 @@ Each carried patch is applied against the one pinned upstream source. Pure upstr
 
 - `0035-dashboard-batch-authentication.patch`: retained unchanged in the old-pin rollback prelude and retired only for the v2 cutover. Upstream covers request-local batch identity and revocation checks; exact-prefix source equivalence passed. Original patch and sidecar bytes and SHA-256 digests are archived. Final runtime batch scenarios remain a gate; restore the carry if equivalence or runtime behavior differs.
 
+- `0050-app-page-files.patch`: the old-pin rollback baseline retains its original pair. The v2 pin already supplies its complete app-file serving behavior, so the cutover retires the carry after exact-prefix source equivalence. Retained assets, embedded screens and reload recovery remain runtime gates; restore the archived pair if behavior differs.
+
 ## Release updates
 
 The release workflow checks the tools service's v2 releases and the Home and node releases separately. Each candidate has one stable update branch and pull request. Repeated checks reuse that PR and refresh it against current `main`. The pins stay immutable; the pool image downloads and verifies released binaries without modifying them.

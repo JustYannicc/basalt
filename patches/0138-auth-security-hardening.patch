@@ -1,350 +1,65 @@
-diff --git a/package.json b/package.json
-index 3fe21ca0..a4c2a35e 100644
---- a/package.json
-+++ b/package.json
-@@ -43,6 +43,7 @@
-     "hosted:docker": "bun run with:self-host env BETTER_AUTH_URL=http://localhost:4400 EXECUTOR_BUILD_VERSION=$(git rev-parse HEAD) docker compose -f apps/hosted/self-host/compose.yaml up --build -d",
-     "hosted:docker:down": "bun run with:self-host docker compose -f apps/hosted/self-host/compose.yaml down",
-     "typecheck": "node scripts/typecheck.ts",
-+    "auth:security": "node apps/hosted/server/scripts/check-better-auth-security.mjs",
-     "web:build": "bun run --cwd apps/local/web build",
-     "web:dev": "bun run dev",
-     "executor": "bun run apps:build && bun run telemetry:build && node --import ./scripts/local-dev.ts apps/local/server/src/bin.ts",
-@@ -171,6 +172,7 @@
-     "effect": "4.0.1"
-   },
-   "patchedDependencies": {
-+    "@better-auth/core@1.7.5": "patches/@better-auth%2Fcore@1.7.5.patch",
-     "@cfworker/json-schema@4.1.1": "patches/@cfworker%2Fjson-schema@4.1.1.patch",
-     "@better-auth/oauth-provider@1.7.5": "patches/@better-auth%2Foauth-provider@1.7.5.patch",
-     "@cloudflare/worker-bundler@0.2.4": "patches/@cloudflare%2Fworker-bundler@0.2.4.patch",
-diff --git a/bun.lock b/bun.lock
-index dfe9d5ef..a54c89bc 100644
---- a/bun.lock
-+++ b/bun.lock
-@@ -860,6 +860,7 @@
-     "@swagger-api/apidom-ns-openapi-3-1@1.11.6": "patches/@swagger-api%2Fapidom-ns-openapi-3-1@1.11.6.patch",
-     "@electric-sql/pglite@0.5.8": "patches/@electric-sql%2Fpglite@0.5.8.patch",
-     "better-auth@1.7.5": "patches/better-auth@1.7.5.patch",
-+    "@better-auth/core@1.7.5": "patches/@better-auth%2Fcore@1.7.5.patch",
-     "tree-sitter@0.22.4": "patches/tree-sitter@0.22.4.patch",
-     "@cloudflare/worker-bundler@0.2.4": "patches/@cloudflare%2Fworker-bundler@0.2.4.patch",
-     "@effect/sql-pg@4.0.1": "patches/@effect%2Fsql-pg@4.0.1.patch",
-diff --git a/patches/better-auth@1.7.5.patch b/patches/better-auth@1.7.5.patch
-index d4fc6cc9..68086a4e 100644
---- a/patches/better-auth@1.7.5.patch
-+++ b/patches/better-auth@1.7.5.patch
-@@ -127,3 +127,94 @@ index f0e2b9c..5229800 100644
-  		if (field?.required === false) schema = schema.nullish();
-  		if (!isClientSide && field?.returned === false) return acc;
-  		return {
-+diff --git a/dist/plugins/admin/admin.d.mts b/dist/plugins/admin/admin.d.mts
-+index 03e33f2..7f69af7 100644
-+--- a/dist/plugins/admin/admin.d.mts
-++++ b/dist/plugins/admin/admin.d.mts
-+@@ -868,6 +868,7 @@ declare const admin: <O extends AdminOptions>(options?: O | undefined) => {
-+     INVALID_ROLE_TYPE: _$_better_auth_core_utils_error_codes0.RawError<"INVALID_ROLE_TYPE">;
-+     YOU_ARE_NOT_ALLOWED_TO_SET_USERS_EMAIL: _$_better_auth_core_utils_error_codes0.RawError<"YOU_ARE_NOT_ALLOWED_TO_SET_USERS_EMAIL">;
-+     PASSWORD_CANNOT_BE_UPDATED_VIA_UPDATE_USER: _$_better_auth_core_utils_error_codes0.RawError<"PASSWORD_CANNOT_BE_UPDATED_VIA_UPDATE_USER">;
-++    USER_ID_CANNOT_BE_UPDATED: _$_better_auth_core_utils_error_codes0.RawError<"USER_ID_CANNOT_BE_UPDATED">;
-+   };
-+   schema: {
-+     user: {
-+diff --git a/dist/plugins/admin/admin.mjs b/dist/plugins/admin/admin.mjs
-+index b27646d..49ad91a 100644
-+--- a/dist/plugins/admin/admin.mjs
-++++ b/dist/plugins/admin/admin.mjs
-+@@ -22,7 +22,7 @@ const admin = (options) => {
-+ 	return {
-+ 		id: "admin",
-+ 		version: PACKAGE_VERSION,
-+-		init() {
-++		init(authContext) {
-+ 			return { options: { databaseHooks: {
-+ 				user: { create: { async before(user) {
-+ 					return { data: {
-+@@ -31,11 +31,11 @@ const admin = (options) => {
-+ 					} };
-+ 				} } },
-+ 				session: { create: { async before(session, ctx) {
-+-					if (!ctx) return;
-+-					const user = await ctx.context.internalAdapter.findUserById(session.userId);
-++					const internalAdapter = ctx?.context.internalAdapter ?? authContext.internalAdapter;
-++					const user = await internalAdapter.findUserById(session.userId);
-+ 					if (user?.banned) {
-+ 						if (user.banExpires && new Date(user.banExpires).getTime() < Date.now()) {
-+-							await ctx.context.internalAdapter.updateUser(session.userId, {
-++							await internalAdapter.updateUser(session.userId, {
-+ 								banned: false,
-+ 								banReason: null,
-+ 								banExpires: null
-+diff --git a/dist/plugins/admin/client.d.mts b/dist/plugins/admin/client.d.mts
-+index 921bb02..c0b1eb9 100644
-+--- a/dist/plugins/admin/client.d.mts
-++++ b/dist/plugins/admin/client.d.mts
-+@@ -75,6 +75,7 @@ declare const adminClient: <O extends AdminClientOptions>(options?: O | undefine
-+     INVALID_ROLE_TYPE: _$_better_auth_core_utils_error_codes0.RawError<"INVALID_ROLE_TYPE">;
-+     YOU_ARE_NOT_ALLOWED_TO_SET_USERS_EMAIL: _$_better_auth_core_utils_error_codes0.RawError<"YOU_ARE_NOT_ALLOWED_TO_SET_USERS_EMAIL">;
-+     PASSWORD_CANNOT_BE_UPDATED_VIA_UPDATE_USER: _$_better_auth_core_utils_error_codes0.RawError<"PASSWORD_CANNOT_BE_UPDATED_VIA_UPDATE_USER">;
-++    USER_ID_CANNOT_BE_UPDATED: _$_better_auth_core_utils_error_codes0.RawError<"USER_ID_CANNOT_BE_UPDATED">;
-+   };
-+ };
-+ //#endregion
-+diff --git a/dist/plugins/admin/error-codes.d.mts b/dist/plugins/admin/error-codes.d.mts
-+index 0906710..18b1d9c 100644
-+--- a/dist/plugins/admin/error-codes.d.mts
-++++ b/dist/plugins/admin/error-codes.d.mts
-+@@ -25,6 +25,7 @@ declare const ADMIN_ERROR_CODES: {
-+   INVALID_ROLE_TYPE: _$_better_auth_core_utils_error_codes0.RawError<"INVALID_ROLE_TYPE">;
-+   YOU_ARE_NOT_ALLOWED_TO_SET_USERS_EMAIL: _$_better_auth_core_utils_error_codes0.RawError<"YOU_ARE_NOT_ALLOWED_TO_SET_USERS_EMAIL">;
-+   PASSWORD_CANNOT_BE_UPDATED_VIA_UPDATE_USER: _$_better_auth_core_utils_error_codes0.RawError<"PASSWORD_CANNOT_BE_UPDATED_VIA_UPDATE_USER">;
-++  USER_ID_CANNOT_BE_UPDATED: _$_better_auth_core_utils_error_codes0.RawError<"USER_ID_CANNOT_BE_UPDATED">;
-+ };
-+ //#endregion
-+ export { ADMIN_ERROR_CODES };
-+\ No newline at end of file
-+diff --git a/dist/plugins/admin/error-codes.mjs b/dist/plugins/admin/error-codes.mjs
-+index 6f2639d..6f55147 100644
-+--- a/dist/plugins/admin/error-codes.mjs
-++++ b/dist/plugins/admin/error-codes.mjs
-+@@ -23,7 +23,8 @@ const ADMIN_ERROR_CODES = defineErrorCodes({
-+ 	YOU_CANNOT_IMPERSONATE_ADMINS: "You cannot impersonate admins",
-+ 	INVALID_ROLE_TYPE: "Invalid role type",
-+ 	YOU_ARE_NOT_ALLOWED_TO_SET_USERS_EMAIL: "You are not allowed to update users email",
-+-	PASSWORD_CANNOT_BE_UPDATED_VIA_UPDATE_USER: "Password cannot be updated through update-user. Use the set-user-password endpoint instead"
-++	PASSWORD_CANNOT_BE_UPDATED_VIA_UPDATE_USER: "Password cannot be updated through update-user. Use the set-user-password endpoint instead",
-++	USER_ID_CANNOT_BE_UPDATED: "User id cannot be updated"
-+ });
-+ //#endregion
-+ export { ADMIN_ERROR_CODES };
-+diff --git a/dist/plugins/admin/routes.mjs b/dist/plugins/admin/routes.mjs
-+index 126a99b..eb4859b 100644
-+--- a/dist/plugins/admin/routes.mjs
-++++ b/dist/plugins/admin/routes.mjs
-+@@ -255,6 +255,7 @@ const adminUpdateUser = (opts) => createAuthEndpoint("/admin/update-user", {
-+ 	const updateData = ctx.body.data;
-+ 	const hasDataKey = (key) => Object.prototype.hasOwnProperty.call(updateData, key);
-+ 	if (hasDataKey("password")) throw APIError.from("BAD_REQUEST", ADMIN_ERROR_CODES.PASSWORD_CANNOT_BE_UPDATED_VIA_UPDATE_USER);
-++	if (hasDataKey("id")) throw APIError.from("BAD_REQUEST", ADMIN_ERROR_CODES.USER_ID_CANNOT_BE_UPDATED);
-+ 	if (Object.prototype.hasOwnProperty.call(ctx.body.data, "role")) {
-+ 		if (!hasPermission({
-+ 			userId: ctx.context.session.user.id,
-diff --git a/patches/@better-auth%2Fcore@1.7.5.patch b/patches/@better-auth%2Fcore@1.7.5.patch
-new file mode 100644
-index 00000000..fe861273
---- /dev/null
-+++ b/patches/@better-auth%2Fcore@1.7.5.patch
-@@ -0,0 +1,179 @@
-+diff --git a/dist/social-providers/apple.mjs b/dist/social-providers/apple.mjs
-+index 9f4c8e610bc1806b67f82a44800e259116588161..b3dea9e8bc39b334995b36caa47b280f46fd90f8 100644
-+--- a/dist/social-providers/apple.mjs
-++++ b/dist/social-providers/apple.mjs
-+@@ -4,8 +4,8 @@ import { getPrimaryClientId } from "../oauth2/utils.mjs";
-+ import { createAuthorizationURL } from "../oauth2/create-authorization-url.mjs";
-+ import { refreshAccessToken } from "../oauth2/refresh-access-token.mjs";
-+ import { validateAuthorizationCode } from "../oauth2/validate-authorization-code.mjs";
-++import { fetchRefusingRedirects } from "../oauth2/reject-redirects.mjs";
-+ import { decodeJwt, importJWK } from "jose";
-+-import { betterFetch } from "@better-fetch/fetch";
-+ //#region src/social-providers/apple.ts
-+ const apple = (options) => {
-+ 	const tokenEndpoint = "https://appleid.apple.com/auth/token";
-+@@ -85,7 +85,7 @@ const apple = (options) => {
-+ 	};
-+ };
-+ const getApplePublicKey = async (kid) => {
-+-	const { data } = await betterFetch(`https://appleid.apple.com/auth/keys`);
-++	const { data } = await fetchRefusingRedirects(`https://appleid.apple.com/auth/keys`);
-+ 	if (!data?.keys) throw new APIError("BAD_REQUEST", { message: "Keys not found" });
-+ 	const jwk = data.keys.find((key) => key.kid === kid);
-+ 	if (!jwk) throw new Error(`JWK with kid ${kid} not found`);
-+diff --git a/dist/social-providers/cognito.mjs b/dist/social-providers/cognito.mjs
-+index 5b5c070b048408d8eec7f543e322f0f41c8d88df..9404e2635278b2be2755b7ea0ac346a5417864d2 100644
-+--- a/dist/social-providers/cognito.mjs
-++++ b/dist/social-providers/cognito.mjs
-+@@ -4,6 +4,7 @@ import { getPrimaryClientId } from "../oauth2/utils.mjs";
-+ import { createAuthorizationURL } from "../oauth2/create-authorization-url.mjs";
-+ import { refreshAccessToken } from "../oauth2/refresh-access-token.mjs";
-+ import { validateAuthorizationCode } from "../oauth2/validate-authorization-code.mjs";
-++import { fetchRefusingRedirects } from "../oauth2/reject-redirects.mjs";
-+ import { decodeJwt, importJWK } from "jose";
-+ import { betterFetch } from "@better-fetch/fetch";
-+ //#region src/social-providers/cognito.ts
-+@@ -136,7 +137,7 @@ const cognito = (options) => {
-+ const getCognitoPublicKey = async (kid, region, userPoolId) => {
-+ 	const COGNITO_JWKS_URI = `https://cognito-idp.${region}.amazonaws.com/${userPoolId}/.well-known/jwks.json`;
-+ 	try {
-+-		const { data } = await betterFetch(COGNITO_JWKS_URI);
-++		const { data } = await fetchRefusingRedirects(COGNITO_JWKS_URI);
-+ 		if (!data?.keys) throw new APIError("BAD_REQUEST", { message: "Keys not found" });
-+ 		const jwk = data.keys.find((key) => key.kid === kid);
-+ 		if (!jwk) throw new Error(`JWK with kid ${kid} not found`);
-+diff --git a/dist/social-providers/facebook.mjs b/dist/social-providers/facebook.mjs
-+index cba8ca1b45f3811189bf130b1f12de4346381947..a71363cbe28cc5d1465609d66cd49a3cef7cfca9 100644
-+--- a/dist/social-providers/facebook.mjs
-++++ b/dist/social-providers/facebook.mjs
-+@@ -4,6 +4,7 @@ import { getPrimaryClientId } from "../oauth2/utils.mjs";
-+ import { createAuthorizationURL } from "../oauth2/create-authorization-url.mjs";
-+ import { refreshAccessToken } from "../oauth2/refresh-access-token.mjs";
-+ import { validateAuthorizationCode } from "../oauth2/validate-authorization-code.mjs";
-++import { fetchRefusingRedirects } from "../oauth2/reject-redirects.mjs";
-+ import { createRemoteJWKSet, decodeJwt } from "jose";
-+ import { betterFetch } from "@better-fetch/fetch";
-+ //#region src/social-providers/facebook.ts
-+@@ -26,7 +27,7 @@ async function verifyFacebookAccessToken(accessToken, options) {
-+ 	const primaryClientId = getPrimaryClientId(options.clientId);
-+ 	if (!primaryClientId || !options.clientSecret) return null;
-+ 	const clientIds = Array.isArray(options.clientId) ? options.clientId : [options.clientId];
-+-	const { data, error } = await betterFetch("https://graph.facebook.com/debug_token", { query: {
-++	const { data, error } = await fetchRefusingRedirects("https://graph.facebook.com/debug_token", { query: {
-+ 		input_token: accessToken,
-+ 		access_token: `${primaryClientId}|${options.clientSecret}`
-+ 	} });
-+diff --git a/dist/social-providers/github.mjs b/dist/social-providers/github.mjs
-+index b65f4eb43c9eb3dc3737eff381a222d747cedf7e..c20b904036530f7863d66a872962c125ce2d1beb 100644
-+--- a/dist/social-providers/github.mjs
-++++ b/dist/social-providers/github.mjs
-+@@ -3,6 +3,7 @@ import { getOAuth2Tokens } from "../oauth2/utils.mjs";
-+ import { createAuthorizationURL } from "../oauth2/create-authorization-url.mjs";
-+ import { refreshAccessToken } from "../oauth2/refresh-access-token.mjs";
-+ import { authorizationCodeRequest } from "../oauth2/validate-authorization-code.mjs";
-++import { fetchRefusingRedirects } from "../oauth2/reject-redirects.mjs";
-+ import { betterFetch } from "@better-fetch/fetch";
-+ //#region src/social-providers/github.ts
-+ const github = (options) => {
-+@@ -35,7 +36,7 @@ const github = (options) => {
-+ 				redirectURI,
-+ 				options
-+ 			});
-+-			const { data, error } = await betterFetch(tokenEndpoint, {
-++			const { data, error } = await fetchRefusingRedirects(tokenEndpoint, {
-+ 				method: "POST",
-+ 				body,
-+ 				headers: requestHeaders
-+diff --git a/dist/social-providers/google.mjs b/dist/social-providers/google.mjs
-+index 0c40ed6650cbd93bdfd5e2d8292e3a26b61e636b..687b1dcdefcac4eef899099c1b592ca532be6bb3 100644
-+--- a/dist/social-providers/google.mjs
-++++ b/dist/social-providers/google.mjs
-+@@ -4,8 +4,8 @@ import { getPrimaryClientId } from "../oauth2/utils.mjs";
-+ import { createAuthorizationURL } from "../oauth2/create-authorization-url.mjs";
-+ import { refreshAccessToken } from "../oauth2/refresh-access-token.mjs";
-+ import { validateAuthorizationCode } from "../oauth2/validate-authorization-code.mjs";
-++import { fetchRefusingRedirects } from "../oauth2/reject-redirects.mjs";
-+ import { decodeJwt, decodeProtectedHeader, importJWK, jwtVerify } from "jose";
-+-import { betterFetch } from "@better-fetch/fetch";
-+ //#region src/social-providers/google.ts
-+ const GOOGLE_ID_TOKEN_MAX_AGE = "1h";
-+ const GOOGLE_ID_TOKEN_ALGORITHM = "RS256";
-+@@ -142,7 +142,7 @@ const getGooglePublicKey = async (kid) => {
-+ 	return publicKey;
-+ };
-+ const getGooglePublicKeys = async (kid) => {
-+-	const { data } = await betterFetch("https://www.googleapis.com/oauth2/v3/certs");
-++	const { data } = await fetchRefusingRedirects("https://www.googleapis.com/oauth2/v3/certs");
-+ 	if (!data?.keys) throw new APIError("BAD_REQUEST", { message: "Keys not found" });
-+ 	const jwks = kid ? data.keys.filter((key) => key.kid === kid) : data.keys;
-+ 	if (!jwks.length) throw new Error(`JWK with kid ${kid} not found`);
-+diff --git a/dist/social-providers/line.mjs b/dist/social-providers/line.mjs
-+index 031dcecaab32a7fa3897c733811f08e0dfa4db91..fee623c638ee4f18bcc367262f16e9d97d95b89c 100644
-+--- a/dist/social-providers/line.mjs
-++++ b/dist/social-providers/line.mjs
-+@@ -1,6 +1,7 @@
-+ import { createAuthorizationURL } from "../oauth2/create-authorization-url.mjs";
-+ import { refreshAccessToken } from "../oauth2/refresh-access-token.mjs";
-+ import { validateAuthorizationCode } from "../oauth2/validate-authorization-code.mjs";
-++import { fetchRefusingRedirects } from "../oauth2/reject-redirects.mjs";
-+ import { decodeJwt } from "jose";
-+ import { betterFetch } from "@better-fetch/fetch";
-+ //#region src/social-providers/line.ts
-+@@ -66,7 +67,7 @@ const line = (options) => {
-+ 			body.set("id_token", token);
-+ 			body.set("client_id", options.clientId);
-+ 			if (nonce) body.set("nonce", nonce);
-+-			const { data, error } = await betterFetch(verifyIdTokenEndpoint, {
-++			const { data, error } = await fetchRefusingRedirects(verifyIdTokenEndpoint, {
-+ 				method: "POST",
-+ 				headers: { "content-type": "application/x-www-form-urlencoded" },
-+ 				body
-+diff --git a/dist/social-providers/microsoft-entra-id.mjs b/dist/social-providers/microsoft-entra-id.mjs
-+index 67a197c8967d9922b5c34a70c2c0ea59b067b7aa..a4557936b6b8dfb9e4e73f1f3f40a8b269e9b2c9 100644
-+--- a/dist/social-providers/microsoft-entra-id.mjs
-++++ b/dist/social-providers/microsoft-entra-id.mjs
-+@@ -4,6 +4,7 @@ import { getPrimaryClientId } from "../oauth2/utils.mjs";
-+ import { createAuthorizationURL } from "../oauth2/create-authorization-url.mjs";
-+ import { refreshAccessToken } from "../oauth2/refresh-access-token.mjs";
-+ import { validateAuthorizationCode } from "../oauth2/validate-authorization-code.mjs";
-++import { fetchRefusingRedirects } from "../oauth2/reject-redirects.mjs";
-+ import { base64 } from "@better-auth/utils/base64";
-+ import { decodeJwt, importJWK } from "jose";
-+ import { betterFetch } from "@better-fetch/fetch";
-+@@ -152,7 +153,7 @@ const microsoft = (options) => {
-+ 	};
-+ };
-+ const getMicrosoftPublicKey = async (kid, tenant, authority) => {
-+-	const { data } = await betterFetch(`${authority}/${tenant}/discovery/v2.0/keys`);
-++	const { data } = await fetchRefusingRedirects(`${authority}/${tenant}/discovery/v2.0/keys`);
-+ 	if (!data?.keys) throw new APIError("BAD_REQUEST", { message: "Keys not found" });
-+ 	const jwk = data.keys.find((key) => key.kid === kid);
-+ 	if (!jwk) throw new Error(`JWK with kid ${kid} not found`);
-+diff --git a/dist/social-providers/wechat.mjs b/dist/social-providers/wechat.mjs
-+index 78b99de5cb5d2d5dc8c183c7b38a00fce2af0d14..f13bc2cc095dc5648319c16bee7b1de01fbc9b60 100644
-+--- a/dist/social-providers/wechat.mjs
-++++ b/dist/social-providers/wechat.mjs
-+@@ -1,4 +1,5 @@
-+ import { RESERVED_AUTHORIZATION_PARAMS_SET } from "../oauth2/create-authorization-url.mjs";
-++import { fetchRefusingRedirects } from "../oauth2/reject-redirects.mjs";
-+ import { createPlaceholderEmail } from "../utils/email.mjs";
-+ import { betterFetch } from "@better-fetch/fetch";
-+ //#region src/social-providers/wechat.ts
-+@@ -27,7 +28,7 @@ const wechat = (options) => {
-+ 			return url;
-+ 		},
-+ 		validateAuthorizationCode: async ({ code }) => {
-+-			const { data: tokenData, error } = await betterFetch("https://api.weixin.qq.com/sns/oauth2/access_token?" + new URLSearchParams({
-++			const { data: tokenData, error } = await fetchRefusingRedirects("https://api.weixin.qq.com/sns/oauth2/access_token?" + new URLSearchParams({
-+ 				appid: options.clientId,
-+ 				secret: options.clientSecret,
-+ 				code,
-+@@ -45,7 +46,7 @@ const wechat = (options) => {
-+ 			};
-+ 		},
-+ 		refreshAccessToken: options.refreshAccessToken ? options.refreshAccessToken : async (refreshToken) => {
-+-			const { data: tokenData, error } = await betterFetch("https://api.weixin.qq.com/sns/oauth2/refresh_token?" + new URLSearchParams({
-++			const { data: tokenData, error } = await fetchRefusingRedirects("https://api.weixin.qq.com/sns/oauth2/refresh_token?" + new URLSearchParams({
-+ 				appid: options.clientId,
-+ 				grant_type: "refresh_token",
-+ 				refresh_token: refreshToken
 diff --git a/apps/hosted/server/scripts/check-better-auth-security.mjs b/apps/hosted/server/scripts/check-better-auth-security.mjs
-new file mode 100644
-index 00000000..2c252489
---- /dev/null
+index d0c5bfe..2c25248 100644
+--- a/apps/hosted/server/scripts/check-better-auth-security.mjs
 +++ b/apps/hosted/server/scripts/check-better-auth-security.mjs
-@@ -0,0 +1,173 @@
+@@ -1,3 +1,4 @@
 +// Adapted from upstream 225d9b81. Each case can run against an unpatched dependency control.
-+import assert from "node:assert/strict";
-+import { DatabaseSync } from "node:sqlite";
-+import { betterAuth } from "better-auth";
-+import { applySetCookies, splitSetCookieHeader } from "better-auth/cookies";
-+import { getMigrations } from "better-auth/db/migration";
-+import { admin } from "better-auth/plugins/admin";
-+import { getGooglePublicKey, github } from "better-auth/social-providers";
-+
-+const redirectedJwk = {
-+  kty: "RSA",
-+  n: "z1SP_mnWgCxTAEptaVgsCGCfjPCV0nOHu5iqmLtANbVQJlcl-XgGKSyoPcBFn6IJ4Q8nGBhrWhugYqnl3ZhffW8YtAJb-XgZqfLNVrRDcMjV7tlEP5QcGxKlqjGatvSntg_6iXMNG59_GVEZVN3RVMblqp0Btzxp3Kwaz8mvC8aS8KoaUFJ1sp8rscQOVO2XuCDud39wlLQ8ommqXF3YV6k8EkwWFVkrV956tsRlI0i_u7mFPIjlGLpIPzGApYyNxJz-Zeeki3Jwod6dDcDq6enFUZ_e7sSF3y_a14Ai6ED3i14TzMgXrX_Uq-_Bzr1R8IakIO30CLsDo5lV_6BCFw",
-+  e: "AQAB",
-+  alg: "RS256",
+ import assert from "node:assert/strict";
+ import { DatabaseSync } from "node:sqlite";
+ import { betterAuth } from "better-auth";
+@@ -11,166 +12,162 @@ const redirectedJwk = {
+   n: "z1SP_mnWgCxTAEptaVgsCGCfjPCV0nOHu5iqmLtANbVQJlcl-XgGKSyoPcBFn6IJ4Q8nGBhrWhugYqnl3ZhffW8YtAJb-XgZqfLNVrRDcMjV7tlEP5QcGxKlqjGatvSntg_6iXMNG59_GVEZVN3RVMblqp0Btzxp3Kwaz8mvC8aS8KoaUFJ1sp8rscQOVO2XuCDud39wlLQ8ommqXF3YV6k8EkwWFVkrV956tsRlI0i_u7mFPIjlGLpIPzGApYyNxJz-Zeeki3Jwod6dDcDq6enFUZ_e7sSF3y_a14Ai6ED3i14TzMgXrX_Uq-_Bzr1R8IakIO30CLsDo5lV_6BCFw",
+   e: "AQAB",
+   alg: "RS256",
+-  kid: "redirected-key",
 +  kid: "security-control-key",
-+};
-+
+ };
+ 
+-const redirect = () =>
+-  new Response(null, {
+-    status: 307,
+-    headers: { location: "https://redirect-target.invalid/collect" },
+-  });
+-
+-const opaqueRedirect = () => {
+-  const response = new Response(null);
+-  Object.defineProperties(response, {
+-    ok: { value: false },
+-    status: { value: 0 },
+-    type: { value: "opaqueredirect" },
 +const provider = github({ clientId: "synthetic-client", clientSecret: "synthetic-secret" });
 +const exchange = () =>
 +  provider.validateAuthorizationCode({
 +    code: "synthetic-code",
 +    codeVerifier: "synthetic-verifier",
 +    redirectURI: "https://executor.example/api/auth/callback/github",
-+  });
-+
+   });
+-  return response;
+-};
+ 
+-const provider = github({ clientId: "synthetic-client", clientSecret: "synthetic-secret" });
+-const originalFetch = globalThis.fetch;
+-const followed = [];
+-globalThis.fetch = async (input, init) => {
+-  const url = input instanceof Request ? input.url : String(input);
+-  assert.equal(init?.redirect, "manual");
+-  if (init.redirect === "manual") return redirect();
+-  followed.push(url);
+-  return Response.json({ access_token: "redirected-access", token_type: "bearer" });
+-};
+-try {
+-  await assert.rejects(
+-    provider.validateAuthorizationCode({
+-      code: "synthetic-code",
+-      codeVerifier: "synthetic-verifier",
+-      redirectURI: "https://executor.example/api/auth/callback/github",
+-    }),
+-    /returned an HTTP redirect/u,
+-  );
+-  await assert.rejects(getGooglePublicKey(redirectedJwk.kid), /returned an HTTP redirect/u);
+-  assert.deepEqual(followed, []);
+-} finally {
+-  globalThis.fetch = originalFetch;
 +/** Replace the remote provider, never the dependency code that must refuse its redirect. */
 +async function withFetch(fetch, run) {
 +  const original = globalThis.fetch;
@@ -354,8 +69,20 @@ index 00000000..2c252489
 +  } finally {
 +    globalThis.fetch = original;
 +  }
-+}
-+
+ }
+ 
+-globalThis.fetch = async () => opaqueRedirect();
+-try {
+-  await assert.rejects(
+-    provider.validateAuthorizationCode({
+-      code: "synthetic-code",
+-      codeVerifier: "synthetic-verifier",
+-      redirectURI: "https://executor.example/api/auth/callback/github",
+-    }),
+-    /returned an HTTP redirect/u,
+-  );
+-} finally {
+-  globalThis.fetch = originalFetch;
 +async function redirects(operation, directBody) {
 +  for (const status of [301, 302, 303, 307, 308, "opaque"]) {
 +    const requests = [];
@@ -385,8 +112,15 @@ index 00000000..2c252489
 +      },
 +    );
 +  }
-+}
-+
+ }
+ 
+-const fetched = [];
+-globalThis.fetch = async (input, init) => {
+-  assert.equal(init?.redirect, "manual");
+-  const url = input instanceof Request ? input.url : String(input);
+-  fetched.push(url);
+-  if (url === "https://github.com/login/oauth/access_token") {
+-    return Response.json({ access_token: "direct-access", token_type: "bearer" });
 +async function authFixture(run) {
 +  const database = new DatabaseSync(":memory:");
 +  try {
@@ -421,9 +155,38 @@ index 00000000..2c252489
 +    await run({ auth, context, headers, target });
 +  } finally {
 +    database.close();
-+  }
-+}
-+
+   }
+-  assert.equal(url, "https://www.googleapis.com/oauth2/v3/certs");
+-  return Response.json({ keys: [redirectedJwk] });
+-};
+-try {
+-  assert.equal(
+-    (
+-      await provider.validateAuthorizationCode({
+-        code: "synthetic-code",
+-        codeVerifier: "synthetic-verifier",
+-        redirectURI: "https://executor.example/api/auth/callback/github",
+-      })
+-    ).accessToken,
+-    "direct-access",
+-  );
+-  assert.ok(await getGooglePublicKey(redirectedJwk.kid));
+-  assert.deepEqual(fetched, [
+-    "https://github.com/login/oauth/access_token",
+-    "https://www.googleapis.com/oauth2/v3/certs",
+-  ]);
+-} finally {
+-  globalThis.fetch = originalFetch;
+ }
+ 
+-const database = new DatabaseSync(":memory:");
+-const authOptions = {
+-  baseURL: "http://localhost:3000",
+-  database,
+-  emailAndPassword: { enabled: true },
+-  plugins: [admin()],
+-  rateLimit: { enabled: false },
+-  secret: "synthetic-secret-that-is-long-enough-for-better-auth",
 +const cases = {
 +  "social-token-redirect": () =>
 +    redirects(exchange, { access_token: "redirected-access", token_type: "bearer" }),
@@ -485,11 +248,95 @@ index 00000000..2c252489
 +        assert.ok(await getGooglePublicKey(redirectedJwk.kid));
 +      },
 +    ),
-+};
-+
+ };
+-await (await getMigrations(authOptions)).runMigrations();
+-const auth = betterAuth(authOptions);
+-await auth.api.signUpEmail({
+-  body: {
+-    email: "admin@example.test",
+-    name: "Admin",
+-    password: "synthetic-password",
+-  },
+-});
+-const context = await auth.$context;
+-const adminUser = (await context.internalAdapter.findUserByEmail("admin@example.test"))?.user;
+-assert.ok(adminUser);
+-await context.internalAdapter.updateUser(adminUser.id, { role: "admin" });
+-const signedIn = await auth.api.signInEmail({
+-  body: { email: "admin@example.test", password: "synthetic-password" },
+-  returnHeaders: true,
+-});
+-const headers = new Headers();
+-applySetCookies(headers, splitSetCookieHeader(signedIn.headers.get("set-cookie") ?? ""));
+-
+-const target = await context.internalAdapter.createUser(
+-  {
+-    email: "security-control@example.test",
+-    emailVerified: false,
+-    name: "Security Control",
+-  },
+-  { method: "admin" },
+-);
+-await assert.rejects(
+-  auth.api.adminUpdateUser({
+-    body: { userId: target.id, data: { id: "replacement-user-id" } },
+-    headers,
+-  }),
+-  (error) => error?.body?.code === "USER_ID_CANNOT_BE_UPDATED",
+-);
+-assert.ok(await context.internalAdapter.findUserById(target.id));
+-assert.equal(await context.internalAdapter.findUserById("replacement-user-id"), null);
+ 
+-const updated = await auth.api.adminUpdateUser({
+-  body: { userId: target.id, data: { name: "Updated Security Control" } },
+-  headers,
+-});
+-assert.equal(updated.name, "Updated Security Control");
+-
+-await context.internalAdapter.updateUser(target.id, { banned: true });
+-await assert.rejects(
+-  context.internalAdapter.createSession(target.id),
+-  (error) => error?.body?.code === "BANNED_USER",
+-);
+-await context.internalAdapter.updateUser(target.id, {
+-  banned: true,
+-  banExpires: new Date(Date.now() - 1_000),
+-  banReason: "expired control",
+-});
+-assert.equal((await context.internalAdapter.createSession(target.id)).userId, target.id);
+-assert.deepEqual(
+-  {
+-    banned: (await context.internalAdapter.findUserById(target.id))?.banned,
+-    banExpires: (await context.internalAdapter.findUserById(target.id))?.banExpires,
+-    banReason: (await context.internalAdapter.findUserById(target.id))?.banReason,
+-  },
+-  { banned: false, banExpires: null, banReason: null },
+-);
+-database.close();
+-console.log("Better Auth security boundaries passed.");
 +const selected = process.argv.slice(2);
 +for (const name of selected.length ? selected : Object.keys(cases)) {
 +  assert.ok(Object.hasOwn(cases, name), `Unknown security case: ${name}`);
 +  await cases[name]();
 +  console.log(`Better Auth security: ${name} passed.`);
 +}
+diff --git a/package.json b/package.json
+index 15306d5..319d486 100644
+--- a/package.json
++++ b/package.json
+@@ -43,6 +43,7 @@
+     "hosted:docker": "bun run with:self-host env BETTER_AUTH_URL=http://localhost:4400 EXECUTOR_BUILD_VERSION=$(git rev-parse HEAD) docker compose -f apps/hosted/self-host/compose.yaml up --build -d",
+     "hosted:docker:down": "bun run with:self-host docker compose -f apps/hosted/self-host/compose.yaml down",
+     "typecheck": "node scripts/typecheck.ts",
++    "auth:security": "bun apps/hosted/server/scripts/check-better-auth-security.mjs",
+     "web:build": "bun run --cwd apps/local/web build",
+     "web:dev": "bun run dev",
+     "executor": "bun run apps:build && bun run telemetry:build && node --import ./scripts/local-dev.ts apps/local/server/src/bin.ts",
+@@ -97,7 +98,6 @@
+     "deploy-events:plan": "bun run --cwd apps/hosted/cloud alchemy deploy alchemy.deploy-events.ts --stage v2 --dry-run --detect-drift --no-input",
+     "deploy-events:deploy": "bun run --cwd apps/hosted/cloud alchemy deploy alchemy.deploy-events.ts --stage v2",
+     "e2e:billing": "vitest run --config e2e/billing.config.ts",
+-    "auth:security": "bun apps/hosted/server/scripts/check-better-auth-security.mjs",
+     "e2e:pglite": "vitest run --config e2e/pglite.config.ts",
+     "e2e:dashboard-file-names": "vitest run --config e2e/dashboard-file-names.config.ts",
+     "e2e:apps-published": "vitest run --config e2e/apps-published.config.ts",

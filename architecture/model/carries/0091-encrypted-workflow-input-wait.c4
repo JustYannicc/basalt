@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Both encrypted and retained workflow drivers support durable input waits. The encrypted driver hashes the step name, keeps the question ID as the wake event type and reloads the answer from encrypted storage instead of event payloads. Managed Cloud proofs enable encrypted starts and retain the existing scenario selection and deadlines."
+    }
+  }
+}

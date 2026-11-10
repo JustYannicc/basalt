@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway.accountPresentation {
     metadata {
-      constraint "Provider failures retain their cause and name accounts by the caller-visible row title across dashboards, MCP and CLI; app account warnings use the same title."
+      constraint "Provider failures retain their cause and name accounts by the caller-visible row title across dashboards, MCP and CLI; app account warnings use the same title. Failure enrichment awaits the provider result after recording the runtime's source attribution. Catalog failure is recorded once, renewal context survives, and reconnect receives the full current app rather than a display name alone."
     }
   }
 }

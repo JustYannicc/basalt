@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "Provider error scenarios require healthy GraphQL tools beside exact sanitized account discovery diagnostics. Explicit app-level discovery failures retain webhook setup refusal and all existing authentication, rate-limit, retry and tool-call recovery assertions. This carry changes only diagnostic test fixtures and assertions, never runtime behavior or deadlines."
+      constraint "Provider error scenarios require healthy GraphQL tools beside exact sanitized account discovery diagnostics. Explicit app-level discovery failures retain webhook setup refusal and all existing authentication, rate-limit, retry and tool-call recovery assertions. This carry changes only diagnostic test fixtures and assertions, never runtime behavior or deadlines. Account-scoped diagnostics occupy child router entries with the exact safe field schema; the healthy GraphQL tool remains the same callable tool rather than a replacement test stub."
     }
   }
 }

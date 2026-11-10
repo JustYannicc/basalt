@@ -1,7 +1,7 @@
 {
   "identity": "basalt-app-cloud-drive",
   "file": "0429-app-cloud-drive.patch",
-  "content_sha256": "fd92c40ec7047b4f6295ef122ce5b1cc5ab26d4d911af2fc6edcd33b8ac3012f",
+  "content_sha256": "c56b667d9e99f8bf494eb20d4c7c2bd513a3097cf14f83a0cce00e312622b8e3",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

@@ -1,4 +1,17 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/background-jobs.ts b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
+index 268c74f..bd6c368 100644
+--- a/apps/hosted/cloud/src/infrastructure/background-jobs.ts
++++ b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
+@@ -16,6 +16,7 @@ import { previewLifetime } from "./test-stage-expiry.ts";
+ 
+ /** Every job a Cron Trigger starts. */
+ export const BackgroundJob = Schema.Literals([
++  "account-health-rechecks",
+   "organization-removal",
+   "provisioning",
+   "contributed-departures",
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+index 26d2db1..43600c1 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -1,3 +1,5 @@
@@ -7,7 +20,7 @@ diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
  import {
    observationPublishPath,
    publishAccountObservations,
-@@ -448,6 +450,12 @@
+@@ -469,6 +471,12 @@ export default Api.make(
        Effect.scoped,
        Effect.catch(() => Effect.logWarning("Personal-data reporting failed")),
      );
@@ -20,7 +33,7 @@ diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
      const jobs = yield* cloudBackgroundJobs;
      yield* jobs.schedule(
        "* * * * *",
-@@ -458,6 +466,7 @@
+@@ -479,6 +487,7 @@ export default Api.make(
        "repository-recovery",
        "schedule-wake",
        "site-assets",
@@ -28,7 +41,7 @@ diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
      );
      yield* jobs.schedule(
        "*/5 * * * *",
-@@ -499,6 +508,7 @@
+@@ -520,6 +529,7 @@ export default Api.make(
        "agent-grant-expiry": agentGrantExpiry,
        "pool-migration-inventory": reportHostPoolInventory.pipe(Effect.provide(executor)),
        "personal-data-reporting": personalDataReporting,
@@ -36,10 +49,10 @@ diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
      } satisfies Record<BackgroundJob, unknown>;
  
      const egress = yield* cloudEgress;
-@@ -658,7 +668,11 @@
-         "/api/internal/v1-import/orgs/:organization/rollback",
-         v1Import.rollback,
-       ).pipe(HttpRouter.provideRequest(executor)),
+@@ -707,7 +717,11 @@ export default Api.make(
+         "/api/internal/v1-import/orgs/:organization/return-billing",
+         v1Import.giveBillingBack,
+       ).pipe(HttpRouter.provideRequest(Layer.merge(executor, billing))),
 -      jobs.route((job) => backgroundJobs[job]),
 +      jobs.route((job) =>
 +        Effect.gen(function* () {
@@ -49,47 +62,9 @@ diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
        authoringRoutes,
        ...(["login", "login/sso", "create"] as const).map((page) =>
          HttpRouter.add(
-diff --git a/apps/hosted/cloud/src/infrastructure/background-jobs.ts b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
---- a/apps/hosted/cloud/src/infrastructure/background-jobs.ts
-+++ b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
-@@ -15,6 +15,7 @@
- 
- /** Every job a Cron Trigger starts. */
- export const BackgroundJob = Schema.Literals([
-+  "account-health-rechecks",
-   "organization-removal",
-   "provisioning",
-   "contributed-departures",
-diff --git a/apps/hosted/server/src/contracts/accounts.ts b/apps/hosted/server/src/contracts/accounts.ts
---- a/apps/hosted/server/src/contracts/accounts.ts
-+++ b/apps/hosted/server/src/contracts/accounts.ts
-@@ -1,4 +1,5 @@
- import { ProviderAppConnectionRequired } from "./provider-account-policy.ts";
-+import { AccountRecheckStatus } from "./account-rechecks.ts";
- import { AccountSelectionInvalid } from "@executor-js/sdk/core";
- import { VersionNotFound } from "@executor-js/sdk/core";
- import { HostedAccountObservations, ObservationPolicy } from "./account-observations.ts";
-@@ -168,6 +169,18 @@
- /** Credentials travel directly to the authorized host and never appear in successful responses. */
- export const HostedAccounts = HttpApiGroup.make("accounts")
-   .add(
-+    HttpApiEndpoint.get("recheckStatus", `${prefix}/account-health-rechecks`, {
-+      params,
-+      success: AccountRecheckStatus,
-+      error: [StorageError, OrganizationForbidden],
-+    })
-+      .annotate(RequiredAction, "read")
-+      .annotate(
-+        OpenApi.Description,
-+        "Administrator readout of automatic account health checks: six-hour cadence, provider spacing and the last dispatched batch. Does not start checks or read credentials.",
-+      ),
-+  )
-+  .add(
-     HttpApiEndpoint.get("observations", `${prefix}/accounts/:account/observations`, {
-       params: { ...params, account: AccountId },
-       success: HostedAccountObservations,
 diff --git a/apps/hosted/server/src/contracts/account-rechecks.ts b/apps/hosted/server/src/contracts/account-rechecks.ts
 new file mode 100644
+index 0000000..0f25005
 --- /dev/null
 +++ b/apps/hosted/server/src/contracts/account-rechecks.ts
 @@ -0,0 +1,17 @@
@@ -110,8 +85,38 @@ new file mode 100644
 +  providerSpacingSeconds: Schema.Int,
 +  lastRun: Schema.NullOr(AccountRecheckRun),
 +});
+diff --git a/apps/hosted/server/src/contracts/accounts.ts b/apps/hosted/server/src/contracts/accounts.ts
+index 88e9cef..84cc580 100644
+--- a/apps/hosted/server/src/contracts/accounts.ts
++++ b/apps/hosted/server/src/contracts/accounts.ts
+@@ -1,4 +1,5 @@
+ import { ProviderAppConnectionRequired } from "./provider-account-policy.ts";
++import { AccountRecheckStatus } from "./account-rechecks.ts";
+ import { AccountSelectionInvalid } from "@executor-js/sdk/core";
+ import { VersionNotFound } from "@executor-js/sdk/core";
+ import { HostedAccountObservations, ObservationPolicy } from "./account-observations.ts";
+@@ -169,6 +170,18 @@ export const HostedAccountDetail = Schema.Struct({
+ });
+ /** Credentials travel directly to the authorized host and never appear in successful responses. */
+ export const HostedAccounts = HttpApiGroup.make("accounts")
++  .add(
++    HttpApiEndpoint.get("recheckStatus", `${prefix}/account-health-rechecks`, {
++      params,
++      success: AccountRecheckStatus,
++      error: [StorageError, OrganizationForbidden],
++    })
++      .annotate(RequiredAction, "read")
++      .annotate(
++        OpenApi.Description,
++        "Administrator readout of automatic account health checks: six-hour cadence, provider spacing and the last dispatched batch. Does not start checks or read credentials.",
++      ),
++  )
+   .add(
+     HttpApiEndpoint.get("observations", `${prefix}/accounts/:account/observations`, {
+       params: { ...params, account: AccountId },
 diff --git a/apps/hosted/server/src/implementation/account-recheck-authority.ts b/apps/hosted/server/src/implementation/account-recheck-authority.ts
 new file mode 100644
+index 0000000..f0d2cd6
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/account-recheck-authority.ts
 @@ -0,0 +1,60 @@
@@ -175,44 +180,9 @@ new file mode 100644
 +    }
 +    return new Set([target.account]);
 +  });
-diff --git a/apps/hosted/server/src/implementation/account-recheck-schema.ts b/apps/hosted/server/src/implementation/account-recheck-schema.ts
-new file mode 100644
---- /dev/null
-+++ b/apps/hosted/server/src/implementation/account-recheck-schema.ts
-@@ -0,0 +1,31 @@
-+import { Effect } from "effect";
-+import { SqlClient } from "effect/sql";
-+
-+/** Additive leases survive Worker replacement without changing saved credentials or checks. */
-+export const migrateAccountRechecks = Effect.gen(function* () {
-+  const sql = yield* SqlClient.SqlClient;
-+  yield* sql`create table if not exists hosted_account_rechecks (
-+    account_id text primary key references executor_accounts(id) on delete cascade,
-+    organization_id text not null references organization(id) on delete cascade,
-+    provider_key text not null,
-+    next_at timestamptz not null,
-+    provider_next_at timestamptz not null,
-+    lease text,
-+    lease_until timestamptz,
-+    run_id text not null,
-+    started_at timestamptz not null,
-+    finished_at timestamptz,
-+    outcome text not null check (outcome in ('running', 'healthy', 'failed', 'skipped'))
-+  )`;
-+  // No account or organization foreign key: deleting either cannot reset a provider's rate limit.
-+  yield* sql`create table if not exists hosted_account_recheck_families (
-+    provider_key text primary key,
-+    next_at timestamptz not null,
-+    account_id text not null,
-+    lease text not null
-+  )`;
-+  yield* sql`create index if not exists hosted_account_rechecks_provider
-+    on hosted_account_rechecks(provider_key, started_at)`;
-+  yield* sql`create index if not exists hosted_account_rechecks_organization
-+    on hosted_account_rechecks(organization_id, started_at)`;
-+});
 diff --git a/apps/hosted/server/src/implementation/account-recheck-queue.ts b/apps/hosted/server/src/implementation/account-recheck-queue.ts
 new file mode 100644
+index 0000000..b9dcd32
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/account-recheck-queue.ts
 @@ -0,0 +1,149 @@
@@ -365,8 +335,46 @@ new file mode 100644
 +      .pipe(Effect.mapError(() => new StorageError()));
 +  return { claim, start, finish };
 +};
+diff --git a/apps/hosted/server/src/implementation/account-recheck-schema.ts b/apps/hosted/server/src/implementation/account-recheck-schema.ts
+new file mode 100644
+index 0000000..ba36fac
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/account-recheck-schema.ts
+@@ -0,0 +1,31 @@
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++
++/** Additive leases survive Worker replacement without changing saved credentials or checks. */
++export const migrateAccountRechecks = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  yield* sql`create table if not exists hosted_account_rechecks (
++    account_id text primary key references executor_accounts(id) on delete cascade,
++    organization_id text not null references organization(id) on delete cascade,
++    provider_key text not null,
++    next_at timestamptz not null,
++    provider_next_at timestamptz not null,
++    lease text,
++    lease_until timestamptz,
++    run_id text not null,
++    started_at timestamptz not null,
++    finished_at timestamptz,
++    outcome text not null check (outcome in ('running', 'healthy', 'failed', 'skipped'))
++  )`;
++  // No account or organization foreign key: deleting either cannot reset a provider's rate limit.
++  yield* sql`create table if not exists hosted_account_recheck_families (
++    provider_key text primary key,
++    next_at timestamptz not null,
++    account_id text not null,
++    lease text not null
++  )`;
++  yield* sql`create index if not exists hosted_account_rechecks_provider
++    on hosted_account_rechecks(provider_key, started_at)`;
++  yield* sql`create index if not exists hosted_account_rechecks_organization
++    on hosted_account_rechecks(organization_id, started_at)`;
++});
 diff --git a/apps/hosted/server/src/implementation/account-rechecks.ts b/apps/hosted/server/src/implementation/account-rechecks.ts
 new file mode 100644
+index 0000000..4b525fd
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/account-rechecks.ts
 @@ -0,0 +1,159 @@
@@ -530,6 +538,7 @@ new file mode 100644
 +  Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
 +);
 diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/server/src/implementation/accounts.ts
+index a599ada..f53ee6c 100644
 --- a/apps/hosted/server/src/implementation/accounts.ts
 +++ b/apps/hosted/server/src/implementation/accounts.ts
 @@ -1,4 +1,5 @@
@@ -538,7 +547,7 @@ diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/ser
  import { visibleObservationHealth } from "./account-observation-policy.ts";
  import { getAccountObservations, refreshAccountObservations } from "./account-observations.ts";
  import { readObservationPolicy, updateObservationPolicy } from "./account-observation-policy.ts";
-@@ -394,6 +395,7 @@
+@@ -406,6 +407,7 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
      const api = yield* ApiAuthentication;
      const redirectUri = accountOAuthRedirectUri(auth);
      return handlers
@@ -546,7 +555,28 @@ diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/ser
        .handle("get", () => getAccount)
        .handle("observations", () => getAccountObservations)
        .handle("refreshObservations", () => refreshAccountObservations)
+diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
+index dc84b5a..e69f0af 100644
+--- a/apps/hosted/server/src/implementation/migrations.ts
++++ b/apps/hosted/server/src/implementation/migrations.ts
+@@ -20,6 +20,7 @@ import { migrateAppAccountLinks } from "./app-account-schema.ts";
+ import { migrateAccountIdentityIndex } from "./account-identity-schema.ts";
+ import { migrateContributedDepartureObservability } from "./contributed-departure-observability-schema.ts";
+ import { migrateContributedDepartures } from "./contributed-departure-schema.ts";
++import { migrateAccountRechecks } from "./account-recheck-schema.ts";
+ import { migrateAccountObservations } from "./account-observation-schema.ts";
+ 
+ /**
+@@ -146,6 +147,7 @@ const hostedProductMigrations = migrateProductSteps("private_hosted_migrations",
+   "14_model_bindings": migrateModelBindings,
+   "15_hosted_routes": migrateHostedRoutes,
+   "16_tool_policies": migrateToolPolicies,
++  "17_account_rechecks": migrateAccountRechecks,
+ });
+ 
+ /**
 diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+index a2593f7..65776c7 100644
 --- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
 +++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
 @@ -1,3 +1,4 @@
@@ -554,7 +584,7 @@ diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/
  import { hostedToolPolicy } from "./tool-policy-evaluation.ts";
  import { requireAppAccess } from "./resource-policy.ts";
  import { requireOrganizationAppWrite } from "./organization-app-write.ts";
-@@ -346,6 +347,15 @@
+@@ -350,6 +351,15 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
        // it has no user accounts.
        appResolving: (app, accounts, appUses) =>
          Effect.gen(function* () {
@@ -570,7 +600,7 @@ diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/
            const user = yield* CurrentUserId;
            const organization = yield* organizationOf(app.owner);
            // The SDK resolved each account with its owner; only the product's policy is checked here.
-@@ -454,7 +464,9 @@
+@@ -458,7 +468,9 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
        accountsResolving: (accounts) =>
          Effect.gen(function* () {
            const user = yield* CurrentUserId;
@@ -581,89 +611,24 @@ diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/
            const owned = organizationAccounts(accounts);
            if (owned.length === 0) return new Set<AccountId>();
            // The SDK resolved each account with its owner; only the product's policy is checked here.
-diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
---- a/apps/hosted/server/src/implementation/migrations.ts
-+++ b/apps/hosted/server/src/implementation/migrations.ts
-@@ -20,6 +20,7 @@
- import { migrateAccountIdentityIndex } from "./account-identity-schema.ts";
- import { migrateContributedDepartureObservability } from "./contributed-departure-observability-schema.ts";
- import { migrateContributedDepartures } from "./contributed-departure-schema.ts";
-+import { migrateAccountRechecks } from "./account-recheck-schema.ts";
- import { migrateAccountObservations } from "./account-observation-schema.ts";
- 
- /**
-@@ -146,6 +147,7 @@
-   "14_model_bindings": migrateModelBindings,
-   "15_hosted_routes": migrateHostedRoutes,
-   "16_tool_policies": migrateToolPolicies,
-+  "17_account_rechecks": migrateAccountRechecks,
- });
- 
- /**
 diff --git a/apps/hosted/server/src/index.ts b/apps/hosted/server/src/index.ts
+index 994f62b..cbe2b58 100644
 --- a/apps/hosted/server/src/index.ts
 +++ b/apps/hosted/server/src/index.ts
-@@ -116,3 +116,5 @@
+@@ -134,3 +134,5 @@ export { resolveOrganizationReference } from "./implementation/organization-refe
  
  export * from "./contracts/schedules.ts";
  export { makeScheduledAuthority } from "./implementation/schedules.ts";
 +
 +export { runAccountRechecks } from "./implementation/account-rechecks.ts";
-diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
---- a/packages/sdk/src/implementation/account-health.ts
-+++ b/packages/sdk/src/implementation/account-health.ts
-@@ -38,7 +38,7 @@
- import { AppNotFound } from "../contracts/apps.ts";
- import { type AccountCredential, invocationAccount, validateFields } from "./provider.ts";
- import { StoredVersion, type StoredAccount } from "../contracts/storage.ts";
--import { storedAccount } from "./accounts.ts";
-+import { accountMetadata, storedAccount } from "./accounts.ts";
- import { interactiveBinding, interactiveBindings } from "./interactive-state.ts";
- import type { InteractiveBinding } from "../contracts/interactive-accounts.ts";
- import {
-@@ -186,6 +186,16 @@
-     acquisition,
-     { status: statusOf, message: messageOf },
-     recordObservation,
-+    lifecycle === undefined
-+      ? undefined
-+      : (account) =>
-+          lifecycle
-+            .accountsResolving([accountMetadata(account)])
-+            .pipe(
-+              Effect.flatMap((allowed) =>
-+                allowed.has(account.id) ? Effect.void : Effect.fail(new StorageError()),
-+              ),
-+            ),
-   );
-   /** One account's health from the apps that use it and its recorded checks. */
-   const project = (
-diff --git a/packages/sdk/src/implementation/account-driver-health.ts b/packages/sdk/src/implementation/account-driver-health.ts
---- a/packages/sdk/src/implementation/account-driver-health.ts
-+++ b/packages/sdk/src/implementation/account-driver-health.ts
-@@ -28,6 +28,7 @@
-   recordObservation?: ReturnType<
-     typeof import("./account-observations.ts").makeAccountObservations
-   >["fromHealth"],
-+  beforeCheck?: (account: StoredAccount) => Effect.Effect<void, StorageError>,
- ) => {
-   const rows = (accounts: readonly DriverAccount[]) =>
-     query(() =>
-@@ -137,6 +138,7 @@
-         );
-         return;
-       }
-+      if (beforeCheck !== undefined) yield* beforeCheck(account);
-       const outcome = yield* hook().pipe(
-         Effect.flatMap((value) =>
-           Schema.decodeUnknownEffect(AccountCheckResult)(value === undefined ? {} : value).pipe(
 diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+index 6ac0723..022d787 100644
 --- a/e2e/support/profile-removal-rollback.ts
 +++ b/e2e/support/profile-removal-rollback.ts
-@@ -20,9 +20,17 @@
+@@ -20,9 +20,17 @@ export const beforeAccountIdentities = () =>
      { sql: "ALTER TABLE executor_oauth_grants DROP COLUMN owner" },
    ] as const;
-
+ 
 +/** Remove the latest hosted objects and journal together so earlier migrations can replay. */
 +export const beforeHostedAccountRechecks = () =>
 +  [
@@ -679,9 +644,10 @@ diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-remov
      { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 16" },
    ] as const;
 diff --git a/e2e/tests/contributed-departure-observability.spec.ts b/e2e/tests/contributed-departure-observability.spec.ts
+index 831d6cf..7c043d7 100644
 --- a/e2e/tests/contributed-departure-observability.spec.ts
 +++ b/e2e/tests/contributed-departure-observability.spec.ts
-@@ -164,15 +164,37 @@
+@@ -164,15 +164,37 @@ layer(RuntimeLive, { excludeTestServices: true })("Departure observability", (it
          expect(retained.items).toMatchObject([
            { account, status: "failed", attempts: 8, queuedAt: null, lastError: null },
          ]);
@@ -720,3 +686,53 @@ diff --git a/e2e/tests/contributed-departure-observability.spec.ts b/e2e/tests/c
          yield* serverControl("start");
        }),
      ),
+diff --git a/packages/sdk/src/implementation/account-driver-health.ts b/packages/sdk/src/implementation/account-driver-health.ts
+index acfb6f9..bfe0778 100644
+--- a/packages/sdk/src/implementation/account-driver-health.ts
++++ b/packages/sdk/src/implementation/account-driver-health.ts
+@@ -28,6 +28,7 @@ export const makeDriverAccountHealth = (
+   recordObservation?: ReturnType<
+     typeof import("./account-observations.ts").makeAccountObservations
+   >["fromHealth"],
++  beforeCheck?: (account: StoredAccount) => Effect.Effect<void, StorageError>,
+ ) => {
+   const rows = (accounts: readonly DriverAccount[]) =>
+     query(() =>
+@@ -137,6 +138,7 @@ export const makeDriverAccountHealth = (
+         );
+         return;
+       }
++      if (beforeCheck !== undefined) yield* beforeCheck(account);
+       const outcome = yield* hook().pipe(
+         Effect.flatMap((value) =>
+           Schema.decodeUnknownEffect(AccountCheckResult)(value === undefined ? {} : value).pipe(
+diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
+index 8a80d59..547b445 100644
+--- a/packages/sdk/src/implementation/account-health.ts
++++ b/packages/sdk/src/implementation/account-health.ts
+@@ -40,7 +40,7 @@ import {
+ import { AppNotFound } from "../contracts/apps.ts";
+ import { type AccountCredential, invocationAccount, validateFields } from "./provider.ts";
+ import { StoredVersion, type StoredAccount } from "../contracts/storage.ts";
+-import { storedAccount } from "./accounts.ts";
++import { accountMetadata, storedAccount } from "./accounts.ts";
+ import { interactiveBinding, interactiveBindings } from "./interactive-state.ts";
+ import type { InteractiveBinding } from "../contracts/interactive-accounts.ts";
+ import {
+@@ -189,6 +189,16 @@ export const makeAccountHealth = (
+     acquisition,
+     { status: statusOf, message: messageOf },
+     recordObservation,
++    lifecycle === undefined
++      ? undefined
++      : (account) =>
++          lifecycle
++            .accountsResolving([accountMetadata(account)])
++            .pipe(
++              Effect.flatMap((allowed) =>
++                allowed.has(account.id) ? Effect.void : Effect.fail(new StorageError()),
++              ),
++            ),
+   );
+   /** One account's health from the apps that use it and its recorded checks. */
+   const project = (

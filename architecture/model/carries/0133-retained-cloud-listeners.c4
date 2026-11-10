@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Managed Cloud fixtures own the canonical loopback listener before provisioning and keep its origin through restarts. Alchemy owns a separate private listener on an assigned port; only that API resource's successful startup announcement selects the forwarding destination. Teardown closes owned listeners, and no free-port probe supplies lasting ownership."
+    }
+  }
+}

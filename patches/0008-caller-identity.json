@@ -1,7 +1,7 @@
 {
   "identity": "executor-caller-identity",
   "file": "0008-caller-identity.patch",
-  "content_sha256": "c5997ee8993edfabacb673bb60e1c6d4cdaee958ba3d18abcae1cf3f81fd9e87",
+  "content_sha256": "3c868b8bc10347e2c6f779a74ca7be79abb8a902d79cdc5d149f50843eea4863",
   "kind": "upstream",
   "upstream_pull_request": 2346,
   "database_sensitive": false,

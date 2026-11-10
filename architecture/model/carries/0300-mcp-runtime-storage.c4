@@ -1,7 +1,7 @@
 model {
   extend basalt.build {
     metadata {
-      constraint "Cloud request handlers use the current SDK and registry query layouts without migration engines. The deployment migration job retains all supported upgrades and gates runtime database bindings on its completion. Runtime and migration code share the exact current schema; the production MCP attribution check rejects migration and schema introspection modules."
+      constraint "Cloud request handlers use the current SDK and registry query layouts without migration engines. The deployment migration job retains all supported upgrades and gates runtime database bindings on its completion. Runtime and migration code share the exact current schema; the production MCP attribution check rejects migration and schema introspection modules. Runtime account resolution consumes the current batched usableAll result and versioned host API contract instead of reintroducing per-account legacy queries."
     }
   }
 }

@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Unused schema and HTTP route factories are pure initializers so the MCP Worker omits unrelated descriptions while HTTP entry points retain every endpoint and error union. Workflow listings keep WorkflowDefinitionErrors, and manual webhook activation semantics remain unchanged. Tree shaking cannot replace runtime validation or raise upload budgets."
+    }
+  }
+}

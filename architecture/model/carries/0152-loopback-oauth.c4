@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountConnections {
+    metadata {
+      constraint "A provider-declared loopback callback is a paste destination, not a local listener. The hosted attempt validates the full exact URL, state, expiry and one-time use before exchanging its retained PKCE verifier. Handoff state retains registered-client provenance and edit controls, and completion preserves its navigating-or-done contract."
+    }
+  }
+}
