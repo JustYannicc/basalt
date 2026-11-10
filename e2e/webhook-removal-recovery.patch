@@ -1,0 +1,46 @@
+diff --git a/e2e/support/webhook-removal-case.ts b/e2e/support/webhook-removal-case.ts
+--- a/e2e/support/webhook-removal-case.ts
++++ b/e2e/support/webhook-removal-case.ts
+@@ -3,7 +3,12 @@
+ import { body } from "./api.ts";
+ import { Evidence, Telemetry } from "./evidence.ts";
+ import type { webhookRemovalFixture, RemovalFailure } from "./webhook-removal-fixture.ts";
+-import { settleWebhookSources, settleWebhookSubscriptions, sourcesAre } from "./webhook-sources.ts";
++import {
++  settleWebhookSources,
++  settleWebhookSubscriptions,
++  sourcesAre,
++  webhookSubscriptions,
++} from "./webhook-sources.ts";
+
+ const Subscription = Schema.Struct({
+   id: Schema.String,
+@@ -103,6 +108,28 @@
+       expect(resumed.body).toMatchObject({ id: hook.id, status: "stopped", failure: null });
+     }
+     yield* f.recover;
++    if (kind === "storage" || kind === "oauth") {
++      // Reconnecting relinks the source. Finish its registration before unlinking so a stale
++      // stopped-only snapshot cannot race a new subscription into the account deletion.
++      const configured = yield* api.request(
++        actors.owner,
++        "PUT",
++        `${path}/webhook-sources/${account}/config`,
++        { config: {} },
++      );
++      expect(configured.status, JSON.stringify(configured.body)).toBe(200);
++      yield* settleWebhookSources(
++        actors.owner,
++        path,
++        sourcesAre({ [account]: { status: "ready", failure: null } }),
++      );
++      const registered = yield* webhookSubscriptions(actors.owner, path);
++      expect(
++        registered.some(
++          (subscription) => subscription.id !== hook.id && subscription.status === "active",
++        ),
++      ).toBe(true);
++    }
+     yield* f.unlink;
+     yield* settleWebhookSubscriptions(actors.owner, path, (hooks) =>
+       hooks.every((hook) => hook.status === "stopped"),
