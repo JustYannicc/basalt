@@ -71,7 +71,8 @@ export default {
     const open = caches.open.bind(caches);
     Object.defineProperty(caches, "open", { configurable: true, value: async name => {
       counters.names.push(name);
-      const cache = await open(name);
+      if (input.cacheUnavailable) throw new Error("Synthetic cache-open failure");
+      const cache = await open(input.reuse ? "executor-private-compiler-results-v2" : name);
       return {
         match: async key => { counters.lookups++; const found = await cache.match(key); if (found) counters.hits++; return found; },
         put: async (key, value) => { counters.writes++; return cache.put(key, value); },
@@ -90,7 +91,7 @@ export default {
         });
         return yield* runtime.compile(input.files, [], {});
       }).pipe(Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(input.config))));
-      return Response.json({ ok: result.ok, counters });
+      return Response.json({ ok: result.ok, error: result.ok ? null : result.error._tag, counters });
     } finally {
       Object.defineProperty(caches, "open", { configurable: true, value: open });
     }
@@ -153,7 +154,8 @@ test(
     });
     const decode = Schema.decodeUnknownSync(
       Schema.Struct({
-        ok: Schema.Literal(true),
+        ok: Schema.Boolean,
+        error: Schema.NullOr(Schema.String),
         counters: Schema.Struct({
           names: Schema.Array(Schema.String),
           lookups: Schema.Number,
@@ -162,11 +164,18 @@ test(
         }),
       }),
     );
-    const compile = async (stage: string, acceptance?: string) => {
+    const compile = async (
+      stage: string,
+      acceptance?: string,
+      fault?: "cache-unavailable" | "nonexact" | "reuse",
+      expectedOk = true,
+    ) => {
       const response = await runtime.dispatchFetch("https://compiler.test", {
         method: "POST",
         body: JSON.stringify({
           stage,
+          cacheUnavailable: fault === "cache-unavailable",
+          reuse: fault === "reuse",
           config: {
             EXECUTOR_APPS_VERSION: qualified.version,
             EXECUTOR_APPS_FRAMEWORK: qualified.framework,
@@ -182,7 +191,9 @@ test(
               path: "package.json",
               content: JSON.stringify({
                 type: "module",
-                dependencies: { apps: qualified.version },
+                dependencies: {
+                  apps: fault === "nonexact" ? `^${qualified.version}` : qualified.version,
+                },
               }),
             },
             {
@@ -193,7 +204,10 @@ test(
         }),
       });
       assert.equal(response.status, 200);
-      return decode(await response.json()).counters;
+      const result = decode(await response.json());
+      assert.equal(result.ok, expectedOk);
+      if (!expectedOk) assert.equal(result.error, "RuntimeBuildFailed");
+      return result.counters;
     };
     try {
       const first = await compile("test-pr-42", "true");
@@ -215,6 +229,15 @@ test(
       assert.deepEqual(production.names, ["executor-private-compiler-results-v2"]);
       assert.equal(production.hits, 0);
       assert.equal((await compile("production")).hits, 1);
+      const reused = await compile("test-pr-42", "true", "reuse", false);
+      assert.equal(reused.hits, 1);
+      assert.equal(reused.writes, 0);
+      const unavailable = await compile("test-pr-42", "true", "cache-unavailable", false);
+      assert.equal(unavailable.lookups, 0);
+      assert.equal(unavailable.writes, 0);
+      await compile("production", undefined, "cache-unavailable");
+      const nonexact = await compile("test-pr-42", "true", "nonexact", false);
+      assert.deepEqual(nonexact, { names: [], lookups: 0, hits: 0, writes: 0 });
     } finally {
       await runtime.dispose();
     }

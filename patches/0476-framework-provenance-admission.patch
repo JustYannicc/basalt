@@ -4983,18 +4983,44 @@ index bc4886b..7034b6a 100644
            ? {}
            : { EXECUTOR_COMPILER_CACHE_RELEASE: eligibleRelease }),
 diff --git a/apps/hosted/cloud/src/implementation/app-build.ts b/apps/hosted/cloud/src/implementation/app-build.ts
-index 3880528..e72a6f3 100644
+index 3880528..db00649 100644
 --- a/apps/hosted/cloud/src/implementation/app-build.ts
 +++ b/apps/hosted/cloud/src/implementation/app-build.ts
-@@ -13,6 +13,7 @@ export const compileCloudApp = (
+@@ -4,7 +4,7 @@ import {
+   prepareWorkerApp,
+   type WorkerHost,
+ } from "@executor-js/sdk/workerd/build";
+-import type { CodeFiles } from "@executor-js/sdk/core";
++import { RuntimeBuildFailed, type CodeFiles } from "@executor-js/sdk/core";
+ import { Effect, Option } from "effect";
+ import { cachedCompilerResult, cacheableSource } from "./compiler-result-cache.ts";
+ 
+@@ -13,12 +13,21 @@ export const compileCloudApp = (
    host: WorkerHost,
    publicPaths: ReadonlyArray<string>,
    release?: string,
 +  cacheName?: string,
  ) =>
    Effect.gen(function* () {
-     if (release === undefined || host.registry !== undefined || !cacheableSource(files))
-@@ -34,6 +35,7 @@ export const compileCloudApp = (
+-    if (release === undefined || host.registry !== undefined || !cacheableSource(files))
++    if (release === undefined || host.registry !== undefined || !cacheableSource(files)) {
++      if (cacheName !== undefined)
++        return yield* new RuntimeBuildFailed({
++          stage: "dependencies",
++          message: "Preview compiler acceptance requires an exact dependency graph.",
++        });
+       return yield* compileWorkerApp(files, host, publicPaths);
+-    // An unused authored dependency must not turn a formerly valid app into a build failure.
+-    const prepared = yield* prepareWorkerApp(files, host).pipe(Effect.option);
++    }
++    // Acceptance must exercise preparation; normal builds retain their unused-dependency fallback.
++    const prepared = yield* cacheName === undefined
++      ? prepareWorkerApp(files, host).pipe(Effect.option)
++      : prepareWorkerApp(files, host).pipe(Effect.map(Option.some));
+     if (Option.isNone(prepared)) return yield* compileWorkerApp(files, host, publicPaths);
+     const dependencyFiles = prepared.value.filesystem
+       .list()
+@@ -34,6 +43,7 @@ export const compileCloudApp = (
          publicPaths,
          release,
          enabled: true,
@@ -5071,9 +5097,16 @@ index c2eeccf..b28ed5f 100644
 +    };
    });
 diff --git a/apps/hosted/cloud/src/implementation/compiler-result-cache.ts b/apps/hosted/cloud/src/implementation/compiler-result-cache.ts
-index 8db1c5b..e3112f7 100644
+index 8db1c5b..6ef8985 100644
 --- a/apps/hosted/cloud/src/implementation/compiler-result-cache.ts
 +++ b/apps/hosted/cloud/src/implementation/compiler-result-cache.ts
+@@ -1,5 +1,5 @@
+ /** Private, release-bound reuse of successful compilation. App declarations still run per create. */
+-import type { CodeFiles } from "@executor-js/sdk/core";
++import { RuntimeBuildFailed, type CodeFiles } from "@executor-js/sdk/core";
+ import { Effect, Option, Schema } from "effect";
+ import { CloudBundle, CompiledCloudApp } from "../contracts/builds.ts";
+ 
 @@ -91,6 +91,7 @@ export const cachedCompilerResult = <E, R>(
      readonly publicPaths: ReadonlyArray<string>;
      readonly release: string | undefined;
@@ -5082,12 +5115,34 @@ index 8db1c5b..e3112f7 100644
      readonly dependencyFiles: ReadonlyArray<{
        readonly path: string;
        readonly content: string | null;
-@@ -104,7 +105,7 @@ export const cachedCompilerResult = <E, R>(
+@@ -104,9 +105,16 @@ export const cachedCompilerResult = <E, R>(
      if (!input.enabled || input.release === undefined || !cacheableSource(input.files))
        return yield* compile;
      const cache = yield* optional(
 -      attempt(() => caches.open("executor-private-compiler-results-v2")),
 +      attempt(() => caches.open(input.cacheName ?? "executor-private-compiler-results-v2")),
      );
-     if (Option.isNone(cache)) return yield* compile;
+-    if (Option.isNone(cache)) return yield* compile;
++    if (Option.isNone(cache)) {
++      if (input.cacheName !== undefined)
++        return yield* new RuntimeBuildFailed({
++          stage: "compile",
++          message: "Preview compiler acceptance could not open its isolated cache.",
++        });
++      return yield* compile;
++    }
      const key = yield* digest(
+       JSON.stringify([
+         input.release,
+@@ -142,6 +150,11 @@ export const cachedCompilerResult = <E, R>(
+       Option.isSome(hit) ? "hit" : "miss",
+     );
+     if (Option.isSome(hit)) {
++      if (input.cacheName !== undefined)
++        return yield* new RuntimeBuildFailed({
++          stage: "compile",
++          message: "Preview compiler acceptance unexpectedly reused a cached result.",
++        });
+       input.onHit?.();
+       return hit.value;
+     }
