@@ -20,6 +20,8 @@ concurrency:
 
 jobs:
   publish:
+    # A manual run on another branch would publish unreviewed bytes under a permanent version.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -51,7 +53,10 @@ jobs:
           draft="$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null || echo missing)"
           # An interrupted create leaves a draft that BRAT can't see: finish it with this build.
           if [ "$draft" = "true" ]; then
-            existing="$(git ls-remote --tags origin "refs/tags/$tag" | cut -f1)"
+            # A bare assignment keeps ls-remote's status, so a failed lookup stops the run; the
+            # peeled line, listed last, names the commit for lightweight and annotated tags alike.
+            refs="$(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}")"
+            existing="$(printf '%s\n' "$refs" | tail -n1 | cut -f1)"
             if [ -n "$existing" ] && [ "$existing" != "$GITHUB_SHA" ]; then
               message="The draft $tag has a tag at $existing, not this build's commit $GITHUB_SHA. Delete the draft and its tag, or raise version in clients/obsidian/manifest.json and versions.json."
               echo "::error::$message"
