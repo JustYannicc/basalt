@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { openVault } from "./vault.ts";
 import { storageFixture } from "./fixture.ts";
+import { defaultLimits } from "./quota-limits.ts";
 import { decodeReceipt } from "../../clients/obsidian/remote.ts";
 const note = (path: string, content: string) => ({
   path,
@@ -18,7 +19,7 @@ test("a sealed initial import uses its own metered allowance while monthly write
     account = storageFixture();
   try {
     const vault = await openVault({ ...data, accountStorage: account.storage, prefix: "import/" });
-    account.storage.sql.exec("UPDATE vault_io SET class_a=5000");
+    account.storage.sql.exec(`UPDATE vault_io SET class_a=${defaultLimits.classA}`);
     const plan = {
       id: "first",
       page: 0,
@@ -47,7 +48,7 @@ test("a sealed initial import uses its own metered allowance while monthly write
       }),
     );
     assert.equal(result.state, "landed");
-    assert.equal((await vault.status()).classA, 5000);
+    assert.equal((await vault.status()).classA, defaultLimits.classA);
     const status = await vault.imports.status("first");
     assert.ok(status);
     assert.ok(status.used.classA > 0);
@@ -151,7 +152,7 @@ test("manifest amendments and removed source records survive a lost write reply 
       method: "apply",
       input: { base: vault.root, operation: "batch", edits: [{ path: "one.md", content: "new" }] },
     };
-    account.storage.sql.exec("UPDATE vault_io SET class_a=5000");
+    account.storage.sql.exec(`UPDATE vault_io SET class_a=${defaultLimits.classA}`);
     lose = true;
     await assert.rejects(vault.imports.run({ id: "first", request }), /reply lost/);
     const restarted = await openVault(options);
@@ -160,7 +161,7 @@ test("manifest amendments and removed source records survive a lost write reply 
     const closed = await restarted.imports.finish("first");
     assert.equal(closed.confirmed, 2);
     assert.equal(closed.omitted, 1);
-    assert.equal((await restarted.status()).classA, 5000);
+    assert.equal((await restarted.status()).classA, defaultLimits.classA);
     assert.equal((await restarted.service.read({ path: "one.md" }))?.content, "new");
     assert.equal(await restarted.service.read({ path: "gone.md" }), null);
   } finally {
@@ -205,7 +206,7 @@ test("an ordinary write queued during an import cannot borrow its allowance", as
       entries: [note("one.md", "one")],
       final: true,
     });
-    account.storage.sql.exec("UPDATE vault_io SET class_a=5000");
+    account.storage.sql.exec(`UPDATE vault_io SET class_a=${defaultLimits.classA}`);
     hold = true;
     const imported = vault.imports.run({
       id: "first",
@@ -233,7 +234,7 @@ test("an ordinary write queued during an import cannot borrow its allowance", as
     release();
     assert.equal(decodeReceipt(await imported).state, "landed");
     await ordinary;
-    assert.equal((await vault.status()).classA, 5000);
+    assert.equal((await vault.status()).classA, defaultLimits.classA);
   } finally {
     data.close();
     account.close();

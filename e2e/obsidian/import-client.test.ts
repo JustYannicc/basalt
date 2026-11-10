@@ -7,6 +7,7 @@ import { invocationWorkflowControls } from "../../.upstream/packages/sdk/src/imp
 import { storageFixture } from "../../src/drive/fixture.ts";
 import { openVault } from "../../src/drive/vault.ts";
 import { createDriveDispatcher } from "../../src/drive/dispatch.ts";
+import { defaultLimits } from "../../src/drive/quota-limits.ts";
 import app from "../../apps/obsidian/index.ts";
 import { createRemote } from "../../clients/obsidian/remote.ts";
 import { createSync } from "../../clients/obsidian/sync.ts";
@@ -159,7 +160,7 @@ test("the plugin resumes manifest and batch replies through the public SDK witho
         },
       });
     };
-    account.storage.sql.exec("UPDATE vault_io SET class_a=5000");
+    account.storage.sql.exec(`UPDATE vault_io SET class_a=${defaultLimits.classA}`);
     await assert.rejects((await start()).run(), /Plan reply lost/);
     files.set("notes/0.md", "edited before upload");
     files.delete("notes/1.md");
@@ -171,7 +172,7 @@ test("the plugin resumes manifest and batch replies through the public SDK witho
     assert.equal(imported?.state, "complete");
     assert.equal(imported?.omitted, 1);
     assert.equal(imported?.confirmed, 105);
-    assert.equal((await vault.status()).classA, 5000);
+    assert.equal((await vault.status()).classA, defaultLimits.classA);
     assert.equal(
       (await vault.service.read({ path: "notes/0.md" }))?.content,
       "edited before upload",
