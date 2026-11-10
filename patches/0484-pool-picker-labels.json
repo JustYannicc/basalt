@@ -1,0 +1,9 @@
+{
+  "identity": "pool-picker-labels",
+  "file": "0484-pool-picker-labels.patch",
+  "content_sha256": "e1cd3a6bffc68231d12bb36e0d61907483fb1ea94e67aec34cea13642621a670",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

@@ -1,0 +1,46 @@
+diff --git a/apps/hosted/web/src/implementation/pages/computer-quick-setup.tsx b/apps/hosted/web/src/implementation/pages/computer-quick-setup.tsx
+--- a/apps/hosted/web/src/implementation/pages/computer-quick-setup.tsx
++++ b/apps/hosted/web/src/implementation/pages/computer-quick-setup.tsx
+@@ -18,13 +18,20 @@ export function PoolSelect({
+   readonly disabled?: boolean;
+ }) {
+   const pools = setup.view?.pools ?? [];
++  // Nothing to choose between: say which pool, without a control that offers no choice.
++  if (pools.length === 1)
++    return (
++      <span className="max-w-60 truncate text-xs font-medium" title={poolLabel(pools[0])}>
++        {poolLabel(pools[0])}
++      </span>
++    );
+   return (
+     <Select
+       value={setup.pool ?? ""}
+       onValueChange={setup.setPool}
+       disabled={disabled || !pools.length}
+     >
+-      <SelectTrigger size="sm" aria-label="Pool for models" className="w-44 text-xs">
++      <SelectTrigger size="sm" aria-label="Pool for models" className="w-56 max-w-full text-xs">
+         <SelectValue placeholder="Your pool" />
+       </SelectTrigger>
+       <SelectContent>
+diff --git a/apps/hosted/web/src/implementation/pages/pool-setup.tsx b/apps/hosted/web/src/implementation/pages/pool-setup.tsx
+--- a/apps/hosted/web/src/implementation/pages/pool-setup.tsx
++++ b/apps/hosted/web/src/implementation/pages/pool-setup.tsx
+@@ -33,6 +33,8 @@ export interface PoolChoice {
+   readonly id: string;
+   readonly name: string;
+   readonly mine: boolean;
++  /** The host's distinct label: the pool's name and its team. */
++  readonly label?: string;
+ }
+ export interface ComputersView {
+   readonly computers: readonly Computer[];
+@@ -113,7 +115,7 @@ export function computerName(): string {
+ }
+ 
+ export const poolLabel = (pool: PoolChoice | undefined) =>
+-  !pool ? "Pool" : pool.mine ? "Your pool" : pool.name.trim() || "Shared pool";
++  !pool ? "Pool" : (pool.label ?? (pool.name.trim() || (pool.mine ? "Your pool" : "Shared pool")));
+ 
+ /** Green needs a model request and, unless the computer is models only, a tool call. */
+ export function isConnected(computer: Computer): boolean {

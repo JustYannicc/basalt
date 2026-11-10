@@ -79,12 +79,18 @@ export class PoolDirectory {
     await this.save();
   }
   choices(user: string, issuedAt: number, own: PoolClaims): PoolChoice[] {
+    // Ownership alone never lists a pool: deletion empties `users` but keeps `owner`, and its
+    // refusal expires, so an owner match would bring deleted pools back. The signed intent's pool stays.
     const pools = Object.values(this.state.pools).filter((pool) =>
-      (pool.users.includes(user) || (pool.authorization !== "executor-app-v1"
-        && (pool.owner === user || pool.pool === own.pool))) && this.allowed(pool.pool, user, issuedAt));
+      (pool.users.includes(user) || (pool.authorization !== "executor-app-v1" && pool.pool === own.pool))
+      && this.allowed(pool.pool, user, issuedAt));
+    // A deleted pool's record may keep an empty organization; that reads as unknown, never as a team.
+    const choice = (id: string, name: string, owner: string, organization: string): PoolChoice =>
+      ({ id, name, mine: owner === user, ...organization ? { organization } : {} });
+    const listed = pools.map((pool) => choice(pool.pool, pool.name, pool.owner, pool.organization));
     if (!this.entry(own.pool) && this.allowed(own.pool, user, issuedAt))
-      return [...pools.map((pool) => ({ id: pool.pool, name: pool.name, mine: pool.owner === user })), { id: own.pool, name: "", mine: own.owner === user }];
-    return pools.map((pool) => ({ id: pool.pool, name: pool.name, mine: pool.owner === user }));
+      return [...listed, choice(own.pool, "", own.owner, own.organization)];
+    return listed;
   }
   async prune(now: number) {
     for (const refusals of [this.state.refusals, this.state.people]) {

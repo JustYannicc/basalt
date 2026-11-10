@@ -42,6 +42,8 @@ export interface PoolChoice {
   readonly name: string;
   /** True for the person's own pool. */
   readonly mine: boolean;
+  /** The team the pool app lives in, for the setup host's team filter. Never sent to the browser. */
+  readonly organization?: string;
 }
 
 /** Same shape as the pool API's own results, so its calls fit without adapting. */

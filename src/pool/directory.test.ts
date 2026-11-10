@@ -60,6 +60,19 @@ test("pool deletion beats a newer audience and older audiences cannot resurrect 
   assert.equal((await f.registry())[restored.computer.id]!.state, "active");
 });
 
+test("a deleted pool stays out of its owner's choices after its refusal expires", async () => {
+  const f = fixture();
+  await f.access(audience());
+  await f.access({ action: "pool-deleted", pool: pool.pool });
+  f.advance(accessGrace + setupTtl + 1);
+  await f.expire();
+  const other = { pool: "other-pool", owner, organization: "other-organization" };
+  const listed = await f.action("computers", owner, await f.intent(owner, other));
+  assert.equal(listed.status, 200);
+  assert.deepEqual((await listed.json() as { pools: unknown }).pools,
+    [{ id: other.pool, name: "", mine: true, organization: other.organization }]);
+});
+
 test("rolled-back person deletion recovers through a later host call and lazily recreates Home user", async () => {
   const f = fixture();
   await f.access(audience());
@@ -205,7 +218,7 @@ test("native audiences keep pool choices stable and never turn management into u
   const choices = await f.action("computers", member, setup);
   assert.equal(choices.status, 200);
   assert.deepEqual((await choices.json() as { pools: unknown }).pools,
-    [{ id: pool.pool, name: pool.name, mine: false }]);
+    [{ id: pool.pool, name: pool.name, mine: false, organization: pool.organization }]);
   const directory = await PoolDirectory.load(f.storage, f.now());
   assert.deepEqual(directory.permissions(pool.pool, owner), { canUse: false, canManage: true });
   assert.deepEqual(directory.permissions(pool.pool, member), { canUse: true, canManage: false });

@@ -134,10 +134,12 @@ export function NativeDevice() {
           <div className="text-[13px]">
             <Row label="Account"><span className="min-w-0 break-words text-right text-muted-foreground">{view.request.account.email}</span></Row>
             <Row label="Requesting app"><span className="min-w-0 break-words text-right text-muted-foreground">{view.request.clientName}</span></Row>
-            <Row label={<label htmlFor="native-pool">Models from</label>}><select id="native-pool" className={`${field} max-w-[65%]`} disabled={!choices || busy || !models} value={pool} onChange={(event) => setPool(event.target.value)}>
+            {choices?.pools.length === 1
+              ? <Row label="Models from"><span className="min-w-0 break-words text-right text-muted-foreground">{choices.pools[0]!.label}</span></Row>
+              : <Row label={<label htmlFor="native-pool">Models from</label>}><select id="native-pool" className={`${field} max-w-[65%]`} disabled={!choices || busy || !models} value={pool} onChange={(event) => setPool(event.target.value)}>
               {!choices && <option value="">{problem ? "Pools unavailable" : "Loading pools…"}</option>}
-              {choices?.pools.map((entry) => <option key={entry.id} value={entry.id}>{entry.name || (entry.mine ? "Your pool" : "Shared pool")}</option>)}
-            </select></Row>
+              {choices?.pools.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
+            </select></Row>}
             <Row label="Tools"><span className="text-right text-muted-foreground">Your connected apps</span></Row>
           </div>
           <fieldset disabled={busy} className="grid min-w-0 gap-3 border-0 p-0">

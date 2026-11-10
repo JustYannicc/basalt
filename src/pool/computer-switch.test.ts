@@ -25,7 +25,8 @@ test("non-owner context is pool-scoped while browser setup lists every personal 
   const listed = await f.action("computers", member, value.intent);
   const list = await listed.json() as { computers: Computer[]; pools: PoolChoice[] };
   assert.deepEqual(list.computers.map((computer) => computer.id).sort(), [shared.computer.id, personal.computer.id].sort());
-  assert.deepEqual(list.pools, [{ id: pool.pool, name: pool.name, mine: false }, { id: own.pool, name: "Personal pool", mine: true }]);
+  assert.deepEqual(list.pools, [{ id: pool.pool, name: pool.name, mine: false, organization: pool.organization },
+    { id: own.pool, name: "Personal pool", mine: true, organization: own.organization }]);
   const validation = await f.action("validate", member, value.intent);
   assert.deepEqual(await validation.json(), { pool: pool.pool, owner, organization: pool.organization, name: pool.name });
   const ownerContext = await f.context(owner);
@@ -38,7 +39,7 @@ test("an unknown pool learned from context has an empty display name", async () 
   const f = fixture();
   const intent = await f.intent();
   const listed = await f.action("computers", member, intent);
-  assert.deepEqual(await listed.json(), { computers: [], pools: [{ id: pool.pool, name: "", mine: false }] });
+  assert.deepEqual(await listed.json(), { computers: [], pools: [{ id: pool.pool, name: "", mine: false, organization: pool.organization }] });
   const validated = await f.action("validate", member, intent);
   assert.deepEqual(await validated.json(), { pool: pool.pool, owner, organization: pool.organization, name: "" });
 });

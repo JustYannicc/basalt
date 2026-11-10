@@ -2,6 +2,7 @@ import {
   body, inputBody, json, native, pool, record, SetupError, security, text, user, type SetupEnv,
 } from "./session.ts";
 import { emitProductEvent } from "./product-events.ts";
+import { poolPicks, teamsOf } from "./pool-choices.ts";
 import { brand } from "../../brand.ts";
 import { computerName, readIntent } from "../pool/setup-links.ts";
 export type { SetupEnv } from "./session.ts";
@@ -19,19 +20,21 @@ function computerSummary(value: unknown): Record<string, unknown> {
 }
 
 const validName = (value: unknown) => computerName(value) !== undefined;
-/** Pool names are people's own labels; ids are app ids. Nothing else about a pool leaves. */
-function poolChoices(value: unknown): Record<string, unknown>[] {
-  if (value === undefined) return [];
-  if (!Array.isArray(value)) throw new SetupError(502, "Setup service returned invalid pools.");
-  return value.map((entry) => {
-    const input = record(entry);
-    if (!text(input.id, 512) || typeof input.name !== "string" || input.name.length > 200 || typeof input.mine !== "boolean")
-      throw new SetupError(502, "Setup service returned invalid pools.");
-    return { id: input.id, name: input.name, mine: input.mine };
-  });
-}
-
 interface OwnPool { pool?: string; organization: string }
+const organizationLists = new WeakMap<Request, Promise<Record<string, unknown>[] | undefined>>();
+/** The person's organizations, read once per request with their own session; undefined when unavailable. */
+function organizationList(request: Request, env: SetupEnv) {
+  let listed = organizationLists.get(request);
+  if (!listed) {
+    listed = native(request, env, "organization/list").then(async (response) => {
+      if (!response.ok) { await response.body?.cancel(); return undefined; }
+      const value: unknown = await response.json().catch(() => undefined);
+      return Array.isArray(value) ? value.map(record) : undefined;
+    }, () => undefined);
+    organizationLists.set(request, listed);
+  }
+  return listed;
+}
 /** Each person's own pool, as an organization's metadata points to it. Only a pointer. */
 function poolsOf(organization: Record<string, unknown>): Record<string, unknown> {
   let metadata: unknown = organization.metadata;
@@ -45,11 +48,9 @@ function poolsOf(organization: Record<string, unknown>): Record<string, unknown>
  * so the organization stays usable without it. Undefined until their pool is installed.
  */
 async function ownPool(request: Request, env: SetupEnv, person: string): Promise<OwnPool | undefined> {
-  const response = await native(request, env, "organization/list");
-  if (!response.ok) throw new SetupError(502, "Could not find your own organization. Try again.");
-  const organizations: unknown = await response.json().catch(() => undefined);
-  if (!Array.isArray(organizations)) throw new SetupError(502, "Could not find your own organization. Try again.");
-  for (const organization of organizations.map(record)) {
+  const organizations = await organizationList(request, env);
+  if (!organizations) throw new SetupError(502, "Could not find your own organization. Try again.");
+  for (const organization of organizations) {
     const owned = Object.entries(poolsOf(organization))
       .map(([key, value]) => ({ key, pool: record(value) }))
       .filter(({ key, pool }) => (pool.owner ?? key) === person && text(pool.app, 512));
@@ -171,9 +172,7 @@ export async function handleSetupPage(request: Request, env: SetupEnv): Promise<
   try { person = await user(request, env); } catch (error) {
     return go(error instanceof SetupError && error.status === 401 ? "/login?redirect=%2Fsetup" : "/");
   }
-  const response = await native(request, env, "organization/list").catch(() => undefined);
-  const listed: unknown = response?.ok ? await response.json().catch(() => undefined) : undefined;
-  const organizations = Array.isArray(listed) ? listed.map(record) : [];
+  const organizations = await organizationList(request, env) ?? [];
   const target = organizations.find((organization) => Object.hasOwn(poolsOf(organization), person))
     ?? (organizations.length === 1 ? organizations[0] : undefined);
   return go(text(target?.slug, 200) ? `/org/${encodeURIComponent(target.slug)}/connect` : "/");
@@ -242,6 +241,8 @@ export async function handleSetup(request: Request, env: SetupEnv): Promise<Resp
     } else input = { intent: url.searchParams.get("intent") };
     if (!text(input.intent)) throw new SetupError(400, "A setup intent is required.");
     const person = await user(request, env);
+    // The list only needs the session; start it now so it overlaps the pool calls below.
+    if (method === "GET") void organizationList(request, env);
     // Revoking needs no pool lookup; listing, minting and refreshing record the person's own pool.
     const selection = await body(await pool(request, env, "validate", { user: person, intent: input.intent }));
     // An intent for the person's own pool already names it; only a shared pool needs the lookup.
@@ -266,7 +267,7 @@ export async function handleSetup(request: Request, env: SetupEnv): Promise<Resp
     if (method === "GET") {
       const result = await body(await pool(request, env, "computers", payload));
       if (!Array.isArray(result.computers)) throw new SetupError(502, "Could not list computers.");
-      return json({ computers: result.computers.map(computerSummary), pools: poolChoices(result.pools), undoPrompt: undo(url.origin) });
+      return json({ computers: result.computers.map(computerSummary), pools: poolPicks(result.pools, teamsOf(await organizationList(request, env))), undoPrompt: undo(url.origin) });
     }
     const revoke = { ...payload, id: computer![1] };
     const result = await body(await pool(request, env, "revoke", revoke));

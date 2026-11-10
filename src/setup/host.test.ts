@@ -350,13 +350,17 @@ test("listing works while the organization list is down; minting on a shared poo
   assert.equal(minting.calls.some((call) => call.path.endsWith("/api-key/create")), false);
 });
 
-test("the computer list carries only pool ids, names and ownership", async () => {
+test("the computer list carries only pool ids, names, ownership and labels, from the person's current teams", async () => {
   const f = fixture({ pool: ({ path }) => path.endsWith("/computers") ? json({
-    computers: [computer], pools: [{ id: "own-pool", name: "My pool", mine: true, owner: "user-1" }, { id: "shared-pool", name: "Ada's pool", mine: false, organization: "o" }],
+    computers: [computer], pools: [{ id: "own-pool", name: "My pool", mine: true, owner: "user-1" },
+      { id: "shared-pool", name: "Ada's pool", mine: false, organization: "organization-1" },
+      { id: "left-pool", name: "", mine: true, organization: "deleted-team" }],
   }) : undefined });
   const response = await f.request("/setup/v1/computers?intent=signed-selection");
   assert.equal(response.status, 200);
-  assert.deepEqual((await response.json()).pools, [{ id: "own-pool", name: "My pool", mine: true }, { id: "shared-pool", name: "Ada's pool", mine: false }]);
+  assert.deepEqual((await response.json()).pools, [{ id: "own-pool", name: "My pool", mine: true, label: "My pool" },
+    { id: "shared-pool", name: "Ada's pool", mine: false, label: "Ada's pool" }]);
+  assert.equal(f.calls.filter((call) => call.path === "/api/auth/organization/list").length, 1);
   const broken = fixture({ pool: ({ path }) => path.endsWith("/computers") ? json({ computers: [], pools: [{ id: "p" }] }) : undefined });
   assert.equal((await broken.request("/setup/v1/computers?intent=signed-selection")).status, 502);
 });

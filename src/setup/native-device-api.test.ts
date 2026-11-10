@@ -23,7 +23,7 @@ function fixture(override?: (call: Call) => Response | undefined | Promise<Respo
       case "/api/auth/device/request": return json({ clientId: "native-client", resource: `${origin}/native`, scopes: ["native", "offline_access"] });
       case "/api/auth/oauth2/public-client": return json({ client_name: "Registered client" });
       case "/setup/v1/context": return json({ intent: "fresh-intent" });
-      case "/setup/v1/computers": return json({ pools: [{ id: "shared-pool", name: "Shared", mine: false }, { id: "own-pool", name: "Own", mine: true }] });
+      case "/setup/v1/computers": return json({ pools: [{ id: "shared-pool", name: "Shared", mine: false, label: "Shared · Team" }, { id: "own-pool", name: "Own", mine: true, label: "Own · Team" }] });
       case "/api/auth/device/decide": return json({ status: JSON.parse(String(input.body)).accept ? "approved" : "denied" });
       default: throw new Error(`Unexpected URL ${call.url.pathname}`);
     }
@@ -85,7 +85,7 @@ test("a changed account or removed pool requires another review and sends no dec
     using f = fixture(({ url }) => changed && change === "account" && url.pathname === "/api/auth/get-session"
       ? json({ user: { id: "person-2", email: "other@example.invalid", emailVerified: true } })
       : changed && change === "pool" && url.pathname === "/setup/v1/computers"
-        ? json({ pools: [{ id: "own-pool", name: "Own", mine: true }] }) : undefined);
+        ? json({ pools: [{ id: "own-pool", name: "Own", mine: true, label: "Own · Team" }] }) : undefined);
     const original = await readDeviceRequest("BCDF-GHJK", signal());
     changed = true;
     const result = await reviewDeviceDecision("BCDF-GHJK", original, signal(), selection);

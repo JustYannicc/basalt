@@ -8,7 +8,7 @@ const Pending = Schema.Struct({ clientId: Text, resource: Text, scopes: Schema.A
 const Client = Schema.Struct({ client_name: Schema.optionalKey(Schema.String) });
 const Context = Schema.Struct({ intent: Text });
 const Choices = Schema.Struct({ pools: Schema.Array(Schema.Struct({
-  id: Text, name: Schema.String, mine: Schema.Boolean,
+  id: Text, name: Schema.String, mine: Schema.Boolean, label: Schema.String,
 })) });
 const Decision = Schema.Struct({ status: Schema.Literals(["approved", "denied"]) });
 
