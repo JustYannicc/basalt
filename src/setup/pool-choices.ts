@@ -14,9 +14,14 @@ export interface Team {
   readonly name: string;
 }
 
-export function teamsOf(listed: readonly Record<string, unknown>[] | undefined): Team[] | undefined {
+export function teamsOf(
+  listed: readonly Record<string, unknown>[] | undefined,
+): Team[] | undefined {
   return listed?.flatMap((team) =>
-    text(team.id, 512) ? [{ id: team.id, name: typeof team.name === "string" ? team.name.trim() : "" }] : []);
+    text(team.id, 512)
+      ? [{ id: team.id, name: typeof team.name === "string" ? team.name.trim() : "" }]
+      : [],
+  );
 }
 
 /**
@@ -32,8 +37,13 @@ export function poolPicks(value: unknown, teams: readonly Team[] | undefined): P
   const seen = new Set<string>();
   const kept = value.flatMap((entry) => {
     const input = record(entry);
-    if (!text(input.id, 512) || typeof input.name !== "string" || input.name.length > 200 || typeof input.mine !== "boolean"
-      || (input.organization !== undefined && !text(input.organization, 512)))
+    if (
+      !text(input.id, 512) ||
+      typeof input.name !== "string" ||
+      input.name.length > 200 ||
+      typeof input.mine !== "boolean" ||
+      (input.organization !== undefined && !text(input.organization, 512))
+    )
       throw new SetupError(502, "Setup service returned invalid pools.");
     // The pool Worker keys pools by id; this only guards a reply that repeats one.
     if (seen.has(input.id)) return [];
@@ -41,8 +51,15 @@ export function poolPicks(value: unknown, teams: readonly Team[] | undefined): P
     const organization = typeof input.organization === "string" ? input.organization : undefined;
     if (teams && organization !== undefined && !team.has(organization)) return [];
     const name = input.name.trim() || (input.mine ? "Your pool" : "Shared pool");
-    const teamName = organization === undefined ? "" : team.get(organization) ?? "";
-    return [{ id: input.id, name: input.name, mine: input.mine, base: teamName ? `${name} · ${teamName}` : name }];
+    const teamName = organization === undefined ? "" : (team.get(organization) ?? "");
+    return [
+      {
+        id: input.id,
+        name: input.name,
+        mine: input.mine,
+        base: teamName ? `${name} · ${teamName}` : name,
+      },
+    ];
   });
   // Two pools with the same name in the same team still need labels a person can tell apart.
   const counts = new Map<string, number>();
