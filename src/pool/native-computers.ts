@@ -10,6 +10,7 @@ import { fail, failureResponse, json, object, text } from "./json.ts";
 import { openNativeKey, sealNativeKey } from "./native-key.ts";
 import { NativeStreams } from "./native-streams.ts";
 import { nativePoolDisplay } from "./native-display.ts";
+import { signedTeams } from "./team-labels.ts";
 import { computerName, readIntent, setupTtl } from "./setup-links.ts";
 import { openEnvelope } from "./token.ts";
 import {
@@ -48,7 +49,9 @@ const keyIdentity = (computer: StoredComputer) =>
 
 /** Native devices share the existing computer registry, key lifecycle and access-removal queue. */
 export class NativeComputers {
-  abortPool(pool: string) { this.streams.abortPool(pool); }
+  abortPool(pool: string) {
+    this.streams.abortPool(pool);
+  }
   private streams = new NativeStreams();
   private deps: Dependencies;
   constructor(deps: Dependencies) {
@@ -113,7 +116,12 @@ export class NativeComputers {
         if (value.action === "check") {
           const computer = await this.active(registry, caller);
           if (value.display !== true) return json({ active: true });
-          const display = await nativePoolDisplay(this.deps.storage, computer, this.deps.now());
+          const display = await nativePoolDisplay(
+            this.deps.storage,
+            computer,
+            this.deps.now(),
+            signedTeams(value.teams),
+          );
           return json({ active: true, display });
         }
         if (value.action !== "revoke")
