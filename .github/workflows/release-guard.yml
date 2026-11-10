@@ -7,11 +7,13 @@ on:
     types: [created, published, prereleased]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   product-only:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Hide releases that aren't products
         env:
@@ -22,6 +24,10 @@ jobs:
             basalt-sync-*|signalbox-sync-*|signalbox-clients-*) echo "$TAG is a product release." ; exit 0 ;;
           esac
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=true
+          # GitHub hands Latest to the newest remaining release, so give it back to the apps.
+          apps="$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --limit 100 --json tagName,publishedAt \
+            --jq '[.[] | select(.tagName | startswith("signalbox-clients-"))] | sort_by(.publishedAt) | last | .tagName // empty')"
+          if [ -n "$apps" ]; then gh release edit "$apps" --repo "$GITHUB_REPOSITORY" --latest; fi
           message="Release $TAG isn't a product release (basalt-sync-*, signalbox-sync-* or signalbox-clients-*), so it was turned back into a hidden draft. PR evidence belongs in the private evidence repository, never on this public Releases page. Delete the draft and its tag once its files are safe."
           echo "::error::$message"
           echo "$message" >> "$GITHUB_STEP_SUMMARY"

@@ -21,4 +21,4 @@ bun run --cwd clients/mobile start
 
 Set `EXPO_PUBLIC_CLIENT_SERVER_ORIGIN` when building against an isolated test server. This is a public server address, never a credential. Native projects are generated locally by prebuild and stay out of Git. Local simulator builds need the platform SDK and native dependencies. App interaction and screenshots use the T3 Device panel.
 
-Signing, private-release identifiers and internal distribution remain gated by [#209](https://github.com/JustYannicc/basalt/issues/209). No store or internal-distribution build is configured here.
+The clients release workflow publishes a release-key-signed Android APK with these development identifiers. Private-release identifiers, store and internal distribution remain gated by [#209](https://github.com/JustYannicc/basalt/issues/209).
