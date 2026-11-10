@@ -4706,3 +4706,208 @@ y`X-7K!C{&jpS*RZ1fJ<1t1)tRu(i%q0UN;km**3-<3Mw{<X-XXmw)@^-~K-Z%3XK>
 literal 0
 HcmV?d00001
 
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 0d7383c..14db0e6 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -8514,7 +8514,7 @@ export const scenarios = plan({
+   executorAppSetupLeavesVersion: {
+     fixtures: "actors",
+     legacyStorage: true,
+-    file: "executor-key-account.spec.ts",
++    file: "executor-app-setup-version.spec.ts",
+     managementApps: ["owner", "admin"],
+     title:
+       "A member joining links their Executor key without redeploying the organization's Executor app",
+diff --git a/e2e/tests/executor-app-setup-version.spec.ts b/e2e/tests/executor-app-setup-version.spec.ts
+new file mode 100644
+index 0000000..5de4528
+--- /dev/null
++++ b/e2e/tests/executor-app-setup-version.spec.ts
+@@ -0,0 +1,91 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { scenarios } from "../test-plan.ts";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { saveAndDeploy } from "../support/app-authoring.ts";
++import { linkedAccountIds } from "../support/app-accounts.ts";
++import { managementApp } from "../support/management-app.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { Resource } from "../support/contracts.ts";
++import { serverControl } from "../support/server-control.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it) => {
++  it.effect(scenarios.executorAppSetupLeavesVersion.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors;
++        const organization = actors.organization.id;
++        const prefix = `/api/organizations/${organization}`;
++        const { app, account } = yield* managementApp(actors.owner);
++        const path = `${prefix}/apps/${app.id}`;
++        const Version = Schema.Struct({ activeVersion: Schema.String });
++        const Source = Schema.Struct({
++          files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
++        });
++        const source = api.request(actors.owner, "GET", `${path}/source`).pipe(
++          Effect.flatMap((response) => body(Source, response)),
++          Effect.map(({ files }) => ({
++            files: files.toSorted((left, right) => left.path.localeCompare(right.path)),
++          })),
++        );
++        // A version whose files differ from this host's template, as an earlier template's do.
++        const earlier = (yield* source).files.map((file) =>
++          file.path === "index.ts"
++            ? { ...file, content: `${file.content}\n// Synthetic earlier template\n` }
++            : file,
++        );
++        const deployed = yield* saveAndDeploy(actors.owner, path, { files: earlier });
++        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++        const version = (yield* body(Schema.Struct({ app: Version }), deployed)).app.activeVersion;
++        // Record it as the version Executor installed, then start the current server over it.
++        yield* legacyStorage([
++          {
++            sql: `UPDATE "organization" SET metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{executorDefaults}', jsonb_build_object('installed', true, 'app', $2::text, 'deployment', $3::text))::text WHERE id = $1`,
++            params: [organization, app.id, version],
++          },
++        ]);
++        yield* serverControl("start");
++        // A new admin joins, and member setup mints and links their key.
++        const email = `joining-admin-${randomUUID().slice(0, 8)}@example.test`;
++        const invitation = yield* body(
++          Resource,
++          yield* api.request(actors.owner, "POST", "/api/auth/organization/invite-member", {
++            organizationId: organization,
++            email,
++            role: "admin",
++          }),
++        );
++        const joining = yield* api.session();
++        expect(
++          (yield* api.request(joining, "POST", "/api/auth/self-host/register", {
++            invitation: invitation.id,
++            name: "Joining Admin",
++            email,
++            password: "password1234",
++          })).status,
++        ).toBe(200);
++        const joined = yield* managementApp(joining);
++        expect(joined.app.id).toBe(app.id);
++        expect(joined.account).not.toBe(account);
++        // Setup left the organization's version, and the keys that fit it, as they were.
++        expect(
++          (yield* body(Version, yield* api.request(actors.owner, "GET", path))).activeVersion,
++        ).toBe(version);
++        expect((yield* source).files).toEqual(earlier);
++        // The owner's key still fits the app, so calls keep running with it.
++        expect(yield* linkedAccountIds(actors.owner, path)).toEqual([account]);
++        const call = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
++          tool: "context.get",
++          kind: "query",
++          input: {},
++        });
++        expect(call.status, JSON.stringify(call.body)).toBe(200);
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/executor-key-account.spec.ts b/e2e/tests/executor-key-account.spec.ts
+index 96a829e..60fd9d4 100644
+--- a/e2e/tests/executor-key-account.spec.ts
++++ b/e2e/tests/executor-key-account.spec.ts
+@@ -20,10 +20,7 @@ import {
+ } from "../support/app-accounts.ts";
+ import { saveAndDeploy } from "../support/app-authoring.ts";
+ import { managementApp } from "../support/management-app.ts";
+-import { legacyStorage } from "../support/legacy-storage.ts";
+ import { Resource } from "../support/contracts.ts";
+-import { randomUUID } from "node:crypto";
+-import { serverControl } from "../support/server-control.ts";
+ import { openThroughBrowser } from "../support/in-app-navigation.ts";
+ import { advanceToReconciliation, installBrowserClock } from "../support/query-transition.ts";
+ import { choiceName } from "../support/account-choices.ts";
+@@ -740,79 +737,4 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
+       }),
+     ),
+   );
+-  it.effect(scenarios.executorAppSetupLeavesVersion.title, (context) =>
+-    withHostedCase(
+-      context,
+-      Effect.gen(function* () {
+-        const api = yield* Api,
+-          actors = yield* Actors;
+-        const organization = actors.organization.id;
+-        const prefix = `/api/organizations/${organization}`;
+-        const { app, account } = yield* managementApp(actors.owner);
+-        const path = `${prefix}/apps/${app.id}`;
+-        const Version = Schema.Struct({ activeVersion: Schema.String });
+-        const Source = Schema.Struct({
+-          files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
+-        });
+-        const source = api.request(actors.owner, "GET", `${path}/source`).pipe(
+-          Effect.flatMap((response) => body(Source, response)),
+-          Effect.map(({ files }) => ({
+-            files: files.toSorted((left, right) => left.path.localeCompare(right.path)),
+-          })),
+-        );
+-        // A version whose files differ from this host's template, as an earlier template's do.
+-        const earlier = (yield* source).files.map((file) =>
+-          file.path === "index.ts"
+-            ? { ...file, content: `${file.content}\n// Synthetic earlier template\n` }
+-            : file,
+-        );
+-        const deployed = yield* saveAndDeploy(actors.owner, path, { files: earlier });
+-        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
+-        const version = (yield* body(Schema.Struct({ app: Version }), deployed)).app.activeVersion;
+-        // Record it as the version Executor installed, then start the current server over it.
+-        yield* legacyStorage([
+-          {
+-            sql: `UPDATE "organization" SET metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{executorDefaults}', jsonb_build_object('installed', true, 'app', $2::text, 'deployment', $3::text))::text WHERE id = $1`,
+-            params: [organization, app.id, version],
+-          },
+-        ]);
+-        yield* serverControl("start");
+-        // A new admin joins, and member setup mints and links their key.
+-        const email = `joining-admin-${randomUUID().slice(0, 8)}@example.test`;
+-        const invitation = yield* body(
+-          Resource,
+-          yield* api.request(actors.owner, "POST", "/api/auth/organization/invite-member", {
+-            organizationId: organization,
+-            email,
+-            role: "admin",
+-          }),
+-        );
+-        const joining = yield* api.session();
+-        expect(
+-          (yield* api.request(joining, "POST", "/api/auth/self-host/register", {
+-            invitation: invitation.id,
+-            name: "Joining Admin",
+-            email,
+-            password: "password1234",
+-          })).status,
+-        ).toBe(200);
+-        const joined = yield* managementApp(joining);
+-        expect(joined.app.id).toBe(app.id);
+-        expect(joined.account).not.toBe(account);
+-        // Setup left the organization's version, and the keys that fit it, as they were.
+-        expect(
+-          (yield* body(Version, yield* api.request(actors.owner, "GET", path))).activeVersion,
+-        ).toBe(version);
+-        expect((yield* source).files).toEqual(earlier);
+-        // The owner's key still fits the app, so calls keep running with it.
+-        expect(yield* linkedAccountIds(actors.owner, path)).toEqual([account]);
+-        const call = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
+-          tool: "context.get",
+-          kind: "query",
+-          input: {},
+-        });
+-        expect(call.status, JSON.stringify(call.body)).toBe(200);
+-      }),
+-    ),
+-  );
+ });
