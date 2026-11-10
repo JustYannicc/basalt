@@ -19,10 +19,29 @@ index 27adb58..d3f334e 100644
        ]),
      }),
 diff --git a/apps/hosted/cloud/src/implementation/compiler-runtime.ts b/apps/hosted/cloud/src/implementation/compiler-runtime.ts
-index 135d348..b1c91c5 100644
+index 135d348..cae2cf5 100644
 --- a/apps/hosted/cloud/src/implementation/compiler-runtime.ts
 +++ b/apps/hosted/cloud/src/implementation/compiler-runtime.ts
-@@ -109,6 +109,7 @@ export const compilerRuntime = (env: Readonly<Record<string, unknown>>) =>
+@@ -26,6 +26,7 @@ export const compilerRuntime = (env: Readonly<Record<string, unknown>>) =>
+     const version = yield* Config.String("EXECUTOR_APPS_VERSION").pipe(Config.option);
+     const release = yield* Config.String("EXECUTOR_COMPILER_CACHE_RELEASE").pipe(Config.option);
+     const cacheEnabled = env.EXECUTOR_COMPILER_CACHE_ENABLED === "true";
++    const previewNamespace = env.EXECUTOR_COMPILER_PREVIEW_CACHE_NAMESPACE;
+     const read = Effect.gen(function* () {
+       const assets = yield* Schema.decodeUnknownEffect(FrameworkAssets)(env.ASSETS);
+       const response = yield* Effect.tryPromise(() =>
+@@ -94,6 +95,10 @@ export const compilerRuntime = (env: Readonly<Record<string, unknown>>) =>
+                         cacheEnabled && registry === undefined
+                           ? Option.getOrUndefined(release)
+                           : undefined,
++                        // Every acceptance request starts cold, even after preview smoke warmed this isolate.
++                        typeof previewNamespace === "string"
++                          ? `${previewNamespace}/${crypto.randomUUID()}`
++                          : undefined,
+                       ),
+                     ),
+                   ),
+@@ -109,6 +114,7 @@ export const compilerRuntime = (env: Readonly<Record<string, unknown>>) =>
              BuildBusy: (error) => Effect.succeed({ ok: false as const, error }),
              RuntimeBuildFailed: (error) => Effect.succeed({ ok: false as const, error }),
              RuntimeProtocolUnsupported: (error) => Effect.succeed({ ok: false as const, error }),
@@ -4817,21 +4836,21 @@ index 0000000..5de4528
 +  );
 +});
 diff --git a/e2e/tests/executor-key-account.spec.ts b/e2e/tests/executor-key-account.spec.ts
-index 96a829e..60fd9d4 100644
+index 96a829eb58..724c642050 100644
 --- a/e2e/tests/executor-key-account.spec.ts
 +++ b/e2e/tests/executor-key-account.spec.ts
-@@ -20,10 +20,7 @@ import {
+@@ -20,10 +20,6 @@ import {
  } from "../support/app-accounts.ts";
  import { saveAndDeploy } from "../support/app-authoring.ts";
  import { managementApp } from "../support/management-app.ts";
 -import { legacyStorage } from "../support/legacy-storage.ts";
- import { Resource } from "../support/contracts.ts";
+-import { Resource } from "../support/contracts.ts";
 -import { randomUUID } from "node:crypto";
 -import { serverControl } from "../support/server-control.ts";
  import { openThroughBrowser } from "../support/in-app-navigation.ts";
  import { advanceToReconciliation, installBrowserClock } from "../support/query-transition.ts";
  import { choiceName } from "../support/account-choices.ts";
-@@ -740,79 +737,4 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
+@@ -740,79 +736,4 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
        }),
      ),
    );
@@ -4937,3 +4956,138 @@ index 0dc3f16..ae7e2fb 100644
    const message = error instanceof Error ? error.message : "";
    const match = marker.exec(message);
    if (match !== null) {
+diff --git a/apps/hosted/cloud/src/compiler.ts b/apps/hosted/cloud/src/compiler.ts
+index bc4886b..7034b6a 100644
+--- a/apps/hosted/cloud/src/compiler.ts
++++ b/apps/hosted/cloud/src/compiler.ts
+@@ -17,9 +17,8 @@ export default AppCompiler.make(
+     if (globalThis.__ALCHEMY_RUNTIME__) return { main: import.meta.url };
+     // Production and test deployments serve their selected framework as Worker assets.
+     const framework = yield* Config.String("EXECUTOR_APPS_FRAMEWORK").pipe(Config.option);
+-    const eligibleRelease = yield* compilerCacheConfiguration(
+-      Option.getOrUndefined(yield* stageName),
+-    );
++    const cache = yield* compilerCacheConfiguration(Option.getOrUndefined(yield* stageName));
++    const eligibleRelease = cache.release ?? cache.acceptance?.release;
+     return {
+       main: import.meta.url,
+       ...(yield* cloudObservability),
+@@ -29,6 +28,9 @@ export default AppCompiler.make(
+       env: {
+         ...(yield* telemetryBindings),
+         EXECUTOR_COMPILER_CACHE_ENABLED: String(eligibleRelease !== undefined),
++        ...(cache.acceptance === undefined
++          ? {}
++          : { EXECUTOR_COMPILER_PREVIEW_CACHE_NAMESPACE: cache.acceptance.namespace }),
+         ...(eligibleRelease === undefined
+           ? {}
+           : { EXECUTOR_COMPILER_CACHE_RELEASE: eligibleRelease }),
+diff --git a/apps/hosted/cloud/src/implementation/app-build.ts b/apps/hosted/cloud/src/implementation/app-build.ts
+index 3880528..e72a6f3 100644
+--- a/apps/hosted/cloud/src/implementation/app-build.ts
++++ b/apps/hosted/cloud/src/implementation/app-build.ts
+@@ -13,6 +13,7 @@ export const compileCloudApp = (
+   host: WorkerHost,
+   publicPaths: ReadonlyArray<string>,
+   release?: string,
++  cacheName?: string,
+ ) =>
+   Effect.gen(function* () {
+     if (release === undefined || host.registry !== undefined || !cacheableSource(files))
+@@ -34,6 +35,7 @@ export const compileCloudApp = (
+         publicPaths,
+         release,
+         enabled: true,
++        ...(cacheName === undefined ? {} : { cacheName }),
+         dependencyFiles,
+         onHit: () => host.onPhase?.("cache-hit"),
+       },
+diff --git a/apps/hosted/cloud/src/implementation/compiler-cache-config.ts b/apps/hosted/cloud/src/implementation/compiler-cache-config.ts
+index c2eeccf..b28ed5f 100644
+--- a/apps/hosted/cloud/src/implementation/compiler-cache-config.ts
++++ b/apps/hosted/cloud/src/implementation/compiler-cache-config.ts
+@@ -1,7 +1,6 @@
+ import { Config, Effect, Option } from "effect";
+ 
+-/** A test stage may inherit release settings, but never production's reuse permission. */
+-export const compilerCacheRelease = (input: {
++type CompilerCacheInput = {
+   readonly stage: string | undefined;
+   readonly release: string | undefined;
+   readonly registry: string | undefined;
+@@ -9,8 +8,9 @@ export const compilerCacheRelease = (input: {
+   readonly expectedFramework: string | undefined;
+   readonly version: string | undefined;
+   readonly expectedVersion: string | undefined;
+-}) =>
+-  input.stage === "production" &&
++};
++
++const qualifiedRelease = (input: CompilerCacheInput) =>
+   /^[a-f0-9]{40}$/.test(input.release ?? "") &&
+   input.registry === undefined &&
+   input.framework !== undefined &&
+@@ -20,12 +20,26 @@ export const compilerCacheRelease = (input: {
+     ? input.release
+     : undefined;
+ 
+-/** Provisioning alone grants reuse. A runtime receives only the qualified release binding. */
++export const compilerCacheRelease = (input: CompilerCacheInput) =>
++  input.stage === "production" ? qualifiedRelease(input) : undefined;
++
++export const compilerPreviewAcceptance = (
++  input: CompilerCacheInput & { readonly acceptance: string | undefined },
++) => {
++  const release = qualifiedRelease(input);
++  return input.acceptance === "true" &&
++    /^test-pr-[1-9][0-9]*$/.test(input.stage ?? "") &&
++    release !== undefined
++    ? { release, namespace: `executor-preview-compiler-acceptance-v1/${input.stage}/${release}` }
++    : undefined;
++};
++
++/** Provisioning grants reuse or a preview-only cold run. Requests cannot select either. */
+ export const compilerCacheConfiguration = (stage: string | undefined) =>
+   Effect.gen(function* () {
+     const setting = (name: string) =>
+       Config.String(name).pipe(Config.option, Effect.map(Option.getOrUndefined));
+-    return compilerCacheRelease({
++    const input = {
+       stage,
+       release: yield* setting("EXECUTOR_COMPILER_CACHE_RELEASE"),
+       registry: yield* setting("EXECUTOR_NPM_REGISTRY"),
+@@ -33,5 +47,12 @@ export const compilerCacheConfiguration = (stage: string | undefined) =>
+       expectedFramework: yield* setting("EXECUTOR_COMPILER_CACHE_FRAMEWORK"),
+       version: yield* setting("EXECUTOR_APPS_VERSION"),
+       expectedVersion: yield* setting("EXECUTOR_COMPILER_CACHE_APPS_VERSION"),
+-    });
++    };
++    return {
++      release: compilerCacheRelease(input),
++      acceptance: compilerPreviewAcceptance({
++        ...input,
++        acceptance: yield* setting("EXECUTOR_COMPILER_PREVIEW_ACCEPTANCE"),
++      }),
++    };
+   });
+diff --git a/apps/hosted/cloud/src/implementation/compiler-result-cache.ts b/apps/hosted/cloud/src/implementation/compiler-result-cache.ts
+index 8db1c5b..e3112f7 100644
+--- a/apps/hosted/cloud/src/implementation/compiler-result-cache.ts
++++ b/apps/hosted/cloud/src/implementation/compiler-result-cache.ts
+@@ -91,6 +91,7 @@ export const cachedCompilerResult = <E, R>(
+     readonly publicPaths: ReadonlyArray<string>;
+     readonly release: string | undefined;
+     readonly enabled: boolean;
++    readonly cacheName?: string;
+     readonly dependencyFiles: ReadonlyArray<{
+       readonly path: string;
+       readonly content: string | null;
+@@ -104,7 +105,7 @@ export const cachedCompilerResult = <E, R>(
+     if (!input.enabled || input.release === undefined || !cacheableSource(input.files))
+       return yield* compile;
+     const cache = yield* optional(
+-      attempt(() => caches.open("executor-private-compiler-results-v2")),
++      attempt(() => caches.open(input.cacheName ?? "executor-private-compiler-results-v2")),
+     );
+     if (Option.isNone(cache)) return yield* compile;
+     const key = yield* digest(

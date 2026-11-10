@@ -9,21 +9,43 @@ const loginFiles = {
 } as const;
 
 /** Lifecycle children provision resources; subscription files belong only to the native runner. */
-export function lifecycleEnvironment(source: NodeJS.ProcessEnv, mode: "deploy" | "cleanup"): NodeJS.ProcessEnv {
+export function lifecycleEnvironment(
+  source: NodeJS.ProcessEnv,
+  mode: "deploy" | "cleanup",
+): NodeJS.ProcessEnv {
   const names = [
-    "PATH", "HOME", "TMPDIR", "LANG", "BUN_INSTALL", "ALCHEMY_HOME", "RUNNER_TEMP", "GITHUB_ACTIONS",
-    "PREVIEW_STATE_KEY", "PREVIEW_MANIFEST_CHECKPOINTED",
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "LANG",
+    "BUN_INSTALL",
+    "ALCHEMY_HOME",
+    "RUNNER_TEMP",
+    "GITHUB_ACTIONS",
+    "PREVIEW_STATE_KEY",
+    "PREVIEW_MANIFEST_CHECKPOINTED",
     ...(mode === "deploy"
-      ? [...requiredPreviewDeploySecrets, "PREVIEW_SMOKE_EMAIL", "PREVIEW_SMOKE_PASSWORD"]
+      ? [
+          ...requiredPreviewDeploySecrets,
+          "PREVIEW_SMOKE_EMAIL",
+          "PREVIEW_SMOKE_PASSWORD",
+          "EXECUTOR_COMPILER_PREVIEW_ACCEPTANCE",
+          "BASALT_RELEASE_CANDIDATE",
+        ]
       : requiredPreviewCleanupSecrets),
   ];
-  return Object.fromEntries(names.flatMap(name => source[name] === undefined ? [] : [[name, source[name]]]));
+  return Object.fromEntries(
+    names.flatMap((name) => (source[name] === undefined ? [] : [[name, source[name]]])),
+  );
 }
 
 export function validateSmokeSecrets(source: NodeJS.ProcessEnv): void {
   for (const name of [
-    "PREVIEW_SMOKE_EMAIL", "PREVIEW_SMOKE_PASSWORD",
-    "PREVIEW_CLAUDE_MODEL", "PREVIEW_CODEX_MODEL", ...Object.keys(loginFiles),
+    "PREVIEW_SMOKE_EMAIL",
+    "PREVIEW_SMOKE_PASSWORD",
+    "PREVIEW_CLAUDE_MODEL",
+    "PREVIEW_CODEX_MODEL",
+    ...Object.keys(loginFiles),
   ]) {
     if (!source[name]?.trim()) throw new Error(`Missing preview smoke input: ${name}`);
   }
@@ -32,7 +54,9 @@ export function validateSmokeSecrets(source: NodeJS.ProcessEnv): void {
   }
   for (const name of Object.keys(loginFiles)) {
     let value: unknown;
-    try { value = JSON.parse(source[name]!); } catch {
+    try {
+      value = JSON.parse(source[name]!);
+    } catch {
       throw new Error(`Preview smoke input must contain JSON: ${name}`);
     }
     if (!value || typeof value !== "object" || Array.isArray(value)) {

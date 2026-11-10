@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway.contributedLinks {
     metadata {
-      constraint "App and user account links read only their linked accounts and those accounts' health, preserving row order, owner scoping and visibility."
+      constraint "App and user account links read only their linked accounts and those accounts' health, preserving row order, owner scoping and visibility. A link read cannot widen its account query to unrelated saved accounts."
     }
   }
 }

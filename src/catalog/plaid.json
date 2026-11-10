@@ -19,7 +19,7 @@
     },
     {
       "path": "package.json",
-      "content": "{\n  \"name\": \"@executor.sh/plaid\",\n  \"description\": \"Plaid: the Plaid REST API (Link, Auth, Transactions, Balance, Identity, Transfer and more) plus the Plaid Dashboard MCP server for Item diagnostics and analytics.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"executor\": {\n    \"title\": \"Plaid\"\n  },\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.14\",\n    \"@modelcontextprotocol/sdk\": \"1.32.1\"\n  }\n}\n"
+      "content": "{\n  \"name\": \"@executor.sh/plaid\",\n  \"description\": \"Plaid: the Plaid REST API (Link, Auth, Transactions, Balance, Identity, Transfer and more) plus the Plaid Dashboard MCP server for Item diagnostics and analytics.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"executor\": {\n    \"title\": \"Plaid\"\n  },\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.16\",\n    \"@modelcontextprotocol/sdk\": \"1.32.1\"\n  }\n}\n"
     }
   ]
 }

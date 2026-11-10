@@ -2,8 +2,8 @@
   "package": "@executor.sh/jira",
   "publishedUrl": "https://catalog.executor.sh/apps/jira.json",
   "publishedSha256": "deddf7578c1d00147e22774de6dc65cda8cb284600e8350a578e3ba7adda32db",
-  "carriedSha256": "616f9eea38c88e1038d6b939c7b141be21cb2e2d775790d585c5ed505a8af6b0",
-  "patchSha256": "70c096166077db6f9ccad48f0c2c3035a0b023d631a152a0896db9b2882fe96d",
-  "appsVersion": "0.0.1-beta.104-basalt.14",
+  "carriedSha256": "47e01b6041da8be4d551d5f7831a5faff6684a4117021b040c0c78d55f602604",
+  "patchSha256": "b4066d0e99089590b188887001bccbb01befaa9422b9f4cbe717a7e32b6fcd24",
+  "appsVersion": "0.0.1-beta.104-basalt.16",
   "license": "Not declared in the published package"
 }

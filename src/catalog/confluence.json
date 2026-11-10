@@ -19,7 +19,7 @@
     },
     {
       "path": "package.json",
-      "content": "{\n  \"name\": \"@executor.sh/confluence\",\n  \"description\": \"Confluence Cloud pages, blog posts, spaces, comments, attachments, labels, folders, whiteboards, tasks and the rest of the Confluence Cloud REST API v2.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"executor\": {\n    \"title\": \"Confluence\"\n  },\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.14\"\n  }\n}\n"
+      "content": "{\n  \"name\": \"@executor.sh/confluence\",\n  \"description\": \"Confluence Cloud pages, blog posts, spaces, comments, attachments, labels, folders, whiteboards, tasks and the rest of the Confluence Cloud REST API v2.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"executor\": {\n    \"title\": \"Confluence\"\n  },\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.16\"\n  }\n}\n"
     }
   ]
 }

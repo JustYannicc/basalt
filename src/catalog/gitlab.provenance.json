@@ -3,8 +3,8 @@
   "publishedUrl": "https://catalog.executor.sh/apps/gitlab.json",
   "snapshotCaptured": "2026-10-30",
   "publishedSha256": "ce0d3cbcd957fa628db8b664959ed3d7fbf6fd6a55d3313e50c58670d2f2eb0e",
-  "carriedSha256": "57725535cfb687fe52294a2bcb0d9c28fb9b360141b849cf92c117e36cf5ef6b",
-  "patchSha256": "0534ee1aa77b831c5fe5fa1486d4e4266f11b95b3d617b4a303a66dcdbf1e187",
+  "carriedSha256": "280a780ee2d84382bd7823cd0bf8c38909dca067944ae93505ad529af2d4a8c9",
+  "patchSha256": "8a8c86e4af1276632b5462e424302db14f206e1841f1c15729b5ac3fe2f81063",
   "publishedFileSha256": {
     "README.md": "1d71a6b392c94589298761e65c027e32cfd4f2744f480ca06de629b9610524ab",
     "icon.ts": "3616da179930ca6520afadd61f0788b6762757c628a1efc2653527a38311a9de",
@@ -20,7 +20,7 @@
     "package.json": "4b93bc665e984a3b55f70844ee5a1aedd1ee14555bbcedddc0638df9af0ad738",
     "mcp.ts": "0ce2e5b9c50e7cfe369b1bb641f9e224bd1ea77182bc6a430cdbdee05c55770b"
   },
-  "appsVersion": "0.0.1-beta.104-basalt.14",
+  "appsVersion": "0.0.1-beta.104-basalt.16",
   "license": "Not declared in the published package",
   "siteConfiguration": {
     "kind": "native-account-origin",

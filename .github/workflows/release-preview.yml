@@ -16,11 +16,16 @@ concurrency:
 jobs:
   preview:
     if: >-
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.head_ref, 'release-updates/') &&
-      contains(github.event.pull_request.labels.*.name, 'release-update')
+      github.event.pull_request.head.repo.full_name == github.repository && (
+        (startsWith(github.head_ref, 'release-updates/') &&
+         contains(github.event.pull_request.labels.*.name, 'release-update')) ||
+        (github.event.action == 'labeled' &&
+         github.event.label.name == 'compiler-acceptance' &&
+         github.head_ref == 'feat/upstream-sync-cutover-20261109'))
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      EXECUTOR_COMPILER_PREVIEW_ACCEPTANCE: ${{ github.event.action == 'labeled' && github.event.label.name == 'compiler-acceptance' && github.head_ref == 'feat/upstream-sync-cutover-20261109' && 'true' || '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -31,9 +36,68 @@ jobs:
         with:
           node-version: 24.18.0
       - name: Validate the exact release candidate before running its code
+        if: env.EXECUTOR_COMPILER_PREVIEW_ACCEPTANCE != 'true'
         run: |
           mkdir -p .local
           node scripts/release-merge/validate-candidate.ts > .local/candidate.json
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Validate the explicitly requested cutover preview before running its code
+        if: env.EXECUTOR_COMPILER_PREVIEW_ACCEPTANCE == 'true'
+        run: |
+          mkdir -p .local
+          cat > .local/validate-compiler-preview.mjs <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { execFileSync } from "node:child_process";
+          const repository = process.env.GITHUB_REPOSITORY;
+          const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
+          const pr = event.pull_request;
+          const sha = /^[a-f0-9]{40}$/;
+          if (process.env.GITHUB_EVENT_NAME !== "pull_request" ||
+              event.action !== "labeled" || event.label?.name !== "compiler-acceptance" ||
+              event.repository?.full_name !== repository ||
+              !Number.isSafeInteger(pr?.number) || pr.number < 1 ||
+              pr.head?.repo?.full_name !== repository || pr.base?.repo?.full_name !== repository ||
+              pr.head?.ref !== "feat/upstream-sync-cutover-20261109" || pr.base?.ref !== "main" ||
+              !sha.test(pr.head?.sha ?? "") || !sha.test(pr.base?.sha ?? "")) {
+            throw new Error("Compiler acceptance requires the exact labeled cutover pull request event");
+          }
+          const get = async (path) => {
+            const response = await fetch(`https://api.github.com/repos/${repository}/${path}`, {
+              headers: {
+                Accept: "application/vnd.github+json",
+                Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+                "X-GitHub-Api-Version": "2022-11-28",
+              },
+            });
+            if (!response.ok) throw new Error(`Compiler preview identity lookup failed: HTTP ${response.status}`);
+            return response.json();
+          };
+          const [current, main] = await Promise.all([get(`pulls/${pr.number}`), get("commits/main")]);
+          if (current.state !== "open" || current.draft !== false ||
+              current.head?.repo?.full_name !== repository || current.base?.repo?.full_name !== repository ||
+              current.head?.ref !== pr.head.ref || current.base?.ref !== "main" ||
+              current.head?.sha !== pr.head.sha || current.base?.sha !== pr.base.sha ||
+              main.sha !== pr.base.sha ||
+              !current.labels?.some(({ name }) => name === "compiler-acceptance")) {
+            throw new Error(`Compiler preview PR #${pr.number} must remain ready, labeled and at event head ${pr.head.sha} on base ${pr.base.sha}`);
+          }
+          execFileSync("git", ["merge-base", "--is-ancestor", pr.base.sha, pr.head.sha], { stdio: "ignore" });
+          const identity = {
+            status: "candidate-allowed", pullRequest: pr.number,
+            head: pr.head.sha, base: pr.base.sha, compilerAcceptance: true,
+          };
+          if (process.argv[2] === "revalidate") {
+            const saved = JSON.parse(readFileSync(".local/candidate.json", "utf8"));
+            if (JSON.stringify(saved) !== JSON.stringify(identity)) {
+              throw new Error("Compiler preview identity changed after its cleanup checkpoint");
+            }
+            const checkout = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+            if (checkout !== pr.head.sha) throw new Error("Compiler preview checkout is not the exact event head");
+          }
+          process.stdout.write(`${JSON.stringify(identity)}\n`);
+          NODE
+          node .local/validate-compiler-preview.mjs > .local/candidate.json
         env:
           GITHUB_TOKEN: ${{ github.token }}
       - name: Check out the validated immutable candidate
@@ -68,11 +132,17 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 90
+      - name: Revalidate the opted-in event head immediately before deployment
+        if: env.EXECUTOR_COMPILER_PREVIEW_ACCEPTANCE == 'true'
+        run: node .local/validate-compiler-preview.mjs revalidate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - name: Deploy, sign in, exercise both clients, and verify teardown
         run: node scripts/release-preview/run.ts "$PREVIEW_PR"
         env:
           PREVIEW_PR: ${{ github.event.pull_request.number }}
           PREVIEW_MANIFEST_CHECKPOINTED: "1"
+          BASALT_RELEASE_CANDIDATE: ${{ env.EXECUTOR_COMPILER_PREVIEW_ACCEPTANCE == 'true' && github.event.pull_request.head.sha || '' }}
           TEST_STAGE_DOMAIN: ${{ vars.TEST_STAGE_DOMAIN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -91,6 +161,14 @@ jobs:
           PREVIEW_CODEX_CLI_AUTH_JSON: ${{ secrets.PREVIEW_CODEX_CLI_AUTH_JSON }}
           PREVIEW_CLAUDE_MODEL: ${{ vars.PREVIEW_CLAUDE_MODEL }}
           PREVIEW_CODEX_MODEL: ${{ vars.PREVIEW_CODEX_MODEL }}
+      - name: Retain the per-app compiler acceptance result
+        if: always() && env.EXECUTOR_COMPILER_PREVIEW_ACCEPTANCE == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiler-acceptance-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: preview-catalog-acceptance.json
+          if-no-files-found: warn
+          retention-days: 30
       - name: Publish exact-head smoke and teardown proof
         uses: actions/upload-artifact@v4
         with:

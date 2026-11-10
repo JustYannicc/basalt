@@ -38,16 +38,25 @@ const retiredSources = (origin: string): readonly Addition[] => [
   atlassianAddition(origin),
 ];
 const reviewedOAuth = oauthReviews(oauthReviewData);
-const headers = {
+const catalogHeaders = {
   "Content-Type": "application/json; charset=utf-8",
   "Access-Control-Allow-Origin": "*",
   "Cache-Control": "public, max-age=300",
   "X-Content-Type-Options": "nosniff",
 };
+
+export const previewCatalogAcceptance = (env: {
+  BASALT_COMPILER_PREVIEW_STAGE?: string;
+  BASALT_COMPILER_PREVIEW_HEAD?: string;
+}) =>
+  /^test-pr-[1-9][0-9]*$/.test(env.BASALT_COMPILER_PREVIEW_STAGE ?? "") &&
+  /^[a-f0-9]{40}$/.test(env.BASALT_COMPILER_PREVIEW_HEAD ?? "")
+    ? { head: env.BASALT_COMPILER_PREVIEW_HEAD! }
+    : undefined;
 const unavailable = () =>
   new Response('{"error":"Catalog unavailable"}', {
     status: 502,
-    headers: { ...headers, "Cache-Control": "no-store" },
+    headers: { ...catalogHeaders, "Cache-Control": "no-store" },
   });
 
 function configuredAdditions(
@@ -63,10 +72,25 @@ export async function handleCatalog(
   request: Request,
   fetcher: typeof fetch = fetch,
   metadata?: ZendeskMarketplaceMetadata,
+  acceptance?: { readonly head: string },
 ): Promise<Response> {
   if (request.method !== "GET" && request.method !== "HEAD")
     return new Response(null, { status: 405, headers: { Allow: "GET, HEAD" } });
-  const additions = configuredAdditions(new URL(request.url).origin, metadata);
+  // A retired snapshot still needs the public install path during explicit cutover acceptance.
+  const additions = [
+    ...configuredAdditions(new URL(request.url).origin, metadata),
+    ...(acceptance === undefined ? [] : [gitlabMcp]),
+  ];
+  const headers = {
+    ...catalogHeaders,
+    "Cache-Control": acceptance === undefined ? "public, max-age=300" : "no-store",
+    ...(acceptance === undefined
+      ? {}
+      : {
+          "x-basalt-preview-head": acceptance.head,
+          "x-basalt-preview-compiler-cache-mode": "cold",
+        }),
+  };
   const path = new URL(request.url).pathname;
   const relative = path.startsWith(catalog.path) ? path.slice(catalog.path.length) : "";
   if (relative !== "index.json" && !/^apps\/[a-zA-Z0-9_-]+\.json$/.test(relative))
@@ -217,7 +241,12 @@ export async function handleCatalog(
 export default {
   fetch: (
     request: Request,
-    env: { ZENDESK_MARKETPLACE_ORGANIZATION_ID?: string; ZENDESK_MARKETPLACE_APP_ID?: string },
+    env: {
+      ZENDESK_MARKETPLACE_ORGANIZATION_ID?: string;
+      ZENDESK_MARKETPLACE_APP_ID?: string;
+      BASALT_COMPILER_PREVIEW_STAGE?: string;
+      BASALT_COMPILER_PREVIEW_HEAD?: string;
+    },
   ) =>
     handleCatalog(
       request,
@@ -226,5 +255,6 @@ export default {
         env.ZENDESK_MARKETPLACE_ORGANIZATION_ID,
         env.ZENDESK_MARKETPLACE_APP_ID,
       ),
+      previewCatalogAcceptance(env),
     ),
 };

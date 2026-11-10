@@ -11,6 +11,7 @@ import { feedbackEndpoints } from "../src/feedback/ui.ts";
 import { validSentryDsn } from "../src/telemetry/sentry-target.ts";
 import { derivePreviewSecrets, previewKey } from "./release-preview/keys.ts";
 import { assertOAuthClientId } from "./oauth-client-config.ts";
+import { compilerPreviewEnvironment } from "./release-preview/policy.ts";
 
 export const requiredSecrets = [
   "CLOUDFLARE_ACCOUNT_ID",
@@ -219,6 +220,7 @@ export function deployEnvironment(
     "PREVIEW_SMOKE_EMAIL",
     "PREVIEW_SMOKE_PASSWORD",
     "EXECUTOR_ROLE_HOSTS_DOMAIN",
+    "EXECUTOR_COMPILER_PREVIEW_ACCEPTANCE",
   ]) {
     if (source[name]?.trim()) throw new Error(`Unsupported production override: ${name}`);
   }
@@ -404,6 +406,15 @@ export function previewEnvironment(pullRequest: number, source = process.env): P
     SENTRY_ENABLED: "false",
     POSTHOG_ENABLED: "false",
   });
+  const compilerAcceptance = compilerPreviewEnvironment(source, stage);
+  Object.assign(deploy, compilerAcceptance);
+  if (compilerAcceptance.EXECUTOR_COMPILER_PREVIEW_ACCEPTANCE === "true") {
+    Object.assign(deploy, {
+      EXECUTOR_COMPILER_CACHE_RELEASE: compilerAcceptance.BASALT_RELEASE_CANDIDATE,
+      EXECUTOR_COMPILER_CACHE_FRAMEWORK: deploy.EXECUTOR_APPS_FRAMEWORK,
+      EXECUTOR_COMPILER_CACHE_APPS_VERSION: servedFrameworkVersion,
+    });
+  }
   return {
     ...identity,
     deploy,

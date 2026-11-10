@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Only the API Worker serves signed, bounded production-operation requests through its existing database access. The MCP Worker refuses the operation, and no forwarding adapter gains database authority. Every request, plan, backup and receipt remains bound to the named organization and approved release."
+    }
+  }
+}

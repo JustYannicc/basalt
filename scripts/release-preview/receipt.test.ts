@@ -39,3 +39,10 @@ test("failed, skipped, duplicate, partial and unsafe smoke reports stay red", ()
     assert.throws(() => requireSuccessfulSmoke(report));
   }
 });
+
+
+test("an explicit compiler acceptance candidate cannot use an ordinary or missing catalog receipt", () => {
+  assert.throws(() => previewReceipt(smoke(), { ...identity, compilerAcceptance: true }, true));
+  assert.throws(() => previewReceipt(smoke(), { ...identity, compilerAcceptance: true }, true, { rows: [] }));
+  assert.throws(() => previewReceipt(smoke(), identity, true, { rows: [] }), /ordinary preview/);
+});

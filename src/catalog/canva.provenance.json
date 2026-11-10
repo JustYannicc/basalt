@@ -2,11 +2,11 @@
   "package": "@executor.sh/canva",
   "publishedUrl": "https://catalog.executor.sh/apps/canva.json",
   "publishedSha256": "3f741cb28671acac0578d6a93b5fec3604a6a1476b0babf4878559a114b37a0d",
-  "carriedSha256": "a9ba73a7ea588a092abfb596ced0721bfb394276b877eba2de513ca6f385b31d",
-  "patchSha256": "cab04b7dd8c75cbe1483054786a13208968261c2013d03f64c953f1bc7672835",
+  "carriedSha256": "cc778592fc948769a455b1267de9db0a69de669ea93d370e30a1870a7b0411c1",
+  "patchSha256": "87a0dd1f3fba828f78e8e0bc859165d2596e482c4ab6f3973bd8e5a1ce627f45",
   "license": "Not declared in the published package",
   "contribution": {
     "state": "Documented MCP endpoint correction retained as a replayable patch; publication not claimed"
   },
-  "appsVersion": "0.0.1-beta.104-basalt.14"
+  "appsVersion": "0.0.1-beta.104-basalt.16"
 }
