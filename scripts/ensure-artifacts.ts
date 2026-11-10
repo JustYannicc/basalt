@@ -1,3 +1,10 @@
+import {
+  ArtifactsHttpFailure,
+  artifactsHttpFailure,
+  failureHeaders,
+  type ArtifactsResponse,
+} from "./artifacts-http-failure.ts";
+export { failureHeaders } from "./artifacts-http-failure.ts";
 import { pathToFileURL } from "node:url";
 import { deployment } from "../brand.ts";
 
@@ -7,7 +14,10 @@ type Token = { id: string };
 type Page<T> = { result: T[]; result_info?: { cursor?: string } };
 
 export interface ArtifactsApi {
-  listNamespaces(cursor?: string): Promise<Page<Namespace>>;
+  listNamespaces(
+    cursor?: string,
+    signal?: AbortSignal,
+  ): Promise<Page<Namespace> & { response?: ArtifactsResponse }>;
   createNamespace(name: string): Promise<Namespace>;
   deleteNamespace(name: string): Promise<void>;
   listRepositories(namespace: string, cursor?: string): Promise<Page<Repository>>;
@@ -22,86 +32,13 @@ export interface ArtifactsApi {
 
 export type ArtifactsFetch = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
-export const failureHeaders = {
-  "cf-ray": /^[a-f0-9]{16}(?:-[A-Z]{3})?$/i,
-  "cf-mitigated": /^challenge$/,
-  "retry-after": /^\d{1,10}$/,
-  "x-ratelimit-limit": /^\d{1,10}$/,
-  "x-ratelimit-remaining": /^\d{1,10}$/,
-  "x-ratelimit-reset": /^\d{1,10}$/,
-};
-
-async function failureBody(response: Response): Promise<unknown> {
-  const reader = response.body?.getReader();
-  if (!reader) return;
-  const bytes = new Uint8Array(64 * 1024);
-  let length = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) return JSON.parse(new TextDecoder().decode(bytes.subarray(0, length)));
-      // Stop at the ceiling without requesting another chunk just to discover EOF.
-      if (value.byteLength >= bytes.byteLength - length) {
-        void reader.cancel().catch(() => {});
-        return;
-      }
-      bytes.set(value, length);
-      length += value.byteLength;
-    }
-  } finally {
-    reader.releaseLock();
-  }
-}
-
-async function apiFailure(response: Response, message: string, body?: unknown): Promise<Error> {
-  const envelope: unknown = body ?? (await failureBody(response).catch(() => undefined));
-  const errors =
-    typeof envelope === "object" && envelope !== null && "errors" in envelope
-      ? envelope.errors
-      : undefined;
-  const codes = new Set<number>();
-  if (Array.isArray(errors)) {
-    for (const entry of errors.slice(0, 10)) {
-      if (typeof entry !== "object" || entry === null || !("code" in entry)) continue;
-      const code: unknown = entry.code;
-      if (typeof code === "number" && Number.isSafeInteger(code) && code > 0 && code <= 99_999_999)
-        codes.add(code);
-    }
-  }
-  const headers: Record<string, string> = {};
-  for (const [name, pattern] of Object.entries(failureHeaders)) {
-    const value = response.headers.get(name);
-    if (value !== null && pattern.test(value)) headers[name] = value;
-  }
-  // Keep only numeric quota parameters; provider-chosen names may contain private data.
-  for (const [name, pattern] of [
-    ["ratelimit", /^"[^"\r\n]{1,64}"\s*;\s*r=(\d{1,10})\s*;\s*t=(\d{1,10})$/],
-    ["ratelimit-policy", /^"[^"\r\n]{1,64}"\s*;\s*q=(\d{1,10})\s*;\s*w=(\d{1,10})$/],
-  ] as const) {
-    const value = response.headers.get(name);
-    if (value === null || value.length > 256) continue;
-    const quotas = value
-      .split(",")
-      .slice(0, 4)
-      .flatMap((item) => {
-        const match = pattern.exec(item.trim());
-        if (!match) return [];
-        return [
-          name === "ratelimit" ? `r=${match[1]};t=${match[2]}` : `q=${match[1]};w=${match[2]}`,
-        ];
-      });
-    if (quotas.length) headers[name] = quotas.join(", ");
-  }
-  return new Error(`${message}; diagnostics=${JSON.stringify({ codes: [...codes], headers })}`);
-}
-
 /** The Cloudflare v4 envelope: `result` plus, on list routes, pagination `result_info`. */
 async function envelope<T>(
   response: Response,
   operation: string,
 ): Promise<{ result: T; result_info?: Record<string, unknown> }> {
   if (!response.ok)
-    throw await apiFailure(
+    throw await artifactsHttpFailure(
       response,
       `Cloudflare Artifacts ${operation} failed with HTTP ${response.status}`,
     );
@@ -109,7 +46,11 @@ async function envelope<T>(
   if (typeof body !== "object" || body === null || !("result" in body))
     throw new Error(`Cloudflare Artifacts ${operation} returned an invalid response`);
   if ("success" in body && body.success !== true)
-    throw await apiFailure(response, `Cloudflare Artifacts ${operation} was rejected`, body);
+    throw await artifactsHttpFailure(
+      response,
+      `Cloudflare Artifacts ${operation} was rejected`,
+      body,
+    );
   const info = "result_info" in body ? body.result_info : undefined;
   return {
     result: body.result as T,
@@ -130,26 +71,45 @@ export function cloudflareArtifactsApi(
   fetcher: ArtifactsFetch = fetch,
 ): ArtifactsApi {
   const base = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(account)}/artifacts`;
-  const request = (url: string | URL, method: string, body?: unknown) =>
+  const request = (url: string | URL, method: string, body?: unknown, signal?: AbortSignal) =>
     fetcher(url, {
       method,
+      ...(signal ? { signal } : {}),
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-  const list = async <T>(url: string, cursor?: string) => {
+  const list = async <T>(url: string, cursor?: string, signal?: AbortSignal) => {
     const target = new URL(url);
     target.searchParams.set("limit", "200");
     if (cursor) target.searchParams.set("cursor", cursor);
     // Pages keep the envelope: the items are `result` and the next cursor is in `result_info`.
-    const page = await envelope<T[]>(await request(target, "GET"), "list");
+    const response = await request(target, "GET", undefined, signal);
+    const page = await envelope<T[]>(response, "list").catch(async (error: unknown) => {
+      if (!signal || error instanceof ArtifactsHttpFailure) throw error;
+      throw await artifactsHttpFailure(
+        response,
+        "Cloudflare Artifacts list returned an invalid response",
+        {},
+      );
+    });
+    const ray = response.headers.get("cf-ray");
     const next = page.result_info?.cursor;
     return {
       result: page.result,
+      ...(signal
+        ? {
+            response: {
+              status: response.status,
+              codes: [],
+              ...(ray && failureHeaders["cf-ray"].test(ray) ? { ray } : {}),
+            },
+          }
+        : {}),
       result_info: { cursor: typeof next === "string" ? next : undefined },
     };
   };
   return {
-    listNamespaces: (cursor) => list(`${base}/namespaces`, cursor),
+    listNamespaces: (cursor, signal) => list(`${base}/namespaces`, cursor, signal),
     createNamespace: async (name) => {
       const response = await request(`${base}/namespaces`, "POST", {
         namespace: name,
@@ -164,7 +124,7 @@ export function cloudflareArtifactsApi(
       const response = await request(`${base}/namespaces/${encodeURIComponent(name)}`, "DELETE");
       if (response.status === 404 || response.status === 204) return;
       if (!response.ok)
-        throw await apiFailure(
+        throw await artifactsHttpFailure(
           response,
           `Cloudflare Artifacts namespace deletion failed with HTTP ${response.status}`,
         );
@@ -178,7 +138,7 @@ export function cloudflareArtifactsApi(
       );
       if ([202, 204, 404].includes(response.status)) return;
       if (!response.ok)
-        throw await apiFailure(
+        throw await artifactsHttpFailure(
           response,
           `Cloudflare Artifacts repository deletion failed with HTTP ${response.status}`,
         );
@@ -208,7 +168,7 @@ export function cloudflareArtifactsApi(
       );
       if ([202, 204, 404].includes(response.status)) return;
       if (!response.ok)
-        throw await apiFailure(
+        throw await artifactsHttpFailure(
           response,
           `Cloudflare Artifacts token deletion failed with HTTP ${response.status}`,
         );

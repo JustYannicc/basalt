@@ -55,6 +55,7 @@ import { declaredMismatch } from "./declared-refusal.ts";
 import { preserveDeclarationHistory } from "./declared-history.ts";
 import { preserveClassHistory } from "./class-history.ts";
 import { prepareDeclaredRelease } from "./prepare-declared.ts";
+import type { NamespaceRead } from "./namespace-read.ts";
 import {
   readDeclaredClass,
   readClassContent,
@@ -85,6 +86,7 @@ export interface DeployStackOptions {
   manifest(value: ReleaseManifest): Promise<void>;
   publication?(container: FrozenContainer, normalization?: BaselineNormalization): Promise<void>;
   admission?(verifications: readonly VerificationAdmission[]): Promise<void>;
+  namespaceRead?(read: NamespaceRead): Promise<void>;
   serving?(container: ServingContainer): Promise<void>;
   io?: {
     buckets?: BucketProvider;

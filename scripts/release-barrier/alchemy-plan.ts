@@ -17,6 +17,7 @@ import * as Retry from "@distilled.cloud/cloudflare/Retry";
 import { BarrierRefusal } from "./manifest.ts";
 import { admitSourceNamespace, commandPhase } from "./commands.ts";
 import { cloudflareArtifactsApi } from "../ensure-artifacts.ts";
+import type { NamespaceRead } from "./namespace-read.ts";
 import {
   stageContainer,
   inspectContainer,
@@ -48,6 +49,7 @@ export const preparePlan = (
   ) => Promise<void>,
   declarations?: DeclaredChanges,
   declaredBuckets: ReadonlyMap<string, PreparedBucket | PreparedD1> = new Map(),
+  recordNamespaceRead?: (read: NamespaceRead) => Promise<void>,
 ) =>
   Effect.gen(function* () {
     assertSupportedPlan(plan, yield* imagePlanReasons(plan), declarations);
@@ -131,9 +133,13 @@ export const preparePlan = (
             const phase = commandPhase(node.resource.LogicalId, news);
             if (phase === "database") databaseCommands.add(fqn);
             if (phase === "namespace") {
-              const check = () => admitSourceNamespace(news, namespaceApi);
-              yield* Effect.tryPromise({ try: check, catch: (error) => error });
-              admissions.push(check);
+              const check = (phase: NamespaceRead["phase"]) =>
+                admitSourceNamespace(news, namespaceApi, { phase, record: recordNamespaceRead });
+              yield* Effect.tryPromise({
+                try: () => check("preparation"),
+                catch: (error) => error,
+              });
+              admissions.push(() => check("pre-activation"));
               inputs.set(fqn, { news: input.news, bindings: input.bindings });
             }
             const result = {
