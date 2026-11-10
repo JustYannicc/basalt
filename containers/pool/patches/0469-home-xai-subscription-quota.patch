@@ -1,0 +1,2134 @@
+Upstream: https://github.com/router-for-me/CLIProxyAPIHome/pull/186
+Source: 0a44909fdcbb0281814b4a413a5be74d80a6b04e..6d8a6d13ae40db2ded931df478ee388294bbe35a
+Scope: upstream XAI decoder/probe subset and schema-free dependencies.
+Keep the existing supported CLI identity, privacy projection and collection signals.
+Exclude Devin, subscription-expiry storage, portable models and database version changes.
+remove when the pin moves to ≥ v1.1.8
+
+Upstream line map at 6d8a6d13ae40db2ded931df478ee388294bbe35a:
+  internal/cluster/quota_snapshots.go carry +21,7 -> internal/cluster/quota_snapshots.go:24-24 (xaiQuotaSnapshotVersion)
+  internal/cluster/quota_snapshots.go carry +56,8 -> internal/cluster/quota_snapshots.go:53-64 (QuotaSnapshotVersion)
+  internal/cluster/quota_snapshots.go carry +222,33 -> internal/cluster/quota_snapshots.go:226-254 (QuotaSnapshotWrite)
+  internal/cluster/quota_snapshots.go carry +335,10 -> internal/cluster/quota_snapshots.go:316-517 (upsertQuotaSnapshotDB)
+  internal/cluster/quota_snapshots.go carry +406,17 -> internal/cluster/quota_snapshots.go:316-517 (upsertQuotaSnapshotDB)
+  internal/cluster/quota_snapshots.go carry +458,12 -> internal/cluster/quota_snapshots.go:316-517 (upsertQuotaSnapshotDB)
+  internal/cluster/quota_snapshots.go carry +474,7 -> internal/cluster/quota_snapshots.go:316-517 (upsertQuotaSnapshotDB)
+  internal/cluster/quota_snapshots.go carry +483,27 -> internal/cluster/quota_snapshots.go:316-517 (upsertQuotaSnapshotDB)
+  internal/cluster/quota_snapshots.go carry +511,48 -> internal/cluster/quota_snapshots.go:544-551 (quotaWindowMatchesPrefixes); internal/cluster/quota_snapshots.go:553-559 (quotaWindowRecordIsCurrent); internal/cluster/quota_snapshots.go:519-542 (replaceQuotaWindowsPreserving); internal/cluster/quota_snapshots.go:316-517 (upsertQuotaSnapshotDB)
+  internal/cluster/quota_snapshots.go carry +643,11 -> internal/cluster/quota_snapshots.go:648-654 (quotaWindowRecordAggregateStatus)
+  internal/cluster/quota_snapshots.go carry +1146,7 -> internal/cluster/quota_snapshots.go:1069-1182 (quotaCredentialFromAuth)
+  internal/cluster/quota_snapshots.go carry +1178,13 -> internal/cluster/quota_snapshots.go:1185-1207 (AggregateQuotaWindowStatus)
+  internal/cluster/quota_snapshots.go carry +1257,34 -> internal/cluster/quota_snapshots.go:1239-1373 (validateQuotaSnapshotWrite)
+  internal/cluster/quota_window_preservation_test.go carry +1,135 -> internal/cluster/quota_window_preservation_test.go:9-127 (TestQuotaWindowPreservationIsAtomicAndKeepsRetryFloor); internal/cluster/quota_window_preservation_test.go:129-135 (TestQuotaWindowPreservationRejectsEmptyPrefix)
+  internal/proxyutil/redirect.go carry +1,44 -> internal/proxyutil/redirect.go:12-25 (SameOriginRedirectPolicy); internal/proxyutil/redirect.go:32-44 (originPort); internal/proxyutil/redirect.go:27-30 (sameOrigin)
+  internal/proxyutil/redirect_test.go carry +1,55 -> internal/proxyutil/redirect_test.go:9-36 (TestSameOriginRedirectPolicy); internal/proxyutil/redirect_test.go:38-55 (TestSameOriginRedirectPolicyPreservesLimitsAndCustomPolicy)
+  internal/quota/codex.go carry +358,7 -> internal/quota/codex.go:360-362 (quotaWindowAggregateStatus)
+  internal/quota/collector.go carry +69,7 -> internal/quota/collector.go:60-83 (Options)
+  internal/quota/collector.go carry +129,9 -> internal/quota/collector.go:96-177 (NewCollector)
+  internal/quota/collector.go carry +342,33 -> internal/quota/collector.go:323-416 (collectCredential)
+  internal/quota/collector.go carry +378,9 -> internal/quota/collector.go:323-416 (collectCredential)
+  internal/quota/collector.go carry +407,18 -> internal/quota/collector.go:418-431 (probeResult)
+  internal/quota/collector.go carry +529,21 -> internal/quota/collector.go:617-656 (probeHTTPRequest); internal/quota/collector.go:598-614 (probeRequestWithToken)
+  internal/quota/collector.go carry +555,14 -> internal/quota/collector.go:617-656 (probeHTTPRequest); internal/quota/collector.go:598-614 (probeRequestWithToken)
+  internal/quota/collector.go carry +602,10 -> internal/quota/collector.go:658-704 (failProbe)
+  internal/quota/collector.go carry +795,10 -> internal/quota/collector.go:863-879 (quotaRetryAfter)
+  internal/quota/collector.go carry +813,8 -> internal/quota/collector.go:881-892 (quotaHTTPProbeError)
+  internal/quota/collector_test.go carry +22,28 -> internal/quota/collector_test.go:25-45 (TestQuotaProbeBearerAuthorizationReplacesCallerHeaders)
+  internal/quota/collector_test.go carry +173,8 -> internal/quota/collector_test.go:145-261 (TestCollectorSupportsClaudeAntigravityKimiAndXAI)
+  internal/quota/providers.go carry +116,6 -> internal/quota/providers.go:131-141 (probeKimi); internal/quota/xai.go:253-357 (probeXAI)
+  internal/quota/providers.go carry +780,28 -> internal/quota/providers.go:885-901 (xaiBillingConfig); internal/quota/providers.go:879-883 (xaiBillingProductUsage)
+  internal/quota/providers.go carry +829,7 -> internal/quota/providers.go:922-974 (parseXAIUsageWindows)
+  internal/quota/providers.go carry +902,23 -> internal/quota/providers.go:992-1002 (parseXAIWeeklyWindow); internal/quota/providers.go:1004-1026 (xaiWeeklyWindow)
+  internal/quota/providers.go carry +927,89 -> internal/quota/providers.go:992-1002 (parseXAIWeeklyWindow); internal/quota/providers.go:1028-1034 (parseXAIWeeklyWindows); internal/quota/providers.go:1004-1026 (xaiWeeklyWindow); internal/quota/providers.go:1036-1109 (xaiWeeklyWindows)
+  internal/quota/providers_xai_quota_test.go carry +43,77 -> internal/quota/providers_xai_quota_test.go:86-107 (TestCollectorXAIKeepsMonthlyQuotaAfterInvalidWeeklyShape); internal/quota/providers_xai_quota_test.go:46-70 (TestCollectorXAIKeepsWeeklyQuotaAfterMalformedMonthlyResponse); internal/quota/providers_xai_quota_test.go:109-115 (TestParseXAIUsageRejectsMissingBillingConfig); internal/quota/providers_xai_quota_test.go:79-84 (TestParseXAIWeeklyQuotaRequiresObservedUsage); internal/quota/providers_xai_quota_test.go:72-77 (TestQuotaHTTPProbeErrorReportsOutdatedClient)
+  internal/quota/providers_xai_quota_test.go carry +184,7 -> internal/quota/providers_xai_quota_test.go:183-216 (TestCollectorPersistsXAIPlanAndSendsCLIHeaders)
+  internal/quota/providers_xai_quota_test.go carry +215,29 -> internal/quota/providers_xai_quota_test.go:218-265 (TestCollectorClearsPaidXAIQuotaAfterConfirmedFreeProfile)
+  internal/quota/providers_xai_quota_test.go carry +249,7 -> internal/quota/providers_xai_quota_test.go:218-265 (TestCollectorClearsPaidXAIQuotaAfterConfirmedFreeProfile)
+  internal/quota/providers_xai_quota_test.go carry +259,8 -> internal/quota/providers_xai_quota_test.go:218-265 (TestCollectorClearsPaidXAIQuotaAfterConfirmedFreeProfile)
+  internal/quota/providers_xai_quota_test.go carry +328,12 -> internal/quota/providers_xai_quota_test.go:326-363 (TestCollectorCollectsXAIWeeklyQuota)
+  internal/quota/providers_xai_quota_test.go carry +347,18 -> internal/quota/providers_xai_quota_test.go:326-363 (TestCollectorCollectsXAIWeeklyQuota)
+  internal/quota/providers_xai_quota_test.go carry +385,9 -> internal/quota/providers_xai_quota_test.go:365-394 (TestCollectorToleratesXAIWeeklyProbeFailure)
+  internal/quota/providers_xai_quota_test.go carry +424,10 -> internal/quota/providers_xai_quota_test.go:421-469 (TestCollectorKeepsXAIPlanWhenMonthlyProbeFails)
+  internal/quota/xai.go carry +1,363 -> internal/quota/xai.go:38-41 (UnmarshalJSON); internal/quota/xai.go:85-128 (parseXAISubscription); internal/quota/xai.go:253-357 (probeXAI); internal/quota/xai.go:43-49 (value); internal/quota/xai.go:173-204 (xaiCanInferZeroUsage); internal/quota/xai.go:210-227 (xaiCollectionFailure); internal/quota/xai.go:130-139 (xaiCurrentWeeklyPeriod); internal/quota/xai.go:23-23 (xaiEntitlementFree); internal/quota/xai.go:24-24 (xaiEntitlementPaid); internal/quota/xai.go:22-22 (xaiEntitlementUnknown); internal/quota/xai.go:229-242 (xaiFailurePriority); internal/quota/xai.go:244-251 (xaiHasObservedAmount); internal/quota/xai.go:206-208 (xaiInvalidResponse); internal/quota/xai.go:33-36 (xaiPercentage); internal/quota/xai.go:51-62 (xaiPercentageValue); internal/quota/xai.go:64-72 (xaiSiblingEndpoint); internal/quota/xai.go:27-30 (xaiSubscription); internal/quota/xai.go:74-83 (xaiSubscriptionURL); internal/quota/xai.go:19-19 (xaiWeeklyEntitlement); internal/quota/xai.go:141-171 (xaiWeeklyPeriodIsCurrent)
+  internal/quota/xai_client_version_test.go carry +15,9 -> 0458 identity/auth assertions retained; only profile fixture and billing-only counter adapted
+  internal/quota/xai_client_version_test.go carry +26,10 -> 0458 identity/auth assertions retained; only profile fixture and billing-only counter adapted
+  internal/quota/xai_omitted_zero_regression_test.go carry +1,43 -> internal/quota/xai_subscription_test.go:24-32 (xaiPaidFixture), with added stored-reading assertions
+  internal/quota/xai_subscription_test.go carry +1,406 -> internal/quota/xai_subscription_test.go:182-182 (RoundTrip); internal/quota/xai_subscription_test.go:266-310 (TestXAIEligibilityFailureRetainsLastObservationAndRecovers); internal/quota/xai_subscription_test.go:312-341 (TestXAIIndependentFailuresPreserveUsefulQuota); internal/quota/xai_subscription_test.go:155-165 (TestXAIOmittedTotalDoesNotContradictObservedProductUsage); internal/quota/xai_subscription_test.go:132-153 (TestXAIOmittedZeroRejectsInvalidOrContradictoryPeriods); internal/quota/xai_subscription_test.go:367-406 (TestXAIProbeCancellationStopsEveryRequest); internal/quota/xai_subscription_test.go:184-240 (TestXAIProbeUsesParallelRequestsWithOneDeadline); internal/quota/xai_subscription_test.go:242-264 (TestXAIQuotaV3RecollectsFreshLegacyAllowance); internal/quota/xai_subscription_test.go:343-365 (TestXAIRequestFailuresTakePriorityOverMissingQuota); internal/quota/xai_subscription_test.go:167-178 (TestXAISubscriptionPlanNamesAndAliases); internal/quota/xai_subscription_test.go:57-130 (TestXAIWeeklySubscriptionAndPresenceMatrix); internal/quota/xai_subscription_test.go:33-55 (serveXAIProbeFixture); internal/quota/xai_subscription_test.go:24-31 (xaiPaidFixture); internal/quota/xai_subscription_test.go:19-22 (xaiProbeFixture); internal/quota/xai_subscription_test.go:180-180 (xaiTestRoundTripper)
+
+diff --git a/internal/cluster/quota_snapshots.go b/internal/cluster/quota_snapshots.go
+--- a/internal/cluster/quota_snapshots.go
++++ b/internal/cluster/quota_snapshots.go
+@@ -21,6 +21,7 @@
+ 	quotaSnapshotSchemaVersion      = 1
+ 	antigravityQuotaSnapshotVersion = 2
+ 	codexQuotaSnapshotVersion       = 2
++	xaiQuotaSnapshotVersion         = 3
+ )
+ 
+ const (
+@@ -55,6 +56,8 @@
+ 		return antigravityQuotaSnapshotVersion
+ 	case "codex":
+ 		return codexQuotaSnapshotVersion
++	case "xai":
++		return xaiQuotaSnapshotVersion
+ 	default:
+ 		return quotaSnapshotSchemaVersion
+ 	}
+@@ -219,30 +222,33 @@
+ }
+ 
+ type QuotaSnapshotWrite struct {
+-	CredentialID          string
+-	QuotaStatus           string
+-	CollectionStatus      string
+-	Source                string
+-	ObservedAt            *time.Time
+-	ReceivedAt            *time.Time
+-	MaxAcceptedObservedAt *time.Time
+-	ExpiresAt             *time.Time
+-	LastAttemptAt         *time.Time
+-	LastSuccessAt         *time.Time
+-	NextProbeAt           *time.Time
+-	ConsecutiveFailure    int
+-	Error                 *QuotaCollectionError
+-	Runtime               *QuotaRuntime
+-	Plan                  *QuotaPlan
+-	ReplacePlan           bool
+-	ResetCredits          *QuotaResetCredits
+-	ReplaceResetCredits   bool
+-	ParserVersion         int
+-	CollectorVersion      int
+-	ExpectedProbeOwner    string
+-	ClearProbeLease       bool
+-	ReplaceWindows        bool
+-	Windows               []QuotaWindow
++	CredentialID           string
++	QuotaStatus            string
++	CollectionStatus       string
++	Source                 string
++	ObservedAt             *time.Time
++	ReceivedAt             *time.Time
++	MaxAcceptedObservedAt  *time.Time
++	ExpiresAt              *time.Time
++	LastAttemptAt          *time.Time
++	LastSuccessAt          *time.Time
++	NextProbeAt            *time.Time
++	NextProbeNotBefore     *time.Time
++	ConsecutiveFailure     int
++	Error                  *QuotaCollectionError
++	Runtime                *QuotaRuntime
++	Plan                   *QuotaPlan
++	FallbackPlan           *QuotaPlan
++	ReplacePlan            bool
++	ResetCredits           *QuotaResetCredits
++	ReplaceResetCredits    bool
++	ParserVersion          int
++	CollectorVersion       int
++	ExpectedProbeOwner     string
++	ClearProbeLease        bool
++	ReplaceWindows         bool
++	PreserveWindowPrefixes []string
++	Windows                []QuotaWindow
+ }
+ 
+ type QuotaListQuery struct {
+@@ -329,6 +335,10 @@
+ 		if errExisting == nil && !existingObservationInvalid && quotaObservationIsOlder(existing.ObservedAt, input.ObservedAt) {
+ 			return nil
+ 		}
++		// Resolve heuristics under the snapshot lock, without replacing a known plan.
++		if input.Plan == nil && !input.ReplacePlan && existing.PlanName == "" {
++			input.Plan = input.FallbackPlan
++		}
+ 
+ 		record, errRecord := quotaSnapshotRecordFromWrite(input)
+ 		if errRecord != nil {
+@@ -396,7 +406,17 @@
+ 			}
+ 		}
+ 
+-		if input.ReplaceWindows {
++		if input.ReplaceWindows && len(input.PreserveWindowPrefixes) > 0 {
++			if existing.ExpiresAt != nil {
++				if errBackfill := tx.Model(&QuotaWindowRecord{}).Where("credential_id = ? AND expires_at IS NULL", input.CredentialID).
++					Update("expires_at", existing.ExpiresAt.UTC()).Error; errBackfill != nil {
++					return errBackfill
++				}
++			}
++			if errReplace := replaceQuotaWindowsPreserving(tx, input, existing); errReplace != nil {
++				return errReplace
++			}
++		} else if input.ReplaceWindows {
+ 			windowIDs := make([]string, 0, len(input.Windows))
+ 			for _, window := range input.Windows {
+ 				windowIDs = append(windowIDs, window.ID)
+@@ -438,6 +458,12 @@
+ 			if errCurrent == nil && !currentObservationInvalid && current.ObservedAt.After(window.ObservedAt) {
+ 				continue
+ 			}
++			// Failed components can return metadata without a trustworthy new amount.
++			if errCurrent == nil && quotaWindowMatchesPrefixes(window.ID, input.PreserveWindowPrefixes) && quotaWindowRecordIsCurrent(current, existing, input.ObservedAt) &&
++				!window.IsUnlimited && window.Used == nil && window.Remaining == nil && window.UsedRatio == nil && window.RemainingRatio == nil &&
++				(current.IsUnlimited || current.Used != nil || current.Remaining != nil || current.UsedRatio != nil || current.RemainingRatio != nil) {
++				continue
++			}
+ 			if errCurrent == nil {
+ 				windowRecord.CreatedAt = current.CreatedAt
+ 			}
+@@ -448,7 +474,7 @@
+ 				return errSave
+ 			}
+ 		}
+-		if !input.ReplaceWindows && len(input.Windows) > 0 {
++		if (!input.ReplaceWindows || len(input.PreserveWindowPrefixes) > 0) && len(input.Windows) > 0 {
+ 			var merged []QuotaWindowRecord
+ 			mergedQuery := tx.Where("credential_id = ?", input.CredentialID)
+ 			if input.ObservedAt != nil {
+@@ -457,9 +483,27 @@
+ 			if errFind := mergedQuery.Find(&merged).Error; errFind != nil {
+ 				return errFind
+ 			}
+-			if errUpdate := tx.Model(&QuotaSnapshotRecord{}).Where("credential_id = ?", input.CredentialID).Updates(map[string]any{
++			updates := map[string]any{
+ 				"quota_status": quotaWindowRecordAggregateStatus(merged), "source": quotaWindowRecordAggregateSource(merged), "updated_at": time.Now().UTC(),
+-			}).Error; errUpdate != nil {
++			}
++			if input.Source == "active_probe" && input.ClearProbeLease && input.ExpectedProbeOwner != "" && record.ExpiresAt != nil {
++				// Retained windows must not gain freshness or postpone recollection.
++				deadline := record.ExpiresAt.UTC()
++				for _, window := range merged {
++					if window.ExpiresAt != nil && window.ExpiresAt.Before(deadline) {
++						deadline = window.ExpiresAt.UTC()
++					}
++				}
++				if deadline.Before(*record.ExpiresAt) {
++					updates["expires_at"] = deadline
++					nextProbeAt := deadline
++					if input.NextProbeNotBefore != nil && input.NextProbeNotBefore.After(nextProbeAt) {
++						nextProbeAt = input.NextProbeNotBefore.UTC()
++					}
++					updates["next_probe_at"] = nextProbeAt
++				}
++			}
++			if errUpdate := tx.Model(&QuotaSnapshotRecord{}).Where("credential_id = ?", input.CredentialID).Updates(updates).Error; errUpdate != nil {
+ 				return errUpdate
+ 			}
+ 		}
+@@ -467,6 +511,48 @@
+ 		return nil
+ 	})
+ 	return updated, errTransaction
++}
++
++func replaceQuotaWindowsPreserving(tx *gorm.DB, input QuotaSnapshotWrite, existing QuotaSnapshotRecord) error {
++	var stored []QuotaWindowRecord
++	if errFind := tx.Where("credential_id = ?", input.CredentialID).Find(&stored).Error; errFind != nil {
++		return errFind
++	}
++	incoming := make(map[string]struct{}, len(input.Windows))
++	for _, window := range input.Windows {
++		incoming[window.ID] = struct{}{}
++	}
++	var remove []string
++	for _, window := range stored {
++		if _, present := incoming[window.WindowID]; present {
++			continue
++		}
++		if quotaWindowMatchesPrefixes(window.WindowID, input.PreserveWindowPrefixes) && quotaWindowRecordIsCurrent(window, existing, input.ObservedAt) {
++			continue
++		}
++		remove = append(remove, window.WindowID)
++	}
++	if len(remove) == 0 {
++		return nil
++	}
++	return tx.Where("credential_id = ? AND window_id IN ?", input.CredentialID, remove).Delete(&QuotaWindowRecord{}).Error
++}
++
++func quotaWindowMatchesPrefixes(id string, prefixes []string) bool {
++	for _, prefix := range prefixes {
++		if strings.HasPrefix(id, prefix) {
++			return true
++		}
++	}
++	return false
++}
++
++func quotaWindowRecordIsCurrent(window QuotaWindowRecord, snapshot QuotaSnapshotRecord, now *time.Time) bool {
++	expiresAt := window.ExpiresAt
++	if expiresAt == nil {
++		expiresAt = snapshot.ExpiresAt
++	}
++	return now != nil && expiresAt != nil && expiresAt.After(*now) && (window.ResetAt == nil || window.ResetAt.After(*now))
+ }
+ 
+ func createQuotaSnapshotRecord(tx *gorm.DB, record *QuotaSnapshotRecord, input QuotaSnapshotWrite) (bool, error) {
+@@ -557,24 +643,11 @@
+ }
+ 
+ func quotaWindowRecordAggregateStatus(windows []QuotaWindowRecord) string {
+-	status := "unknown"
++	items := make([]QuotaWindow, 0, len(windows))
+ 	for _, window := range windows {
+-		switch window.Status {
+-		case "exhausted":
+-			return "exhausted"
+-		case "low":
+-			status = "low"
+-		case "error":
+-			if status != "low" {
+-				status = "error"
+-			}
+-		case "healthy":
+-			if status == "unknown" {
+-				status = "healthy"
+-			}
+-		}
+-	}
+-	return status
++		items = append(items, QuotaWindow{ScopeID: quotaOptionalString(window.ScopeID), Status: window.Status})
++	}
++	return AggregateQuotaWindowStatus(items)
+ }
+ 
+ func quotaWindowRecordAggregateSource(windows []QuotaWindowRecord) string {
+@@ -1073,7 +1146,7 @@
+ 		}
+ 		displayWindows = validWindows
+ 		if len(displayWindows) > 0 {
+-			item.QuotaStatus = quotaWindowAggregateDTOStatus(displayWindows)
++			item.QuotaStatus = AggregateQuotaWindowStatus(displayWindows)
+ 			item.Source = quotaOptionalString(quotaWindowAggregateDTOSource(displayWindows))
+ 		}
+ 	}
+@@ -1105,9 +1178,13 @@
+ 	return item
+ }
+ 
+-func quotaWindowAggregateDTOStatus(windows []QuotaWindow) string {
++// AggregateQuotaWindowStatus summarizes independent limits, excluding shared-pool breakdowns.
++func AggregateQuotaWindowStatus(windows []QuotaWindow) string {
+ 	status := "unknown"
+ 	for _, window := range windows {
++		if strings.EqualFold(quotaStringValue(window.ScopeID), "xai-product-usage") {
++			continue
++		}
+ 		switch window.Status {
+ 		case "exhausted":
+ 			return "exhausted"
+@@ -1180,11 +1257,34 @@
+ 	if input.Source != "" && !quotaAllowed(input.Source, "response_header", "active_probe", "mixed") {
+ 		return fmt.Errorf("unsupported quota source %q", input.Source)
+ 	}
+-	if input.Plan != nil {
+-		input.Plan.Name = quotaBoundedText(input.Plan.Name, 64)
+-		if input.Plan.Name == "" {
++	for _, plan := range []*QuotaPlan{input.Plan, input.FallbackPlan} {
++		if plan == nil {
++			continue
++		}
++		plan.Name = quotaBoundedText(plan.Name, 64)
++		if plan.Name == "" {
+ 			return fmt.Errorf("quota plan name is required")
+ 		}
++	}
++	if input.FallbackPlan != nil && (input.Source != "active_probe" || !input.ClearProbeLease || strings.TrimSpace(input.ExpectedProbeOwner) == "") {
++		return fmt.Errorf("fallback quota plans require a leased active probe")
++	}
++	if len(input.PreserveWindowPrefixes) > 0 {
++		if input.Source != "active_probe" || !input.ReplaceWindows || input.ObservedAt == nil {
++			return fmt.Errorf("preserved quota windows require an active replacement observation")
++		}
++		for _, prefix := range input.PreserveWindowPrefixes {
++			if strings.TrimSpace(prefix) == "" || len(prefix) > quotaWindowTextMaxLength {
++				return fmt.Errorf("invalid preserved quota window prefix")
++			}
++		}
++	}
++	if input.NextProbeNotBefore != nil {
++		if input.NextProbeNotBefore.IsZero() {
++			return fmt.Errorf("quota next probe lower bound must not be zero")
++		}
++		notBefore := input.NextProbeNotBefore.UTC()
++		input.NextProbeNotBefore = &notBefore
+ 	}
+ 	if errResetCredits := normalizeQuotaResetCredits(input.ResetCredits); errResetCredits != nil {
+ 		return errResetCredits
+diff --git a/internal/cluster/quota_window_preservation_test.go b/internal/cluster/quota_window_preservation_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/cluster/quota_window_preservation_test.go
+@@ -0,0 +1,135 @@
++package cluster
++
++import (
++	"context"
++	"testing"
++	"time"
++)
++
++func TestQuotaWindowPreservationIsAtomicAndKeepsRetryFloor(t *testing.T) {
++	for _, backend := range []string{"sqlite", "postgres"} {
++		t.Run(backend, func(t *testing.T) {
++			ctx := context.Background()
++			var repo *Repository
++			if backend == "postgres" {
++				repo = newPostgresQuiescenceRepository(t)
++			} else {
++				var closeRepo func()
++				repo, closeRepo = newBillingTestRepository(t, ctx)
++				defer closeRepo()
++			}
++			id := "xai-preservation"
++			seedQuotaSnapshotAuth(t, repo, id, "xai", "XAI", map[string]any{"type": "xai", "access_token": "synthetic"})
++			base := time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)
++			expiry := base.Add(30 * time.Minute)
++			monthExpiry := base.Add(5 * time.Minute)
++			windows := make([]QuotaWindow, 0, 4)
++			for index, name := range []string{"xai-monthly-spend", "xai-on-demand", "xai-weekly-usage", "xai-product-grokbuild"} {
++				remaining := float64(50)
++				deadline := expiry
++				if index == 0 {
++					remaining = 0
++					deadline = monthExpiry
++				}
++				windows = append(windows, QuotaWindow{ID: name, Scope: "account", Mode: "fixed", Status: "unknown", Unit: "percentage", Remaining: &remaining, Limit: float64Ptr(100), PeriodUnit: "week", PeriodValue: float64Ptr(1), ObservedAt: base, Source: "active_probe", ExpiresAt: &deadline, Priority: index})
++			}
++			_, errSeed := repo.UpsertQuotaSnapshot(ctx, QuotaSnapshotWrite{CredentialID: id, QuotaStatus: "exhausted", CollectionStatus: "success", Source: "active_probe", ObservedAt: &base, ExpiresAt: &expiry, NextProbeAt: &expiry, ReplaceWindows: true, Windows: windows, ParserVersion: QuotaSnapshotVersion("xai"), CollectorVersion: QuotaSnapshotVersion("xai")})
++			if errSeed != nil {
++				t.Fatal(errSeed)
++			}
++			db, errDB := repo.database()
++			if errDB != nil {
++				t.Fatal(errDB)
++			}
++			// Legacy rows inherit their original snapshot deadline exactly once.
++			if errLegacy := db.Model(&QuotaWindowRecord{}).Where("credential_id = ? AND window_id = ?", id, "xai-on-demand").Update("expires_at", nil).Error; errLegacy != nil {
++				t.Fatal(errLegacy)
++			}
++			now := base.Add(time.Minute)
++			claimed, errClaim := repo.ForceClaimEligibleQuotaProbe(ctx, id, "owner", now, time.Minute)
++			if errClaim != nil || !claimed {
++				t.Fatalf("claim failed: %v", errClaim)
++			}
++			newExpiry := now.Add(30 * time.Minute)
++			retryFloor := now.Add(10 * time.Minute)
++			incoming := windows[2]
++			incoming.ObservedAt = now
++			incoming.ExpiresAt = &newExpiry
++			incoming.Remaining = float64Ptr(99)
++			incoming.Used = nil
++			incoming.UsedRatio = nil
++			incoming.RemainingRatio = nil
++			incoming.Status = "unknown"
++			unknown := windows[0]
++			unknown.ObservedAt = now
++			unknown.ExpiresAt = &newExpiry
++			unknown.Remaining = nil
++			unknown.Used = nil
++			unknown.UsedRatio = nil
++			unknown.RemainingRatio = nil
++			unknown.Status = "unknown"
++			write := QuotaSnapshotWrite{CredentialID: id, QuotaStatus: "healthy", CollectionStatus: "partial", Source: "active_probe", ObservedAt: &now, ExpiresAt: &newExpiry, LastAttemptAt: &now, NextProbeAt: &newExpiry, NextProbeNotBefore: &retryFloor, ExpectedProbeOwner: "other-owner", ClearProbeLease: true, ReplaceWindows: true, PreserveWindowPrefixes: []string{"xai-monthly-", "xai-on-demand"}, Windows: []QuotaWindow{incoming, unknown}, ParserVersion: QuotaSnapshotVersion("xai"), CollectorVersion: QuotaSnapshotVersion("xai")}
++			updated, errWrongOwner := repo.UpsertQuotaSnapshot(ctx, write)
++			if errWrongOwner != nil || updated {
++				t.Fatalf("wrong lease owner modified quota: updated=%v error=%v", updated, errWrongOwner)
++			}
++			untouched, errUntouched := repo.GetQuotaCredential(ctx, id, now)
++			if errUntouched != nil || len(untouched.Windows) != 4 || untouched.ObservedAt == nil || !untouched.ObservedAt.Equal(base) {
++				t.Fatalf("fenced replacement mutated quota: item=%+v error=%v", untouched, errUntouched)
++			}
++			write.ExpectedProbeOwner = "owner"
++			updated, errWrite := repo.UpsertQuotaSnapshot(ctx, write)
++			if errWrite != nil || !updated {
++				t.Fatalf("replacement failed: updated=%v error=%v", updated, errWrite)
++			}
++			item, errGet := repo.GetQuotaCredential(ctx, id, now)
++			if errGet != nil || len(item.Windows) != 3 || item.QuotaStatus != "exhausted" || item.ExpiresAt == nil || !item.ExpiresAt.Equal(monthExpiry) || item.NextProbeAt == nil || !item.NextProbeAt.Equal(retryFloor) {
++				t.Fatalf("merged quota lost risk or retry bounds: item=%+v error=%v", item, errGet)
++			}
++			for _, window := range item.Windows {
++				switch window.ID {
++				case "xai-monthly-spend":
++					if window.Remaining == nil || *window.Remaining != 0 || !window.ObservedAt.Equal(base) || window.ExpiresAt == nil || !window.ExpiresAt.Equal(monthExpiry) {
++						t.Fatal("unknown monthly amount overwrote a valid observation")
++					}
++				case "xai-on-demand":
++					if !window.ObservedAt.Equal(base) || window.ExpiresAt == nil || !window.ExpiresAt.Equal(expiry) {
++						t.Fatal("legacy window gained a new freshness deadline")
++					}
++				case "xai-weekly-usage":
++					if window.Remaining == nil || *window.Remaining != 99 || !window.ObservedAt.Equal(now) {
++						t.Fatal("successful weekly component was not updated")
++					}
++				default:
++					t.Fatalf("successful component retained a removed product: %s", window.ID)
++				}
++			}
++			now = base.Add(6 * time.Minute)
++			claimed, errClaim = repo.ForceClaimEligibleQuotaProbe(ctx, id, "owner", now, time.Minute)
++			if errClaim != nil || !claimed {
++				t.Fatal("recovery claim failed")
++			}
++			newExpiry = now.Add(30 * time.Minute)
++			incoming.ObservedAt = now
++			write.ObservedAt = &now
++			write.Windows = []QuotaWindow{incoming}
++			write.NextProbeNotBefore = nil
++			updated, errWrite = repo.UpsertQuotaSnapshot(ctx, write)
++			if errWrite != nil || !updated {
++				t.Fatalf("recovery failed: updated=%v error=%v", updated, errWrite)
++			}
++			recovered, errRecovered := repo.GetQuotaCredential(ctx, id, now)
++			if errRecovered != nil || len(recovered.Windows) != 2 || recovered.QuotaStatus != "healthy" || recovered.ExpiresAt == nil || !recovered.ExpiresAt.Equal(expiry) || recovered.NextProbeAt == nil || !recovered.NextProbeAt.Equal(expiry) {
++				t.Fatalf("expired preserved amount survived or retained data was refreshed: item=%+v error=%v", recovered, errRecovered)
++			}
++		})
++	}
++}
++
++func TestQuotaWindowPreservationRejectsEmptyPrefix(t *testing.T) {
++	now := time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)
++	input := QuotaSnapshotWrite{CredentialID: "test", QuotaStatus: "unknown", CollectionStatus: "partial", Source: "active_probe", ObservedAt: &now, ReplaceWindows: true, PreserveWindowPrefixes: []string{""}}
++	if errValidate := validateQuotaSnapshotWrite(&input); errValidate == nil {
++		t.Fatal("an empty preservation prefix would match every window")
++	}
++}
+diff --git a/internal/proxyutil/redirect.go b/internal/proxyutil/redirect.go
+new file mode 100644
+--- /dev/null
++++ b/internal/proxyutil/redirect.go
+@@ -0,0 +1,44 @@
++package proxyutil
++
++import (
++	"errors"
++	"net/http"
++	"net/url"
++	"strings"
++)
++
++// SameOriginRedirectPolicy prevents credentials in headers or bodies from leaving
++// the original origin, while preserving an existing client's redirect policy.
++func SameOriginRedirectPolicy(previous func(*http.Request, []*http.Request) error) func(*http.Request, []*http.Request) error {
++	return func(request *http.Request, via []*http.Request) error {
++		if len(via) == 0 || request.URL.User != nil || !sameOrigin(request.URL, via[0].URL) {
++			return errors.New("redirect to a different origin is not allowed")
++		}
++		if previous != nil {
++			return previous(request, via)
++		}
++		if len(via) >= 10 {
++			return errors.New("stopped after 10 redirects")
++		}
++		return nil
++	}
++}
++
++func sameOrigin(left, right *url.URL) bool {
++	return strings.EqualFold(left.Scheme, right.Scheme) &&
++		strings.EqualFold(left.Hostname(), right.Hostname()) && originPort(left) == originPort(right)
++}
++
++func originPort(target *url.URL) string {
++	if port := target.Port(); port != "" {
++		return port
++	}
++	switch strings.ToLower(target.Scheme) {
++	case "https":
++		return "443"
++	case "http":
++		return "80"
++	default:
++		return ""
++	}
++}
+diff --git a/internal/proxyutil/redirect_test.go b/internal/proxyutil/redirect_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/proxyutil/redirect_test.go
+@@ -0,0 +1,55 @@
++package proxyutil
++
++import (
++	"errors"
++	"net/http"
++	"testing"
++)
++
++func TestSameOriginRedirectPolicy(t *testing.T) {
++	for _, test := range []struct {
++		name, origin, target string
++		allowed              bool
++	}{
++		{"same origin", "https://example.com/a", "https://example.com/b", true},
++		{"default https port", "https://example.com/a", "https://EXAMPLE.com:443/b", true},
++		{"default http port", "http://example.com/a", "http://example.com:80/b", true},
++		{"different host", "https://example.com/a", "https://other.example/b", false},
++		{"subdomain", "https://example.com/a", "https://login.example.com/b", false},
++		{"different port", "https://example.com/a", "https://example.com:8443/b", false},
++		{"https downgrade", "https://example.com/a", "http://example.com/b", false},
++		{"different scheme", "http://example.com/a", "https://example.com/b", false},
++		{"userinfo", "https://example.com/a", "https://other:password@example.com/b", false},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			origin, errOrigin := http.NewRequest(http.MethodPost, test.origin, nil)
++			target, errTarget := http.NewRequest(http.MethodPost, test.target, nil)
++			if errOrigin != nil || errTarget != nil {
++				t.Fatal("invalid test URL")
++			}
++			errRedirect := SameOriginRedirectPolicy(nil)(target, []*http.Request{origin})
++			if (errRedirect == nil) != test.allowed {
++				t.Fatalf("redirect allowed=%v, want %v", errRedirect == nil, test.allowed)
++			}
++		})
++	}
++}
++
++func TestSameOriginRedirectPolicyPreservesLimitsAndCustomPolicy(t *testing.T) {
++	origin, _ := http.NewRequest(http.MethodGet, "https://example.com/a", nil)
++	target, _ := http.NewRequest(http.MethodGet, "https://example.com/b", nil)
++	if errRedirect := SameOriginRedirectPolicy(nil)(target, make([]*http.Request, 0)); errRedirect == nil {
++		t.Fatal("redirect without an original request was accepted")
++	}
++	via := make([]*http.Request, 10)
++	for index := range via {
++		via[index] = origin
++	}
++	if errRedirect := SameOriginRedirectPolicy(nil)(target, via); errRedirect == nil {
++		t.Fatal("default redirect limit was bypassed")
++	}
++	previous := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
++	if errRedirect := SameOriginRedirectPolicy(previous)(target, via[:1]); !errors.Is(errRedirect, http.ErrUseLastResponse) {
++		t.Fatal("existing redirect policy was discarded")
++	}
++}
+diff --git a/internal/quota/codex.go b/internal/quota/codex.go
+--- a/internal/quota/codex.go
++++ b/internal/quota/codex.go
+@@ -358,24 +358,7 @@
+ }
+ 
+ func quotaWindowAggregateStatus(windows []cluster.QuotaWindow) string {
+-	status := "unknown"
+-	for _, window := range windows {
+-		switch window.Status {
+-		case "exhausted":
+-			return "exhausted"
+-		case "low":
+-			status = "low"
+-		case "error":
+-			if status != "low" {
+-				status = "error"
+-			}
+-		case "healthy":
+-			if status == "unknown" {
+-				status = "healthy"
+-			}
+-		}
+-	}
+-	return status
++	return cluster.AggregateQuotaWindowStatus(windows)
+ }
+ 
+ func quotaIDSlug(value string) string {
+diff --git a/internal/quota/collector.go b/internal/quota/collector.go
+--- a/internal/quota/collector.go
++++ b/internal/quota/collector.go
+@@ -69,6 +69,7 @@
+ 	ClaudeProfileURL       string
+ 	KimiUsageURL           string
+ 	XAIBillingURL          string
++	XAIProfileURL          string
+ 	MetaQuotaURL           string
+ 	AntigravityURLs        []string
+ 	Now                    func() time.Time
+@@ -128,6 +129,9 @@
+ 	}
+ 	if strings.TrimSpace(options.XAIBillingURL) == "" {
+ 		options.XAIBillingURL = xaiBillingURL
++	}
++	if strings.TrimSpace(options.XAIProfileURL) == "" {
++		options.XAIProfileURL = xaiSiblingEndpoint(options.XAIBillingURL, "user")
+ 	}
+ 	if strings.TrimSpace(options.MetaQuotaURL) == "" {
+ 		options.MetaQuotaURL = metaQuotaURL
+@@ -338,6 +342,33 @@
+ 	signal.ProbeOK = true
+ 	observedAt := c.options.Now().UTC()
+ 	expiresAt := observedAt.Add(c.options.SnapshotFreshness)
++	if result.boundWindowLifetimes {
++		// A reset ends that window's lifetime, not every other cycle's lifetime.
++		for index := range result.windows {
++			window := &result.windows[index]
++			deadline := window.ObservedAt.Add(c.options.SnapshotFreshness)
++			if window.ExpiresAt != nil && window.ExpiresAt.Before(deadline) {
++				deadline = window.ExpiresAt.UTC()
++			}
++			// The reset may have passed between parsing and persistence.
++			if window.ResetAt != nil && window.ResetAt.Before(deadline) {
++				deadline = window.ResetAt.UTC()
++			}
++			window.ExpiresAt = &deadline
++			if deadline.Before(expiresAt) {
++				expiresAt = deadline
++			}
++		}
++	}
++	nextProbeAt := expiresAt
++	var nextProbeNotBefore *time.Time
++	if result.retryAfter > 0 {
++		retryAt := observedAt.Add(result.retryAfter)
++		nextProbeNotBefore = &retryAt
++		if retryAt.After(nextProbeAt) {
++			nextProbeAt = retryAt
++		}
++	}
+ 	status := quotaWindowAggregateStatus(result.windows)
+ 	collectionStatus := "success"
+ 	if result.partial {
+@@ -347,9 +378,9 @@
+ 	input := cluster.QuotaSnapshotWrite{
+ 		CredentialID: auth.ID, QuotaStatus: status, CollectionStatus: collectionStatus, Source: "active_probe",
+ 		ObservedAt: &observedAt, MaxAcceptedObservedAt: &observedAt, ExpiresAt: &expiresAt, LastAttemptAt: &observedAt, LastSuccessAt: &observedAt,
+-		NextProbeAt: &expiresAt, ConsecutiveFailure: 0, Error: result.collectionError, Plan: result.plan, ReplacePlan: result.replacePlan, ParserVersion: snapshotVersion, CollectorVersion: snapshotVersion,
++		NextProbeAt: &nextProbeAt, NextProbeNotBefore: nextProbeNotBefore, ConsecutiveFailure: 0, Error: result.collectionError, Plan: result.plan, FallbackPlan: result.fallbackPlan, ReplacePlan: result.replacePlan, ParserVersion: snapshotVersion, CollectorVersion: snapshotVersion,
+ 		ResetCredits: result.resetCredits, ReplaceResetCredits: result.replaceResetCredits,
+-		ExpectedProbeOwner: c.options.Owner, ClearProbeLease: true, ReplaceWindows: result.replaceWindows, Windows: result.windows,
++		ExpectedProbeOwner: c.options.Owner, ClearProbeLease: true, ReplaceWindows: result.replaceWindows, PreserveWindowPrefixes: result.preserveWindowPrefixes, Windows: result.windows,
+ 	}
+ 	if strings.TrimSpace(c.options.HomeID) != "" {
+ 		input.Runtime = &cluster.QuotaRuntime{HomeID: c.options.HomeID, HomeLabel: c.options.HomeID}
+@@ -376,14 +407,18 @@
+ }
+ 
+ type probeResult struct {
+-	windows             []cluster.QuotaWindow
+-	plan                *cluster.QuotaPlan
+-	resetCredits        *cluster.QuotaResetCredits
+-	partial             bool
+-	replaceWindows      bool
+-	replacePlan         bool
+-	replaceResetCredits bool
+-	collectionError     *cluster.QuotaCollectionError
++	windows                []cluster.QuotaWindow
++	plan                   *cluster.QuotaPlan
++	fallbackPlan           *cluster.QuotaPlan
++	resetCredits           *cluster.QuotaResetCredits
++	partial                bool
++	replaceWindows         bool
++	preserveWindowPrefixes []string
++	replacePlan            bool
++	replaceResetCredits    bool
++	collectionError        *cluster.QuotaCollectionError
++	retryAfter             time.Duration
++	boundWindowLifetimes   bool
+ }
+ 
+ func (c *Collector) probeCredential(ctx context.Context, auth *coreauth.Auth) (probeResult, *probeError) {
+@@ -494,6 +529,21 @@
+ 	if token == "" {
+ 		return nil, nil, &probeError{code: "AUTH_TOKEN_UNAVAILABLE", message: "Credential access token is unavailable.", retryable: true}
+ 	}
++	headers = headers.Clone()
++	if headers == nil {
++		headers = make(http.Header)
++	}
++	for key := range headers {
++		if strings.EqualFold(key, "Authorization") {
++			delete(headers, key)
++		}
++	}
++	headers.Set("Authorization", "Bearer "+token)
++	return c.probeHTTPRequest(ctx, auth, method, targetURL, body, headers)
++}
++
++// probeHTTPRequest shares transport and safe error handling with body-authenticated collectors.
++func (c *Collector) probeHTTPRequest(ctx context.Context, auth *coreauth.Auth, method string, targetURL string, body []byte, headers http.Header) ([]byte, http.Header, *probeError) {
+ 	requestCtx, cancel := context.WithTimeout(ctx, c.options.ProbeTimeout)
+ 	defer cancel()
+ 	req, errRequest := http.NewRequestWithContext(requestCtx, method, targetURL, bytes.NewReader(body))
+@@ -505,12 +555,14 @@
+ 			req.Header.Add(key, value)
+ 		}
+ 	}
+-	req.Header.Set("Authorization", "Bearer "+token)
+ 	client, errClient := c.options.HTTPClient(auth, c.options.ProbeTimeout)
+ 	if errClient != nil {
+ 		return nil, nil, &probeError{code: "PROBE_TRANSPORT_INVALID", message: "Credential proxy configuration is invalid.", retryable: false}
+ 	}
+-	resp, errDo := client.Do(req)
++	// A client factory may share its client across concurrent probes.
++	requestClient := *client
++	requestClient.CheckRedirect = proxyutil.SameOriginRedirectPolicy(client.CheckRedirect)
++	resp, errDo := requestClient.Do(req)
+ 	if errDo != nil {
+ 		return nil, nil, &probeError{code: "UPSTREAM_UNAVAILABLE", message: "Upstream quota endpoint is unavailable.", retryable: true}
+ 	}
+@@ -550,10 +602,10 @@
+ 			}
+ 		}
+ 	}
++	delay = quotaBackoffWithJitter(delay, credentialID)
+ 	if failure.retryAfter > delay {
+ 		delay = failure.retryAfter
+ 	}
+-	delay = quotaBackoffWithJitter(delay, credentialID)
+ 	nextProbeAt := now.Add(delay)
+ 	occurredAt := now
+ 	collectionError := cluster.QuotaCollectionError{Code: failure.code, Message: failure.message, Retryable: failure.retryable, OccurredAt: &occurredAt}
+@@ -743,6 +795,10 @@
+ 		return 0
+ 	}
+ 	if seconds, errSeconds := strconv.ParseInt(value, 10, 64); errSeconds == nil && seconds > 0 {
++		const maxDelay = time.Duration(1<<63 - 1)
++		if seconds > int64(maxDelay/time.Second) {
++			return maxDelay
++		}
+ 		return time.Duration(seconds) * time.Second
+ 	}
+ 	if retryAt, errTime := http.ParseTime(value); errTime == nil && retryAt.After(now) {
+@@ -757,6 +813,8 @@
+ 		return &probeError{code: "UPSTREAM_AUTH_REJECTED", message: "Upstream rejected the credential.", retryable: true, statusCode: status, requestID: requestID}
+ 	case http.StatusTooManyRequests:
+ 		return &probeError{code: "UPSTREAM_RATE_LIMITED", message: "Upstream quota endpoint rate limited the probe.", retryable: true, statusCode: status, requestID: requestID}
++	case http.StatusUpgradeRequired:
++		return &probeError{code: "UPSTREAM_CLIENT_OUTDATED", message: "Upstream quota endpoint requires a newer client version.", retryable: false, statusCode: status, requestID: requestID}
+ 	default:
+ 		return &probeError{code: "UPSTREAM_UNAVAILABLE", message: "Upstream quota endpoint returned an unavailable response.", retryable: status >= 500, statusCode: status, requestID: requestID}
+ 	}
+diff --git a/internal/quota/collector_test.go b/internal/quota/collector_test.go
+--- a/internal/quota/collector_test.go
++++ b/internal/quota/collector_test.go
+@@ -22,6 +22,28 @@
+ 	"gorm.io/gorm/logger"
+ )
+ 
++func TestQuotaProbeBearerAuthorizationReplacesCallerHeaders(t *testing.T) {
++	received := make(chan []string, 1)
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		received <- append([]string(nil), r.Header.Values("Authorization")...)
++		_, _ = w.Write([]byte(`{}`))
++	}))
++	defer server.Close()
++	collector := NewCollector(newCollectorTestRepository(t), Options{Owner: "header-test"})
++	headers := http.Header{"authorization": []string{"stale-lowercase"}, "Authorization": []string{"stale-canonical"}}
++	_, _, errProbe := collector.probeRequestWithToken(context.Background(), &coreauth.Auth{}, "test-token", http.MethodGet, server.URL, nil, headers)
++	if errProbe != nil {
++		t.Fatalf("quota request failed: %v", errProbe)
++	}
++	values := <-received
++	if len(values) != 1 || values[0] != "Bearer test-token" {
++		t.Fatal("quota request must send exactly one current bearer credential")
++	}
++	if headers["authorization"][0] != "stale-lowercase" || headers["Authorization"][0] != "stale-canonical" {
++		t.Fatal("quota request mutated the caller's header map")
++	}
++}
++
+ func TestCollectorPersistsCodexActiveProbeSnapshot(t *testing.T) {
+ 	repo := newCollectorTestRepository(t)
+ 	now := time.Date(2026, 7, 16, 4, 0, 0, 0, time.UTC)
+@@ -151,6 +173,8 @@
+ 			_, _ = w.Write([]byte(`{"user":{"userId":"user-1","region":"REGION_OVERSEA"},"usage":{"limit":"100","used":"44","remaining":"56","resetTime":"2026-07-21T13:09:11Z"},"limits":[{"window":{"duration":300,"timeUnit":"TIME_UNIT_MINUTE"},"detail":{"limit":"100","used":"10","remaining":"90","resetTime":"2026-07-19T14:09:11Z"}}],"totalQuota":{"limit":"100","remaining":"99"}}`))
+ 		case "/xai":
+ 			_, _ = w.Write([]byte(`{"config":{"monthlyLimit":{"val":20000},"used":{"val":167},"billingPeriodEnd":"2026-08-01T00:00:00Z"}}`))
++		case "/user":
++			_, _ = w.Write([]byte(`{"subscriptionTier":null}`))
+ 		default:
+ 			w.WriteHeader(http.StatusNotFound)
+ 		}
+diff --git a/internal/quota/providers.go b/internal/quota/providers.go
+--- a/internal/quota/providers.go
++++ b/internal/quota/providers.go
+@@ -116,59 +116,6 @@
+ 		return nil, &probeError{code: "UPSTREAM_RESPONSE_INVALID", message: "Kimi quota response did not contain usable windows.", retryable: true}
+ 	}
+ 	return windows, nil
+-}
+-
+-func (c *Collector) probeXAI(ctx context.Context, auth *coreauth.Auth) (probeResult, *probeError) {
+-	headers := http.Header{
+-		"Accept":               []string{"*/*"},
+-		"User-Agent":           []string{xaiGrokUserAgent},
+-		xaiTokenAuthHeader:     []string{xaiTokenAuthValue},
+-		xaiClientVersionHeader: []string{xaiClientVersionValue},
+-	}
+-	if userID := quotaMetadataString(auth.Metadata, "sub", "subject", "user_id", "userId"); userID != "" {
+-		headers.Set("x-userid", userID)
+-	}
+-	now := c.options.Now().UTC()
+-	var windows []cluster.QuotaWindow
+-	var plan *cluster.QuotaPlan
+-	monthlyPayload, _, errMonthly := c.probeRequest(ctx, auth, http.MethodGet, c.options.XAIBillingURL, nil, headers)
+-	if errMonthly == nil {
+-		recordReturnedWindows(ctx, "xai-monthly", monthlyPayload)
+-		monthlyWindows, monthlyPlan, errParse := parseXAIUsageWindows(monthlyPayload, now)
+-		if errParse != nil {
+-			return probeResult{}, &probeError{code: "UPSTREAM_RESPONSE_INVALID", message: "xAI billing response did not contain usable quota.", retryable: true}
+-		}
+-		windows, plan = monthlyWindows, monthlyPlan
+-	}
+-	// The weekly credits quota lives behind the format=credits billing variant
+-	// and is the primary limit for subscription accounts; a weekly probe failure
+-	// is non-fatal while the monthly response still yields usable windows.
+-	weeklyPayload, _, errWeekly := c.probeRequest(ctx, auth, http.MethodGet, xaiWeeklyBillingURL(c.options.XAIBillingURL), nil, headers)
+-	if errWeekly == nil {
+-		recordReturnedWindows(ctx, "xai-weekly", weeklyPayload)
+-		if weeklyWindow, ok := parseXAIWeeklyWindow(weeklyPayload, now); ok {
+-			windows = append([]cluster.QuotaWindow{weeklyWindow}, windows...)
+-		}
+-	}
+-	if len(windows) == 0 {
+-		if errMonthly != nil {
+-			return probeResult{}, errMonthly
+-		}
+-		if errWeekly != nil {
+-			return probeResult{}, errWeekly
+-		}
+-		return probeResult{}, &probeError{code: "UPSTREAM_RESPONSE_INVALID", message: "xAI billing response did not contain usable quota.", retryable: true}
+-	}
+-	result := probeResult{windows: windows, plan: plan, replaceWindows: true, replacePlan: true}
+-	if errMonthly != nil {
+-		// The weekly window alone cannot re-derive the subscription plan, so a
+-		// monthly outage downgrades the collection to partial and keeps the
+-		// previously stored plan instead of clearing it.
+-		result.partial = true
+-		result.collectionError = probeCollectionError(errMonthly, now)
+-		result.replacePlan = false
+-	}
+-	return result, nil
+ }
+ 
+ func (c *Collector) probeMeta(ctx context.Context, auth *coreauth.Auth) (probeResult, *probeError) {
+@@ -833,20 +780,28 @@
+ 	End   string `json:"end"`
+ }
+ 
++type xaiBillingProductUsage struct {
++	Product           string        `json:"product"`
++	UsagePercent      xaiPercentage `json:"usagePercent"`
++	UsagePercentSnake xaiPercentage `json:"usage_percent"`
++}
++
+ type xaiBillingConfig struct {
+-	MonthlyLimit            flexFloat         `json:"monthlyLimit"`
+-	MonthlyLimitSnake       flexFloat         `json:"monthly_limit"`
+-	Used                    flexFloat         `json:"used"`
+-	OnDemandCap             flexFloat         `json:"onDemandCap"`
+-	OnDemandCapSnake        flexFloat         `json:"on_demand_cap"`
+-	OnDemandUsed            flexFloat         `json:"onDemandUsed"`
+-	OnDemandUsedSnake       flexFloat         `json:"on_demand_used"`
+-	BillingPeriodEnd        string            `json:"billingPeriodEnd"`
+-	BillingEndSnake         string            `json:"billing_period_end"`
+-	CreditUsagePercent      flexFloat         `json:"creditUsagePercent"`
+-	CreditUsagePercentSnake flexFloat         `json:"credit_usage_percent"`
+-	CurrentPeriod           *xaiBillingPeriod `json:"currentPeriod"`
+-	CurrentPeriodSnake      *xaiBillingPeriod `json:"current_period"`
++	MonthlyLimit            flexFloat                `json:"monthlyLimit"`
++	MonthlyLimitSnake       flexFloat                `json:"monthly_limit"`
++	Used                    flexFloat                `json:"used"`
++	OnDemandCap             flexFloat                `json:"onDemandCap"`
++	OnDemandCapSnake        flexFloat                `json:"on_demand_cap"`
++	OnDemandUsed            flexFloat                `json:"onDemandUsed"`
++	OnDemandUsedSnake       flexFloat                `json:"on_demand_used"`
++	BillingPeriodEnd        string                   `json:"billingPeriodEnd"`
++	BillingEndSnake         string                   `json:"billing_period_end"`
++	CreditUsagePercent      xaiPercentage            `json:"creditUsagePercent"`
++	CreditUsagePercentSnake xaiPercentage            `json:"credit_usage_percent"`
++	CurrentPeriod           *xaiBillingPeriod        `json:"currentPeriod"`
++	CurrentPeriodSnake      *xaiBillingPeriod        `json:"current_period"`
++	ProductUsage            []xaiBillingProductUsage `json:"productUsage"`
++	ProductUsageSnake       []xaiBillingProductUsage `json:"product_usage"`
+ }
+ 
+ const (
+@@ -874,7 +829,7 @@
+ 		return nil, nil, fmt.Errorf("decode xai billing response: %w", errDecode)
+ 	}
+ 	if payload.Config == nil {
+-		return nil, nil, nil
++		return nil, nil, fmt.Errorf("xai billing response is missing config")
+ 	}
+ 	config := payload.Config
+ 	monthlyLimitCents := firstFloat(flexFloatValue(config.MonthlyLimit), flexFloatValue(config.MonthlyLimitSnake))
+@@ -947,20 +902,23 @@
+ 	if config == nil {
+ 		return cluster.QuotaWindow{}, false
+ 	}
+-	usedPercent := firstFloat(flexFloatValue(config.CreditUsagePercent), flexFloatValue(config.CreditUsagePercentSnake))
+-	period := config.CurrentPeriod
+-	if period == nil {
+-		period = config.CurrentPeriodSnake
++	return xaiWeeklyWindow(config, observedAt, xaiEntitlementUnknown)
++}
++
++func xaiWeeklyWindow(config *xaiBillingConfig, observedAt time.Time, entitlement xaiWeeklyEntitlement) (cluster.QuotaWindow, bool) {
++	usedPercent := xaiPercentageValue(config.CreditUsagePercent, config.CreditUsagePercentSnake)
++	period := xaiCurrentWeeklyPeriod(config)
++	if entitlement == xaiEntitlementFree || !xaiWeeklyPeriodIsCurrent(config, observedAt) {
++		return cluster.QuotaWindow{}, false
+ 	}
+ 	if usedPercent == nil {
+-		return cluster.QuotaWindow{}, false
+-	}
+-	if period != nil && strings.Contains(strings.ToLower(period.Type), "monthly") {
+-		return cluster.QuotaWindow{}, false
+-	}
+-	used := math.Max(0, math.Min(100, *usedPercent))
+-	limit := 100.0
+-	window := cluster.QuotaWindow{ID: "xai-weekly-usage", Label: quotaStringPtr("Weekly Limit"), Scope: "account", Mode: "fixed", Status: "unknown", Unit: "percentage", Used: &used, Limit: &limit, PeriodUnit: "week", PeriodValue: quotaFloatPtr(1), Source: "active_probe", ObservedAt: observedAt, Priority: -10}
++		if entitlement == xaiEntitlementPaid && xaiCanInferZeroUsage(config, observedAt) {
++			usedPercent = quotaFloatPtr(0)
++		} else if entitlement != xaiEntitlementPaid || period == nil || !strings.Contains(strings.ToLower(period.Type), "weekly") {
++			return cluster.QuotaWindow{}, false
++		}
++	}
++	window := cluster.QuotaWindow{ID: "xai-weekly-usage", Label: quotaStringPtr("Weekly Limit"), Scope: "account", Mode: "fixed", Status: "unknown", Unit: "percentage", Used: usedPercent, Limit: quotaFloatPtr(100), PeriodUnit: "week", PeriodValue: quotaFloatPtr(1), Source: "active_probe", ObservedAt: observedAt, Priority: -10}
+ 	if period != nil {
+ 		window.ResetAt = parseProviderTime(period.End)
+ 	}
+@@ -969,6 +927,89 @@
+ 	}
+ 	normalizeWindowValues(&window)
+ 	return window, true
++}
++
++func parseXAIWeeklyWindows(body []byte, observedAt time.Time) []cluster.QuotaWindow {
++	var payload xaiBillingPayload
++	if errDecode := json.Unmarshal(body, &payload); errDecode != nil || payload.Config == nil {
++		return nil
++	}
++	return xaiWeeklyWindows(payload.Config, observedAt, xaiEntitlementUnknown)
++}
++
++func xaiWeeklyWindows(config *xaiBillingConfig, observedAt time.Time, entitlement xaiWeeklyEntitlement) []cluster.QuotaWindow {
++	if entitlement == xaiEntitlementFree || !xaiWeeklyPeriodIsCurrent(config, observedAt) {
++		return nil
++	}
++	var windows []cluster.QuotaWindow
++	var resetAt *time.Time
++	if weeklyWindow, ok := xaiWeeklyWindow(config, observedAt, entitlement); ok {
++		resetAt = weeklyWindow.ResetAt
++		windows = append(windows, weeklyWindow)
++	}
++	period := xaiCurrentWeeklyPeriod(config)
++	if period != nil && strings.Contains(strings.ToLower(period.Type), "monthly") {
++		return windows
++	}
++	if resetAt == nil && period != nil {
++		resetAt = parseProviderTime(period.End)
++	}
++	if resetAt == nil {
++		resetAt = parseProviderTime(firstNonEmptyString(config.BillingPeriodEnd, config.BillingEndSnake))
++	}
++	rawProducts := config.ProductUsage
++	if len(rawProducts) == 0 {
++		rawProducts = config.ProductUsageSnake
++	}
++	seen := make(map[string]int, len(rawProducts))
++	productWindows := make([]cluster.QuotaWindow, 0, len(rawProducts))
++	for index, item := range rawProducts {
++		product := strings.TrimSpace(item.Product)
++		if product == "" {
++			product = fmt.Sprintf("Product %d", index+1)
++		}
++		usedPercent := xaiPercentageValue(item.UsagePercent, item.UsagePercentSnake)
++		var usedPtr *float64
++		var limitPtr *float64
++		if usedPercent != nil && !math.IsNaN(*usedPercent) && !math.IsInf(*usedPercent, 0) {
++			used := math.Max(0, math.Min(100, *usedPercent))
++			limit := 100.0
++			usedPtr = &used
++			limitPtr = &limit
++		}
++		slug := quotaIDSlug(product)
++		if slug == "" {
++			slug = fmt.Sprintf("%d", index+1)
++		}
++		window := cluster.QuotaWindow{
++			ID:          "xai-product-" + slug,
++			Label:       quotaStringPtr(product),
++			Scope:       "account",
++			ScopeID:     quotaStringPtr("xai-product-usage"),
++			Mode:        "fixed",
++			Status:      "unknown",
++			Unit:        "percentage",
++			Used:        usedPtr,
++			Limit:       limitPtr,
++			ResetAt:     resetAt,
++			PeriodUnit:  "week",
++			PeriodValue: quotaFloatPtr(1),
++			Source:      "active_probe",
++			ObservedAt:  observedAt,
++			Priority:    20 + index,
++		}
++		if usedPtr != nil {
++			normalizeWindowValues(&window)
++		}
++		key := strings.ToLower(product)
++		if existingIdx, exists := seen[key]; exists {
++			productWindows[existingIdx] = window
++			continue
++		}
++		seen[key] = len(productWindows)
++		productWindows = append(productWindows, window)
++	}
++	return append(windows, productWindows...)
+ }
+ 
+ func normalizedProviderRatio(value float64) float64 {
+diff --git a/internal/quota/providers_xai_quota_test.go b/internal/quota/providers_xai_quota_test.go
+--- a/internal/quota/providers_xai_quota_test.go
++++ b/internal/quota/providers_xai_quota_test.go
+@@ -43,6 +43,77 @@
+ 	}
+ }
+ 
++func TestCollectorXAIKeepsWeeklyQuotaAfterMalformedMonthlyResponse(t *testing.T) {
++	repo := newCollectorTestRepository(t)
++	now := time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)
++	seedCollectorProviderAuth(t, repo, "xai-invalid-monthly", "xai", map[string]any{"type": "xai", "access_token": "test"})
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.Header.Get("X-Grok-Client-Version") != "1.0.77" || r.Header.Get("User-Agent") != "xai-grok-workspace/1.0.77" {
++			t.Errorf("outdated Grok CLI identity headers")
++		}
++		if r.URL.Query().Get("format") == "credits" {
++			_, _ = w.Write([]byte(`{"config":{"creditUsagePercent":1,"currentPeriod":{"type":"weekly","end":"2026-11-12T12:15:00Z"},"productUsage":[{"product":"GrokBuild","usagePercent":1}]}}`))
++			return
++		}
++		_, _ = w.Write([]byte(`{"config":`))
++	}))
++	defer server.Close()
++	collector := NewCollector(repo, Options{Owner: "xai-invalid-monthly-test", XAIBillingURL: server.URL, Now: func() time.Time { return now }})
++	collector.collect(context.Background())
++	item, errGet := repo.GetQuotaCredential(context.Background(), "xai-invalid-monthly", now)
++	if errGet != nil || item.CollectionStatus != "partial" || len(item.Windows) != 2 || item.Windows[0].Remaining == nil || *item.Windows[0].Remaining != 99 {
++		t.Fatalf("weekly quota was lost after malformed monthly response: %+v error=%v", item, errGet)
++	}
++	if item.Error == nil || item.Error.Code != "UPSTREAM_RESPONSE_INVALID" || item.Windows[1].ID != "xai-product-grokbuild" {
++		t.Fatalf("partial error or product usage was lost: %+v", item)
++	}
++}
++
++func TestQuotaHTTPProbeErrorReportsOutdatedClient(t *testing.T) {
++	failure := quotaHTTPProbeError(http.StatusUpgradeRequired, "request-1")
++	if failure.code != "UPSTREAM_CLIENT_OUTDATED" || failure.statusCode != 426 || failure.retryable {
++		t.Fatalf("unexpected outdated-client error: %+v", failure)
++	}
++}
++
++func TestParseXAIWeeklyQuotaRequiresObservedUsage(t *testing.T) {
++	window, ok := parseXAIWeeklyWindow([]byte(`{"config":{"currentPeriod":{"type":"weekly","end":"2026-11-12T12:15:00Z"}}}`), time.Now())
++	if ok {
++		t.Fatalf("weekly allowance inferred without observed usage or subscription entitlement: %+v", window)
++	}
++}
++
++func TestCollectorXAIKeepsMonthlyQuotaAfterInvalidWeeklyShape(t *testing.T) {
++	for _, body := range []string{`{}`, `null`, `[]`, `{"config":[]}`} {
++		t.Run(body, func(t *testing.T) {
++			repo := newCollectorTestRepository(t)
++			seedCollectorProviderAuth(t, repo, "xai-weekly-invalid-shape", "xai", map[string]any{"type": "xai", "access_token": "test"})
++			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				if r.URL.Query().Get("format") == "credits" {
++					_, _ = w.Write([]byte(body))
++					return
++				}
++				_, _ = w.Write([]byte(`{"config":{"monthlyLimit":15000,"used":100}}`))
++			}))
++			defer server.Close()
++			collector := NewCollector(repo, Options{Owner: "xai-weekly-shape-test", XAIBillingURL: server.URL})
++			collector.collect(context.Background())
++			item, errGet := repo.GetQuotaCredential(context.Background(), "xai-weekly-invalid-shape", time.Now())
++			if errGet != nil || item.CollectionStatus != "partial" || item.Error == nil || item.Error.Code != "UPSTREAM_RESPONSE_INVALID" || len(item.Windows) != 1 || item.Plan == nil {
++				t.Fatalf("weekly response shape failure discarded monthly quota or went unreported: item=%+v error=%v", item, errGet)
++			}
++		})
++	}
++}
++
++func TestParseXAIUsageRejectsMissingBillingConfig(t *testing.T) {
++	for _, body := range []string{`{}`, `null`, `{"config":null}`} {
++		if _, _, errParse := parseXAIUsageWindows([]byte(body), time.Now()); errParse == nil {
++			t.Fatal("missing monthly config was accepted as an authoritative empty plan")
++		}
++	}
++}
++
+ func TestParseXAIUsageWindowsAcceptsSnakeCaseAndScalarValues(t *testing.T) {
+ 	now := time.Date(2026, 7, 16, 8, 0, 0, 0, time.UTC)
+ 	body := []byte(`{
+@@ -113,7 +184,7 @@
+ 	repo := newCollectorTestRepository(t)
+ 	now := time.Date(2026, 7, 16, 8, 0, 0, 0, time.UTC)
+ 	seedCollectorProviderAuth(t, repo, "xai-plan-probe", "xai", map[string]any{"type": "xai", "access_token": "xai-secret", "sub": "xai-user"})
+-	requestHeaders := make(chan http.Header, 2)
++	requestHeaders := make(chan http.Header, 3)
+ 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+ 		requestHeaders <- request.Header.Clone()
+ 		_, _ = w.Write([]byte(`{"config":{"monthlyLimit":{"val":150000},"used":{"val":15000},"onDemandCap":{"val":5000},"onDemandUsed":{"val":1200},"billingPeriodEnd":"2026-08-01T00:00:00Z"}}`))
+@@ -144,17 +215,29 @@
+ 	}
+ }
+ 
+-func TestCollectorClearsStaleXAIPlan(t *testing.T) {
++func TestCollectorClearsPaidXAIQuotaAfterConfirmedFreeProfile(t *testing.T) {
+ 	repo := newCollectorTestRepository(t)
+ 	now := time.Date(2026, 7, 16, 8, 0, 0, 0, time.UTC)
+ 	seedCollectorProviderAuth(t, repo, "xai-plan-clear", "xai", map[string]any{"type": "xai", "access_token": "xai-secret"})
+-	var requests atomic.Int32
+-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+-		if requests.Add(1) == 1 {
++	var round atomic.Int32
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.URL.Path == "/user" {
++			if round.Load() == 0 {
++				_, _ = w.Write([]byte(`{"subscriptionTier":"SuperGrokHeavy"}`))
++			} else {
++				_, _ = w.Write([]byte(`{"subscriptionTier":null}`))
++			}
++			return
++		}
++		if r.URL.Query().Get("format") == "credits" {
++			_, _ = w.Write([]byte(`{"config":{"creditUsagePercent":1,"currentPeriod":{"type":"weekly"}}}`))
++			return
++		}
++		if round.Load() == 0 {
+ 			_, _ = w.Write([]byte(`{"config":{"monthlyLimit":150000,"used":1000}}`))
+ 			return
+ 		}
+-		_, _ = w.Write([]byte(`{"config":{"monthlyLimit":20000,"used":1000}}`))
++		_, _ = w.Write([]byte(`{"config":{"monthlyLimit":0,"used":0}}`))
+ 	}))
+ 	defer server.Close()
+ 
+@@ -166,6 +249,7 @@
+ 	}
+ 
+ 	now = now.Add(31 * time.Minute)
++	round.Store(1)
+ 	accepted, errTrigger := collector.TriggerCollection(context.Background(), map[string]struct{}{"xai-plan-clear": {}}, nil)
+ 	if errTrigger != nil || accepted != 1 {
+ 		t.Fatalf("TriggerCollection() = %d, %v, want 1, nil", accepted, errTrigger)
+@@ -175,8 +259,8 @@
+ 	if errSecond != nil {
+ 		t.Fatalf("GetQuotaCredential() after plan change error = %v", errSecond)
+ 	}
+-	if second.Plan != nil {
+-		t.Fatalf("stale plan was retained: %+v", second.Plan)
++	if second.Plan == nil || second.Plan.Name != "Free" || len(second.Windows) != 0 || second.CollectionStatus != "success" || second.QuotaStatus != "unknown" {
++		t.Fatalf("paid quota was retained after a confirmed downgrade: %+v", second)
+ 	}
+ }
+ 
+@@ -244,8 +328,12 @@
+ 	now := time.Date(2026, 7, 16, 8, 0, 0, 0, time.UTC)
+ 	seedCollectorProviderAuth(t, repo, "xai-weekly-probe", "xai", map[string]any{"type": "xai", "access_token": "xai-secret"})
+ 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
++		if request.URL.Path == "/user" {
++			_, _ = w.Write([]byte(`{"subscriptionTier":"SuperGrokPlus"}`))
++			return
++		}
+ 		if request.URL.Query().Get("format") == "credits" {
+-			_, _ = w.Write([]byte(`{"config":{"creditUsagePercent":16,"currentPeriod":{"type":"weekly","start":"2026-07-09T20:46:00Z","end":"2026-07-16T20:46:00Z"}}}`))
++			_, _ = w.Write([]byte(`{"config":{"creditUsagePercent":16,"currentPeriod":{"type":"weekly","start":"2026-07-09T20:46:00Z","end":"2026-07-16T20:46:00Z"},"productUsage":[{"product":"GrokBuild","usagePercent":1}]}}`))
+ 			return
+ 		}
+ 		_, _ = w.Write([]byte(`{"config":{"monthlyLimit":0,"used":0,"onDemandCap":0}}`))
+@@ -259,15 +347,18 @@
+ 	if errGet != nil {
+ 		t.Fatalf("GetQuotaCredential() error = %v", errGet)
+ 	}
+-	if len(item.Windows) != 1 || item.Windows[0].ID != "xai-weekly-usage" {
++	if len(item.Windows) != 2 || item.Windows[0].ID != "xai-weekly-usage" || item.Windows[1].ID != "xai-product-grokbuild" {
+ 		t.Fatalf("weekly-only account got windows = %+v", item.Windows)
++	}
++	if item.Windows[1].Label == nil || *item.Windows[1].Label != "GrokBuild" || item.Windows[1].Used == nil || *item.Windows[1].Used != 1 {
++		t.Fatalf("unexpected product usage window: %+v", item.Windows[1])
+ 	}
+ 	weekly := item.Windows[0]
+ 	if weekly.Status != "healthy" || weekly.Remaining == nil || *weekly.Remaining != 84 {
+ 		t.Fatalf("unexpected weekly window state: %+v", weekly)
+ 	}
+-	if item.Plan != nil {
+-		t.Fatalf("weekly-only account must not get a subscription plan: %+v", item.Plan)
++	if item.Plan == nil || item.Plan.Name != "SuperGrok Plus" {
++		t.Fatalf("weekly-only account lost its confirmed subscription: %+v", item.Plan)
+ 	}
+ }
+ 
+@@ -294,6 +385,9 @@
+ 	if len(item.Windows) != 1 || item.Windows[0].ID != "xai-monthly-spend" {
+ 		t.Fatalf("monthly windows lost after weekly probe failure: %+v", item.Windows)
+ 	}
++	if item.CollectionStatus != "partial" || item.Error == nil {
++		t.Fatalf("weekly probe failure was hidden: %+v", item)
++	}
+ 	if item.Plan == nil || item.Plan.Name != "SuperGrok" {
+ 		t.Fatalf("plan lost after weekly probe failure: %+v", item.Plan)
+ 	}
+@@ -330,6 +424,10 @@
+ 	seedCollectorProviderAuth(t, repo, "xai-monthly-fail", "xai", map[string]any{"type": "xai", "access_token": "xai-secret"})
+ 	var monthlyRequests atomic.Int32
+ 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
++		if request.URL.Path == "/user" {
++			_, _ = w.Write([]byte(`{}`))
++			return
++		}
+ 		if request.URL.Query().Get("format") == "credits" {
+ 			_, _ = w.Write([]byte(`{"config":{"creditUsagePercent":16,"currentPeriod":{"type":"weekly","end":"2026-07-16T20:46:00Z"}}}`))
+ 			return
+diff --git a/internal/quota/xai.go b/internal/quota/xai.go
+new file mode 100644
+--- /dev/null
++++ b/internal/quota/xai.go
+@@ -0,0 +1,363 @@
++package quota
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"net/url"
++	"path"
++	"strings"
++	"sync"
++	"time"
++
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++)
++
++type xaiWeeklyEntitlement uint8
++
++const (
++	xaiEntitlementUnknown xaiWeeklyEntitlement = iota
++	xaiEntitlementFree
++	xaiEntitlementPaid
++)
++
++type xaiSubscription struct {
++	entitlement xaiWeeklyEntitlement
++	plan        *cluster.QuotaPlan
++}
++
++// xaiPercentage distinguishes an omitted percentage from null or malformed input.
++type xaiPercentage struct {
++	number  flexFloat
++	present bool
++}
++
++func (p *xaiPercentage) UnmarshalJSON(data []byte) error {
++	p.present = true
++	return p.number.UnmarshalJSON(data)
++}
++
++func (p xaiPercentage) value() *float64 {
++	value := flexFloatValue(p.number)
++	if value == nil || *value < 0 || *value > 100 {
++		return nil
++	}
++	return value
++}
++
++func xaiPercentageValue(primary, alternate xaiPercentage) *float64 {
++	if primary.present && alternate.present {
++		left, right := primary.value(), alternate.value()
++		if left == nil || right == nil || *left != *right {
++			return nil
++		}
++	}
++	if primary.present {
++		return primary.value()
++	}
++	return alternate.value()
++}
++
++func xaiSiblingEndpoint(billingURL, name string) string {
++	target, errParse := url.Parse(billingURL)
++	if errParse != nil || target.Scheme == "" || target.Host == "" {
++		return ""
++	}
++	target.Path = path.Join(path.Dir(target.Path), name)
++	target.RawPath, target.RawQuery, target.Fragment = "", "", ""
++	return target.String()
++}
++
++func xaiSubscriptionURL(profileURL string) string {
++	target, errParse := url.Parse(profileURL)
++	if errParse != nil {
++		return ""
++	}
++	query := target.Query()
++	query.Set("include", "subscription")
++	target.RawQuery = query.Encode()
++	return target.String()
++}
++
++func parseXAISubscription(body []byte) (xaiSubscription, error) {
++	var payload map[string]json.RawMessage
++	if errDecode := json.Unmarshal(body, &payload); errDecode != nil || payload == nil {
++		return xaiSubscription{}, fmt.Errorf("xai profile response is not an object")
++	}
++	raw, exists := payload["subscriptionTier"]
++	if _, alternateExists := payload["subscription_tier"]; exists && alternateExists {
++		return xaiSubscription{}, fmt.Errorf("xai profile response has ambiguous subscription tier fields")
++	}
++	if !exists {
++		raw, exists = payload["subscription_tier"]
++	}
++	if !exists {
++		return xaiSubscription{}, fmt.Errorf("xai profile response is missing subscription tier")
++	}
++	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
++		return xaiSubscription{entitlement: xaiEntitlementFree, plan: &cluster.QuotaPlan{Name: "Free"}}, nil
++	}
++	var tier string
++	if errDecode := json.Unmarshal(raw, &tier); errDecode != nil {
++		return xaiSubscription{}, fmt.Errorf("xai subscription tier is not a string")
++	}
++	tier = strings.TrimSpace(tier)
++	key := strings.NewReplacer("_", "", "-", "", " ", "").Replace(strings.ToLower(tier))
++	key = strings.TrimPrefix(key, "subscriptiontier")
++	var plan *cluster.QuotaPlan
++	switch key {
++	case "", "free", "none":
++		return xaiSubscription{entitlement: xaiEntitlementFree, plan: &cluster.QuotaPlan{Name: "Free"}}, nil
++	case "supergrok":
++		plan = &cluster.QuotaPlan{Name: "SuperGrok"}
++	case "supergrokplus":
++		plan = &cluster.QuotaPlan{Name: "SuperGrok Plus", Premium: true}
++	case "supergrokpro":
++		plan = &cluster.QuotaPlan{Name: "SuperGrok Pro", Premium: true}
++	case "supergrokheavy":
++		plan = &cluster.QuotaPlan{Name: "SuperGrok Heavy", Premium: true}
++	case "xpremiumplus":
++		plan = &cluster.QuotaPlan{Name: "X Premium+", Premium: true}
++	default:
++		return xaiSubscription{plan: &cluster.QuotaPlan{Name: tier}}, fmt.Errorf("xai subscription tier is not recognized")
++	}
++	return xaiSubscription{entitlement: xaiEntitlementPaid, plan: plan}, nil
++}
++
++func xaiCurrentWeeklyPeriod(config *xaiBillingConfig) *xaiBillingPeriod {
++	if config.CurrentPeriod != nil && config.CurrentPeriodSnake != nil && *config.CurrentPeriod != *config.CurrentPeriodSnake {
++		return nil
++	}
++	period := config.CurrentPeriod
++	if period == nil {
++		period = config.CurrentPeriodSnake
++	}
++	return period
++}
++
++func xaiWeeklyPeriodIsCurrent(config *xaiBillingConfig, observedAt time.Time) bool {
++	if config.CurrentPeriod != nil && config.CurrentPeriodSnake != nil && *config.CurrentPeriod != *config.CurrentPeriodSnake {
++		return false
++	}
++	period := xaiCurrentWeeklyPeriod(config)
++	endValue := firstNonEmptyString(config.BillingPeriodEnd, config.BillingEndSnake)
++	if period != nil {
++		switch strings.ToLower(strings.TrimSpace(period.Type)) {
++		case "", "weekly", "usage_period_type_weekly":
++		default:
++			return false
++		}
++		if period.End != "" {
++			endValue = period.End
++		}
++	}
++	var end *time.Time
++	if endValue != "" {
++		end = parseProviderTime(endValue)
++		if end == nil || !end.After(observedAt) {
++			return false
++		}
++	}
++	if period != nil && period.Start != "" {
++		start := parseProviderTime(period.Start)
++		if start == nil || start.After(observedAt) || end != nil && !start.Before(*end) {
++			return false
++		}
++	}
++	return true
++}
++
++func xaiCanInferZeroUsage(config *xaiBillingConfig, observedAt time.Time) bool {
++	if config.CreditUsagePercent.present || config.CreditUsagePercentSnake.present {
++		return false
++	}
++	period := xaiCurrentWeeklyPeriod(config)
++	if period == nil {
++		return false
++	}
++	switch strings.ToLower(strings.TrimSpace(period.Type)) {
++	case "weekly", "usage_period_type_weekly":
++	default:
++		return false
++	}
++	end := parseProviderTime(period.End)
++	if end == nil || !end.After(observedAt) {
++		return false
++	}
++	if period.Start != "" {
++		start := parseProviderTime(period.Start)
++		if start == nil || start.After(observedAt) || !start.Before(*end) {
++			return false
++		}
++	}
++	for _, product := range append(append([]xaiBillingProductUsage(nil), config.ProductUsage...), config.ProductUsageSnake...) {
++		for _, percent := range []xaiPercentage{product.UsagePercent, product.UsagePercentSnake} {
++			if percent.present && (percent.value() == nil || *percent.value() != 0) {
++				return false
++			}
++		}
++	}
++	return true
++}
++
++func xaiInvalidResponse(message string) *probeError {
++	return &probeError{code: "UPSTREAM_RESPONSE_INVALID", message: message, retryable: true}
++}
++
++func xaiCollectionFailure(failures ...*probeError) *probeError {
++	var selected *probeError
++	for _, failure := range failures {
++		if failure != nil && (selected == nil || xaiFailurePriority(failure.code) < xaiFailurePriority(selected.code)) {
++			selected = failure
++		}
++	}
++	if selected == nil {
++		return nil
++	}
++	result := *selected
++	for _, failure := range failures {
++		if failure != nil && failure.retryAfter > result.retryAfter {
++			result.retryAfter = failure.retryAfter
++		}
++	}
++	return &result
++}
++
++func xaiFailurePriority(code string) int {
++	switch code {
++	case "UPSTREAM_CLIENT_OUTDATED":
++		return 0
++	case "UPSTREAM_AUTH_REJECTED":
++		return 1
++	case "UPSTREAM_RATE_LIMITED":
++		return 2
++	case "UPSTREAM_RESPONSE_INVALID":
++		return 4
++	default:
++		return 3
++	}
++}
++
++func xaiHasObservedAmount(windows []cluster.QuotaWindow) bool {
++	for _, window := range windows {
++		if window.Used != nil || window.Remaining != nil || window.UsedRatio != nil || window.RemainingRatio != nil {
++			return true
++		}
++	}
++	return false
++}
++
++func (c *Collector) probeXAI(ctx context.Context, auth *coreauth.Auth) (probeResult, *probeError) {
++	// Keep all independent requests inside one probe budget and the credential lease.
++	ctx, cancel := context.WithTimeout(ctx, c.options.ProbeTimeout)
++	defer cancel()
++	headers := http.Header{
++		"Accept": []string{"*/*"}, "User-Agent": []string{xaiGrokUserAgent},
++		xaiTokenAuthHeader: []string{xaiTokenAuthValue}, xaiClientVersionHeader: []string{xaiClientVersionValue},
++	}
++	if userID := quotaMetadataString(auth.Metadata, "sub", "subject", "user_id", "userId"); userID != "" {
++		headers.Set("x-userid", userID)
++	}
++	targets := []string{c.options.XAIBillingURL, xaiWeeklyBillingURL(c.options.XAIBillingURL), xaiSubscriptionURL(c.options.XAIProfileURL)}
++	responses := make([]struct {
++		body []byte
++		err  *probeError
++	}, len(targets))
++	var requests sync.WaitGroup
++	for index, target := range targets {
++		requests.Add(1)
++		go func() {
++			defer requests.Done()
++			responses[index].body, _, responses[index].err = c.probeRequest(ctx, auth, http.MethodGet, target, nil, headers)
++		}()
++	}
++	requests.Wait()
++	if responses[0].err == nil {
++		recordReturnedWindows(ctx, "xai-monthly", responses[0].body)
++	}
++	if responses[1].err == nil {
++		recordReturnedWindows(ctx, "xai-weekly", responses[1].body)
++	}
++	now := c.options.Now().UTC()
++	var retryAfter time.Duration
++	for _, response := range responses {
++		if response.err != nil && response.err.retryAfter > retryAfter {
++			retryAfter = response.err.retryAfter
++		}
++	}
++	errMonthly, errWeekly, errProfile := responses[0].err, responses[1].err, responses[2].err
++	var windows []cluster.QuotaWindow
++	var fallbackPlan *cluster.QuotaPlan
++	if errMonthly == nil {
++		var errParse error
++		windows, fallbackPlan, errParse = parseXAIUsageWindows(responses[0].body, now)
++		if errParse != nil {
++			errMonthly = xaiInvalidResponse("xAI monthly billing response could not be parsed.")
++		} else {
++			for _, window := range windows {
++				if window.Used == nil && window.Remaining == nil {
++					errMonthly = xaiInvalidResponse("xAI monthly remaining quota is unavailable.")
++					break
++				}
++			}
++		}
++	}
++	var subscription xaiSubscription
++	if errProfile == nil {
++		var errParse error
++		subscription, errParse = parseXAISubscription(responses[2].body)
++		if errParse != nil {
++			errProfile = xaiInvalidResponse("xAI subscription eligibility could not be confirmed.")
++		}
++	}
++	if subscription.entitlement == xaiEntitlementFree {
++		// Free profiles may return a credits period without entitlement to that allowance.
++		errWeekly = nil
++	} else if errWeekly == nil {
++		var payload xaiBillingPayload
++		if errDecode := json.Unmarshal(responses[1].body, &payload); errDecode != nil || payload.Config == nil {
++			errWeekly = xaiInvalidResponse("xAI weekly quota response could not be parsed.")
++		} else {
++			weekly := xaiWeeklyWindows(payload.Config, now, subscription.entitlement)
++			windows = append(weekly, windows...)
++			complete := false
++			productsComplete := true
++			for _, window := range weekly {
++				if window.ID == "xai-weekly-usage" && window.Used != nil {
++					complete = true
++				} else if window.ID != "xai-weekly-usage" && window.Used == nil {
++					productsComplete = false
++				}
++			}
++			if !complete || !productsComplete {
++				errWeekly = xaiInvalidResponse("xAI weekly remaining quota is unavailable.")
++			}
++		}
++	}
++	failure := xaiCollectionFailure(errMonthly, errWeekly, errProfile)
++	if failure != nil && retryAfter > failure.retryAfter {
++		failure.retryAfter = retryAfter
++	}
++	failedWithoutAmounts := !xaiHasObservedAmount(windows) && failure != nil
++	if failedWithoutAmounts || len(windows) == 0 && !(subscription.entitlement == xaiEntitlementFree && errMonthly == nil) {
++		if failure != nil {
++			return probeResult{}, failure
++		}
++		return probeResult{}, xaiInvalidResponse("xAI billing response did not contain usable quota.")
++	}
++	result := probeResult{windows: windows, plan: subscription.plan, fallbackPlan: fallbackPlan, replaceWindows: true, replacePlan: subscription.plan != nil, boundWindowLifetimes: true, retryAfter: retryAfter}
++	if errMonthly != nil {
++		result.preserveWindowPrefixes = append(result.preserveWindowPrefixes, "xai-monthly-", "xai-on-demand")
++	}
++	if errWeekly != nil {
++		result.preserveWindowPrefixes = append(result.preserveWindowPrefixes, "xai-weekly-", "xai-product-")
++	}
++	if failure != nil {
++		result.partial = true
++		result.collectionError = probeCollectionError(failure, now)
++	}
++	return result, nil
++}
+diff --git a/internal/quota/xai_client_version_test.go b/internal/quota/xai_client_version_test.go
+--- a/internal/quota/xai_client_version_test.go
++++ b/internal/quota/xai_client_version_test.go
+@@ -15,7 +15,9 @@
+ 	seedCollectorProviderAuth(t, repo, "xai-version", "xai", map[string]any{"type": "xai", "access_token": "synthetic-xai-token", "sub": "synthetic-xai-user"})
+ 	var requests atomic.Int32
+ 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+-		requests.Add(1)
++		if r.URL.Path != "/user" {
++			requests.Add(1)
++		}
+ 		if r.Header.Get("x-grok-client-version") != "1.0.77" || r.Header.Get("User-Agent") != "xai-grok-workspace/1.0.77" {
+ 			w.WriteHeader(http.StatusUpgradeRequired)
+ 			_, _ = w.Write([]byte(`{"error":"Your Grok CLI version is outdated."}`))
+@@ -24,6 +26,10 @@
+ 		if r.Header.Get("Authorization") != "Bearer synthetic-xai-token" || r.Header.Get("X-XAI-Token-Auth") != "xai-grok-cli" || r.Header.Get("x-userid") != "synthetic-xai-user" {
+ 			t.Error("quota request changed its saved-account authentication")
+ 			w.WriteHeader(http.StatusUnauthorized)
++			return
++		}
++		if r.URL.Path == "/user" {
++			_, _ = w.Write([]byte(`{"subscriptionTier":"SuperGrok"}`))
+ 			return
+ 		}
+ 		if r.URL.Query().Get("format") == "credits" {
+diff --git a/internal/quota/xai_omitted_zero_regression_test.go b/internal/quota/xai_omitted_zero_regression_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/quota/xai_omitted_zero_regression_test.go
+@@ -0,0 +1,43 @@
++package quota
++
++import (
++    "context"
++    "fmt"
++    "net/http"
++    "net/http/httptest"
++    "testing"
++    "time"
++)
++
++// Fixture from upstream Home #186's xaiPaidFixture: proto3 omits a zero percentage.
++func TestBasaltXAIPaidOmittedZeroStoresReading(t *testing.T) {
++    now := time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)
++    profile := `{"subscriptionTier":"SuperGrokPlus"}`
++    monthly := `{"config":{"monthlyLimit":0,"used":0,"onDemandCap":0}}`
++    weekly := fmt.Sprintf(`{"config":{"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","start":%q,"end":%q}}}`,
++        now.Add(-time.Hour).Format(time.RFC3339), now.Add(6*24*time.Hour).Format(time.RFC3339))
++    server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++        body := monthly
++        if r.URL.Path == "/v1/user" {
++            if r.URL.Query().Get("include") != "subscription" { t.Error("profile request lacks subscription metadata") }
++            body = profile
++        } else if r.URL.Query().Get("format") == "credits" { body = weekly }
++        w.Header().Set("Content-Type", "application/json")
++        _, _ = w.Write([]byte(body))
++    }))
++    defer server.Close()
++    repo := newCollectorTestRepository(t)
++    seedCollectorProviderAuth(t, repo, "xai-paid-omitted", "xai", map[string]any{"type":"xai", "access_token":"fixture"})
++    collector := NewCollector(repo, Options{Owner:"omitted-zero", XAIBillingURL:server.URL+"/v1/billing", Now:func() time.Time { return now }})
++    collector.collect(context.Background())
++    item, errGet := repo.GetQuotaCredential(context.Background(), "xai-paid-omitted", now)
++    if errGet != nil { t.Fatalf("reading: %v", errGet) }
++    if item.CollectionStatus != "success" || item.Error != nil || len(item.Windows) != 1 {
++        t.Fatalf("paid omitted-zero response did not store usage: status=%s error=%+v windows=%d", item.CollectionStatus, item.Error, len(item.Windows))
++    }
++    window := item.Windows[0]
++    if window.ID != "xai-weekly-usage" || window.Used == nil || *window.Used != 0 || window.Remaining == nil || *window.Remaining != 100 || window.ResetAt == nil || !window.ResetAt.Equal(now.Add(6*24*time.Hour)) {
++        t.Fatalf("incorrect stored weekly usage: %+v", window)
++    }
++    if item.Plan == nil || item.Plan.Name != "SuperGrok Plus" { t.Fatalf("incorrect paid plan: %+v", item.Plan) }
++}
+diff --git a/internal/quota/xai_subscription_test.go b/internal/quota/xai_subscription_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/quota/xai_subscription_test.go
+@@ -0,0 +1,406 @@
++package quota
++
++import (
++	"context"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++)
++
++type xaiProbeFixture struct {
++	profile, monthly, weekly                   string
++	profileStatus, monthlyStatus, weeklyStatus int
++}
++
++func xaiPaidFixture(now time.Time) xaiProbeFixture {
++	return xaiProbeFixture{
++		profile: `{"subscriptionTier":"SuperGrokPlus"}`,
++		monthly: `{"config":{"monthlyLimit":0,"used":0,"onDemandCap":0}}`,
++		weekly: fmt.Sprintf(`{"config":{"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","start":%q,"end":%q}}}`,
++			now.Add(-time.Hour).Format(time.RFC3339), now.Add(6*24*time.Hour).Format(time.RFC3339)),
++	}
++}
++
++func serveXAIProbeFixture(t *testing.T, fixture func() xaiProbeFixture) *httptest.Server {
++	t.Helper()
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		value := fixture()
++		body, status := value.monthly, value.monthlyStatus
++		if r.URL.Path == "/v1/user" {
++			if r.URL.Query().Get("include") != "subscription" {
++				t.Error("profile request did not select subscription metadata")
++			}
++			body, status = value.profile, value.profileStatus
++		} else if r.URL.Query().Get("format") == "credits" {
++			body, status = value.weekly, value.weeklyStatus
++		}
++		if status == 0 {
++			status = http.StatusOK
++		}
++		w.Header().Set("Content-Type", "application/json")
++		w.WriteHeader(status)
++		_, _ = io.WriteString(w, body)
++	}))
++	t.Cleanup(server.Close)
++	return server
++}
++
++func TestXAIWeeklySubscriptionAndPresenceMatrix(t *testing.T) {
++	now := time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)
++	type scenario struct {
++		name           string
++		profile        string
++		profileStatus  int
++		percentage     string
++		remaining      *float64
++		plan           string
++		partial, fails bool
++	}
++	for _, test := range []scenario{
++		{name: "free null rejects weekly even with usage", profile: `{"subscriptionTier":null}`, percentage: `1`, plan: "Free"},
++		{name: "free explicit rejects weekly", profile: `{"subscriptionTier":"Free"}`, percentage: `0`, plan: "Free"},
++		{name: "none rejects weekly", profile: `{"subscription_tier":"none"}`, plan: "Free"},
++		{name: "empty tier is free", profile: `{"subscriptionTier":""}`, plan: "Free"},
++		{name: "paid omitted zero", remaining: quotaFloatPtr(100), plan: "SuperGrok Plus"},
++		{name: "paid explicit zero", percentage: `0`, remaining: quotaFloatPtr(100), plan: "SuperGrok Plus"},
++		{name: "paid numeric string zero", percentage: `"0"`, remaining: quotaFloatPtr(100), plan: "SuperGrok Plus"},
++		{name: "paid exhausted", percentage: `100`, remaining: quotaFloatPtr(0), plan: "SuperGrok Plus"},
++		{name: "paid null is unknown", percentage: `null`, fails: true},
++		{name: "paid malformed is unknown", percentage: `"bad"`, fails: true},
++		{name: "paid boolean is unknown", percentage: `false`, fails: true},
++		{name: "paid negative is unknown", percentage: `-1`, fails: true},
++		{name: "paid over range is unknown", percentage: `101`, fails: true},
++		{name: "conflicting percentage aliases are unknown", percentage: `0,"credit_usage_percent":1`, fails: true},
++		{name: "matching percentage aliases are usable", percentage: `1,"credit_usage_percent":"1"`, remaining: quotaFloatPtr(99), plan: "SuperGrok Plus"},
++		{name: "missing tier keeps observed data partial", profile: `{}`, percentage: `1`, remaining: quotaFloatPtr(99), partial: true},
++		{name: "missing tier cannot infer zero", profile: `{}`, fails: true},
++		{name: "unknown tier keeps observed data partial", profile: `{"subscriptionTier":"FutureEnterprise"}`, percentage: `1`, remaining: quotaFloatPtr(99), plan: "FutureEnterprise", partial: true},
++		{name: "unknown tier cannot infer zero", profile: `{"subscriptionTier":"FutureEnterprise"}`, fails: true},
++		{name: "invalid tier cannot infer zero", profile: `{"subscriptionTier":true}`, fails: true},
++		{name: "conflicting subscription aliases cannot infer zero", profile: `{"subscriptionTier":"SuperGrokPlus","subscription_tier":"Free"}`, fails: true},
++		{name: "profile outage keeps observed data partial", profileStatus: http.StatusServiceUnavailable, percentage: `1`, remaining: quotaFloatPtr(99), partial: true},
++		{name: "profile authorization error cannot infer zero", profileStatus: http.StatusUnauthorized, fails: true},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			fixture := xaiPaidFixture(now)
++			if test.profile != "" {
++				fixture.profile = test.profile
++			}
++			fixture.profileStatus = test.profileStatus
++			if test.percentage != "" {
++				fixture.weekly = strings.Replace(fixture.weekly, `"currentPeriod":`, `"creditUsagePercent":`+test.percentage+`,"currentPeriod":`, 1)
++			}
++			server := serveXAIProbeFixture(t, func() xaiProbeFixture { return fixture })
++			collector := NewCollector(newCollectorTestRepository(t), Options{Owner: "xai-matrix", XAIBillingURL: server.URL + "/v1/billing", Now: func() time.Time { return now }})
++			result, errProbe := collector.probeXAI(context.Background(), &coreauth.Auth{Metadata: map[string]any{"access_token": "fixture"}})
++			if test.fails {
++				if errProbe == nil {
++					t.Fatal("unconfirmed or invalid quota was accepted as a successful observation")
++				}
++				return
++			}
++			if errProbe != nil || result.partial != test.partial {
++				t.Fatalf("unexpected collection state: partial=%v error=%v", result.partial, errProbe)
++			}
++			if test.remaining == nil {
++				if len(result.windows) != 0 {
++					t.Fatalf("free profile acquired a weekly allowance: %+v", result.windows)
++				}
++			} else if len(result.windows) != 1 || result.windows[0].Remaining == nil || *result.windows[0].Remaining != *test.remaining {
++				t.Fatalf("incorrect remaining quota: %+v", result.windows)
++			}
++			if test.plan == "" {
++				if result.plan != nil {
++					t.Fatalf("unknown subscription acquired a plan: %+v", result.plan)
++				}
++			} else if result.plan == nil || result.plan.Name != test.plan {
++				t.Fatalf("subscription plan was lost: %+v", result.plan)
++			}
++		})
++	}
++}
++
++func TestXAIOmittedZeroRejectsInvalidOrContradictoryPeriods(t *testing.T) {
++	now := time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)
++	for _, test := range []struct{ name, period string }{
++		{"expired", `{"type":"weekly","end":"2026-11-05T00:00:00Z"}`},
++		{"future start", `{"type":"weekly","start":"2026-11-07T00:00:00Z","end":"2026-11-13T00:00:00Z"}`},
++		{"missing end", `{"type":"weekly"}`},
++		{"invalid end", `{"type":"weekly","end":"bad"}`},
++		{"unknown period", `{"type":"future_period","end":"2026-11-13T00:00:00Z"}`},
++		{"monthly period", `{"type":"monthly","end":"2026-11-13T00:00:00Z"}`},
++		{"conflicting period aliases", `{"type":"weekly","end":"2026-11-13T00:00:00Z"},"current_period":{"type":"monthly","end":"2026-11-13T00:00:00Z"}`},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			fixture := xaiPaidFixture(now)
++			fixture.weekly = `{"config":{"currentPeriod":` + test.period + `}}`
++			server := serveXAIProbeFixture(t, func() xaiProbeFixture { return fixture })
++			collector := NewCollector(newCollectorTestRepository(t), Options{Owner: "xai-period", XAIBillingURL: server.URL + "/v1/billing", Now: func() time.Time { return now }})
++			if result, errProbe := collector.probeXAI(context.Background(), &coreauth.Auth{Metadata: map[string]any{"access_token": "fixture"}}); errProbe == nil {
++				t.Fatalf("invalid period became a zero-usage quota: %+v", result.windows)
++			}
++		})
++	}
++}
++
++func TestXAIOmittedTotalDoesNotContradictObservedProductUsage(t *testing.T) {
++	now := time.Now().UTC()
++	fixture := xaiPaidFixture(now)
++	fixture.weekly = strings.Replace(fixture.weekly, `"currentPeriod":`, `"productUsage":[{"product":"GrokBuild","usagePercent":1}],"currentPeriod":`, 1)
++	server := serveXAIProbeFixture(t, func() xaiProbeFixture { return fixture })
++	collector := NewCollector(newCollectorTestRepository(t), Options{Owner: "xai-products", XAIBillingURL: server.URL + "/v1/billing", Now: func() time.Time { return now }})
++	result, errProbe := collector.probeXAI(context.Background(), &coreauth.Auth{Metadata: map[string]any{"access_token": "fixture"}})
++	if errProbe != nil || !result.partial || len(result.windows) != 2 || result.windows[0].Remaining != nil || result.windows[1].Used == nil || *result.windows[1].Used != 1 {
++		t.Fatalf("product usage was discarded or an unused total was invented: result=%+v error=%v", result, errProbe)
++	}
++}
++
++func TestXAISubscriptionPlanNamesAndAliases(t *testing.T) {
++	for _, test := range []struct{ tier, name string }{
++		{"SuperGrok", "SuperGrok"}, {"SuperGrokPlus", "SuperGrok Plus"},
++		{"SuperGrokPro", "SuperGrok Pro"}, {"SuperGrokHeavy", "SuperGrok Heavy"},
++		{"XPremiumPlus", "X Premium+"}, {"SUBSCRIPTION_TIER_SUPER_GROK_HEAVY", "SuperGrok Heavy"},
++	} {
++		subscription, errParse := parseXAISubscription([]byte(fmt.Sprintf(`{"subscription_tier":%q}`, test.tier)))
++		if errParse != nil || subscription.entitlement != xaiEntitlementPaid || subscription.plan == nil || subscription.plan.Name != test.name {
++			t.Fatalf("subscription mapping failed: subscription=%+v error=%v", subscription, errParse)
++		}
++	}
++}
++
++type xaiTestRoundTripper func(*http.Request) (*http.Response, error)
++
++func (f xaiTestRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
++
++func TestXAIProbeUsesParallelRequestsWithOneDeadline(t *testing.T) {
++	now := time.Now().UTC()
++	fixture := xaiPaidFixture(now)
++	started := make(chan time.Time, 3)
++	release := make(chan struct{})
++	var finish sync.Once
++	defer finish.Do(func() { close(release) })
++	client := &http.Client{Transport: xaiTestRoundTripper(func(r *http.Request) (*http.Response, error) {
++		deadline, ok := r.Context().Deadline()
++		if !ok {
++			return nil, fmt.Errorf("probe has no deadline")
++		}
++		started <- deadline
++		select {
++		case <-release:
++		case <-r.Context().Done():
++			return nil, r.Context().Err()
++		}
++		body := fixture.monthly
++		if r.URL.Path == "/v1/user" {
++			body = fixture.profile
++		} else if r.URL.Query().Get("format") == "credits" {
++			body = fixture.weekly
++		}
++		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
++	})}
++	collector := NewCollector(newCollectorTestRepository(t), Options{Owner: "xai-parallel", XAIBillingURL: "http://quota.test/v1/billing", Now: func() time.Time { return now }, HTTPClient: func(*coreauth.Auth, time.Duration) (*http.Client, error) { return client, nil }})
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	done := make(chan *probeError, 1)
++	go func() {
++		_, failure := collector.probeXAI(ctx, &coreauth.Auth{Metadata: map[string]any{"access_token": "fixture"}})
++		done <- failure
++	}()
++	var shared time.Time
++	for range 3 {
++		select {
++		case deadline := <-started:
++			if shared.IsZero() {
++				shared = deadline
++			} else if !shared.Equal(deadline) {
++				t.Fatal("requests do not share a total probe deadline")
++			}
++		case <-time.After(2 * time.Second):
++			t.Fatal("independent requests were serialized")
++		}
++	}
++	finish.Do(func() { close(release) })
++	select {
++	case failure := <-done:
++		if failure != nil {
++			t.Fatalf("parallel probe failed: %v", failure)
++		}
++	case <-time.After(2 * time.Second):
++		t.Fatal("parallel probe did not finish")
++	}
++}
++
++func TestXAIQuotaV3RecollectsFreshLegacyAllowance(t *testing.T) {
++	repo := newCollectorTestRepository(t)
++	seedCollectorProviderAuth(t, repo, "xai-legacy-free", "xai", map[string]any{"type": "xai", "access_token": "fixture"})
++	now := time.Now().UTC()
++	expiresAt := now.Add(30 * time.Minute)
++	_, errSeed := repo.UpsertQuotaSnapshot(context.Background(), cluster.QuotaSnapshotWrite{
++		CredentialID: "xai-legacy-free", QuotaStatus: "healthy", CollectionStatus: "success", Source: "active_probe", ObservedAt: &now, ExpiresAt: &expiresAt, NextProbeAt: &expiresAt,
++		ParserVersion: 2, CollectorVersion: 2, ReplaceWindows: true,
++		Windows: []cluster.QuotaWindow{{ID: "xai-weekly-usage", Scope: "account", Mode: "fixed", Status: "healthy", Unit: "percentage", Used: quotaFloatPtr(1), Limit: quotaFloatPtr(100), PeriodUnit: "week", PeriodValue: quotaFloatPtr(1), Source: "active_probe", ObservedAt: now}},
++	})
++	if errSeed != nil {
++		t.Fatal(errSeed)
++	}
++	fixture := xaiPaidFixture(now)
++	fixture.profile = `{"subscriptionTier":null}`
++	server := serveXAIProbeFixture(t, func() xaiProbeFixture { return fixture })
++	collector := NewCollector(repo, Options{Owner: "xai-upgrade", XAIBillingURL: server.URL + "/v1/billing", Now: func() time.Time { return now }})
++	collector.collect(context.Background())
++	item, errGet := repo.GetQuotaCredential(context.Background(), "xai-legacy-free", now)
++	if errGet != nil || item.Plan == nil || item.Plan.Name != "Free" || len(item.Windows) != 0 || item.CollectionStatus != "success" {
++		t.Fatalf("fresh legacy allowance survived the eligibility upgrade: item=%+v error=%v", item, errGet)
++	}
++}
++
++func TestXAIEligibilityFailureRetainsLastObservationAndRecovers(t *testing.T) {
++	repo := newCollectorTestRepository(t)
++	seedCollectorProviderAuth(t, repo, "xai-recovery", "xai", map[string]any{"type": "xai", "access_token": "fixture"})
++	now := time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)
++	fixture := xaiPaidFixture(now)
++	var round atomic.Int32
++	server := serveXAIProbeFixture(t, func() xaiProbeFixture {
++		value := fixture
++		switch round.Load() {
++		case 0:
++			value.weekly = strings.Replace(value.weekly, `"currentPeriod":`, `"creditUsagePercent":1,"currentPeriod":`, 1)
++		case 1:
++			value.profileStatus = http.StatusServiceUnavailable
++			value.profile = `{"error":"private upstream details"}`
++		}
++		return value
++	})
++	collector := NewCollector(repo, Options{Owner: "xai-recovery", XAIBillingURL: server.URL + "/v1/billing", Now: func() time.Time { return now }})
++	auth := &coreauth.Auth{ID: "xai-recovery", Provider: "xai"}
++	collector.collectCredential(context.Background(), auth, true)
++	first, errFirst := repo.GetQuotaCredential(context.Background(), auth.ID, now)
++	if errFirst != nil || first.CollectionStatus != "success" || first.ObservedAt == nil || len(first.Windows) != 1 {
++		t.Fatalf("initial observation was not persisted: item=%+v error=%v", first, errFirst)
++	}
++	round.Store(1)
++	now = now.Add(time.Minute)
++	collector.collectCredential(context.Background(), auth, true)
++	failed, errFailed := repo.GetQuotaCredential(context.Background(), auth.ID, now)
++	if errFailed != nil || failed.CollectionStatus != "failed" || failed.Error == nil || failed.Error.Code != "UPSTREAM_UNAVAILABLE" || strings.Contains(failed.Error.Message, "private") {
++		t.Fatalf("eligibility failure was hidden or exposed upstream details: item=%+v error=%v", failed, errFailed)
++	}
++	if failed.ObservedAt == nil || !failed.ObservedAt.Equal(*first.ObservedAt) || failed.LastAttemptAt == nil || !failed.LastAttemptAt.Equal(now) || failed.ConsecutiveFailure != 1 || failed.NextProbeAt == nil || !failed.NextProbeAt.After(now) {
++		t.Fatalf("failure overwrote observation time or bypassed retry backoff: %+v", failed)
++	}
++	if failed.Plan == nil || failed.Plan.Name != "SuperGrok Plus" || len(failed.Windows) != 1 || failed.Windows[0].Remaining == nil || *failed.Windows[0].Remaining != 99 {
++		t.Fatalf("eligibility outage replaced valid historical quota: %+v", failed)
++	}
++	round.Store(2)
++	now = now.Add(time.Minute)
++	collector.collectCredential(context.Background(), auth, true)
++	recovered, errRecovered := repo.GetQuotaCredential(context.Background(), auth.ID, now)
++	if errRecovered != nil || recovered.CollectionStatus != "success" || recovered.Error != nil || recovered.ConsecutiveFailure != 0 || recovered.ObservedAt == nil || !recovered.ObservedAt.Equal(now) || len(recovered.Windows) != 1 || recovered.Windows[0].Remaining == nil || *recovered.Windows[0].Remaining != 100 {
++		t.Fatalf("confirmed paid zero usage did not recover cleanly: item=%+v error=%v", recovered, errRecovered)
++	}
++}
++
++func TestXAIIndependentFailuresPreserveUsefulQuota(t *testing.T) {
++	now := time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)
++	for _, test := range []struct {
++		name, monthly, weekly, code string
++		monthlyStatus, weeklyStatus int
++		remaining                   float64
++	}{
++		{name: "monthly outage", monthlyStatus: http.StatusServiceUnavailable, code: "UPSTREAM_UNAVAILABLE", remaining: 100},
++		{name: "monthly malformed", monthly: `[]`, code: "UPSTREAM_RESPONSE_INVALID", remaining: 100},
++		{name: "weekly outdated", monthly: `{"config":{"monthlyLimit":15000,"used":1500}}`, weeklyStatus: http.StatusUpgradeRequired, code: "UPSTREAM_CLIENT_OUTDATED", remaining: 135},
++		{name: "weekly malformed", monthly: `{"config":{"monthlyLimit":15000,"used":1500}}`, weekly: `[]`, code: "UPSTREAM_RESPONSE_INVALID", remaining: 135},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			fixture := xaiPaidFixture(now)
++			fixture.monthlyStatus, fixture.weeklyStatus = test.monthlyStatus, test.weeklyStatus
++			if test.monthly != "" {
++				fixture.monthly = test.monthly
++			}
++			if test.weekly != "" {
++				fixture.weekly = test.weekly
++			}
++			server := serveXAIProbeFixture(t, func() xaiProbeFixture { return fixture })
++			collector := NewCollector(newCollectorTestRepository(t), Options{Owner: "xai-independent", XAIBillingURL: server.URL + "/v1/billing", Now: func() time.Time { return now }})
++			result, failure := collector.probeXAI(context.Background(), &coreauth.Auth{Metadata: map[string]any{"access_token": "fixture"}})
++			if failure != nil || !result.partial || result.collectionError == nil || result.collectionError.Code != test.code || result.plan == nil || result.plan.Name != "SuperGrok Plus" || len(result.windows) != 1 || result.windows[0].Remaining == nil || *result.windows[0].Remaining != test.remaining {
++				t.Fatalf("one component failure discarded confirmed quota or subscription: result=%+v failure=%v", result, failure)
++			}
++		})
++	}
++}
++
++func TestXAIRequestFailuresTakePriorityOverMissingQuota(t *testing.T) {
++	now := time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)
++	for _, test := range []struct {
++		status int
++		code   string
++	}{
++		{http.StatusUpgradeRequired, "UPSTREAM_CLIENT_OUTDATED"},
++		{http.StatusUnauthorized, "UPSTREAM_AUTH_REJECTED"},
++		{http.StatusTooManyRequests, "UPSTREAM_RATE_LIMITED"},
++	} {
++		t.Run(test.code, func(t *testing.T) {
++			fixture := xaiPaidFixture(now)
++			fixture.monthly, fixture.profile = `{}`, `{}`
++			fixture.weeklyStatus = test.status
++			server := serveXAIProbeFixture(t, func() xaiProbeFixture { return fixture })
++			collector := NewCollector(newCollectorTestRepository(t), Options{Owner: "xai-errors", XAIBillingURL: server.URL + "/v1/billing", Now: func() time.Time { return now }})
++			_, failure := collector.probeXAI(context.Background(), &coreauth.Auth{Metadata: map[string]any{"access_token": "fixture"}})
++			if failure == nil || failure.code != test.code || failure.statusCode != test.status {
++				t.Fatalf("actionable request failure was hidden: %v", failure)
++			}
++		})
++	}
++}
++
++func TestXAIProbeCancellationStopsEveryRequest(t *testing.T) {
++	started, stopped := make(chan struct{}, 3), make(chan struct{}, 3)
++	client := &http.Client{Transport: xaiTestRoundTripper(func(r *http.Request) (*http.Response, error) {
++		started <- struct{}{}
++		<-r.Context().Done()
++		stopped <- struct{}{}
++		return nil, r.Context().Err()
++	})}
++	collector := NewCollector(newCollectorTestRepository(t), Options{Owner: "xai-cancel", XAIBillingURL: "http://quota.test/v1/billing", HTTPClient: func(*coreauth.Auth, time.Duration) (*http.Client, error) { return client, nil }})
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	done := make(chan *probeError, 1)
++	go func() {
++		_, failure := collector.probeXAI(ctx, &coreauth.Auth{Metadata: map[string]any{"access_token": "fixture"}})
++		done <- failure
++	}()
++	for range 3 {
++		select {
++		case <-started:
++		case <-time.After(2 * time.Second):
++			t.Fatal("requests did not start")
++		}
++	}
++	cancel()
++	for range 3 {
++		select {
++		case <-stopped:
++		case <-time.After(2 * time.Second):
++			t.Fatal("request survived cancellation")
++		}
++	}
++	select {
++	case failure := <-done:
++		if failure == nil {
++			t.Fatal("cancelled requests produced a successful quota observation")
++		}
++	case <-time.After(2 * time.Second):
++		t.Fatal("cancelled probe did not return")
++	}
++}
