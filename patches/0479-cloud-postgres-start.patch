@@ -1,0 +1,689 @@
+diff --git a/e2e/cloud-postgres.config.ts b/e2e/cloud-postgres.config.ts
+new file mode 100644
+index 0000000..4679419
+--- /dev/null
++++ b/e2e/cloud-postgres.config.ts
+@@ -0,0 +1,6 @@
++import { defineConfig } from "vitest/config";
++
++/** Real Docker startup and cleanup, without building a Cloud Worker. */
++export default defineConfig({
++  test: { include: ["e2e/tests/cloud-postgres.spec.ts"], testTimeout: 120_000, maxWorkers: 1 },
++});
+diff --git a/e2e/sdk/suite.ts b/e2e/sdk/suite.ts
+index b77323f..e69ed72 100644
+--- a/e2e/sdk/suite.ts
++++ b/e2e/sdk/suite.ts
+@@ -349,7 +349,6 @@ export const runSuite = ({
+                           directory: productionDirectory,
+                           listener: productionListener!,
+                           origin: proxyProduction.value,
+-                          databasePort: yield* freePort,
+                           commit,
+                           ...(prebuiltFramework ? { prebuilt: true as const } : {}),
+                           observeUI: false,
+@@ -365,7 +364,6 @@ export const runSuite = ({
+                         directory,
+                         listener: listener!,
+                         origin,
+-                        databasePort: yield* freePort,
+                         commit,
+                         ...(prebuiltFramework ? { prebuilt: true as const } : {}),
+                         observeUI,
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+index 8a7f69b..c942da4 100644
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -143,7 +143,6 @@ export const startCloudEnvironment = (input: {
+   readonly directory: string;
+   readonly origin: string;
+   readonly listener: CloudListener;
+-  readonly databasePort: number;
+   readonly commit: string;
+   readonly observeUI: boolean;
+   /**
+@@ -193,9 +192,6 @@ export const startCloudEnvironment = (input: {
+       (process.env.BASALT_E2E_PRODUCTION_OPS === "1"
+         ? yield* productionOpsDatabaseProxy()
+         : undefined);
+-    const databaseBackendPort = databaseProxy === undefined ? input.databasePort : yield* freePort;
+-    if (databaseProxy !== undefined) yield* databaseProxy.select(databaseBackendPort);
+-    const databasePort = databaseProxy?.port ?? input.databasePort;
+     const nativePoolBackend = process.env.BASALT_E2E_POOL_BACKEND === "1";
+     const poolBackend =
+       nativePoolBackend ||
+@@ -281,6 +277,36 @@ export const startCloudEnvironment = (input: {
+     const databasePassword = randomBytes(24).toString("hex");
+     // The Worker logs in as the runtime role; migrations and fixtures keep the owner's login.
+     const runtimePassword = randomBytes(24).toString("hex");
++    const dockerHost = (yield* processes.string(
++      ChildProcess.make("docker", ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"]),
++    )).trim();
++    if (!dockerHost.startsWith("unix://") && !dockerHost.startsWith("npipe://"))
++      return yield* new CloudStartFailed({
++        operation: "Use a local Docker daemon for disposable test data",
++      });
++    const dockerEnv = {
++      PATH: [path.join(cloud, "node_modules/.bin"), process.env.PATH ?? ""].join(
++        process.platform === "win32" ? ";" : ":",
++      ),
++      DOCKER_HOST: dockerHost,
++      DOCKER_CONFIG: `${directory}/docker-client`,
++    };
++    yield* fs.makeDirectory(dockerEnv.DOCKER_CONFIG, { recursive: true, mode: 0o700 });
++    const { databasePort: databaseBackendPort } = yield* startCloudPostgres({
++      container,
++      databasePassword,
++      runtimePassword,
++      dockerEnv,
++      log: `${directory}/postgres.log`,
++    });
++    if (databaseProxy !== undefined) yield* databaseProxy.select(databaseBackendPort);
++    const databasePort = databaseProxy?.port ?? databaseBackendPort;
++    const alternate =
++      process.env.BASALT_E2E_PRODUCTION_OPS === "1"
++        ? yield* productionOpsDatabaseProxy()
++        : undefined;
++    if (alternate !== undefined) yield* alternate.select(databaseBackendPort);
++    const alternatePort = alternate?.port;
+     const operatorOAuth = OperatorOAuthFixture.make({
+       port: yield* freePort,
+       clientId: "first-party-client",
+@@ -356,9 +382,7 @@ export const startCloudEnvironment = (input: {
+       BASALT_E2E_DATABASE_ORIGIN: "original",
+       BASALT_E2E_DATABASE_TARGET_PORT: String(databasePort),
+       BASALT_E2E_OPS_RELEASE: "reviewed-release",
+-      PATH: [path.join(cloud, "node_modules/.bin"), process.env.PATH ?? ""].join(
+-        process.platform === "win32" ? ";" : ":",
+-      ),
++      PATH: dockerEnv.PATH,
+       ...(process.env.HOME === undefined ? {} : { HOME: process.env.HOME }),
+       ...(process.env.TMPDIR === undefined ? {} : { TMPDIR: process.env.TMPDIR }),
+       // CI prevents Alchemy from inspecting personal profiles; its home is empty for every run.
+@@ -458,19 +482,6 @@ export const startCloudEnvironment = (input: {
+       ...operatorOAuthClients(operatorOAuth),
+     };
+     yield* fs.makeDirectory(env.ALCHEMY_HOME, { recursive: true, mode: 0o700 });
+-    const dockerHost = (yield* processes.string(
+-      ChildProcess.make("docker", ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"]),
+-    )).trim();
+-    if (!dockerHost.startsWith("unix://") && !dockerHost.startsWith("npipe://"))
+-      return yield* new CloudStartFailed({
+-        operation: "Use a local Docker daemon for disposable test data",
+-      });
+-    const dockerEnv = {
+-      PATH: env.PATH,
+-      DOCKER_HOST: dockerHost,
+-      DOCKER_CONFIG: `${directory}/docker-client`,
+-    };
+-    yield* fs.makeDirectory(dockerEnv.DOCKER_CONFIG, { recursive: true, mode: 0o700 });
+     // Lets the lock fixture stop and resume one of the database's backends.
+     const postgresContainer = `${directory}/postgres-container.json`;
+     yield* fs.writeFileString(
+@@ -557,17 +568,6 @@ export const startCloudEnvironment = (input: {
+         ),
+         Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 100 }),
+       );
+-    const alternatePort =
+-      process.env.BASALT_E2E_PRODUCTION_OPS === "1" ? yield* freePort : undefined;
+-    yield* startCloudPostgres({
+-      container,
+-      databasePort: databaseBackendPort,
+-      ...(alternatePort === undefined ? {} : { alternatePort }),
+-      databasePassword,
+-      runtimePassword,
+-      dockerEnv,
+-      log: `${directory}/postgres.log`,
+-    });
+     yield* createV1Database({
+       container,
+       dockerEnv,
+diff --git a/e2e/support/cloud-postgres-command.ts b/e2e/support/cloud-postgres-command.ts
+new file mode 100644
+index 0000000..b31040b
+--- /dev/null
++++ b/e2e/support/cloud-postgres-command.ts
+@@ -0,0 +1,78 @@
++/** Docker diagnostics stay attached to the sub-step that failed, without test passwords. */
++import { Effect, FileSystem, Schema, Stream } from "effect";
++import { ChildProcess, ChildProcessSpawner } from "effect/process";
++
++export class CloudPostgresFailed extends Schema.TaggedError<CloudPostgresFailed>()(
++  "CloudPostgresFailed",
++  {
++    operation: Schema.String,
++  },
++) {
++  get message() {
++    return `Cloud test environment failed: ${this.operation}`;
++  }
++}
++
++export const postgresCommand = (input: {
++  readonly dockerEnv: Readonly<Record<string, string>>;
++  readonly log: string;
++  readonly secrets: ReadonlyArray<string>;
++}) =>
++  Effect.gen(function* () {
++    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++    const fs = yield* FileSystem.FileSystem;
++    const redact = (text: string) =>
++      input.secrets
++        .filter(Boolean)
++        .reduce(
++          (safe, secret) =>
++            safe
++              .replaceAll(secret, "<redacted>")
++              .replaceAll(encodeURIComponent(secret), "<redacted>"),
++          text,
++        );
++    const run = (args: ReadonlyArray<string>, env: Record<string, string> = {}) =>
++      Effect.scoped(
++        Effect.gen(function* () {
++          const child = yield* processes.spawn(
++            ChildProcess.make("docker", args, {
++              env: { ...input.dockerEnv, ...env },
++              extendEnv: false,
++              stdout: "pipe",
++              stderr: "pipe",
++            }),
++          );
++          const [code, stdout, stderr] = yield* Effect.all(
++            [
++              child.exitCode,
++              Stream.mkString(Stream.decodeText(child.stdout)),
++              Stream.mkString(Stream.decodeText(child.stderr)),
++            ],
++            { concurrency: 3 },
++          );
++          return { code, stdout: redact(stdout), stderr: redact(stderr) };
++        }),
++      );
++    const checked = (
++      operation: string,
++      args: ReadonlyArray<string>,
++      env?: Record<string, string>,
++    ) =>
++      run(args, env).pipe(
++        Effect.mapError(
++          (error) =>
++            new CloudPostgresFailed({ operation: redact(`${operation}: ${error.message}`) }),
++        ),
++        Effect.flatMap((result) =>
++          Effect.gen(function* () {
++            if (result.code === 0) return result.stdout;
++            const diagnostic = `${operation} (docker ${args[0]}, exit ${result.code}): ${result.stderr.trim() || result.stdout.trim() || "no Docker diagnostic"}`;
++            return yield* new CloudPostgresFailed({ operation: diagnostic });
++          }),
++        ),
++        Effect.tapError((error) =>
++          fs.writeFileString(input.log, `${error.message}\n`, { flag: "a", mode: 0o600 }),
++        ),
++      );
++    return { run, checked };
++  });
+diff --git a/e2e/support/cloud-postgres-fixtures.ts b/e2e/support/cloud-postgres-fixtures.ts
+new file mode 100644
+index 0000000..5874092
+--- /dev/null
++++ b/e2e/support/cloud-postgres-fixtures.ts
+@@ -0,0 +1,65 @@
++import { connect } from "node:net";
++import { Effect, FileSystem } from "effect";
++import { ChildProcess, ChildProcessSpawner } from "effect/process";
++
++/** Exercise the published TCP endpoint, not just pg_isready inside the container. */
++export const postgresHandshake = (port: number) =>
++  Effect.gen(function* () {
++    const socket = yield* Effect.acquireRelease(
++      Effect.sync(() => connect({ host: "127.0.0.1", port })),
++      (socket) =>
++        Effect.sync(() => {
++          socket.destroy();
++        }),
++    );
++    return yield* Effect.tryPromise(
++      () =>
++        new Promise<string>((resolve, reject) => {
++          socket.setTimeout(5000, () => socket.destroy(new Error("Postgres handshake timed out")));
++          socket.once("error", reject);
++          socket.once("connect", () => socket.write(Buffer.from([0, 0, 0, 8, 4, 210, 22, 47])));
++          socket.once("data", (data) => resolve(data.toString()));
++          socket.once("end", () =>
++            reject(new Error("Postgres closed before the handshake response")),
++          );
++        }),
++    );
++  });
++
++export const localDocker = Effect.gen(function* () {
++  const fs = yield* FileSystem.FileSystem;
++  const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++  const directory = yield* fs.makeTempDirectoryScoped();
++  const host = (yield* processes.string(
++    ChildProcess.make("docker", ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"]),
++  )).trim();
++  if (!host.startsWith("unix://") && !host.startsWith("npipe://"))
++    return yield* Effect.die("A local Docker daemon is required");
++  return {
++    directory,
++    dockerEnv: { PATH: process.env.PATH ?? "", DOCKER_HOST: host, DOCKER_CONFIG: directory },
++  };
++});
++
++/** Fail one Docker sub-step without touching the daemon or relying on network outages. */
++export const failedDocker = (step: "pull" | "create" | "start", secret: string) =>
++  Effect.gen(function* () {
++    const fs = yield* FileSystem.FileSystem;
++    const directory = yield* fs.makeTempDirectoryScoped();
++    yield* fs.writeFileString(
++      `${directory}/docker`,
++      `#!/bin/sh
++case "$1" in
++  ps) exit 0 ;;
++  image) ${step === "pull" ? "exit 1" : "exit 0"} ;;
++  ${step}) echo 'daemon ${step} refused: ${secret}' >&2; exit 1 ;;
++  *) exit 0 ;;
++esac
++`,
++      { mode: 0o700 },
++    );
++    return {
++      directory,
++      dockerEnv: { PATH: directory, DOCKER_HOST: "unix:///synthetic", DOCKER_CONFIG: directory },
++    };
++  });
+diff --git a/e2e/support/cloud-postgres.ts b/e2e/support/cloud-postgres.ts
+index 6a36df1..e5a65a9 100644
+--- a/e2e/support/cloud-postgres.ts
++++ b/e2e/support/cloud-postgres.ts
+@@ -10,6 +10,7 @@
+  */
+ import { Clock, Console, Effect, FileSystem, Schedule, Schema, Stream } from "effect";
+ import { ChildProcess, ChildProcessSpawner } from "effect/process";
++import { CloudPostgresFailed, postgresCommand } from "./cloud-postgres-command.ts";
+ 
+ const role = "executor.e2e.role=cloud-postgres";
+ /**
+@@ -24,14 +25,6 @@ const pidLabel = "executor.e2e.pid";
+ /** A container younger than this is never removed by another run, whatever its owner's state. */
+ const staleAfterMs = 5 * 60_000;
+ 
+-class CloudPostgresFailed extends Schema.TaggedError<CloudPostgresFailed>()("CloudPostgresFailed", {
+-  operation: Schema.String,
+-}) {
+-  get message() {
+-    return `Cloud test environment failed: ${this.operation}`;
+-  }
+-}
+-
+ const Containers = Schema.fromJsonString(
+   Schema.Array(
+     Schema.Struct({
+@@ -142,9 +135,9 @@ const removeAbandoned = (dockerEnv: DockerEnv, namespace: string) =>
+ /** Create, start and await a Postgres container that is removed when the caller's scope closes. */
+ export const startCloudPostgres = (input: {
+   readonly container: string;
+-  readonly databasePort: number;
+-  /** A second runner-owned endpoint for binding-change proof against the same retained database. */
+-  readonly alternatePort?: number;
++  /** A fixed binding only for reproducing startup failures; managed runs let Docker allocate. */
++  /** A fixed binding only for reproducing startup failures; managed runs let Docker allocate. */
++  readonly databasePort?: number;
+   readonly databasePassword: string;
+   /**
+    * Create the runtime role, with its grants and this password, before anything else, so every
+@@ -167,66 +160,79 @@ export const startCloudPostgres = (input: {
+         stdout: "ignore",
+         stderr: "ignore",
+       });
++    const command = yield* postgresCommand({
++      dockerEnv,
++      log: input.log,
++      secrets: [input.databasePassword, input.runtimePassword ?? ""],
++    });
++    const image = yield* command.run(["image", "inspect", "--format", "{{.Id}}", "postgres:17"]);
++    if (image.code !== 0)
++      yield* command.checked("Pull the Postgres image", ["pull", "postgres:17"]);
+     // Without a namespace, a container records no owner another run could check, and this run
+     // checks none.
+     const namespace = yield* pidNamespace;
+     if (namespace !== undefined) yield* removeAbandoned(dockerEnv, namespace);
+     // Acquisition is uninterruptible, so an interrupted run still learns whether Docker created
+     // the container before it removes it. Removal by name is a no-op when nothing was created.
+-    const created = yield* Effect.acquireRelease(
+-      processes.exitCode(
+-        docker(
+-          [
+-            "create",
+-            "--rm",
+-            "--name",
+-            container,
+-            "--label",
+-            role,
+-            ...(namespace === undefined
+-              ? []
+-              : [
+-                  "--label",
+-                  `${namespaceLabel}=${namespace}`,
+-                  "--label",
+-                  `${pidLabel}=${process.pid}`,
+-                ]),
+-            "--publish",
+-            `127.0.0.1:${input.databasePort}:5432`,
+-            ...(input.alternatePort === undefined
+-              ? []
+-              : ["--publish", `127.0.0.1:${input.alternatePort}:5432`]),
+-            "--env",
+-            "POSTGRES_USER=executor",
+-            "--env",
+-            "POSTGRES_DB=executor",
+-            "--env",
+-            "POSTGRES_PASSWORD",
+-            "postgres:17",
+-            // The local Worker connects straight to Postgres, without PgBouncer.
+-            // Parallel browser requests and their background jobs each own SQL
+-            // connections; PostgreSQL's default 100 slots rejects startup bursts.
+-            "-c",
+-            "max_connections=512",
+-          ],
+-          { POSTGRES_PASSWORD: input.databasePassword },
+-        ),
++    yield* Effect.acquireRelease(
++      command.checked(
++        "Create the Postgres container",
++        [
++          "create",
++          "--rm",
++          "--name",
++          container,
++          "--label",
++          role,
++          ...(namespace === undefined
++            ? []
++            : [
++                "--label",
++                `${namespaceLabel}=${namespace}`,
++                "--label",
++                `${pidLabel}=${process.pid}`,
++              ]),
++          "--publish",
++          `127.0.0.1:${input.databasePort ?? 0}:5432`,
++          "--env",
++          "POSTGRES_USER=executor",
++          "--env",
++          "POSTGRES_DB=executor",
++          "--env",
++          "POSTGRES_PASSWORD",
++          "postgres:17",
++          // The local Worker connects straight to Postgres, without PgBouncer.
++          // Parallel browser requests and their background jobs each own SQL
++          // connections; PostgreSQL's default 100 slots rejects startup bursts.
++          "-c",
++          "max_connections=512",
++        ],
++        { POSTGRES_PASSWORD: input.databasePassword },
+       ),
+       () =>
+-        processes.exitCode(docker(["rm", "--force", "--volumes", container])).pipe(
+-          Effect.flatMap((code) =>
+-            code === 0
+-              ? Effect.void
+-              : Effect.die(new Error("Cannot remove disposable Cloud test database")),
+-          ),
+-          Effect.orDie,
+-        ),
++        command
++          .checked("Remove the Postgres container", ["rm", "--force", "--volumes", container])
++          .pipe(Effect.asVoid, Effect.orDie),
+     );
+-    if (created !== 0)
+-      return yield* new CloudPostgresFailed({ operation: "Create the Postgres container" });
+-    const started = yield* processes.exitCode(docker(["start", container]));
+-    if (started !== 0)
+-      return yield* new CloudPostgresFailed({ operation: "Start the Postgres container" });
++    yield* command.checked("Start the Postgres container", ["start", container]);
++    // Docker allocates and holds published ports atomically at start. A freePort probe cannot.
++    const bindings = yield* command.checked("Read the Postgres ports", [
++      "port",
++      container,
++      "5432/tcp",
++    ]);
++    const ports = bindings
++      .trim()
++      .split("\n")
++      .map((binding) => Number(binding.replace(/^127\.0\.0\.1:/, "")));
++    if (
++      ports.length !== 1 ||
++      ports.some((port) => !Number.isInteger(port) || port < 1 || port > 65535)
++    )
++      return yield* new CloudPostgresFailed({
++        operation: `Read the Postgres ports: unexpected Docker bindings ${bindings.trim()}`,
++      });
++    const databasePort = ports[0]!;
+     const logs = yield* processes.spawn(
+       ChildProcess.make("docker", ["logs", "--follow", container], {
+         env: dockerEnv,
+@@ -243,29 +249,20 @@ export const startCloudPostgres = (input: {
+     );
+     // The image starts a temporary Unix-only server during initdb. Wait for its
+     // final TCP listener before migrations and fixture setup compete to use it.
+-    yield* processes
+-      .exitCode(
+-        docker([
+-          "exec",
+-          container,
+-          "pg_isready",
+-          "-h",
+-          "127.0.0.1",
+-          "-U",
+-          "executor",
+-          "-d",
+-          "executor",
+-        ]),
+-      )
+-      .pipe(
+-        Effect.flatMap((code) =>
+-          code === 0
+-            ? Effect.void
+-            : Effect.fail(new CloudPostgresFailed({ operation: "Postgres TCP readiness" })),
+-        ),
+-        Effect.retry({ schedule: Schedule.spaced("1 second"), times: 90 }),
+-      );
+-    if (input.runtimePassword === undefined) return;
++    yield* command
++      .checked("Postgres TCP readiness", [
++        "exec",
++        container,
++        "pg_isready",
++        "-h",
++        "127.0.0.1",
++        "-U",
++        "executor",
++        "-d",
++        "executor",
++      ])
++      .pipe(Effect.retry({ schedule: Schedule.spaced("1 second"), times: 90 }));
++    if (input.runtimePassword === undefined) return { databasePort };
+     const runtimeRole = yield* processes.exitCode(
+       docker([
+         "exec",
+@@ -283,6 +280,7 @@ export const startCloudPostgres = (input: {
+     );
+     if (runtimeRole !== 0)
+       return yield* new CloudPostgresFailed({ operation: "Create the runtime database role" });
++    return { databasePort };
+   });
+ 
+ /**
+diff --git a/e2e/support/production-ops-database-fixture.ts b/e2e/support/production-ops-database-fixture.ts
+index 2974e93..2fccfe3 100644
+--- a/e2e/support/production-ops-database-fixture.ts
++++ b/e2e/support/production-ops-database-fixture.ts
+@@ -11,7 +11,6 @@ import {
+ } from "effect";
+ import { ChildProcess, ChildProcessSpawner } from "effect/process";
+ import { cloudRuntimeDatabaseRole, startCloudPostgres } from "./cloud-postgres.ts";
+-import { freePort } from "./ports.ts";
+ import { fixtureProcessOutput } from "./fixture-diagnostics.ts";
+ 
+ export const ProductionDatabaseState = Schema.Struct({
+@@ -51,11 +50,9 @@ export const productionOpsDatabaseFixture = (input: {
+         .pipe(Effect.orDie),
+     );
+     const targetContainer = `${input.container}-target`;
+-    const targetPort = yield* freePort;
+     // Container readiness belongs to environment setup, not the timed identity switch.
+-    yield* startCloudPostgres({
++    const { databasePort: targetPort } = yield* startCloudPostgres({
+       container: targetContainer,
+-      databasePort: targetPort,
+       databasePassword: input.databasePassword,
+       runtimePassword: input.runtimePassword,
+       dockerEnv: input.dockerEnv,
+diff --git a/e2e/tests/cloud-postgres.spec.ts b/e2e/tests/cloud-postgres.spec.ts
+new file mode 100644
+index 0000000..d5be453
+--- /dev/null
++++ b/e2e/tests/cloud-postgres.spec.ts
+@@ -0,0 +1,140 @@
++import * as NodeServices from "@effect/platform-node/NodeServices";
++import { expect, layer } from "@effect/vitest";
++import { Cause, Effect, Exit, FileSystem } from "effect";
++import { ChildProcess, ChildProcessSpawner } from "effect/process";
++import { startCloudPostgres } from "../support/cloud-postgres.ts";
++import {
++  failedDocker,
++  localDocker,
++  postgresHandshake,
++} from "../support/cloud-postgres-fixtures.ts";
++import { freePort, holdPort } from "../support/ports.ts";
++import { productionOpsDatabaseProxy } from "../support/production-ops-database-proxy.ts";
++
++layer(NodeServices.layer, { excludeTestServices: true })("Cloud Postgres", (it) => {
++  it.effect(
++    "starts on an owned port despite an occupied earlier allocation and removes the container",
++    () =>
++      Effect.gen(function* () {
++        const { directory, dockerEnv } = yield* localDocker;
++        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++        const stalePort = yield* freePort;
++        yield* holdPort(stalePort);
++        const container = `executor-e2e-port-proof-${process.pid}`;
++        yield* Effect.scoped(
++          Effect.gen(function* () {
++            const { databasePort } = yield* startCloudPostgres({
++              container,
++              dockerEnv,
++              databasePassword: "synthetic-postgres-password",
++              runtimePassword: "synthetic-runtime-password",
++              log: `${directory}/postgres.log`,
++            });
++            expect(databasePort).not.toBe(stalePort);
++            expect(yield* postgresHandshake(databasePort)).toBe("N");
++            const alternate = yield* productionOpsDatabaseProxy();
++            yield* alternate.select(databasePort);
++            expect(alternate.port).not.toBe(databasePort);
++            expect(yield* postgresHandshake(alternate.port)).toBe("N");
++            const role = yield* processes.string(
++              ChildProcess.make(
++                "docker",
++                [
++                  "exec",
++                  container,
++                  "psql",
++                  "-U",
++                  "executor",
++                  "-d",
++                  "executor",
++                  "-Atc",
++                  "select rolname from pg_roles where rolname = 'executor_runtime'",
++                ],
++                { env: dockerEnv, extendEnv: false },
++              ),
++            );
++            expect(role.trim()).toBe("executor_runtime");
++          }),
++        );
++        expect(
++          yield* processes.exitCode(
++            ChildProcess.make("docker", ["inspect", container], {
++              env: dockerEnv,
++              extendEnv: false,
++              stdout: "ignore",
++              stderr: "ignore",
++            }),
++          ),
++        ).not.toBe(0);
++      }).pipe(Effect.scoped),
++  );
++
++  it.effect("names a real bind conflict and removes the failed container", () =>
++    Effect.gen(function* () {
++      const { directory, dockerEnv } = yield* localDocker;
++      const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++      const port = yield* holdPort(0);
++      const container = `executor-e2e-conflict-proof-${process.pid}`;
++      const result = yield* Effect.exit(
++        Effect.scoped(
++          startCloudPostgres({
++            container,
++            dockerEnv,
++            databasePort: port,
++            databasePassword: "synthetic-conflict-password",
++            log: `${directory}/postgres.log`,
++          }),
++        ),
++      );
++      expect(Exit.isFailure(result)).toBe(true);
++      if (Exit.isFailure(result)) {
++        const message = Cause.pretty(result.cause);
++        expect(message).toContain("Start the Postgres container (docker start, exit 1)");
++        expect(message).toMatch(
++          /address already in use|port is already allocated|ports are not available/i,
++        );
++      }
++      expect(
++        yield* processes.exitCode(
++          ChildProcess.make("docker", ["inspect", container], {
++            env: dockerEnv,
++            extendEnv: false,
++            stdout: "ignore",
++            stderr: "ignore",
++          }),
++        ),
++      ).not.toBe(0);
++    }).pipe(Effect.scoped),
++  );
++
++  for (const step of ["pull", "create", "start"] as const) {
++    it.effect(`retains the ${step} diagnostic without the database password`, () =>
++      Effect.gen(function* () {
++        const secret = "synthetic-diagnostic-secret";
++        const { directory, dockerEnv } = yield* failedDocker(step, secret);
++        const fs = yield* FileSystem.FileSystem;
++        const log = `${directory}/postgres.log`;
++        const result = yield* Effect.exit(
++          Effect.scoped(
++            startCloudPostgres({
++              container: "synthetic-postgres",
++              dockerEnv,
++              databasePassword: secret,
++              log,
++            }),
++          ),
++        );
++        expect(Exit.isFailure(result)).toBe(true);
++        if (Exit.isFailure(result)) {
++          const message = Cause.pretty(result.cause);
++          expect(message).toContain(`docker ${step}, exit 1`);
++          expect(message).toContain(`daemon ${step} refused: <redacted>`);
++          expect(message).not.toContain(secret);
++        }
++        const retained = yield* fs.readFileString(log);
++        expect(retained).toContain(`daemon ${step} refused: <redacted>`);
++        expect(retained).not.toContain(secret);
++      }).pipe(Effect.scoped),
++    );
++  }
++});
