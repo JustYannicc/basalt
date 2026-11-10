@@ -18,6 +18,7 @@ for (const scenario of [
   "startup",
   "memory",
   "http",
+  "envelope",
   "transport",
   "timeout",
   "abort",
@@ -70,7 +71,12 @@ for (const scenario of [
               )
             : scenario === "http"
               ? new Response("synthetic-private-token", { status: 503 })
-              : Response.json({ success: true, result: { startup_time_ms: 100 } });
+              : scenario === "envelope"
+                ? Response.json({
+                    success: false,
+                    errors: [{ code: 10021, message: "synthetic-private-token" }],
+                  })
+                : Response.json({ success: true, result: { startup_time_ms: 100 } });
       return Effect.succeed(HttpResponse.fromWeb(request, response));
     });
     const proof = fixture({
@@ -149,6 +155,7 @@ for (const scenario of [
           output,
         );
       } else if (scenario === "http") assert.ok(output.includes("503"), output);
+      else if (scenario === "envelope") assert.ok(output.includes("200"), output);
       else if (scenario === "transport") assert.ok(output.includes("TransportError"), output);
       else if (scenario === "timeout") assert.ok(output.includes("TimeoutError"), output);
       else if (scenario === "abort") assert.ok(output.includes("AbortError"), output);

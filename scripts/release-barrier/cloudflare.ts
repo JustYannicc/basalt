@@ -62,8 +62,8 @@ export const uploadVersion = (worker: FrozenWorker) =>
     let diagnostic: ReturnType<typeof uploadResponseDiagnostic> | undefined;
     const observed = client.pipe(
       HttpClient.tap((response) => {
-        if (response.status < 400) return Effect.void;
         diagnostic = uploadResponseDiagnostic(response.status, undefined);
+        if (response.status < 400) return Effect.void;
         return response.json.pipe(
           Effect.match({
             onFailure: () => {},
