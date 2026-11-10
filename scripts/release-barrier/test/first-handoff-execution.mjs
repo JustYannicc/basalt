@@ -13,6 +13,7 @@ export function retainFirstHandoffExecution() {
       .filter((name) => name.startsWith("first-handoff"))
       .map((name) => "scripts/release-barrier/test/" + name),
     "scripts/pool-tests/runtime-handoff-worker.ts",
+    "scripts/release-barrier/prop-diff.ts",
     "src/pool/runtime-slots/adoption-readback.ts",
     "src/pool/runtime-slots/adoption-observation.ts",
     "src/pool/runtime-slots/admission-proof.ts",

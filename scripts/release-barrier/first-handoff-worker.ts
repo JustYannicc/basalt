@@ -2,6 +2,7 @@ import * as Workers from "@distilled.cloud/cloudflare/workers";
 import { Schema } from "effect";
 import { readRuntimeExports } from "./provisioning-exports.ts";
 import { BarrierRefusal, canonical, digest } from "./manifest.ts";
+import { changedProps } from "./prop-diff.ts";
 import type { FirstHandoffManifest, HandoffWorkerSnapshot } from "./first-handoff-contract.ts";
 
 export function handoffWorkerRefusal(
@@ -13,9 +14,13 @@ export function handoffWorkerRefusal(
   return new BarrierRefusal(reason, "PoolWorker", {
     fqn: "PoolWorker",
     type: "Cloudflare.Worker",
-    changed: [
-      { path, old: digest(canonical(expected ?? null)), new: digest(canonical(observed ?? null)) },
-    ],
+    changed: changedProps(expected, observed, (old, next) => ({
+      old: digest(canonical(old ?? null)),
+      new: digest(canonical(next ?? null)),
+    })).map((change) => ({
+      ...change,
+      path: change.path === "$" ? path : `${path}.${change.path}`,
+    })),
     why: [
       "The exact immutable version and preserved settings must match before relying on the next handoff phase.",
     ],

@@ -1,8 +1,46 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { firstHandoffVersionRequest } from "./first-handoff-worker.ts";
+import { firstHandoffVersionRequest, sameHandoffWorkerValue } from "./first-handoff-worker.ts";
+import { BarrierRefusal, canonical, digest } from "./manifest.ts";
 import { firstHandoffFixture } from "./test/first-handoff-fixture.ts";
 import { decodeHandoffWorker } from "./first-handoff-contract.ts";
+
+test("handoff snapshot refusals identify nested drift with private leaf hashes", () => {
+  const expected = {
+    version: {
+      placement: { mode: "off" },
+      bindings: [{ name: "PRIVATE_SETTING", type: "secret_text", text: "private-before" }],
+    },
+  };
+  const observed = structuredClone(expected);
+  observed.version.placement.mode = "smart";
+  observed.version.bindings[0]!.text = "private-after";
+  for (const phase of ["baseline", "beforeCodeInstall", "beforeCodeActivation"]) {
+    assert.throws(
+      () => sameHandoffWorkerValue(`firstHandoff.${phase}`, expected, observed),
+      (error) => {
+        assert.ok(error instanceof BarrierRefusal);
+        assert.equal(error.reason, "first-handoff-worker-drift");
+        assert.deepEqual(error.delta?.changed, [
+          {
+            path: `firstHandoff.${phase}.version.bindings.0.text`,
+            old: digest(canonical("private-before")),
+            new: digest(canonical("private-after")),
+          },
+          {
+            path: `firstHandoff.${phase}.version.placement.mode`,
+            old: digest(canonical("off")),
+            new: digest(canonical("smart")),
+          },
+        ]);
+        const receipt = JSON.stringify(error.delta);
+        for (const privateValue of ["private-before", "private-after", "PRIVATE_SETTING"])
+          assert.equal(receipt.includes(privateValue), false);
+        return true;
+      },
+    );
+  }
+});
 
 test("handoff code installation cannot advance the legacy image or settings before adoption", async () => {
   const { manifest } = await firstHandoffFixture();
