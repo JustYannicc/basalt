@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-device-decision-diagnostics",
+  "file": "0482-device-decision-diagnostics.patch",
+  "content_sha256": "bb3682e1779b2c51ac59d9af3326cebdb7f3c978769b199ceb68d8225fa9ce36",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

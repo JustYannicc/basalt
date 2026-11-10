@@ -1,0 +1,380 @@
+diff --git a/packages/mcp-auth/src/contracts/device.ts b/packages/mcp-auth/src/contracts/device.ts
+--- a/packages/mcp-auth/src/contracts/device.ts
++++ b/packages/mcp-auth/src/contracts/device.ts
+@@ -37,3 +37,45 @@
+ /** What a person decided for a device request. */
+ export const DeviceDecision = Schema.Struct({ status: Schema.Literals(["approved", "denied"]) });
+ export type DeviceDecision = typeof DeviceDecision.Type;
++
++/** Bounded diagnostics only. Never include a code, intent, credential or upstream response body. */
++export const DeviceFailureDetails = Schema.Struct({
++  stage: Schema.Literals([
++    "session",
++    "request_lookup",
++    "native_control_signing",
++    "native_control_request",
++    "native_control_response",
++    "grant_record",
++    "consent_record",
++    "decision_record",
++    "grant_cleanup",
++  ]),
++  failure: Schema.Literals([
++    "storage",
++    "signing",
++    "transport",
++    "status",
++    "timeout",
++    "invalid_response",
++  ]),
++  dependencyStatus: Schema.optionalKey(
++    Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 599 })),
++  ),
++});
++export type DeviceFailureDetails = typeof DeviceFailureDetails.Type;
++
++export const DeviceDecisionUnavailable = Schema.Struct({
++  ...DeviceFailureDetails.fields,
++  code: Schema.Literal("DEVICE_APPROVAL_UNAVAILABLE"),
++  message: Schema.NonEmptyString,
++});
++
++/** Approval can fail after a side effect, so a 503 never promises it is safe to replay. */
++export const deviceDecisionUnavailable = (details: DeviceFailureDetails) =>
++  DeviceDecisionUnavailable.make({
++    ...details,
++    code: "DEVICE_APPROVAL_UNAVAILABLE",
++    message:
++      "We could not confirm this device connection. Check its status on your device before trying again.",
++  });
+diff --git a/packages/mcp-auth/src/implementation/device-authorization.ts b/packages/mcp-auth/src/implementation/device-authorization.ts
+--- a/packages/mcp-auth/src/implementation/device-authorization.ts
++++ b/packages/mcp-auth/src/implementation/device-authorization.ts
+@@ -31,6 +31,7 @@
+ } from "../contracts/device.ts";
+ import { GrantId } from "../contracts/grant.ts";
+ import { authCall, parse, runAuth } from "./auth-call.ts";
++import { deviceDecisionStep } from "./device-decision-step.ts";
+ 
+ /** How long a person has to approve a request, and the polling interval the client starts with. */
+ const requestSeconds = 600;
+@@ -453,12 +454,15 @@
+         (ctx) =>
+           runAuth(
+             Effect.gen(function* () {
+-              const session = yield* settings.session(ctx);
++              const session = yield* deviceDecisionStep("session", settings.session(ctx));
+               const input = yield* parse(
+                 Schema.Struct({ user_code: Schema.String, accept: Schema.Boolean }),
+                 ctx.body,
+               );
+-              const found = yield* locate(ctx, input.user_code);
++              const found = yield* deviceDecisionStep(
++                "request_lookup",
++                locate(ctx, input.user_code),
++              );
+               const now = yield* Clock.currentTimeMillis;
+               if (Option.isNone(found) || now >= found.value.request.expiresAt)
+                 return yield* Effect.fail(new APIError("NOT_FOUND"));
+@@ -466,30 +470,39 @@
+               if (request.decision.status !== "pending")
+                 return yield* Effect.fail(new APIError("CONFLICT"));
+               if (!input.accept) {
+-                const denied = yield* replace(ctx, row, {
+-                  ...request,
+-                  decision: { status: "denied" },
+-                });
++                const denied = yield* deviceDecisionStep(
++                  "decision_record",
++                  replace(ctx, row, {
++                    ...request,
++                    decision: { status: "denied" },
++                  }),
++                );
+                 if (!denied) return yield* Effect.fail(new APIError("CONFLICT"));
+                 return DeviceDecision.make({ status: "denied" });
+               }
+-              const grant = yield* settings.approve(ctx, {
+-                userId: session.userId,
+-                clientId: request.clientId,
+-                resource: request.resource,
+-                scopes: request.scopes,
+-              });
+-              const approved = yield* replace(ctx, row, {
+-                ...request,
+-                decision: {
+-                  status: "approved",
++              const grant = yield* deviceDecisionStep(
++                "grant_record",
++                settings.approve(ctx, {
+                   userId: session.userId,
+-                  grant,
+-                  sessionId: session.sessionId,
+-                },
+-              });
++                  clientId: request.clientId,
++                  resource: request.resource,
++                  scopes: request.scopes,
++                }),
++              );
++              const approved = yield* deviceDecisionStep(
++                "decision_record",
++                replace(ctx, row, {
++                  ...request,
++                  decision: {
++                    status: "approved",
++                    userId: session.userId,
++                    grant,
++                    sessionId: session.sessionId,
++                  },
++                }),
++              );
+               if (!approved) {
+-                yield* settings.revoke(ctx, grant);
++                yield* deviceDecisionStep("grant_cleanup", settings.revoke(ctx, grant));
+                 return yield* Effect.fail(new APIError("CONFLICT"));
+               }
+               return DeviceDecision.make({ status: "approved" });
+diff --git a/packages/mcp-auth/src/implementation/device-decision-step.ts b/packages/mcp-auth/src/implementation/device-decision-step.ts
+--- /dev/null
++++ b/packages/mcp-auth/src/implementation/device-decision-step.ts
+@@ -0,0 +1,29 @@
++import { APIError } from "better-auth/api";
++import { Effect, Option, Schema } from "effect";
++import {
++  DeviceDecisionUnavailable,
++  DeviceFailureDetails,
++  deviceDecisionUnavailable,
++} from "../contracts/device.ts";
++
++/** Preserve typed dependency diagnostics; storage boundaries otherwise supply their own stage. */
++export const deviceDecisionStep = <A>(
++  stage: DeviceFailureDetails["stage"],
++  work: Effect.Effect<A, APIError>,
++) =>
++  work.pipe(
++    Effect.catch((error) => {
++      if (error.statusCode !== 503) return Effect.fail(error);
++      if (Schema.is(DeviceDecisionUnavailable)(error.body)) return Effect.fail(error);
++      const details = Option.getOrElse(
++        Schema.decodeUnknownOption(DeviceFailureDetails)(error.body),
++        () => ({ stage, failure: "storage" as const }),
++      );
++      return Effect.logWarning("device.decision.failed").pipe(
++        Effect.annotateLogs({ ...details }),
++        Effect.andThen(
++          Effect.fail(new APIError("SERVICE_UNAVAILABLE", deviceDecisionUnavailable(details))),
++        ),
++      );
++    }),
++  );
+diff --git a/packages/mcp-auth/src/implementation/native-grants.ts b/packages/mcp-auth/src/implementation/native-grants.ts
+--- a/packages/mcp-auth/src/implementation/native-grants.ts
++++ b/packages/mcp-auth/src/implementation/native-grants.ts
+@@ -10,6 +10,7 @@
+ import { GrantId } from "../contracts/grant.ts";
+ import type { NativeGrantDisplay } from "../contracts/native-display.ts";
+ import { authCall, parse, runAuth } from "./auth-call.ts";
++import { deviceDecisionStep } from "./device-decision-step.ts";
+ 
+ /** Kept outside GrantPolicy so an older server cannot interpret a device as API authority. */
+ export const NativeGrantPolicy = Schema.Struct({
+@@ -157,19 +158,22 @@
+       Effect.gen(function* () {
+         const id = GrantId.make(`native:${crypto.randomUUID()}`);
+         const policy = yield* host.approve(ctx, userId, id);
+-        const row = yield* authCall(() =>
+-          ctx.context.adapter.create({
+-            model: "mcpGrant",
+-            forceAllowId: true,
+-            data: {
+-              id,
+-              userId,
+-              clientId,
+-              resource: host.audience,
+-              policy: JSON.stringify(policy),
+-              revoked: false,
+-            },
+-          }),
++        const row = yield* deviceDecisionStep(
++          "grant_record",
++          authCall(() =>
++            ctx.context.adapter.create({
++              model: "mcpGrant",
++              forceAllowId: true,
++              data: {
++                id,
++                userId,
++                clientId,
++                resource: host.audience,
++                policy: JSON.stringify(policy),
++                revoked: false,
++              },
++            }),
++          ),
+         ).pipe(
+           Effect.catch((error) =>
+             host
+diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/src/implementation/oauth.ts
+--- a/packages/mcp-auth/src/implementation/oauth.ts
++++ b/packages/mcp-auth/src/implementation/oauth.ts
+@@ -21,6 +21,7 @@
+ import { Clock, Effect, Option, Schema } from "effect";
+ import { authCall, parse, runAuth } from "./auth-call.ts";
+ import { deviceAuthorizationPlugin, devicePollsPerRequest } from "./device-authorization.ts";
++import { deviceDecisionStep } from "./device-decision-step.ts";
+ import { isNativeGrant, nativeGrants, type NativeGrantHost } from "./native-grants.ts";
+ import { deviceVerificationPath } from "../contracts/device.ts";
+ export { NativeGrantAccess, NativeGrantPolicy, type NativeGrantHost } from "./native-grants.ts";
+@@ -1070,19 +1071,22 @@
+           ? native.create(ctx, request.userId, request.clientId)
+           : createGrant(ctx, request.userId, request.clientId, [request.resource]);
+         const now = yield* Clock.currentTimeMillis;
+-        yield* authCall(() =>
+-          ctx.context.adapter.create({
+-            model: "oauthConsent",
+-            data: {
+-              clientId: request.clientId,
+-              userId: request.userId,
+-              scopes: [...request.scopes],
+-              resources: [request.resource],
+-              referenceId: grant.id,
+-              createdAt: new Date(now),
+-              updatedAt: new Date(now),
+-            },
+-          }),
++        yield* deviceDecisionStep(
++          "consent_record",
++          authCall(() =>
++            ctx.context.adapter.create({
++              model: "oauthConsent",
++              data: {
++                clientId: request.clientId,
++                userId: request.userId,
++                scopes: [...request.scopes],
++                resources: [request.resource],
++                referenceId: grant.id,
++                createdAt: new Date(now),
++                updatedAt: new Date(now),
++              },
++            }),
++          ),
+         );
+         return grant.id;
+       }),
+diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/hosted/server/src/implementation/native-grant-host.ts
+--- a/apps/hosted/server/src/implementation/native-grant-host.ts
++++ b/apps/hosted/server/src/implementation/native-grant-host.ts
+@@ -11,6 +11,7 @@
+ import { signEnvelope } from "./pool-token.ts";
+ import { nativeGrantDisplay } from "./native-grant-display.ts";
+ import { nativeControlPath, nativeControlPrefix } from "./native-contract.ts";
++import { nativeControlCall, nativeControlFailure } from "./native-control-error.ts";
+ 
+ const Created = Schema.Struct({
+   computer: Schema.Struct({ id: Schema.NonEmptyString }),
+@@ -29,14 +30,14 @@
+ ) =>
+   Effect.gen(function* () {
+     const at = yield* Clock.currentTimeMillis;
+-    const envelope = yield* authCall(() =>
++    const envelope = yield* nativeControlCall(action, "native_control_signing", () =>
+       signEnvelope(Redacted.value(secret), nativeControlPrefix, {
+         ...value,
+         action,
+         expiresAt: at + 30_000,
+       }),
+     );
+-    const response = yield* authCall(() =>
++    const response = yield* nativeControlCall(action, "native_control_request", () =>
+       fetch(new URL(nativeControlPath, origin), {
+         method: "POST",
+         headers: { "content-type": "application/json" },
+@@ -46,18 +47,29 @@
+       }),
+     );
+     if (!response.ok) {
+-      yield* authCall(() => response.body?.cancel() ?? Promise.resolve());
+-      return yield* Effect.fail(
+-        new APIError(
+-          response.status === 401 || response.status === 403
+-            ? "UNAUTHORIZED"
+-            : "SERVICE_UNAVAILABLE",
+-        ),
++      yield* Effect.promise(
++        () => response.body?.cancel().catch(() => undefined) ?? Promise.resolve(),
++      );
++      return yield* nativeControlFailure(
++        action,
++        {
++          stage: "native_control_response",
++          failure: "status",
++          dependencyStatus: response.status,
++        },
++        response.status === 401 || response.status === 403,
+       );
+     }
+-    const body: unknown = yield* authCall(() => response.json());
++    const body: unknown = yield* nativeControlCall(action, "native_control_response", () =>
++      response.json(),
++    );
+     return yield* Schema.decodeUnknownEffect(schema)(body).pipe(
+-      Effect.mapError(() => new APIError("SERVICE_UNAVAILABLE")),
++      Effect.catch(() =>
++        nativeControlFailure(action, {
++          stage: "native_control_response",
++          failure: "invalid_response",
++        }),
++      ),
+     );
+   });
+ const computerIdentity = (access: NativeGrantAccess) => ({
+diff --git a/apps/hosted/server/src/implementation/native-control-error.ts b/apps/hosted/server/src/implementation/native-control-error.ts
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/native-control-error.ts
+@@ -0,0 +1,45 @@
++import type { DeviceFailureDetails } from "@executor-js/mcp-auth/device";
++import { APIError } from "better-auth/api";
++import { Effect } from "effect";
++
++export const nativeControlFailure = (
++  action: string,
++  details: DeviceFailureDetails,
++  unauthorized = false,
++) =>
++  Effect.logWarning("native.control.failed").pipe(
++    Effect.annotateLogs({ action, ...details }),
++    Effect.andThen(
++      Effect.fail(
++        new APIError(unauthorized ? "UNAUTHORIZED" : "SERVICE_UNAVAILABLE", {
++          code: unauthorized ? "NATIVE_CONTROL_REFUSED" : "NATIVE_CONTROL_UNAVAILABLE",
++          message: unauthorized
++            ? "This device connection is no longer available."
++            : "The device connection service is unavailable. Check your device before trying again.",
++          ...details,
++        }),
++      ),
++    ),
++  );
++
++export const nativeControlCall = <A>(
++  action: string,
++  stage: "native_control_signing" | "native_control_request" | "native_control_response",
++  run: () => Promise<A>,
++) =>
++  Effect.tryPromise({
++    try: run,
++    catch: (error) => {
++      const timeout =
++        error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
++      const failure =
++        stage === "native_control_signing"
++          ? "signing"
++          : stage === "native_control_response"
++            ? "invalid_response"
++            : timeout
++              ? "timeout"
++              : "transport";
++      return { stage, failure } satisfies DeviceFailureDetails;
++    },
++  }).pipe(Effect.catch((details) => nativeControlFailure(action, details)));
