@@ -213,16 +213,16 @@ index 0000000..3e6b8a2
 +  });
 diff --git a/apps/hosted/cloud/src/infrastructure/maps-routes/index.ts b/apps/hosted/cloud/src/infrastructure/maps-routes/index.ts
 new file mode 100644
-index 0000000..4e444d4
+index 0000000..0f6c69a
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/maps-routes/index.ts
-@@ -0,0 +1,229 @@
+@@ -0,0 +1,223 @@
 +import { AppId, ProviderId } from "@executor-js/sdk/core";
 +import { authorizeHostedRoutesAccount } from "@executor-js/hosted-server/hosted-routes";
 +import { HostedRoutesConfiguration } from "@executor-js/hosted-server/hosted-routes/contracts";
 +import { verifyHostedRoutesToken } from "@executor-js/hosted-server/hosted-routes-token";
 +import { GroupDatabase } from "@executor-js/hosted-server/groups";
-+import { OrganizationForbidden, OrganizationId } from "@executor-js/hosted-server/organization";
++import { OrganizationId } from "@executor-js/hosted-server/organization";
 +import { Effect, Option, Redacted, Result, Schema, Stream } from "effect";
 +import { HttpServerRequest, HttpServerResponse } from "effect/http";
 +import type { SqlClient } from "effect/sql";
@@ -244,12 +244,6 @@ index 0000000..4e444d4
 +  readonly provider: ProviderId;
 +  /** Used by the cloud emulator boundary to route only the fixed Google request to its fixture. */
 +  readonly fetcher?: typeof fetch;
-+}
-+
-+interface Authorized {
-+  readonly app: string;
-+  readonly organization: string;
-+  readonly user: string;
 +}
 +
 +const tokenFrom = (request: HttpServerRequest.HttpServerRequest) => {

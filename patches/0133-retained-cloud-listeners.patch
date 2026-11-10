@@ -211,16 +211,17 @@ index 8d05b02..30674a7 100644
          // own deadline and the whole wait has one too.
 diff --git a/e2e/support/cloud-listener.ts b/e2e/support/cloud-listener.ts
 new file mode 100644
-index 0000000..761e0cf
+index 0000000..dd4d160
 --- /dev/null
 +++ b/e2e/support/cloud-listener.ts
-@@ -0,0 +1,23 @@
+@@ -0,0 +1,24 @@
 +/** Own the canonical origin before fixtures start; Alchemy binds its private listener separately. */
 +import {
 +  WorkerProxy,
 +  WorkerProxyLive,
 +} from "@alchemy.run/cloudflare-runtime/core/proxy/WorkerProxy";
 +import { Effect } from "effect";
++import { stripVTControlCharacters } from "node:util";
 +
 +export const cloudListener = Effect.gen(function* () {
 +  const proxy = yield* WorkerProxy;
@@ -229,7 +230,7 @@ index 0000000..761e0cf
 +
 +/** Read only the API resource's successful listener announcement, never another Worker's URL. */
 +export const cloudApiAddress = (line: string) => {
-+  const plain = line.replace(/\u001b\[[0-9;]*m/g, "");
++  const plain = stripVTControlCharacters(line);
 +  const match =
 +    /\[Api\] Started in [^\n]* → (http:\/\/(?:localhost|127\.0\.0\.1):[0-9]+)\/?(?:\s|$)/u.exec(
 +      plain,

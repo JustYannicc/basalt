@@ -1,7 +1,7 @@
 {
   "identity": "basalt-hosted-google-routes",
   "file": "0131-hosted-google-routes.patch",
-  "content_sha256": "e4c109cc666508cfb2312a395dfda35df979448912dbe996322b73a7ba3a0544",
+  "content_sha256": "6fcb073bcf3679ab9b1c0c017c8608bf6702e45d626dce47fcd4850ec2ae8870",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

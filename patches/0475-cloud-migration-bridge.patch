@@ -479,13 +479,13 @@ index 0000000..df3409a
 +  });
 diff --git a/apps/hosted/cloud/src/implementation/executor-version-policy.ts b/apps/hosted/cloud/src/implementation/executor-version-policy.ts
 new file mode 100644
-index 0000000..13ec5d7
+index 0000000..3e7677f
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/executor-version-policy.ts
 @@ -0,0 +1,49 @@
 +import { Schema } from "effect";
 +
-+const Commit = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/));
++const Commit = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/u));
 +const Precondition = Schema.Struct({
 +  transition: Schema.Struct({
 +    baseGitCommit: Commit,

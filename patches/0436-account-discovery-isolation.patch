@@ -10294,10 +10294,26 @@ index 0000000..d8816eb
 +  }),
 +});
 diff --git a/packages/sdk/src/implementation/listings.ts b/packages/sdk/src/implementation/listings.ts
-index dcea1c1..2ad3afe 100644
+index dcea1c1..756d333 100644
 --- a/packages/sdk/src/implementation/listings.ts
 +++ b/packages/sdk/src/implementation/listings.ts
-@@ -186,6 +186,7 @@ export const makeListings = (options: {
+@@ -152,15 +152,6 @@ class Stopped {
+ }
+ type Outcome = Evaluated | Failed | Unkept | Stopped;
+ 
+-/**
+- * Whether the app's own router failed for some of its accounts, such as one account whose MCP
+- * server refused to list its tools, while the others' tools were listed. Such a listing is served
+- * to the readers of its evaluation but never kept, like a failure, so the next read evaluates the
+- * app again and finds a recovered account.
+- */
+-const partial = (routers: ReadonlyArray<ToolRouter>) =>
+-  routers.some((router) => router.path === "" && router.error !== undefined);
+-
+ /**
+  * Keep each evaluated listing in the shared declaration store under the declaration key, so a
+  * new version, account set or stored credential is another listing,
+@@ -186,6 +177,7 @@ export const makeListings = (options: {
    readonly background: BackgroundWork | undefined;
    readonly declarations: Declarations;
    readonly resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"];
@@ -10305,7 +10321,7 @@ index dcea1c1..2ad3afe 100644
    readonly policy?: ToolListingPolicy;
    /** Keeps evaluated listings as search rows. */
    readonly search: ToolSearch;
-@@ -210,6 +211,22 @@ export const makeListings = (options: {
+@@ -210,6 +202,22 @@ export const makeListings = (options: {
      search
        .write(state, ToolSearchListing.make(id), listing, at)
        .pipe(Effect.catchCause(() => Effect.logWarning("Tool search rows were not saved")));
@@ -10328,7 +10344,7 @@ index dcea1c1..2ad3afe 100644
    /** Keep a renewal of `id`'s rows, stamped with its start, so an app cache change since forgets it. */
    const renewal = (
      id: string,
-@@ -236,11 +253,7 @@ export const makeListings = (options: {
+@@ -236,11 +244,7 @@ export const makeListings = (options: {
    ) =>
      Effect.gen(function* () {
        const identity = { app: state.app.id, version: state.version.id };
@@ -10341,7 +10357,7 @@ index dcea1c1..2ad3afe 100644
        const now = yield* Clock.currentTimeMillis;
        if (policy.maxStaleMillis <= 0) return { listing: yield* evaluated, at: now };
        const id = yield* options.declarations.key("tools.list", state);
-@@ -469,7 +482,11 @@ export const makeListings = (options: {
+@@ -469,7 +473,11 @@ export const makeListings = (options: {
        // the check this starts, if one is due, reads when that was.
        if (read.followChanges !== false) yield* options.declarations.followChanges(state.app.id);
        const early = yield* keptListing;
@@ -10354,7 +10370,7 @@ index dcea1c1..2ad3afe 100644
          return yield* serve(early.at, early.value, "memory");
        // What runs before this read looks beyond this process and in memory again, or, as
        // `earlier`, before its caller read search rows. An evaluation that ends keeps its listing
-@@ -488,7 +505,7 @@ export const makeListings = (options: {
+@@ -488,7 +496,7 @@ export const makeListings = (options: {
                )
                  return undefined;
                const decoded = yield* decodeListing(recalled.json).pipe(Effect.option);
@@ -10363,7 +10379,7 @@ index dcea1c1..2ad3afe 100644
                const listed = new Listed(decoded.value);
                yield* cache.set(id, {
                  kind: "value",
-@@ -527,7 +544,11 @@ export const makeListings = (options: {
+@@ -527,7 +535,11 @@ export const makeListings = (options: {
              );
        // The durable read yielded, and an evaluation may have ended meanwhile.
        const kept = yield* keptListing;
@@ -10376,7 +10392,7 @@ index dcea1c1..2ad3afe 100644
          return yield* serve(kept.at, kept.value, "memory");
        // A remembered failure spares a reader with a wait bound, such as MCP discovery, from
        // waiting on the evaluation again. A reader prepared to wait, such as the dashboard,
-@@ -655,11 +676,29 @@ export const makeListings = (options: {
+@@ -655,11 +667,29 @@ export const makeListings = (options: {
        );
        if (!(yield* background(work))) cache.renewed();
      });
@@ -10407,7 +10423,7 @@ index dcea1c1..2ad3afe 100644
      /**
       * The listing a reader that does not refresh would be served without evaluating, in two steps:
       * the one kept in this process is read now, and the returned lookup answers with it, or, only
-@@ -772,10 +811,17 @@ export const makeListings = (options: {
+@@ -772,10 +802,17 @@ export const makeListings = (options: {
            // Written only for the search that evaluated them; see `partial`.
            !partial(kept.routers)
          ) {
@@ -10427,7 +10443,7 @@ index dcea1c1..2ad3afe 100644
              const aged = now - kept.at >= policy.renewMillis;
              const last = yield* cache.get(renewalKey(id));
              // The latest renewal started since these rows were evaluated.
-@@ -808,7 +854,7 @@ export const makeListings = (options: {
+@@ -808,7 +845,7 @@ export const makeListings = (options: {
                  ? "partial"
                  : "stale",
          );

@@ -21,10 +21,10 @@ index e5de001..b94eb07 100644
      file: "oauth-client-recovery.spec.ts",
 diff --git a/e2e/tests/google-oauth-choices.spec.ts b/e2e/tests/google-oauth-choices.spec.ts
 new file mode 100644
-index 0000000..e0dcef2
+index 0000000..7411bf4
 --- /dev/null
 +++ b/e2e/tests/google-oauth-choices.spec.ts
-@@ -0,0 +1,228 @@
+@@ -0,0 +1,231 @@
 +/** Google-labelled services keep BYO visible without changing a new or saved account's client. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
@@ -95,9 +95,12 @@ index 0000000..e0dcef2
 +            );
 +            const connection = (account?: string) =>
 +              api
-+                .request(actors.owner, "POST", connectionsPath(path, "user", "service"), {
-+                  ...(account === undefined ? {} : { account }),
-+                })
++                .request(
++                  actors.owner,
++                  "POST",
++                  connectionsPath(path, "user", "service"),
++                  account === undefined ? {} : { account },
++                )
 +                .pipe(Effect.flatMap((answer) => body(Resource, answer)));
 +            return { path, id: app.id, connection };
 +          });
