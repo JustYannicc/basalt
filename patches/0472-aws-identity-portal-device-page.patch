@@ -1,0 +1,49 @@
+diff --git a/e2e/support/aws-identity-fixture.ts b/e2e/support/aws-identity-fixture.ts
+--- a/e2e/support/aws-identity-fixture.ts
++++ b/e2e/support/aws-identity-fixture.ts
+@@ -197,8 +197,9 @@
+           return yield* json({
+             deviceCode,
+             userCode,
+-            verificationUri: "https://device.sso.us-east-1.amazonaws.com/",
+-            verificationUriComplete: `https://device.sso.us-east-1.amazonaws.com/?user_code=${userCode}`,
++            verificationUri:
++              "https://ssoins-0a1b2c3d4e5f6789.us-east-1.portal.amazonaws.com/#/device",
++            verificationUriComplete: `https://ssoins-0a1b2c3d4e5f6789.us-east-1.portal.amazonaws.com/#/device?user_code=${userCode}`,
+             expiresIn: 600,
+             interval: 1,
+           });
+@@ -256,7 +256,8 @@
+           const page = slicePage(accounts, pageInput.nextToken, pageInput.size);
+           return yield* json({
+             accountList: page.items.map(({ id, name }) => ({ accountId: id, accountName: name })),
+-            ...(page.nextToken === undefined ? {} : { nextToken: page.nextToken }),
++            // AWS may send null for the final page token.
++            nextToken: page.nextToken ?? null,
+           });
+         }),
+       ),
+@@ -279,7 +280,8 @@
+           const page = slicePage(assigned, pageInput.nextToken, pageInput.size);
+           return yield* json({
+             roleList: page.items,
+-            ...(page.nextToken === undefined ? {} : { nextToken: page.nextToken }),
++            // AWS may send null for the final page token.
++            nextToken: page.nextToken ?? null,
+           });
+         }),
+       ),
+diff --git a/e2e/support/aws-identity-journey.ts b/e2e/support/aws-identity-journey.ts
+--- a/e2e/support/aws-identity-journey.ts
++++ b/e2e/support/aws-identity-journey.ts
+@@ -159,7 +159,9 @@
+         .getByRole("link", { name: "Open AWS Identity Center", exact: true })
+         .getAttribute("href"),
+     );
+-    expect(signIn).toBe("https://device.sso.us-east-1.amazonaws.com/?user_code=SYNTH-1234");
++    expect(signIn).toBe(
++      "https://ssoins-0a1b2c3d4e5f6789.us-east-1.portal.amazonaws.com/#/device?user_code=SYNTH-1234",
++    );
+     yield* browser.checkpoint(`AWS Identity Center pending ${width}`);
+     fixture.approve();
+     const completed = yield* browser.use("The hosted poll persists the AWS connection", (page) =>
