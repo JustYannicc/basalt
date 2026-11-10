@@ -88,7 +88,9 @@ jobs:
       # The keyring's native module is installed for the runner's own architecture only, so each
       # runner packages its own: Apple Silicon on macos-latest, x64 on Windows and Linux.
       # Published builds carry the permanent identifiers; package.json keeps the development ones.
+      # Bash on every runner: Windows PowerShell splits a native argument like -c.appId at its dot.
       - name: Package the app
+        shell: bash
         run: bun run --cwd clients/desktop package:${{ matrix.platform }} -c.appId=run.signalbox.client -c.productName=Signalbox
       - name: Package the command line connection
         if: matrix.platform == 'linux'
