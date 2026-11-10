@@ -109,7 +109,7 @@ for (const [statement, missing] of [
   ],
   [
     "alter table private_v1_import_allowed alter column into_mode set default 'unexpected'",
-    "19_v1_import_into: private_v1_import_allowed.into_mode must be nullable text without a default",
+    "19_v1_import_into: private_v1_import_allowed.into_mode.default: expected null, observed",
   ],
   [
     "drop index private_v1_session_handoff_expires",

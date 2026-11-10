@@ -33,10 +33,11 @@ index 0000000..f3f5041
 +  }).pipe(Effect.mapError(migrationFailed("product")));
 diff --git a/apps/hosted/cloud/src/implementation/cloud-migration-state.ts b/apps/hosted/cloud/src/implementation/cloud-migration-state.ts
 new file mode 100644
-index 0000000..b4f7944
+index 0000000..4665278
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/cloud-migration-state.ts
-@@ -0,0 +1,218 @@
+@@ -0,0 +1,209 @@
++import { cloudColumnIssues } from "./cloud-migration-columns.ts";
 +import { Effect } from "effect";
 +import { SqlClient } from "effect/sql";
 +import {
@@ -202,19 +203,9 @@ index 0000000..b4f7944
 +          // Hosted 16 also owns the policy tables. Their presence before Cloud 10 is supported.
 +          if (!applied.has(id) && actual && !(id === 10 && sharedPolicies))
 +            issues.push(`${id}_${name}: unjournaled ${table}.${column}`);
-+          if (
-+            actual &&
-+            id >= 18 &&
-+            (actual.data_type !== "text" ||
-+              actual.is_nullable !== "YES" ||
-+              actual.column_default !== null)
-+          )
++          if (actual)
 +            issues.push(
-+              `${id}_${name}: ${table}.${column} must be nullable text without a default`,
-+            );
-+          if (actual && id === 9 && column === "id" && actual.data_type !== "uuid")
-+            issues.push(
-+              "9_production_ops_database_identity: production_ops_database_identity.id must retain its UUID type",
++              ...cloudColumnIssues(table, column, actual).map((issue) => `${id}_${name}: ${issue}`),
 +            );
 +        }
 +      }
@@ -845,3 +836,159 @@ index a97f73d..6e34f5f 100644
      // Effect's Postgres migrator probes with ::regclass. Bootstrap explicitly
      // so a missing journal cannot abort the caller's enclosing transaction.
      yield* sql`create table if not exists ${sql(table)} (
+diff --git a/apps/hosted/cloud/src/implementation/cloud-migration-columns.ts b/apps/hosted/cloud/src/implementation/cloud-migration-columns.ts
+new file mode 100644
+index 0000000..7fe4df4
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/cloud-migration-columns.ts
+@@ -0,0 +1,150 @@
++type Column = { data_type: string; is_nullable: string; column_default: string | null };
++type Expected = readonly [type: string, nullable: string, defaultValue: string | null];
++
++// IF NOT EXISTS cannot repair a changed column on a recorded operation.
++const columns: Readonly<Record<string, Readonly<Record<string, Expected>>>> = {
++  cloud_app_domain: {
++    organization_id: ["text", "NO", null],
++    slug: ["text", "NO", null],
++    status: ["text", "NO", null],
++    checked_at: ["timestamp with time zone", "NO", null],
++  },
++  cloud_billing_seats: {
++    organization_id: ["text", "NO", null],
++    synced_count: ["integer", "YES", null],
++    seat_plan: ["boolean", "NO", "false"],
++    checked_at: ["timestamp with time zone", "YES", null],
++  },
++  cloud_company_profile: {
++    domain: ["text", "NO", null],
++    status: ["text", "NO", "'pending'::text"],
++    profile: ["text", "YES", null],
++    attempts: ["integer", "NO", "0"],
++    lease: ["text", "YES", null],
++    retry_at: ["timestamp with time zone", "NO", "now()"],
++  },
++  cloud_email_preferences: {
++    user_id: ["text", "NO", null],
++    optional_emails_unsubscribed_at: ["timestamp with time zone", "YES", null],
++  },
++  cloud_organization_removal_start: {
++    organization_id: ["text", "NO", null],
++    instance_id: ["text", "NO", null],
++    started_at: ["timestamp with time zone", "NO", "now()"],
++  },
++  cloud_organization_setup: {
++    user_id: ["text", "NO", null],
++    organization_id: ["text", "NO", null],
++    domain: ["text", "YES", null],
++    name_edited: ["boolean", "NO", "false"],
++    logo_edited: ["boolean", "NO", "false"],
++    applied: ["boolean", "NO", "false"],
++  },
++  cloud_setup_assignment: {
++    user_id: ["text", "NO", null],
++    organization_id: ["text", "NO", null],
++    variant: ["text", "NO", null],
++    assigned_at: ["timestamp with time zone", "NO", "now()"],
++    exposed_at: ["timestamp with time zone", "YES", null],
++  },
++  cloud_setup_skip_assignment: {
++    user_id: ["text", "NO", null],
++    organization_id: ["text", "NO", null],
++    variant: ["text", "NO", null],
++    assigned_at: ["timestamp with time zone", "NO", "now()"],
++    exposed_at: ["timestamp with time zone", "YES", null],
++    completed_at: ["timestamp with time zone", "YES", null],
++  },
++  cloud_welcome_email: {
++    user_id: ["text", "NO", null],
++    status: ["text", "NO", "'pending'::text"],
++    created_at: ["timestamp with time zone", "NO", "now()"],
++    attempted_at: ["timestamp with time zone", "YES", null],
++    sent_at: ["timestamp with time zone", "YES", null],
++  },
++  hosted_tool_policies: {
++    id: ["text", "NO", null],
++    organization_id: ["text", "NO", null],
++    revision: ["integer", "NO", null],
++    definition: ["jsonb", "NO", null],
++  },
++  hosted_tool_policy_history: {
++    sequence: ["bigint", "NO", null],
++    organization_id: ["text", "NO", null],
++    policy_id: ["text", "NO", null],
++    actor: ["text", "NO", null],
++    action: ["text", "NO", null],
++    snapshot: ["jsonb", "NO", null],
++    changed_at: ["timestamp with time zone", "NO", "now()"],
++  },
++  private_production_ops_receipts: {
++    plan_sha256: ["text", "NO", null],
++    organization_id: ["text", "NO", null],
++    migration: ["text", "NO", null],
++    revision: ["text", "NO", null],
++    release: ["text", "NO", null],
++    backup_sha256: ["text", "NO", null],
++    verification: ["jsonb", "NO", null],
++    applied_at: ["timestamp with time zone", "NO", "now()"],
++  },
++  private_v1_import_allowed: {
++    v1_org_id: ["text", "NO", null],
++    added_at: ["timestamp with time zone", "NO", "now()"],
++    note: ["text", "YES", null],
++    displace_v2_org_id: ["text", "YES", null],
++    into_v2_org_id: ["text", "YES", null],
++    into_mode: ["text", "YES", null],
++  },
++  private_v1_import_billing: {
++    organization_id: ["text", "NO", null],
++    v1_org_id: ["text", "NO", null],
++    state: ["text", "NO", null],
++    subscription: ["jsonb", "NO", null],
++    stripe_subscription_id: ["text", "YES", null],
++    updated_at: ["timestamp with time zone", "NO", "now()"],
++  },
++  private_v1_import_map: {
++    v1_org_id: ["text", "NO", null],
++    v1_kind: ["text", "NO", null],
++    v1_id: ["text", "NO", null],
++    v2_kind: ["text", "YES", null],
++    v2_id: ["text", "YES", null],
++    status: ["text", "NO", null],
++    reason: ["text", "YES", null],
++    source_hash: ["text", "NO", null],
++    updated_at: ["timestamp with time zone", "NO", "now()"],
++  },
++  private_v1_import_org: {
++    v1_org_id: ["text", "NO", null],
++    v2_org_id: ["text", "YES", null],
++    state: ["text", "NO", null],
++    run_id: ["text", "NO", null],
++    report: ["jsonb", "NO", null],
++    updated_at: ["timestamp with time zone", "NO", "now()"],
++  },
++  private_v1_session_handoff: {
++    jti: ["text", "NO", null],
++    expires_at: ["timestamp with time zone", "NO", null],
++    used_at: ["timestamp with time zone", "NO", "now()"],
++  },
++  production_ops_database_identity: {
++    id: ["uuid", "NO", null],
++    created_at: ["timestamp with time zone", "NO", "now()"],
++  },
++};
++
++const normalizeDefault = (value: string | null) => value?.replace(/public\./g, "") ?? null;
++
++export function cloudColumnIssues(table: string, column: string, actual: Column) {
++  const expected = columns[table]?.[column];
++  if (!expected) return [`${table}.${column}: missing expected column contract`];
++  const values = [actual.data_type, actual.is_nullable, normalizeDefault(actual.column_default)];
++  const properties = ["type", "nullable", "default"];
++  return expected.flatMap((value, index) =>
++    normalizeDefault(value) === values[index]
++      ? []
++      : [
++          `${table}.${column}.${properties[index]}: expected ${JSON.stringify(value)}, observed ${JSON.stringify(values[index])}`,
++        ],
++  );
++}

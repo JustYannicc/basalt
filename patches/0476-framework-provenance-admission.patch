@@ -5097,7 +5097,7 @@ index c2eeccf..b28ed5f 100644
 +    };
    });
 diff --git a/apps/hosted/cloud/src/implementation/compiler-result-cache.ts b/apps/hosted/cloud/src/implementation/compiler-result-cache.ts
-index 8db1c5b..6ef8985 100644
+index 8db1c5b..cc74dca 100644
 --- a/apps/hosted/cloud/src/implementation/compiler-result-cache.ts
 +++ b/apps/hosted/cloud/src/implementation/compiler-result-cache.ts
 @@ -1,5 +1,5 @@
@@ -5134,15 +5134,72 @@ index 8db1c5b..6ef8985 100644
      const key = yield* digest(
        JSON.stringify([
          input.release,
-@@ -142,6 +150,11 @@ export const cachedCompilerResult = <E, R>(
-       Option.isSome(hit) ? "hit" : "miss",
+@@ -118,25 +126,50 @@ export const cachedCompilerResult = <E, R>(
+       ]),
      );
-     if (Option.isSome(hit)) {
-+      if (input.cacheName !== undefined)
+     const url = `https://compiler-cache.invalid/v2/${key}`;
+-    const hit = yield* optional(
+-      attempt(() => cache.value.match(url)).pipe(
+-        Effect.flatMap((response) =>
+-          response === undefined
+-            ? Effect.fail(new CacheUnavailable())
+-            : Effect.gen(function* () {
+-                const body = yield* attempt(() => response.text());
+-                if (body.length * 2 > maximumBytes) return yield* new CacheUnavailable();
+-                const envelope = yield* Schema.decodeUnknownEffect(Envelope)(body);
+-                if ((yield* digest(envelope.payload)) !== envelope.digest)
+-                  return yield* new CacheUnavailable();
+-                const decoded = yield* Schema.decodeUnknownEffect(CachedOutput)(envelope.payload);
+-                const value = { ...decoded, ui: decoded.ui };
+-                if (!validBundle(value)) return yield* new CacheUnavailable();
+-                return value;
+-              }),
++    if (input.cacheName !== undefined) {
++      const response = yield* attempt(() => cache.value.match(url)).pipe(
++        Effect.timeoutOrElse({
++          duration: "250 millis",
++          orElse: () => Effect.fail(new CacheUnavailable()),
++        }),
++        Effect.mapError(
++          () =>
++            new RuntimeBuildFailed({
++              stage: "compile",
++              message: "Preview compiler acceptance could not observe its cold cache lookup.",
++            }),
+         ),
+-      ),
+-    );
++      );
++      if (response !== undefined)
 +        return yield* new RuntimeBuildFailed({
 +          stage: "compile",
 +          message: "Preview compiler acceptance unexpectedly reused a cached result.",
 +        });
-       input.onHit?.();
-       return hit.value;
-     }
++    }
++    const hit =
++      input.cacheName === undefined
++        ? yield* optional(
++            attempt(() => cache.value.match(url)).pipe(
++              Effect.flatMap((response) =>
++                response === undefined
++                  ? Effect.fail(new CacheUnavailable())
++                  : Effect.gen(function* () {
++                      const body = yield* attempt(() => response.text());
++                      if (body.length * 2 > maximumBytes) return yield* new CacheUnavailable();
++                      const envelope = yield* Schema.decodeUnknownEffect(Envelope)(body);
++                      if ((yield* digest(envelope.payload)) !== envelope.digest)
++                        return yield* new CacheUnavailable();
++                      const decoded = yield* Schema.decodeUnknownEffect(CachedOutput)(
++                        envelope.payload,
++                      );
++                      const value = { ...decoded, ui: decoded.ui };
++                      if (!validBundle(value)) return yield* new CacheUnavailable();
++                      return value;
++                    }),
++              ),
++            ),
++          )
++        : Option.none<typeof CompiledCloudApp.Type>();
+     yield* Effect.annotateCurrentSpan(
+       "executor.compiler.cache",
+       Option.isSome(hit) ? "hit" : "miss",

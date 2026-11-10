@@ -74,7 +74,16 @@ export default {
       if (input.cacheUnavailable) throw new Error("Synthetic cache-open failure");
       const cache = await open(input.reuse ? "executor-private-compiler-results-v2" : name);
       return {
-        match: async key => { counters.lookups++; const found = await cache.match(key); if (found) counters.hits++; return found; },
+        match: async key => {
+          counters.lookups++;
+          if (input.fault === "lookup-unavailable") throw new Error("Synthetic cache lookup failure");
+          if (input.fault === "lookup-timeout") return new Promise(() => {});
+          if (input.fault === "corrupt-hit" || input.fault === "oversized-hit") {
+            counters.hits++;
+            return new Response(input.fault === "corrupt-hit" ? "corrupt" : "x".repeat(8 * 1024 * 1024));
+          }
+          const found = await cache.match(key); if (found) counters.hits++; return found;
+        },
         put: async (key, value) => { counters.writes++; return cache.put(key, value); },
       };
     }});
@@ -167,13 +176,21 @@ test(
     const compile = async (
       stage: string,
       acceptance?: string,
-      fault?: "cache-unavailable" | "nonexact" | "reuse",
+      fault?:
+        | "cache-unavailable"
+        | "nonexact"
+        | "reuse"
+        | "lookup-unavailable"
+        | "lookup-timeout"
+        | "corrupt-hit"
+        | "oversized-hit",
       expectedOk = true,
     ) => {
       const response = await runtime.dispatchFetch("https://compiler.test", {
         method: "POST",
         body: JSON.stringify({
           stage,
+          fault,
           cacheUnavailable: fault === "cache-unavailable",
           reuse: fault === "reuse",
           config: {
@@ -232,6 +249,17 @@ test(
       const reused = await compile("test-pr-42", "true", "reuse", false);
       assert.equal(reused.hits, 1);
       assert.equal(reused.writes, 0);
+      for (const fault of [
+        "lookup-unavailable",
+        "lookup-timeout",
+        "corrupt-hit",
+        "oversized-hit",
+      ] as const) {
+        const refused = await compile("test-pr-42", "true", fault, false);
+        assert.equal(refused.lookups, 1);
+        assert.equal(refused.writes, 0);
+        assert.equal((await compile("production", undefined, fault)).writes, 1);
+      }
       const unavailable = await compile("test-pr-42", "true", "cache-unavailable", false);
       assert.equal(unavailable.lookups, 0);
       assert.equal(unavailable.writes, 0);

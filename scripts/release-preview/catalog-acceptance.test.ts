@@ -1,5 +1,6 @@
+import { catalogAcceptanceOperation } from "./catalog-acceptance-report.ts";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -232,3 +233,44 @@ test("a cleanup refusal cannot produce a successful receipt", async () => {
   assert.equal(mock.apps.size, 2);
   assert.throws(() => requireSuccessfulCatalogAcceptance(result, head));
 });
+
+for (const fault of ["memory", "source-mismatch", "cleanup"] as const) {
+  test(`a failed private child reports safe ${fault} details before teardown`, async () => {
+    const { result } = await run(fault);
+    const directory = await mkdtemp(join(tmpdir(), "catalog-report-"));
+    try {
+      const path = join(directory, "result.json");
+      const summaryPath = join(directory, "summary.md");
+      await writeFile(path, JSON.stringify(result));
+      const lines: string[] = [];
+      await assert.rejects(
+        catalogAcceptanceOperation(
+          async () => {
+            throw new Error("private-secret-that-must-not-escape");
+          },
+          path,
+          head,
+          {
+            summaryPath,
+            emit: (line) => {
+              lines.push(line);
+            },
+          },
+        ),
+        /safe details/,
+      );
+      const summary = await readFile(summaryPath, "utf8");
+      assert.ok(lines.some((line) => line.includes("aws:")));
+      assert.ok(summary.includes("aws:"));
+      assert.ok(!summary.includes("private-secret-that-must-not-escape"));
+      if (fault === "memory") assert.match(summary, /BuildMemoryExceeded/);
+      if (fault === "source-mismatch") {
+        assert.ok(summary.includes(result.rows[0]!.expectedDocumentSha256));
+        assert.ok(summary.includes(result.rows[0]!.observedDocumentSha256!));
+      }
+      if (fault === "cleanup") assert.match(summary, /deletion was not confirmed/);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}

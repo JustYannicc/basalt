@@ -90,7 +90,7 @@ index fb5b2fc..dd0f3c9 100644
  export const hostedOrganizationHandlers = HttpApiBuilder.group(
 diff --git a/apps/hosted/server/src/implementation/pool-membership-mirrors.ts b/apps/hosted/server/src/implementation/pool-membership-mirrors.ts
 new file mode 100644
-index 0000000..a19586c
+index 0000000..71169b2
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-membership-mirrors.ts
 @@ -0,0 +1,46 @@
@@ -120,9 +120,9 @@ index 0000000..a19586c
 +      a.credential_generation as generation from ${yield* usableAppLinks(sql, [pool])}
 +      and exists (select 1 from organization o
 +        cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
-+        where o.id = ${organization} and entry.value ->> 'app' = app.id
-+          and app.owner = 'organization:' || o.id)
-+      and exists (select 1 from executor_deployments d where d.id = app.active_deployment
++        where o.id = ${organization} and entry.value ->> 'app' = l.app
++          and l.owner = 'organization:' || o.id)
++      and exists (select 1 from executor_deployments d where d.id = l.active_deployment
 +        and d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'scope' = 'app'
 +        and d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'provider' = a.provider
 +        and d.requirements::jsonb -> 'accounts' -> l.requirement -> 'definition' -> 'auth' -> a.method ->> 'type' = 'secrets'
@@ -141,7 +141,7 @@ index 0000000..a19586c
 +      });
 +  }).pipe(Effect.mapError(() => new StorageError()));
 diff --git a/apps/hosted/server/src/implementation/pool-membership.ts b/apps/hosted/server/src/implementation/pool-membership.ts
-index 4ad22d2..3258293 100644
+index 4ad22d2..8f79f93 100644
 --- a/apps/hosted/server/src/implementation/pool-membership.ts
 +++ b/apps/hosted/server/src/implementation/pool-membership.ts
 @@ -15,6 +15,7 @@ import { HostedExecutor } from "../contracts/executor.ts";
@@ -152,6 +152,22 @@ index 4ad22d2..3258293 100644
  import { reconcilePoolMembership } from "./pool-membership-reconcile.ts";
  
  const NativePoolAccountFields = {
+@@ -99,12 +100,12 @@ export const nativePoolMembership = (organization: string, pool: AppId, executor
+           (select driver_revision from executor_account_acquisitions where account = a.id) as "driverRevision",
+           (select revision from executor_account_acquisitions where account = a.id) as "bindingRevision",
+           (select d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'scope'
+-            from executor_deployments d where d.id = app.active_deployment) as "requirementScope",
++            from executor_deployments d where d.id = l.active_deployment) as "requirementScope",
+           (select d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'provider'
+-            from executor_deployments d where d.id = app.active_deployment) as "requirementProvider",
++            from executor_deployments d where d.id = l.active_deployment) as "requirementProvider",
+           coalesce((select d.requirements::jsonb -> 'accounts' -> l.requirement -> 'definition' -> 'auth' -> a.method
+               @> '{"type":"secrets","provisioned":true}'::jsonb
+-            from executor_deployments d where d.id = app.active_deployment), false) as "requirementProvisioned"
++            from executor_deployments d where d.id = l.active_deployment), false) as "requirementProvisioned"
+         from ${yield* usableAppLinks(sql, [pool])}
+           and not exists (select 1 from executor_account_acquisitions retiring
+             where retiring.account = a.id and retiring.removal is not null)
 @@ -173,6 +174,9 @@ export const readNativePoolMembership = Effect.gen(function* () {
      return HttpServerResponse.empty({ status: 401 });
    const sql = yield* policyDatabase;

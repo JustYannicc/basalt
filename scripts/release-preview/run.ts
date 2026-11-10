@@ -1,3 +1,4 @@
+import { catalogAcceptanceOperation } from "./catalog-acceptance-report.ts";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -141,21 +142,26 @@ export async function executePreview(
       smoke: async () => {
         if (identity.compilerAcceptance) {
           const catalogPath = join(root, "preview-catalog-acceptance.json");
-          await operation(
-            "catalog-acceptance",
-            "scripts/release-preview/catalog-acceptance-cli.ts",
-            [],
-            {
-              ...runnerEnvironment,
-              GITHUB_ACTIONS: "true",
-              EXECUTOR_COMPILER_PREVIEW_ACCEPTANCE: "true",
-              BASALT_RELEASE_CANDIDATE: identity.head,
-              PREVIEW_CATALOG_ACCEPTANCE_RESULT: catalogPath,
-              PREVIEW_CLAUDE_AUTH_FILE: undefined,
-              PREVIEW_CODEX_SUBSCRIPTION_AUTH_FILE: undefined,
-            },
+          catalogAcceptance = await catalogAcceptanceOperation(
+            () =>
+              operation(
+                "catalog-acceptance",
+                "scripts/release-preview/catalog-acceptance-cli.ts",
+                [],
+                {
+                  ...runnerEnvironment,
+                  GITHUB_ACTIONS: "true",
+                  EXECUTOR_COMPILER_PREVIEW_ACCEPTANCE: "true",
+                  BASALT_RELEASE_CANDIDATE: identity.head,
+                  PREVIEW_CATALOG_ACCEPTANCE_RESULT: catalogPath,
+                  PREVIEW_CLAUDE_AUTH_FILE: undefined,
+                  PREVIEW_CODEX_SUBSCRIPTION_AUTH_FILE: undefined,
+                },
+              ),
+            catalogPath,
+            identity.head,
+            { summaryPath: source.GITHUB_STEP_SUMMARY },
           );
-          catalogAcceptance = JSON.parse(await readFile(catalogPath, "utf8"));
         }
         const resultPath = join(privateRoot, "smoke-result.json");
         await operation("native-smoke", "scripts/pool-acceptance.ts", [], {
