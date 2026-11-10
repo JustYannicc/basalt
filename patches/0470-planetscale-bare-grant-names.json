@@ -1,0 +1,11 @@
+{
+  "identity": "planetscale-bare-grant-names",
+  "file": "0470-planetscale-bare-grant-names.patch",
+  "content_sha256": "5256fab9f0807e8885bb99e92104ddc636662b773789c8b6109349626db095af",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "upstream-planetscale-bare-grant-names",
+  "requires": "Resolve PlanetScale's bare granted permission names to the requested or narrowest published prefixed scope, store that canonical set, and keep refusing names outside the published envelope."
+}

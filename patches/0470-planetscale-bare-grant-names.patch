@@ -1,0 +1,187 @@
+--- a/apps/hosted/server/src/implementation/planetscale-oauth.ts
++++ b/apps/hosted/server/src/implementation/planetscale-oauth.ts
+@@ -166,6 +166,8 @@
+     issuer: "https://api.planetscale.com",
+     authorizationUrl: "https://app.planetscale.com/oauth/authorize",
+     tokenUrl: "https://auth.planetscale.com/oauth/token",
++    // Token responses name each granted permission without its resource prefix.
++    grantedScopePrefixes: ["branch:", "database:", "organization:", "user:"],
+     scopeImplications,
+   },
+   tokenEndpointAuthMethod: "client_secret_basic",
+--- a/packages/sdk/src/contracts/oauth-scopes.ts
++++ b/packages/sdk/src/contracts/oauth-scopes.ts
+@@ -29,3 +29,34 @@
+   }
+   return [...covered];
+ };
++
++/**
++ * The scopes a host client's token response reports, with each bare name resolved for servers
++ * that report a resource-prefixed scope without its prefix, such as `read_branches` for
++ * `organization:read_branches`. A name outside the allowed closure becomes the requested
++ * `<prefix><name>`, else the first allowed one in the server's narrowest-first order, so a grant
++ * never claims a broader resource than the request named. Unresolved names stay as reported and
++ * the allowed check refuses them.
++ */
++export const firstPartyGrantedScopes = (
++  server: {
++    readonly grantedScopeSeparator?: string | undefined;
++    readonly grantedScopePrefixes?: readonly string[] | undefined;
++    readonly scopeImplications?: Readonly<Record<string, readonly string[]>> | undefined;
++  },
++  allowed: readonly string[],
++  scope: string | undefined,
++  requested: readonly string[] = [],
++) => {
++  const reported = normalizeOAuthScopes(scope, server.grantedScopeSeparator);
++  const prefixes = server.grantedScopePrefixes ?? [];
++  if (reported === undefined || prefixes.length === 0) return reported;
++  const permitted = new Set(oauthScopeClosure(allowed, server.scopeImplications));
++  const resolve = (name: string) => {
++    if (permitted.has(name)) return [name];
++    const named = prefixes.map((prefix) => prefix + name).filter((full) => permitted.has(full));
++    const asked = named.filter((full) => requested.includes(full));
++    return asked.length > 0 ? asked : named.length > 0 ? [named[0]!] : [name];
++  };
++  return [...new Set(reported.flatMap(resolve))];
++};
+--- a/packages/sdk/src/contracts/oauth.ts
++++ b/packages/sdk/src/contracts/oauth.ts
+@@ -340,6 +340,11 @@
+      * reports `repo,gist` whatever separator the request used. Defaults to whitespace only.
+      */
+     grantedScopeSeparator: Schema.optionalKey(Schema.NonEmptyString),
++    /**
++     * Resource prefixes, narrowest first, that the token response may omit from a reported scope,
++     * such as PlanetScale's `organization:`. Bare names resolve to allowed prefixed scopes only.
++     */
++    grantedScopePrefixes: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
+     /** Host-reviewed access included by a scope. Apps cannot extend the operator's scope menu. */
+     scopeImplications: Schema.optionalKey(Schema.Record(ScopeToken, Schema.Array(ScopeToken))),
+     /** Extra authorization request parameters, such as `{ access_type: "offline" }`. */
+--- a/packages/sdk/src/implementation/oauth.ts
++++ b/packages/sdk/src/implementation/oauth.ts
+@@ -1,5 +1,9 @@
+ import { unavailableAccount } from "./discovery-accounts.ts";
+-import { normalizeOAuthScopes, oauthScopeClosure } from "../contracts/oauth-scopes.ts";
++import {
++  firstPartyGrantedScopes,
++  normalizeOAuthScopes,
++  oauthScopeClosure,
++} from "../contracts/oauth-scopes.ts";
+ import { projectOAuthFields as project } from "./oauth-fields.ts";
+ import type { AppAccountUse, ResourceLifecycle } from "../contracts/executor.ts";
+ import { missingOAuthScopes, oauthIdentityConsent } from "../contracts/oauth-families.ts";
+@@ -587,21 +591,38 @@
+    * reports none, which grants what was requested (RFC 6749 §5.1) or, on renewal, what the grant
+    * held (§6). Scopes are whitespace-delimited, and also split on the server's
+    * `grantedScopeSeparator`, such as GitHub's `repo,gist`; never on the request's `scopeSeparator`.
++   * Bare names resolve through the server's `grantedScopePrefixes` against what was requested.
+    */
+-  const grantedScopes = (client: FirstPartyOAuthClient | undefined, scope: string | undefined) => {
+-    const granted = normalizeOAuthScopes(scope, client?.server.grantedScopeSeparator);
++  const reportedScopes = (
++    client: FirstPartyOAuthClient | undefined,
++    scope: string | undefined,
++    requested: readonly string[] | undefined,
++  ) =>
++    client === undefined
++      ? normalizeOAuthScopes(scope)
++      : firstPartyGrantedScopes(client.server, allowedScopes(client), scope, requested);
++  const grantedScopes = (
++    client: FirstPartyOAuthClient | undefined,
++    scope: string | undefined,
++    requested: readonly string[] | undefined,
++  ) => {
++    const granted = reportedScopes(client, scope, requested);
+     return granted === undefined
+       ? undefined
+       : oauthScopeClosure(granted, client?.server.scopeImplications);
+   };
+   /** Whether a token response for the operator's client reports only scopes the client allows. */
+-  const grantAllowed = (id: FirstPartyOAuthClientId, scope: string | undefined) => {
++  const grantAllowed = (
++    id: FirstPartyOAuthClientId,
++    scope: string | undefined,
++    requested: readonly string[] | undefined,
++  ) => {
+     const client = firstPartyClients.get(id);
+     if (client === undefined) return false;
+     const allowed = new Set(
+       oauthScopeClosure(allowedScopes(client), client.server.scopeImplications),
+     );
+-    return (grantedScopes(client, scope) ?? []).every((granted) => allowed.has(granted));
++    return (grantedScopes(client, scope, requested) ?? []).every((granted) => allowed.has(granted));
+   };
+   /**
+    * The operator's client and authorization server as configured now, or undefined when the
+@@ -2589,7 +2610,10 @@
+         ),
+       );
+       // The operator's client keeps no grant holding a scope it does not allow.
+-      if (isFirstPartyAttempt(attempt) && !grantAllowed(attempt.firstParty, tokens.scope)) {
++      if (
++        isFirstPartyAttempt(attempt) &&
++        !grantAllowed(attempt.firstParty, tokens.scope, attempt.requestedScopes)
++      ) {
+         const client = firstPartyClients.get(attempt.firstParty);
+         if (client !== undefined)
+           yield* Console.warn(
+@@ -2598,7 +2622,7 @@
+               client: attempt.firstParty,
+               ...oauthScopeExceededEvidence(
+                 attempt.requestedScopes ?? [],
+-                normalizeOAuthScopes(tokens.scope, client.server.grantedScopeSeparator) ?? [],
++                reportedScopes(client, tokens.scope, attempt.requestedScopes) ?? [],
+                 oauthScopeClosure(allowedScopes(client), client.server.scopeImplications),
+               ),
+             }),
+@@ -2616,8 +2640,8 @@
+         const client = firstPartyClients.get(attempt.firstParty);
+         if (client?.requireScopeConfirmation === true) {
+           const requested = attempt.requestedScopes ?? [];
+-          const reported = normalizeOAuthScopes(tokens.scope, client.server.grantedScopeSeparator);
+-          const granted = grantedScopes(client, tokens.scope);
++          const reported = reportedScopes(client, tokens.scope, requested);
++          const granted = grantedScopes(client, tokens.scope, requested);
+           const recipes = options?.accountFamilies ?? (yield* AccountFamilyConfiguration).recipes;
+           const missing = missingOAuthScopes(attempt.identity?.issuer, requested, granted, recipes);
+           if (requested.length > 0 && (granted === undefined || missing.length > 0)) {
+@@ -2676,7 +2700,11 @@
+           ? {}
+           : {
+               grantedScopes: isFirstPartyAttempt(attempt)
+-                ? grantedScopes(firstPartyClients.get(attempt.firstParty), tokens.scope)
++                ? grantedScopes(
++                    firstPartyClients.get(attempt.firstParty),
++                    tokens.scope,
++                    attempt.requestedScopes,
++                  )
+                 : tokens.scope.split(/\s+/u).filter(Boolean),
+             }),
+ 
+@@ -3095,7 +3123,9 @@
+             // does not allow. The grant then needs reconnecting, and the response's tokens are
+             // revoked.
+             Effect.filterOrFail(
+-              (tokens) => !isFirstPartyGrant(grant) || grantAllowed(grant.firstParty, tokens.scope),
++              (tokens) =>
++                !isFirstPartyGrant(grant) ||
++                grantAllowed(grant.firstParty, tokens.scope, grant.requestedScopes),
+               (tokens) => ({
+                 outcome: "reconnect" as const,
+                 cause: { stage, field: "scope" } satisfies OAuthFailureCause,
+@@ -3208,7 +3238,11 @@
+                 ? {}
+                 : {
+                     grantedScopes: isFirstPartyGrant(base)
+-                      ? grantedScopes(firstPartyClients.get(base.firstParty), tokens.scope)
++                      ? grantedScopes(
++                          firstPartyClients.get(base.firstParty),
++                          tokens.scope,
++                          base.requestedScopes,
++                        )
+                       : tokens.scope.split(/\s+/u).filter(Boolean),
+                   }),
+               ...(base.grant === "client_credentials" || refreshToken === undefined
