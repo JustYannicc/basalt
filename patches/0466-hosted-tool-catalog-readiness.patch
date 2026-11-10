@@ -1,0 +1,70 @@
+diff --git a/apps/hosted/web/src/contracts/tool-availability.ts b/apps/hosted/web/src/contracts/tool-availability.ts
+--- a/apps/hosted/web/src/contracts/tool-availability.ts
++++ b/apps/hosted/web/src/contracts/tool-availability.ts
+@@ -4,7 +4,7 @@
+  */
+ import { hydrated } from "@executor-js/ui/contracts/http";
+ import { revalidated } from "@executor-js/ui/contracts/refresh";
+-import { acknowledge, invalidate } from "@executor-js/ui/contracts/mutations";
++import { acknowledge, currentQuery, invalidate } from "@executor-js/ui/contracts/mutations";
+ import type { Query, ToolCatalog } from "@executor-js/ui/contracts/dashboard";
+ import {
+   enabledToolNames,
+@@ -42,7 +42,7 @@
+       tools: list.catalog.items,
+       routers: list.catalog.routers,
+     })),
+-  ),
++  ).pipe(currentQuery),
+ );
+ /** Account changes invalidate the manager's catalog as well as ordinary discovery. */
+ export const refreshToolAvailabilityDiscovery = (
+diff --git a/e2e/tests/grouped-accounts.spec.ts b/e2e/tests/grouped-accounts.spec.ts
+--- a/e2e/tests/grouped-accounts.spec.ts
++++ b/e2e/tests/grouped-accounts.spec.ts
+@@ -6,7 +6,7 @@
+ import { Browser } from "../support/browser.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { App, Resource } from "../support/contracts.ts";
+-import { holdQuery } from "../support/query-transition.ts";
++import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
+ import { connectionsPath, linkedAccountIds } from "../support/app-accounts.ts";
+ import { scenarios } from "../test-plan.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+@@ -173,6 +173,26 @@
+           });
+         yield* runIdentity("Personal", personal, "Work");
+         yield* browser.checkpoint("Tool calls run with the linked account");
++        const refreshing = yield* holdQuery(
++          [actors.organization.id, actors.organization.slug].map(
++            (id) => `/api/organizations/${id}/apps/${app.id}/tool-availability`,
++          ),
++          "continue",
++          { allRequests: true },
++        );
++        yield* refreshVisiblePage;
++        yield* refreshing.requested;
++        yield* browser.use("A pending catalog cannot reuse linked-account tools", (page) =>
++          page.getByRole("status", { name: "Loading tools", exact: true }).waitFor(),
++        );
++        expect(
++          yield* browser.use("A pending catalog has no previous drafts", (page) =>
++            page.getByRole("button", { name: "drafts", exact: true }).count(),
++          ),
++        ).toBe(0);
++        yield* browser.checkpoint("Catalog waits without reusing linked-account tools");
++        yield* refreshing.release;
++        yield* catalogShows("Personal", "drafts", "threads", 3);
+         // Linking Work from the Accounts tab replaces Personal; the catalog follows the new link.
+         yield* browser.use("Open Accounts", (page) =>
+           page
+@@ -215,6 +235,9 @@
+             .click(),
+         );
+         yield* held.requested;
++        yield* browser.use("The replacement catalog waits without old tools", (page) =>
++          page.getByRole("status", { name: "Loading tools", exact: true }).waitFor(),
++        );
+         expect(
+           yield* browser.use("Personal tools are not shown for the new link", (page) =>
+             page.getByRole("button", { name: "drafts", exact: true }).count(),

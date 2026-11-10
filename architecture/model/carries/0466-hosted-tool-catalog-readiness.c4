@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The hosted manager tool catalog never displays a previous catalog while its current linked-account discovery is pending or failed. Availability settings keep their acknowledged save state independently. A held-refresh scenario checks the loading state and absence of old tools, then retains the replacement-account, failure, retry and tool-call assertions with unchanged deadlines."
+    }
+  }
+}
