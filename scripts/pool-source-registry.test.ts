@@ -98,6 +98,16 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /unchanged credential, permission, rate-limit and outage classification/,
         );
+      } else if (patch.identity === "cliproxy-home-xai-subscription-quota") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0469-home-xai-subscription-quota.patch");
+        assert.match(patch.retirement.requires, /remove when the pin moves to ≥ v1\.1\.8/);
+        assert.match(patch.retirement.requires, /paid omitted-zero, free\/unknown-profile/);
+        assert.match(patch.retirement.requires, /retained-window, supported-client/);
+        assert.match(
+          patch.retirement.requires,
+          /metadata-only collection regressions pass on the new pin/,
+        );
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&
