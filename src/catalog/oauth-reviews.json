@@ -1984,7 +1984,7 @@
     {
       "entry": "google",
       "package": "@executor.sh/google",
-      "sourceSha256": "48bbffa0b0f7805ff1c8ea34f13acdbc4b093f9307206809e37a8c723e5977b6",
+      "sourceSha256": "d9aeafd3e7f2915a69b7aa57b4ffb54a53630b561be453c93f968ca6c6e8d5f7",
       "methods": {
         "oauth": {
           "kind": "hosted",
