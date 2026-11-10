@@ -1993,7 +1993,7 @@ index c3b0070..7755e5c 100644
  export interface MutationProps<Input, A, E> {
 diff --git a/packages/ui/src/implementation/dashboard/catalog-add-another.tsx b/packages/ui/src/implementation/dashboard/catalog-add-another.tsx
 new file mode 100644
-index 0000000..75b170a
+index 0000000..de85996
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/catalog-add-another.tsx
 @@ -0,0 +1,201 @@
@@ -2074,9 +2074,9 @@ index 0000000..75b170a
 +  // State updates land after the event; a second click in the same frame must not send twice.
 +  const inFlight = useRef(false);
 +  // The dialog keeps its content while it animates closed, after `target` is cleared.
-+  const last = useRef(target);
-+  if (target !== undefined) last.current = target;
-+  const shown = target ?? last.current;
++  const [retained, setRetained] = useState(target);
++  if (target !== undefined && target !== retained) setRetained(target);
++  const shown = target ?? retained;
 +  const entry = shown?.entry;
 +  const draft: Draft<IE> | undefined =
 +    entry &&
