@@ -151,7 +151,19 @@ for (const mode of [
             placement: { region: "aws:eu-central-1" },
             limits: { subrequests: 50_000 },
             observability: { enabled: true },
-            tags: [],
+            // The repository declares VaultDrive on this Worker; live settings don't have it yet.
+            ...(worker.role === "ArtifactsCredentials"
+              ? {
+                  bindings: [
+                    {
+                      type: "durable_object_namespace",
+                      name: "VaultDrive",
+                      className: "VaultDrive",
+                    },
+                  ],
+                  tags: ["alchemy:dos:VaultDrive=VaultDrive"],
+                }
+              : { tags: [] }),
           },
         })),
       async () => {
