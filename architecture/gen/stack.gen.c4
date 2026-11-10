@@ -1,7 +1,7 @@
 // Generated from the deployment stack. Do not edit.
 deployment {
   stage deployed "Declared deployment" {
-    metadata { bindings "5bf961bb368c50b18baec3d5dc7a521908da27d92500ccff4bef64a7ef4aa4af" }
+    metadata { bindings "d61b916b08d63d1065463e866aa360d549ac5e4d882a99819bf0c2fe3db2b395" }
     zone group-2703341ef73f1544 "Asset service" {
       storage resource-5feb83cf920a7484743f0f20b6120bffd7591b4d943a0e1b4182bdae81230638 "App Builds" {
         app = instanceOf assetsService {
@@ -231,6 +231,11 @@ deployment {
         app = instanceOf basalt.toolsGateway {
           metadata { resource "resource-c065d523336cd33212e7a04bdcda35d4954a2c8d97706d40fea5fb3cd8415928" }
         }
+        durableObject resource-0a96a0413bb4a118c657319edec9bb584c0d3732223de21255f4ba1356fe377c "Vault Drive" {
+          app = instanceOf basalt.vaultRecords {
+            metadata { resource "resource-0a96a0413bb4a118c657319edec9bb584c0d3732223de21255f4ba1356fe377c" }
+          }
+        }
         durableObject resource-bff4ef8687419c16e34ec9c049a08dc4a2f16603614af3ec7fb3ac59edd36fea "Tools state" {
           app = instanceOf basalt.toolsState {
             metadata { resource "resource-bff4ef8687419c16e34ec9c049a08dc4a2f16603614af3ec7fb3ac59edd36fea" }
@@ -279,6 +284,13 @@ deployment {
       workflow resource-ba613b66a7b4f37d0133ed05f49fd8750a5f2cadd1ed322f8eeb3167167b495a "Provisioning" {
         app = instanceOf basalt.toolsState {
           metadata { resource "resource-ba613b66a7b4f37d0133ed05f49fd8750a5f2cadd1ed322f8eeb3167167b495a" }
+        }
+      }
+    }
+    zone group-1ed143201a5e9cf6 "Vault records" {
+      storage resource-cd59467e50adada42b7698d9672959dc006bc0ff06b9bfecd1e685d75e8c6cc6 "Vault Attachments" {
+        app = instanceOf basalt.vaultRecords {
+          metadata { resource "resource-cd59467e50adada42b7698d9672959dc006bc0ff06b9bfecd1e685d75e8c6cc6" }
         }
       }
     }
@@ -514,6 +526,11 @@ views {
   deployment view deployment_group_0492fe9825ed3b1f {
     title "Basalt/Deployment/Tools state"
     include deployed.group-0492fe9825ed3b1f.*
+    autoLayout TopBottom
+  }
+  deployment view deployment_group_1ed143201a5e9cf6 {
+    title "Basalt/Deployment/Vault records"
+    include deployed.group-1ed143201a5e9cf6.*
     autoLayout TopBottom
   }
   deployment view deployment_group_7a68fb465f6d464b {
