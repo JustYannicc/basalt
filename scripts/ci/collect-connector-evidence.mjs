@@ -13,6 +13,7 @@ const jobs = {
   "planetscale-sign-in": ["planetscale-sign-in"],
   "vercel-sign-in": ["vercel-sign-in"],
   "elevenlabs-sign-in": ["elevenlabs-sign-in"],
+  "neon-key-reuse": ["neon-key-reuse"],
   "catalog-compat": ["catalog-compat", "elevenlabs-discovery", "zoho-people", "zoho-people-mcp"],
 };
 const runDirectories = {

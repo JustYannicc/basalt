@@ -8,9 +8,12 @@ import type { Fetcher } from "../deploy-safety/http.ts";
 import { brand } from "../../brand.ts";
 import { servingClock, type ServingClock } from "./serving-clock.ts";
 import { readServingObservation } from "./serving-observation.ts";
+import type { RuntimeIdentity } from "../../src/pool/deployment-readiness.ts";
+import { containerCodeAdoptionMs, waitForContainerCode } from "./container-adoption.ts";
 import {
   ServingFailure,
   servingFailure,
+  retryableServingFailure as retryable,
   type ServingCheck,
   type ServingObservation,
 } from "./serving-failure.ts";
@@ -19,12 +22,6 @@ export const containerStartupMs = 180_000;
 export const containerServingMs = 240_000;
 // Called after waitForContainerVersion has observed rollout completion. Instance adoption keeps its existing 240-second budget.
 export const containerAllocationMs = containerServingMs;
-const retryable = (error: ServingFailure) =>
-  (error.serving.status !== undefined &&
-    (error.serving.status >= 500 || error.serving.status === 429)) ||
-  ["TypeError", "TimeoutError", "AbortError", "not-running", "not-ready"].includes(
-    error.serving.cause,
-  );
 
 export const verifyServingContainer = (
   container: FrozenContainer,
@@ -41,11 +38,13 @@ export const verifyServingContainer = (
         const unsignedOrigin = `https://${brand.host}`;
         const clock = options.clock ?? servingClock;
         const began = clock.now();
-        const allocation = clock.deadline(containerAllocationMs);
+        const adoption = clock.deadline(containerCodeAdoptionMs);
+        let allocation: ReturnType<ServingClock["deadline"]> | undefined;
         let runtime: ReturnType<ServingClock["deadline"]> | undefined;
         let startup: ReturnType<ServingClock["deadline"]> | undefined;
         let connection: Awaited<ReturnType<typeof openDeploymentReadiness>> | undefined;
         let observation: ServingObservation | undefined;
+        let codeIdentity: RuntimeIdentity | undefined;
         let allocationFailure: ServingFailure | undefined;
         const kickAbort = new AbortController();
         const target = {
@@ -78,14 +77,29 @@ export const verifyServingContainer = (
           const remaining = end - clock.now();
           if (remaining > 0) await bounded(clock.sleep(Math.min(5_000, remaining)), signal);
         };
+        const expectedCode = {
+          candidate,
+          workerInput: poolWorkerRevision,
+          imageHash: container.inputHash,
+        };
         const opening = openDeploymentReadiness({
           ...worker,
           key: Redacted.value(key),
-          target: { candidate, workerInput: poolWorkerRevision, imageHash: container.inputHash },
+          target: expectedCode,
         });
         const verify = async () => {
           try {
-            connection = await check("bridge-open", () => bounded(opening, allocation.signal));
+            connection = await check("bridge-open", () => bounded(opening, adoption.signal));
+            codeIdentity = await waitForContainerCode(
+              connection,
+              expectedCode,
+              clock,
+              began + containerCodeAdoptionMs,
+              adoption.signal,
+            );
+            adoption.dispose();
+            const allocationAt = clock.now();
+            allocation = clock.deadline(containerAllocationMs);
             // This signed request can start/adopt the instance. Scheduling is observed separately;
             // a slow warm response must not consume the instance's own startup budget.
             let kickFailure: ServingFailure | undefined;
@@ -94,7 +108,7 @@ export const verifyServingContainer = (
               .catch((error) => {
                 kickFailure = servingFailure("deployment-readiness", error);
               });
-            const allocationEnd = began + containerAllocationMs;
+            const allocationEnd = allocationAt + containerAllocationMs;
             while (clock.now() < allocationEnd) {
               if (
                 kickFailure?.serving.status !== undefined &&
@@ -237,6 +251,10 @@ export const verifyServingContainer = (
             throw last;
           } catch (error) {
             const failure = servingFailure("instance-start", error);
+            failure.serving.codeIdentity ??= {
+              expected: expectedCode,
+              observed: codeIdentity ?? null,
+            };
             failure.serving.elapsedMs = Math.max(0, clock.now() - began);
             if (observation)
               failure.serving.observation = {
@@ -255,13 +273,17 @@ export const verifyServingContainer = (
         try {
           if (connection)
             await check("bridge-close", () =>
-              bounded(connection!.close(), runtime?.signal ?? allocation.signal),
+              bounded(
+                connection!.close(),
+                runtime?.signal ?? allocation?.signal ?? adoption.signal,
+              ),
             );
           else void opening.then((value) => value.close()).catch(() => {});
         } catch (error) {
           cleanupFailure = error;
         } finally {
-          allocation.dispose();
+          adoption.dispose();
+          allocation?.dispose();
           startup?.dispose();
           runtime?.dispose();
         }

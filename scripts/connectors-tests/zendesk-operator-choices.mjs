@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import guidanceSnapshot from "./zendesk-company-guidance.snapshot.json" with { type: "json" };
 
 const loopback = "http://localhost:27439/callback";
 
@@ -73,11 +74,7 @@ export function proveOperatorChoices({
     );
     assert.equal(hosted.available, false);
     assert.equal(hosted.redirectUri, callback);
-    assert.equal(
-      hosted.setupInstructions,
-      "In Zendesk Admin Center, open Apps and integrations > APIs > OAuth clients. " +
-        "Add this callback URL to the public OAuth client site-a_zendesk with read and write access; no client secret is needed.",
-    );
+    assert.equal(hosted.setupInstructions, guidanceSnapshot.setupInstructions);
     assert.equal(paste.available, true);
     assert.equal(paste.redirectUri, loopback);
     assert.equal(hosted.clientId, "site-a_zendesk");

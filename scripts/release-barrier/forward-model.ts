@@ -199,6 +199,7 @@ export function forwardAdoption(
     );
   const native = containerSnapshot(identity);
   const currentHash = encodedRecordHash(before);
+  const nativeBeforeHash = encodedRecordHash(packet.nativeBefore);
   const journaledWrite =
     packet.adoption && [packet.adoption.before, packet.adoption.after].includes(currentHash);
   const alreadyAdopted =
@@ -206,8 +207,28 @@ export function forwardAdoption(
     identity.hash.image === container.inputHash &&
     identity.hash.digest === container.imageDigest &&
     sameContainerState(native, containerSnapshot(observed));
-  if (alreadyAdopted && !journaledWrite)
-    throw new BarrierRefusal("forward-native-after-drift", container.id);
+  const unchangedBaseline =
+    packet.adoption === undefined &&
+    isBaseline &&
+    currentHash === nativeBeforeHash &&
+    identity.hash.image === container.baselineInputHash &&
+    identity.hash.digest === imageDigest(container.baseline.configuration.image);
+  if (alreadyAdopted && !journaledWrite && !unchangedBaseline) {
+    const hash = (value: string | undefined) =>
+      value === undefined ? null : /^[a-f0-9]{64}$/u.test(value) ? value : "invalid";
+    throw new BarrierRefusal("forward-native-after-drift", container.id, {
+      fqn: container.id,
+      type: "Cloudflare.Container",
+      changed: [
+        { path: "native.recordHash", old: nativeBeforeHash, new: currentHash },
+        { path: "journal.adoption.before", old: hash(packet.adoption?.before), new: currentHash },
+        { path: "journal.adoption.after", old: hash(packet.adoption?.after), new: currentHash },
+      ],
+      why: [
+        "Candidate identity has neither an exact unchanged native baseline nor a journaled adoption write",
+      ],
+    });
+  }
   if (
     !alreadyAdopted &&
     (identity.hash.image !== container.baselineInputHash ||

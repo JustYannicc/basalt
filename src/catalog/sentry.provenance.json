@@ -2,11 +2,11 @@
   "package": "@executor.sh/sentry",
   "publishedUrl": "https://catalog.executor.sh/apps/sentry.json",
   "publishedSha256": "d8bc47b3e14bd1c87520810b00eceb806d87ed649842cadcdec25bb5db471a26",
-  "carriedSha256": "9607bc7785d47139e0d2c233b68e5e2665919fca5e668224f91f1450960a2ab4",
-  "patchSha256": "0c7de1e981b2af7903cb4b51b2ee25fb58e64c18299531a86195da627d9a6be9",
+  "carriedSha256": "f4cd960c20a2ee9da7e591671da5a9f7fa63522f094e96848847294ed62d7b3d",
+  "patchSha256": "30c5b6bfabb96729aea717bdfff4410d0c53d8a2d1102c9c9874f1ee4b364b94",
   "license": "Not declared in the published package",
   "contribution": {
     "state": "Personal-token MCP routing retained as a replayable patch; publication not claimed"
   },
-  "appsVersion": "0.0.1-beta.104-basalt.13"
+  "appsVersion": "0.0.1-beta.104-basalt.14"
 }

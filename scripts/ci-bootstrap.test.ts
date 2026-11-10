@@ -71,10 +71,6 @@ test("Check toolchain bootstraps use official non-GitHub sources on every runner
       assert.ok(!step.uses?.startsWith("actions/setup-node@"), id);
     }
   }
-  const versions = workflow.jobs["boat-bundle"].steps
-    .filter((step: { uses?: string }) => step.uses === "./.github/actions/setup-bun")
-    .map((step: { with: Record<string, string> }) => step.with["bun-version"]);
-  assert.deepEqual(versions, ["1.4.4", "1.4.2"]);
 });
 
 test("Node bootstrap reads only pinned official archives and refuses unknown versions", async () => {
@@ -91,7 +87,7 @@ test("Node bootstrap reads only pinned official archives and refuses unknown ver
   const workflow = parse(
     readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
   );
-  for (const id of ["select", "fast", "boat-bundle", "workerd-assets", "check", "client-desktop"])
+  for (const id of ["select", "fast", "workerd-assets", "check", "client-desktop"])
     assert.ok(
       workflow.jobs[id].steps.some(
         (step: { uses?: string }) => step.uses === "./.github/actions/setup-node",

@@ -18,6 +18,10 @@ import {
 } from "./database-budget-receipt.ts";
 
 export const databaseVerificationCommandMs = 115_000;
+type RuntimeConnection = Pick<
+  Awaited<ReturnType<typeof openDeploymentReadiness>>,
+  "ready" | "close"
+>;
 
 function list(value: string | undefined) {
   const parsed: unknown = JSON.parse(value ?? "null");
@@ -38,7 +42,7 @@ export async function runDatabaseBudgetCommand(
   source: NodeJS.ProcessEnv,
   args: string[],
   adapters: {
-    open?: typeof openDeploymentReadiness;
+    open?: (...args: Parameters<typeof openDeploymentReadiness>) => Promise<RuntimeConnection>;
     check?: typeof checkDatabaseBackends;
     now?: () => number;
     timeout?: (milliseconds: number) => AbortSignal;
@@ -62,7 +66,7 @@ export async function runDatabaseBudgetCommand(
     });
   const open = adapters.open ?? openDeploymentReadiness;
   const check = adapters.check ?? checkDatabaseBackends;
-  let readiness: Awaited<ReturnType<typeof openDeploymentReadiness>> | undefined;
+  let readiness: RuntimeConnection | undefined;
   const startedAt = now();
   let operationStartedAt = startedAt;
   const path = source.DATABASE_BUDGET_RECEIPT ?? "";

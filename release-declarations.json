@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "stack": "basalt",
+  "retentionOwner": "Basalt deployment",
+  "changes": [
+    {
+      "action": "create-d1-database",
+      "type": "Cloudflare.D1Database",
+      "fqn": "PublicSiteWaitlist",
+      "props": {
+        "name": "public-site-waitlist",
+        "jurisdiction": "eu"
+      },
+      "removalPolicy": "retain",
+      "retention": {
+        "data": true,
+        "nativeStateRow": true,
+        "recoveryDescriptor": true
+      }
+    }
+  ]
+}

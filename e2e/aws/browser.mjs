@@ -114,6 +114,8 @@ export async function proveAwsPasteUi({
       .getByRole("button", { name: "Connect new account", exact: true })
       .click();
     const connectDialog = page.getByRole("dialog", { name: "Connect AWS", exact: true });
+    // AWS's sign-in and Identity Center share one section, whose connect menu lists both.
+    await page.getByRole("menuitem", { name: "Sign in with AWS", exact: true }).click();
     await connectDialog.waitFor({ state: "visible" });
 
     const first = await startPasteFlow(connectDialog, "Connect AWS", page);

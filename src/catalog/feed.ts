@@ -8,6 +8,8 @@ export interface FeedEntry {
   description: string;
   auth: unknown[];
   oauthDeferrals?: readonly { method: string; message: string }[];
+  /** The tools each account requirement runs, where the app feeds them different tools. */
+  requirementTools?: Readonly<Record<string, string>>;
   icons: { src: string; [key: string]: unknown }[];
   source: string;
   [key: string]: unknown;

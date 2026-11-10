@@ -89,6 +89,7 @@ test("managed credentials stay sealed while grant metadata remains readable", as
   const selected = sealed.app.service;
   assert.ok(selected && "id" in selected);
   assert.deepEqual(selected.oauthScopes, ["read", "write"]);
+  assert.ok(selected.fields !== undefined);
   for (const value of Object.values(selected.fields)) assert.match(String(value), /^exsec2_/);
   assert.equal(JSON.stringify(sealed).includes("synthetic-token"), false);
 });

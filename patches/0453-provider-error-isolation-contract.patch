@@ -1,0 +1,113 @@
+diff --git a/e2e/tests/provider-errors.spec.ts b/e2e/tests/provider-errors.spec.ts
+--- a/e2e/tests/provider-errors.spec.ts
++++ b/e2e/tests/provider-errors.spec.ts
+@@ -197,6 +197,33 @@
+         'invalid_token: "Token [redacted] belongs to another organization"',
+       );
+     };
++    const assertGraphqlCatalog = (
++      response: Effect.Success<ReturnType<typeof catalog>>,
++      reason: string,
++      status: number,
++      upstream?: typeof Failure.Type.upstream,
++    ) =>
++      Effect.gen(function* () {
++        expect(response.status, JSON.stringify(response.body)).toBe(200);
++        const listed = yield* body(Catalog, response);
++        expect(listed.items.map(({ name }) => name)).toEqual([tool]);
++        expect(listed.routers).toEqual([
++          {
++            path: "__account_source_0",
++            error: {
++              _tag: "ProviderError",
++              reason,
++              status,
++              accountId: affected,
++              phase: "discover",
++              ...(upstream === undefined ? {} : { upstream }),
++            },
++          },
++        ]);
++        expect(JSON.stringify(response.body)).not.toMatch(
++          new RegExp(`${providerSecretMarker}|Forged|stack|synthetic-personal|synthetic-work`),
++        );
++      });
+     // Listing evaluates the app; an MCP server's own session setup is named more precisely.
+     const listing = kind === "mcp" ? "connect" : "discover";
+     if (kind !== "openapi") {
+@@ -280,14 +307,32 @@
+         expect((yield* body(Resource, saved)).id).toBe(affected);
+         yield* assertCatalog(yield* catalog(), false);
+         yield* assertCatalog(yield* index(), false);
++      } else if (kind === "graphql") {
++        const stated = {
++          code: "invalid_token",
++          message: "Token [redacted] belongs to another organization",
++        };
++        yield* assertGraphqlCatalog(yield* catalog(), "unauthorized", 401, stated);
++        yield* assertGraphqlCatalog(yield* index(), "unauthorized", 401, stated);
++        const healthy = accounts[0];
++        if (healthy === undefined) return yield* Effect.die("Missing first account");
++        const read = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
++          tool,
++          kind: "query",
++          input: { accountId: healthy, input: {} },
++        });
++        expect(read.status, JSON.stringify(read.body)).toBe(200);
++        expect(read.body).toBe("work");
+       } else {
+         const listed = yield* assertFailure(yield* catalog(), "unauthorized", 401, listing);
+         if (kind !== "custom") expectStated(listed, "while listing its tools");
+       }
+       // Lazy MCP sources do not discover tools when listing unrelated webhooks.
+       const setup = yield* api.request(actors.owner, "GET", `${path}/webhook-definitions`);
+-      expect(setup.status, JSON.stringify(setup.body)).toBe(kind === "mcp" ? 200 : 502);
+-      if (kind === "mcp") expect(setup.body).toEqual([]);
++      expect(setup.status, JSON.stringify(setup.body)).toBe(
++        kind === "mcp" || kind === "graphql" ? 200 : 502,
++      );
++      if (kind === "mcp" || kind === "graphql") expect(setup.body).toEqual([]);
+     }
+     yield* upstream.configure({ status: 401, phase: "call" });
+     expect((yield* catalog()).status).toBe(200);
+@@ -368,8 +413,38 @@
+       ["RATE_LIMITED", "rate_limited"],
+     ] as const) {
+       yield* upstream.configure({ status: 200, code });
+-      yield* assertFailure(yield* catalog(), reason, 200);
+-    }
++      yield* assertGraphqlCatalog(yield* catalog(), reason, 200);
++      yield* assertGraphqlCatalog(yield* index(), reason, 200);
++    }
++    // The remaining checks exercise app-wide recovery. Fail outside accountRouter here;
++    // its isolated discovery failures must not prevent unrelated webhook setup.
++    const recoverySource = yield* body(
++      Schema.Struct({
++        files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
++      }),
++      yield* api.request(actors.owner, "GET", `${path}/source`),
++    );
++    const recoveryIndex = recoverySource.files.find((file) => file.path === "index.ts");
++    expect(recoveryIndex?.content).toContain("async ({ user, cache, signal }) => ({");
++    const recovery = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
++      files: recoverySource.files.map((file) =>
++        file.path === "index.ts"
++          ? {
++              ...file,
++              content: file.content
++                .replace(
++                  "async ({ user, cache, signal }) => ({",
++                  `async ({ user, cache, signal }) => {
++  const account = user.accounts.service[1];
++  await graphqlRouter({ revalidate: true, url: ${JSON.stringify(`${upstream.origin}/graphql`)}, cache, signal, account, headers: { Authorization: "Bearer " + account.fields.token } });
++  return ({`,
++                )
++                .replace("}));", "}); });"),
++            }
++          : file,
++      ),
++    });
++    expect(recovery.status, JSON.stringify(recovery.body)).toBe(200);
+     // Saving the affected account's webhook source sets it up again; the rejected credential
+     // leaves it waiting for the account to be repaired.
+     yield* upstream.configure({ status: 401 });

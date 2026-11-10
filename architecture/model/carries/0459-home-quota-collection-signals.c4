@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "Each claimed Home quota collection emits one bounded metadata record at info level. It identifies the account by native UUID or a SHA256 legacy reference and records only fixed vendor window field paths and durations before quantity parsing, with probe, JSON validity and truncation flags. The supervisor validates the closed schema and forwards it to existing container log observability. No quota values, labels, bodies or credentials enter the record, and collection, persistence and request behavior remain unchanged."
+    }
+  }
+}

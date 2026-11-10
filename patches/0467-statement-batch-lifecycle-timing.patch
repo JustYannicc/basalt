@@ -1,0 +1,49 @@
+diff --git a/apps/hosted/server/src/implementation/statement-batch.ts b/apps/hosted/server/src/implementation/statement-batch.ts
+--- a/apps/hosted/server/src/implementation/statement-batch.ts
++++ b/apps/hosted/server/src/implementation/statement-batch.ts
+@@ -8,6 +8,7 @@
+     const request = yield* Effect.serviceOption(HttpServerRequest.HttpServerRequest);
+     const bounded = batch.pipe(
+       Effect.timeoutOrElse({ duration: "10 seconds", orElse: () => new StorageError() }),
++      Effect.withSpan("storage.statement.batch"),
+     );
+     if (Option.isNone(request) || !(request.value.source instanceof Request)) return yield* bounded;
+     const signal = request.value.source.signal;
+diff --git a/e2e/tests/statement-batch-deadline.spec.ts b/e2e/tests/statement-batch-deadline.spec.ts
+--- a/e2e/tests/statement-batch-deadline.spec.ts
++++ b/e2e/tests/statement-batch-deadline.spec.ts
+@@ -148,7 +148,7 @@
+               Effect.die("Stalled batch did not return StorageError before the deadline"),
+             ),
+           );
+-          const elapsed = (yield* Clock.currentTimeMillis) - start;
++          const requestElapsed = (yield* Clock.currentTimeMillis) - start;
+           expect(failed.success, JSON.stringify(failed)).toBe(false);
+           expect(failed.failure).toMatchObject({
+             code: "StorageError",
+@@ -156,10 +156,15 @@
+             retryable: true,
+           });
+           expect(failed.failure).not.toMatchObject({ mayHaveWritten: true });
++          expect(yield* counter.calls).toBe(before);
++          const failureTrace = yield* delivered(failed.traceId);
++          const batches = failureTrace.data.filter(
++            ({ span }) => span.operationName === "storage.statement.batch",
++          );
++          expect(batches).toHaveLength(1);
++          const elapsed = batches[0]!.span.durationMs;
+           expect(elapsed).toBeGreaterThanOrEqual(10_000);
+           expect(elapsed).toBeLessThan(12_000);
+-          expect(yield* counter.calls).toBe(before);
+-          const failureTrace = yield* delivered(failed.traceId);
+           expect(failureTrace.data.some(({ span }) => span.operationName === dispatch)).toBe(false);
+           yield* evidence.json("statement-batch-dispatch.json", {
+             dispatch,
+@@ -194,6 +199,7 @@
+           expect(yield* counter.calls).toBe(before + 1);
+           yield* evidence.json("statement-batch-deadline.json", {
+             elapsed,
++            requestElapsed,
+             failure: failed.failure,
+             state,
+             authorCallsBefore: before,

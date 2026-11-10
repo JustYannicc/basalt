@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import hmac
 import http.server
 import json
@@ -15,6 +16,7 @@ from collections.abc import Callable
 from typing import Any
 
 from .pool_contract import native_policy_request
+from .policy_diagnostic import policy_failure
 from .runtime_signals import FailureCategory, report_failure
 
 READY_BIND = ("0.0.0.0", 8318)
@@ -29,7 +31,26 @@ class Readiness:
         self,
         management_key: str,
         monotonic_ns: Callable[[], int] = time.monotonic_ns,
+        *,
+        launch_generation: str | None = None,
+        launch_token: str | None = None,
     ) -> None:
+        self._launch_headers: dict[str, str] = {}
+        if launch_generation is not None or launch_token is not None:
+            if (
+                not isinstance(launch_generation, str)
+                or re.fullmatch(r"[1-9][0-9]{0,15}", launch_generation) is None
+                or int(launch_generation) > (1 << 53) - 1
+                or not isinstance(launch_token, str)
+                or re.fullmatch(r"[a-f0-9]{64}", launch_token) is None
+            ):
+                raise ValueError("Invalid pool launch identity")
+            self._launch_headers = {
+                "X-Signalbox-Launch-Generation": launch_generation,
+                "X-Signalbox-Launch-Token-Sha256": hashlib.sha256(
+                    launch_token.encode("ascii")
+                ).hexdigest(),
+            }
         self.boot_id = str(uuid.uuid4())
         self.started_at = (
             dt.datetime.now(dt.timezone.utc)
@@ -194,6 +215,9 @@ class Readiness:
         supplied = header[len(prefix) :].encode("utf-8")
         return hmac.compare_digest(supplied, self._key)
 
+    def launch_headers(self) -> dict[str, str]:
+        return dict(self._launch_headers)
+
 
 class ReadyHandler(http.server.BaseHTTPRequestHandler):
     readiness: Readiness | None = None
@@ -209,11 +233,15 @@ class ReadyHandler(http.server.BaseHTTPRequestHandler):
             self._send(401, {"error": "unauthorized"})
             return
         ready, payload, lease_ms = readiness.readiness_response()
-        headers = {"X-Signalbox-Policy-Lease-Ms": str(lease_ms)} if ready else None
+        headers = (
+            {"X-Signalbox-Policy-Lease-Ms": str(lease_ms), **readiness.launch_headers()}
+            if ready
+            else None
+        )
         self._send(200 if ready else 503, payload, headers)
 
     def do_POST(self) -> None:
-        if self.path != "/native-policy":
+        if self.path not in ("/native-policy", "/native-policy/check"):
             self._send(404, {"error": "not_found"})
             return
         readiness = self.readiness
@@ -227,21 +255,30 @@ class ReadyHandler(http.server.BaseHTTPRequestHandler):
         except ValueError:
             content_length = 0
         if content_length < 2 or content_length > MAX_POLICY_INSTALL_BYTES:
-            self._send(400, {"error": "invalid_projection"})
+            self._send(400, {"error": "invalid_projection_framing", "reason": "envelope"})
+            return
+        if self.path == "/native-policy/check":
+            from .policy_check import check_policy
+
+            if content_length > 8192:
+                self._send(400, {"ok": False})
+                return
+            status, payload = check_policy(self.rfile.read(content_length))
+            self._send(status, payload)
             return
         try:
             body = json.loads(
                 self.rfile.read(content_length), object_pairs_hook=_unique_object
             )
         except (ValueError, TypeError):
-            self._send(400, {"error": "invalid_projection"})
+            self._send(400, {"error": "invalid_projection_framing", "reason": "json"})
             return
         if (
             not isinstance(body, dict)
             or set(body) != {"projection"}
             or not isinstance(body["projection"], str)
         ):
-            self._send(400, {"error": "invalid_projection"})
+            self._send(400, {"error": "invalid_projection_framing", "reason": "envelope"})
             return
 
         status, result = native_policy_request(
@@ -257,7 +294,7 @@ class ReadyHandler(http.server.BaseHTTPRequestHandler):
             self._send(200, {"installed": True, "revision": revision})
             return
         if status in (400, 409):
-            self._send(status, {"error": "invalid_projection"})
+            self._send(status, policy_failure(result))
             return
         self._send(503, {"error": "policy_unavailable"})
 

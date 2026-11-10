@@ -66,6 +66,7 @@ export async function startPlanetScale({
   omitGrantedScope = false,
   refuseScope,
   refreshScopes,
+  configuredScopes,
 }) {
   const calls = [];
   const failures = [];
@@ -137,9 +138,11 @@ export async function startPlanetScale({
       const params = Object.fromEntries(new URLSearchParams(await read(request)));
       // Doorkeeper grants the requested scopes, or the client's registered default for none.
       const granted =
-        params.scope === undefined || params.scope.trim() === ""
-          ? registrationDefault.join(" ")
-          : params.scope;
+        configuredScopes !== undefined
+          ? configuredScopes.join(" ")
+          : params.scope === undefined || params.scope.trim() === ""
+            ? registrationDefault.join(" ")
+            : params.scope;
       const code = randomBytes(16).toString("hex");
       codes.set(code, { ...params, granted });
       const callback = new URL(params.redirect_uri);

@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import { bundlePoolApp } from "./pool-app-bundle.ts";
 import { poolWorkerRevisionPath, poolWorkerRevisionSource } from "./pool-worker-revision.ts";
 import { prepareTestPlans, retiredTestPlanSources } from "./ci/declarations.ts";
-import { e2eCorrection } from "./ci/prepare-e2e.ts";
+import { e2eCorrections } from "./ci/prepare-e2e.ts";
 
 export function verifyConnectorsSource(root: string): { commit: string; patches: string[] } {
   const upstream = join(root, ".upstream");
@@ -45,8 +45,7 @@ export function verifyConnectorsSource(root: string): { commit: string; patches:
         throw new Error(`Carried patch does not apply: ${patch}`);
       }
     }
-    const correction = e2eCorrection(root);
-    if (correction !== undefined) git(["apply", "--cached", correction], expected);
+    for (const correction of e2eCorrections(root)) git(["apply", "--cached", correction], expected);
     const addedPaths = () =>
       git(["diff", "--cached", "--name-only", "--diff-filter=A", pin.commit], expected)
         .split("\n")

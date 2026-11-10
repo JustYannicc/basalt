@@ -7,10 +7,12 @@ import oauthReviewData from "./oauth-reviews.json" with { type: "json" };
 import { catalog } from "./settings.ts";
 import { onServedFramework } from "./framework.ts";
 import { atlassianAddition } from "./atlassian/index.ts";
+import { atlassianConsumers } from "./atlassian-consumers.ts";
 import { gitlabSource, withGitLabInstances } from "./gitlab.ts";
 import { slackSource, withSlackUserAuth } from "./slack.ts";
 import { miroSource, withMiroCapabilities } from "./miro.ts";
 import { elevenlabsSource, withElevenLabsSignIn } from "./elevenlabs.ts";
+import { neonSource } from "./neon.ts";
 import { sentrySource, withSentryConnections } from "./sentry.ts";
 import { vercelSource, withVercelSignIn } from "./vercel.ts";
 import { notionSource } from "./notion.ts";
@@ -24,12 +26,17 @@ import { googleMapsAddition } from "./google-maps/index.ts";
 import { workosSource, withWorkOSSignIn } from "./workos.ts";
 import { planetscaleSource, withPlanetScaleAccess } from "./planetscale.ts";
 import { clerkSource, withClerkSignIn } from "./clerk.ts";
+import { canvaSource } from "./canva.ts";
+import { plaidSource, withPlaidAccess } from "./plaid.ts";
 import { obsidian } from "./obsidian/index.ts";
 
 // AWS source stays in the catalog until maintainers identify a maintained destination.
 const sourceAdditions: readonly Addition[] = [aws, zohoPeople, obsidian, ...providerApps];
-// GitLab sign-in moved into the one GitLab app. Installed copies still read their source.
-const retiredSources: readonly Addition[] = [gitlabMcp];
+// Retired umbrella apps remain readable until their installed copies are explicitly migrated.
+const retiredSources = (origin: string): readonly Addition[] => [
+  gitlabMcp,
+  atlassianAddition(origin),
+];
 const reviewedOAuth = oauthReviews(oauthReviewData);
 const headers = {
   "Content-Type": "application/json; charset=utf-8",
@@ -47,15 +54,8 @@ function configuredAdditions(
   origin: string,
   metadata?: ZendeskMarketplaceMetadata,
 ): readonly FeedAddition[] {
-  const additions = [atlassianAddition(origin)];
   const zendesk = zendeskAddition(metadata);
-  return [
-    ...additions,
-    ...sourceAdditions,
-    ...recipeAdditions(origin),
-    googleMapsAddition(origin),
-    zendesk,
-  ];
+  return [...sourceAdditions, ...recipeAdditions(origin), googleMapsAddition(origin), zendesk];
 }
 
 /** A read-only feed. Never forward cookies, authorization or query parameters to its publisher. */
@@ -71,6 +71,14 @@ export async function handleCatalog(
   const relative = path.startsWith(catalog.path) ? path.slice(catalog.path.length) : "";
   if (relative !== "index.json" && !/^apps\/[a-zA-Z0-9_-]+\.json$/.test(relative))
     return new Response(null, { status: 404 });
+  const consumer = Object.entries(atlassianConsumers).find(
+    ([id]) => relative === `apps/${id}.json`,
+  )?.[1];
+  if (consumer !== undefined)
+    return new Response(
+      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(consumer)),
+      { headers },
+    );
   if (relative === "apps/slack.json")
     return new Response(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(slackSource)),
@@ -91,9 +99,19 @@ export async function handleCatalog(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(elevenlabsSource)),
       { headers },
     );
+  if (relative === "apps/neon.json")
+    return new Response(
+      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(neonSource)),
+      { headers },
+    );
   if (relative === "apps/sentry.json")
     return new Response(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(sentrySource)),
+      { headers },
+    );
+  if (relative === "apps/canva.json")
+    return new Response(
+      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(canvaSource)),
       { headers },
     );
   if (relative === "apps/vercel.json")
@@ -116,6 +134,11 @@ export async function handleCatalog(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(planetscaleSource)),
       { headers },
     );
+  if (relative === "apps/plaid.json")
+    return new Response(
+      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(plaidSource)),
+      { headers },
+    );
   if (relative === "apps/clerk.json")
     return new Response(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(clerkSource)),
@@ -126,7 +149,7 @@ export async function handleCatalog(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(spotifySource)),
       { headers },
     );
-  const added = [...additions, ...retiredSources].find(
+  const added = [...additions, ...retiredSources(new URL(request.url).origin)].find(
     (item) => relative === `apps/${encodeURIComponent(item.entry.id)}.json`,
   );
   if (added) {
@@ -155,14 +178,16 @@ export async function handleCatalog(
     if (!response.ok || response.status !== 200) return unavailable();
     let body: string;
     if (relative === "index.json") {
-      const upstream = withSentryConnections(
-        withPlanetScaleAccess(
-          withClerkSignIn(
-            withWorkOSSignIn(
-              withElevenLabsSignIn(
-                withVercelSignIn(
-                  withMiroCapabilities(
-                    withSlackUserAuth(withGitLabInstances((await response.json()) as Feed)),
+      const upstream = withPlaidAccess(
+        withSentryConnections(
+          withPlanetScaleAccess(
+            withClerkSignIn(
+              withWorkOSSignIn(
+                withElevenLabsSignIn(
+                  withVercelSignIn(
+                    withMiroCapabilities(
+                      withSlackUserAuth(withGitLabInstances((await response.json()) as Feed)),
+                    ),
                   ),
                 ),
               ),

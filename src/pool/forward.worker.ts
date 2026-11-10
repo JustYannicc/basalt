@@ -28,6 +28,16 @@ interface Dependencies {
   memberships: NativeMemberships;
   streams: NativeStreams;
   lifecycle: Promise<PoolLifecycle>;
+  route?: (
+    request: Request,
+    port: 8317 | 8327,
+    pool: string | undefined,
+    legacy: (request: Request, prepared: () => void) => Promise<Response>,
+    beforeDispatch: () => void,
+  ) => Promise<Response>;
+  warm?: (
+    legacy: () => Promise<import("./lifecycle.ts").PoolStatus>,
+  ) => Promise<import("./lifecycle.ts").PoolStatus>;
   protection: RuntimeProtection;
   fetch(request: Request, port: 8317 | 8327): Promise<Response>;
   defer(work: Promise<unknown>): void;
@@ -58,29 +68,44 @@ export async function forwardPoolRequest(
         deps.memberships,
         deps.env.POOL_APP_SIGNING_KEY,
         deps.env.POOL_AUTH_DATABASE?.connectionString,
+        deps.streams,
         native ?? deps.appModel,
       );
       request = gate.request;
       identity = gate.identity;
-      if (gate.pool) {
-        modelLease = deps.streams.acquire(crypto.randomUUID(), gate.pool, request.signal);
-        request = new Request(request, { signal: modelLease.signal });
-      }
+      modelLease = gate.lease;
     }
     guard = "runtime_readiness";
-    const status = await (await deps.lifecycle).warm();
-    if (pathname === "/__warm") return new Response(null, { status: 204 });
-    if (modelLease) {
-      guard = "runtime_protection";
-      deps.protection.admit(status);
+    const warm = () => deps.lifecycle.then((lifecycle) => lifecycle.warm());
+    if (pathname === "/__warm") {
+      await (deps.warm ? deps.warm(warm) : warm());
+      return new Response(null, { status: 204 });
     }
-    guard = "request_active";
-    request.signal.throwIfAborted();
     guard = "runtime_port";
     if (!port) throw new Error("Pool container port unavailable");
-    guard = "upstream_dispatch";
-    dispatched = true;
-    const upstream = await deps.fetch(containerRequest(request, "http://pool"), port);
+    let boot: string | undefined;
+    const beforeDispatch = () => {
+      guard = "upstream_dispatch";
+      dispatched = true;
+    };
+    const legacy = async (forwarded: Request, prepared: () => void = () => {}) => {
+      guard = "runtime_readiness";
+      const status = await warm();
+      boot = status.boot_id;
+      if (modelLease) {
+        guard = "runtime_protection";
+        deps.protection.admit(status);
+      }
+      guard = "request_active";
+      forwarded.signal.throwIfAborted();
+      prepared();
+      beforeDispatch();
+      return deps.fetch(forwarded, port);
+    };
+    const outbound = containerRequest(request, "http://pool");
+    const upstream = deps.route
+      ? await deps.route(outbound, port, identity?.pool, legacy, beforeDispatch)
+      : await legacy(outbound);
     guard = "upstream_response";
     const response = await rewriteCapResponse(upstream, pathname);
     if (
@@ -96,7 +121,8 @@ export async function forwardPoolRequest(
       return modelLease === undefined ? forwarded : nativeResponse(forwarded, modelLease);
     }
     const headers = new Headers(response.headers);
-    headers.set("X-Signalbox-Pool-Boot", status.boot_id);
+    const observedBoot = upstream.headers.get("X-Signalbox-Pool-Boot") ?? boot;
+    if (observedBoot) headers.set("X-Signalbox-Pool-Boot", observedBoot);
     const forwarded = new Response(response.body, {
       status: response.status,
       statusText: response.statusText,

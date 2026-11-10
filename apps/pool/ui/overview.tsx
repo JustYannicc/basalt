@@ -62,7 +62,7 @@ export function ManagerOverview({
   const current = { ...data, capacity: currentCapacity(data.capacity, view) };
   const labs =
     providers && current.coherent === true && current.capacity?.ok
-      ? labSummaries(current.capacity.value, days)
+      ? labSummaries(current.capacity.value, days, view ? overviewAccounts(view) : [])
       : [];
   const mismatched = data.coherent === false && data.capacity !== undefined;
   // Partial usage is coverage of the same snapshot, so it gets its own note and keeps capacity.
@@ -95,6 +95,7 @@ export function ManagerOverview({
         result={current.capacity?.ok && !providers ? undefined : current.capacity}
         empty={view !== undefined && overviewAccounts(view).length === 0}
         providers={providers ?? []}
+        accounts={view ? overviewAccounts(view) : []}
         days={days}
         coherent={data.coherent === true}
         onRetry={onRetry}

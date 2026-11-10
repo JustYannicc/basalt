@@ -33,17 +33,25 @@ func decodeSigningKey(value string) ([]byte, error) {
 }
 
 func (keys signingKeys) verify(token, prefix string) ([]byte, error) {
+	payload, err := keys.verifyReason(token, prefix)
+	if err != nil {
+		return nil, errInvalidEnvelope
+	}
+	return payload, nil
+}
+
+func (keys signingKeys) verifyReason(token, prefix string) ([]byte, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 || parts[0] != prefix {
-		return nil, errInvalidEnvelope
+		return nil, &projectionFailure{reason: "envelope"}
 	}
 	payload, errPayload := decodeBase64URL(parts[1])
 	if errPayload != nil {
-		return nil, errInvalidEnvelope
+		return nil, &projectionFailure{reason: "envelope"}
 	}
 	signature, errSignature := decodeBase64URL(parts[2])
 	if errSignature != nil || len(signature) != sha256.Size {
-		return nil, errInvalidEnvelope
+		return nil, &projectionFailure{reason: "signature"}
 	}
 	signed := []byte(prefix + "." + parts[1])
 	for _, key := range [][]byte{keys.current, keys.previous} {
@@ -56,7 +64,7 @@ func (keys signingKeys) verify(token, prefix string) ([]byte, error) {
 			return payload, nil
 		}
 	}
-	return nil, errInvalidEnvelope
+	return nil, &projectionFailure{reason: "signature"}
 }
 
 func encodeBase64URL(value []byte) string {

@@ -12,19 +12,17 @@ import type { Feed } from "./feed.ts";
 
 const official: Feed = { version: 1, apps: [] };
 
-test("the feed offers the personal Atlassian app with its one-sentence description", async () => {
+test("the feed retires the umbrella while preserving its source for installed copies", async () => {
   const response = await handleCatalog(
-    new Request("https://app.signalbox.run/catalog/index.json"),
+    new Request("https://catalog.example.test/catalog/index.json"),
     async () => Response.json(official),
   );
   assert.equal(response.status, 200);
   const body = (await response.json()) as Feed;
-  const entry = body.apps.find((app) => app.id === "atlassian")!;
-  assert.equal(entry.package, "atlassian");
-  assert.equal(entry.source, "apps/atlassian.json");
-  assert.deepEqual(entry.auth, [{ method: "oauth", kind: "oauth2" }]);
-  assert.equal(entry.connectionNotices, undefined);
-  assert.doesNotMatch(entry.description, /executor/i);
+  assert.equal(
+    body.apps.some((app) => app.id === "atlassian"),
+    false,
+  );
 });
 
 test("the app source is served locally without contacting the official publisher", async () => {

@@ -3,7 +3,7 @@
   "runs": {},
   "config": [
     {
-      "job": "host-managed-accounts-cloud",
+      "job": "host-managed-accounts-runtime",
       "config": "account-definition.config.ts",
       "titles": [
         "host-added Google metadata preserves retained and current account-check definitions"

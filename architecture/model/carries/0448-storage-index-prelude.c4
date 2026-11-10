@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "SDK storage 4.0.29 appends only three queue indexes above the complete 4.0.28 layout. Fresh setup and upgrade install identical indexes, hosted table migration defers the index-only step, and the prelude remains the accepted rollback binary after cutover. Storage readers accept the recorded 4.0.29 marker while runtime ORM selection stays on layout 4.0.28. PostgreSQL index creation holds queue writes until its transaction commits; reads and unrelated account writes remain usable, and refused queue writes recover after commit. Build checks require the exact last table layout after validating any trailing index-only steps; an index marker cannot replace that runtime layout. Released migrations and protocols remain unchanged."
+    }
+  }
+}

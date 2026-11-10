@@ -1,0 +1,33 @@
+{
+  "scenarios": {
+    "appServiceSection": {
+      "fixtures": "actors",
+      "title": "an app that declares one service twice shows one section with one connect menu of its methods, lists each account once, keeps each link on its own requirement and prefills the new account's name",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted fixture; the local host renders the same section, covered by the root Clerk, GitLab and WorkOS local runners."
+        }
+      }
+    }
+  },
+  "runs": {
+    "appServiceSection": [
+      "host-managed-accounts-cloud:account-policy-and-import",
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ]
+  },
+  "inherited": [],
+  "inputs": [
+    ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/service-groups.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/name-account.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx"
+  ]
+}

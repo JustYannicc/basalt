@@ -1,0 +1,48 @@
+--- a/README.md
++++ b/README.md
+@@ -10,7 +10,10 @@
+ ## Auth
+ 
+ - REST API, client ID and secret: copy them from Team Settings > Keys in the [Plaid Dashboard](https://dashboard.plaid.com/developers/keys). Enter the environment (`production` or `sandbox`) with them; it is fixed per connected account, so connect once per environment. Credentials are sent as `PLAID-CLIENT-ID` and `PLAID-SECRET` headers only to the matching Plaid host. The health check calls the read-only `/institutions/get`.
+-- Dashboard MCP, OAuth: the server publishes OAuth metadata and supports dynamic client registration with PKCE (scope `mcp:dashboard`), so no OAuth app has to be created. The authorization page is on dashboard.plaid.com. Plaid also documents a `client_credentials` grant with Production keys, which yields 15-minute tokens; that flow is not offered here.
++- Dashboard MCP, Production keys: enter the same client ID and **Production** secret from Team Settings > Keys. Plaid requires Production approval for at least one product. The host uses Plaid's documented `client_credentials` grant at `https://production.plaid.com/oauth/token`, requesting only `mcp:dashboard`. It retains the grant and renews the 15-minute access token; no browser sign-in, OAuth app registration or manually pasted access token is needed. See [Plaid's Dashboard MCP guide](https://plaid.com/docs/resources/mcp/) and [OAuth API reference](https://plaid.com/docs/api/oauth/).
++- Dashboard MCP, browser OAuth: the existing discovered OAuth method remains available for clients using Plaid's authorization page. Existing accounts and their original sign-in method are preserved.
++
++REST and MCP remain separate account requirements here. This change does not automatically reuse a saved REST key pair. In particular, a Sandbox REST connection is never automatically exchanged against Production. MCP access tokens go only to `api.dashboard.plaid.com`; the client ID and secret are handled by the host's native OAuth flow, not exposed to app tools.
+ 
+ ## Known gaps
+ 
+--- a/index.ts
++++ b/index.ts
+@@ -67,11 +67,19 @@
+   },
+ });
+ 
+-// The Dashboard MCP server publishes OAuth metadata with dynamic client registration (PKCE, public client).
++// Production keys can mint an MCP grant without browser sign-in. Keep browser OAuth available.
+ const plaidMcp = defineProvider({
+   name: "Plaid Dashboard MCP",
+   hosts: ["api.dashboard.plaid.com"],
+   auth: {
++    clientCredentials: oauth2({
++      grant: "client_credentials",
++      tokenUrl: "https://production.plaid.com/oauth/token",
++      tokenEndpointAuthMethod: "client_secret_post",
++      tokenRequestFormat: "json",
++      scopes: ["mcp:dashboard"],
++      resource: null,
++    }),
+     oauth: oauth2({ discover: url, scopes: ["mcp:dashboard"] }),
+   },
+   health: (check) =>
+--- a/package.json
++++ b/package.json
+@@ -7,7 +7,7 @@
+     "title": "Plaid"
+   },
+   "dependencies": {
+-    "apps": "0.0.1-beta.100",
++    "apps": "0.0.1-beta.104-basalt.14",
+     "@modelcontextprotocol/sdk": "1.32.1"
+   }
+ }

@@ -9,7 +9,7 @@ import { handleCatalog } from "./worker.ts";
 import { onServedFramework } from "./framework.ts";
 import { planetscaleSource } from "./planetscale.ts";
 
-/** The 33 scopes the hosted Signalbox PlanetScale app is configured with. */
+/** Independent minimum-request fixture for checking the operation-scope mapping. */
 const hosted = [
   "read_user",
   "read_organization",
@@ -56,7 +56,6 @@ const scopeTable = async () => {
     const path = join(directory, "scopes.ts");
     writeFileSync(path, file("scopes.ts")!);
     return (await import(pathToFileURL(path).href)) as {
-      hostedScopes: readonly string[];
       scopeAliases: Readonly<Record<string, string>>;
       serviceTokenOnly: ReadonlySet<string>;
       operationNames: readonly string[];
@@ -210,7 +209,6 @@ test("PlanetScale preserves the legacy provider and scopes the new provider inde
 
 test("PlanetScale scope table covers every operation exactly once", async () => {
   const table = await scopeTable();
-  assert.deepEqual([...table.hostedScopes], hosted);
   const oauth = Object.keys(table.operationScopes);
   assert.equal(oauth.length, 257, "Operations PlanetScale accepts the hosted scopes for");
   assert.equal(table.serviceTokenOnly.size, 34, "Operations only a service token can call");

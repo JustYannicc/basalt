@@ -104,20 +104,26 @@ function publicScalar(value: unknown, keys: string[]): Scalar | undefined {
 }
 
 /** Public receipts retain only selected scalar values, never arbitrary serialized props. */
-export function changedProps(olds: unknown, news: unknown): PropChange[] {
+export function changedProps(
+  olds: unknown,
+  news: unknown,
+  leafHashes?: (old: unknown, next: unknown) => { old: string; new: string },
+): PropChange[] {
   const changes: PropChange[] = [];
+  const changed = (path: string, old: unknown, next: unknown) =>
+    changes.push(leafHashes ? { path, ...leafHashes(old, next) } : { path, changed: true });
   const walk = (old: unknown, next: unknown, keys: string[], rawKeys: string[], depth: number) => {
     if (changes.length >= 256 || Object.is(old, next)) return;
     const path = keys.join(".") || "$";
     if (depth >= 12) {
-      changes.push({ path, changed: true });
+      changed(path, old, next);
       return;
     }
     if ((record(old) || old == null) && (record(next) || next == null)) {
       const before = record(old) ? old : {};
       const after = record(next) ? next : {};
       const fields = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
-      if (!fields.length && !deepEqual(old, next)) changes.push({ path, changed: true });
+      if (!fields.length && !deepEqual(old, next)) changed(path, old, next);
       for (const key of fields) {
         const safeKey = pathKey(key, rawKeys);
         walk(before[key], after[key], [...keys, safeKey], [...rawKeys, key], depth + 1);
@@ -125,12 +131,12 @@ export function changedProps(olds: unknown, news: unknown): PropChange[] {
       return;
     }
     if (!isResolved(old) || !isResolved(next)) {
-      changes.push({ path, changed: true });
+      changed(path, old, next);
       return;
     }
     if (deepEqual(old, next)) return;
     if (isRedacted(old) || isRedacted(next)) {
-      changes.push({ path, changed: true });
+      changed(path, old, next);
       return;
     }
     if (Array.isArray(old) && Array.isArray(next)) {
@@ -142,6 +148,10 @@ export function changedProps(olds: unknown, news: unknown): PropChange[] {
           [...rawKeys, String(index)],
           depth + 1,
         );
+      return;
+    }
+    if (leafHashes) {
+      changed(path, old, next);
       return;
     }
     const before = publicScalar(old, rawKeys);

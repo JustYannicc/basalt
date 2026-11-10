@@ -1,5 +1,9 @@
 const load = (path: string) => import(new URL(`../../.upstream/${path}`, import.meta.url).href);
 
+export const { AccountListReads } = (await load(
+  "apps/hosted/server/src/implementation/account-list-reads.ts",
+)) as typeof import("../../.upstream/apps/hosted/server/src/implementation/account-list-reads.ts");
+
 export const sdk = (await load(
   "packages/sdk/src/core.ts",
 )) as typeof import("../../.upstream/packages/sdk/src/core.ts");

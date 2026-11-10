@@ -4,6 +4,8 @@ export const policyHealthLeaseMs = 1_500;
 export const policyHealthRefreshMs = 500;
 export const policyHealthProbeMs = 250;
 export const policyHealthHeader = "X-Signalbox-Policy-Lease-Ms";
+export const launchGenerationHeader = "X-Signalbox-Launch-Generation";
+export const launchTokenHashHeader = "X-Signalbox-Launch-Token-Sha256";
 
 /** Start the remaining lease at request dispatch, so transport delay cannot extend it. */
 export async function readRuntimeHealth(
@@ -14,20 +16,39 @@ export async function readRuntimeHealth(
 ): Promise<PoolStatus> {
   const requestedAt = now();
   const response = await readiness.fetch("http://pool/ready", {
-    signal, headers: { Authorization: `Bearer ${managementKey}` },
+    signal,
+    headers: { Authorization: `Bearer ${managementKey}` },
   });
   if (!response.ok) {
     await response.body?.cancel();
     throw new PoolRuntimeUnhealthy();
   }
   const status: unknown = await response.json();
-  if (typeof status !== "object" || status === null || !("boot_id" in status) || !("started_at" in status)
-    || typeof status.boot_id !== "string" || typeof status.started_at !== "string")
+  if (
+    typeof status !== "object" ||
+    status === null ||
+    !("boot_id" in status) ||
+    !("started_at" in status) ||
+    typeof status.boot_id !== "string" ||
+    typeof status.started_at !== "string"
+  )
     throw new PoolRuntimeUnhealthy();
   const remaining = response.headers.get(policyHealthHeader);
   const milliseconds = remaining !== null && /^[1-9]\d*$/.test(remaining) ? Number(remaining) : 0;
-  return { boot_id: status.boot_id, started_at: status.started_at,
+  const generation = response.headers.get(launchGenerationHeader);
+  const tokenHash = response.headers.get(launchTokenHashHeader);
+  return {
+    boot_id: status.boot_id,
+    started_at: status.started_at,
+    ...(generation &&
+    /^[1-9]\d*$/.test(generation) &&
+    Number.isSafeInteger(Number(generation)) &&
+    tokenHash &&
+    /^[a-f0-9]{64}$/.test(tokenHash)
+      ? { launch: { generation: Number(generation), tokenHash } }
+      : {}),
     ...(milliseconds > 0 && milliseconds <= policyHealthLeaseMs
-      ? { policyLeaseUntil: requestedAt + milliseconds } : {}),
+      ? { policyLeaseUntil: requestedAt + milliseconds }
+      : {}),
   };
 }
