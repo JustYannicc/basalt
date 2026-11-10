@@ -1,7 +1,46 @@
 {
-  "scenarios": {},
-  "runs": {},
-  "inherited": ["legacyTargetlessConnections", "legacyTargetlessHostedConnections"],
+  "scenarios": {
+    "legacyTargetlessConnections": {
+      "legacyStorage": true,
+      "title": "upgrading deletes connections stored without an app target and their sign-ins, and keeps targeted ones, which complete as user links when stored before scopes",
+      "targets": {
+        "local": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Self-host runs the same SDK step, with its product's access rows, in the hosted scenario."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Legacy rows need a runner-owned database; Cloud cases share one Worker and database."
+        }
+      }
+    },
+    "legacyTargetlessHostedConnections": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "upgrading a hosted database deletes targetless connections with their access rows and then requires a target",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Legacy rows need a runner-owned database; Cloud cases share one Worker and database."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no organization access rows; the local scenario covers its storage."
+        }
+      }
+    }
+  },
+  "runs": {
+    "legacyTargetlessConnections": ["declared:local"],
+    "legacyTargetlessHostedConnections": ["declared:self-host"]
+  },
+  "inherited": [],
   "inputs": [
     ".upstream/apps/hosted/cloud/alchemy.run.ts",
     ".upstream/apps/hosted/cloud/scripts/build-site.ts",
