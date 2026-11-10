@@ -1221,6 +1221,48 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
+  production-ops-atlassian-adoption:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'production-ops-atlassian-adoption')
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build the isolated signed migration test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the scenarios' browser engine
+        uses: ./.github/actions/setup-browser
+      - name: Verify Atlassian family adoption through signed operations
+        timeout-minutes: 5
+        run: BASALT_SCOPE_PROOF_PATTERN="$(node scripts/ci/e2e-pattern.ts production-ops:atlassian-adoption)" node scripts/production-ops/prove-scope.ts
+      - name: Verify saved Atlassian source preservation through signed operations
+        timeout-minutes: 5
+        run: BASALT_SCOPE_PROOF_PATTERN="$(node scripts/ci/e2e-pattern.ts production-ops:atlassian-saved-source)" node scripts/production-ops/prove-scope.ts
+      - name: Verify deployed and historical Atlassian source through signed operations
+        timeout-minutes: 5
+        run: BASALT_SCOPE_PROOF_PATTERN="$(node scripts/ci/e2e-pattern.ts production-ops:atlassian-deployed-source)" node scripts/production-ops/prove-scope.ts
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: production-ops-atlassian-adoption-e2e
+          include-hidden-files: true
+          path: |
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
+          if-no-files-found: warn
   production-ops-identity:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'production-ops-identity')
@@ -2421,6 +2463,7 @@ jobs:
         sso-service-binding,
         production-ops,
         production-ops-migrations,
+        production-ops-atlassian-adoption,
         production-ops-identity,
         compiler-diagnostics,
         human-in-the-loop,

@@ -1,0 +1,7 @@
+model {
+  extend basalt.catalog {
+    metadata {
+      constraint "Reviewed outside-service families default identity only for matching authorization servers, token endpoints and API audiences. Their tools stay separate catalog services; a redundant umbrella leaves discovery while installed source remains readable. Different audiences keep separate sign-ins, and legacy accounts reconnect to prove their subject without email inference. Installed-app adoption requires exact approved selections and verified consumer links. Retirement proves editable and every retained deployed source unchanged, refuses saved work, fences concurrent source writes, preserves every account, grant and deployment, and verifies repeated application without repeating changes. Adoption proofs settle the host data-step report before seeding retained state; immutable fixture transports are checked before launch. Each signed adoption proof runs in its own CI step, and maintained family sources declare the same framework version the catalog serves."
+    }
+  }
+}

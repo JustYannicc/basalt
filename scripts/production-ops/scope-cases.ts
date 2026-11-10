@@ -16,9 +16,11 @@ export function selectScopeCases(
   const cases = Object.entries(plan)
     .filter(
       ([, scenario]) =>
-        ["production-ops-migrations.spec.ts", "production-ops-database.spec.ts"].includes(
-          scenario.file,
-        ) && selected.test(scenario.title),
+        [
+          "production-ops-migrations.spec.ts",
+          "production-ops-database.spec.ts",
+          "atlassian-family-adoption.spec.ts",
+        ].includes(scenario.file) && selected.test(scenario.title),
     )
     .map(([id, scenario]) => ({
       title: scenario.title,

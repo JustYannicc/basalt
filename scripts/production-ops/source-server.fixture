@@ -1,0 +1,126 @@
+/** Native Git behind the source adapter boundary of a disposable local Cloud proof. */
+import { createServer } from "node:http";
+import { parseArgs } from "node:util";
+import { Effect, Schema } from "effect";
+import { nativeRepositories } from "@executor-js/app-source/node";
+import {
+  AppCodeId,
+  GitObjectId,
+  SourceCommit,
+  SourceFiles,
+} from "@executor-js/sdk/core";
+
+const { values } = parseArgs({ options: { directory: { type: "string" } } });
+if (values.directory === undefined) throw new Error("The proof must own its Git directory");
+const git = nativeRepositories(values.directory);
+const Id = { code: AppCodeId };
+const Operation = Schema.Union([
+  Schema.Struct({ op: Schema.Literal("create"), ...Id }),
+  Schema.Struct({ op: Schema.Literal("history"), ...Id }),
+  Schema.Struct({ op: Schema.Literal("head"), ...Id, branch: Schema.String }),
+  Schema.Struct({ op: Schema.Literal("read"), ...Id, ref: Schema.String }),
+  Schema.Struct({ op: Schema.Literal("blob"), ...Id, object: GitObjectId }),
+  Schema.Struct({ op: Schema.Literal("file"), ...Id, commit: SourceCommit, path: Schema.String }),
+  Schema.Struct({
+    op: Schema.Literal("commit"),
+    ...Id,
+    branch: Schema.String,
+    expected: Schema.NullOr(SourceCommit),
+    files: SourceFiles,
+    message: Schema.String,
+    basis: Schema.optionalKey(Schema.String),
+  }),
+  Schema.Struct({
+    op: Schema.Literal("request"),
+    ...Id,
+    url: Schema.String,
+    method: Schema.String,
+    headers: Schema.Record(Schema.String, Schema.String),
+    body: Schema.NullOr(Schema.String),
+  }),
+]);
+const execute = (input: typeof Operation.Type): Effect.Effect<unknown, unknown> => {
+  switch (input.op) {
+    case "create":
+      return git.create(input.code).pipe(Effect.as(null));
+    case "history":
+      return git.history(input.code);
+    case "head":
+      return git.head(input.code, input.branch);
+    case "read":
+      return git.read(input.code, input.ref);
+    case "commit":
+      return git.commit({ ...input, id: input.code });
+    case "blob":
+      return git
+        .blob(input.code, input.object)
+        .pipe(Effect.map((bytes) => Buffer.from(bytes).toString("base64")));
+    case "file":
+      return git
+        .file(input.code, input.commit, input.path)
+        .pipe(Effect.map((bytes) => Buffer.from(bytes).toString("base64")));
+    case "request":
+      return Effect.gen(function* () {
+        const response = yield* git.request(
+          input.code,
+          new Request(input.url, {
+            method: input.method,
+            headers: input.headers,
+            ...(input.body === null ? {} : { body: Buffer.from(input.body, "base64") }),
+          }),
+        );
+        const bytes = yield* Effect.promise(() => response.arrayBuffer());
+        return {
+          status: response.status,
+          headers: Object.fromEntries(response.headers),
+          body: Buffer.from(bytes).toString("base64"),
+        };
+      });
+  }
+};
+const server = createServer(async (request, response) => {
+  if (request.method !== "POST" || request.url !== "/source") {
+    response.writeHead(404).end();
+    return;
+  }
+  try {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const part of request) {
+      const bytes = Buffer.isBuffer(part) ? part : Buffer.from(part);
+      size += bytes.length;
+      if (size > 4 * 1024 * 1024) throw new Error("Source proof request exceeds its bound");
+      chunks.push(bytes);
+    }
+    const operation = Schema.decodeUnknownSync(Schema.fromJsonString(Operation))(
+      Buffer.concat(chunks).toString("utf8"),
+    );
+    const result = await Effect.runPromise(
+      execute(operation).pipe(
+        Effect.match({
+          onSuccess: (value) => ({ ok: true, value }),
+          onFailure: (error) => ({
+            ok: false,
+            reason:
+              typeof error === "object" && error !== null && "reason" in error
+                ? error.reason
+                : "git",
+          }),
+        }),
+      ),
+    );
+    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(result));
+  } catch {
+    response
+      .writeHead(400, { "content-type": "application/json" })
+      .end(JSON.stringify({ ok: false, reason: "invalid-source" }));
+  }
+});
+server.listen(0, "127.0.0.1", () => {
+  const address = server.address();
+  if (address === null || typeof address === "string")
+    throw new Error("Git proof listener missing");
+  process.stdout.write(JSON.stringify({ origin: `http://127.0.0.1:${address.port}` }) + "\n");
+});
+for (const signal of ["SIGINT", "SIGTERM"] as const)
+  process.once(signal, () => server.close(() => process.exit(0)));

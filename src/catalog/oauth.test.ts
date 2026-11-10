@@ -17,7 +17,8 @@ const sha = "a".repeat(64);
 test("reviewed carried sources match the packages the catalog serves", async () => {
   const reviews = oauthReviews(reviewData);
   for (const id of [
-    "atlassian",
+    "jira",
+    "confluence",
     "clerk",
     "aws",
     "elevenlabs",
@@ -278,15 +279,15 @@ test("the public catalog preserves service aliases and exact-method OAuth guidan
   assert.equal(response.status, 200);
   const result = ((await response.json()) as Feed).apps.find((app) => app.id === "confluence")!;
   assert.deepEqual(result.service, {
-    id: "atlassian",
+    id: "@executor.sh/confluence",
     mcp: [],
-    packages: ["@executor.sh/confluence", "atlassian"],
+    packages: ["@executor.sh/confluence"],
   });
   assert.deepEqual(result.oauthDeferrals, [
     {
       method: "OAuth2",
       message:
-        "Signalbox has not verified one-click sign-in for Confluence yet. You can connect with your own OAuth app.",
+        "Shared sign-in for Atlassian is not configured on this host. You can connect with your own OAuth app.",
     },
   ]);
   assert.deepEqual(result.auth, confluence.auth);

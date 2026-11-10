@@ -279,18 +279,6 @@
       }
     },
     {
-      "entry": "atlassian",
-      "package": "atlassian",
-      "sourceSha256": "630ec53c5195db281c3ea56e75aed26a610f06d0e6a670889d3c62db22b2add2",
-      "methods": {
-        "oauth": {
-          "kind": "hosted",
-          "client": "atlassian",
-          "message": "Shared sign-in for Atlassian is not configured on this host. You can connect with your own OAuth app."
-        }
-      }
-    },
-    {
       "entry": "attio",
       "package": "@executor.sh/attio",
       "methods": {
@@ -1067,10 +1055,12 @@
       "package": "@executor.sh/confluence",
       "methods": {
         "OAuth2": {
-          "kind": "deferred",
-          "message": "Signalbox has not verified one-click sign-in for Confluence yet. You can connect with your own OAuth app."
+          "kind": "hosted",
+          "client": "atlassian",
+          "message": "Shared sign-in for Atlassian is not configured on this host. You can connect with your own OAuth app."
         }
-      }
+      },
+      "sourceSha256": "d62405069efe2866f852d3cba4a33fd9b15a483455713bfa7517267aa6552cfd"
     },
     {
       "entry": "connecteam",
@@ -2574,10 +2564,12 @@
       "package": "@executor.sh/jira",
       "methods": {
         "OAuth2": {
-          "kind": "deferred",
-          "message": "Signalbox has not verified one-click sign-in for Jira yet. You can connect with your own OAuth app."
+          "kind": "hosted",
+          "client": "atlassian",
+          "message": "Shared sign-in for Atlassian is not configured on this host. You can connect with your own OAuth app."
         }
-      }
+      },
+      "sourceSha256": "1c4b60bbfbd1d715a5e56768b60ce4e9832c35f8a65ef3dc7efb8f0cd4d3e4fd"
     },
     {
       "entry": "jobadder",
