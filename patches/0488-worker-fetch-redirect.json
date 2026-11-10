@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-worker-fetch-redirect",
+  "file": "0488-worker-fetch-redirect.patch",
+  "content_sha256": "1407d733e7256c47ca93a8b39fa2a8c2f319b464c54ddd9aba2852d9d578d254",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

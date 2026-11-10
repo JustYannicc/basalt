@@ -26,8 +26,13 @@ async function readFile(response: Response, provider: string): Promise<Uint8Arra
     }
     const bytes = new Uint8Array(size);
     let offset = 0;
-    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-    const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes));
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    const value: unknown = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes),
+    );
     if (!object(value) || value.type !== provider) return unavailable();
     return bytes;
   } finally {
@@ -36,16 +41,31 @@ async function readFile(response: Response, provider: string): Promise<Uint8Arra
 }
 
 /** Called only after control token and owner authorization. Never returns Home error bodies. */
-export async function exportLoginFile(url: URL, client: HomeClient, home: PoolHome): Promise<Response> {
+export async function exportLoginFile(
+  url: URL,
+  client: HomeClient,
+  home: PoolHome,
+): Promise<Response> {
   let id: string;
-  try { id = decodeURIComponent(url.pathname.split("/").at(-2)!); }
-  catch { return fail(400, "invalid_query", "Provide a valid account id."); }
+  try {
+    id = decodeURIComponent(url.pathname.split("/").at(-2)!);
+  } catch {
+    return fail(400, "invalid_query", "Provide a valid account id.");
+  }
   const provider = url.searchParams.get("provider");
-  if (!id || id.length > 256 || /[\p{Cc}\p{White_Space}/\\]/u.test(id)
-    || (provider !== "claude" && provider !== "codex")
-    || url.searchParams.getAll("provider").length !== 1
-    || [...url.searchParams.keys()].some((key) => key !== "provider")) {
-    return fail(400, "invalid_query", "Provide an account id and exactly one provider: claude or codex.");
+  if (
+    !id ||
+    id.length > 256 ||
+    /[\p{Cc}\p{White_Space}/\\]/u.test(id) ||
+    (provider !== "claude" && provider !== "codex") ||
+    url.searchParams.getAll("provider").length !== 1 ||
+    [...url.searchParams.keys()].some((key) => key !== "provider")
+  ) {
+    return fail(
+      400,
+      "invalid_query",
+      "Provide an account id and exactly one provider: claude or codex.",
+    );
   }
   await requireMembership(home, id);
   const files = (await home.credentials()).filter((row) => row.id === id);
@@ -55,7 +75,9 @@ export async function exportLoginFile(url: URL, client: HomeClient, home: PoolHo
   if (file.provider !== provider || file.type !== provider) {
     return fail(404, "not_found", "This account does not match the requested provider.");
   }
-  const response = await client.response(`/credentials/download?${new URLSearchParams({ id })}`, { redirect: "error" });
+  const response = await client.response(`/credentials/download?${new URLSearchParams({ id })}`, {
+    redirect: "manual",
+  });
   if (!response.ok) {
     await response.body?.cancel().catch(() => {});
     if (response.status === 404) return fail(404, "not_found", "This account no longer exists.");
@@ -64,5 +86,7 @@ export async function exportLoginFile(url: URL, client: HomeClient, home: PoolHo
   const bytes = await readFile(response, provider);
   // Do not release a secret if membership disappeared while Home was downloading it.
   await requireMembership(home, id);
-  return new Response(bytes, { headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" } });
+  return new Response(bytes, {
+    headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
+  });
 }
