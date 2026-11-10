@@ -1,0 +1,645 @@
+diff --git a/internal/cluster/quota_snapshots.go b/internal/cluster/quota_snapshots.go
+--- a/internal/cluster/quota_snapshots.go
++++ b/internal/cluster/quota_snapshots.go
+@@ -190,32 +190,33 @@
+ }
+ 
+ type QuotaCredentialSnapshot struct {
+-	CredentialID       string                `json:"credential_id"`
+-	AuthIndex          *string               `json:"auth_index"`
+-	Provider           string                `json:"provider"`
+-	CredentialType     string                `json:"credential_type"`
+-	Label              string                `json:"label"`
+-	Account            *string               `json:"account"`
+-	Project            *string               `json:"project"`
+-	CredentialStatus   string                `json:"credential_status"`
+-	QuotaStatus        string                `json:"quota_status"`
+-	Freshness          string                `json:"freshness"`
+-	CollectionStatus   string                `json:"collection_status"`
+-	Source             *string               `json:"source"`
+-	ObservedAt         *time.Time            `json:"observed_at"`
+-	ExpiresAt          *time.Time            `json:"expires_at"`
+-	EarliestResetAt    *time.Time            `json:"earliest_reset_at"`
+-	LastAttemptAt      *time.Time            `json:"last_attempt_at"`
+-	LastSuccessAt      *time.Time            `json:"last_success_at"`
+-	NextProbeAt        *time.Time            `json:"next_probe_at"`
+-	ConsecutiveFailure int                   `json:"consecutive_failures"`
+-	PrimaryWindows     []QuotaWindow         `json:"primary_windows"`
+-	WindowCount        int                   `json:"window_count"`
+-	Error              *QuotaCollectionError `json:"error"`
+-	Runtime            *QuotaRuntime         `json:"runtime"`
+-	Plan               *QuotaPlan            `json:"plan,omitempty"`
+-	ResetCredits       *QuotaResetCredits    `json:"-"`
+-	Windows            []QuotaWindow         `json:"-"`
++	CollectionDiagnostic *QuotaCollectionDiagnostic `json:"-"`
++	CredentialID         string                     `json:"credential_id"`
++	AuthIndex            *string                    `json:"auth_index"`
++	Provider             string                     `json:"provider"`
++	CredentialType       string                     `json:"credential_type"`
++	Label                string                     `json:"label"`
++	Account              *string                    `json:"account"`
++	Project              *string                    `json:"project"`
++	CredentialStatus     string                     `json:"credential_status"`
++	QuotaStatus          string                     `json:"quota_status"`
++	Freshness            string                     `json:"freshness"`
++	CollectionStatus     string                     `json:"collection_status"`
++	Source               *string                    `json:"source"`
++	ObservedAt           *time.Time                 `json:"observed_at"`
++	ExpiresAt            *time.Time                 `json:"expires_at"`
++	EarliestResetAt      *time.Time                 `json:"earliest_reset_at"`
++	LastAttemptAt        *time.Time                 `json:"last_attempt_at"`
++	LastSuccessAt        *time.Time                 `json:"last_success_at"`
++	NextProbeAt          *time.Time                 `json:"next_probe_at"`
++	ConsecutiveFailure   int                        `json:"consecutive_failures"`
++	PrimaryWindows       []QuotaWindow              `json:"primary_windows"`
++	WindowCount          int                        `json:"window_count"`
++	Error                *QuotaCollectionError      `json:"error"`
++	Runtime              *QuotaRuntime              `json:"runtime"`
++	Plan                 *QuotaPlan                 `json:"plan,omitempty"`
++	ResetCredits         *QuotaResetCredits         `json:"-"`
++	Windows              []QuotaWindow              `json:"-"`
+ }
+ 
+ type QuotaSnapshotWrite struct {
+@@ -915,6 +916,7 @@
+ 		windows = append(windows, quotaWindowDTO(windowRecord))
+ 	}
+ 	item := quotaCredentialFromAuth(record, auth, snapshot, windows, now)
++	item.CollectionDiagnostic = r.collectionDiagnostic(credentialID)
+ 	return &item, nil
+ }
+ 
+diff --git a/internal/cluster/management/quota_snapshots.go b/internal/cluster/management/quota_snapshots.go
+--- a/internal/cluster/management/quota_snapshots.go
++++ b/internal/cluster/management/quota_snapshots.go
+@@ -104,6 +104,7 @@
+ 		"reset_credits": quotaResetCreditsDTOFrom(item.ResetCredits),
+ 		"collection": gin.H{
+ 			"source": item.Source, "freshness": item.Freshness, "status": item.CollectionStatus,
++			"diagnostic":  item.CollectionDiagnostic,
+ 			"observed_at": item.ObservedAt, "expires_at": item.ExpiresAt, "last_attempt_at": item.LastAttemptAt,
+ 			"last_success_at": item.LastSuccessAt, "next_probe_at": item.NextProbeAt,
+ 			"consecutive_failures": item.ConsecutiveFailure, "error": item.Error,
+diff --git a/internal/quota/collector.go b/internal/quota/collector.go
+--- a/internal/quota/collector.go
++++ b/internal/quota/collector.go
+@@ -185,11 +185,19 @@
+ }
+ 
+ func (c *Collector) collect(ctx context.Context) {
++	inventoryAt := c.options.Now().UTC()
+ 	auths, errAuths := c.repo.ListAuths(ctx)
+ 	if errAuths != nil {
+ 		log.WithError(errAuths).Warn("quota collector: list credentials failed")
+ 		return
+ 	}
++	live := make(map[string]struct{}, len(auths))
++	for _, auth := range auths {
++		if auth != nil {
++			live[auth.ID] = struct{}{}
++		}
++	}
++	c.repo.PruneQuotaCollectionDiagnostics(live, inventoryAt)
+ 	c.collectCredentials(ctx, auths, false)
+ }
+ 
+@@ -319,9 +327,17 @@
+ 	if !claimed {
+ 		return
+ 	}
++	diagnostic := newFieldDiagnostic(normalizedQuotaProvider(auth.Provider), now)
++	if diagnostic != nil {
++		ctx = context.WithValue(ctx, fieldDiagnosticKey{}, diagnostic)
++	}
+ 	signal := newCollectionSignal(auth.ID, normalizedQuotaProvider(auth.Provider))
+ 	ctx = context.WithValue(ctx, collectionSignalKey{}, signal)
+ 	defer signal.emit()
++	// Retain the handoff before a blocked log writer can delay completion.
++	if diagnostic != nil {
++		defer func() { _ = c.repo.RememberQuotaCollectionDiagnostic(auth.ID, *diagnostic) }()
++	}
+ 	resolveCtx, cancelResolve := context.WithTimeout(ctx, c.options.ProbeTimeout)
+ 	resolved, _, errResolve := c.repo.GetAuth(resolveCtx, auth.ID)
+ 	cancelResolve()
+diff --git a/internal/quota/basalt_collection_signal.go b/internal/quota/basalt_collection_signal.go
+--- a/internal/quota/basalt_collection_signal.go
++++ b/internal/quota/basalt_collection_signal.go
+@@ -106,6 +106,7 @@
+ // Inspect field presence before quota parsing can discard an unusable quantity.
+ // Only schema paths and durations leave this function; the payload is not retained.
+ func recordReturnedWindows(ctx context.Context, source string, body []byte) {
++	recordFieldDiagnostic(ctx, source, body)
+ 	s, _ := ctx.Value(collectionSignalKey{}).(*collectionSignal)
+ 	if s == nil {
+ 		return
+diff --git a/internal/cluster/repository.go b/internal/cluster/repository.go
+--- a/internal/cluster/repository.go
++++ b/internal/cluster/repository.go
+@@ -21,6 +21,8 @@
+ )
+ 
+ type Repository struct {
++	quotaDiagnosticMu  sync.Mutex
++	quotaDiagnostics   map[string]QuotaCollectionDiagnostic
+ 	db                 *gorm.DB
+ 	cpaSnapshotMu      sync.Mutex
+ 	sessionRootCacheMu sync.RWMutex
+diff --git a/docs/management/api.md b/docs/management/api.md
+--- a/docs/management/api.md
++++ b/docs/management/api.md
+@@ -3065,6 +3065,10 @@
+ 
+ Usage activity is attributed to the active DB credential resolved from `auth_index`, so a delegated executor's reported provider does not suppress scheduled collection; provider-specific passive observations still require the reported provider to match the credential provider. When a scheduled scan finds an expired `collecting` lease without a recoverable recent-activity watermark, it clears the lease and returns the collection to `idle` without issuing another upstream request.
+ 
++`collection.diagnostic` is an optional read-only diagnostic for the latest local Claude or Codex collection attempt. It contains `attempted_at` (UTC timestamp), `provider`, `response_received` and `json_valid`. Claude includes `five_hour`; Codex includes `primary_window` and `secondary_window`. Each field object contains only booleans: `present`, `null`, `quantity_null`, `quantity_valid` and `five_hour` (the field represents a five-hour window; for Codex its reported duration is 18000 seconds). Explicit zero is valid without a reset; absent or null quantities remain unknown. No response bodies, quantities, reset values or credentials are included.
++
++The diagnostic is available before stdout logging completes and retains one latest attempt per live credential. It is process-local and omitted until a supported collection attempt, after a Home restart, or for other providers. `attempted_at` identifies the diagnostic attempt independently of the saved quota snapshot; it does not assert that the snapshot write succeeded. This field is detail-only and does not initiate a collection.
++
+ ### POST `/quota/collect`
+ 
+ Starts an asynchronous on-demand quota collection round and returns how many credentials were accepted into the local collector queue. This is the only quota endpoint that is not read-only. On-demand jobs share the same process-wide provider concurrency controls as scheduled collection and are deduplicated per credential while queued or running.
+diff --git a/docs/management/api_CN.md b/docs/management/api_CN.md
+--- a/docs/management/api_CN.md
++++ b/docs/management/api_CN.md
+@@ -3057,6 +3057,10 @@
+ 
+ usage 活动归属于通过 `auth_index` 解析出的当前 DB 凭证，因此委托 executor 上报的 Provider 不会阻止定时采集；Provider 专用的被动观测仍要求上报 Provider 与凭证 Provider 一致。定时扫描发现已过期的 `collecting` lease 且没有可恢复的近期活动水位时，会清除 lease 并把采集状态恢复为 `idle`，不会再次请求上游。
+ 
++`collection.diagnostic` 是可选的只读诊断，记录本进程最近一次 Claude 或 Codex 采集尝试。它包含 `attempted_at`（UTC 时间）、`provider`、`response_received` 和 `json_valid`。Claude 包含 `five_hour`；Codex 包含 `primary_window` 和 `secondary_window`。每个窗口对象仅包含布尔值：`present`、`null`、`quantity_null`、`quantity_valid`、`five_hour`（该字段表示五小时窗口；Codex 报告的时长为 18000 秒）。显式零值无需重置时间也有效；缺失或 null 数量仍表示未知。不包含响应正文、数量、重置值或凭据。
++
++诊断在 stdout 日志写入完成前即可读取，每个现存凭据保留最近一次尝试。它仅保存在本进程内存中，在首次支持的采集前、Home 重启后或其他 Provider 上省略。`attempted_at` 独立标识诊断尝试，不代表额度快照已成功写入。该字段仅在详情响应中提供，不会触发采集。
++
+ ### POST `/quota/collect`
+ 
+ 启动一轮异步按需额度采集，返回进入本地 collector 队列的凭证数量。这是唯一非只读的额度端点。按需任务与定时采集共享进程级 Provider 并发限制；同一凭证在本地排队或执行期间会去重。
+diff --git a/internal/cluster/basalt_collection_diagnostic.go b/internal/cluster/basalt_collection_diagnostic.go
+new file mode 100644
+--- /dev/null
++++ b/internal/cluster/basalt_collection_diagnostic.go
+@@ -0,0 +1,80 @@
++package cluster
++
++import (
++	"fmt"
++	"time"
++)
++
++type QuotaFieldPresence struct {
++	Present       bool `json:"present"`
++	Null          bool `json:"null"`
++	QuantityNull  bool `json:"quantity_null"`
++	QuantityValid bool `json:"quantity_valid"`
++	FiveHour      bool `json:"five_hour"`
++}
++
++// A closed projection of the source shape, independent of quota quantities and stdout.
++type QuotaCollectionDiagnostic struct {
++	AttemptedAt      time.Time           `json:"attempted_at"`
++	Provider         string              `json:"provider"`
++	ResponseReceived bool                `json:"response_received"`
++	JSONValid        bool                `json:"json_valid"`
++	FiveHour         *QuotaFieldPresence `json:"five_hour,omitempty"`
++	PrimaryWindow    *QuotaFieldPresence `json:"primary_window,omitempty"`
++	SecondaryWindow  *QuotaFieldPresence `json:"secondary_window,omitempty"`
++}
++
++// The pool owns durable storage; Home only hands off its latest bounded result.
++func (r *Repository) RememberQuotaCollectionDiagnostic(id string, diagnostic QuotaCollectionDiagnostic) error {
++	if diagnostic.AttemptedAt.IsZero() || (diagnostic.Provider != "claude" && diagnostic.Provider != "codex") {
++		return fmt.Errorf("invalid collection diagnostic")
++	}
++	r.quotaDiagnosticMu.Lock()
++	defer r.quotaDiagnosticMu.Unlock()
++	if r.quotaDiagnostics == nil {
++		r.quotaDiagnostics = make(map[string]QuotaCollectionDiagnostic)
++	}
++	previous, exists := r.quotaDiagnostics[id]
++	if exists && previous.AttemptedAt.After(diagnostic.AttemptedAt) {
++		return nil
++	}
++
++	r.quotaDiagnostics[id] = copyCollectionDiagnostic(diagnostic)
++	return nil
++}
++func (r *Repository) collectionDiagnostic(id string) *QuotaCollectionDiagnostic {
++	r.quotaDiagnosticMu.Lock()
++	defer r.quotaDiagnosticMu.Unlock()
++	value, ok := r.quotaDiagnostics[id]
++	if !ok {
++		return nil
++	}
++	result := copyCollectionDiagnostic(value)
++	return &result
++}
++func copyCollectionDiagnostic(value QuotaCollectionDiagnostic) QuotaCollectionDiagnostic {
++	if value.FiveHour != nil {
++		field := *value.FiveHour
++		value.FiveHour = &field
++	}
++	if value.PrimaryWindow != nil {
++		field := *value.PrimaryWindow
++		value.PrimaryWindow = &field
++	}
++	if value.SecondaryWindow != nil {
++		field := *value.SecondaryWindow
++		value.SecondaryWindow = &field
++	}
++	return value
++}
++
++// Bound handoffs by live credentials, rather than evicting unread active accounts.
++func (r *Repository) PruneQuotaCollectionDiagnostics(live map[string]struct{}, inventoryAt time.Time) {
++	r.quotaDiagnosticMu.Lock()
++	defer r.quotaDiagnosticMu.Unlock()
++	for id := range r.quotaDiagnostics {
++		if _, ok := live[id]; !ok && r.quotaDiagnostics[id].AttemptedAt.Before(inventoryAt) {
++			delete(r.quotaDiagnostics, id)
++		}
++	}
++}
+diff --git a/internal/cluster/basalt_collection_diagnostic_test.go b/internal/cluster/basalt_collection_diagnostic_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/cluster/basalt_collection_diagnostic_test.go
+@@ -0,0 +1,46 @@
++package cluster
++
++import (
++	"fmt"
++	"testing"
++	"time"
++)
++
++func TestQuotaFieldDiagnosticLiveCredentialHandoffs(t *testing.T) {
++	repo := &Repository{}
++	at := time.Date(2026, 11, 10, 13, 0, 0, 0, time.UTC)
++	value := QuotaCollectionDiagnostic{AttemptedAt: at, Provider: "claude", FiveHour: &QuotaFieldPresence{Present: true, QuantityValid: true, FiveHour: true}}
++	if err := repo.RememberQuotaCollectionDiagnostic("first", value); err != nil {
++		t.Fatal(err)
++	}
++	value.FiveHour.QuantityValid = false
++	read := repo.collectionDiagnostic("first")
++	if !read.FiveHour.QuantityValid {
++		t.Fatal("producer mutated published handoff")
++	}
++	read.FiveHour.QuantityValid = false
++	if !repo.collectionDiagnostic("first").FiveHour.QuantityValid {
++		t.Fatal("reader mutated handoff")
++	}
++	for i := 1; i <= 512; i++ {
++		value.AttemptedAt = at.Add(time.Duration(i) * time.Second)
++		if err := repo.RememberQuotaCollectionDiagnostic(fmt.Sprint(i), value); err != nil {
++			t.Fatal(err)
++		}
++	}
++	if len(repo.quotaDiagnostics) != 513 || repo.collectionDiagnostic("first") == nil {
++		t.Fatal("active account handoff was evicted")
++	}
++	repo.PruneQuotaCollectionDiagnostics(map[string]struct{}{"first": {}}, at.Add(time.Hour))
++	if len(repo.quotaDiagnostics) != 1 || repo.collectionDiagnostic("first") == nil {
++		t.Fatal("live credential pruning lost active handoff")
++	}
++	value.AttemptedAt = at.Add(2 * time.Hour)
++	if err := repo.RememberQuotaCollectionDiagnostic("new-during-inventory", value); err != nil {
++		t.Fatal(err)
++	}
++	repo.PruneQuotaCollectionDiagnostics(map[string]struct{}{"first": {}}, at.Add(time.Hour))
++	if repo.collectionDiagnostic("new-during-inventory") == nil {
++		t.Fatal("stale inventory evicted a newer handoff")
++	}
++}
+diff --git a/internal/cluster/management/basalt_field_diagnostic_test.go b/internal/cluster/management/basalt_field_diagnostic_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/cluster/management/basalt_field_diagnostic_test.go
+@@ -0,0 +1,53 @@
++package management
++
++import (
++	"context"
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/gin-gonic/gin"
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++)
++
++func TestQuotaFieldDiagnosticDetailHTTP(t *testing.T) {
++	h, closeRepo := newUsageObservabilityTestHandler(t)
++	defer closeRepo()
++	at := time.Date(2026, 11, 10, 13, 0, 0, 0, time.UTC)
++	auth := &coreauth.Auth{ID: "field-fixture", Index: "field-fixture", Provider: "claude", Status: coreauth.StatusActive, Metadata: map[string]any{"type": "claude", "access_token": "private-token"}, CreatedAt: at, UpdatedAt: at}
++	if _, err := h.repo.UpsertAuth(context.Background(), auth, "test"); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := h.repo.UpsertQuotaSnapshot(t.Context(), cluster.QuotaSnapshotWrite{CredentialID: auth.ID, QuotaStatus: "unknown", CollectionStatus: "failed", Source: "active_probe", ObservedAt: &at}); err != nil {
++		t.Fatal(err)
++	}
++	expected := cluster.QuotaCollectionDiagnostic{AttemptedAt: at, Provider: "claude", ResponseReceived: true, JSONValid: true, FiveHour: &cluster.QuotaFieldPresence{Present: true, QuantityNull: true, FiveHour: true}}
++	if err := h.repo.RememberQuotaCollectionDiagnostic(auth.ID, expected); err != nil {
++		t.Fatal(err)
++	}
++	gin.SetMode(gin.TestMode)
++	engine := gin.New()
++	engine.GET("/quota/credentials/:credential_id", h.GetQuotaCredential)
++	response := httptest.NewRecorder()
++	engine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/quota/credentials/field-fixture", nil))
++	if response.Code != 200 {
++		t.Fatalf("HTTP %d", response.Code)
++	}
++	var body struct {
++		Collection struct {
++			Diagnostic *cluster.QuotaCollectionDiagnostic `json:"diagnostic"`
++		} `json:"collection"`
++	}
++	if json.Unmarshal(response.Body.Bytes(), &body) != nil || body.Collection.Diagnostic == nil || *body.Collection.Diagnostic.FiveHour != *expected.FiveHour {
++		t.Fatal("stored field flags not readable in detail HTTP")
++	}
++	if strings.Contains(response.Body.String(), "private-token") {
++		t.Fatal("credential leaked")
++	}
++	raw, _ := json.Marshal(body.Collection.Diagnostic)
++	t.Log("FIELD_DIAGNOSTIC_HTTP " + string(raw))
++}
+diff --git a/internal/quota/basalt_field_diagnostic.go b/internal/quota/basalt_field_diagnostic.go
+new file mode 100644
+--- /dev/null
++++ b/internal/quota/basalt_field_diagnostic.go
+@@ -0,0 +1,80 @@
++package quota
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"math"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++)
++
++type fieldDiagnosticKey struct{}
++
++func newFieldDiagnostic(provider string, at time.Time) *cluster.QuotaCollectionDiagnostic {
++	d := &cluster.QuotaCollectionDiagnostic{Provider: provider, AttemptedAt: at.UTC()}
++	switch provider {
++	case "claude":
++		d.FiveHour = &cluster.QuotaFieldPresence{}
++	case "codex":
++		d.PrimaryWindow = &cluster.QuotaFieldPresence{}
++		d.SecondaryWindow = &cluster.QuotaFieldPresence{}
++	default:
++		return nil
++	}
++	return d
++}
++func recordFieldDiagnostic(ctx context.Context, source string, body []byte) {
++	d, _ := ctx.Value(fieldDiagnosticKey{}).(*cluster.QuotaCollectionDiagnostic)
++	if d == nil || d.Provider != source {
++		return
++	}
++	d.ResponseReceived = true
++	var root map[string]json.RawMessage
++	d.JSONValid = json.Unmarshal(body, &root) == nil && root != nil
++	if !d.JSONValid {
++		return
++	}
++	if source == "claude" {
++		*d.FiveHour = fieldPresence(root["five_hour"], true)
++		return
++	}
++	var limits map[string]json.RawMessage
++	_ = json.Unmarshal(root["rate_limit"], &limits)
++	*d.PrimaryWindow = fieldPresence(limits["primary_window"], false)
++	*d.SecondaryWindow = fieldPresence(limits["secondary_window"], false)
++}
++func fieldPresence(raw json.RawMessage, claude bool) cluster.QuotaFieldPresence {
++	f := cluster.QuotaFieldPresence{Present: len(raw) > 0, Null: bytes.Equal(bytes.TrimSpace(raw), []byte("null"))}
++	if !f.Present || f.Null {
++		return f
++	}
++	var fields map[string]json.RawMessage
++	if json.Unmarshal(raw, &fields) != nil || fields == nil {
++		return f
++	}
++	key := "used_percent"
++	if claude {
++		key = "utilization"
++	}
++	quantity := fields[key]
++	f.QuantityNull = bytes.Equal(bytes.TrimSpace(quantity), []byte("null"))
++	var amount float64
++	f.QuantityValid = len(quantity) > 0 && !f.QuantityNull && json.Unmarshal(quantity, &amount) == nil && finiteQuantity(amount)
++	if claude {
++		f.FiveHour = true
++	} else {
++		var seconds int64
++		if json.Unmarshal(fields["limit_window_seconds"], &seconds) == nil {
++			f.FiveHour = seconds == 18000
++			f.QuantityValid = f.QuantityValid && seconds > 0
++		} else {
++			f.QuantityValid = false
++		}
++	}
++	return f
++}
++func finiteQuantity(value float64) bool {
++	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0
++}
+diff --git a/internal/quota/basalt_field_diagnostic_test.go b/internal/quota/basalt_field_diagnostic_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/quota/basalt_field_diagnostic_test.go
+@@ -0,0 +1,140 @@
++package quota
++
++import (
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++	log "github.com/sirupsen/logrus"
++)
++
++func TestQuotaFieldDiagnosticStoredCollector(t *testing.T) {
++	for _, tc := range []struct {
++		name, provider, body       string
++		present, null, valid, five bool
++		status                     int
++	}{
++		{"claude-zero", "claude", `{"five_hour":{"utilization":0,"resets_at":null},"seven_day":{"utilization":30}}`, true, false, true, true, 200},
++		{"claude-null-quantity", "claude", `{"five_hour":{"utilization":null,"resets_at":null},"seven_day":{"utilization":30}}`, true, false, false, true, 200},
++		{"claude-null-window", "claude", `{"five_hour":null,"seven_day":{"utilization":30}}`, true, true, false, false, 200},
++		{"claude-absent", "claude", `{"seven_day":{"utilization":30}}`, false, false, false, false, 200},
++		{"codex-zero", "codex", `{"rate_limit":{"primary_window":{"used_percent":0,"limit_window_seconds":18000}}}`, true, false, true, true, 200},
++		{"codex-null", "codex", `{"rate_limit":{"primary_window":null,"secondary_window":{"used_percent":30,"limit_window_seconds":604800}}}`, true, true, false, false, 200},
++		{"codex-absent", "codex", `{"rate_limit":{"secondary_window":{"used_percent":30,"limit_window_seconds":604800}}}`, false, false, false, false, 200},
++		{"codex-bad-quantity", "codex", `{"rate_limit":{"primary_window":{"used_percent":"private-token","limit_window_seconds":18000}}}`, true, false, false, true, 200},
++		{"transport-failed", "codex", `{"private-token":"never-retained"}`, false, false, false, false, 429},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			repo := newCollectorTestRepository(t)
++			id := "diag-" + tc.name
++			seedCollectorProviderAuth(t, repo, id, tc.provider, map[string]any{"type": tc.provider, "access_token": "private-token"})
++			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				w.WriteHeader(tc.status)
++				_, _ = w.Write([]byte(tc.body))
++			}))
++			defer server.Close()
++			at := time.Date(2026, 11, 10, 13, 0, 0, 0, time.UTC)
++			c := NewCollector(repo, Options{Owner: "diagnostic", Now: func() time.Time { return at }, ClaudeUsageURL: server.URL, ClaudeProfileURL: server.URL, CodexUsageURL: server.URL, CodexResetCreditsURL: server.URL})
++			auth, _, err := repo.GetAuth(t.Context(), id)
++			if err != nil {
++				t.Fatal(err)
++			}
++			c.collectCredential(t.Context(), auth, true)
++			item, err := repo.GetQuotaCredential(t.Context(), id, at)
++			if err != nil {
++				t.Fatal(err)
++			}
++			d := item.CollectionDiagnostic
++			if d == nil {
++				t.Fatal("collection diagnostic not stored")
++			}
++			f := d.FiveHour
++			if tc.provider == "codex" {
++				f = d.PrimaryWindow
++			}
++			if f == nil || f.Present != tc.present || f.Null != tc.null || f.QuantityValid != tc.valid || f.FiveHour != tc.five {
++				t.Fatalf("wrong field flags: %+v", f)
++			}
++			if (tc.name == "claude-null-quantity") != f.QuantityNull {
++				t.Fatal("null quantity lost")
++			}
++			if d.ResponseReceived != (tc.status == 200) || !d.AttemptedAt.Equal(at) {
++				t.Fatal("wrong collection context")
++			}
++			raw, _ := json.Marshal(d)
++			if strings.Contains(string(raw), "private-") || strings.Contains(string(raw), "utilization") || strings.Contains(string(raw), "used_percent") {
++				t.Fatal("private quantity/body retained")
++			}
++			// A stale deferred writer must not overwrite a newer collection's evidence.
++			newer := *d
++			newer.AttemptedAt = at.Add(time.Minute)
++			newer.JSONValid = false
++			if err := repo.RememberQuotaCollectionDiagnostic(id, newer); err != nil {
++				t.Fatal(err)
++			}
++			if err := repo.RememberQuotaCollectionDiagnostic(id, *d); err != nil {
++				t.Fatal(err)
++			}
++			retained, err := repo.GetQuotaCredential(t.Context(), id, at)
++			if err != nil || retained.CollectionDiagnostic.JSONValid {
++				t.Fatal("old diagnostic replaced newer evidence")
++			}
++			// Normal snapshot writes retain the diagnostic until a new collection replaces it.
++			when := at.Add(2 * time.Minute)
++			_, err = repo.UpsertQuotaSnapshot(t.Context(), cluster.QuotaSnapshotWrite{CredentialID: id, Source: "active_probe", QuotaStatus: "unknown", CollectionStatus: "success", ObservedAt: &when, ReplaceWindows: true})
++			if err != nil {
++				t.Fatal(err)
++			}
++			retained, err = repo.GetQuotaCredential(t.Context(), id, when)
++			if err != nil || retained.CollectionDiagnostic == nil || !retained.CollectionDiagnostic.AttemptedAt.Equal(newer.AttemptedAt) {
++				t.Fatal("snapshot write lost diagnostic")
++			}
++		})
++	}
++}
++
++type blockedQuotaOutput struct{ entered, release chan struct{} }
++
++func (w *blockedQuotaOutput) Write(p []byte) (int, error) {
++	if strings.Contains(string(p), collectionSignalMarker) {
++		close(w.entered)
++		<-w.release
++	}
++	return len(p), nil
++}
++func TestQuotaFieldDiagnosticIndependentOfBlockedStdout(t *testing.T) {
++	repo := newCollectorTestRepository(t)
++	const id = "blocked-output-fixture"
++	seedCollectorProviderAuth(t, repo, id, "codex", map[string]any{"type": "codex", "access_token": "private-token"})
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		_, _ = w.Write([]byte(`{"rate_limit":{"primary_window":{"used_percent":0,"limit_window_seconds":18000}}}`))
++	}))
++	defer server.Close()
++	at := time.Date(2026, 11, 10, 13, 0, 0, 0, time.UTC)
++	c := NewCollector(repo, Options{Owner: "blocked-output", Now: func() time.Time { return at }, CodexUsageURL: server.URL, CodexResetCreditsURL: server.URL})
++	auth, _, err := repo.GetAuth(t.Context(), id)
++	if err != nil {
++		t.Fatal(err)
++	}
++	output := &blockedQuotaOutput{make(chan struct{}), make(chan struct{})}
++	previous := log.StandardLogger().Out
++	log.SetOutput(output)
++	defer log.SetOutput(previous)
++	done := make(chan struct{})
++	go func() { defer close(done); c.collectCredential(t.Context(), auth, true) }()
++	select {
++	case <-output.entered:
++	case <-done:
++		t.Fatal("collector did not reach stdout")
++	}
++	item, err := repo.GetQuotaCredential(t.Context(), id, at)
++	close(output.release)
++	<-done
++	if err != nil || item.CollectionDiagnostic == nil || !item.CollectionDiagnostic.PrimaryWindow.QuantityValid {
++		t.Fatal("stdout blocked diagnostic handoff")
++	}
++}
+diff --git a/internal/quota/basalt_idle_shapes_test.go b/internal/quota/basalt_idle_shapes_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/quota/basalt_idle_shapes_test.go
+@@ -0,0 +1,42 @@
++package quota
++
++import (
++	"testing"
++	"time"
++)
++
++func TestQuotaFieldDiagnosticIdleShapes(t *testing.T) {
++	now := time.Date(2026, 11, 10, 13, 0, 0, 0, time.UTC)
++	for _, tc := range []struct {
++		name, provider, body string
++		wantFive             bool
++	}{
++		{"claude-zero-no-reset", "claude", `{"five_hour":{"utilization":0,"resets_at":null},"seven_day":{"utilization":30}}`, true},
++		{"claude-null-unknown", "claude", `{"five_hour":{"utilization":null,"resets_at":null},"seven_day":{"utilization":30}}`, false},
++		{"codex-zero-no-reset", "codex", `{"rate_limit":{"primary_window":{"used_percent":0,"limit_window_seconds":18000},"secondary_window":{"used_percent":30,"limit_window_seconds":604800}}}`, true},
++		{"codex-missing-primary-unknown", "codex", `{"rate_limit":{"secondary_window":{"used_percent":30,"limit_window_seconds":604800}}}`, false},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			windows, err := parseClaudeUsageWindows([]byte(tc.body), now)
++			if tc.provider == "codex" {
++				windows, err = parseCodexUsageWindows([]byte(tc.body), now)
++			}
++			if err != nil {
++				t.Fatal(err)
++			}
++			found := false
++			for _, w := range windows {
++				if w.WindowSeconds != nil && *w.WindowSeconds == 18000 {
++					found = true
++					if w.Used == nil || *w.Used != 0 || w.RemainingRatio == nil || *w.RemainingRatio != 1 || w.ResetAt != nil {
++						t.Fatal("zero without reset changed")
++					}
++				}
++			}
++			if found != tc.wantFive {
++				t.Fatalf("five-hour present=%v want=%v", found, tc.wantFive)
++			}
++			t.Logf("five-hour=%v, explicit zero preserved; absent/null remain unknown", found)
++		})
++	}
++}

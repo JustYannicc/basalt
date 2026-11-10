@@ -18,6 +18,7 @@ import { importManifest } from "./import-manifest.ts";
 import { importService } from "./import-service.ts";
 import { operationScope } from "./operation-scope.ts";
 import type { ImportPolicy } from "./import-budget.ts";
+import { createArtifactsStores, type VaultRepository } from "./artifacts/stores.ts";
 
 export async function openVault(input: {
   storage: TransactionStorage;
@@ -28,6 +29,8 @@ export async function openVault(input: {
   cacheBytes?: number;
   now?: () => number;
   importPolicy?: Partial<ImportPolicy>;
+  /** The vault's Artifacts repository. Without it, text and history use the R2 pack store. */
+  repository?: VaultRepository;
 }) {
   const limits = effectiveLimits(input.limits),
     quota = quotaAccount(input.accountStorage, limits),
@@ -48,11 +51,28 @@ export async function openVault(input: {
       now,
       uploads: io.uploads,
     });
-    const stores = await openCloudflareStorage({ ...input, bucket: io.bucket });
+    const artifacts = input.repository
+      ? createArtifactsStores({ storage: input.storage, repository: input.repository, now })
+      : undefined;
+    const recovered = artifacts ? await artifacts.recover() : undefined;
+    const stores = artifacts ?? (await openCloudflareStorage({ ...input, bucket: io.bucket }));
     const cache = cacheObjects(stores.objects, input.cacheBytes ?? 8 * 1024 * 1024),
       usage = treeUsage(input.storage, cache.objects, attachments);
     for (const pending of quota.pending(input.prefix))
       quota.finish(pending.id, (await stores.refs.receipt(pending.operation))?.state === "landed");
+    // Storage that received an existing repository starts its ledger at that repository's main.
+    // The booking is idempotent by its reservation id, so a retry after a crash never counts twice.
+    const head = recovered?.baselineNeeded ? await stores.refs.get("refs/heads/main") : null;
+    if (head) {
+      if (quota.status().currentBytes === 0 && quota.status().files === 0) {
+        const baseline = await usage.at(head);
+        quota.finish(
+          quota.reserve(input.prefix, `recovered:${head}`, head, baseline.bytes, baseline.files),
+          true,
+        );
+      }
+      artifacts?.baselineBooked();
+    }
     const refs: RefStore = {
       ...stores.refs,
       async publish(transaction) {
@@ -83,6 +103,20 @@ export async function openVault(input: {
         ...sql.exec("SELECT timestamp,durable FROM vault_authors WHERE operation=?", operation),
       ][0];
       if (row && typeof row.timestamp === "number" && row.durable === 1) return row.timestamp;
+      // With Artifacts, this object's own storage is the durable record of the stamp.
+      if (artifacts) {
+        sql.exec(
+          "INSERT OR IGNORE INTO vault_authors(operation,timestamp,durable) VALUES(?,?,1)",
+          operation,
+          Math.floor(now() / 1000),
+        );
+        const saved = [
+          ...sql.exec("SELECT timestamp FROM vault_authors WHERE operation=?", operation),
+        ][0];
+        if (typeof saved?.timestamp !== "number")
+          throw new Error("Missing durable operation timestamp");
+        return saved.timestamp;
+      }
       const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(operation));
       const key =
         input.prefix +
@@ -144,7 +178,13 @@ export async function openVault(input: {
         cache.clear();
         usage.clear();
       },
-      status: async () => ({ ...quota.status(), ...io.status(), limits, cache: cache.status() }),
+      status: async () => ({
+        ...quota.status(),
+        ...io.status(),
+        limits,
+        cache: cache.status(),
+        ...(artifacts ? { repository: artifacts.status() } : {}),
+      }),
     };
   }, manifest.active());
 }

@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-vault-drive-backend",
+  "file": "0474-vault-drive-backend.patch",
+  "content_sha256": "17d4a44fa318844be85e56f3df17ce98bc00befe43cdcc683ae124514b543263",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

@@ -6,6 +6,7 @@ import {
   type RemoteVault,
   type SyncState,
 } from "./types.ts";
+import { isTextPath } from "../../src/drive/text-files.ts";
 export async function pull(input: {
   state: SyncState;
   local: LocalVault;
@@ -16,7 +17,8 @@ export async function pull(input: {
   const { state, local, remote, save, signal } = input;
   signal?.throwIfAborted();
   const head = (await remote.list({ limit: 1 })).at;
-  if (state.pulledHead === head) return;
+  const from = state.pulledHead ?? null;
+  if (from === head) return;
   const blocked = new Set(
       state.conflicts.flatMap((conflict) => conflict.conflicts.map((file) => file.path)),
     ),
@@ -26,19 +28,26 @@ export async function pull(input: {
     signal?.throwIfAborted();
     if (!safePath(path)) throw new Error("Cloud returned an unsafe vault path");
     observed.add(path);
-    if (!path.endsWith(".md") && !local.binary) {
+    if (!isTextPath(path) && !local.binary) {
       if (!state.unsupported.includes(path)) state.unsupported.push(path);
       return;
     }
     if (blocked.has(path)) return;
     const baseline = state.files[path],
-      current = await local.read(path),
+      current = await (local.inspect ?? local.read).call(local, path),
       currentBlob = current === null ? null : await blobId(current);
     if (blob !== null && blob === currentBlob) {
       state.files[path] = { at: head, local: currentBlob, cloud: blob };
       return;
     }
-    if (baseline ? currentBlob !== baseline.local : current !== null) return;
+    if (baseline ? currentBlob !== baseline.local : current !== null) {
+      // A local edit is kept. When the cloud still holds the blob its base had, head is an
+      // equally good base, so the next checkpoint needn't commit it separately. `cloud` is the
+      // blob at `at` only when it equals `local`; after a merge it is the merged result instead.
+      if (baseline && blob === baseline.cloud && baseline.cloud === baseline.local)
+        state.files[path] = { ...baseline, at: head };
+      return;
+    }
     if (blob === null) {
       if (baseline && (await local.replace(path, current, null, { at: head }))) {
         delete state.files[path];
@@ -71,7 +80,6 @@ export async function pull(input: {
     } else complete = false;
   };
   if (remote.changes) {
-    const from = state.pulledHead ?? null;
     let cursor: import("./types.ts").ChangeCursor | null = null;
     do {
       signal?.throwIfAborted();
@@ -113,6 +121,13 @@ export async function pull(input: {
     await visit("");
     for (const path of Object.keys(state.files)) if (!observed.has(path)) await apply(path, null);
   }
+  if (complete && from !== null)
+    // A path the range didn't touch has the same content at head as at `from`, so a file based
+    // on `from` can move to head. That lets a checkpoint commit every dirty file from one base.
+    // Files left on an older base (a local edit that outlived a cloud change) keep it, so their
+    // commit still merges against the cloud edit instead of overwriting it.
+    for (const [path, file] of Object.entries(state.files))
+      if (!observed.has(path) && file.at === from) state.files[path] = { ...file, at: head };
   state.head = head;
   if (complete) state.pulledHead = head;
   await save();

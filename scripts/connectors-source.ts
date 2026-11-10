@@ -13,6 +13,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { bundlePoolApp } from "./pool-app-bundle.ts";
 import { poolWorkerRevisionPath, poolWorkerRevisionSource } from "./pool-worker-revision.ts";
+import {
+  obsidianPluginVersionPath,
+  obsidianPluginVersionSource,
+} from "./obsidian-plugin-version.ts";
 import { prepareTestPlans, retiredTestPlanSources } from "./ci/declarations.ts";
 import { e2eCorrections } from "./ci/prepare-e2e.ts";
 
@@ -123,12 +127,20 @@ export function verifyConnectorsSource(root: string): { commit: string; patches:
       poolWorkerRevisionSource(root)
     )
       throw new Error("Generated pool Worker revision differs from the current pool Worker source");
+    if (
+      readFileSync(join(upstream, obsidianPluginVersionPath), "utf8") !==
+      obsidianPluginVersionSource(root)
+    )
+      throw new Error(
+        "Generated Obsidian plugin version differs from clients/obsidian/manifest.json",
+      );
     const permitted = new Set([
       ...additions,
       ...generated,
       releasePath,
       opsReleasePath,
       poolWorkerRevisionPath,
+      obsidianPluginVersionPath,
     ]);
     const extraRuntimeSource = git(["ls-files", "--others", "--exclude-standard"])
       .split("\n")
@@ -139,7 +151,9 @@ export function verifyConnectorsSource(root: string): { commit: string; patches:
           !permitted.has(path),
       );
     if (extraRuntimeSource.length)
-      throw new Error("Unexpected source in the prepared tools runtime");
+      throw new Error(
+        `Unexpected source in the prepared tools runtime: ${extraRuntimeSource.join(", ")}`,
+      );
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }

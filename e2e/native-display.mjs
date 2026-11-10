@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 
 /** The CLI's public requests traverse the real Router and hosted native-grant endpoint. */
-export async function verifyNativeDisplay({ worker, origin, headers, owner, poolId, setDisplay }) {
+export async function verifyNativeDisplay({
+  worker,
+  origin,
+  headers,
+  owner,
+  poolId,
+  setDisplay,
+  sentTeams,
+}) {
   const response = await fetch(
     `${worker.origin}/api/auth/get-session?disableCookieCache=true&disableRefresh=true`,
     { headers: owner },
@@ -21,6 +29,14 @@ export async function verifyNativeDisplay({ worker, origin, headers, owner, pool
     ],
   };
   assert.deepEqual(worker.display(), expected);
+  // The host reads the owner's current teams itself, so the pool Worker can drop pools from teams
+  // they left; the list it signed must be exactly their memberships.
+  const listed = await fetch(`${worker.origin}/api/auth/organization/list`, { headers: owner });
+  assert.equal(listed.status, 200);
+  const byId = (a, b) => a.id.localeCompare(b.id);
+  const memberships = (await listed.json()).map(({ id, name }) => ({ id, name })).sort(byId);
+  assert.ok(memberships.length > 0);
+  assert.deepEqual([...((await sentTeams()) ?? [])].sort(byId), memberships);
   const browserOnly = await fetch(`${worker.origin}/api/auth/native/access`, { headers: owner });
   assert.equal(browserOnly.status, 401, "A browser session does not replace the native bearer.");
   await browserOnly.body?.cancel();

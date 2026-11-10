@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Schema } from "effect";
+import { readFileSync } from "node:fs";
+import { Effect, Schema } from "effect";
 import { AppId, AppSlug, ToolName } from "@executor-js/sdk";
 import { ConnectionId, ConnectionInput } from "@executor-js/mcp-auth/connections";
 import {
@@ -10,6 +11,7 @@ import {
   supportsObsidian,
 } from "../../.upstream/apps/hosted/web/src/contracts/obsidian-connection.ts";
 import {
+  basaltSyncReleaseCheck,
   basaltSyncReleaseStatus,
   basaltSyncRepository,
   basaltSyncTag,
@@ -62,6 +64,13 @@ test("the dashboard installs the plugin release this checkout publishes", () => 
   assert.equal(basaltSyncVersion, manifest.version);
   assert.equal(Object.hasOwn(versions, manifest.version), true);
   assert.equal(manifest.id, protocolAction);
+  // The release workflow, the dashboard's BRAT link and the plugin agree on one tag per version.
+  assert.equal(basaltSyncTag, `${manifest.id}-${manifest.version}`);
+  const release = readFileSync(
+    new URL("../../.github/workflows/obsidian-plugin-release.yml", import.meta.url),
+    "utf8",
+  );
+  assert.ok(release.includes(`tag="${manifest.id}-$version"`));
   assert.equal(basaltSyncRepository("https://github.com/owner/repo"), "owner/repo");
   assert.equal(basaltSyncRepository("https://github.com/owner/repo.git"), "owner/repo");
   assert.equal(basaltSyncRepository("https://gitlab.com/owner/repo"), null);
@@ -85,4 +94,30 @@ test("BRAT is linked only once the release holds every file Obsidian installs", 
   assert.equal(basaltSyncReleaseStatus(404, null), "unavailable");
   const limited = basaltSyncReleaseStatus(403, null);
   assert.equal(typeof limited === "object" && limited._tag, "BasaltSyncReleaseUnreachable");
+});
+
+test("the release check sends GitHub no credentials or dashboard headers", async () => {
+  // GitHub answers with Access-Control-Allow-Origin "*", which browsers refuse for a credentialed
+  // or non-simple request, so the check must look exactly like a plain anonymous fetch.
+  const calls: { url: string; init: RequestInit | undefined }[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    calls.push({ url: input instanceof Request ? input.url : String(input), init });
+    const body = {
+      assets: [{ name: "main.js" }, { name: "manifest.json" }, { name: "styles.css" }],
+    };
+    return new Response(JSON.stringify(body), { status: 200 });
+  };
+  try {
+    assert.equal(await Effect.runPromise(basaltSyncReleaseCheck("owner/repo")), "available");
+  } finally {
+    globalThis.fetch = original;
+  }
+  assert.equal(calls.length, 1);
+  assert.equal(
+    calls[0]!.url,
+    `https://api.github.com/repos/owner/repo/releases/tags/${basaltSyncTag}`,
+  );
+  assert.equal(calls[0]!.init?.credentials, "omit");
+  assert.deepEqual([...new Headers(calls[0]!.init?.headers).keys()], []);
 });

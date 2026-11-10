@@ -355,7 +355,7 @@
     {
       "entry": "aws",
       "package": "aws",
-      "sourceSha256": "cddc32a127cd2c40bed0b29a1d4d15af2d202034dd95a528b1b05cc442689925",
+      "sourceSha256": "a6a7bd5ddcd4e591a29280f17031be258a67f4679d94196f434ce9763fa30957",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -1984,7 +1984,7 @@
     {
       "entry": "google",
       "package": "@executor.sh/google",
-      "sourceSha256": "48bbffa0b0f7805ff1c8ea34f13acdbc4b093f9307206809e37a8c723e5977b6",
+      "sourceSha256": "d9aeafd3e7f2915a69b7aa57b4ffb54a53630b561be453c93f968ca6c6e8d5f7",
       "methods": {
         "oauth": {
           "kind": "hosted",

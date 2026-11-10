@@ -9,6 +9,7 @@ import { releaseEvidence } from "./evidence.ts";
 import { reportRefusal } from "./refusal-report.ts";
 import { fixture } from "./test/deploy-stack-fixture.ts";
 import { BarrierRefusal } from "./manifest.ts";
+import type { NamespaceRead } from "./namespace-read.ts";
 
 for (const planFailure of ["read", "diff"] as const)
   test(`plan ${planFailure} refusal retains its logical resource and safe provider error`, async (context) => {
@@ -122,7 +123,13 @@ for (const namespace of ["missing", "wrong", "drift", "vault-drift"] as const) {
   });
 }
 test("existing EU namespace is admitted before uploads and rechecked before activation without running its provisioning Command", async () => {
-  const proof = fixture({ namespace: "eu" });
+  const reads: NamespaceRead[] = [];
+  const proof = fixture({
+    namespace: "eu",
+    namespaceRead: async (read) => {
+      reads.push(read);
+    },
+  });
   await Effect.runPromise(proof.effect);
   // App sources, then vaults: both are admitted before uploads and both are rechecked.
   assert.deepEqual(proof.events.slice(0, 2), ["namespace:read", "namespace:read"]);
@@ -133,6 +140,15 @@ test("existing EU namespace is admitted before uploads and rechecked before acti
     2,
   );
   assert.ok(!proof.events.some((event) => event.includes("command:node ensure-artifacts.ts")));
+  assert.deepEqual(
+    reads.map(({ phase, namespace }) => [phase, namespace]),
+    [
+      ["preparation", "apps"],
+      ["preparation", "vaults"],
+      ["pre-activation", "apps"],
+      ["pre-activation", "vaults"],
+    ],
+  );
 });
 test("an unsupported Command cannot be deferred through preparation", async () => {
   const proof = fixture({ unknownCommand: true });

@@ -362,7 +362,7 @@ test("first import keeps a local note and an existing different cloud note on se
   }
 });
 
-test("an idle visible vault receives cloud-only changes on its remote wake and stops after unload", async () => {
+test("an idle visible vault fetches cloud-only changes on its remote wake and stops after unload", async () => {
   const { watchRemoteChanges } = await import("./remote-wake.ts");
   const f = await fixture({ "idle.md": "before" });
   try {
@@ -374,7 +374,7 @@ test("an idle visible vault receives cloud-only changes on its remote wake and s
     const work: Promise<void>[] = [];
     const stop = watchRemoteChanges({
       repeat: (run, milliseconds) => {
-        assert.ok(milliseconds >= 30000);
+        assert.ok(milliseconds >= 5 * 60_000);
         callback = () => {
           if (!stopped) run();
         };
@@ -383,8 +383,8 @@ test("an idle visible vault receives cloud-only changes on its remote wake and s
         };
       },
       available: () => visible,
-      sync: () => {
-        work.push(sync.run());
+      pull: () => {
+        work.push(sync.pull());
       },
     });
     await f.cloud.service.write({
@@ -405,6 +405,73 @@ test("an idle visible vault receives cloud-only changes on its remote wake and s
     stop();
     callback();
     assert.equal(work.length, 1);
+  } finally {
+    f.close();
+  }
+});
+
+test("a fetch never commits, and a local edit that outlived a cloud edit merges instead of overwriting it", async () => {
+  const f = await fixture({ "a.md": "a", "b.md": "b" });
+  try {
+    const sync = await f.sync();
+    await sync.run();
+    const commits = f.calls();
+    const edit = async (path: string, content: string, operation: string) =>
+      f.cloud.service.write({
+        base: (await f.cloud.service.list()).at,
+        path,
+        content,
+        mode: (await f.cloud.service.read({ path })) ? "edit" : "create",
+        operation,
+      });
+    f.files.set("b.md", "device b");
+    await edit("b.md", "cloud b", "agent-b");
+    await sync.pull();
+    // A later fetch whose range never touches b.md must not move b.md onto the newer head.
+    await edit("c.md", "cloud c", "agent-c");
+    await sync.pull();
+    assert.equal(f.calls(), commits);
+    assert.equal(f.files.get("b.md"), "device b");
+    assert.equal(f.files.get("c.md"), "cloud c");
+    assert.equal((await f.cloud.service.read({ path: "b.md" }))?.content, "cloud b");
+    await sync.run();
+    assert.equal((await f.cloud.service.read({ path: "b.md" }))?.content, "cloud b");
+    assert.equal(sync.status().state, "conflict");
+    assert.equal(
+      (await f.cloud.service.read({ path: "b.md", at: sync.conflicts()[0]!.oid }))?.content,
+      "device b",
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test("one checkpoint commits edits from different sync times, a new note and a delete together", async () => {
+  const f = await fixture({ "old.md": "old", "gone.md": "gone", "other.md": "other" });
+  try {
+    const sync = await f.sync();
+    await sync.run();
+    await f.cloud.service.write({
+      base: (await f.cloud.service.list()).at,
+      path: "other.md",
+      content: "agent",
+      mode: "edit",
+      operation: "agent-other",
+    });
+    await sync.pull();
+    const commits = f.calls();
+    f.files.set("old.md", "old, edited");
+    f.files.set("other.md", "agent, edited");
+    f.files.set("new.md", "new");
+    f.files.delete("gone.md");
+    await sync.run();
+    assert.equal(f.calls() - commits, 1);
+    const cloud = async (path: string) => (await f.cloud.service.read({ path }))?.content ?? null;
+    assert.equal(await cloud("old.md"), "old, edited");
+    assert.equal(await cloud("other.md"), "agent, edited");
+    assert.equal(await cloud("new.md"), "new");
+    assert.equal(await cloud("gone.md"), null);
+    assert.equal(sync.status().state, "idle");
   } finally {
     f.close();
   }

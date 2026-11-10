@@ -95,6 +95,15 @@
             "mode": "manual",
             "requires": "remove when the pin moves to \u2265 v1.1.8 and the upstream paid omitted-zero, free/unknown-profile, retained-window, supported-client and metadata-only collection regressions pass on the new pin."
           }
+        },
+        {
+          "identity": "cliproxy-home-collection-field-presence",
+          "file": "0477-home-collection-field-presence.patch",
+          "sha256": "e629d15bc078d1a6d15cde112b73b4d0a0577c871807f8c6da0f508b61386801",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after pinned Home exposes bounded per-collection field-presence, null and quantity-validity handoffs independently of logs, and the authenticated pool view preserves them in pool-owned storage without response bodies, amounts or credentials. Home database models and versions must remain unchanged."
+          }
         }
       ]
     },
@@ -106,7 +115,7 @@
         {
           "identity": "cliproxy-node-metadata-only-diagnostics",
           "file": "cliproxy-node-v8.0.51-metadata-only.patch",
-          "sha256": "4c03e342e149e8362f7d5b3882d10c35d84661455c56165a1f6e7de2d45ed2a4",
+          "sha256": "f5f43a2fe21ab52f26cbedffd86d1a9dcdf22969d9c95665d7eb408c6165cdb2",
           "retirement": {
             "mode": "manual",
             "requires": "Replacement release passes the forced failure, retained-data purge, fingerprint identity, mixed-writer, repeated-boot and response-bearing application-log projection, guard and resumable-cleanup regressions before removing this carry."

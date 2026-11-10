@@ -1,0 +1,68 @@
+diff --git a/e2e/tests/account-status-privacy.spec.ts b/e2e/tests/account-status-privacy.spec.ts
+--- a/e2e/tests/account-status-privacy.spec.ts
++++ b/e2e/tests/account-status-privacy.spec.ts
+@@ -24,6 +24,9 @@
+     withHostedCase(
+       context,
+       Effect.gen(function* () {
++        // Punctuation cannot collide with generated IDs, timestamps or the fixture labels.
++        const shortSecret = "!~";
++        const shortHex = Buffer.from(shortSecret).toString("hex");
+         const contact = "owner@example.test";
+         const fixture = yield* statusAccount(
+           (connect, check) =>
+@@ -36,7 +39,7 @@
+                 "token: string()",
+                 "token: string(), short: string(), tone: string(), contact: plain(string())",
+               ),
+-          { contact, tone: "warning" },
++          { contact, tone: "warning", short: shortSecret },
+         );
+         const leaks = (secret: string) => [
+           { ...displayedStatus, badges: [{ label: `plan ${secret}`, tone: "good" }] },
+@@ -62,11 +65,11 @@
+         }
+         // A short secret may be chance, so only the item that contains it is hidden.
+         const hiddenTone = { ...displayedStatus, badges: [{ label: "Plan", tone: "warning" }] };
+-        for (const status of [...leaks("xy"), hiddenTone]) {
++        for (const status of [...leaks(shortSecret), hiddenTone]) {
+           yield* fixture.statusBackend.answer({ status: 200, body: { status } });
+           const response = yield* fixture.check();
+           expect((yield* body(Health, response)).apps[0]?.check?.status).toBe("healthy");
+-          const hidden = status === hiddenTone ? "warning" : "xy";
++          const hidden = status === hiddenTone ? "warning" : shortSecret;
+           expect(JSON.stringify(response.body)).not.toContain(hidden);
+           expect(JSON.stringify((yield* fixture.read()).body)).not.toContain(hidden);
+         }
+@@ -78,11 +81,11 @@
+             status: {
+               ...displayedStatus,
+               badges: [
+-                { label: "Proxy", tone: "good" },
++                { label: `Pro${shortSecret}y`, tone: "good" },
+                 { label: "Available", tone: "good" },
+               ],
+               stats: [
+-                { label: "Hex", value: Buffer.from("xy").toString("hex") },
++                { label: "Hex", value: shortHex },
+                 { label: "Requests", value: "42" },
+               ],
+             },
+@@ -92,13 +95,16 @@
+         expect((yield* body(Health, healthy)).apps[0]?.check?.status).toBe("healthy");
+         const shown = JSON.stringify((yield* fixture.read()).body);
+         for (const kept of [contact, "Available", "Requests"]) expect(shown).toContain(kept);
+-        for (const hidden of ["Proxy", "7879"]) expect(shown).not.toContain(hidden);
++        for (const hidden of [shortSecret, JSON.stringify(shortHex)])
++          expect(shown).not.toContain(hidden);
+         const stored = yield* legacyStorage([
+           {
+             sql: "SELECT account_info, message FROM executor_account_checks WHERE account = $1",
+             params: [fixture.account],
+           },
+         ]);
++        expect(JSON.stringify(stored)).not.toContain(shortSecret);
++        expect(JSON.stringify(stored)).not.toContain(JSON.stringify(shortHex));
+         expect(JSON.stringify(stored)).not.toContain("opaque-1");
+         expect(JSON.stringify(stored)).not.toContain(interactiveBackendKey);
+         yield* serverControl("start");

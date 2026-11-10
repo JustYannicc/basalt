@@ -132,7 +132,9 @@ export function describeStatus(input: StatusInput): StatusView {
       title,
       initial
         ? `${needs.join(", ")}. Import not finished: ${importProgress(initial)}.`
-        : `${needs.join(", ")}. Everything else is synced.`,
+        : status.queued > 0
+          ? `${needs.join(", ")}. ${plural(status.queued, "change")} still to sync.`
+          : `${needs.join(", ")}. Everything else is synced.`,
     );
   }
   if (initial)
@@ -147,6 +149,13 @@ export function describeStatus(input: StatusInput): StatusView {
       "Downloading attachments",
       `${plural(attachments.downloading, "file")} left.`,
     );
+  // Edits wait for a checkpoint, so "Synced" would be a lie while any are waiting.
+  if (status.queued > 0)
+    return view(
+      "muted",
+      `${plural(status.queued, "change")} to sync`,
+      "They go to Basalt after a few minutes without edits, when you leave Obsidian, or when you choose Sync now.",
+    );
   const when = input.lastSynced === null ? "" : ` ${ago(input.lastSynced, input.now)}`;
-  return view("ok", `Synced${when}`, queuedText(status.queued), status.queued === 0);
+  return view("ok", `Synced${when}`, queuedText(0), true);
 }

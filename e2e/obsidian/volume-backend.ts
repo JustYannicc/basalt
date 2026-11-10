@@ -75,7 +75,9 @@ export async function volumeBackend(directory: string, worker: boolean) {
     format: "esm",
     platform: "browser",
     target: "es2022",
-    external: ["cloudflare:workers"],
+    // The runtime below enables nodejs_compat, as the production vault Worker does, so workerd
+    // supplies Node built-ins the drive uses (incremental hashing and zlib's consumed-byte count).
+    external: ["cloudflare:workers", "node:*"],
     logLevel: "silent",
   });
   const runtime = new Miniflare({

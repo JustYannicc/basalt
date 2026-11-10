@@ -137,3 +137,44 @@ test("legacy pools without names use the existing personal and shared labels", a
   });
   assert.deepEqual([...p.f.storage.values], before);
 });
+
+test("with the signed team list, pools from teams the person left drop out and the rest name their team", async () => {
+  const p = displayProtocol();
+  const gone = { ...pool, pool: "gone-pool", name: "", organization: "deleted-team" };
+  const twin = { ...pool, pool: "twin", organization: pool.organization };
+  assert.equal((await p.f.access({ action: "audience", pools: [pool, gone, twin] })).status, 200);
+  const { computer } = await p.register();
+  const check = (teams: unknown) =>
+    p
+      .control("check", { computer: computer.id, pool: pool.pool, display: true, teams })
+      .then((response) => response.json());
+  assert.deepEqual(await check([{ id: pool.organization, name: "Acme" }]), {
+    active: true,
+    display: {
+      pool: { id: pool.pool, name: "First pool · Acme (1)" },
+      pools: [
+        { id: pool.pool, name: "First pool · Acme (1)" },
+        { id: twin.pool, name: "First pool · Acme (2)" },
+      ],
+    },
+  });
+  // The grant's own pool stays even when its team is missing from the list.
+  assert.deepEqual(await check([{ id: "other-team", name: "Other" }]), {
+    active: true,
+    display: {
+      pool: { id: pool.pool, name: pool.name },
+      pools: [{ id: pool.pool, name: pool.name }],
+    },
+  });
+  // No current teams at all leaves only the grant's own pool.
+  assert.deepEqual(await check([]), {
+    active: true,
+    display: {
+      pool: { id: pool.pool, name: pool.name },
+      pools: [{ id: pool.pool, name: pool.name }],
+    },
+  });
+  // A malformed list means the teams are unknown, so nothing is filtered.
+  const unknown = (await check([{ id: 7 }])) as { display: { pools: unknown[] } };
+  assert.equal(unknown.display.pools.length, 3);
+});
