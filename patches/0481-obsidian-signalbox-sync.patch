@@ -1,7 +1,14 @@
 diff --git a/apps/hosted/web/src/contracts/obsidian-plugin.ts b/apps/hosted/web/src/contracts/obsidian-plugin.ts
 --- a/apps/hosted/web/src/contracts/obsidian-plugin.ts
 +++ b/apps/hosted/web/src/contracts/obsidian-plugin.ts
-@@ -5,11 +5,11 @@ import { browserOnly, dashboardHttpClient } from "@executor-js/ui/contracts/http
+@@ -1,15 +1,15 @@
+-import { Data, Effect } from "effect";
+-import { HttpClient, HttpClientRequest } from "effect/http";
++import { Data, Effect, Layer } from "effect";
++import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
+ import { Atom } from "effect/reactivity";
+-import { browserOnly, dashboardHttpClient } from "@executor-js/ui/contracts/http";
++import { browserOnly } from "@executor-js/ui/contracts/http";
  import { basaltSyncVersion } from "./obsidian-plugin-version.ts";
  
  /**
@@ -33,6 +40,78 @@ diff --git a/apps/hosted/web/src/contracts/obsidian-plugin.ts b/apps/hosted/web/
  }
  
  /**
+@@ -57,6 +57,43 @@ export function basaltSyncReleaseStatus(
+   return basaltSyncFiles.every((file) => names.has(file)) ? "available" : "unavailable";
+ }
+ 
++/**
++ * GitHub answers with Access-Control-Allow-Origin "*", which a browser refuses for a credentialed
++ * request, and its preflight rejects Effect's trace headers. So the release is read as a plain
++ * anonymous request: no credentials, no trace headers, no extra headers, through the page's
++ * current fetch.
++ */
++const anonymousGitHubClient = FetchHttpClient.layer.pipe(
++  Layer.provide(Layer.succeed(FetchHttpClient.RequestInit, { credentials: "omit" })),
++  Layer.provide(
++    Layer.succeed(FetchHttpClient.Fetch, (input, init) => globalThis.fetch(input, init)),
++  ),
++);
++
++/** Whether this repository's release can be installed, read from the page. */
++export const basaltSyncReleaseCheck = (repository: string) =>
++  Effect.gen(function* () {
++    const client = yield* HttpClient.HttpClient;
++    const response = yield* client
++      .execute(
++        HttpClientRequest.get(
++          `https://api.github.com/repos/${repository}/releases/tags/${basaltSyncTag}`,
++        ),
++      )
++      .pipe(Effect.mapError(() => new BasaltSyncReleaseUnreachable({ status: null })));
++    const body: unknown =
++      response.status === 200
++        ? yield* response.json.pipe(
++            Effect.mapError(() => new BasaltSyncReleaseUnreachable({ status: response.status })),
++          )
++        : null;
++    const status = basaltSyncReleaseStatus(response.status, body);
++    return typeof status === "string" ? status : yield* status;
++  }).pipe(
++    Effect.provideService(HttpClient.TracerPropagationEnabled, false),
++    Effect.provide(anonymousGitHubClient),
++  );
++
+ /**
+  * Read in the browser once per repository; the dialog refreshes it on "Check again". A
+  * deployment without a public GitHub source has nothing to install from.
+@@ -66,26 +103,7 @@ export const basaltSyncReleaseAtom = Atom.family((repository: string | null) =>
+     Atom.make(
+       repository === null
+         ? Effect.succeed("unavailable" as const)
+-        : Effect.gen(function* () {
+-            const client = yield* HttpClient.HttpClient;
+-            const response = yield* client
+-              .execute(
+-                HttpClientRequest.get(
+-                  `https://api.github.com/repos/${repository}/releases/tags/${basaltSyncTag}`,
+-                ).pipe(HttpClientRequest.acceptJson),
+-              )
+-              .pipe(Effect.mapError(() => new BasaltSyncReleaseUnreachable({ status: null })));
+-            const body: unknown =
+-              response.status === 200
+-                ? yield* response.json.pipe(
+-                    Effect.mapError(
+-                      () => new BasaltSyncReleaseUnreachable({ status: response.status }),
+-                    ),
+-                  )
+-                : null;
+-            const status = basaltSyncReleaseStatus(response.status, body);
+-            return typeof status === "string" ? status : yield* status;
+-          }).pipe(Effect.provide(dashboardHttpClient)),
++        : basaltSyncReleaseCheck(repository),
+     ),
+   ),
+ );
 diff --git a/apps/hosted/web/src/contracts/obsidian-connection.ts b/apps/hosted/web/src/contracts/obsidian-connection.ts
 --- a/apps/hosted/web/src/contracts/obsidian-connection.ts
 +++ b/apps/hosted/web/src/contracts/obsidian-connection.ts
