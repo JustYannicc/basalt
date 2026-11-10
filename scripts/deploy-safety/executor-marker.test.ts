@@ -71,8 +71,13 @@ test("fresh bootstrap and later transitions do not inherit the one-time Stage 2 
 
 test("the serialized production policy is candidate-bound and explicitly clears an unrelated cutover", () => {
   const candidate = "b".repeat(40);
-  const selected = executorMarkerPrecondition(report("a".repeat(40), candidate, oldToolsPin, stage2ToolsPin));
-  assert.deepEqual(JSON.parse(executorMarkerPolicy(candidate, selected)), { candidate, precondition: selected });
+  const selected = executorMarkerPrecondition(
+    report("a".repeat(40), candidate, oldToolsPin, stage2ToolsPin),
+  );
+  assert.deepEqual(JSON.parse(executorMarkerPolicy(candidate, selected)), {
+    candidate,
+    precondition: selected,
+  });
   assert.deepEqual(JSON.parse(executorMarkerPolicy(candidate)), { candidate, precondition: null });
   assert.throws(() => executorMarkerPolicy("c".repeat(40), selected), /does not match/);
   assert.throws(() => executorMarkerPolicy("main"), /immutable/);

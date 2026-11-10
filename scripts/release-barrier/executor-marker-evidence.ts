@@ -17,12 +17,22 @@ const Receipt = Schema.Struct({
   observed: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9]+\.[0-9]+\.[0-9]+$/))),
   outcome: Schema.Literals(["accepted", "refused", "read_failed"]),
   reason: Schema.optionalKey(
-    Schema.Literals(["missing", "multiple_rows", "invalid_value", "version_mismatch", "query_failed"]),
+    Schema.Literals([
+      "missing",
+      "multiple_rows",
+      "invalid_value",
+      "version_mismatch",
+      "query_failed",
+    ]),
   ),
 });
 
 /** Read only this attempt's safe receipt, including when the migration command failed. */
-export async function executorMarkerSummary(directory: string, candidate: string, attempt?: string) {
+export async function executorMarkerSummary(
+  directory: string,
+  candidate: string,
+  attempt?: string,
+) {
   if (!attempt) return "";
   if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(attempt))
     throw new Error("Executor marker receipt attempt is invalid");

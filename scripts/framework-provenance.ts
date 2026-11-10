@@ -27,7 +27,10 @@ export function frameworkSourceEvidence(upstream: string) {
   const manifest = JSON.parse(readFileSync(join(upstream, "package.json"), "utf8"));
   for (const patch of Object.values(manifest.patchedDependencies ?? {})) paths.add(String(patch));
   const source = {
-    upstream: execFileSync("git", ["rev-parse", "HEAD"], { cwd: upstream, encoding: "utf8" }).trim(),
+    upstream: execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: upstream,
+      encoding: "utf8",
+    }).trim(),
     files: [...paths].sort().map((path) => [path, sha256(readFileSync(join(upstream, path)))]),
   };
   return { revision: `source-sha256:${sha256(JSON.stringify(source))}`, source };
@@ -40,7 +43,10 @@ export async function builtFrameworkEvidence(root: string) {
   const published = Schema.decodeUnknownSync(Schema.fromJsonString(PublishedAppFramework))(
     bytes.toString("utf8"),
   );
-  if (published.version !== servedFrameworkVersion || published.protocol !== servedFrameworkProtocol)
+  if (
+    published.version !== servedFrameworkVersion ||
+    published.protocol !== servedFrameworkProtocol
+  )
     throw new Error(
       `Published framework ${published.version}/p${published.protocol} differs from ${servedFrameworkVersion}/p${servedFrameworkProtocol}`,
     );
@@ -61,7 +67,9 @@ export async function builtFrameworkEvidence(root: string) {
 
 export async function checkFrameworkProvenance(root: string) {
   const actual = await builtFrameworkEvidence(root);
-  const approved = approvedFrameworkReleases.filter((release) => release.version === actual.version);
+  const approved = approvedFrameworkReleases.filter(
+    (release) => release.version === actual.version,
+  );
   if (approved.length !== 1 || JSON.stringify(approved[0]) !== JSON.stringify(actual))
     throw new Error(
       `Framework ${actual.version}/p${actual.protocol} publication differs from its approved server, browser or source identity: ${JSON.stringify({ approved, actual })}`,

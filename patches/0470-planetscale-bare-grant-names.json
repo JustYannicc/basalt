@@ -1,7 +1,7 @@
 {
   "identity": "planetscale-bare-grant-names",
   "file": "0470-planetscale-bare-grant-names.patch",
-  "content_sha256": "ef746a9fc26e62035e4857cb659db1f5c71f349938d01ff232e9bead3c74085c",
+  "content_sha256": "b401319df68be688e9bc1808b07e780464686e155feee1a6a10e6ae07b256729",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

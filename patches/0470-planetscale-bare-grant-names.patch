@@ -1,6 +1,8 @@
+diff --git a/apps/hosted/server/src/implementation/planetscale-oauth.ts b/apps/hosted/server/src/implementation/planetscale-oauth.ts
+index bba18d9..9159a45 100644
 --- a/apps/hosted/server/src/implementation/planetscale-oauth.ts
 +++ b/apps/hosted/server/src/implementation/planetscale-oauth.ts
-@@ -166,6 +166,8 @@
+@@ -166,6 +166,8 @@ export const planetScaleOAuthClient: FirstPartyOAuthClientDefinition = {
      issuer: "https://api.planetscale.com",
      authorizationUrl: "https://app.planetscale.com/oauth/authorize",
      tokenUrl: "https://auth.planetscale.com/oauth/token",
@@ -9,9 +11,11 @@
      scopeImplications,
    },
    tokenEndpointAuthMethod: "client_secret_basic",
+diff --git a/packages/sdk/src/contracts/oauth-scopes.ts b/packages/sdk/src/contracts/oauth-scopes.ts
+index 16ed957..f5000e3 100644
 --- a/packages/sdk/src/contracts/oauth-scopes.ts
 +++ b/packages/sdk/src/contracts/oauth-scopes.ts
-@@ -29,3 +29,34 @@
+@@ -29,3 +29,34 @@ export const oauthScopeClosure = (
    }
    return [...covered];
  };
@@ -46,20 +50,21 @@
 +  };
 +  return [...new Set(reported.flatMap(resolve))];
 +};
+diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
+index 5bfabc3..05157bc 100644
 --- a/packages/sdk/src/contracts/oauth.ts
 +++ b/packages/sdk/src/contracts/oauth.ts
-@@ -340,6 +340,11 @@
-      * reports `repo,gist` whatever separator the request used. Defaults to whitespace only.
-      */
-     grantedScopeSeparator: Schema.optionalKey(Schema.NonEmptyString),
-+    /**
-+     * Resource prefixes, narrowest first, that the token response may omit from a reported scope,
-+     * such as PlanetScale's `organization:`. Bare names resolve to allowed prefixed scopes only.
-+     */
-+    grantedScopePrefixes: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
-     /** Host-reviewed access included by a scope. Apps cannot extend the operator's scope menu. */
-     scopeImplications: Schema.optionalKey(Schema.Record(ScopeToken, Schema.Array(ScopeToken))),
-     /** Extra authorization request parameters, such as `{ access_type: "offline" }`. */
+@@ -373,6 +373,8 @@ export const FirstPartyOAuthServer = /* @__PURE__ */ (() => Schema.Struct({
+    * reports `repo,gist` whatever separator the request used. Defaults to whitespace only.
+    */
+   grantedScopeSeparator: Schema.optionalKey(Schema.NonEmptyString),
++  /** Resource prefixes, narrowest first, that a token response may omit from granted scopes. */
++  grantedScopePrefixes: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
+   /** Host-reviewed access included by a scope. Apps cannot extend the operator's scope menu. */
+   scopeImplications: Schema.optionalKey(Schema.Record(ScopeToken, Schema.Array(ScopeToken))),
+   /**
+diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
+index 597e713..4d541f3 100644
 --- a/packages/sdk/src/implementation/oauth.ts
 +++ b/packages/sdk/src/implementation/oauth.ts
 @@ -1,5 +1,9 @@
@@ -71,9 +76,9 @@
 +  oauthScopeClosure,
 +} from "../contracts/oauth-scopes.ts";
  import { projectOAuthFields as project } from "./oauth-fields.ts";
- import type { AppAccountUse, ResourceLifecycle } from "../contracts/executor.ts";
+ import { CurrentActor, type AppAccountUse, type ResourceLifecycle } from "../contracts/executor.ts";
  import { missingOAuthScopes, oauthIdentityConsent } from "../contracts/oauth-families.ts";
-@@ -587,21 +591,38 @@
+@@ -656,21 +660,38 @@ export const makeOAuth = (
     * reports none, which grants what was requested (RFC 6749 §5.1) or, on renewal, what the grant
     * held (§6). Scopes are whitespace-delimited, and also split on the server's
     * `grantedScopeSeparator`, such as GitHub's `repo,gist`; never on the request's `scopeSeparator`.
@@ -116,7 +121,7 @@
    };
    /**
     * The operator's client and authorization server as configured now, or undefined when the
-@@ -2589,7 +2610,10 @@
+@@ -2705,7 +2726,10 @@ export const makeOAuth = (
          ),
        );
        // The operator's client keeps no grant holding a scope it does not allow.
@@ -128,7 +133,7 @@
          const client = firstPartyClients.get(attempt.firstParty);
          if (client !== undefined)
            yield* Console.warn(
-@@ -2598,7 +2622,7 @@
+@@ -2714,7 +2738,7 @@ export const makeOAuth = (
                client: attempt.firstParty,
                ...oauthScopeExceededEvidence(
                  attempt.requestedScopes ?? [],
@@ -137,7 +142,7 @@
                  oauthScopeClosure(allowedScopes(client), client.server.scopeImplications),
                ),
              }),
-@@ -2616,8 +2640,8 @@
+@@ -2732,8 +2756,8 @@ export const makeOAuth = (
          const client = firstPartyClients.get(attempt.firstParty);
          if (client?.requireScopeConfirmation === true) {
            const requested = attempt.requestedScopes ?? [];
@@ -148,7 +153,7 @@
            const recipes = options?.accountFamilies ?? (yield* AccountFamilyConfiguration).recipes;
            const missing = missingOAuthScopes(attempt.identity?.issuer, requested, granted, recipes);
            if (requested.length > 0 && (granted === undefined || missing.length > 0)) {
-@@ -2676,7 +2700,11 @@
+@@ -2797,7 +2821,11 @@ export const makeOAuth = (
            ? {}
            : {
                grantedScopes: isFirstPartyAttempt(attempt)
@@ -161,7 +166,7 @@
                  : tokens.scope.split(/\s+/u).filter(Boolean),
              }),
  
-@@ -3095,7 +3123,9 @@
+@@ -3219,7 +3247,9 @@ export const makeOAuth = (
              // does not allow. The grant then needs reconnecting, and the response's tokens are
              // revoked.
              Effect.filterOrFail(
@@ -172,7 +177,7 @@
                (tokens) => ({
                  outcome: "reconnect" as const,
                  cause: { stage, field: "scope" } satisfies OAuthFailureCause,
-@@ -3208,7 +3238,11 @@
+@@ -3332,7 +3362,11 @@ export const makeOAuth = (
                  ? {}
                  : {
                      grantedScopes: isFirstPartyGrant(base)

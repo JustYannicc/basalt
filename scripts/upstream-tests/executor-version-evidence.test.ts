@@ -53,7 +53,11 @@ test("missing receipts are omitted and arbitrary setting values stay out of evid
   const root = await mkdtemp(join(tmpdir(), "executor-marker-private-"));
   context.after(() => rm(root, { recursive: true, force: true }));
   assert.equal(await executorMarkerSummary(root, candidate, attempt), "");
-  const receipt = evaluateMarkerRows([{ value: "password=synthetic-private-value" }], precondition, attempt);
+  const receipt = evaluateMarkerRows(
+    [{ value: "password=synthetic-private-value" }],
+    precondition,
+    attempt,
+  );
   await Effect.runPromise(retainExecutorMarkerReceipt(root, receipt));
   const summary = await executorMarkerSummary(root, candidate, attempt);
   assert.match(summary, /observed: `unavailable`/);

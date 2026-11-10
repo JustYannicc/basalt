@@ -79,12 +79,7 @@ test("p39 and p40 retain their original credential-host grammar", () => {
 test("protocol42 keeps underscore metadata while still sealing credentials", async () => {
   const adapter = await Effect.runPromise(appProtocol(42));
   const selected = await Effect.runPromise(
-    bundleAccounts(
-      adapter,
-      fixture.app,
-      fixture.key,
-      fixture.accounts(),
-    ),
+    bundleAccounts(adapter, fixture.app, fixture.key, fixture.accounts()),
   );
   const account = selected.app.one;
   assert.ok(account && "fields" in account && account.fields);

@@ -30,14 +30,24 @@ test("only one exact unnormalized 4.0.29 row is accepted with full transition id
     observed: "4.0.29",
     outcome: "accepted",
   });
-  assert.equal(evaluateMarkerRows([{ value: "4.0.29 " }], precondition, attempt).outcome, "refused");
+  assert.equal(
+    evaluateMarkerRows([{ value: "4.0.29 " }], precondition, attempt).outcome,
+    "refused",
+  );
   assert.equal(evaluateMarkerRows([{ value: "4.0.28" }], precondition, attempt).observed, "4.0.28");
 });
 
 test("missing, duplicate and non-version values fail closed without copying arbitrary data", () => {
   assert.equal(evaluateMarkerRows([], precondition, attempt).reason, "missing");
-  assert.equal(evaluateMarkerRows([{ value: "4.0.29" }, { value: "4.0.29" }], precondition, attempt).reason, "multiple_rows");
-  const invalid = evaluateMarkerRows([{ value: "password=must-not-escape" }], precondition, attempt);
+  assert.equal(
+    evaluateMarkerRows([{ value: "4.0.29" }, { value: "4.0.29" }], precondition, attempt).reason,
+    "multiple_rows",
+  );
+  const invalid = evaluateMarkerRows(
+    [{ value: "password=must-not-escape" }],
+    precondition,
+    attempt,
+  );
   assert.equal(invalid.outcome, "refused");
   assert.equal(invalid.observed, null);
   assert.equal(JSON.stringify(invalid).includes("must-not-escape"), false);
@@ -99,12 +109,20 @@ test("an accepted retry repeats only the read and receipt for the same pin trans
 
 test("receipt retention failure stops an otherwise accepted migration preflight", async () => {
   let continued = false;
-  const exit = await Effect.runPromiseExit(requireVersionMarker({
-    precondition,
-    attempt,
-    read: Effect.succeed([{ value: "4.0.29" }]),
-    retain: () => Effect.fail(new Error("fixture receipt disk failure")),
-  }).pipe(Effect.andThen(Effect.sync(() => { continued = true; }))));
+  const exit = await Effect.runPromiseExit(
+    requireVersionMarker({
+      precondition,
+      attempt,
+      read: Effect.succeed([{ value: "4.0.29" }]),
+      retain: () => Effect.fail(new Error("fixture receipt disk failure")),
+    }).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          continued = true;
+        }),
+      ),
+    ),
+  );
   assert.equal(exit._tag, "Failure");
   assert.equal(continued, false);
 });

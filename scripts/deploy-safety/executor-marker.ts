@@ -39,10 +39,7 @@ export function executorMarkerPrecondition(
 }
 
 /** An explicit null overwrites any ambient policy on releases outside the cutover. */
-export function executorMarkerPolicy(
-  candidate: string,
-  precondition?: ExecutorMarkerPrecondition,
-) {
+export function executorMarkerPolicy(candidate: string, precondition?: ExecutorMarkerPrecondition) {
   if (!/^[a-f0-9]{40}$/.test(candidate))
     throw new Error("Executor marker policy requires an immutable release candidate");
   if (precondition && precondition.transition.candidateGitCommit !== candidate)
