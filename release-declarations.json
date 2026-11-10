@@ -17,6 +17,26 @@
         "nativeStateRow": true,
         "recoveryDescriptor": true
       }
+    },
+    {
+      "action": "create-bucket",
+      "type": "Cloudflare.R2.Bucket",
+      "fqn": "VaultAttachments",
+      "props": {
+        "jurisdiction": "eu",
+        "storageClass": "Standard",
+        "publicAccess": false,
+        "forceDestroy": false,
+        "domains": [],
+        "cors": [],
+        "lifecycleRules": []
+      },
+      "removalPolicy": "retain",
+      "retention": {
+        "data": true,
+        "nativeStateRow": true,
+        "recoveryDescriptor": true
+      }
     }
   ]
 }

@@ -108,14 +108,14 @@ for (const reject of [false, true]) {
   });
 }
 
-for (const namespace of ["missing", "wrong", "drift"] as const) {
+for (const namespace of ["missing", "wrong", "drift", "vault-drift"] as const) {
   test(`namespace ${namespace} refuses before any Worker activation or provisioning`, async () => {
     const proof = fixture({ namespace });
     await assert.rejects(Effect.runPromise(proof.effect), /source-namespace/);
     assert.ok(
       !proof.events.some((event) => event.startsWith("activate:") || event.startsWith("command:")),
     );
-    if (namespace !== "drift") {
+    if (namespace !== "drift" && namespace !== "vault-drift") {
       assert.ok(!proof.events.some((event) => event.startsWith("validate:")));
       assert.equal(proof.writes(), 0);
     }
@@ -124,10 +124,14 @@ for (const namespace of ["missing", "wrong", "drift"] as const) {
 test("existing EU namespace is admitted before uploads and rechecked before activation without running its provisioning Command", async () => {
   const proof = fixture({ namespace: "eu" });
   await Effect.runPromise(proof.effect);
-  assert.equal(proof.events[0], "namespace:read");
-  const second = proof.events.indexOf("namespace:read", 1);
-  assert.ok(second > proof.events.indexOf("validate:Router"));
-  assert.ok(second < proof.events.findIndex((event) => event.startsWith("activate:")));
+  // App sources, then vaults: both are admitted before uploads and both are rechecked.
+  assert.deepEqual(proof.events.slice(0, 2), ["namespace:read", "namespace:read"]);
+  const validated = proof.events.indexOf("validate:Router"),
+    activated = proof.events.findIndex((event) => event.startsWith("activate:"));
+  assert.equal(
+    proof.events.slice(validated, activated).filter((event) => event === "namespace:read").length,
+    2,
+  );
   assert.ok(!proof.events.some((event) => event.includes("command:node ensure-artifacts.ts")));
 });
 test("an unsupported Command cannot be deferred through preparation", async () => {
