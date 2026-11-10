@@ -73,3 +73,41 @@ export async function expectedSource(app: AcceptanceApp, origin: string) {
     frameworkVersion: servedFrameworkVersion,
   };
 }
+
+export type OriginBindingIssue = {
+  property:
+    | "copiedFrom.name"
+    | "copiedFrom.reference"
+    | "copiedFrom.commit"
+    | "service.newInstance";
+  expectedSha256: string;
+  observedSha256: string;
+};
+
+/** Fingerprints expose the differing field without publishing preview URLs or response data. */
+export function installedOriginIssues(
+  payload: Record<string, unknown>,
+  expected: { package: string; reference: string },
+): OriginBindingIssue[] {
+  const object = (value: unknown) =>
+    typeof value === "object" && value !== null && !Array.isArray(value) ? record(value) : {};
+  const copied = object(payload.copiedFrom);
+  const service = object(payload.service);
+  const properties: readonly [OriginBindingIssue["property"], unknown, unknown][] = [
+    ["copiedFrom.name", expected.package, copied.name],
+    ["copiedFrom.reference", expected.reference, copied.reference],
+    ["copiedFrom.commit", null, copied.commit],
+    ["service.newInstance", true, service.newInstance],
+  ];
+  return properties.flatMap(([property, expectedValue, observed]) =>
+    expectedValue === observed
+      ? []
+      : [
+          {
+            property,
+            expectedSha256: digest(JSON.stringify(expectedValue) ?? "missing"),
+            observedSha256: digest(JSON.stringify(observed) ?? "missing"),
+          },
+        ],
+  );
+}

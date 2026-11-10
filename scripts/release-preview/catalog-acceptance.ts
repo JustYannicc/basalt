@@ -5,6 +5,8 @@ import { PreviewHttpClient } from "../pool-acceptance/preview-http.ts";
 import { catalogAcceptanceApps } from "./catalog-acceptance-inventory.ts";
 import {
   digest,
+  installedOriginIssues,
+  type OriginBindingIssue,
   expectedSource,
   identifier,
   record,
@@ -17,6 +19,7 @@ export type CatalogAcceptanceRow = {
   package: string;
   sourcePath: string;
   candidateHead: string;
+  originBindingIssues: OriginBindingIssue[];
   expectedDocumentSha256: string;
   expectedFilesSha256: string;
   observedDocumentSha256: string | null;
@@ -73,6 +76,7 @@ export async function runCatalogAcceptance(
       ...app,
       index,
       candidateHead,
+      originBindingIssues: [],
       expectedDocumentSha256: expected[index]!.documentSha256,
       expectedFilesSha256: expected[index]!.filesSha256,
       observedDocumentSha256: null,
@@ -208,14 +212,11 @@ export async function runCatalogAcceptance(
         // Persist the cleanup ID before any further request or assertion can fail.
         await checkpoint();
         row.activeVersion = identifier(payload.activeVersion);
-        const copied = record(payload.copiedFrom);
-        if (
-          copied.name !== row.package ||
-          copied.reference !== `${config.origin}${expectedRow.path}` ||
-          copied.commit !== null ||
-          record(payload.service).newInstance !== true
-        )
-          throw new Error("installed-origin-binding-mismatch");
+        row.originBindingIssues = installedOriginIssues(payload, {
+          package: row.package,
+          reference: `${config.origin}${expectedRow.path}`,
+        });
+        if (row.originBindingIssues.length) throw new Error("installed-origin-binding-mismatch");
         const retained = record(
           await requestJson(
             `${prefix}/apps/${encodeURIComponent(id)}/source?version=${encodeURIComponent(row.activeVersion)}`,

@@ -20,7 +20,13 @@ const config = {
   organizationId: "org_preview",
   poolAppId: "app_existing_pool",
 };
-type Fault = "missing-witness" | "source-mismatch" | "memory" | "refusal" | "cleanup";
+type Fault =
+  | "missing-witness"
+  | "source-mismatch"
+  | "memory"
+  | "refusal"
+  | "cleanup"
+  | "origin-mismatch";
 
 async function fixture(fault?: Fault) {
   const sources = new Map<string, unknown>();
@@ -118,7 +124,10 @@ async function fixture(fault?: Fault) {
         service: { id: app.package, newInstance: true },
         copiedFrom: {
           name: app.package,
-          reference: `${origin}/catalog/apps/${app.entry}.json`,
+          reference:
+            fault === "origin-mismatch" && app.entry === "aws"
+              ? "https://private-origin.example.invalid/changed"
+              : `${origin}/catalog/apps/${app.entry}.json`,
           commit: null,
         },
       });
@@ -234,7 +243,7 @@ test("a cleanup refusal cannot produce a successful receipt", async () => {
   assert.throws(() => requireSuccessfulCatalogAcceptance(result, head));
 });
 
-for (const fault of ["memory", "source-mismatch", "cleanup"] as const) {
+for (const fault of ["memory", "source-mismatch", "cleanup", "origin-mismatch"] as const) {
   test(`a failed private child reports safe ${fault} details before teardown`, async () => {
     const { result } = await run(fault);
     const directory = await mkdtemp(join(tmpdir(), "catalog-report-"));
@@ -269,6 +278,13 @@ for (const fault of ["memory", "source-mismatch", "cleanup"] as const) {
         assert.ok(summary.includes(result.rows[0]!.observedDocumentSha256!));
       }
       if (fault === "cleanup") assert.match(summary, /deletion was not confirmed/);
+      if (fault === "origin-mismatch") {
+        const issue = result.rows[0]!.originBindingIssues[0]!;
+        assert.equal(issue.property, "copiedFrom.reference");
+        assert.ok(summary.includes(issue.expectedSha256));
+        assert.ok(summary.includes(issue.observedSha256));
+        assert.ok(!summary.includes("private-origin.example.invalid"));
+      }
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

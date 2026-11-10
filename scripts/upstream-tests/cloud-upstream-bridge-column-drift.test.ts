@@ -25,6 +25,10 @@ for (const [statement, issue] of [
     "alter table cloud_company_profile alter column attempts set default 7",
     '1_baseline: cloud_company_profile.attempts.default: expected "0", observed "7"',
   ],
+  [
+    "alter table cloud_welcome_email alter column status set default 'public.pending'",
+    "1_baseline: cloud_welcome_email.status.default: expected \"'pending'::text\", observed \"'public.pending'::text\"",
+  ],
 ] as const) {
   test(`recorded column drift refuses without altering retained state: ${issue}`, async () => {
     await Effect.runPromise(

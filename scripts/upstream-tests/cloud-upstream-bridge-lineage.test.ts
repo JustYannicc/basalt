@@ -203,3 +203,26 @@ test("the shared runner refuses hosted holes and changed meanings with exact nam
     }).pipe(Effect.provide(pgliteLayer())),
   );
 });
+
+for (const status of ["PENDING", "public.pending"]) {
+  test(`index predicates preserve quoted literal bytes: ${status}`, async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* seedHistory(19);
+        yield* sql`drop index cloud_welcome_email_pending`;
+        yield* sql.unsafe(
+          "create index cloud_welcome_email_pending on cloud_welcome_email (created_at, user_id) where status = '" +
+            status +
+            "'",
+        );
+        const error = yield* refused(migrateCloudProductSteps());
+        assert.match(
+          error.message,
+          /1_baseline: changed definition of index cloud_welcome_email_pending/,
+        );
+        assert.ok(error.message.includes(status), error.message);
+      }).pipe(Effect.provide(pgliteLayer())),
+    );
+  });
+}

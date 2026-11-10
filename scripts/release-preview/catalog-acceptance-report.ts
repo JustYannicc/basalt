@@ -11,6 +11,10 @@ const hash = (value: unknown, length = 64) =>
     ? value
     : "missing-or-invalid";
 const reasons = new Set([
+  "BuildBusy",
+  "RuntimeBuildFailed",
+  "StorageError",
+  "RequestInvalid",
   "BuildMemoryExceeded",
   "CatalogImportFailed",
   "install-refused",
@@ -47,10 +51,31 @@ export function catalogAcceptanceFailures(value: unknown, head: string) {
       details.push(
         `source document expected ${hash(row.expectedDocumentSha256)}, observed ${hash(row.observedDocumentSha256)}`,
       );
-    if (row.expectedFilesSha256 !== row.installedFilesSha256)
+    if (row.installedFilesSha256 !== null && row.expectedFilesSha256 !== row.installedFilesSha256)
       details.push(
         `installed files expected ${hash(row.expectedFilesSha256)}, observed ${hash(row.installedFilesSha256)}`,
       );
+    const properties = new Set([
+      "copiedFrom.name",
+      "copiedFrom.reference",
+      "copiedFrom.commit",
+      "service.newInstance",
+    ]);
+    for (const value of Array.isArray(row.originBindingIssues) ? row.originBindingIssues : []) {
+      const issue = object(value);
+      if (typeof issue.property === "string" && properties.has(issue.property))
+        details.push(
+          `${issue.property} expected SHA256 ${hash(issue.expectedSha256)}, observed SHA256 ${hash(issue.observedSha256)}`,
+        );
+    }
+    if (
+      typeof row.httpStatus === "number" &&
+      Number.isInteger(row.httpStatus) &&
+      row.httpStatus >= 100 &&
+      row.httpStatus <= 599 &&
+      row.httpStatus !== 200
+    )
+      details.push(`install HTTP status expected 200, observed ${row.httpStatus}`);
     if (details.length) failures.push(`${app.entry}: ${details.join("; ")}`);
   }
   const cleanup = object(result.cleanup);

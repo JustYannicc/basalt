@@ -39,6 +39,8 @@ export function requireSuccessfulCatalogAcceptance(
       row.package !== expected.package ||
       row.sourcePath !== expected.sourcePath ||
       row.candidateHead !== candidateHead ||
+      !Array.isArray(row.originBindingIssues) ||
+      row.originBindingIssues.length !== 0 ||
       row.outcome !== "success" ||
       row.failure !== null ||
       row.httpStatus !== 200 ||

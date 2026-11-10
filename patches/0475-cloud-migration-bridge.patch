@@ -33,10 +33,10 @@ index 0000000..f3f5041
 +  }).pipe(Effect.mapError(migrationFailed("product")));
 diff --git a/apps/hosted/cloud/src/implementation/cloud-migration-state.ts b/apps/hosted/cloud/src/implementation/cloud-migration-state.ts
 new file mode 100644
-index 0000000..4665278
+index 0000000..58ab934
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/cloud-migration-state.ts
-@@ -0,0 +1,209 @@
+@@ -0,0 +1,216 @@
 +import { cloudColumnIssues } from "./cloud-migration-columns.ts";
 +import { Effect } from "effect";
 +import { SqlClient } from "effect/sql";
@@ -172,7 +172,11 @@ index 0000000..4665278
 +] as const;
 +
 +const normalizeIndex = (definition: string) =>
-+  definition.toLowerCase().replace(/::text|public\.|[\s"()]/g, "");
++  (definition.match(/'(?:[^']|'')*'|[^']+/g) ?? [])
++    .map((part) =>
++      part.startsWith("'") ? part : part.toLowerCase().replace(/::text|public\.|[\s"()]/g, ""),
++    )
++    .join("");
 +
 +/** Check the stored operations too. A receipt alone cannot establish that its SQL survived. */
 +export const cloudMigrationStateIssues = (keys: ReadonlyArray<string>) =>
@@ -192,7 +196,8 @@ index 0000000..4665278
 +      is_nullable: string;
 +      column_default: string | null;
 +    }>`select table_name, column_name, data_type, is_nullable, column_default
-+      from information_schema.columns where table_schema = 'public'`;
++      from information_schema.columns where table_schema = 'public'
++      and table_name in ${sql.in([...new Set(operations.flatMap(([, , tables]) => Object.keys(tables)))])}`;
 +    for (const [id, name, tables] of operations) {
 +      for (const [table, required] of Object.entries(tables)) {
 +        for (const column of required.split(" ")) {
@@ -217,7 +222,7 @@ index 0000000..4665278
 +    }>`select
 +      c.relname as indexname, i.indisvalid as valid, pg_get_indexdef(i.indexrelid) as definition from pg_index i
 +      join pg_class c on c.oid = i.indexrelid join pg_namespace n on n.oid = c.relnamespace
-+      where n.nspname = 'public'`;
++      where n.nspname = 'public' and c.relname in ${sql.in(indexes.map(([, , name]) => name))}`;
 +    for (const [id, name, index, target, unique] of indexes) {
 +      if (!applied.has(id)) continue;
 +      const actual = actualIndexes.find((item) => item.indexname === index && item.valid);
@@ -226,7 +231,9 @@ index 0000000..4665278
 +        const [table, ...rest] = target.split(" ");
 +        const expected = `create ${unique ? "unique " : ""}index ${index} on ${table} using btree ${rest.join(" ")}`;
 +        if (normalizeIndex(actual.definition) !== normalizeIndex(expected))
-+          issues.push(`${id}_${name}: changed definition of index ${index}; expected ${expected}`);
++          issues.push(
++            `${id}_${name}: changed definition of index ${index}; expected ${expected}; observed ${JSON.stringify(actual.definition)}`,
++          );
 +      }
 +    }
 +    if (
@@ -838,10 +845,10 @@ index a97f73d..6e34f5f 100644
      yield* sql`create table if not exists ${sql(table)} (
 diff --git a/apps/hosted/cloud/src/implementation/cloud-migration-columns.ts b/apps/hosted/cloud/src/implementation/cloud-migration-columns.ts
 new file mode 100644
-index 0000000..7fe4df4
+index 0000000..872ea8b
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/cloud-migration-columns.ts
-@@ -0,0 +1,150 @@
+@@ -0,0 +1,148 @@
 +type Column = { data_type: string; is_nullable: string; column_default: string | null };
 +type Expected = readonly [type: string, nullable: string, defaultValue: string | null];
 +
@@ -977,15 +984,13 @@ index 0000000..7fe4df4
 +  },
 +};
 +
-+const normalizeDefault = (value: string | null) => value?.replace(/public\./g, "") ?? null;
-+
 +export function cloudColumnIssues(table: string, column: string, actual: Column) {
 +  const expected = columns[table]?.[column];
 +  if (!expected) return [`${table}.${column}: missing expected column contract`];
-+  const values = [actual.data_type, actual.is_nullable, normalizeDefault(actual.column_default)];
++  const values = [actual.data_type, actual.is_nullable, actual.column_default];
 +  const properties = ["type", "nullable", "default"];
 +  return expected.flatMap((value, index) =>
-+    normalizeDefault(value) === values[index]
++    value === values[index]
 +      ? []
 +      : [
 +          `${table}.${column}.${properties[index]}: expected ${JSON.stringify(value)}, observed ${JSON.stringify(values[index])}`,
