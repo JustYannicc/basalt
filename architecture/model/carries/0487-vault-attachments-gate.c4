@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.cloudDrive {
+    metadata {
+      constraint "Until the release that provisions VaultAttachments is live, production ArtifactsCredentials binds no attachment bucket; only a test stage binds its disposable one. A vault without a bucket keeps text and history and refuses every attachment and import command as unavailable before the vault opens, so the quota meter never records a write that cannot land; its stand-in bucket reads nothing and writes nothing. The gate retires in the next release, which binds the provisioned bucket."
+    }
+  }
+}
