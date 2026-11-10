@@ -177,6 +177,9 @@ test("an unknown location refuses by name instead of failing to decode", async (
   await assert.rejects(proof.run(readDeclaredBucket(target)), (error: unknown) => {
     assert.ok(error instanceof BarrierRefusal, String(error));
     assert.equal(error.reason, "declared-bucket-location-unknown");
+    assert.deepEqual(error.delta?.changed, [
+      { path: "location", old: "apac|eeur|enam|weur|wnam|oc", new: "mars" },
+    ]);
     return true;
   });
 });

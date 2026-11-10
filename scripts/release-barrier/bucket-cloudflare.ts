@@ -81,7 +81,14 @@ export const readDeclaredBucket = (target: BucketTarget, fqn = "declared-bucket"
       throw new BarrierRefusal("declared-bucket-location-unknown", fqn, {
         fqn,
         type: "Cloudflare.R2.Bucket",
-        changed: [{ path: "location", old: "known-hint", new: null }],
+        changed: [
+          {
+            path: "location",
+            old: knownLocation.literals.join("|"),
+            // A location hint is public metadata; anything not shaped like one is withheld.
+            new: /^[a-z]{1,16}$/.test(hint) ? hint : "[unrecognised]",
+          },
+        ],
       });
     const location = hint;
     return {
