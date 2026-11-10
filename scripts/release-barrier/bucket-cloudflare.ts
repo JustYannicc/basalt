@@ -7,6 +7,8 @@ import type { PropChange } from "./prop-diff.ts";
 import { declaredMismatch } from "./declared-refusal.ts";
 import { BarrierRefusal, digest } from "./manifest.ts";
 
+const knownLocation = Schema.Literals(["apac", "eeur", "enam", "weur", "wnam", "oc"]);
+
 export const bucketAccount = Effect.gen(function* () {
   const environment = yield* Effect.serviceOption(CloudflareEnvironment);
   if (Option.isNone(environment))
@@ -72,12 +74,16 @@ export const readDeclaredBucket = (target: BucketTarget, fqn = "declared-bucket"
         type: "Cloudflare.R2.Bucket",
         changed,
       });
-    const location =
-      bucket.location == null
-        ? undefined
-        : Schema.decodeUnknownSync(Schema.Literals(["apac", "eeur", "enam", "weur", "wnam", "oc"]))(
-            bucket.location,
-          );
+    // The API returns location hints in uppercase ("EEUR") although it documents lowercase;
+    // Alchemy's own R2 provider normalises them the same way before comparing.
+    const hint = bucket.location == null ? undefined : bucket.location.toLowerCase();
+    if (hint !== undefined && !Schema.is(knownLocation)(hint))
+      throw new BarrierRefusal("declared-bucket-location-unknown", fqn, {
+        fqn,
+        type: "Cloudflare.R2.Bucket",
+        changed: [{ path: "location", old: "known-hint", new: null }],
+      });
+    const location = hint;
     return {
       attributes: {
         ...target,
