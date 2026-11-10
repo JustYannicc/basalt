@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { RuntimeCreateDeclaration } from "./runtime-create-schema.ts";
 
 const logicalName = Schema.String.check(Schema.isPattern(/^[A-Za-z][A-Za-z0-9_/-]*$/u));
 const className = Schema.String.check(Schema.isPattern(/^[A-Za-z_$][A-Za-z0-9_$]*$/u));
@@ -55,7 +56,7 @@ export const SqliteClassDeclaration = Schema.Struct({
 });
 
 /** Reviewed intent has no field through which an author can supply observed authority. */
-export const DeclaredChanges = Schema.Struct({
+const LegacyDeclaredChanges = Schema.Struct({
   schemaVersion: Schema.Literal(1),
   stack: logicalName,
   retentionOwner: Schema.NonEmptyString,
@@ -64,13 +65,37 @@ export const DeclaredChanges = Schema.Struct({
   ),
 });
 
+export const DeclaredChanges = Schema.Union([
+  LegacyDeclaredChanges,
+  Schema.Struct({
+    schemaVersion: Schema.Literal(2),
+    stack: logicalName,
+    retentionOwner: Schema.NonEmptyString,
+    changes: Schema.NonEmptyArray(
+      Schema.Union([
+        BucketDeclaration,
+        D1Declaration,
+        SqliteClassDeclaration,
+        RuntimeCreateDeclaration,
+      ]),
+    ),
+  }),
+]);
+
 export type DeclaredChanges = typeof DeclaredChanges.Type;
 export type BucketDeclaration = typeof BucketDeclaration.Type;
 export type SqliteClassDeclaration = typeof SqliteClassDeclaration.Type;
 
-export const decodeDeclaredChanges = Schema.decodeUnknownSync(DeclaredChanges, {
+const decode = Schema.decodeUnknownSync(DeclaredChanges, {
   onExcessProperty: "error",
   errors: "all",
 });
+export function decodeDeclaredChanges<T extends { schemaVersion: 1 }>(
+  value: T,
+): typeof LegacyDeclaredChanges.Type;
+export function decodeDeclaredChanges(value: unknown): DeclaredChanges;
+export function decodeDeclaredChanges(value: unknown) {
+  return decode(value);
+}
 
 export type D1Declaration = typeof D1Declaration.Type;
