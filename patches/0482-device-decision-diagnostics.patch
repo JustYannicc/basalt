@@ -370,10 +370,10 @@ diff --git a/apps/hosted/server/src/implementation/native-control-error.ts b/app
 +      const failure =
 +        stage === "native_control_signing"
 +          ? "signing"
-+          : stage === "native_control_response"
-+            ? "invalid_response"
-+            : timeout
-+              ? "timeout"
++          : timeout
++            ? "timeout"
++            : stage === "native_control_response"
++              ? "invalid_response"
 +              : "transport";
 +      return { stage, failure } satisfies DeviceFailureDetails;
 +    },

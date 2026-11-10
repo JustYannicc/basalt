@@ -77,6 +77,18 @@ test("native dependency diagnostics distinguish status, timeout and invalid resp
       failure: "timeout",
     },
     {
+      run: async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new DOMException("private body timeout", "TimeoutError"));
+            },
+          }),
+        ),
+      stage: "native_control_response",
+      failure: "timeout",
+    },
+    {
       run: async () => new Response("private unreadable body"),
       stage: "native_control_response",
       failure: "invalid_response",
