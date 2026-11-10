@@ -3,7 +3,7 @@ import { matchesGlob } from "node:path";
 import { fileURLToPath } from "node:url";
 import { areas, heavyJobs, sharedInputs, staticInputs } from "./areas.ts";
 import { matchingDeclarations, readDeclarations } from "./declarations.ts";
-import { isEligibleJob } from "../ci-bundles/schedule.ts";
+import { configuredBoatJobs as parseBoatJobs } from "./boat.ts";
 import { carryTargets, frozenInputMatcher, isRelativeInput } from "./inputs.ts";
 
 export { carryTargets } from "./inputs.ts";
@@ -60,9 +60,7 @@ export function selectPaths(paths: readonly string[]) {
 }
 
 export function jobRoutes(jobs: readonly string[], configuredBoatJobs: string) {
-  const configured = [...new Set(configuredBoatJobs.toLowerCase().split(",").filter(Boolean))];
-  if (configured.some((job) => !heavyJobs.includes(job) || !isEligibleJob(job)))
-    throw new Error("Unknown configured Boat job");
+  const configured = parseBoatJobs(configuredBoatJobs);
   return {
     hostedJobs: jobs.filter((job) => !configured.includes(job)),
     boatJobs: jobs.filter((job) => configured.includes(job)),

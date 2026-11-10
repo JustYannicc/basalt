@@ -11,7 +11,7 @@ const title = "Rows retain usable actions on a phone";
 const workflow = `jobs:
   account-acquisition:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'account-acquisition')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'account-acquisition')
     steps:
       - working-directory: .upstream
         run: bun run e2e:self-host --test-name "${selector}" --workers 1

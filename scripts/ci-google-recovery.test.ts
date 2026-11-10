@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { test } from "node:test";
 import { selectPaths } from "./ci/affected.ts";
 import { heavyJobs } from "./ci/areas.ts";
-import { gateErrors, fastJobs, bundleJobs, conditionalJobs } from "./ci/gate.ts";
+import { gateErrors, fastJobs, conditionalJobs } from "./ci/gate.ts";
 import { patternForGroup, readDeclarations } from "./ci/declarations.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
@@ -101,7 +101,7 @@ test("both Google halves retain browser setup, ten-minute budgets and independen
     assert.equal(job.needs, "select");
     assert.equal(job["runs-on"], "ubuntu-latest");
     assert.equal(job["timeout-minutes"], 10);
-    assert.equal(job.if, `contains(fromJSON(needs.select.outputs.hosted_jobs), '${ids[index]}')`);
+    assert.equal(job.if, `contains(fromJSON(needs.select.outputs.jobs), '${ids[index]}')`);
     assert.equal(job.steps[3].uses, "./.github/actions/setup-browser");
     assert.deepEqual(job.steps[3].with, { "prepare-upstream": "true" });
     assert.equal(job.steps[3]["timeout-minutes"], 2);
@@ -124,13 +124,10 @@ test("account selection and the full aggregate require both Google halves", () =
     assert.ok(selected.includes(id));
     assert.ok(workflow.jobs.check.needs.includes(id));
     const needs = Object.fromEntries(
-      [...fastJobs, ...heavyJobs, ...bundleJobs, ...conditionalJobs].map((job) => [
+      [...fastJobs, ...heavyJobs, ...conditionalJobs].map((job) => [
         job,
         {
-          result:
-            bundleJobs.includes(job) || (conditionalJobs.includes(job) && job !== "workerd-assets")
-              ? "skipped"
-              : "success",
+          result: conditionalJobs.includes(job) && job !== "workerd-assets" ? "skipped" : "success",
         },
       ]),
     );

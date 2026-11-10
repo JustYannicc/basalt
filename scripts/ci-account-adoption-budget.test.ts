@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { readDeclarations, patternForGroup } from "./ci/declarations.ts";
 import { selectPaths } from "./ci/affected.ts";
 import { heavyJobs } from "./ci/areas.ts";
-import { bundleJobs, conditionalJobs, fastJobs, gateErrors } from "./ci/gate.ts";
+import { conditionalJobs, fastJobs, gateErrors } from "./ci/gate.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
 const workflow = parse(
@@ -78,7 +78,7 @@ test("the audited partition keeps preparation, evidence and the unchanged 20-min
   assert.equal(original["timeout-minutes"], 20);
   assert.equal(audited["timeout-minutes"], original["timeout-minutes"]);
   assert.equal(audited.needs, "select");
-  assert.equal(audited.if, `contains(fromJSON(needs.select.outputs.hosted_jobs), '${job}')`);
+  assert.equal(audited.if, `contains(fromJSON(needs.select.outputs.jobs), '${job}')`);
   assert.deepEqual(audited.steps.slice(0, 6), original.steps.slice(0, 6));
   const runs = audited.steps.filter((step: { run?: string }) =>
     step.run?.includes("e2e:self-host"),
@@ -101,13 +101,10 @@ test("affected selection and the full aggregate cannot skip the audited partitio
   assert.ok(selectPaths([".upstream/e2e/tests/account-cache-scope.spec.ts"]).jobs.includes(job));
   assert.ok(workflow.jobs.check.needs.includes(job));
   const needs = Object.fromEntries(
-    [...fastJobs, ...heavyJobs, ...bundleJobs, ...conditionalJobs].map((id) => [
+    [...fastJobs, ...heavyJobs, ...conditionalJobs].map((id) => [
       id,
       {
-        result:
-          bundleJobs.includes(id) || (conditionalJobs.includes(id) && id !== "workerd-assets")
-            ? "skipped"
-            : "success",
+        result: conditionalJobs.includes(id) && id !== "workerd-assets" ? "skipped" : "success",
       },
     ]),
   );
