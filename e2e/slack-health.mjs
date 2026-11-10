@@ -195,14 +195,41 @@ const program = Effect.gen(function* () {
     ["ratelimited", "upstream_unavailable", 429],
   ]) {
     answer = { kind: "profile-error", error, status: http };
+    const startedAt = Date.now();
     const health = yield* check(ids[0]);
+    const failure = health.apps.find((a) => a.app === app.id)?.check?.failure;
+    const occurredAt = failure?.detail?.occurredAt;
+    if (error !== "unknown_fixture_failure") {
+      record(
+        `profile failure time ${error} HTTP ${http}`,
+        typeof occurredAt === "string" &&
+          new Date(Date.parse(occurredAt)).toISOString() === occurredAt &&
+          Date.parse(occurredAt) >= startedAt &&
+          Date.parse(occurredAt) <= Date.now(),
+        true,
+      );
+    }
     record(`profile ${error} HTTP ${http}`, status(health), expected);
     record(
       `profile failure ${error} HTTP ${http}`,
-      health.apps.find((a) => a.app === app.id)?.check?.failure,
+      failure,
       error === "unknown_fixture_failure"
         ? { phase: "app-threw", tag: "HostOperationFailed" }
-        : { phase: "vendor", tag: "ProviderError" },
+        : {
+            phase: "vendor",
+            tag: "ProviderError",
+            detail: {
+              source: "provider",
+              reason:
+                expected === "credentials_rejected"
+                  ? "unauthorized"
+                  : expected === "forbidden"
+                    ? "forbidden"
+                    : "rate_limited",
+              status: http,
+              occurredAt,
+            },
+          },
     );
   }
   for (const [name, body] of [
