@@ -22,6 +22,39 @@ export interface ArtifactsRepo {
   [Symbol.dispose]?(): void;
 }
 
+/** The slice of an R2 bucket binding a vault uses. Reads are ranged parts of at most 1 MiB. */
+export interface VaultBucket {
+  put(key: string, value: Uint8Array | string): Promise<unknown>;
+  get(
+    key: string,
+    options?: { range?: { offset: number; length: number } },
+  ): Promise<{ size: number; arrayBuffer(): Promise<ArrayBuffer> } | null>;
+  list(options: {
+    prefix: string;
+    cursor?: string;
+    startAfter?: string;
+    limit: number;
+  }): Promise<{ objects: readonly { key: string }[]; truncated: boolean; cursor?: string }>;
+  delete(key: string): Promise<unknown>;
+}
+
+/** Strata's bucket, over the runtime binding: bodies are rebuilt from the bounded ranged read. */
+const strataBucket = (bucket: VaultBucket): Bucket & { delete(key: string): Promise<unknown> } => ({
+  put: (key, value) => bucket.put(key, value),
+  async get(key, options) {
+    const object = await bucket.get(key, options);
+    if (!object) return null;
+    const bytes = await object.arrayBuffer();
+    return {
+      size: object.size,
+      body: new Blob([bytes]).stream(),
+      arrayBuffer: async () => bytes,
+    };
+  },
+  list: (options) => bucket.list(options),
+  delete: (key) => bucket.delete(key),
+});
+
 /** What crosses the object's RPC boundary: plain JSON, success or the drive's typed failure. */
 export type VaultReply =
   | { ok: true; value: unknown }
@@ -43,7 +76,7 @@ const close = (repo: ArtifactsRepo) => repo[Symbol.dispose]?.();
 export function vaultObject(input: {
   app: string;
   storage: TransactionStorage;
-  bucket: Bucket & { delete(key: string): Promise<unknown> };
+  bucket: VaultBucket;
   artifacts: ArtifactsNamespace;
   now?: () => number;
 }) {
@@ -99,7 +132,7 @@ export function vaultObject(input: {
     const vault = await openVault({
       storage: input.storage,
       accountStorage: input.storage,
-      bucket: input.bucket,
+      bucket: strataBucket(input.bucket),
       prefix: `${name}/`,
       repository: vaultRepository,
       now,

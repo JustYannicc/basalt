@@ -1,0 +1,183 @@
+diff --git a/apps/hosted/cloud/src/artifacts-credentials.ts b/apps/hosted/cloud/src/artifacts-credentials.ts
+--- a/apps/hosted/cloud/src/artifacts-credentials.ts
++++ b/apps/hosted/cloud/src/artifacts-credentials.ts
+@@ -11,13 +11,18 @@ import { Clock, Effect, Layer, Option, Redacted, Schedule, Schema, Semaphore } f
+ import { ArtifactsCredentials } from "./infrastructure/artifacts-credentials-worker.ts";
+ import {
+   ArtifactsTokenCoordinator,
++  VaultAttachments,
+   cloudSourceNamespace,
++  cloudVaultNamespace,
++  vaultObjectName,
+   creation,
+   credential,
+   envelope,
+   unavailable,
+ } from "./infrastructure/artifacts-tokens.ts";
+ import { cloudEncryptionKey } from "./infrastructure/secrets.ts";
++// The vault engine is Basalt's own drive, shared with its tests and migration tooling.
++import { vaultObject } from "../../../../../src/drive/object.ts";
+ import {
+   cloudObservability,
+   cloudTelemetry,
+@@ -60,9 +65,14 @@ const makeArtifactsTokenCoordinator = Effect.gen(function* () {
+   const namespace = yield* cloudSourceNamespace;
+   const resource = yield* Cloudflare.Artifacts.Namespace("AppSources", { namespace });
+   const binding = yield* Cloudflare.Artifacts.ReadWriteNamespace(resource);
++  const vaults = yield* Cloudflare.Artifacts.ReadWriteNamespace(
++    yield* Cloudflare.Artifacts.Namespace("Vaults", { namespace: yield* cloudVaultNamespace }),
++  );
++  const attachments = yield* Cloudflare.R2.ReadWriteBucket(VaultAttachments);
+   const encryptionKey = yield* cloudEncryptionKey;
+   return Effect.gen(function* () {
+     const state = yield* Cloudflare.DurableObjectState;
++    let vault: ReturnType<typeof vaultObject> | undefined;
+     const encryption = yield* aesGcmCredentials(yield* encryptionKey, crypto);
+     const lock = yield* Semaphore.make(1);
+     const open = (repository: AppCodeId) =>
+@@ -378,6 +388,32 @@ const makeArtifactsTokenCoordinator = Effect.gen(function* () {
+             parent: Option.getOrUndefined(externalTrace(trace)),
+           }),
+         ),
++      vault: (app: string, command: unknown) =>
++        Effect.gen(function* () {
++          // Refuse a vault command on any object not named for that vault, including app code ones.
++          if (state.raw.id.name !== vaultObjectName(app))
++            return { ok: false, error: { _tag: "DriveRequestFailed", reason: "denied" } };
++          if (!vault) {
++            const artifacts = yield* vaults.raw;
++            const raw = yield* attachments.raw;
++            // The drive reads ranges, lists and deletes; it never needs conditional reads.
++            const bucket = {
++              put: (key: string, value: Uint8Array | string) => raw.put(key, value),
++              get: (key: string, options?: { range?: { offset: number; length: number } }) =>
++                raw.get(key, options),
++              list: (options: {
++                prefix: string;
++                cursor?: string;
++                startAfter?: string;
++                limit: number;
++              }) => raw.list(options),
++              delete: (key: string) => raw.delete(key),
++            };
++            vault = vaultObject({ app, storage: state.raw.storage, bucket, artifacts });
++          }
++          const opened = vault;
++          return yield* Effect.promise(() => opened.request(command));
++        }),
+       alarm: () =>
+         Effect.gen(function* () {
+           const raw = yield* state.storage.get<unknown>("prepare");
+@@ -399,7 +435,15 @@ const makeArtifactsTokenCoordinator = Effect.gen(function* () {
+         ),
+     };
+   }).pipe(Effect.orDie);
+-}).pipe(Effect.provide(Cloudflare.Artifacts.ReadWriteNamespaceBinding), Effect.orDie);
++}).pipe(
++  Effect.provide(
++    Layer.mergeAll(
++      Cloudflare.Artifacts.ReadWriteNamespaceBinding,
++      Cloudflare.R2.ReadWriteBucketBinding,
++    ),
++  ),
++  Effect.orDie,
++);
+ 
+ /** Dispose provider RPC handles without retaining them in the credential store. */
+ const disposeRpc = (value: unknown) =>
+diff --git a/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts b/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
+--- a/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
++++ b/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
+@@ -7,6 +7,9 @@ import * as Cloudflare from "alchemy/Cloudflare";
+ import { Stage } from "alchemy/Stage";
+ import { Config, Effect, Option, Redacted, Schema } from "effect";
+ import { ArtifactsCredentials } from "./artifacts-credentials-worker.ts";
++import { DriveRequestFailed } from "apps/contracts";
++import type { DriveBackend } from "@executor-js/sdk/core";
++import { testStage } from "./stage.ts";
+ import { cloudEncryptionKey } from "./secrets.ts";
+ import { providerFailureCode } from "../implementation/provider-failure.ts";
+ 
+@@ -94,8 +97,54 @@ interface Coordinator {
+     trace: TraceContext | undefined,
+   ) => Effect.Effect<typeof envelope.Type | null, SourceError, RuntimeContext>;
+   readonly alarm: () => Effect.Effect<void, never, RuntimeContext>;
++  /** One drive command on the vault object named for `app`; the reply is plain JSON. */
++  readonly vault: (app: string, command: unknown) => Effect.Effect<unknown, never, RuntimeContext>;
+ }
+ 
++/** Vault repositories sit beside the stage's app sources in their own namespace. */
++export const cloudVaultNamespace = cloudSourceNamespace.pipe(
++  Effect.map((source) => `${source.replace(/-apps$/u, "")}-vaults`),
++);
++
++/**
++ * Attachment bytes. Production binds the retained bucket the Basalt stack declares; a test stage
++ * owns a disposable one, because a reference only resolves once a release has recorded it.
++ */
++export const VaultAttachments = testStage.pipe(
++  Effect.orDie,
++  Effect.flatMap((stage) =>
++    Option.isSome(stage)
++      ? Cloudflare.R2.Bucket("VaultAttachmentsPreview", { jurisdiction: "eu", forceDestroy: true })
++      : Cloudflare.R2.Bucket.ref("VaultAttachments"),
++  ),
++);
++
++/** A vault's object shares the coordinator class under a name no app code can take. */
++export const vaultObjectName = (app: string) => `vault:${app}`;
++
++const VaultReply = Schema.Union([
++  Schema.Struct({ ok: Schema.Literal(true), value: Schema.Json }),
++  Schema.Struct({ ok: Schema.Literal(false), error: DriveRequestFailed }),
++]);
++
++/** Every executor routes an app's drive commands to that app's vault object. */
++export const cloudVaultDrives = (
++  coordinator: Cloudflare.DurableObject<ArtifactsTokenCoordinator>,
++): DriveBackend => ({
++  request: ({ app, command }) =>
++    coordinator
++      .getByName(vaultObjectName(app))
++      .vault(app, command)
++      .pipe(
++        Effect.flatMap(Schema.decodeUnknownEffect(VaultReply)),
++        Effect.mapError(() => new DriveRequestFailed({ reason: "invalid_response" })),
++        Effect.flatMap((reply) =>
++          reply.ok ? Effect.succeed(reply.value) : Effect.fail(reply.error),
++        ),
++        Effect.provide(RuntimeContext.phantom),
++      ),
++});
++
+ /**
+  * A private object per app code serializes refreshes across all Worker instances and callers.
+  * The namespace, with every stored credential, moved here from the API Worker.
+diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
+--- a/apps/hosted/cloud/src/infrastructure/executor.ts
++++ b/apps/hosted/cloud/src/infrastructure/executor.ts
+@@ -28,6 +28,8 @@ import { organizationPublishers } from "../implementation/publishers.ts";
+ import type { AppSources } from "./source.ts";
+ import { isolateDeclarations } from "./isolate-memory.ts";
+ import { cloudBlobs } from "./blobs.ts";
++import { ArtifactsCredentials } from "./artifacts-credentials-worker.ts";
++import { ArtifactsTokenCoordinator, cloudVaultDrives } from "./artifacts-tokens.ts";
+ import { cloudWorkflows } from "./workflow-runtime.ts";
+ import { cloudRuntime } from "./runtime.ts";
+ import { durableDeclarations } from "./durable-declarations.ts";
+@@ -100,6 +102,7 @@ export const cloudExecutor = Effect.fn(function* (
+   const makeRuntime = yield* cloudRuntime(origin, databases);
+   const workflows = yield* cloudWorkflows;
+   const blobs = yield* cloudBlobs;
++  const drives = cloudVaultDrives(yield* ArtifactsTokenCoordinator.from(ArtifactsCredentials));
+   const publishing = (yield* appPublishing.pipe(Effect.orDie)) === "on";
+   // App storage, hosted permission checks and Better Auth share the event's client.
+   const database = (yield* InvocationDatabase).pipe(Effect.mapError(() => new StorageError()));
+@@ -139,6 +142,7 @@ export const cloudExecutor = Effect.fn(function* (
+         // SDK owners include a namespace; dashboard routes resolve the organization ID itself.
+         workflowInputUrl: ({ owner, app, id }) =>
+           `${origin}/org/${encodeURIComponent(owner.replace(/^organization:/u, ""))}/approvals/workflow/${encodeURIComponent(app)}/${encodeURIComponent(id)}`,
++        drives,
+         registry: {
+           storage: yield* Effect.flatMap(organizationPublishers, makeRegistryRuntimeStorage).pipe(
+             Effect.provideContext(services),
