@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-account-parser-stages",
+  "file": "0483-account-parser-stages.patch",
+  "content_sha256": "a18a45b0a49f67133caebe0e61c0a0e4691f7ca4c77105d981548d6e71992e02",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
