@@ -163,21 +163,18 @@ export function vaultObject(input: {
         opened = undefined;
         return { ok: false, error: { _tag: "DriveRequestFailed", reason: "unavailable" } };
       }
-      try {
-        return await Effect.runPromise(
-          dispatch(decoded).pipe(
-            Effect.map((value): VaultReply => ({ ok: true, value })),
-            Effect.catchTag("DriveRequestFailed", (error) =>
-              Effect.succeed<VaultReply>({
-                ok: false,
-                error: Schema.encodeSync(DriveRequestFailed)(error),
-              }),
-            ),
+      // Expected drive failures are replies; anything else is a defect and propagates as one.
+      return await Effect.runPromise(
+        dispatch(decoded).pipe(
+          Effect.map((value): VaultReply => ({ ok: true, value })),
+          Effect.catchTag("DriveRequestFailed", (error) =>
+            Effect.succeed<VaultReply>({
+              ok: false,
+              error: Schema.encodeSync(DriveRequestFailed)(error),
+            }),
           ),
-        );
-      } catch {
-        return { ok: false, error: { _tag: "DriveRequestFailed", reason: "outcome_unknown" } };
-      }
+        ),
+      );
     },
   };
 }
