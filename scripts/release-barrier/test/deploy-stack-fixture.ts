@@ -37,6 +37,7 @@ export const fixture = (
     deploymentDrift?: boolean;
     baselineError?: CloudflareHttpError;
     baseline?: typeof import("../cloudflare.ts").readBaseline;
+    upload?: typeof uploadVersion;
     extraWorkers?: readonly string[];
     evidence?: Pick<DeployStackOptions, "record" | "manifest">;
     preparationError?: unknown;
@@ -299,6 +300,7 @@ export const fixture = (
             upload: (worker) =>
               Effect.gen(function* () {
                 events.push(`validate:${worker.id}`);
+                if (options.upload) return yield* options.upload(worker);
                 if (options.reject && worker.id === "Router")
                   throw new Error("provider refuses Router");
                 if (repair && options.latestSettings && worker.id === "Api")
