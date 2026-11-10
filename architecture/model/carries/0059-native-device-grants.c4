@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "Native device grants retain a distinct audience and the native and offline-access scope envelope in the existing grant store. Registration and refresh cannot change computer identity or capabilities. Refresh, including cached reply replay, rechecks current host membership and computer state before issuing access; ordinary device grants keep their own policy."
+      constraint "Native device grants retain a distinct audience and the native and offline-access scope envelope in the existing grant store. Registration and refresh cannot change computer identity or capabilities. Refresh, including cached reply replay, rechecks current host membership and computer state before issuing access; ordinary device grants keep their own policy. Native grant checks use the upstream typed refusal constructors with explicit resource and membership reasons, preserving their order and HTTP status."
     }
   }
 }

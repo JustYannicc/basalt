@@ -1,9 +1,0 @@
-{
-  "identity": "executor-app-query-authorization",
-  "file": "0039-app-query-authorization.patch",
-  "content_sha256": "c28252748737db058a58cc631ca1eececbbb1d618bc08b10d35ea9f38dfafefb",
-  "kind": "upstream",
-  "upstream_pull_request": 2453,
-  "database_sensitive": false,
-  "workflow_sensitive": false
-}

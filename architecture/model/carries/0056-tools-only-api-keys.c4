@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "Tools-only API keys grant discovery and execution without account, app-source or key administration. Their distinct prefix must agree with stored scope metadata, so missing metadata and older hosts refuse them instead of granting full access. MCP authorization and scoped connection revocation retain the same action policy."
+      constraint "Tools-only API keys grant discovery and execution without account, app-source or key administration. Their distinct prefix must agree with stored scope metadata, so missing metadata and older hosts refuse them instead of granting full access. MCP authorization and scoped connection revocation retain the same action policy. PAT scope mismatches use the upstream typed bearer refusal and retain the wrong-resource audit reason."
     }
   }
 }
