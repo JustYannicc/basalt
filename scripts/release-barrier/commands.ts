@@ -7,6 +7,8 @@ import {
   stageNamespaces,
 } from "../ensure-artifacts.ts";
 import { BarrierRefusal } from "./manifest.ts";
+import { ArtifactsHttpFailure } from "../artifacts-http-failure.ts";
+import { namespaceAdmissionReader, type NamespaceReadOptions } from "./namespace-read.ts";
 
 const commands: Record<
   string,
@@ -57,7 +59,11 @@ export function commandPhase(id: string, props: ExecProps) {
 }
 
 /** A missing namespace is an unsupported new resource, never permission to provision it mid-release. */
-export async function admitSourceNamespace(props: ExecProps, api = cloudflareArtifactsApi) {
+export async function admitSourceNamespace(
+  props: ExecProps,
+  api = cloudflareArtifactsApi,
+  options: NamespaceReadOptions = {},
+) {
   const value = (key: string) => {
     const configured = props.env?.[key];
     const text = Redacted.isRedacted(configured) ? Redacted.value(configured) : configured;
@@ -78,7 +84,14 @@ export async function admitSourceNamespace(props: ExecProps, api = cloudflareArt
   // The vault namespace is provisioned by an operator before the release that names it.
   for (const namespace of stageNamespaces(value("CLOUD_SOURCE_NAMESPACE"))) {
     try {
-      await ensureEuNamespace(readOnly, namespace);
+      await ensureEuNamespace(
+        namespaceAdmissionReader(
+          readOnly,
+          namespace === value("CLOUD_SOURCE_NAMESPACE") ? "apps" : "vaults",
+          options,
+        ),
+        namespace,
+      );
     } catch (error) {
       if (error instanceof BarrierRefusal) throw error;
       throw new BarrierRefusal("source-namespace-not-ready", "AppSourceNamespace", {
@@ -144,7 +157,11 @@ function safeDiagnostics(text: string | undefined) {
  */
 export function readFailure(error: unknown) {
   const kind = error instanceof Error ? error.name || "Error" : typeof error;
-  if (!(error instanceof Error) || error.constructor !== Error) return kind;
+  if (
+    !(error instanceof Error) ||
+    (error.constructor !== Error && !(error instanceof ArtifactsHttpFailure))
+  )
+    return kind;
   for (const pattern of clientMessages) {
     const match = pattern.exec(error.message);
     if (!match) continue;

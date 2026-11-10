@@ -78,6 +78,13 @@ export async function nativeFixture(
       ]);
       return json(201, { client_id: "fixture-client" });
     }
+    // Production refuses these form endpoints with 415 unless the body is declared as a form.
+    if (
+      (request.url === "/api/auth/oauth2/device-authorization" ||
+        request.url === "/api/auth/oauth2/token") &&
+      !request.headers["content-type"]?.startsWith("application/x-www-form-urlencoded")
+    )
+      return json(415, { code: "UNSUPPORTED_MEDIA_TYPE" });
     if (request.url === "/api/auth/oauth2/device-authorization") {
       assert.equal(fields.get("resource"), `${origin}/native`);
       assert.equal(fields.get("code_challenge_method"), "S256");
@@ -272,10 +279,18 @@ export async function nativeFixture(
           );
         } else {
           modelSends++;
-          if (modelFailure === "disconnect") { peer.terminate(); return; }
+          if (modelFailure === "disconnect") {
+            peer.terminate();
+            return;
+          }
           if (modelFailure === "unknown") {
             response(502, { "content-type": "application/json", "x-should-retry": "false" });
-            data(Buffer.from('{"error":{"code":"upstream_outcome_unknown","retryable":false}}'), false, false, true);
+            data(
+              Buffer.from('{"error":{"code":"upstream_outcome_unknown","retryable":false}}'),
+              false,
+              false,
+              true,
+            );
             return;
           }
           response(200, { "content-type": "text/event-stream" });
@@ -337,7 +352,8 @@ export async function nativeFixture(
       });
       peer.on("error", () => undefined);
       if (readyFailure === "close") peer.terminate();
-      else if (readyFailure !== "timeout") send({ type: "ready", expiresAt: Date.now() + 600000, limits });
+      else if (readyFailure !== "timeout")
+        send({ type: "ready", expiresAt: Date.now() + 600000, limits });
     });
   });
   server.listen(0, "127.0.0.1");
@@ -386,8 +402,12 @@ export async function nativeFixture(
     loseRefresh: () => {
       loseRefresh = true;
     },
-    failBeforeReady: (value: "close" | "timeout" | undefined) => { readyFailure = value; },
-    failModel: (value: "unknown" | "not-started" | "disconnect" | undefined) => { modelFailure = value; },
+    failBeforeReady: (value: "close" | "timeout" | undefined) => {
+      readyFailure = value;
+    },
+    failModel: (value: "unknown" | "not-started" | "disconnect" | undefined) => {
+      modelFailure = value;
+    },
     dropTool: (value: boolean) => {
       dropTool = value;
     },
@@ -397,7 +417,16 @@ export async function nativeFixture(
     interrupt: () => {
       for (const socket of sockets.clients) socket.terminate();
     },
-    counts: () => ({ refreshes, writes, cancels, polls, accessReads, healthReads, modelSends, operationOpens }),
+    counts: () => ({
+      refreshes,
+      writes,
+      cancels,
+      polls,
+      accessReads,
+      healthReads,
+      modelSends,
+      operationOpens,
+    }),
     close: async () => {
       for (const socket of sockets.clients) socket.terminate();
       sockets.close();

@@ -148,6 +148,7 @@ const program = Effect.gen(function* () {
         owner,
         poolId: "pool-native-client",
         setDisplay: (enabled) => Effect.runPromise(pool.display(enabled)),
+        sentTeams: () => Effect.runPromise(pool.teams),
       });
       const modelSearch = await verifyNativeSearch({ worker, origin, headers, WebSocket });
       const localModelHeaders = await verifyNativeLocalHeaders({ origin, token, WebSocket });

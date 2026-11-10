@@ -45,7 +45,7 @@
     "npmRebuild": false,
     "mac": {
       "category": "public.app-category.productivity",
-      "identity": null
+      "identity": "-"
     },
     "win": {
       "signAndEditExecutable": false

@@ -11,6 +11,30 @@ import {
   waitForContainerVersion,
 } from "./container-cloudflare.ts";
 
+test("manual and normal checkout roots preserve the same pool declaration", () => {
+  const proof = containerPublication();
+  const olds = { ...containerProps(), context: "/runner/temp/candidate/containers/pool/" };
+  const news = { ...containerProps(), context: "/runner/work/project/containers/pool/" };
+  assert.doesNotThrow(() =>
+    assertImageOnlyPublication(proof.publication, news, olds, proof.previous),
+  );
+});
+
+for (const change of ["directory", "relative", "dockerfile", "policy"] as const)
+  test(`checkout relocation still rejects a changed ${change}`, () => {
+    const proof = containerPublication();
+    const olds = { ...containerProps(), context: "/runner/temp/candidate/containers/pool/" };
+    const news = { ...containerProps(), context: "/runner/work/project/containers/pool/" };
+    if (change === "directory") news.context = "/runner/work/project/containers/other/";
+    if (change === "relative") news.context = "containers/pool/";
+    if (change === "dockerfile") Object.assign(news, { dockerfile: "/other/Dockerfile" });
+    if (change === "policy") news.maxInstances = 2;
+    assert.throws(
+      () => assertImageOnlyPublication(proof.publication, news, olds, proof.previous),
+      /unsupported-container-declaration-change/,
+    );
+  });
+
 test("only an immutable image change preserves the existing EU/basic/one-instance application", async () => {
   const proof = containerPublication();
   const result = await Effect.runPromise(

@@ -1,0 +1,9 @@
+{
+  "identity": "native-pool-current-teams",
+  "file": "0485-native-pool-current-teams.patch",
+  "content_sha256": "414b7669f9a5e2f2c8a8f55f7e1810623d74af5ab5f043e90439ceb26a7a24c0",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

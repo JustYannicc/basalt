@@ -25,6 +25,7 @@ function sdk(
     publicAccess?: boolean;
     lifecycle?: boolean;
     fail?: boolean;
+    location?: string | null;
   } = {},
 ) {
   const calls: string[] = [];
@@ -94,7 +95,7 @@ function sdk(
                 name: target.bucketName,
                 jurisdiction: "eu",
                 storage_class: "Standard",
-                location: "weur",
+                location: options.location === undefined ? "weur" : options.location,
               };
         }
       }
@@ -156,4 +157,29 @@ test("the real R2 SDK reports a missing bucket without adopting or writing", asy
   assert.equal(await proof.run(readDeclaredBucket(target)), undefined);
   assert.equal(proof.calls.length, 1);
   assert.ok(proof.calls[0]?.startsWith("GET"));
+});
+
+// The R2 API returns location hints in uppercase, unlike its documented lowercase enum; the
+// Terraform provider and Alchemy's own R2 provider both normalise it.
+for (const location of ["EEUR", "WEUR", "eeur", null])
+  test(`the real R2 read accepts an EU bucket whose location reads back as ${JSON.stringify(location)}`, async () => {
+    const proof = sdk({ location });
+    const value = await proof.run(readDeclaredBucket(target));
+    assert.equal(
+      value?.attributes.location,
+      location === null ? undefined : location.toLowerCase(),
+    );
+    assert.ok(proof.calls.every((call) => call.startsWith("GET")));
+  });
+
+test("an unknown location refuses by name instead of failing to decode", async () => {
+  const proof = sdk({ location: "MARS" });
+  await assert.rejects(proof.run(readDeclaredBucket(target)), (error: unknown) => {
+    assert.ok(error instanceof BarrierRefusal, String(error));
+    assert.equal(error.reason, "declared-bucket-location-unknown");
+    assert.deepEqual(error.delta?.changed, [
+      { path: "location", old: "apac|eeur|enam|weur|wnam|oc", new: "mars" },
+    ]);
+    return true;
+  });
 });

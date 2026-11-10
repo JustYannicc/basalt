@@ -1,12 +1,10 @@
 {
   "kind": "new-app-contribution",
   "upstreamIssue": "https://github.com/UsefulSoftwareCo/executor/issues/2372",
-  "sourceSha256": "9c49d5891184999f4a9264bd0a0b0981c8c4708c3c91c9024a5d835b3f266af5",
+  "sourceSha256": "ed1dfeef2505b41bc6f9e0d4614f57eea855f952e9a76c44ae8e6a4efe6a2600",
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",
-    "apps": "0.0.1-beta.104-basalt.12",
-    "react": "19.2.0",
-    "react-dom": "19.2.0"
+    "apps": "0.0.1-beta.104-basalt.12"
   },
   "transport": {
     "kind": "mcp",
@@ -27,7 +25,7 @@
   },
   "catalogSource": {
     "repository": "https://github.com/JustYannicc/signalbox-app-aws",
-    "commit": "1216f790f03270da9d819c978eddc84c0deae3a8",
+    "commit": "ad50e2675c329e42556b24eb5ed5e64beba7d9b7",
     "fileSha256": {
       "README.md": "4a7f9eff7991585abf3176a103790d729b8af5862c4df8b3c1d90f6e99bb2f61",
       "connection.ts": "c79f17b3854d380d7cf55ccaf1b297880f383606a20e3a728f19e488bc838ccc",
@@ -41,30 +39,20 @@
       "index.ts": "3d76e00355ce86625f5aa85da400ecae6a866441b8568eedddd6446b3cec2d6c",
       "migrations/0001_identity_center.sql": "39b1b23f0c2eae660367b1804d89361e46d676b2c5551fef279a18789d49e11f",
       "operations.ts": "54e58542b0d28db990ee83bfae27860baa95d4ab7ce6b0ec725beca725162308",
-      "package.json": "262a40abf4b117508a807ddf2d6ab8cb3bef0c8154c7609913ecaab248cf3623",
+      "package.json": "f27191a3995c08feb0e4a7f418ef45281f9c772ec67a8d126ca5a85df18d244b",
       "provider.ts": "417904326e2afa9964dfdddaa932c373bbb251529d17cc6a98635ed697e240a9",
       "requirements.ts": "a7a5c8cd5c77a37a5a6890458b7013d131ed82f86e41e38ab8d4d580ceb430d1",
       "safe-result.ts": "a0458b969cb996cb504f37eb668c808b788834239f2000b77815b3b7b01cedca",
       "saved-connection.ts": "c20fb81d49cb1edf0b5a73a5245789e0ed8e94528d8776c2c2ff00f96e8d276d",
       "session-store.ts": "99f78d29415d6d2e6a433e940103038bad03f9b00f288706b6350bd28e52677f",
-      "ui/access-check.tsx": "70f60d75e6535da13471eca400bd21e7372a40b3cec7777bc24a28d7801d101d",
-      "ui/api.ts": "98392911af558a68f9b51bdcc535318f80a9b724dded336ef291db81f8a4235a",
-      "ui/app.tsx": "27ffd1a74964b85602eb79f78ba3dacd278456483e3d14a463cc6cf80d5d06f5",
-      "ui/assets.d.ts": "35d26ea66c86da9701e4f4b467913481ffeae910761cea34c775c5dacb7f8eaa",
-      "ui/connection-state.ts": "0b87c2b487dad3b8fb7aff91d11e47a7aeadf79e0fa7f668e28ee0ff9049f7f0",
-      "ui/connection.tsx": "b8516a2debd61c430f118b5707c1b9be28a2180cf4def6d9e7c55e26574b3c8c",
-      "ui/controls.tsx": "1ef88e440c8df9d7808d96821b1d8cd7e04da10886b36caec5fb0060000cb660",
-      "ui/host.ts": "8699a482db03685f7c1eddd152dc5fa380d8571995421654b782659ca95e0307",
-      "ui/index.html": "83a1605d1aba7ad3a07ac2ed0e87b23eb1f6ebf8fdfe5063f0b2c33e5a9ce0ee",
-      "ui/inventory.tsx": "2811f4c08c370a2a9b1774d60ae770b225acca57c3ef8ff5bf06833ff965d3a5",
-      "ui/main.tsx": "704503e69848f604adf6c5b2eb5e885f470a8ee3f8bfface3987ef5b740d47e2",
-      "ui/model.ts": "29ddec94ea6563c53f55164b826f69899194c41d7c46ab8436132ece76dbf808",
+      "ui/index.html": "91202a483a17e41def8e055fe4887395127e5009da4bd6b4cdd599c7ed488151",
+      "ui/main.js": "c32d5b1e0511a54a532f28d446b6c78e1f99bf738e51154c0e6eaecd250e7f07",
       "ui/style.css": "29e278c2a27a7e2386005abb55db509c847177fd66de948b1fdffbdad046db62",
       "vendor/LICENSE": "a9455541e8a4e4766d146a7552ac547c04bfb7a8718f5af516f1b9e346e82a77",
       "vendor/aws4fetch.d.ts": "df222c9f4dc40589be58c01d0d5536acc601bfd5eec572bc00122a1b9001f560",
       "vendor/aws4fetch.js": "aea0f8576a89a9afea973904bb92e98a642265eb5159ff940ede689ad8e910f0",
       "wire.ts": "b90fe097fdaad8fd83e974cb99fb68a9889b81eef8fbadf819e1535bfef8aa15"
     },
-    "snapshotSha256": "9c49d5891184999f4a9264bd0a0b0981c8c4708c3c91c9024a5d835b3f266af5"
+    "snapshotSha256": "ed1dfeef2505b41bc6f9e0d4614f57eea855f952e9a76c44ae8e6a4efe6a2600"
   }
 }

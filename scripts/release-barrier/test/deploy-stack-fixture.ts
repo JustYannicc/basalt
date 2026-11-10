@@ -37,6 +37,7 @@ export const fixture = (
     deploymentDrift?: boolean;
     baselineError?: CloudflareHttpError;
     baseline?: typeof import("../cloudflare.ts").readBaseline;
+    upload?: typeof uploadVersion;
     extraWorkers?: readonly string[];
     evidence?: Pick<DeployStackOptions, "record" | "manifest">;
     preparationError?: unknown;
@@ -46,6 +47,7 @@ export const fixture = (
     newResource?: boolean;
     interrupted?: boolean;
     namespace?: "eu" | "missing" | "wrong" | "drift" | "vault-drift";
+    namespaceRead?: DeployStackOptions["namespaceRead"];
     unknownCommand?: boolean;
     orphanedDatabaseCommand?: boolean;
     planFailure?: "read" | "diff";
@@ -245,6 +247,7 @@ export const fixture = (
         releasePlanning = true;
         return yield* deployStack(compiled, {
           candidate: "a".repeat(40),
+          namespaceRead: options.namespaceRead,
           record: async (receipt) => {
             receipts.push(receipt);
             await options.evidence?.record(receipt);
@@ -299,6 +302,7 @@ export const fixture = (
             upload: (worker) =>
               Effect.gen(function* () {
                 events.push(`validate:${worker.id}`);
+                if (options.upload) return yield* options.upload(worker);
                 if (options.reject && worker.id === "Router")
                   throw new Error("provider refuses Router");
                 if (repair && options.latestSettings && worker.id === "Api")
