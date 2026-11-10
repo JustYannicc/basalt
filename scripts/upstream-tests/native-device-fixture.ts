@@ -41,6 +41,7 @@ export async function fixture(
         url: origin,
         issuer: `${origin}/api/auth`,
         resourceOrigins: { api: [origin], mcp: [origin] },
+        oauthRedirectUri: Option.none(),
         nativeSigningKey: key,
       },
       [],
