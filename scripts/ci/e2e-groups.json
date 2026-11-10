@@ -320,5 +320,10 @@
     "job": "aws-connectors",
     "target": "self-host",
     "mode": "managed"
+  },
+  "host-managed-accounts-cloud:account-policy-and-import": {
+    "job": "host-managed-accounts-cloud",
+    "target": "cloud",
+    "mode": "managed"
   }
 }

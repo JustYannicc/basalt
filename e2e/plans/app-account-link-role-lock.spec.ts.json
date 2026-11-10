@@ -21,7 +21,7 @@
   },
   "runs": {
     "hostedAppLinkRoleLock": [
-      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement"
+      "host-managed-accounts-cloud:account-policy-and-import"
     ]
   },
   "inherited": []

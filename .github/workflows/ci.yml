@@ -805,6 +805,12 @@ jobs:
           bun run e2e:cloud --test-name
           "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement)"
           --workers 1
+      - name: Verify account policy and import in a fresh Cloud runtime
+        working-directory: .upstream
+        run: >-
+          bun run e2e:cloud --test-name
+          "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-cloud:account-policy-and-import)"
+          --workers 1
       - name: Keep listed account actions usable through Cloud
         working-directory: .upstream
         run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-cloud:listed-account-actions)" --workers 1
