@@ -1,0 +1,42 @@
+import { DurableObject } from "cloudflare:workers";
+import { vaultObject } from "../../object.ts";
+
+interface Environment {
+  VAULT: DurableObjectNamespace<Vault>;
+  ATTACHMENTS: R2Bucket;
+}
+
+/** The production object's shape: real SQLite storage and R2, a stand-in Artifacts control plane. */
+export class Vault extends DurableObject<Environment> {
+  vault: ReturnType<typeof vaultObject> | undefined;
+  override async fetch(request: Request) {
+    const input = (await request.json()) as { url: string; token: string; command: unknown };
+    this.vault ??= vaultObject({
+      app: "workerd",
+      storage: this.ctx.storage,
+      bucket: {
+        put: (key, value) => this.env.ATTACHMENTS.put(key, value),
+        get: (key, options) => this.env.ATTACHMENTS.get(key, options),
+        list: (options) => this.env.ATTACHMENTS.list(options),
+        delete: (key) => this.env.ATTACHMENTS.delete(key),
+      },
+      artifacts: {
+        create: async () => ({ remote: input.url }),
+        get: async () => ({
+          info: async () => ({ remote: input.url }),
+          createToken: async (_scope, ttl) => ({
+            plaintext: input.token,
+            expiresAt: new Date(Date.now() + ttl * 1000).toISOString(),
+          }),
+          readBlob: async () => null,
+        }),
+      },
+    });
+    return Response.json(await this.vault.request(input.command));
+  }
+}
+
+export default {
+  fetch: (request: Request, env: Environment) =>
+    env.VAULT.get(env.VAULT.idFromName("vault:workerd")).fetch(request),
+};
