@@ -3,7 +3,7 @@
  * It never imports "obsidian"; it runs in the person's browser inside Basalt.
  *
  * The parent wires `createConnection` to Basalt's existing browser-only route that creates
- * the app-scoped MCP connection. The button then opens `obsidian://basalt-sync?...`, where the
+ * the app-scoped MCP connection. The button then opens `obsidian://signalbox-sync?...`, where the
  * plugin shows the vault and server and starts device authorization.
  */
 import type { DeviceConfig } from "./controller.ts";
@@ -43,7 +43,7 @@ export function mountConnectButton(
       const anchor = document.createElement("a");
       anchor.href = link;
       anchor.textContent = "Open it here";
-      note.append(anchor, ". Install the Basalt Sync plugin first if you haven't.");
+      note.append(anchor, ". Install the Signalbox Sync plugin first if you haven't.");
       note.hidden = false;
     } catch (failure) {
       note.textContent =

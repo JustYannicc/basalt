@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-obsidian-signalbox-sync",
+  "file": "0481-obsidian-signalbox-sync.patch",
+  "content_sha256": "83879560d2130248fe3f2c7157f70b0afdbbf612e18ba3e96a3af2100eae141b",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

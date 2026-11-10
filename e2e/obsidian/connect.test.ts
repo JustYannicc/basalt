@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { Schema } from "effect";
 import { AppId, AppSlug, ToolName } from "@executor-js/sdk";
 import { ConnectionId, ConnectionInput } from "@executor-js/mcp-auth/connections";
@@ -62,6 +63,13 @@ test("the dashboard installs the plugin release this checkout publishes", () => 
   assert.equal(basaltSyncVersion, manifest.version);
   assert.equal(Object.hasOwn(versions, manifest.version), true);
   assert.equal(manifest.id, protocolAction);
+  // The release workflow, the dashboard's BRAT link and the plugin agree on one tag per version.
+  assert.equal(basaltSyncTag, `${manifest.id}-${manifest.version}`);
+  const release = readFileSync(
+    new URL("../../.github/workflows/obsidian-plugin-release.yml", import.meta.url),
+    "utf8",
+  );
+  assert.ok(release.includes(`tag="${manifest.id}-$version"`));
   assert.equal(basaltSyncRepository("https://github.com/owner/repo"), "owner/repo");
   assert.equal(basaltSyncRepository("https://github.com/owner/repo.git"), "owner/repo");
   assert.equal(basaltSyncRepository("https://gitlab.com/owner/repo"), null);
