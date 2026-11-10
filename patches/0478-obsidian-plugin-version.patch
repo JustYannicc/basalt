@@ -1,0 +1,19 @@
+diff --git a/apps/hosted/web/src/contracts/obsidian-plugin.ts b/apps/hosted/web/src/contracts/obsidian-plugin.ts
+--- a/apps/hosted/web/src/contracts/obsidian-plugin.ts
++++ b/apps/hosted/web/src/contracts/obsidian-plugin.ts
+@@ -2,9 +2,13 @@ import { Data, Effect } from "effect";
+ import { HttpClient, HttpClientRequest } from "effect/http";
+ import { Atom } from "effect/reactivity";
+ import { browserOnly, dashboardHttpClient } from "@executor-js/ui/contracts/http";
++import { basaltSyncVersion } from "./obsidian-plugin-version.ts";
+ 
+-/** The Basalt Sync version this dashboard connects to; it names the plugin's release tag. */
+-export const basaltSyncVersion = "0.1.0";
++/**
++ * The Basalt Sync version this dashboard connects to; it names the plugin's release tag. Basalt's
++ * upstream preparation generates it from the plugin manifest, so a plugin bump needs no carry.
++ */
++export { basaltSyncVersion };
+ export const basaltSyncTag = `basalt-sync-${basaltSyncVersion}`;
+ /** Obsidian downloads exactly these files when it installs a plugin. */
+ export const basaltSyncFiles = ["main.js", "manifest.json", "styles.css"] as const;
