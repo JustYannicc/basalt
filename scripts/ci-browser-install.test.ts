@@ -75,7 +75,7 @@ if (name === 'sudo') {
   if (args.includes('--dry-run')) process.exit(mode !== 'missing' && existsSync(join(root, 'installed')) ? 0 : 1);
   const config = process.env.APT_CONFIG;
   if (config) {
-    assert.equal(readFileSync(config, 'utf8').trim(), 'Binary::apt-get::APT::Get::Download-Only \"true\";');
+    assert.equal(readFileSync(config, 'utf8').trim(), 'Binary::apt-get::APT::Get::Download-Only "true";');
     record('download-only', []);
   }
   if (mode === 'fail') process.exit(1);
