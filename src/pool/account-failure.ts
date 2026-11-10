@@ -12,8 +12,30 @@ export interface AccountFailureDetail {
   source: "provider" | "home" | "transport";
   reason: Reason;
   status?: number;
+  parserStage?:
+    | "monthly_decode"
+    | "weekly_decode"
+    | "missing_amount"
+    | "profile_entitlement"
+    | "unknown";
   occurredAt: string;
 }
+const parserStage = (message: unknown): AccountFailureDetail["parserStage"] => {
+  switch (message) {
+    case "xAI monthly billing response could not be parsed.":
+      return "monthly_decode";
+    case "xAI weekly quota response could not be parsed.":
+      return "weekly_decode";
+    case "xAI monthly remaining quota is unavailable.":
+    case "xAI weekly remaining quota is unavailable.":
+    case "xAI billing response did not contain usable quota.":
+      return "missing_amount";
+    case "xAI subscription eligibility could not be confirmed.":
+      return "profile_entitlement";
+    default:
+      return "unknown";
+  }
+};
 const statusOf = (value: unknown) =>
   typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 599
     ? value
@@ -82,6 +104,7 @@ export function accountCollectionFailure(reading: Json, now: number): AccountFai
     source,
     reason,
     ...(source === "provider" && status !== undefined ? { status } : {}),
+    ...(reason === "invalid_response" ? { parserStage: parserStage(error.message) } : {}),
     occurredAt,
   };
 }

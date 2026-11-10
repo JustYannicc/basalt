@@ -50,6 +50,23 @@
           "reason": "Requires a process-owned registration and a loopback credential service."
         }
       }
+    },
+    "accountFailureParserStages": {
+      "fixtures": "actors",
+      "title": "driver failed readings retain closed parser stages in account details",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises shared account diagnostics through hosted public APIs and UI."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Requires a process-owned registration and a loopback credential service."
+        }
+      }
     }
   },
   "runs": {
@@ -60,6 +77,9 @@
       "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
     ],
     "accountFailureSourceSeparation": [
+      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
+    ],
+    "accountFailureParserStages": [
       "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
     ]
   },
