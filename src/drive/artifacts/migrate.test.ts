@@ -54,6 +54,17 @@ async function packVault() {
     edits: [{ path: "note.md", content: "conflicting edit" }],
   });
   assert.equal(conflict.state, "conflict");
+  const kept: string[] = [conflict.oid];
+  for (let index = 0; index < 4; index++) {
+    const saved = await vault.drive.commit({
+      ref: conflict.ref,
+      expected: kept.at(-1)!,
+      operation: `kept-${index}`,
+      edits: [{ path: "note.md", content: `kept edit ${index}` }],
+      message: `kept ${index}`,
+    });
+    kept.push(saved.oid);
+  }
   const refs = Object.fromEntries(
     [...data.storage.sql.exec("SELECT name, oid FROM drive_refs")].map((row) => [
       String(row.name),
@@ -77,6 +88,7 @@ async function packVault() {
       conflict: conflict.oid,
     },
     bytes,
+    kept,
     close() {
       data.close();
       account.close();
@@ -89,19 +101,30 @@ test("an R2-pack vault migrates with identical commit ids, a clean fsck and its 
   const source = await packVault();
   try {
     // Tiny limits force many pushes, the way a vault over 64 MiB would split.
-    const sizes: number[] = [];
+    const sizes: number[] = [],
+      keptSizes: number[] = [];
     const counted = repository(server);
     const result = await migrateVault({
       objects: source.objects,
       refs: source.refs,
       repository: {
         ...counted,
-        push: (request) => (sizes.push(request.objects.length), counted.push(request)),
+        push: (request) => {
+          sizes.push(request.objects.length);
+          if (request.updates.some((update) => update.ref.startsWith("refs/heads/conflicts/")))
+            keptSizes.push(request.objects.length);
+          return counted.push(request);
+        },
       },
       limits: { objects: 4 },
     });
     // Kept branches are chunked like main: no push carries much more than one commit's closure.
     assert.ok(Math.max(...sizes) <= 6, JSON.stringify(sizes));
+    assert.ok(keptSizes.length >= 3, `kept branch must split: ${keptSizes}`);
+    assert.ok(
+      keptSizes.every((size) => size <= 4),
+      `kept branch exceeded object limit: ${keptSizes}`,
+    );
     assert.ok(result.pushes > 2, `pushes: ${result.pushes}`);
     assert.equal(remoteMain(server), source.refs["refs/heads/main"]);
     git(server.bare, "fsck", "--full", "--strict");
@@ -120,7 +143,8 @@ test("an R2-pack vault migrates with identical commit ids, a clean fsck and its 
     )
       .toString()
       .trim();
-    assert.match(kept, new RegExp(`^refs/heads/conflicts/\\S+ ${source.commits.conflict}$`));
+    assert.match(kept, new RegExp(`^refs/heads/conflicts/\\S+ ${source.kept.at(-1)}$`));
+    for (const oid of source.kept) assert.ok(remoteCommits.has(oid), `kept commit ${oid} survived`);
     assert.equal(git(server.bare, "show", `${source.commits.v1}:note.md`).toString(), "one");
     // The tree holds the standard LFS pointer; the bytes copy key for key with the same id.
     assert.match(
