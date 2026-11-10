@@ -63,6 +63,7 @@ if (name === 'sudo') {
   execute(join(root, '.upstream/node_modules/.bin/playwright'), args.slice(1));
 } else if (name === 'dpkg') {
   record(name, args);
+  assert.ok(args.slice(1).every((path) => existsSync(path)), 'local install requires downloaded debs');
   if (mode === 'partial') process.exit(1);
   if (mode === 'slow') {
     const progress = setInterval(() => { record('unpack-progress', []); console.log('Unpacking fixture package...'); }, 5000);
@@ -80,7 +81,8 @@ if (name === 'sudo') {
   if (mode === 'fail') process.exit(1);
   if (mode === 'stall' && mirror.includes('http://archive.ubuntu.com/'))
     execute('curl', ['--silent', '--show-error', '--max-time', '75', ${JSON.stringify(url)}]);
-  if (!config) writeFileSync(join(root, 'installed'), 'yes');
+  if (config) writeFileSync(join(root, 'tmp/playwright-apt/libfixture_1_amd64.deb'), 'downloaded fixture');
+  else writeFileSync(join(root, 'installed'), 'yes');
 } else throw new Error('Unexpected fixture command ' + name);
 `;
   for (const name of ["sudo", "bunx", "dpkg"])
@@ -91,6 +93,7 @@ if (name === 'sudo') {
   return {
     root,
     async run(hit: boolean) {
+      if (!hit) rmSync(join(root, "tmp/playwright-apt/libfixture_1_amd64.deb"));
       const child = spawn("bash", [script, String(hit)], {
         env: {
           PATH: `${bin}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`,
@@ -232,8 +235,17 @@ test("a mirror that accepts connections but never responds reaches the fallback 
     const result = await fixture_.run(false);
     const seconds = (Date.now() - start) / 1000;
     assert.equal(result.code, 0, result.output);
-    const attempts = result.calls.filter((call) => call.name === "playwright");
+    const attempts = result.calls.filter(
+      (call) => call.name === "playwright" && !call.args.includes("--dry-run"),
+    );
     assert.equal(attempts.length, 2);
+    assert.equal(result.calls.filter((call) => call.name === "download-only").length, 2);
+    assert.equal(result.calls.filter((call) => call.name === "dpkg").length, 1);
+    assert.equal(
+      result.calls.filter((call) => call.name === "playwright" && call.args.includes("--dry-run"))
+        .length,
+      1,
+    );
     assert.ok(seconds >= 59 && seconds < 70, `mirror failover took ${seconds}s`);
     console.log(`Stalled mirror failed over and installed in ${seconds.toFixed(2)}s`);
   } finally {
