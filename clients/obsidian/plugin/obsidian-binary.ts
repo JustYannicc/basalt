@@ -13,7 +13,7 @@ function desktopReader(plugin: Plugin): DesktopReader | undefined {
   const module: unknown = require("./desktop-reader.cjs");
   const exported = object(module);
   if (typeof exported.createReader !== "function")
-    throw new Error("The desktop byte reader is invalid. Reinstall Basalt Sync.");
+    throw new Error("The desktop byte reader is invalid. Reinstall Signalbox Sync.");
   const raw: unknown = exported.createReader(adapter.getBasePath()),
     reader = object(raw);
   const snapshot = reader.snapshot,

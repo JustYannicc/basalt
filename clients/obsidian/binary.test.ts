@@ -31,6 +31,9 @@ function device(initial: Record<string, Uint8Array<ArrayBuffer>> = {}) {
   const io: BinaryIo = {
     snapshot,
     async read(path, expected, offset, length) {
+      // The same bounds as the desktop reader.
+      if (length < 1 || length > 1048576 || offset + length > expected.bytes)
+        throw new Error("Attachment read exceeds its range bound");
       const file = files.get(path);
       if (!file || file.stamp !== expected.stamp) throw new Error("Local attachment changed");
       return file.content.slice(offset, offset + length);
@@ -529,6 +532,109 @@ test("a large Markdown note stays text in cloud reads/search and is present offl
     ).run();
     assert.deepEqual(phone.files.get("large.md")?.content, content);
     await assert.rejects(mobile.evict("large.md"), /kept offline/);
+  } finally {
+    c.close();
+  }
+});
+
+test("Obsidian text formats sync as Git text while PDFs, large text and non-UTF-8 text stay attachments", async () => {
+  const c = await cloud();
+  const encode = (value: string) => new TextEncoder().encode(value);
+  const source = device({
+    "Board.canvas": encode('{"nodes":[],"edges":[]}\n'),
+    "paper.pdf": new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x0a, 0x00, 0xff, 0x01]),
+    "latin1.csv": new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x0a]),
+    "export.json": encode(`[${"0,".repeat(512 * 1024)}0]`),
+    "Empty.md": new Uint8Array(),
+  });
+  let sequence = 0;
+  try {
+    const mac = await createBinaryClient({
+      text: source.text,
+      io: source.io,
+      remote: c.remote,
+      store: source.store,
+      pins: source.pins,
+      mode: "full",
+      id: () => String(++sequence),
+      changed: () => {},
+    });
+    // An empty note is text, and import never asks the device reader for zero bytes.
+    assert.equal((await mac.local.importEntry?.({ path: "Empty.md", bytes: 0 }))?.kind, "note");
+    const sync = await createSync({
+      local: mac.local,
+      remote: c.remote,
+      store: source.syncStore,
+      id: () => String(++sequence),
+    });
+    await sync.run();
+    source.put("Board.canvas", encode('{"nodes":[{"id":"a"}],"edges":[]}\n'));
+    await sync.run();
+    const at = (await c.vault.service.list()).at;
+    const info = (path: string) => c.vault.service.info({ path, at });
+    assert.equal((await info("Board.canvas"))?.attachment, null);
+    assert.equal(
+      (await c.vault.service.read({ path: "Board.canvas", at }))?.content,
+      '{"nodes":[{"id":"a"}],"edges":[]}\n',
+    );
+    assert.notEqual((await info("paper.pdf"))?.attachment, null);
+    assert.notEqual((await info("latin1.csv"))?.attachment, null);
+    assert.notEqual((await info("export.json"))?.attachment, null);
+    assert.equal((await info("Empty.md"))?.attachment, null);
+    assert.equal(sync.status().state, "idle");
+  } finally {
+    c.close();
+  }
+});
+
+test("a fetch never uploads an attachment the device changed while the cloud changed it too", async () => {
+  const c = await cloud();
+  let sequence = 0;
+  const open = async (value: ReturnType<typeof device>) => {
+    const client = await createBinaryClient({
+      text: value.text,
+      io: value.io,
+      remote: c.remote,
+      store: value.store,
+      pins: value.pins,
+      mode: "full",
+      id: () => String(++sequence),
+      changed: () => {},
+    });
+    return createSync({
+      local: client.local,
+      remote: c.remote,
+      store: value.syncStore,
+      id: () => String(++sequence),
+    });
+  };
+  const pdf = (byte: number) => new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x00, byte]);
+  const mac = device({ "paper.pdf": pdf(1) }),
+    other = device();
+  try {
+    const macSync = await open(mac);
+    await macSync.run();
+    const otherSync = await open(other);
+    await otherSync.run();
+    other.put("paper.pdf", pdf(2));
+    await otherSync.run();
+    // Rewriting the same bytes only changes the stamp; the cloud version still comes down.
+    mac.put("paper.pdf", pdf(1));
+    let parts = c.parts();
+    await macSync.pull();
+    assert.equal(c.parts(), parts);
+    assert.deepEqual(mac.files.get("paper.pdf")?.content, pdf(2));
+    other.put("paper.pdf", pdf(4));
+    await otherSync.run();
+    mac.put("paper.pdf", pdf(3));
+    parts = c.parts();
+    await macSync.pull();
+    assert.equal(c.parts(), parts);
+    assert.deepEqual(mac.files.get("paper.pdf")?.content, pdf(3));
+    await macSync.run();
+    assert.ok(c.parts() > parts);
+    assert.equal(macSync.status().state, "conflict");
+    assert.deepEqual(mac.files.get("paper.pdf")?.content, pdf(3));
   } finally {
     c.close();
   }

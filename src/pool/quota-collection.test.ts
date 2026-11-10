@@ -437,3 +437,54 @@ test("joining a queued collection keeps the original nine-second wait budget", a
   );
   assert.equal(f.posts(), 1);
 });
+
+test("field diagnostics live in pool storage and survive loss of Home's handoff", async () => {
+  const f = fixture();
+  const field = {
+    present: true,
+    null: false,
+    quantity_null: true,
+    quantity_valid: false,
+    five_hour: true,
+  };
+  const diagnostic = {
+    provider: "claude",
+    attempted_at: "2030-01-01T00:00:00Z",
+    response_received: true,
+    json_valid: true,
+    five_hour: { ...field, token: "private-secret" },
+    body: "private-secret",
+  };
+  const reading = {
+    credential: { credential_id: "a", provider: "claude" },
+    windows: [],
+    collection: {
+      status: "success",
+      freshness: "fresh",
+      observed_at: "2030-01-01T00:00:00Z",
+      diagnostic,
+    },
+  };
+  let source: Json = reading;
+  let reads = 0;
+  const client = new HomeClient(
+    async (path, init) => {
+      assert.ok(path.endsWith("/quota/credentials/a"));
+      assert.notEqual(init?.method, "POST");
+      reads++;
+      return Response.json(source);
+    },
+    undefined,
+    undefined,
+    f.storage,
+  );
+  const first = await new QuotaCollection(f.storage, client, f.options).read("a");
+  assert.ok(!JSON.stringify(first).includes("private-secret"));
+  const saved = structuredClone([...f.storage.values.values()]);
+  assert.equal(saved.length, 1);
+  assert.ok(!JSON.stringify(saved).includes("private-secret"));
+  source = { ...reading, collection: { ...reading.collection, diagnostic: null } };
+  const restarted = await new QuotaCollection(f.storage, client, f.options).read("a");
+  assert.deepEqual(restarted, first);
+  assert.equal(reads, 2);
+});

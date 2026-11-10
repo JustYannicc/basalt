@@ -18,5 +18,5 @@ export const provisionVaultAttachments = Bucket(id, {
   lifecycleRules: [],
 }).pipe(retain());
 
-/** Binding a consumer does not register a second bucket or change its reviewed intent. */
-export const vaultAttachments = Bucket.ref(id);
+// Consumers bind provisionVaultAttachments itself. A reference resolves only from recorded state,
+// so it fails stack evaluation until a release has recorded the bucket.

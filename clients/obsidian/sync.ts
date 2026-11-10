@@ -12,6 +12,7 @@ import {
   type SyncStatus,
 } from "./types.ts";
 import { pull } from "./pull.ts";
+import { isTextPath, maximumTextBytes } from "../../src/drive/text-files.ts";
 import { dictionary } from "./dictionary.ts";
 import { initialImport } from "./initial-import.ts";
 
@@ -44,6 +45,8 @@ export async function createSync(input: {
   const localHashes = new Map<string, { stamp: string; hash: string }>();
   let running: Promise<void> | null = null,
     error: string | null = null,
+    // A failed checkpoint's error stays until a checkpoint succeeds; a fetch can't clear it.
+    checkpointFailed = false,
     queued = 0;
   const save = () => store.save(structuredClone(state));
   const importing = initialImport({
@@ -140,7 +143,17 @@ export async function createSync(input: {
     await save();
     await deliver();
   };
-  const perform = async () => {
+  const pulling = () =>
+    pull({ state, local, remote, save, ...(input.signal ? { signal: input.signal } : {}) });
+  /** Fetch only: brings cloud changes down and never commits, uploads or imports. */
+  const fetchOnly = async () => {
+    // The first import and the first head are a checkpoint's job; a fetch waits for them.
+    if (!state.head || (remote.initial && state.initial?.phase !== "complete")) return;
+    await pulling();
+    if (!checkpointFailed) error = null;
+  };
+  /** One checkpoint: pull, commit every dirty path, push, then pull what landed. */
+  const checkpoint = async () => {
     error = null;
     await importing.prepare();
     await deliver();
@@ -151,29 +164,47 @@ export async function createSync(input: {
       await save();
     }
     state.unsupported = [];
-    await pull({ state, local, remote, save, ...(input.signal ? { signal: input.signal } : {}) });
+    await pulling();
+    const head = state.head!;
     const listed = await local.files(),
       paths = new Set(listed.map((file) => file.path));
     for (const path of localHashes.keys()) if (!paths.has(path)) localHashes.delete(path);
     const blocked = new Set(
       state.conflicts.flatMap((conflict) => conflict.conflicts.map((file) => file.path)),
     );
-    let batch: Edit[] = [],
-      bytes = 0,
-      base = state.head;
-    const flush = async () => {
-      if (batch.length) {
-        const submitted = batch;
-        batch = [];
-        bytes = 0;
-        await submit(base, submitted);
-      }
+    // Edits grouped by the revision they are based on. After a complete pull nearly every
+    // tracked file is based on head, so a checkpoint is normally one commit. A group is sent
+    // whenever it reaches the server's batch bounds, and all groups together hold at most one
+    // batch of content, so memory stays bounded however much changed.
+    const maxPaths = 100,
+      maxBytes = 2 * 1024 * 1024;
+    const groups = new Map<string, { edits: Edit[]; bytes: number }>();
+    let buffered = 0;
+    const send = async (base: string) => {
+      const group = groups.get(base);
+      if (!group?.edits.length) return;
+      groups.delete(base);
+      buffered -= group.bytes;
+      await submit(base, group.edits);
+    };
+    const add = async (base: string, edit: Edit, bytes: number) => {
+      const current = groups.get(base);
+      if (current && (current.edits.length >= maxPaths || current.bytes + bytes > maxBytes))
+        await send(base);
+      // Only a checkpoint spanning several bases can hit this; it sends the others early.
+      if (buffered + bytes > maxBytes) for (const other of groups.keys()) await send(other);
+      let group = groups.get(base);
+      if (!group) groups.set(base, (group = { edits: [], bytes: 0 }));
+      group.edits.push(edit);
+      group.bytes += bytes;
+      buffered += bytes;
+      queued++;
     };
     for (const file of listed) {
       input.signal?.throwIfAborted();
       if (
         !safePath(file.path) ||
-        (!local.binary && (!file.path.endsWith(".md") || file.bytes > maximumFileBytes))
+        (!local.binary && (!isTextPath(file.path) || file.bytes > maximumTextBytes))
       ) {
         state.unsupported.push(file.path);
         continue;
@@ -202,35 +233,33 @@ export async function createSync(input: {
       if (prior?.local === hash && !importing.pending(file.path)) continue;
       if (!prior && !state.importBase)
         throw new Error("Update the cloud Obsidian app before importing new files");
-      let at = prior?.at ?? state.importBase!;
-      if (
-        batch.length &&
-        (at !== base || batch.length >= 100 || bytes + actualBytes > 2 * 1024 * 1024)
-      ) {
-        await flush();
-        at = prior?.at ?? state.importBase!;
-      }
-      base = at;
-      batch.push({ path: file.path, content });
-      bytes += actualBytes;
-      queued++;
+      // A new file joins head only when head has no file there. Otherwise it is based on the
+      // import base, so it conflicts with the cloud file instead of replacing it.
+      const base =
+        prior?.at ??
+        (!importing.active() && !(await remote.read({ path: file.path, at: head, maxBytes: 4 }))
+          ? head
+          : state.importBase!);
+      await add(base, { path: file.path, content }, actualBytes);
     }
-    await flush();
-    for (const [path, prior] of Object.entries(state.files)) {
-      if (importing.active()) continue;
-      if (paths.has(path) || blocked.has(path) || prior.local === null) continue;
-      await submit(prior.at, [{ path, content: null }]);
-    }
-    if (state.head !== state.pulledHead)
-      await pull({ state, local, remote, save, ...(input.signal ? { signal: input.signal } : {}) });
+    if (!importing.active())
+      for (const [path, prior] of Object.entries(state.files))
+        if (!paths.has(path) && !blocked.has(path) && prior.local !== null)
+          await add(prior.at, { path, content: null }, 0);
+    for (const base of groups.keys()) await send(base);
+    if (state.head !== state.pulledHead) await pulling();
     await save();
-    if (await importing.finish(paths)) await perform();
+    if (await importing.finish(paths)) await checkpoint();
   };
-  const run = () => {
+  const run = (work: () => Promise<void> = checkpoint) => {
     if (running) return running;
-    running = perform()
+    running = work()
+      .then(() => {
+        if (work === checkpoint) checkpointFailed = false;
+      })
       .catch((failure: unknown) => {
         error = failure instanceof Error ? failure.message : "Sync failed";
+        if (work === checkpoint) checkpointFailed = true;
         throw failure;
       })
       .finally(() => {
@@ -260,5 +289,11 @@ export async function createSync(input: {
     await run();
   };
   await save();
-  return { run, resolve, status, conflicts: () => structuredClone(state.conflicts) };
+  return {
+    run: () => run(),
+    pull: () => run(fetchOnly),
+    resolve,
+    status,
+    conflicts: () => structuredClone(state.conflicts),
+  };
 }

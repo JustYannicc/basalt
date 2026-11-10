@@ -3,6 +3,7 @@ import type { BinaryVersion, ConflictChoice } from "../attachments.ts";
 import type { SyncHost } from "./host.ts";
 import type { Conflict } from "../types.ts";
 import { conflictSides } from "../conflict-sides.ts";
+import { isTextPath } from "../../../src/drive/text-files.ts";
 
 type Side = { kind: "text"; text: string | null } | { kind: "binary"; info: BinaryVersion | null };
 type Pick = "device" | "cloud" | "combined";
@@ -20,7 +21,7 @@ interface FileState {
 }
 
 const previewLimit = 100_000;
-const isBinary = (path: string) => !path.toLowerCase().endsWith(".md");
+const isBinary = (path: string) => !isTextPath(path);
 
 /**
  * Shows both retained versions of every conflicting path and requires an explicit choice for
