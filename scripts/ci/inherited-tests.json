@@ -412,6 +412,20 @@
       "runtime": "attached",
       "reason": "Requires a deployed Cloud stage and remains explicit manual coverage; the self-host counterpart runs in the prepared account CI group.",
       "command": "bun run e2e:deployed --test-name '^App account sign-in starts OAuth without asking for a name and returns cancellation to the same app$'"
+    },
+    "appManagementContractsHosted": {
+      "file": "app-management-contracts.spec.ts",
+      "target": "cloud",
+      "runtime": "attached",
+      "reason": "Requires a deployed Cloud stage; the exact self-host counterpart runs in CI.",
+      "command": "bun run e2e:deployed --test-name '^hosted agents read the apps release, are refused create without files, deploy the documented two-file app, get commit and deploy results as objects, and learn the tool-only app has no UI$'"
+    },
+    "credentialHostsProduct": {
+      "file": "credential-hosts.spec.ts",
+      "target": "cloud",
+      "runtime": "attached",
+      "reason": "Requires a deployed Cloud stage; the exact self-host counterpart runs in CI.",
+      "command": "bun run e2e:deployed --test-name '^a sealed API key reaches the product'\"'\"'s own API through the app'\"'\"'s outbound network$'"
     }
   }
 }

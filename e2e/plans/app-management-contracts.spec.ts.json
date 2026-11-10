@@ -1,0 +1,43 @@
+{
+  "scenarios": {
+    "appManagementContractsHosted": {
+      "fixtures": "actors",
+      "title": "hosted agents read the apps release, are refused create without files, deploy the documented two-file app, get commit and deploy results as objects, and learn the tool-only app has no UI",
+      "managementApps": ["owner"],
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "attached"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local runs the same agent programs in its own scenario."
+        }
+      }
+    },
+    "appManagementContractsLocal": {
+      "title": "local agents read the apps release, are refused create without files, deploy the documented two-file app, get commit and deploy results as objects, see the files a commit removed, and are refused a file inside a file",
+      "targets": {
+        "local": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Hosted organizations run the same agent programs in their own scenario."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Hosted organizations run the same agent programs in their own scenario."
+        }
+      }
+    }
+  },
+  "runs": {
+    "appManagementContractsHosted": ["declared:self-host"],
+    "appManagementContractsLocal": ["declared:local"]
+  },
+  "inputs": [".upstream/packages/apps/**", ".upstream/packages/sdk/**"]
+}
