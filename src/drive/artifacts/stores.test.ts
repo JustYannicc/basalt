@@ -3,7 +3,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { backend, git } from "./test/backend.ts";
-import { device, remoteMain, type Backend } from "./test/vault.ts";
+import { device, remoteMain, repository, type Backend } from "./test/vault.ts";
+import { storageFixture } from "../fixture.ts";
+import { openVault } from "../vault.ts";
+import type { VaultRepository } from "./stores.ts";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -192,6 +195,158 @@ test("a fresh object rebuilds from the repository and reads every version", asyn
     );
   } finally {
     reader.close();
+    await server.close();
+  }
+});
+
+test("a push that lands just before a crash finishes its receipt and quota on the next wake", async () => {
+  const server = await backend();
+  const data = storageFixture(),
+    account = storageFixture();
+  const open = (repo: VaultRepository) =>
+    openVault({ ...data, accountStorage: account.storage, prefix: "vault/", repository: repo });
+  try {
+    const healthy = repository(server);
+    const first = await open(healthy);
+    let crashed = false;
+    // The push reaches the repository, then the object dies before it can read anything back.
+    const dying: VaultRepository = {
+      ...healthy,
+      async push(request) {
+        await healthy.push(request);
+        crashed = true;
+        throw new Error("object evicted");
+      },
+      async refs() {
+        if (crashed) throw new Error("object evicted");
+        return healthy.refs();
+      },
+    };
+    const before = await open(dying);
+    await assert.rejects(
+      before.service.apply({
+        base: first.root,
+        operation: "landed-then-crashed",
+        edits: [{ path: "note.md", content: "hello" }],
+      }),
+    );
+    assert.equal(git(server.bare, "show", "main:note.md").toString(), "hello");
+    const after = await open(healthy);
+    assert.equal((await after.status()).currentBytes, 5);
+    const retried = await after.service.apply({
+      base: first.root,
+      operation: "landed-then-crashed",
+      edits: [{ path: "note.md", content: "hello" }],
+    });
+    assert.equal(retried.state, "landed");
+    assert.equal(retried.oid, remoteMain(server));
+    const removed = await after.service.remove({
+      base: retried.oid,
+      path: "note.md",
+      operation: "remove-after-crash",
+    });
+    assert.equal(removed.state, "landed");
+    assert.equal((await after.status()).currentBytes, 0);
+  } finally {
+    data.close();
+    account.close();
+    await server.close();
+  }
+});
+
+test("a fresh object books the repository's bytes and keeps its conflicts resolvable", async () => {
+  const server = await backend();
+  const writer = await device(server);
+  const fresh = { close: () => {} };
+  try {
+    const one = await writer.service.apply({
+      base: writer.root,
+      operation: "one",
+      edits: [{ path: "note.md", content: "twelve bytes" }],
+    });
+    const conflict = await writer.service.apply({
+      base: writer.root,
+      operation: "conflicting",
+      edits: [{ path: "note.md", content: "other words!" }],
+    });
+    assert.equal(conflict.state, "conflict");
+    writer.close();
+    const reader = await device(server);
+    fresh.close = () => reader.close();
+    assert.equal((await reader.status()).currentBytes, 12);
+    assert.equal(
+      (await reader.service.read({ path: "note.md", at: conflict.oid }))?.content,
+      "other words!",
+    );
+    const resolved = await reader.service.resolve({
+      ref: conflict.ref,
+      expected: conflict.oid,
+      main: one.oid,
+      edits: [{ path: "note.md", content: "both kept" }],
+      operation: "resolve-on-another-device",
+    });
+    assert.equal(resolved.state, "landed");
+    assert.equal(git(server.bare, "show", "main:note.md").toString(), "both kept");
+  } finally {
+    fresh.close();
+    await server.close();
+  }
+});
+
+test("a refused conflict-branch push retries within the land's bound", async () => {
+  const server = await backend();
+  const vault = await device(server);
+  try {
+    await vault.service.apply({
+      base: vault.root,
+      operation: "one",
+      edits: [{ path: "note.md", content: "first" }],
+    });
+    refuseNextPush(server, "artifacts_unknown_reason!");
+    const conflict = await vault.service.apply({
+      base: vault.root,
+      operation: "conflicting",
+      edits: [{ path: "note.md", content: "second" }],
+    });
+    assert.equal(conflict.state, "conflict");
+    assert.equal(
+      git(server.bare, "for-each-ref", "--format=%(objectname)", "refs/heads/conflicts")
+        .toString()
+        .trim(),
+      conflict.oid,
+    );
+  } finally {
+    vault.close();
+    await server.close();
+  }
+});
+
+test("objects above SQLite's row limit are stored in parts", async () => {
+  const server = await backend();
+  const data = storageFixture(),
+    account = storageFixture();
+  try {
+    const vault = await openVault({
+      ...data,
+      accountStorage: account.storage,
+      prefix: "vault/",
+      repository: repository(server),
+    });
+    const text = "x".repeat(3 * 1024 * 1024);
+    const landed = await vault.service.apply({
+      base: vault.root,
+      operation: "large-note",
+      edits: [{ path: "large.md", content: text }],
+    });
+    assert.equal(landed.state, "landed");
+    const largest = [
+      ...data.storage.sql.exec("SELECT MAX(length(data)) AS bytes FROM vault_git_parts"),
+    ][0];
+    assert.ok(Number(largest?.bytes) <= 1024 * 1024);
+    assert.equal(Number(git(server.bare, "cat-file", "-s", "main:large.md").toString()), text.length);
+  } finally {
+    data.close();
+    account.close();
     await server.close();
   }
 });

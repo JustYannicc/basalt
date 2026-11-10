@@ -89,12 +89,19 @@ test("an R2-pack vault migrates with identical commit ids, a clean fsck and its 
   const source = await packVault();
   try {
     // Tiny limits force many pushes, the way a vault over 64 MiB would split.
+    const sizes: number[] = [];
+    const counted = repository(server);
     const result = await migrateVault({
       objects: source.objects,
       refs: source.refs,
-      repository: repository(server),
+      repository: {
+        ...counted,
+        push: (request) => (sizes.push(request.objects.length), counted.push(request)),
+      },
       limits: { objects: 4 },
     });
+    // Kept branches are chunked like main: no push carries much more than one commit's closure.
+    assert.ok(Math.max(...sizes) <= 6, JSON.stringify(sizes));
     assert.ok(result.pushes > 2, `pushes: ${result.pushes}`);
     assert.equal(remoteMain(server), source.refs["refs/heads/main"]);
     git(server.bare, "fsck", "--full", "--strict");
@@ -131,15 +138,21 @@ test("an R2-pack vault migrates with identical commit ids, a clean fsck and its 
     assert.equal(remoteMain(server), source.refs["refs/heads/main"]);
 
     // An Artifacts-mode vault on the migrated repository reads every version, bytes included.
-    const reader = await device(server);
+    // Attachment records move first: opening the vault books every byte its main points to.
+    let copied = 0;
+    const reader = await device(server, undefined, async (bucket) => {
+      copied = (
+        await copyAttachments({
+          from: source.data.bucket,
+          to: bucket,
+          fromPrefix: "legacy/",
+          toPrefix: "vault/",
+        })
+      ).copied;
+    });
     try {
-      const copied = await copyAttachments({
-        from: source.data.bucket,
-        to: reader.bucket,
-        fromPrefix: "legacy/",
-        toPrefix: "vault/",
-      });
-      assert.ok(copied.copied > 0);
+      assert.ok(copied > 0);
+      assert.ok((await reader.status()).currentBytes >= source.bytes.length);
       assert.equal(
         (await reader.service.read({ path: "note.md", at: source.commits.v1 }))?.content,
         "one",

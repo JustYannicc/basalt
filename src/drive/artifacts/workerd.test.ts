@@ -76,5 +76,20 @@ test("the vault object lands checkpoints from inside a Durable Object", async (t
   assert.equal(git(server.bare, "rev-parse", "main").toString().trim(), second.value?.oid);
   assert.equal(git(server.bare, "show", "main:daily/today.md").toString(), "from workerd");
   assert.equal(git(server.bare, "show", "main:other.md").toString(), "parallel");
+  // Workerd's SQLite refuses rows near 2 MB; a 3 MiB note must still land.
+  const large = await call({
+    operation: "drive",
+    method: "apply",
+    input: {
+      base: second.value!.oid,
+      operation: "large",
+      edits: [{ path: "large.md", content: "x".repeat(3 * 1024 * 1024) }],
+    },
+  });
+  assert.equal(large.value?.state, "landed", JSON.stringify(large));
+  assert.equal(
+    Number(git(server.bare, "cat-file", "-s", "main:large.md").toString()),
+    3 * 1024 * 1024,
+  );
   git(server.bare, "fsck", "--full", "--strict");
 });

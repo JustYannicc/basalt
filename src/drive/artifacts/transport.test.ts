@@ -14,6 +14,8 @@ import {
   ProtocolError,
   PushTooLarge,
   AtomicUnsupported,
+  ReplyTooLarge,
+  maximumReplyBytes,
 } from "./transport.ts";
 import { backend, git, token, responsePack, pkt } from "./test/backend.ts";
 import { writtenObject, encodeTree, encodeCommit } from "../shared/.generated/strata/git/write.js";
@@ -408,4 +410,25 @@ test("fatal side band, unpack failure, missing statuses, and corrupt fetch packs
     return body;
   };
   await assert.rejects(remote.fetchObjects({ wants: [first.oid] }), /Pack checksum mismatch/);
+});
+
+test("a reply too large to decode in memory is refused by name before decoding", async () => {
+  let streamed = 0;
+  const remote = createGitRemote({
+    url: "https://repository.invalid/vault.git",
+    auth: async () => token,
+    fetch: async () =>
+      new Response(
+        new ReadableStream({
+          pull(controller) {
+            streamed += 1024 * 1024;
+            controller.enqueue(new Uint8Array(1024 * 1024));
+          },
+        }),
+        { headers: { "content-type": "application/x-git-receive-pack-advertisement" } },
+      ),
+  });
+  await assert.rejects(remote.refs(), ReplyTooLarge);
+  // It stops reading at the limit instead of buffering the whole stream.
+  assert.ok(streamed <= maximumReplyBytes + 2 * 1024 * 1024, String(streamed));
 });

@@ -54,12 +54,21 @@ export async function openVault(input: {
     const artifacts = input.repository
       ? createArtifactsStores({ storage: input.storage, repository: input.repository, now })
       : undefined;
-    if (artifacts) await artifacts.recover();
+    const recovered = artifacts ? await artifacts.recover() : undefined;
     const stores = artifacts ?? (await openCloudflareStorage({ ...input, bucket: io.bucket }));
     const cache = cacheObjects(stores.objects, input.cacheBytes ?? 8 * 1024 * 1024),
       usage = treeUsage(input.storage, cache.objects, attachments);
     for (const pending of quota.pending(input.prefix))
       quota.finish(pending.id, (await stores.refs.receipt(pending.operation))?.state === "landed");
+    // Storage that just received an existing repository starts its ledger at that repository's main.
+    const head = recovered?.adopted ? await stores.refs.get("refs/heads/main") : null;
+    if (head && quota.status().currentBytes === 0 && quota.status().files === 0) {
+      const baseline = await usage.at(head);
+      quota.finish(
+        quota.reserve(input.prefix, `recovered:${head}`, head, baseline.bytes, baseline.files),
+        true,
+      );
+    }
     const refs: RefStore = {
       ...stores.refs,
       async publish(transaction) {

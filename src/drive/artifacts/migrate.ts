@@ -28,30 +28,11 @@ export async function migrateVault(input: {
     return object;
   };
   const remote = await input.repository.refs();
-  let landed = remote[main] ?? null;
   const sent = new Set<string>();
   // A resumed migration starts from the remote main, whose closure is complete by construction.
-  if (landed) for (const oid of await commitsFrom(landed, load)) sent.add(oid);
+  if (remote[main]) for (const oid of await commitsFrom(remote[main], load)) sent.add(oid);
 
-  const order = await commitsFrom(source, load);
-  let batch: GitObject[] = [],
-    bytes = 0,
-    head: string | null = null,
-    pushes = 0;
-  const flush = async () => {
-    if (!head) return;
-    const result = await input.repository.push({
-      updates: [{ ref: main, old: landed, next: head }],
-      objects: batch,
-    });
-    if (!result.applied || result.results[main] !== "ok")
-      throw new Error("The repository refused a migration push; main changed during migration");
-    landed = head;
-    pushes++;
-    batch = [];
-    bytes = 0;
-    head = null;
-  };
+  let pushes = 0;
   const closure = async (root: string, into: GitObject[]) => {
     const queue = [root];
     while (queue.length) {
@@ -63,24 +44,59 @@ export async function migrateVault(input: {
       if (object.type === "tree") queue.push(...referencedOids("tree", object.content));
     }
   };
-  for (const commit of order) {
-    if (sent.has(commit)) continue;
-    const objects: GitObject[] = [];
-    await closure(parseCommit((await load(commit)).content).tree, objects);
-    sent.add(commit);
-    objects.push(await load(commit));
-    const size = objects.reduce((total, object) => total + object.content.length, 0);
-    if (
-      batch.length &&
-      (bytes + size > limits.bytes || batch.length + objects.length > limits.objects)
-    )
-      await flush();
-    batch.push(...objects);
-    bytes += size;
-    head = commit;
-  }
-  await flush();
-  if (landed !== source) throw new Error("Migration ended without main at the source head");
+  /**
+   * Push one branch's history in bounded chunks, parents first. Each chunk advances the ref only to
+   * a commit whose closure has landed, so every push stays within the repository's limits.
+   */
+  const pushChain = async (ref: string, tip: string, start: string | null) => {
+    let landed = start,
+      batch: GitObject[] = [],
+      bytes = 0,
+      head: string | null = null;
+    const flush = async () => {
+      if (!head) return;
+      const result = await input.repository.push({
+        updates: [{ ref, old: landed, next: head }],
+        objects: batch,
+      });
+      if (!result.applied || result.results[ref] !== "ok")
+        throw new Error("The repository refused a migration push; the branch changed meanwhile");
+      landed = head;
+      pushes++;
+      batch = [];
+      bytes = 0;
+      head = null;
+    };
+    for (const commit of await commitsFrom(tip, load)) {
+      if (sent.has(commit)) continue;
+      const objects: GitObject[] = [];
+      await closure(parseCommit((await load(commit)).content).tree, objects);
+      sent.add(commit);
+      objects.push(await load(commit));
+      const size = objects.reduce((total, object) => total + object.content.length, 0);
+      if (
+        batch.length &&
+        (bytes + size > limits.bytes || batch.length + objects.length > limits.objects)
+      )
+        await flush();
+      batch.push(...objects);
+      bytes += size;
+      head = commit;
+    }
+    await flush();
+    // A branch whose commits all landed with main still needs its ref.
+    if (landed !== tip) {
+      const result = await input.repository.push({
+        updates: [{ ref, old: landed, next: tip }],
+        objects: [],
+      });
+      if (!result.applied || result.results[ref] !== "ok")
+        throw new Error("The repository refused a migration push; the branch changed meanwhile");
+      pushes++;
+    }
+  };
+
+  await pushChain(main, source, remote[main] ?? null);
 
   // Unlanded writer branches become kept conflict branches, so no saved work is left behind.
   const branches: Record<string, string> = {};
@@ -89,21 +105,7 @@ export async function migrateVault(input: {
     const target = `refs/heads/conflicts/${ref.slice("refs/heads/writers/".length)}`;
     const current = (await input.repository.refs())[target] ?? null;
     branches[target] = oid;
-    if (current === oid) continue;
-    const objects: GitObject[] = [];
-    for (const commit of await commitsFrom(oid, load)) {
-      if (sent.has(commit)) continue;
-      await closure(parseCommit((await load(commit)).content).tree, objects);
-      sent.add(commit);
-      objects.push(await load(commit));
-    }
-    const result = await input.repository.push({
-      updates: [{ ref: target, old: current, next: oid }],
-      objects,
-    });
-    if (!result.applied || result.results[target] !== "ok")
-      throw new Error("The repository refused a kept branch during migration");
-    pushes++;
+    if (current !== oid) await pushChain(target, oid, current);
   }
   return { main: source, pushes, objects: sent.size, branches };
 }

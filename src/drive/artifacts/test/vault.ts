@@ -25,9 +25,14 @@ export const repository = (server: Backend, seen?: string[]): VaultRepository =>
     },
   };
 };
-export const device = async (server: Backend, seen?: string[]) => {
+export const device = async (
+  server: Backend,
+  seen?: string[],
+  before?: (bucket: ReturnType<typeof storageFixture>["bucket"]) => Promise<void>,
+) => {
   const data = storageFixture(),
     account = storageFixture();
+  await before?.(data.bucket);
   const vault = await openVault({
     ...data,
     accountStorage: account.storage,

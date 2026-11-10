@@ -24,6 +24,21 @@ import {
   type RemoteOptions,
 } from "./wire.ts";
 
+/** Replies above this are refused before decoding; see ReplyTooLarge. */
+export const maximumReplyBytes = 32 * 1024 * 1024;
+
+/** A reply too large to decode in memory, such as a cold fetch of a very large history. */
+export class ReplyTooLarge extends ProtocolError {
+  override name = "ReplyTooLarge";
+  readonly bytes: number;
+  constructor(bytes: number) {
+    super(
+      `Git reply of at least ${bytes} bytes exceeds the ${maximumReplyBytes}-byte decode limit`,
+    );
+    this.bytes = bytes;
+  }
+}
+
 export {
   AtomicUnsupported,
   AuthFailed,
@@ -83,11 +98,33 @@ export function createGitRemote(options: RemoteOptions) {
       await response.body?.cancel().catch(() => {});
       throw new ProtocolError("Unexpected Git response content type");
     }
+    // A reply is decoded whole, so it must stay well inside a Durable Object's memory. A cold
+    // fetch of a very large history is refused by name instead of exhausting the isolate.
+    const declared = Number(response.headers.get("content-length") ?? 0);
+    if (declared > maximumReplyBytes) {
+      await response.body?.cancel().catch(() => {});
+      throw new ReplyTooLarge(declared);
+    }
+    const reader = response.body?.getReader();
+    if (!reader) return new Uint8Array(0);
+    const parts: Uint8Array[] = [];
+    let total = 0;
     try {
-      return new Uint8Array(await response.arrayBuffer());
-    } catch {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.length;
+        if (total > maximumReplyBytes) {
+          await reader.cancel().catch(() => {});
+          throw new ReplyTooLarge(total);
+        }
+        parts.push(value);
+      }
+    } catch (error) {
+      if (error instanceof ReplyTooLarge) throw error;
       throw new Unavailable("Git remote response interrupted");
     }
+    return concatBytes(parts);
   }
   async function receiveAdvertisement() {
     const advertised = advertisement(await request("git-receive-pack"), "git-receive-pack");
