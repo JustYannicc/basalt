@@ -53,6 +53,23 @@ export interface BankedResets {
   readonly nextExpiresAt: string | null;
 }
 
+export interface QuotaFieldPresence {
+  readonly present: boolean;
+  readonly null: boolean;
+  readonly quantityNull: boolean;
+  readonly quantityValid: boolean;
+  readonly fiveHour: boolean;
+}
+export interface CollectionDiagnostic {
+  readonly attemptedAt: string;
+  readonly provider: "claude" | "codex";
+  readonly responseReceived: boolean;
+  readonly jsonValid: boolean;
+  readonly fiveHour?: QuotaFieldPresence;
+  readonly primaryWindow?: QuotaFieldPresence;
+  readonly secondaryWindow?: QuotaFieldPresence;
+}
+
 export interface Account {
   readonly id: string;
   readonly provider: string;
@@ -77,6 +94,7 @@ export interface Account {
     readonly status: string | null;
     readonly errorCode: string | null;
     readonly lastAttemptAt: string | null;
+    readonly diagnostic?: CollectionDiagnostic;
   };
   /** ISO time the backend reads it again, or null. */
   readonly nextReadAt: string | null;
