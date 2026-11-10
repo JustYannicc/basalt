@@ -65,7 +65,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts b/
      verification, applied_at::text from private_production_ops_receipts
      where organization_id = $1 order by applied_at desc, plan_sha256 limit 2001`,
 diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
-index ca40ba3..dc68375 100644
+index ca40ba3..5dcfd0c 100644
 --- a/apps/hosted/cloud/src/infrastructure/executor.ts
 +++ b/apps/hosted/cloud/src/infrastructure/executor.ts
 @@ -4,11 +4,7 @@ export { cloudEgress } from "./egress.ts";
@@ -90,6 +90,15 @@ index ca40ba3..dc68375 100644
  import { cachedVersionSources } from "../implementation/version-source-cache.ts";
  import { organizationPublishers } from "../implementation/publishers.ts";
  import type { AppSources } from "./source.ts";
+@@ -104,7 +102,7 @@ export const cloudExecutor = Effect.fn(function* (
+   const apiRevision =
+     apiOrigin === undefined || servesBuiltApiDocument(apiOrigin)
+       ? api.revision
+-      : yield* Effect.promise(() => import("../implementation/default-app.ts")).pipe(
++      : yield* Effect.promise(() => import("../contracts/api.ts")).pipe(
+           Effect.flatMap(({ executorCloudApiDocument }) =>
+             hostedApiRevision(JSON.stringify(executorCloudApiDocument(apiOrigin))),
+           ),
 @@ -150,7 +148,10 @@ export const cloudExecutor = Effect.fn(function* (
          secret: key,
          origin,

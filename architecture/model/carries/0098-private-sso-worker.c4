@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway.ssoService {
     metadata {
-      constraint "The private SSO service owns SAML and OIDC verification through the existing auth factory, encrypted provider configuration and request-scoped database. API forwarding preserves URL, body and cookies for native SSO paths; ordinary auth and the v1 handoff retain their current handler and membership rules without loading SSO into the public API bundle."
+      constraint "The private SSO service owns SAML and OIDC verification through the shared native auth core, encrypted provider configuration and request-scoped database. Its Better Auth options, security hooks, callback context and cancellation stay identical to the API factory. API-only bearer, session and handoff services remain outside the SSO entry point, while the API retains its full authentication interface. API forwarding preserves URL, body and cookies for native SSO paths; ordinary auth and the v1 handoff retain their current handler and membership rules without loading SSO into the public API bundle."
     }
   }
 }

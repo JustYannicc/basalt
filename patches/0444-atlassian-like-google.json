@@ -1,7 +1,7 @@
 {
   "identity": "atlassian-like-google",
   "file": "0444-atlassian-like-google.patch",
-  "content_sha256": "ab0ea9a096d5674722a3f1b947be72f617d0d1d79125ff4ceb856bb2fff60e4f",
+  "content_sha256": "4a34f292c3e9d6458b715ca6d97aa0eb3f97fc0547d7dcd0a114e02548961e63",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
