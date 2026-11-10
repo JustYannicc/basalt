@@ -19,7 +19,7 @@ diff --git a/e2e/tests/account-failure-observations.spec.ts b/e2e/tests/account-
 +          ["missing_amount", "missing quota amount"],
 +          ["profile_entitlement", "subscription entitlement"],
 +          ["unknown", "unknown"],
-+        ]) {
++        ] as const) {
 +          if (parserStage !== "monthly_decode") yield* f.advance(2);
 +          const diagnostic = {
 +            source: "provider",

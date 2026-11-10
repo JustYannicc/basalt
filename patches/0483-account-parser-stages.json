@@ -1,7 +1,7 @@
 {
   "identity": "basalt-account-parser-stages",
   "file": "0483-account-parser-stages.patch",
-  "content_sha256": "a18a45b0a49f67133caebe0e61c0a0e4691f7ca4c77105d981548d6e71992e02",
+  "content_sha256": "fe722ce910c20faecbef5fa8ab449f42ed106b8faffbd34e0b41cc2fff2fd693",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
