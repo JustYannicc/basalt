@@ -39,6 +39,10 @@ run("bun", ["packages/sdk/scripts/check-storage-versions.ts"], upstream);
 run("bun", ["scripts/basalt-worker-sizes.ts"], cloud, {
   ...process.env,
   BASALT_RELEASE_ATTEMPT: credentials.BASALT_RELEASE_ATTEMPT,
+  // Stack evaluation describes migrations without executing their commands.
+  BASALT_RELEASE_CANDIDATE: configuration.BASALT_RELEASE_CANDIDATE,
+  BASALT_EXECUTOR_MARKER_POLICY: "fixture-executor-marker-policy.json",
+  BASALT_RELEASE_EVIDENCE_DIRECTORY: "fixture-release-evidence",
 });
 checkMcpRuntimeBundle();
 checkAppPagesRuntimeBundle();
