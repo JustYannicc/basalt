@@ -100,6 +100,8 @@ Redeploy cannot recover a lost or rotated state key; after bootstrap, back up `A
 | `POOL_APP_SIGNING_KEY_PREVIOUS` | Optional, only while rotating: the pool Worker still accepts tokens signed with it |
 | `APP_DOMAIN_CONTROL_SECRET`   | App-domain lifecycle key, needed only by the nested address scheme                                        |
 | `APP_DOMAIN_CONTROLLER_TOKEN` | Scoped DNS/certificate token, needed only by the nested address scheme |
+| `ANDROID_RELEASE_KEYSTORE_BASE64` | Optional; the Android release key, base64, that signs published APKs. Back it up: a lost key forces every user to uninstall before updating |
+| `ANDROID_RELEASE_KEYSTORE_PASSWORD` | Optional; the password for that key and its `signalbox` alias |
 
 The workflow maps `AUTH_GITHUB_*` to upstream's `GITHUB_*` environment variables because GitHub reserves the latter prefix for Actions secrets. Generated signing and lifecycle secrets are created directly in Actions secrets. Their values never belong in logs, repository files or artifacts.
 

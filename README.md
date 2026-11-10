@@ -6,10 +6,6 @@ Signalbox pools AI subscriptions like ChatGPT and Claude so you and your team ca
 
 [signalbox.run](https://signalbox.run) runs it for you. This repository is the code behind it, so you can run your own.
 
-## Download
-
-Get the Mac, Windows, Linux and Android apps and the command line connection from the [latest release](https://github.com/JustYannicc/basalt/releases/latest). Its notes explain how to open apps that aren't signed by Apple, Microsoft or Google yet. Signalbox Sync for Obsidian installs from Connect Obsidian in Signalbox.
-
 ## What's inside
 
 - **[Executor](https://github.com/UsefulSoftwareCo/executor)** handles sign-in, apps, accounts, connections and MCP. Signalbox runs a pinned release with patches on top ([patches/](patches)).
