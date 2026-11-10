@@ -46,6 +46,7 @@ export const fixture = (
     newResource?: boolean;
     interrupted?: boolean;
     namespace?: "eu" | "missing" | "wrong" | "drift" | "vault-drift";
+    namespaceRead?: DeployStackOptions["namespaceRead"];
     unknownCommand?: boolean;
     orphanedDatabaseCommand?: boolean;
     planFailure?: "read" | "diff";
@@ -245,6 +246,7 @@ export const fixture = (
         releasePlanning = true;
         return yield* deployStack(compiled, {
           candidate: "a".repeat(40),
+          namespaceRead: options.namespaceRead,
           record: async (receipt) => {
             receipts.push(receipt);
             await options.evidence?.record(receipt);
