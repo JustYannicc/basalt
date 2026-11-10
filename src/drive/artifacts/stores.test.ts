@@ -343,7 +343,10 @@ test("objects above SQLite's row limit are stored in parts", async () => {
       ...data.storage.sql.exec("SELECT MAX(length(data)) AS bytes FROM vault_git_parts"),
     ][0];
     assert.ok(Number(largest?.bytes) <= 1024 * 1024);
-    assert.equal(Number(git(server.bare, "cat-file", "-s", "main:large.md").toString()), text.length);
+    assert.equal(
+      Number(git(server.bare, "cat-file", "-s", "main:large.md").toString()),
+      text.length,
+    );
   } finally {
     data.close();
     account.close();
