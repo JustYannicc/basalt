@@ -144,6 +144,34 @@ diff --git a/internal/cluster/repository.go b/internal/cluster/repository.go
  	db                 *gorm.DB
  	cpaSnapshotMu      sync.Mutex
  	sessionRootCacheMu sync.RWMutex
+diff --git a/docs/management/api.md b/docs/management/api.md
+--- a/docs/management/api.md
++++ b/docs/management/api.md
+@@ -3065,6 +3065,10 @@
+ 
+ Usage activity is attributed to the active DB credential resolved from `auth_index`, so a delegated executor's reported provider does not suppress scheduled collection; provider-specific passive observations still require the reported provider to match the credential provider. When a scheduled scan finds an expired `collecting` lease without a recoverable recent-activity watermark, it clears the lease and returns the collection to `idle` without issuing another upstream request.
+ 
++`collection.diagnostic` is an optional read-only diagnostic for the latest local Claude or Codex collection attempt. It contains `attempted_at` (UTC timestamp), `provider`, `response_received` and `json_valid`. Claude includes `five_hour`; Codex includes `primary_window` and `secondary_window`. Each field object contains only booleans: `present`, `null`, `quantity_null`, `quantity_valid` and `five_hour` (the field represents a five-hour window; for Codex its reported duration is 18000 seconds). Explicit zero is valid without a reset; absent or null quantities remain unknown. No response bodies, quantities, reset values or credentials are included.
++
++The diagnostic is available before stdout logging completes and retains one latest attempt per live credential. It is process-local and omitted until a supported collection attempt, after a Home restart, or for other providers. `attempted_at` identifies the diagnostic attempt independently of the saved quota snapshot; it does not assert that the snapshot write succeeded. This field is detail-only and does not initiate a collection.
++
+ ### POST `/quota/collect`
+ 
+ Starts an asynchronous on-demand quota collection round and returns how many credentials were accepted into the local collector queue. This is the only quota endpoint that is not read-only. On-demand jobs share the same process-wide provider concurrency controls as scheduled collection and are deduplicated per credential while queued or running.
+diff --git a/docs/management/api_CN.md b/docs/management/api_CN.md
+--- a/docs/management/api_CN.md
++++ b/docs/management/api_CN.md
+@@ -3057,6 +3057,10 @@
+ 
+ usage 活动归属于通过 `auth_index` 解析出的当前 DB 凭证，因此委托 executor 上报的 Provider 不会阻止定时采集；Provider 专用的被动观测仍要求上报 Provider 与凭证 Provider 一致。定时扫描发现已过期的 `collecting` lease 且没有可恢复的近期活动水位时，会清除 lease 并把采集状态恢复为 `idle`，不会再次请求上游。
+ 
++`collection.diagnostic` 是可选的只读诊断，记录本进程最近一次 Claude 或 Codex 采集尝试。它包含 `attempted_at`（UTC 时间）、`provider`、`response_received` 和 `json_valid`。Claude 包含 `five_hour`；Codex 包含 `primary_window` 和 `secondary_window`。每个窗口对象仅包含布尔值：`present`、`null`、`quantity_null`、`quantity_valid`、`five_hour`（该字段表示五小时窗口；Codex 报告的时长为 18000 秒）。显式零值无需重置时间也有效；缺失或 null 数量仍表示未知。不包含响应正文、数量、重置值或凭据。
++
++诊断在 stdout 日志写入完成前即可读取，每个现存凭据保留最近一次尝试。它仅保存在本进程内存中，在首次支持的采集前、Home 重启后或其他 Provider 上省略。`attempted_at` 独立标识诊断尝试，不代表额度快照已成功写入。该字段仅在详情响应中提供，不会触发采集。
++
+ ### POST `/quota/collect`
+ 
+ 启动一轮异步按需额度采集，返回进入本地 collector 队列的凭证数量。这是唯一非只读的额度端点。按需任务与定时采集共享进程级 Provider 并发限制；同一凭证在本地排队或执行期间会去重。
 diff --git a/internal/cluster/basalt_collection_diagnostic.go b/internal/cluster/basalt_collection_diagnostic.go
 new file mode 100644
 --- /dev/null
@@ -284,20 +312,21 @@ diff --git a/internal/cluster/management/basalt_field_diagnostic_test.go b/inter
 new file mode 100644
 --- /dev/null
 +++ b/internal/cluster/management/basalt_field_diagnostic_test.go
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,53 @@
 +package management
 +
 +import (
 +	"context"
 +	"encoding/json"
-+	"github.com/gin-gonic/gin"
-+	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
-+	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
 +	"net/http"
 +	"net/http/httptest"
 +	"strings"
 +	"testing"
 +	"time"
++
++	"github.com/gin-gonic/gin"
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
 +)
 +
 +func TestQuotaFieldDiagnosticDetailHTTP(t *testing.T) {
@@ -341,16 +370,17 @@ diff --git a/internal/quota/basalt_field_diagnostic.go b/internal/quota/basalt_f
 new file mode 100644
 --- /dev/null
 +++ b/internal/quota/basalt_field_diagnostic.go
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,80 @@
 +package quota
 +
 +import (
 +	"bytes"
 +	"context"
 +	"encoding/json"
-+	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
 +	"math"
 +	"time"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
 +)
 +
 +type fieldDiagnosticKey struct{}
@@ -425,18 +455,19 @@ diff --git a/internal/quota/basalt_field_diagnostic_test.go b/internal/quota/bas
 new file mode 100644
 --- /dev/null
 +++ b/internal/quota/basalt_field_diagnostic_test.go
-@@ -0,0 +1,139 @@
+@@ -0,0 +1,140 @@
 +package quota
 +
 +import (
 +	"encoding/json"
-+	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
-+	log "github.com/sirupsen/logrus"
 +	"net/http"
 +	"net/http/httptest"
 +	"strings"
 +	"testing"
 +	"time"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++	log "github.com/sirupsen/logrus"
 +)
 +
 +func TestQuotaFieldDiagnosticStoredCollector(t *testing.T) {
