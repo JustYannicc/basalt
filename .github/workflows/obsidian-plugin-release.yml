@@ -51,8 +51,15 @@ jobs:
           draft="$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null || echo missing)"
           # An interrupted create leaves a draft that BRAT can't see: finish it with this build.
           if [ "$draft" = "true" ]; then
+            existing="$(git ls-remote --tags origin "refs/tags/$tag" | cut -f1)"
+            if [ -n "$existing" ] && [ "$existing" != "$GITHUB_SHA" ]; then
+              message="The draft $tag has a tag at $existing, not this build's commit $GITHUB_SHA. Delete the draft and its tag, or raise version in clients/obsidian/manifest.json and versions.json."
+              echo "::error::$message"
+              echo "$message" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
             gh release upload "$tag" --clobber "$DIST/main.js" "$DIST/manifest.json" "$DIST/styles.css"
-            gh release edit "$tag" --draft=false --latest=false
+            gh release edit "$tag" --target "$GITHUB_SHA" --draft=false --latest=false
             echo "Published $tag from its interrupted draft." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
