@@ -80,11 +80,11 @@ export function createArtifactsStores(input: {
     ][0];
     let excess = Number(cached?.total ?? 0) - blobLimit;
     if (excess <= 0) return;
-    for (const victim of [
-      ...sql.exec(
-        "SELECT oid, bytes FROM vault_objects WHERE kept = 0 AND pending = 0 ORDER BY used",
-      ),
-    ]) {
+    // Read the candidates fully before deleting any, so no cursor is open across the deletes.
+    const victims = Array.from(
+      sql.exec("SELECT oid, bytes FROM vault_objects WHERE kept = 0 AND pending = 0 ORDER BY used"),
+    );
+    for (const victim of victims) {
       if (excess <= 0) break;
       sql.exec("DELETE FROM vault_objects WHERE oid = ?", String(victim.oid));
       excess -= Number(victim.bytes);

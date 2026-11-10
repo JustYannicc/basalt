@@ -115,7 +115,9 @@ function validateUpdate(update: RefUpdate) {
   const ref = update.ref;
   if (
     !ref.startsWith("refs/") ||
-    /[\x00-\x20\x7f~^:?*\[\\]/.test(ref) ||
+    // Git refuses control characters, space and DEL, then ~ ^ : ? * [ and backslash.
+    [...ref].some((character) => character <= " " || character === "\u007f") ||
+    /[~^:?*[\\]/.test(ref) ||
     ref.includes("..") ||
     ref.includes("@{") ||
     ref.endsWith(".") ||
