@@ -1,4 +1,4 @@
-import { cloudflareArtifactsApi, euNamespaceExists } from "../ensure-artifacts.ts";
+import { cloudflareArtifactsApi, euNamespaceExists, stageNamespaces } from "../ensure-artifacts.ts";
 import { PlanetScaleApi } from "../deploy-safety/planetscale-api.ts";
 import type { PreviewIdentity } from "../environment.ts";
 import {
@@ -297,8 +297,9 @@ export async function verifyPreviewProvidersAbsent(
   }
   const databases = await readbacks.listPlanetScaleDatabases(identity.databaseName);
   if (databases.some((name) => name === identity.databaseName)) throw new Error("Preview PlanetScale database is still present");
-  if (await readbacks.artifactsNamespaceExists(identity.sourceNamespace))
-    throw new Error("Preview Artifacts namespace is still present");
+  for (const namespace of stageNamespaces(identity.sourceNamespace))
+    if (await readbacks.artifactsNamespaceExists(namespace))
+      throw new Error("Preview Artifacts namespace is still present");
   if (!inventory.providers.complete || !exact.complete || inventory.providers.containers.length === 0 ||
     inventory.providers.domains.length === 0 || !exact.workers.some((worker) => worker.hostnames.length > 0))
     throw new Error("Preview provider readbacks did not cover every paid application and domain binding");

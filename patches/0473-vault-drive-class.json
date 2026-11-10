@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-vault-drive-class",
+  "file": "0473-vault-drive-class.patch",
+  "content_sha256": "df2650615142f45ab7d1e8d835f71472a5eccbc90f42a0a1a5e5046167e2b259",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

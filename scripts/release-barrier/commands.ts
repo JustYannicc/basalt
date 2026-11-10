@@ -1,6 +1,6 @@
 import type { ExecProps } from "alchemy/Command/Exec";
 import { Redacted } from "effect";
-import { cloudflareArtifactsApi, ensureEuNamespace } from "../ensure-artifacts.ts";
+import { cloudflareArtifactsApi, ensureEuNamespace, stageNamespaces } from "../ensure-artifacts.ts";
 import { BarrierRefusal } from "./manifest.ts";
 
 const commands: Record<
@@ -63,17 +63,17 @@ export async function admitSourceNamespace(props: ExecProps, api = cloudflareArt
   const refuseMutation = async (): Promise<never> => {
     throw new BarrierRefusal("source-namespace-provisioning-required");
   };
+  const readOnly = {
+    ...provider,
+    createNamespace: refuseMutation,
+    deleteNamespace: refuseMutation,
+    deleteRepository: refuseMutation,
+    deleteToken: refuseMutation,
+  };
   try {
-    await ensureEuNamespace(
-      {
-        ...provider,
-        createNamespace: refuseMutation,
-        deleteNamespace: refuseMutation,
-        deleteRepository: refuseMutation,
-        deleteToken: refuseMutation,
-      },
-      value("CLOUD_SOURCE_NAMESPACE"),
-    );
+    // The vault namespace is provisioned by an operator before the release that names it.
+    for (const namespace of stageNamespaces(value("CLOUD_SOURCE_NAMESPACE")))
+      await ensureEuNamespace(readOnly, namespace);
   } catch (error) {
     throw error instanceof BarrierRefusal
       ? error

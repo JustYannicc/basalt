@@ -124,8 +124,9 @@ for (const namespace of ["missing", "wrong", "drift"] as const) {
 test("existing EU namespace is admitted before uploads and rechecked before activation without running its provisioning Command", async () => {
   const proof = fixture({ namespace: "eu" });
   await Effect.runPromise(proof.effect);
-  assert.equal(proof.events[0], "namespace:read");
-  const second = proof.events.indexOf("namespace:read", 1);
+  // App sources, then vaults: both are admitted before uploads and both are rechecked.
+  assert.deepEqual(proof.events.slice(0, 2), ["namespace:read", "namespace:read"]);
+  const second = proof.events.indexOf("namespace:read", 2);
   assert.ok(second > proof.events.indexOf("validate:Router"));
   assert.ok(second < proof.events.findIndex((event) => event.startsWith("activate:")));
   assert.ok(!proof.events.some((event) => event.includes("command:node ensure-artifacts.ts")));

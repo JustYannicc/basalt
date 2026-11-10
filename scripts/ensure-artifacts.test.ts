@@ -4,6 +4,8 @@ import {
   cloudflareArtifactsApi,
   deleteEuNamespace,
   ensureEuNamespace,
+  stageNamespaces,
+  vaultNamespace,
   type ArtifactsApi,
 } from "./ensure-artifacts.ts";
 
@@ -312,4 +314,41 @@ test("every Artifacts operation bounds numeric codes and rejects 403 after one r
     });
     assert.equal(requests, 1);
   }
+});
+
+test("each stage keeps vaults in its own namespace beside app sources", () => {
+  assert.equal(vaultNamespace("basalt-production-apps"), "basalt-production-vaults");
+  assert.equal(vaultNamespace("basalt-preview-pr-1419-apps"), "basalt-preview-pr-1419-vaults");
+  assert.equal(vaultNamespace("sources"), "sources-vaults");
+  assert.deepEqual(stageNamespaces("basalt-production-apps"), [
+    "basalt-production-apps",
+    "basalt-production-vaults",
+  ]);
+  assert.throws(() => vaultNamespace("Bad_Name"), /Invalid Artifacts vault namespace/);
+});
+
+test("the release admits a stage only when both namespaces already exist in the EU", async () => {
+  const { admitSourceNamespace } = await import("./release-barrier/commands.ts");
+  const props = {
+    command: "node ensure-artifacts.ts",
+    env: {
+      CLOUDFLARE_ACCOUNT_ID: "account",
+      CLOUDFLARE_API_TOKEN: "token",
+      CLOUD_SOURCE_NAMESPACE: "basalt-production-apps",
+    },
+  };
+  const provider = (...names: string[]) => {
+    const state = fixture({ namespaces: names.map((namespace) => ({ namespace, jurisdiction: "eu" })) });
+    return { state, api: () => state.api };
+  };
+  const both = provider("basalt-production-apps", "basalt-production-vaults");
+  await admitSourceNamespace(props, both.api);
+  assert.deepEqual(both.state.calls, ["namespaces:", "namespaces:"]);
+  // A missing vault namespace is an operator step, never something a release creates.
+  const sourcesOnly = provider("basalt-production-apps");
+  await assert.rejects(
+    admitSourceNamespace(props, sourcesOnly.api),
+    /source-namespace-provisioning-required/,
+  );
+  assert.ok(!sourcesOnly.state.calls.some((call) => call.startsWith("create:")));
 });

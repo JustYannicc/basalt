@@ -258,17 +258,16 @@ export const fixture = (
                 events.push("namespace:read");
                 const missing =
                   options.namespace === "missing" ||
-                  (options.namespace === "drift" && namespaceReads > 1);
+                  // Each admission reads the app-source and the vault namespace.
+                  (options.namespace === "drift" && namespaceReads > 2);
                 return Response.json({
                   success: true,
                   result: missing
                     ? []
-                    : [
-                        {
-                          namespace: "sources",
-                          jurisdiction: options.namespace === "wrong" ? "global" : "eu",
-                        },
-                      ],
+                    : ["sources", "sources-vaults"].map((namespace) => ({
+                        namespace,
+                        jurisdiction: options.namespace === "wrong" ? "global" : "eu",
+                      })),
                 });
               }),
             placements: (worker, baseline) =>

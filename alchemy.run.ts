@@ -1,4 +1,5 @@
 import { provisionPublicSiteWaitlist } from "./scripts/release-barrier/public-site-waitlist.ts";
+import { provisionVaultAttachments } from "./scripts/release-barrier/vault-attachments.ts";
 import { productionOpsRelease } from "./.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -175,6 +176,9 @@ export default Alchemy.Stack(
       compatibility: { date: "2026-09-08" },
       observability: workerObservability,
     });
+    // Vault attachment bytes. Like the waiting list, a separate release provisions it before any
+    // Worker binds it; previews bind no retained bucket.
+    if (preview === undefined) yield* provisionVaultAttachments;
     // The public home and legal pages at the zone's apex. Previews share the zone, so only
     // production owns its apex.
     if (preview === undefined) {

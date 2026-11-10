@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.cloudDrive {
+    metadata {
+      constraint "The VaultDrive SQLite class ships alone on the ArtifactsCredentials Worker before any code calls it: one inert export plus its local binding, the only binding delta the declared class expansion admits. Vault text and history belong in a per-vault Artifacts repository in the stage's EU vault namespace, which an operator creates before the release that names it; the release only verifies it. Attachment bytes belong in the retained EU VaultAttachments bucket, whose objects are never deleted. Feature bindings for the namespace, the bucket and the API's VaultDrive binding follow in a later release."
+    }
+  }
+}

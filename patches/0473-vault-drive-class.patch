@@ -1,0 +1,61 @@
+diff --git a/apps/hosted/cloud/src/artifacts-credentials.ts b/apps/hosted/cloud/src/artifacts-credentials.ts
+--- a/apps/hosted/cloud/src/artifacts-credentials.ts
++++ b/apps/hosted/cloud/src/artifacts-credentials.ts
+@@ -18,6 +18,7 @@ import {
+   unavailable,
+ } from "./infrastructure/artifacts-tokens.ts";
+ import { cloudEncryptionKey } from "./infrastructure/secrets.ts";
++import { VaultDrive } from "./infrastructure/vault-drive.ts";
+ import {
+   cloudObservability,
+   cloudTelemetry,
+@@ -427,7 +428,12 @@ export default ArtifactsCredentials.make(
+   }),
+   Effect.succeed({}).pipe(
+     Effect.provide(
+-      Layer.mergeAll(ArtifactsTokenCoordinator.make(makeArtifactsTokenCoordinator), cloudTelemetry),
++      Layer.mergeAll(
++        ArtifactsTokenCoordinator.make(makeArtifactsTokenCoordinator),
++        // Inert until the vault backend ships; it holds no state yet.
++        VaultDrive.make(Effect.succeed(Effect.succeed({}))),
++        cloudTelemetry,
++      ),
+     ),
+   ),
+ );
+diff --git a/apps/hosted/cloud/src/infrastructure/artifacts-credentials-worker.ts b/apps/hosted/cloud/src/infrastructure/artifacts-credentials-worker.ts
+--- a/apps/hosted/cloud/src/infrastructure/artifacts-credentials-worker.ts
++++ b/apps/hosted/cloud/src/infrastructure/artifacts-credentials-worker.ts
+@@ -1,10 +1,11 @@
+ /** Bind the Artifacts credentials Worker without importing its implementation. */
+ import * as Cloudflare from "alchemy/Cloudflare";
+ import type { ArtifactsTokenCoordinator } from "./artifacts-tokens.ts";
++import type { VaultDrive } from "./vault-drive.ts";
+ 
+-/** Hosts every repository's token coordinator, so waking one never starts the API Worker. */
++/** Hosts token coordinators and vault objects, so waking one never starts the API Worker. */
+ export class ArtifactsCredentials extends Cloudflare.Worker<
+   ArtifactsCredentials,
+   {},
+-  ArtifactsTokenCoordinator
++  ArtifactsTokenCoordinator | VaultDrive
+ >()("ArtifactsCredentials") {}
+diff --git a/apps/hosted/cloud/src/infrastructure/vault-drive.ts b/apps/hosted/cloud/src/infrastructure/vault-drive.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/vault-drive.ts
+@@ -0,0 +1,14 @@
++/** Bind a vault's drive object without importing its implementation. */
++import * as Cloudflare from "alchemy/Cloudflare";
++
++/** Calls the vault backend makes on one vault's object. None exist until that backend ships. */
++export interface VaultDriveApi {}
++
++/**
++ * One SQLite object per vault serializes its writes and holds its receipts and caches. Its text
++ * and history live in the vault's Artifacts repository. The class ships first, with no methods
++ * or bindings, so its storage exists before any feature code depends on it.
++ */
++export class VaultDrive extends Cloudflare.DurableObject<VaultDrive, VaultDriveApi>()(
++  "VaultDrive",
++) {}

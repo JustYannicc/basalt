@@ -174,8 +174,9 @@ function liveServices(source: NodeJS.ProcessEnv): LifecycleServices {
       const account = environment.CLOUDFLARE_ACCOUNT_ID;
       const token = environment.CLOUDFLARE_API_TOKEN;
       if (!account || !token) throw new Error("Preview cleanup credentials are missing");
-      const { cloudflareArtifactsApi } = await import("../ensure-artifacts.ts");
-      await deleteEuNamespace(cloudflareArtifactsApi(account, token), namespace);
+      const { cloudflareArtifactsApi, stageNamespaces } = await import("../ensure-artifacts.ts");
+      const api = cloudflareArtifactsApi(account, token);
+      for (const name of stageNamespaces(namespace)) await deleteEuNamespace(api, name);
     },
     verifyProviders: (identity, inventory, environment) =>
       verifyPreviewProvidersAbsent(identity, inventory, providerReadbacks(environment)),

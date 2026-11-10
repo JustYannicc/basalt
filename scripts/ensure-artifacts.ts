@@ -259,13 +259,27 @@ export async function deleteEuNamespace(
   throw new Error("Artifacts namespace is still present after deletion");
 }
 
+/**
+ * Vault repositories live beside a stage's app sources, in their own namespace, so the two
+ * workloads keep separate request-rate limits and a preview teardown removes both.
+ */
+export function vaultNamespace(sourceNamespace: string): string {
+  const name = `${sourceNamespace.replace(/-apps$/u, "")}-vaults`;
+  if (!/^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$/u.test(name)) throw new Error("Invalid Artifacts vault namespace");
+  return name;
+}
+
+/** Every namespace a stage owns, app sources first. */
+export const stageNamespaces = (sourceNamespace: string) => [sourceNamespace, vaultNamespace(sourceNamespace)];
+
 async function main(): Promise<void> {
   const account = process.env.CLOUDFLARE_ACCOUNT_ID;
   const token = process.env.CLOUDFLARE_API_TOKEN;
   if (!account || !token) throw new Error("Missing Cloudflare deploy credentials");
-  const namespace = process.env.CLOUD_SOURCE_NAMESPACE ?? deployment.sourceNamespace;
-  await ensureEuNamespace(cloudflareArtifactsApi(account, token), namespace);
-  console.log("Artifacts namespace uses EU jurisdiction");
+  const api = cloudflareArtifactsApi(account, token);
+  for (const namespace of stageNamespaces(process.env.CLOUD_SOURCE_NAMESPACE ?? deployment.sourceNamespace))
+    await ensureEuNamespace(api, namespace);
+  console.log("Artifacts namespaces use EU jurisdiction");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
