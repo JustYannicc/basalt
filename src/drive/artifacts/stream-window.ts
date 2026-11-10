@@ -1,7 +1,7 @@
 import type { Bytes } from "../shared/strata/types.ts";
 import { ProtocolError, Unavailable } from "./wire.ts";
 
-/** Counts owned byte buffers, including allocations which overlap while a window grows. */
+/** Counts owned buffers and bookkeeping, including allocations which overlap during work. */
 export class RetainedBytes {
   private sizes = new Map<object, number>();
   private report: ((bytes: number) => void) | undefined;
@@ -9,7 +9,8 @@ export class RetainedBytes {
     this.report = report;
   }
   set(owner: object, bytes: number) {
-    this.sizes.set(owner, bytes);
+    if (bytes) this.sizes.set(owner, bytes);
+    else this.sizes.delete(owner);
     this.report?.([...this.sizes.values()].reduce((sum, size) => sum + size, 0));
   }
 }

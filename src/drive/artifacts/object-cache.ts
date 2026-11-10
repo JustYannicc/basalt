@@ -101,15 +101,14 @@ export function createObjectCache(
     ][0];
     let excess = Number(cached?.total ?? 0) - blobLimit;
     if (excess <= 0) return;
-    // Read the candidates fully before deleting any, so no cursor is open across the deletes.
-    const victims = Array.from(
-      sql.exec(
-        "SELECT oid, bytes FROM vault_git_objects WHERE kept = 0 AND pending = 0 AND oid NOT IN (SELECT oid FROM vault_pack_bases) ORDER BY used",
-      ),
-    );
     storage.transactionSync(() => {
-      for (const victim of victims) {
-        if (excess <= 0) break;
+      while (excess > 0) {
+        const victim = [
+          ...sql.exec(
+            "SELECT oid, bytes FROM vault_git_objects WHERE kept = 0 AND pending = 0 ORDER BY used LIMIT 1",
+          ),
+        ][0];
+        if (!victim) break;
         sql.exec("DELETE FROM vault_git_parts WHERE oid = ?", String(victim.oid));
         sql.exec("DELETE FROM vault_git_objects WHERE oid = ?", String(victim.oid));
         excess -= Number(victim.bytes);
@@ -152,23 +151,19 @@ export function createObjectCache(
     verified,
     complete: (oid: string) =>
       known(oid) && ![...sql.exec("SELECT 1 FROM vault_fetch_incomplete WHERE oid = ?", oid)][0],
-    async putFetched(object: GitObject, temporary = false) {
+    async putFetched(object: GitObject) {
       await verified([object]);
-      storage.transactionSync(() => {
-        const exists = known(object.oid),
-          pinned = [
-            ...sql.exec("SELECT temporary FROM vault_pack_bases WHERE oid = ?", object.oid),
-          ][0];
-        if (!exists && object.type !== "blob")
-          sql.exec("INSERT OR IGNORE INTO vault_fetch_incomplete(oid) VALUES (?)", object.oid);
-        sql.exec(
-          "INSERT INTO vault_pack_bases(oid, temporary) VALUES (?, ?) ON CONFLICT(oid) DO UPDATE SET temporary = MIN(temporary, excluded.temporary)",
-          object.oid,
-          temporary && (!exists || Number(pinned?.temporary) === 1) ? 1 : 0,
-        );
-      });
+      if (object.type !== "blob")
+        storage.transactionSync(() => {
+          if (!known(object.oid))
+            sql.exec("INSERT OR IGNORE INTO vault_fetch_incomplete(oid) VALUES (?)", object.oid);
+          sql.exec(
+            "INSERT OR REPLACE INTO vault_pack_bases(oid, temporary) VALUES (?, 0)",
+            object.oid,
+          );
+        });
       save([object], false);
-      // Incoming blobs remain pinned for later deltas. Older unpinned cache entries can go now.
+      // Delta bases may be evicted here; the sink can read them again from the repository.
       evict();
     },
     endFetch,

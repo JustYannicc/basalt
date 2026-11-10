@@ -10,6 +10,7 @@ import { createArtifactsStores } from "./stores.ts";
 import { createObjectCache } from "./object-cache.ts";
 import { createGitRemote, ProtocolError, maximumReplyBytes } from "./transport.ts";
 import { fetchStream } from "./fetch-stream.ts";
+import { createFetchStaging } from "./fetch-staging.ts";
 import { backend, git, pkt, responsePack, token } from "./test/backend.ts";
 import { repository } from "./test/vault.ts";
 import { deltaKinds, largeHistory, sampleBytes } from "./test/large-history.ts";
@@ -80,11 +81,12 @@ test(
                 peak = Math.max(peak, bytes);
               },
               sink: {
+                staging: input.sink!.staging,
                 get: input.sink!.get,
-                async put(object, temporary) {
+                async put(object) {
                   writes++;
                   earlyWrite ||= received < history.packBytes;
-                  await input.sink!.put(object, temporary);
+                  await input.sink!.put(object);
                 },
               },
             }),
@@ -163,6 +165,7 @@ test("repeated forward REF_DELTAs spill to storage and resolve after their base 
       }),
     );
     await fetchStream(response, false, {
+      staging: createFetchStaging(data.storage),
       get: async (oid) => cache.load(oid) ?? null,
       put: cache.putFetched,
     });
@@ -244,19 +247,26 @@ test("bad checksums and truncated streams keep refs unchanged and retry the inco
   }
 });
 
-test("ingestion evicts old cache entries while retaining bases until the pack finishes", async () => {
+test("ingestion evicts incoming blobs throughout a fetch", async (t) => {
   const data = storageFixture();
-  try {
-    const cache = createObjectCache(data.storage, 4, Date.now),
-      old = await writtenObject("blob", new TextEncoder().encode("old!")),
-      base = await writtenObject("blob", new TextEncoder().encode("a delta base"));
-    cache.save([old], false);
-    await cache.putFetched(base);
-    assert.equal(cache.load(old.oid), undefined, "old blob evicted during ingestion");
-    assert.ok(cache.load(base.oid), "in-pack base is protected even above the cache limit");
-    cache.endFetch(true);
-    assert.equal(cache.load(base.oid), undefined, "pin is released when the pack finishes");
-  } finally {
-    data.close();
+  t.after(() => data.close());
+  const cache = createObjectCache(data.storage, 4, Date.now);
+  let peak = 0;
+  for (let i = 0; i < 100; i++) {
+    const object = await writtenObject(
+      "blob",
+      new TextEncoder().encode(String(i).padStart(4, "0")),
+    );
+    await cache.putFetched(object);
+    const row = [
+      ...data.storage.sql.exec(
+        "SELECT SUM(bytes) AS bytes FROM vault_git_objects WHERE type = 'blob'",
+      ),
+    ][0];
+    const bytes = Number(row?.bytes ?? 0);
+    peak = Math.max(peak, bytes);
+    assert.ok(bytes <= 4, `cache retained ${bytes} bytes during ingestion`);
   }
+  cache.endFetch(true);
+  t.diagnostic(`peak cache bytes during ingestion ${peak}, limit 4`);
 });

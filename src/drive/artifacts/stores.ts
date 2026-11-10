@@ -1,5 +1,6 @@
 import { DriveError } from "../shared/.generated/strata/errors.js";
 import { createObjectCache } from "./object-cache.ts";
+import { createFetchStaging } from "./fetch-staging.ts";
 import type { FetchInput } from "./fetch-stream.ts";
 import { referencedOids } from "../shared/.generated/strata/git/objects.js";
 import { createSqliteRefStore, validateTransaction } from "../shared/.generated/strata/sqlite.js";
@@ -60,7 +61,8 @@ export function createArtifactsStores(input: {
   );
   const local = createSqliteRefStore(storage);
 
-  const cache = createObjectCache(storage, blobLimit, now);
+  const cache = createObjectCache(storage, blobLimit, now),
+    staging = createFetchStaging(storage);
   const { load, save, evict, verified } = cache;
   /** Bring every commit and tree reachable from a remote head into the clone. */
   const fetchHead = async (head: string) => {
@@ -76,7 +78,13 @@ export function createArtifactsStores(input: {
         wants: [head],
         haves,
         sink: {
-          get: async (oid) => load(oid) ?? null,
+          staging,
+          async get(oid) {
+            const stored = load(oid);
+            if (stored) return stored;
+            const content = await repository.readBlob(oid);
+            return content ? { oid, type: "blob", content } : null;
+          },
           put: cache.putFetched,
         },
       });

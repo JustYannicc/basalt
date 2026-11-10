@@ -4,12 +4,13 @@ import { applyDelta, readEntryHeader } from "../shared/.generated/strata/git/pac
 import type { Bytes, GitObject } from "../shared/strata/types.ts";
 import { decoder, limits, ProtocolError, Unavailable } from "./wire.ts";
 import { RetainedBytes, StreamWindow, responseBytes } from "./stream-window.ts";
+import type { createFetchStaging } from "./fetch-staging.ts";
 
 /** The caller persists objects and serves delta bases without keeping the pack in memory. */
 export interface FetchSink {
   get(oid: string): Promise<GitObject | null>;
-  /** Temporary blobs hold forward deltas until their bases arrive; discard after the fetch. */
-  put(object: GitObject, temporary?: boolean): Promise<void>;
+  put(object: GitObject): Promise<void>;
+  staging: ReturnType<typeof createFetchStaging>;
 }
 export interface FetchInput {
   wants: string[];
@@ -54,7 +55,8 @@ async function* packBytes(body: Response["body"], banded: boolean, retained: Ret
       if (length < 4 || length > 65520) throw new ProtocolError("Invalid Git packet size");
       await input.require(length);
       const payload = input.bytes.subarray(4, length),
-        text = decoder.decode(payload);
+        text =
+          negotiating && (payload[0] === 65 || payload[0] === 78) ? decoder.decode(payload) : "";
       if (
         negotiating &&
         (text === "NAK\n" || /^ACK [0-9a-f]{40}(?: (?:common|ready|continue))?\n$/.test(text))
@@ -74,7 +76,7 @@ async function* packBytes(body: Response["body"], banded: boolean, retained: Ret
   }
 }
 
-/** Pack payloads are bounded by one compressed object; only offsets and ids outlive an entry. */
+/** Pack payloads are bounded by one object; pack-wide bookkeeping lives in SQLite. */
 export async function fetchStream(
   response: Response,
   banded: boolean,
@@ -85,44 +87,40 @@ export async function fetchStream(
     input = new StreamWindow(packBytes(response.body, banded, retained), retained),
     hash = createHash("sha1"),
     scratch = {},
-    offsets = new Map<number, string>(),
-    pending: { offset: number; header: ReturnType<typeof readEntryHeader>; delta: string }[] = [];
+    inflation = {},
+    staging = sink.staging.begin(retained);
   let offset = 0;
   const consume = (length: number) => {
     hash.update(input.bytes.subarray(0, length));
     input.consume(length);
     offset += length;
   };
-  const parent = async (at: number, header: ReturnType<typeof readEntryHeader>) => {
-    const oid =
-      header.kind === "ofs_delta" ? offsets.get(at - header.baseDistance!) : header.baseOid;
-    if (!oid) return null;
-    const object = await sink.get(oid);
-    if (object && (object.oid !== oid || id(object.type, object.content) !== oid))
-      throw new ProtocolError("External delta base does not match its id");
-    return object;
-  };
-  const resolve = async (at: number, header: ReturnType<typeof readEntryHeader>, data: Bytes) => {
-    let type: GitObject["type"], content: Bytes;
-    if (header.kind === "ofs_delta" || header.kind === "ref_delta") {
-      const base = await parent(at, header);
-      if (!base) return false;
-      // Account for the base, delta and result while they overlap.
-      retained.set(scratch, data.length + base.content.length);
-      type = base.type;
-      content = applyDelta(base.content, data, limits.object);
-      retained.set(scratch, data.length + base.content.length + content.length);
-    } else {
-      type = header.kind;
-      content = data;
-    }
-    if (header.kind !== "ofs_delta" && header.kind !== "ref_delta")
-      retained.set(scratch, data.length + content.length);
+  const resolve = async (at: number, type: GitObject["type"], content: Bytes) => {
     const object = { oid: id(type, content), type, content };
     await sink.put(object);
-    offsets.set(at, object.oid);
-    retained.set(scratch, 0);
+    staging.resolved(at, object.oid);
+  };
+  const delta = async (at: number, oid: string | undefined, data: Bytes) => {
+    if (!oid) return false;
+    const base = await sink.get(oid);
+    if (!base) return false;
+    retained.set(scratch, base.content.buffer.byteLength);
+    if (base.oid !== oid || id(base.type, base.content) !== oid)
+      throw new ProtocolError("External delta base does not match its id");
+    const content = applyDelta(base.content, data, limits.object);
+    retained.set(scratch, base.content.buffer.byteLength + content.buffer.byteLength);
+    await resolve(at, base.type, content);
     return true;
+  };
+  const drain = async () => {
+    for (;;) {
+      const entry = staging.next();
+      if (!entry) return;
+      if (!(await delta(entry.offset, entry.oid, entry.content)))
+        throw new ProtocolError("Missing staged delta base");
+      staging.release();
+      retained.set(scratch, 0);
+    }
   };
   try {
     await input.require(12);
@@ -153,11 +151,25 @@ export async function fetchStream(
         await input.ensure(size);
         try {
           // zlib stops at this entry and reports its compressed span, even with lookahead bytes.
-          retained.set(scratch, 2 * header.size + 65536);
-          const inflated = inflateSync(input.bytes, {
+          retained.set(inflation, 2 * header.size + 65536);
+          // Node typings omit the documented info=true result shape. Validate it at the boundary.
+          const inflated: unknown = inflateSync(input.bytes, {
             info: true,
             maxOutputLength: Math.max(1, header.size),
-          }) as unknown as { buffer: Bytes; engine: { bytesWritten: number } };
+          });
+          if (
+            typeof inflated !== "object" ||
+            inflated === null ||
+            !("buffer" in inflated) ||
+            !(inflated.buffer instanceof Uint8Array) ||
+            !(inflated.buffer.buffer instanceof ArrayBuffer) ||
+            !("engine" in inflated) ||
+            typeof inflated.engine !== "object" ||
+            inflated.engine === null ||
+            !("bytesWritten" in inflated.engine) ||
+            typeof inflated.engine.bytesWritten !== "number"
+          )
+            throw new ProtocolError("Invalid inflater result");
           if (inflated.buffer.length !== header.size || !inflated.engine.bytesWritten)
             throw new ProtocolError("Packed object size mismatch");
           consume(inflated.engine.bytesWritten);
@@ -166,11 +178,14 @@ export async function fetchStream(
             inflated.buffer.byteOffset,
             inflated.buffer.byteLength,
           );
-          if (!(await resolve(at, header, data))) {
-            const delta = id("blob", data);
-            await sink.put({ oid: delta, type: "blob", content: data }, true);
-            pending.push({ offset: at, header, delta });
-          }
+          retained.set(inflation, data.buffer.byteLength + 65536);
+          if (header.kind === "ofs_delta" || header.kind === "ref_delta") {
+            const oid =
+              header.kind === "ofs_delta"
+                ? staging.oidAt(at - header.baseDistance!)
+                : header.baseOid;
+            if (!(await delta(at, oid, data))) staging.defer(at, header, data);
+          } else await resolve(at, header.kind, data);
           retained.set(scratch, 0);
           break;
         } catch (error) {
@@ -182,6 +197,8 @@ export async function fetchStream(
           size = Math.min(size * 2, limits.object + 1048576);
         }
       }
+      retained.set(inflation, 0);
+      await drain();
     }
     await input.require(20);
     if (hash.digest("hex") !== Buffer.from(input.bytes.subarray(0, 20)).toString("hex"))
@@ -189,24 +206,17 @@ export async function fetchStream(
     input.consume(20);
     await input.ensure(1);
     if (input.bytes.length) throw new ProtocolError("Trailing data in Git pack");
-    while (pending.length) {
-      let progress = false;
-      for (let i = pending.length - 1; i >= 0; i--) {
-        const entry = pending[i]!,
-          delta = await sink.get(entry.delta);
-        if (!delta) throw new ProtocolError("Missing staged delta");
-        if (await resolve(entry.offset, entry.header, delta.content)) {
-          pending.splice(i, 1);
-          progress = true;
-        }
-      }
-      if (!progress) throw new ProtocolError("Missing or cyclic delta base");
-    }
+    if (staging.pending()) throw new ProtocolError("Missing or cyclic delta base");
   } catch (error) {
     if (error instanceof ProtocolError || error instanceof Unavailable) throw error;
     throw new ProtocolError("Invalid Git pack or delta base");
   } finally {
-    await input.close();
-    retained.set(scratch, 0);
+    try {
+      await input.close();
+    } finally {
+      retained.set(scratch, 0);
+      retained.set(inflation, 0);
+      staging.close();
+    }
   }
 }

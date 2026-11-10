@@ -87,13 +87,17 @@ const close = (repo: ArtifactsRepo) => repo[Symbol.dispose]?.();
  * One vault object per app: its storage, its attachment bucket and its Artifacts repository. The
  * write token lives only in this object's memory, is never stored and is never returned.
  */
-export function vaultObject(input: {
-  app: string;
-  storage: TransactionStorage;
-  bucket: VaultBucket;
-  artifacts: ArtifactsNamespace;
-  now?: () => number;
-}) {
+export function vaultObject(
+  input: {
+    app: string;
+    storage: TransactionStorage;
+    bucket: VaultBucket;
+    artifacts: ArtifactsNamespace;
+    now?: () => number;
+  },
+  /** Internal test seam for defects raised by a dispatcher after the vault opens. */
+  dispatcherFactory: typeof createDriveDispatcher = createDriveDispatcher,
+) {
   const now = input.now ?? Date.now,
     name = repositoryName(input.app);
   let opened: ReturnType<typeof open> | undefined;
@@ -151,7 +155,7 @@ export function vaultObject(input: {
       repository: vaultRepository,
       now,
     });
-    return createDriveDispatcher(
+    return dispatcherFactory(
       vault.drive,
       vault.attachments,
       vault.changes,

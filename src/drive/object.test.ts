@@ -107,3 +107,19 @@ test("a drive failure is a reply, but a defect propagates instead of hiding as o
     /storage invariant broken/,
   );
 });
+
+test("vaultObject.request rejects dispatcher defects", async (t) => {
+  const server = await backend(),
+    data = storageFixture();
+  t.after(() => server.close());
+  t.after(() => data.close());
+  const { artifacts } = namespace(server);
+  const object = vaultObject(
+    { app: "defect", storage: data.storage, bucket: data.bucket, artifacts },
+    () => () => Effect.die(new Error("request dispatcher invariant broken")),
+  );
+  await assert.rejects(
+    object.request({ operation: "drive", method: "list", input: {} }),
+    /request dispatcher invariant broken/,
+  );
+});
