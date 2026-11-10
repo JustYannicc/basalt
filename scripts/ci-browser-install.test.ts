@@ -34,6 +34,7 @@ function fixture(mode = "success", url = "") {
     writeFileSync(join(apt, path), "http://azure.archive.ubuntu.com/ubuntu\n");
   writeFileSync(join(root, "tmp/playwright-apt/libfixture_1_amd64.deb"), "fixture");
   const mock = `#!${process.execPath}
+import assert from 'node:assert/strict';
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -63,15 +64,23 @@ if (name === 'sudo') {
 } else if (name === 'dpkg') {
   record(name, args);
   if (mode === 'partial') process.exit(1);
-  writeFileSync(join(root, 'installed'), 'yes');
+  if (mode === 'slow') {
+    const progress = setInterval(() => { record('unpack-progress', []); console.log('Unpacking fixture package...'); }, 5000);
+    setTimeout(() => { clearInterval(progress); writeFileSync(join(root, 'installed'), 'yes'); }, 62000);
+  } else writeFileSync(join(root, 'installed'), 'yes');
 } else if (name === 'playwright') {
   const mirror = readFileSync(join(root, 'etc/apt/apt-mirrors.txt'), 'utf8').trim();
   record(name, [...args, mirror]);
   if (args.includes('--dry-run')) process.exit(mode !== 'missing' && existsSync(join(root, 'installed')) ? 0 : 1);
+  const config = process.env.APT_CONFIG;
+  if (config) {
+    assert.equal(readFileSync(config, 'utf8').trim(), 'Binary::apt-get::APT::Get::Download-Only \"true\";');
+    record('download-only', []);
+  }
   if (mode === 'fail') process.exit(1);
   if (mode === 'stall' && mirror.includes('http://archive.ubuntu.com/'))
     execute('curl', ['--silent', '--show-error', '--max-time', '75', ${JSON.stringify(url)}]);
-  writeFileSync(join(root, 'installed'), 'yes');
+  if (!config) writeFileSync(join(root, 'installed'), 'yes');
 } else throw new Error('Unexpected fixture command ' + name);
 `;
   for (const name of ["sudo", "bunx", "dpkg"])
@@ -132,6 +141,7 @@ test("a restored package cache installs offline without an index refresh or mirr
       [["install-deps", "--dry-run", "chromium"]],
     );
     assert.ok(!result.calls.some((call) => call.args[0] === "sed"));
+    assert.ok(!result.calls.some((call) => call.name === "download-only"));
   } finally {
     fixture_.dispose();
   }
@@ -170,6 +180,8 @@ test("two failed mirrors exhaust the fixed attempt count", async () => {
     assert.notEqual(result.code, 0);
     const attempts = result.calls.filter((call) => call.name === "playwright");
     assert.equal(attempts.length, 2);
+    assert.equal(result.calls.filter((call) => call.name === "download-only").length, 2);
+    assert.ok(!result.calls.some((call) => call.name === "dpkg"));
     assert.ok(attempts[0]!.args.at(-1)!.includes("http://archive.ubuntu.com/"));
     assert.ok(attempts[1]!.args.at(-1)!.includes("http://azure.archive.ubuntu.com/"));
     assert.equal(
@@ -180,6 +192,30 @@ test("two failed mirrors exhaust the fixed attempt count", async () => {
     fixture_.dispose();
   }
 });
+
+for (const hit of [true, false]) {
+  test(`a progressing local install can exceed the mirror deadline after a cache ${hit ? "hit" : "miss"}`, async () => {
+    const fixture_ = fixture("slow");
+    try {
+      const start = Date.now();
+      const result = await fixture_.run(hit);
+      const seconds = (Date.now() - start) / 1000;
+      assert.equal(result.code, 0, result.output);
+      assert.ok(seconds >= 62, `local installation ended after ${seconds}s`);
+      assert.ok(result.calls.filter((call) => call.name === "unpack-progress").length >= 12);
+      assert.ok(result.calls.some((call) => call.name === "dpkg"));
+      assert.equal(
+        result.calls.filter((call) => call.name === "download-only").length,
+        hit ? 0 : 1,
+      );
+      console.log(
+        `Progressing local install after cache ${hit ? "hit" : "miss"} completed in ${seconds.toFixed(2)}s`,
+      );
+    } finally {
+      fixture_.dispose();
+    }
+  });
+}
 
 test("a mirror that accepts connections but never responds reaches the fallback within 70 seconds", async () => {
   const sockets = new Set<import("node:net").Socket>();

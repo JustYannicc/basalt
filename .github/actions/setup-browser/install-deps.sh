@@ -2,14 +2,17 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../../../.upstream"
 playwright=./node_modules/.bin/playwright
-if [[ "${1:-false}" == true ]]; then
+install_cached_deps() {
   shopt -s nullglob
   debs=("$RUNNER_TEMP/playwright-apt/"*.deb)
   if ((${#debs[@]})); then
-    sudo timeout --kill-after=5s 60s dpkg --install "${debs[@]}"
+    sudo dpkg --install "${debs[@]}"
   fi
   # A partial cache must fail offline rather than silently starting downloads.
   "$playwright" install-deps --dry-run chromium
+}
+if [[ "${1:-false}" == true ]]; then
+  install_cached_deps
   exit
 fi
 mkdir -p "$RUNNER_TEMP/playwright-apt"
@@ -26,8 +29,15 @@ sources=(/etc/apt/sources.list.d/ubuntu.sources)
 if [[ -f /etc/apt/sources.list ]]; then sources+=(/etc/apt/sources.list); fi
 if [[ -f /etc/apt/apt-mirrors.txt ]]; then sources+=(/etc/apt/apt-mirrors.txt); fi
 sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' "${sources[@]}"
-# Apt's per-request inactivity limit does not bound a complete index refresh.
-if ! sudo timeout --kill-after=5s 60s "$playwright" install-deps chromium; then
+# Keep Playwright's package selection, but never unpack under the mirror deadline.
+download_config="$RUNNER_TEMP/playwright-download-only.conf"
+printf '%s\n' 'Binary::apt-get::APT::Get::Download-Only "true";' > "$download_config"
+download_deps() {
+  sudo timeout --kill-after=5s 60s bash -c \
+    'APT_CONFIG="$1" exec "$2" install-deps chromium' -- "$download_config" "$playwright"
+}
+if ! download_deps; then
   sudo sed -i 's|archive.ubuntu.com|azure.archive.ubuntu.com|g' "${sources[@]}"
-  sudo timeout --kill-after=5s 60s "$playwright" install-deps chromium
+  download_deps
 fi
+install_cached_deps
