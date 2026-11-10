@@ -2,6 +2,7 @@ import { onServedFramework } from "./framework.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
 import { test } from "node:test";
 import { aws } from "./aws/index.ts";
 import { mergeFeed } from "./feed.ts";
@@ -29,6 +30,7 @@ test("AWS catalog provenance pins the self-contained published source and depend
   assert.deepEqual(source.files.map((file) => file.path).sort(), [
     "README.md",
     "connection.ts",
+    "device-url.ts",
     "errors.ts",
     "icon.ts",
     "identity-client.ts",
@@ -156,4 +158,54 @@ test("AWS signer sends HTTP only through the supplied context fetch", async () =
   assert.match(requests[0]!.headers.get("authorization") ?? "", /^AWS4-HMAC-SHA256 /);
   assert.equal(requests[0]!.headers.get("x-amz-security-token"), "synthetic-session");
   assert.equal(await requests[0]!.text(), '{"method":"tools/list"}');
+});
+
+test("AWS device sign-in accepts only exact AWS pages in the connection's region", async () => {
+  const file = source.files.find((entry) => entry.path === "device-url.ts");
+  assert.ok(file);
+  const { deviceVerificationUrl } = (await import(
+    `data:text/javascript;base64,${Buffer.from(stripTypeScriptTypes(file.content)).toString("base64")}`
+  )) as {
+    deviceVerificationUrl: (
+      value: string,
+      region: string,
+      kind: "page" | "complete",
+    ) => URL | undefined;
+  };
+  const accepts = (value: string, kind: "page" | "complete" = "complete") =>
+    deviceVerificationUrl(value, "eu-west-1", kind)?.href;
+
+  // Current StartDeviceAuthorization shape from the regional OIDC endpoint (instance id synthetic).
+  const portal = "https://ssoins-0a1b2c3d4e5f6789.eu-west-1.portal.amazonaws.com/#/device";
+  assert.equal(accepts(`${portal}?user_code=ABCD-EFGH`), `${portal}?user_code=ABCD-EFGH`);
+  assert.equal(accepts(portal, "page"), portal);
+  assert.equal(
+    accepts("https://device.sso.eu-west-1.amazonaws.com/?user_code=ABCD-EFGH"),
+    "https://device.sso.eu-west-1.amazonaws.com/?user_code=ABCD-EFGH",
+  );
+
+  for (const lookalike of [
+    portal,
+    `http://ssoins-0a1b2c3d4e5f6789.eu-west-1.portal.amazonaws.com/#/device?user_code=ABCD-EFGH`,
+    `https://ssoins-0a1b2c3d4e5f6789.us-east-1.portal.amazonaws.com/#/device?user_code=ABCD-EFGH`,
+    `https://evil.ssoins-0a1b2c3d4e5f6789.eu-west-1.portal.amazonaws.com/#/device?user_code=ABCD-EFGH`,
+    `https://ssoins-0a1b2c3d4e5f6789.eu-west-1.portal.amazonaws.com.evil.com/#/device?user_code=ABCD-EFGH`,
+    `https://ssoins-0a1b2c3d4e5f6789.eu-west-1.portal.amazonaws.co/#/device?user_code=ABCD-EFGH`,
+    `https://ssoins-0a1b2c3d4e5f6789.evil.eu-west-1.portal.amazonaws.com/#/device?user_code=ABCD-EFGH`,
+    `https://ssoins-short.eu-west-1.portal.amazonaws.com/#/device?user_code=ABCD-EFGH`,
+    `https://ssoins-0a1b2c3d4e5f6789.eu-west-1.portal.amazonaws.com@evil.com/#/device?user_code=ABCD-EFGH`,
+    `https://user:pass@ssoins-0a1b2c3d4e5f6789.eu-west-1.portal.amazonaws.com/#/device?user_code=ABCD-EFGH`,
+    `https://ssoins-0a1b2c3d4e5f6789.eu-west-1.portal.amazonaws.com:8443/#/device?user_code=ABCD-EFGH`,
+    `https://ssoins-0a1b2c3d4e5f6789.eu-west-1.portal.amazonaws.com/start/#/device?user_code=ABCD-EFGH`,
+    `https://ssoins-0a1b2c3d4e5f6789.eu-west-1.portal.amazonaws.com/?next=x#/device?user_code=ABCD-EFGH`,
+    `https://ssoins-0a1b2c3d4e5f6789.eu-west-1.portal.amazonaws.com/#/device?user_code=ABCD&next=x`,
+    `https://ssoins-0a1b2c3d4e5f6789.eu-west-1.portal.amazonaws.com/#/elsewhere?user_code=ABCD-EFGH`,
+    "https://device.sso.us-east-1.amazonaws.com/?user_code=ABCD-EFGH",
+    "https://device.sso.eu-west-1.amazonaws.com.evil.com/?user_code=ABCD-EFGH",
+    "https://x.device.sso.eu-west-1.amazonaws.com/?user_code=ABCD-EFGH",
+    "http://device.sso.eu-west-1.amazonaws.com/?user_code=ABCD-EFGH",
+    "https://device.sso.eu-west-1.amazonaws.com@evil.com/?user_code=ABCD-EFGH",
+    "not a url",
+  ])
+    assert.equal(accepts(lookalike), undefined, lookalike);
 });

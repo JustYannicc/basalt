@@ -1,7 +1,7 @@
 {
   "identity": "aws-identity-center",
   "file": "0422-aws-identity-center.patch",
-  "content_sha256": "3a350a23703157fea865debd4c005bed49043070e5729a68a12738c386922d5f",
+  "content_sha256": "f156ab84c1a94ddf23e0f4b69d7acb6e9dcddf8ba1260289f0113e5565fd1068",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

@@ -711,8 +711,8 @@ index 0000000..e5f623f
 +          return yield* json({
 +            deviceCode,
 +            userCode,
-+            verificationUri: "https://device.sso.us-east-1.amazonaws.com/",
-+            verificationUriComplete: `https://device.sso.us-east-1.amazonaws.com/?user_code=${userCode}`,
++            verificationUri: "https://ssoins-0a1b2c3d4e5f6789.us-east-1.portal.amazonaws.com/#/device",
++            verificationUriComplete: `https://ssoins-0a1b2c3d4e5f6789.us-east-1.portal.amazonaws.com/#/device?user_code=${userCode}`,
 +            expiresIn: 600,
 +            interval: 1,
 +          });
@@ -1072,7 +1072,7 @@ new file mode 100644
 index 0000000..f7b25f8
 --- /dev/null
 +++ b/e2e/support/aws-identity-journey.ts
-@@ -0,0 +1,569 @@
+@@ -0,0 +1,571 @@
 +/** Deploy the retained AWS catalog source and exercise only public hosted APIs. */
 +import { expect } from "@effect/vitest";
 +import { Effect, FileSystem, Path, Schema } from "effect";
@@ -1234,7 +1234,9 @@ index 0000000..f7b25f8
 +        .getByRole("link", { name: "Open AWS Identity Center", exact: true })
 +        .getAttribute("href"),
 +    );
-+    expect(signIn).toBe("https://device.sso.us-east-1.amazonaws.com/?user_code=SYNTH-1234");
++    expect(signIn).toBe(
++      "https://ssoins-0a1b2c3d4e5f6789.us-east-1.portal.amazonaws.com/#/device?user_code=SYNTH-1234",
++    );
 +    yield* browser.checkpoint(`AWS Identity Center pending ${width}`);
 +    fixture.approve();
 +    const completed = yield* browser.use("The hosted poll persists the AWS connection", (page) =>

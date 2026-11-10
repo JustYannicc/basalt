@@ -4,10 +4,11 @@
     {
       "package": "aws",
       "repository": "JustYannicc/signalbox-app-aws",
-      "commit": "3dcd825858ac74eb0b0cab08ae16c6480f34299b",
+      "commit": "804a51f87b65a83f7bb825e5e14c52e960b043c1",
       "files": [
         "README.md",
         "connection.ts",
+        "device-url.ts",
         "errors.ts",
         "icon.ts",
         "identity-client.ts",
