@@ -4,7 +4,7 @@
     {
       "package": "aws",
       "repository": "JustYannicc/signalbox-app-aws",
-      "commit": "1216f790f03270da9d819c978eddc84c0deae3a8",
+      "commit": "ad50e2675c329e42556b24eb5ed5e64beba7d9b7",
       "files": [
         "README.md",
         "connection.ts",
@@ -24,23 +24,13 @@
         "safe-result.ts",
         "saved-connection.ts",
         "session-store.ts",
-        "ui/access-check.tsx",
-        "ui/api.ts",
-        "ui/app.tsx",
-        "ui/assets.d.ts",
-        "ui/connection-state.ts",
-        "ui/connection.tsx",
-        "ui/controls.tsx",
-        "ui/host.ts",
-        "ui/index.html",
-        "ui/inventory.tsx",
-        "ui/main.tsx",
-        "ui/model.ts",
-        "ui/style.css",
         "vendor/LICENSE",
         "vendor/aws4fetch.d.ts",
         "vendor/aws4fetch.js",
-        "wire.ts"
+        "wire.ts",
+        "ui/index.html",
+        "ui/main.js",
+        "ui/style.css"
       ]
     },
     {
