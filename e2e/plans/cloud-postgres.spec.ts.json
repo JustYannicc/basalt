@@ -1,0 +1,11 @@
+{
+  "scenarios": {},
+  "runs": {},
+  "config": [{ "job": "fast", "config": "cloud-postgres.config.ts" }],
+  "inputs": [
+    ".upstream/e2e/support/cloud-postgres.ts",
+    ".upstream/e2e/support/cloud-postgres-command.ts",
+    ".upstream/e2e/support/cloud-environment.ts",
+    ".upstream/e2e/support/production-ops-database-fixture.ts"
+  ]
+}
