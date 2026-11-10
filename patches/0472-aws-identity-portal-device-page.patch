@@ -12,6 +12,26 @@ diff --git a/e2e/support/aws-identity-fixture.ts b/e2e/support/aws-identity-fixt
              expiresIn: 600,
              interval: 1,
            });
+@@ -256,7 +256,8 @@
+           const page = slicePage(accounts, pageInput.nextToken, pageInput.size);
+           return yield* json({
+             accountList: page.items.map(({ id, name }) => ({ accountId: id, accountName: name })),
+-            ...(page.nextToken === undefined ? {} : { nextToken: page.nextToken }),
++            // AWS may send null for the final page token.
++            nextToken: page.nextToken ?? null,
+           });
+         }),
+       ),
+@@ -279,7 +280,8 @@
+           const page = slicePage(assigned, pageInput.nextToken, pageInput.size);
+           return yield* json({
+             roleList: page.items,
+-            ...(page.nextToken === undefined ? {} : { nextToken: page.nextToken }),
++            // AWS may send null for the final page token.
++            nextToken: page.nextToken ?? null,
+           });
+         }),
+       ),
 diff --git a/e2e/support/aws-identity-journey.ts b/e2e/support/aws-identity-journey.ts
 --- a/e2e/support/aws-identity-journey.ts
 +++ b/e2e/support/aws-identity-journey.ts

@@ -1,7 +1,7 @@
 {
   "kind": "new-app-contribution",
   "upstreamIssue": "https://github.com/UsefulSoftwareCo/executor/issues/2372",
-  "sourceSha256": "26fafa6e4f25b97d08e82f6d7c148e6a67ecf300e08017a76a0fb2bf6ad7155e",
+  "sourceSha256": "9c49d5891184999f4a9264bd0a0b0981c8c4708c3c91c9024a5d835b3f266af5",
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",
     "apps": "0.0.1-beta.104-basalt.12",
@@ -27,15 +27,15 @@
   },
   "catalogSource": {
     "repository": "https://github.com/JustYannicc/signalbox-app-aws",
-    "commit": "804a51f87b65a83f7bb825e5e14c52e960b043c1",
+    "commit": "1216f790f03270da9d819c978eddc84c0deae3a8",
     "fileSha256": {
       "README.md": "4a7f9eff7991585abf3176a103790d729b8af5862c4df8b3c1d90f6e99bb2f61",
       "connection.ts": "c79f17b3854d380d7cf55ccaf1b297880f383606a20e3a728f19e488bc838ccc",
-      "device-url.ts": "7ec553e0df8804e5d57a0b51a9075d4df31cbb2ebaf00d9077a7375027558e5a",
+      "device-url.ts": "16c6c010ba9d45a24618a4e3fedbe2bafd98912c828a8f0f5b64f375ab539c15",
       "errors.ts": "0ef5be4f43f1131f87682772fae61df889d446c86c9ccf91dd3c6043d6debb11",
       "icon.ts": "738bc7fdb56c97bb5529b29249813839ed829b80893cd0ceb60a4cd800fba61c",
       "identity-client.ts": "4e5b6986d08cafdebdcf7b31c146ca279727a03adde5ad2528ed27729f629344",
-      "identity-http.ts": "a57162c0b290a3637f52b33e52057719a11a2597ea8c2ea2428066eaebf790ba",
+      "identity-http.ts": "40e91c33460abbfafc353d2a4f65dfd8ecf998cde166e46718fd84c3364f3ae2",
       "identity-schema.ts": "cc30cf646e0e6d075f1193ebed11374b1b5e58aedb6373b173ac75c14add4568",
       "identity-state.ts": "e9ffc9cdebe97a2a2fe5dd3eeea2ae6a5a3eff2264a154411ea1f08944a8ee91",
       "index.ts": "3d76e00355ce86625f5aa85da400ecae6a866441b8568eedddd6446b3cec2d6c",
@@ -65,6 +65,6 @@
       "vendor/aws4fetch.js": "aea0f8576a89a9afea973904bb92e98a642265eb5159ff940ede689ad8e910f0",
       "wire.ts": "b90fe097fdaad8fd83e974cb99fb68a9889b81eef8fbadf819e1535bfef8aa15"
     },
-    "snapshotSha256": "26fafa6e4f25b97d08e82f6d7c148e6a67ecf300e08017a76a0fb2bf6ad7155e"
+    "snapshotSha256": "9c49d5891184999f4a9264bd0a0b0981c8c4708c3c91c9024a5d835b3f266af5"
   }
 }

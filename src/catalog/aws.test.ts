@@ -179,6 +179,8 @@ test("AWS device sign-in accepts only exact AWS pages in the connection's region
   const portal = "https://ssoins-0a1b2c3d4e5f6789.eu-west-1.portal.amazonaws.com/#/device";
   assert.equal(accepts(`${portal}?user_code=ABCD-EFGH`), `${portal}?user_code=ABCD-EFGH`);
   assert.equal(accepts(portal, "page"), portal);
+  const hyphenated = "https://ssoins-0a1b2c3d-4e5f-67.eu-west-1.portal.amazonaws.com/#/device";
+  assert.equal(accepts(`${hyphenated}?user_code=ABCD-EFGH`), `${hyphenated}?user_code=ABCD-EFGH`);
   assert.equal(
     accepts("https://device.sso.eu-west-1.amazonaws.com/?user_code=ABCD-EFGH"),
     "https://device.sso.eu-west-1.amazonaws.com/?user_code=ABCD-EFGH",
@@ -193,6 +195,7 @@ test("AWS device sign-in accepts only exact AWS pages in the connection's region
     `https://ssoins-0a1b2c3d4e5f6789.eu-west-1.portal.amazonaws.co/#/device?user_code=ABCD-EFGH`,
     `https://ssoins-0a1b2c3d4e5f6789.evil.eu-west-1.portal.amazonaws.com/#/device?user_code=ABCD-EFGH`,
     `https://ssoins-short.eu-west-1.portal.amazonaws.com/#/device?user_code=ABCD-EFGH`,
+    `https://ssoins-0a1b2c3d.4e5f6789.eu-west-1.portal.amazonaws.com/#/device?user_code=ABCD-EFGH`,
     `https://ssoins-0a1b2c3d4e5f6789.eu-west-1.portal.amazonaws.com@evil.com/#/device?user_code=ABCD-EFGH`,
     `https://user:pass@ssoins-0a1b2c3d4e5f6789.eu-west-1.portal.amazonaws.com/#/device?user_code=ABCD-EFGH`,
     `https://ssoins-0a1b2c3d4e5f6789.eu-west-1.portal.amazonaws.com:8443/#/device?user_code=ABCD-EFGH`,

@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "Identity Center device sign-in links only to the exact instance portal or legacy device page in the connection's region. The synthetic wire serves the current instance portal shape, so acquisition proof fails when the app rejects the page the outside service returns."
+      constraint "Identity Center device sign-in links only to the exact instance portal or legacy device page in the connection's region. Null optional response members read as absent. The synthetic wire serves the current instance portal shape and null final page tokens, so acquisition proof fails when the app rejects either."
     }
   }
 }
