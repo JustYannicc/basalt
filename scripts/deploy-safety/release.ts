@@ -225,7 +225,11 @@ async function main(args: string[]): Promise<void> {
       throw new SafetyGateError(
         "Latest production deployment is unresolved; reconcile it before another release",
       );
-    const dependencies = productionReleaseDependencies(candidateRoot, candidate, plan.executorMarker);
+    const dependencies = productionReleaseDependencies(
+      candidateRoot,
+      candidate,
+      plan.executorMarker,
+    );
     const priorBegin = dependencies.begin;
     dependencies.begin = async (report, backup) => {
       const id = await priorBegin(report, backup);

@@ -48,8 +48,13 @@ export function releaseEvidence(directory: string, candidate: string, encryption
     ...declared,
     expansion: classes.expansion,
     async summary(path: string | undefined, disposition: "complete" | "failed") {
-      const marker = await executorMarkerSummary(directory, candidate, process.env.BASALT_RELEASE_ATTEMPT);
-      const text = classes.summary() + declared.summary(disposition, latest?.activated ?? []) + marker;
+      const marker = await executorMarkerSummary(
+        directory,
+        candidate,
+        process.env.BASALT_RELEASE_ATTEMPT,
+      );
+      const text =
+        classes.summary() + declared.summary(disposition, latest?.activated ?? []) + marker;
       if (path && text) await appendFile(path, text);
     },
     async desired(value: unknown) {
