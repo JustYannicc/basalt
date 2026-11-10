@@ -50,9 +50,7 @@ test("a failed readiness child retains both streams, its exit code and the contr
                   process.execPath,
                   [
                     "-e",
-                    command.args[0] === "port"
-                      ? 'process.stdout.write("127.0.0.1:15432\\n")'
-                      : "",
+                    command.args[0] === "port" ? 'process.stdout.write("127.0.0.1:15432\\n")' : "",
                   ],
                   { stdout: "pipe", stderr: "pipe" },
                 ),
