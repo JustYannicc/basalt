@@ -1,0 +1,98 @@
+diff --git a/internal/quota/collector.go b/internal/quota/collector.go
+--- a/internal/quota/collector.go
++++ b/internal/quota/collector.go
+@@ -40,8 +40,8 @@
+ 	xaiTokenAuthHeader         = "X-XAI-Token-Auth"
+ 	xaiTokenAuthValue          = "xai-grok-cli"
+ 	xaiClientVersionHeader     = "x-grok-client-version"
+-	xaiClientVersionValue      = "0.2.93"
+-	xaiGrokUserAgent           = "xai-grok-workspace/0.2.93"
++	xaiClientVersionValue      = "1.0.77"
++	xaiGrokUserAgent           = "xai-grok-workspace/" + xaiClientVersionValue
+ 	metaAPIVersionHeader       = "x-api-version"
+ 	metaAPIVersionValue        = "1.0.0"
+ 	metaMuseUserAgent          = "muse-code/1.0.2"
+diff --git a/internal/quota/xai_client_version_test.go b/internal/quota/xai_client_version_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/quota/xai_client_version_test.go
+@@ -0,0 +1,79 @@
++package quota
++
++import (
++	"context"
++	"net/http"
++	"net/http/httptest"
++	"sync/atomic"
++	"testing"
++	"time"
++)
++
++func TestXAIQuotaUsesSupportedClientIdentity(t *testing.T) {
++	repo := newCollectorTestRepository(t)
++	now := time.Date(2026, 11, 9, 20, 31, 0, 0, time.UTC)
++	seedCollectorProviderAuth(t, repo, "xai-version", "xai", map[string]any{"type": "xai", "access_token": "synthetic-xai-token", "sub": "synthetic-xai-user"})
++	var requests atomic.Int32
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		requests.Add(1)
++		if r.Header.Get("x-grok-client-version") != "1.0.77" || r.Header.Get("User-Agent") != "xai-grok-workspace/1.0.77" {
++			w.WriteHeader(http.StatusUpgradeRequired)
++			_, _ = w.Write([]byte(`{"error":"Your Grok CLI version is outdated."}`))
++			return
++		}
++		if r.Header.Get("Authorization") != "Bearer synthetic-xai-token" || r.Header.Get("X-XAI-Token-Auth") != "xai-grok-cli" || r.Header.Get("x-userid") != "synthetic-xai-user" {
++			t.Error("quota request changed its saved-account authentication")
++			w.WriteHeader(http.StatusUnauthorized)
++			return
++		}
++		if r.URL.Query().Get("format") == "credits" {
++			_, _ = w.Write([]byte(`{"config":{"creditUsagePercent":16,"currentPeriod":{"type":"weekly","end":"2026-11-16T20:31:00Z"}}}`))
++			return
++		}
++		_, _ = w.Write([]byte(`{"config":{"monthlyLimit":15000,"used":4200}}`))
++	}))
++	defer server.Close()
++	collector := NewCollector(repo, Options{Owner: "home-test", XAIBillingURL: server.URL, Now: func() time.Time { return now }})
++	collector.collect(context.Background())
++	item, errGet := repo.GetQuotaCredential(context.Background(), "xai-version", now)
++	if errGet != nil {
++		t.Fatal(errGet)
++	}
++	if requests.Load() != 2 {
++		t.Fatalf("billing requests = %d, want monthly and weekly", requests.Load())
++	}
++	if item.CollectionStatus != "success" || item.Error != nil || len(item.Windows) != 2 {
++		t.Fatalf("supported billing identity did not save quota: status=%s error=%+v windows=%d", item.CollectionStatus, item.Error, len(item.Windows))
++	}
++}
++
++func TestXAIQuotaPreservesVendorFailures(t *testing.T) {
++	for _, test := range []struct {
++		status int
++		code   string
++	}{
++		{http.StatusUnauthorized, "UPSTREAM_AUTH_REJECTED"},
++		{http.StatusForbidden, "UPSTREAM_AUTH_REJECTED"},
++		{http.StatusTooManyRequests, "UPSTREAM_RATE_LIMITED"},
++		{http.StatusServiceUnavailable, "UPSTREAM_UNAVAILABLE"},
++	} {
++		t.Run(http.StatusText(test.status), func(t *testing.T) {
++			repo := newCollectorTestRepository(t)
++			now := time.Date(2026, 11, 9, 20, 31, 0, 0, time.UTC)
++			seedCollectorProviderAuth(t, repo, "xai-failure", "xai", map[string]any{"type": "xai", "access_token": "synthetic-xai-token"})
++			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
++				w.WriteHeader(test.status)
++			}))
++			defer server.Close()
++			collector := NewCollector(repo, Options{Owner: "home-test", XAIBillingURL: server.URL, Now: func() time.Time { return now }})
++			collector.collect(context.Background())
++			item, errGet := repo.GetQuotaCredential(context.Background(), "xai-failure", now)
++			if errGet != nil {
++				t.Fatal(errGet)
++			}
++			if item.CollectionStatus != "failed" || item.Error == nil || item.Error.Code != test.code || item.Error.UpstreamStatusCode == nil || *item.Error.UpstreamStatusCode != test.status {
++				t.Fatalf("vendor failure changed: status=%s error=%+v", item.CollectionStatus, item.Error)
++			}
++		})
++	}
++}
