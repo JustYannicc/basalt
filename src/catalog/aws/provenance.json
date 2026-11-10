@@ -1,7 +1,7 @@
 {
   "kind": "new-app-contribution",
   "upstreamIssue": "https://github.com/UsefulSoftwareCo/executor/issues/2372",
-  "sourceSha256": "72243523947aa357b24172513fe68e8971ed0b750692b8f15fba50207f4d2763",
+  "sourceSha256": "ed1dfeef2505b41bc6f9e0d4614f57eea855f952e9a76c44ae8e6a4efe6a2600",
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",
     "apps": "0.0.1-beta.104-basalt.12"
@@ -25,7 +25,7 @@
   },
   "catalogSource": {
     "repository": "https://github.com/JustYannicc/signalbox-app-aws",
-    "commit": "3973010fb311d562024ea254865b3145b4c0ebc7",
+    "commit": "ad50e2675c329e42556b24eb5ed5e64beba7d9b7",
     "fileSha256": {
       "README.md": "4a7f9eff7991585abf3176a103790d729b8af5862c4df8b3c1d90f6e99bb2f61",
       "connection.ts": "c79f17b3854d380d7cf55ccaf1b297880f383606a20e3a728f19e488bc838ccc",
@@ -46,13 +46,13 @@
       "saved-connection.ts": "c20fb81d49cb1edf0b5a73a5245789e0ed8e94528d8776c2c2ff00f96e8d276d",
       "session-store.ts": "99f78d29415d6d2e6a433e940103038bad03f9b00f288706b6350bd28e52677f",
       "ui/index.html": "91202a483a17e41def8e055fe4887395127e5009da4bd6b4cdd599c7ed488151",
-      "ui/main.js": "fef9b8c5fc88f5eba5a8158b331bb0145b842ba349f0717d5ca5e394eb32070e",
+      "ui/main.js": "c32d5b1e0511a54a532f28d446b6c78e1f99bf738e51154c0e6eaecd250e7f07",
       "ui/style.css": "29e278c2a27a7e2386005abb55db509c847177fd66de948b1fdffbdad046db62",
       "vendor/LICENSE": "a9455541e8a4e4766d146a7552ac547c04bfb7a8718f5af516f1b9e346e82a77",
       "vendor/aws4fetch.d.ts": "df222c9f4dc40589be58c01d0d5536acc601bfd5eec572bc00122a1b9001f560",
       "vendor/aws4fetch.js": "aea0f8576a89a9afea973904bb92e98a642265eb5159ff940ede689ad8e910f0",
       "wire.ts": "b90fe097fdaad8fd83e974cb99fb68a9889b81eef8fbadf819e1535bfef8aa15"
     },
-    "snapshotSha256": "72243523947aa357b24172513fe68e8971ed0b750692b8f15fba50207f4d2763"
+    "snapshotSha256": "ed1dfeef2505b41bc6f9e0d4614f57eea855f952e9a76c44ae8e6a4efe6a2600"
   }
 }
