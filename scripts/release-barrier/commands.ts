@@ -70,13 +70,37 @@ export async function admitSourceNamespace(props: ExecProps, api = cloudflareArt
     deleteRepository: refuseMutation,
     deleteToken: refuseMutation,
   };
-  try {
-    // The vault namespace is provisioned by an operator before the release that names it.
-    for (const namespace of stageNamespaces(value("CLOUD_SOURCE_NAMESPACE")))
+  // The vault namespace is provisioned by an operator before the release that names it.
+  for (const namespace of stageNamespaces(value("CLOUD_SOURCE_NAMESPACE"))) {
+    try {
       await ensureEuNamespace(readOnly, namespace);
-  } catch (error) {
-    throw error instanceof BarrierRefusal
-      ? error
-      : new BarrierRefusal("source-namespace-not-ready");
+    } catch (error) {
+      if (error instanceof BarrierRefusal) throw error;
+      throw new BarrierRefusal("source-namespace-not-ready", "AppSourceNamespace", {
+        fqn: "AppSourceNamespace",
+        type: "Command.Exec",
+        changed: [{ path: `namespaces.${namespace}`, old: "readable-eu", new: readFailure(error) }],
+        why: [`Reading Artifacts namespace ${namespace} failed: ${readFailure(error)}`],
+      });
+    }
   }
+}
+
+/**
+ * Name a failed namespace read by its class, HTTP status and provider codes. The Artifacts client
+ * builds its own messages from allow-listed fields; anything else is reduced to its class, since a
+ * transport error can carry a host or request detail.
+ */
+export function readFailure(error: unknown) {
+  const kind = error instanceof Error ? error.name || "Error" : typeof error;
+  const message = error instanceof Error ? error.message : "";
+  const status = /\bHTTP (\d{3})\b/.exec(message)?.[1];
+  const diagnostics = /; diagnostics=(\{.{0,600}\})$/.exec(message)?.[1];
+  const known =
+    /^(?:Cloudflare Artifacts [a-z ]+(?:failed with HTTP \d{3}|was rejected|returned an invalid response|pagination repeated a cursor|pagination did not end)|Invalid Cloudflare Artifacts list response|Artifacts namespace must have immutable EU jurisdiction; deployment stopped)/.exec(
+      message,
+    )?.[0];
+  return [kind, status && `HTTP ${status}`, known, diagnostics && `diagnostics=${diagnostics}`]
+    .filter(Boolean)
+    .join("; ");
 }
