@@ -172,7 +172,7 @@ index 2baa7a3..89c6e2a 100644
        }),
      ],
 diff --git a/apps/hosted/server/src/implementation/bearer-access.ts b/apps/hosted/server/src/implementation/bearer-access.ts
-index 14ed300..0a66bd1 100644
+index 14ed300..19a80bc 100644
 --- a/apps/hosted/server/src/implementation/bearer-access.ts
 +++ b/apps/hosted/server/src/implementation/bearer-access.ts
 @@ -15,17 +15,19 @@
@@ -301,7 +301,7 @@ index 14ed300..0a66bd1 100644
 +          clientId: row.tokenClient,
 +          policy: native,
 +        }),
-+      ).pipe(Effect.mapError((error) => (error.statusCode === 503 ? unavailable : unauthorized)));
++      ).pipe(Effect.mapError((error) => (error.statusCode === 503 ? unavailable : unauthorized("revoked"))));
 +      return {
 +        userId: row.subject,
 +        clientId: row.tokenClient,
@@ -874,7 +874,7 @@ index 0000000..a74b749
 +    };
 +  });
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 35594ea..267a3b5 100644
+index 0284e64..3ae6dd2 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -335,6 +335,64 @@ export const scenarios = plan({

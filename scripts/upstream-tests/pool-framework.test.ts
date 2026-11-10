@@ -43,7 +43,12 @@ test("the hosted compiler selects its configured patched framework without npm",
       },
     }),
   );
-  assert.equal(await Effect.runPromise((dependencies as { framework: Effect.Effect<boolean, unknown> }).framework), true);
+  assert.equal(
+    await Effect.runPromise(
+      (dependencies as { framework: Effect.Effect<boolean, unknown> }).framework,
+    ),
+    true,
+  );
   assert.equal(reads, 1);
   // framework.release returns this shared host version.
   const { appsVersion } = await load("packages/app-templates/src/implementation/files.ts");
@@ -77,11 +82,13 @@ test(
     const { appProtocol } = await load("packages/sdk/src/implementation/app-protocols.ts");
     await Effect.runPromise(appProtocol(runtime.protocol));
 
-    const admitted = await Effect.runPromise(admitFramework({
-      framework: { version: runtime.version, modules: runtime.server },
-      protocol: runtime.protocol,
-      browser: runtime.browser,
-    }));
+    const admitted = await Effect.runPromise(
+      admitFramework({
+        framework: { version: runtime.version, modules: runtime.server },
+        protocol: runtime.protocol,
+        browser: runtime.browser,
+      }),
+    );
     assert.equal(admitted.version, poolFrameworkVersion);
     assert.equal(admitted.protocol, frameworkProtocol);
 
