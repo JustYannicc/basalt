@@ -3217,7 +3217,7 @@ index 74ecf27..b4f44e2 100644
        // Each requirement records its scope; a name is used in one scope only.
 diff --git a/packages/sdk/src/implementation/basalt-framework-releases.ts b/packages/sdk/src/implementation/basalt-framework-releases.ts
 new file mode 100644
-index 0000000..1405070
+index 0000000..6f69cff
 --- /dev/null
 +++ b/packages/sdk/src/implementation/basalt-framework-releases.ts
 @@ -0,0 +1,31 @@
@@ -3242,7 +3242,7 @@ index 0000000..1405070
 +    browserSha256: "e1e0f8c54a07acf946053720ab96fe317f2edad34aa3e84018c55e1e2162d777",
 +    source: {
 +      origin: "basalt",
-+      revision: "source-sha256:8e7758e84e7e6191704c04ecad2ac4085fddf965864d1681fac9e68ad3fb83cc",
++      revision: "source-sha256:54d19593e2d033418a8ea64e7be12e3d3dc2dfff7839e5c533456b4853fcd465",
 +      sha256: "260e8e20fb86937127deb3efcd3301c49c9e1f2bd6a303966f83c2990d111134",
 +    },
 +  },
