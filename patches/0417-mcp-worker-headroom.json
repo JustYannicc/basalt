@@ -1,7 +1,7 @@
 {
   "identity": "basalt-mcp-worker-headroom",
   "file": "0417-mcp-worker-headroom.patch",
-  "content_sha256": "afb3ef33447a92e792b61e983185981621042d6ecb87181ac20cf7f59d1fc7d9",
+  "content_sha256": "7b5678afbf924550fb44af5d1c5801e16b0b215a22ad47acdb10648998ff500c",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

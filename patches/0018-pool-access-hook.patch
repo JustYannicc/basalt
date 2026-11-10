@@ -506,7 +506,7 @@ index 7d36816..1247968 100644
          database: storage,
          secret: key,
 diff --git a/apps/hosted/cloud/src/infrastructure/onboarding.ts b/apps/hosted/cloud/src/infrastructure/onboarding.ts
-index 123d3a2..5d5bbb5 100644
+index 0155f80..a067bec 100644
 --- a/apps/hosted/cloud/src/infrastructure/onboarding.ts
 +++ b/apps/hosted/cloud/src/infrastructure/onboarding.ts
 @@ -209,6 +209,12 @@ export const cloudOnboarding = Effect.gen(function* () {

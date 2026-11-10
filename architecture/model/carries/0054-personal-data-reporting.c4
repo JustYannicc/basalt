@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "Background personal-data reports renew only the saved owner and registration's encrypted subject grant, batch due reports and erase closed subjects' credentials and identity copies. Interactive health stays independent. Reporting resolves the stored account before identity lookup and preserves both reporting and queue indexes through additive storage upgrades."
+      constraint "Background personal-data reports renew only the saved owner and registration's encrypted subject grant, batch due reports and erase closed subjects' credentials and identity copies. Interactive health stays independent. Reporting resolves the stored account before identity lookup and preserves both reporting and queue indexes through additive storage upgrades. Background reporting retains the shared scheduler outcome for handled failures."
     }
   }
 }

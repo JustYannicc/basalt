@@ -1,7 +1,7 @@
 {
   "identity": "basalt-pool-access-hook",
   "file": "0018-pool-access-hook.patch",
-  "content_sha256": "29d8da28d3bf4fd580c5a3ce568a26542781bd228559a126e35a37907d781a21",
+  "content_sha256": "c1fffdde938b8dab70b9b88a778e073eece6ef2797da38aca0540990756c270c",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

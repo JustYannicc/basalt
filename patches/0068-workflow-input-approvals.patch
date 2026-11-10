@@ -454,7 +454,7 @@ index 0000000..fea2fde
 +  );
 +});
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index ee2ed6d..2afd864 100644
+index f062eec..aa567b2 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -1,3 +1,6 @@
@@ -477,7 +477,7 @@ index ee2ed6d..2afd864 100644
          yield* appUiAddressScheme.pipe(Effect.orDie),
          yield* appUiEmbedded.pipe(Effect.orDie),
        ),
-@@ -504,6 +508,8 @@ export default Api.make(
+@@ -505,6 +509,8 @@ export default Api.make(
      // Only framework lookups and the published skills read the large authoring reference.
      const authoring = yield* cloudAuthoringReference;
      const api = cloudApi(document).pipe(
@@ -2300,10 +2300,10 @@ index 266cea4..339f1b9 100644
 +
 +export const workflowInputFixture = workflowInputFixtureFor(workflowInputFiles);
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 7428d06..9f0b6d9 100644
+index b8ca6ca..a28c659 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -9499,6 +9499,46 @@ export const scenarios = plan({
+@@ -9487,6 +9487,46 @@ export const scenarios = plan({
        local: na("Hosted routes have a separate local counterpart."),
      },
    },

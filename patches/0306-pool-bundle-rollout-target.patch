@@ -16,11 +16,11 @@ index e41cb24..b321946 100644
      return yield* withCatalogAppDefaults(executor, catalogFeed, pools);
    });
 diff --git a/apps/hosted/cloud/src/infrastructure/product.ts b/apps/hosted/cloud/src/infrastructure/product.ts
-index ee1dafb..77bb1a0 100644
+index ac2e392..5b687b9 100644
 --- a/apps/hosted/cloud/src/infrastructure/product.ts
 +++ b/apps/hosted/cloud/src/infrastructure/product.ts
 @@ -97,6 +97,7 @@ export const cloudProduct = Effect.fn(function* (
-                   client: cachedFeedClient(apiOrigin, feedUrl.value, egress.client),
+                   client: yield* cachedFeedClient(apiOrigin, feedUrl.value, egress.client),
                  },
                },
 +          hosts.browser,

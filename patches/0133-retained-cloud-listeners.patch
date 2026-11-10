@@ -35,7 +35,7 @@ index ef6900a..08c0461 100644
        ),
      ),
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index 7f5964e..7f77a9c 100644
+index 3ed51b7..a80999c 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -239,7 +239,7 @@ export default Api.make(

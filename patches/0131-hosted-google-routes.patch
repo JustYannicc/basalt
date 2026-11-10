@@ -683,7 +683,7 @@ index efaf0f5..67a3123 100644
      Layer.succeed(AccessLifecycle, accessLifecycle),
      Layer.succeed(
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index 8f57121..7f5964e 100644
+index f4cbe68..3ed51b7 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -2,6 +2,8 @@ import { drainContributedDepartures } from "@executor-js/hosted-server/contribut
@@ -695,7 +695,7 @@ index 8f57121..7f5964e 100644
  import { cloudArtifactsTokensLive } from "./infrastructure/artifacts-tokens.ts";
  import {
    Provisioning,
-@@ -640,6 +642,7 @@ export default Api.make(
+@@ -642,6 +644,7 @@ export default Api.make(
        sitePageRoutes.map((page) => HttpRouter.route("GET", page, sitePage)),
      );
      // The site's first-party analytics proxy and error tunnel.
@@ -703,7 +703,7 @@ index 8f57121..7f5964e 100644
      const siteTelemetryRoutes = Layer.mergeAll(
        HttpRouter.add("*", "/api/:channel/*", analytics.proxy),
        HttpRouter.add("POST", "/api/:channel/submit", errorTunnel),
-@@ -649,6 +652,12 @@ export default Api.make(
+@@ -651,6 +654,12 @@ export default Api.make(
        HttpRouter.add("POST", productionOpsPath, productionOps).pipe(
          HttpRouter.provideRequest(executor),
        ),
@@ -1731,10 +1731,10 @@ index fdde97c..af8446c 100644
      { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 14" },
    ] as const;
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index f1460ae..6b6ae24 100644
+index d481629..0bba386 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -10079,6 +10079,17 @@ export const scenarios = plan({
+@@ -10067,6 +10067,17 @@ export const scenarios = plan({
        local: na("The Cloud host owns automatic pool setup."),
      },
    },

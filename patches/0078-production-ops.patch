@@ -1097,7 +1097,7 @@ index 0000000..4884844
 +    }
 +  });
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index 9fb0218..6a974e3 100644
+index a0ff641..242e615 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -26,6 +26,10 @@ import {
@@ -1111,7 +1111,7 @@ index 9fb0218..6a974e3 100644
  import { expireIdleAgentGrants } from "@executor-js/app-management/data-steps";
  import { GroupDatabase } from "@executor-js/hosted-server/groups";
  import { SqlClient } from "effect/sql";
-@@ -636,7 +640,11 @@ export default Api.make(
+@@ -638,7 +642,11 @@ export default Api.make(
        HttpRouter.add("*", "/api/:channel/*", analytics.proxy),
        HttpRouter.add("POST", "/api/:channel/submit", errorTunnel),
      );
@@ -1998,7 +1998,7 @@ index 0000000..73c4fcf
 +  return { own, foreign, database, account, snapshot };
 +});
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 208bb1c..81dea75 100644
+index eb72446..9e273ed 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -2816,6 +2816,62 @@ export const scenarios = plan({

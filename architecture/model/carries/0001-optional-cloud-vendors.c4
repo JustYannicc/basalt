@@ -1,7 +1,7 @@
 model {
   extend basalt.deployment {
     metadata {
-      constraint "Absent billing, company lookup and telemetry settings disable those capabilities without blocking team setup. Partial vendor configuration refuses deployment. Disabled telemetry returns before looking up optional resources, and disabled billing exposes no checkout or billing page."
+      constraint "Absent billing, company lookup and telemetry settings disable those capabilities without blocking team setup. Partial vendor configuration refuses deployment. Disabled telemetry returns before looking up optional resources, and disabled billing exposes no checkout or billing page. Import settings unwrap configured billing and keep disabled billing absent. Background reconciliation reports typed handled failures to the shared scheduler."
     }
   }
 }

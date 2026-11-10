@@ -1,7 +1,7 @@
 {
   "identity": "executor-optional-cloud-vendors",
   "file": "0001-optional-cloud-vendors.patch",
-  "content_sha256": "c395168d4214c29312aebdfeff9f1de8887b97bf8e5e4a66d1ba26a5984a3cc4",
+  "content_sha256": "45287d45cb4464f1f6d7d1be91ba601f92440e4a25b54405a22d4141433740c5",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

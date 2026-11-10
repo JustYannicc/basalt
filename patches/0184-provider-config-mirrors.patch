@@ -53,7 +53,7 @@ index 0a1d973..4de966b 100644
      cachedBuildAssets(
        origin,
 diff --git a/apps/hosted/cloud/src/infrastructure/product.ts b/apps/hosted/cloud/src/infrastructure/product.ts
-index 2f00b30..ee1dafb 100644
+index df0698f..ac2e392 100644
 --- a/apps/hosted/cloud/src/infrastructure/product.ts
 +++ b/apps/hosted/cloud/src/infrastructure/product.ts
 @@ -1,4 +1,7 @@
@@ -2414,7 +2414,7 @@ index 0000000..4cac058
 +export const retained = source(false);
 +export const retainedWithPool = source(true);
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 60352d6..7861e46 100644
+index 3a251e9..395067c 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -4063,8 +4063,45 @@ export const scenarios = plan({

@@ -141,7 +141,7 @@ index 12aa378..828d166 100644
        }
        // An app's own text reaches its caller, never an incident report.
 diff --git a/apps/hosted/cloud/src/infrastructure/provisioning.ts b/apps/hosted/cloud/src/infrastructure/provisioning.ts
-index e705b10..b68aeef 100644
+index 7573cf1..caca3dd 100644
 --- a/apps/hosted/cloud/src/infrastructure/provisioning.ts
 +++ b/apps/hosted/cloud/src/infrastructure/provisioning.ts
 @@ -37,6 +37,7 @@ import {

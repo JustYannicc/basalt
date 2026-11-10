@@ -1,7 +1,7 @@
 {
   "identity": "basalt-usage-auto-refresh",
   "file": "0144-usage-auto-refresh.patch",
-  "content_sha256": "9c44802bdac0627dad540317f89a7fd9ab2017b5276283850280c77bd8a56a48",
+  "content_sha256": "090b33abd6d89c2f0445d9649afde0a319f05e7ebe45e698a103f93c5f43e8d3",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

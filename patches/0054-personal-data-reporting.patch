@@ -11,7 +11,7 @@ index c6e1e0c..2a9fb9f 100644
  export type BackgroundJob = typeof BackgroundJob.Type;
  
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index c31cfc5..7e039b7 100644
+index c31cfc5..c00ff19 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -14,7 +14,11 @@ import {
@@ -35,7 +35,7 @@ index c31cfc5..7e039b7 100644
  import { cloudProduct } from "./infrastructure/product.ts";
  import { cloudAuthDatabase } from "./infrastructure/auth-database.ts";
  import { EventCleanup, sqlCancellation } from "./infrastructure/event-cleanup.ts";
-@@ -422,6 +427,13 @@ export default Api.make(
+@@ -422,6 +427,14 @@ export default Api.make(
        Effect.as(jobCompleted),
        handledJob(Effect.logWarning("Idle agent grant expiry failed")),
      );
@@ -44,12 +44,13 @@ index c31cfc5..7e039b7 100644
 +      Effect.provide(executor),
 +      reportErrors,
 +      Effect.scoped,
-+      Effect.catch(() => Effect.logWarning("Personal-data reporting failed")),
++      Effect.as(jobCompleted),
++      handledJob(Effect.logWarning("Personal-data reporting failed")),
 +    );
      const jobs = yield* cloudBackgroundJobs;
      yield* jobs.schedule(
        "* * * * *",
-@@ -440,6 +452,23 @@ export default Api.make(
+@@ -440,6 +453,23 @@ export default Api.make(
      );
      yield* jobs.schedule("17 4 * * *", "billing-reconcile", "agent-grant-expiry");
      yield* jobs.schedule("13 * * * *", "pool-migration-inventory");
@@ -73,7 +74,7 @@ index c31cfc5..7e039b7 100644
      const backgroundJobs = {
        "organization-removal": organizationRemovals,
        provisioning: dispatch,
-@@ -453,6 +482,7 @@ export default Api.make(
+@@ -453,6 +483,7 @@ export default Api.make(
        "billing-reconcile": billingReconcile,
        "agent-grant-expiry": agentGrantExpiry,
        "pool-migration-inventory": reportHostPoolInventory.pipe(Effect.provide(executor)),
@@ -937,7 +938,7 @@ index 0000000..f1a1727
 +  };
 +});
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index a1505c7..10e14ac 100644
+index 5c33801..cecd9a4 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -3214,6 +3214,77 @@ export const scenarios = plan({
@@ -1018,7 +1019,7 @@ index a1505c7..10e14ac 100644
    mcpAccountHealth: {
      fixtures: "actors",
      file: "mcp-account-health.spec.ts",
-@@ -8857,10 +8928,11 @@ export const scenarios = plan({
+@@ -8845,10 +8916,11 @@ export const scenarios = plan({
    },
    accountStatusStorage: {
      fixtures: "actors",

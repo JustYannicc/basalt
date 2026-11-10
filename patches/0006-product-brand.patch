@@ -429,12 +429,15 @@ index 0000000..8d8819e
 +  return bindings;
 +});
 diff --git a/apps/hosted/cloud/src/infrastructure/welcome-email.ts b/apps/hosted/cloud/src/infrastructure/welcome-email.ts
-index 37a2345..30462b6 100644
+index 37a2345..8a1cc2e 100644
 --- a/apps/hosted/cloud/src/infrastructure/welcome-email.ts
 +++ b/apps/hosted/cloud/src/infrastructure/welcome-email.ts
-@@ -8,6 +8,7 @@ import { cloudHosts } from "./stage.ts";
+@@ -6,8 +6,9 @@ import { deliverWelcomeEmails } from "../implementation/welcome-emails.ts";
+ import type { SendWelcomeEmail } from "../contracts/email.ts";
+ import { cloudHosts } from "./stage.ts";
  import { cloudSecrets } from "./secrets.ts";
- import { jobFailed } from "../contracts/job-outcome.ts";
+-import { jobFailed } from "../contracts/job-outcome.ts";
++import { jobCompleted, jobFailed } from "../contracts/job-outcome.ts";
  import { unsubscribeHandler, unsubscribeLinks } from "../implementation/email-preferences.ts";
 +import { CurrentProductBrand, isDefaultProductBrand } from "@executor-js/utils/product-brand";
  
@@ -470,7 +473,7 @@ index 37a2345..30462b6 100644
 +              user,
 +            ).pipe(Effect.provide(database)),
 +          )
-+        : Effect.void;
++        : Effect.succeed(jobCompleted);
      return {
        deliver: deliverUser().pipe(
          Effect.catch((error) =>

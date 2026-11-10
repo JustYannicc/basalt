@@ -514,7 +514,7 @@ index 5b2b628..c6ba676 100644
    // App runners and data supervisors: a cold tool call starts both isolates.
    "app-data": 700_000,
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index 6a974e3..ccdf299 100644
+index 242e615..73b27ac 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -164,6 +164,8 @@ import { recordClientNetwork } from "./implementation/client-network.ts";
@@ -538,7 +538,7 @@ index 6a974e3..ccdf299 100644
      const welcomeEmails = yield* cloudWelcomeEmails(email.welcome);
      yield* AppWorkflows;
      yield* Provisioning;
-@@ -737,7 +744,7 @@ export default Api.make(
+@@ -739,7 +746,7 @@ export default Api.make(
          "/api/auth/organization/list",
          auth.handler.pipe(Effect.flatMap(hideRemovedOrganizations), Effect.provide(executor)),
        ),
@@ -636,7 +636,7 @@ index a807abb..79532f9 100644
    // Cloud's hosts: role hosts, the edge and sign-in on `app.`. Run in `cloud-product`, their
    // load kept the team installation's workflow span from arriving within its 30-second wait, so
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 09b2a48..663d269 100644
+index 2f31303..5763c03 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -1731,6 +1731,16 @@ export const scenarios = plan({

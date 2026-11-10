@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index 8c4a56d..cc915fd 100644
+index 059f8e4..8507f87 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -61,6 +61,10 @@ import {
@@ -13,7 +13,7 @@ index 8c4a56d..cc915fd 100644
  import { Billing } from "./contracts/billing.ts";
  import { BillingMeter } from "./contracts/billing-meter.ts";
  import { billingBindings } from "./infrastructure/billing.ts";
-@@ -684,6 +688,9 @@ export default Api.make(
+@@ -686,6 +690,9 @@ export default Api.make(
        HttpRouter.add("POST", poolMembershipReadPath, readNativePoolMembership).pipe(
          HttpRouter.provideRequest(executor),
        ),

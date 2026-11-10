@@ -110,7 +110,7 @@ index 93d0a42..b6eb895 100644
        const steps = hostDataSteps({
          executor,
 diff --git a/apps/hosted/cloud/src/infrastructure/product.ts b/apps/hosted/cloud/src/infrastructure/product.ts
-index cafe26a..2f00b30 100644
+index cafe26a..df0698f 100644
 --- a/apps/hosted/cloud/src/infrastructure/product.ts
 +++ b/apps/hosted/cloud/src/infrastructure/product.ts
 @@ -19,7 +19,7 @@ import { AppRepositoryRecovery, RepositoryHost, StorageError } from "@executor-j
@@ -150,14 +150,14 @@ index cafe26a..2f00b30 100644
 +                url: feedUrl.value,
 +                egress: {
 +                  ...egress,
-+                  client: cachedFeedClient(apiOrigin, feedUrl.value, egress.client),
++                  client: yield* cachedFeedClient(apiOrigin, feedUrl.value, egress.client),
 +                },
 +              },
          ).pipe(Effect.provideService(PoolAppSource, poolSource)),
        );
      }).pipe(
 diff --git a/apps/hosted/cloud/src/infrastructure/provisioning.ts b/apps/hosted/cloud/src/infrastructure/provisioning.ts
-index f951997..0a2b382 100644
+index f951997..4ff8512 100644
 --- a/apps/hosted/cloud/src/infrastructure/provisioning.ts
 +++ b/apps/hosted/cloud/src/infrastructure/provisioning.ts
 @@ -35,6 +35,7 @@ import {
@@ -203,7 +203,7 @@ index f951997..0a2b382 100644
            });
            const persisted =
              status === "complete"
-@@ -271,7 +279,12 @@ export const dispatchProvisioning = <R>(
+@@ -271,7 +279,13 @@ export const dispatchProvisioning = <R>(
              yield* Effect.logError("Provisioning workflow needs attention", { job: job.id });
            if (job.kind === "team" && persisted === "running") yield* installTeam(job.id);
          }).pipe(
@@ -214,6 +214,7 @@ index f951997..0a2b382 100644
 +              reason: dispatchFailureReason(cause),
 +            }),
 +          ),
++          Effect.mapError(() => new ProvisioningFailed()),
            Effect.result,
          ),
        { concurrency: 4 },

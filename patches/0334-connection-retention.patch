@@ -367,7 +367,7 @@ index baee04e..4456a53 100644
      keys: ["account_id"],
      predicate: `${organization} and ${account("account_id")}`,
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index cc915fd..56f4aac 100644
+index 8507f87..6972719 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -41,6 +41,10 @@ import { reportHostPoolInventory } from "./infrastructure/pool-inventory.ts";
@@ -381,7 +381,25 @@ index cc915fd..56f4aac 100644
  import { SqlClient } from "effect/sql";
  import {
    OrganizationRemoval,
-@@ -473,6 +477,18 @@ export default Api.make(
+@@ -91,7 +95,7 @@ import { cloudSiteAssets } from "./infrastructure/site-assets.ts";
+ import { retainedAssetFolders, retainedAssetPath } from "./contracts/retained-assets.ts";
+ import * as Output from "alchemy/Output";
+ import { AlchemyContext } from "alchemy/AlchemyContext";
+-import { Config, Effect, Layer, Option, Path, Ref } from "effect";
++import { Cause, Config, Effect, Layer, Option, Path, Ref } from "effect";
+ import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
+ import { cloudAuth } from "./infrastructure/auth.ts";
+ import { cloudAccountCallback } from "./implementation/account-callback.ts";
+@@ -118,7 +122,7 @@ import {
+   selfBinding,
+   type BackgroundJob,
+ } from "./infrastructure/background-jobs.ts";
+-import { handledJob, jobCompleted, jobFailed } from "./contracts/job-outcome.ts";
++import { handledJob, jobCompleted, jobFailed, jobFailedWith } from "./contracts/job-outcome.ts";
+ import { cloudEgress } from "./infrastructure/executor.ts";
+ import { withBatchExecution } from "./infrastructure/batch-execution.ts";
+ import { cloudEmulators } from "./infrastructure/emulators.ts";
+@@ -474,6 +478,23 @@ export default Api.make(
        Effect.as(jobCompleted),
        handledJob(Effect.logWarning("Idle agent grant expiry failed")),
      );
@@ -395,12 +413,17 @@ index cc915fd..56f4aac 100644
 +      Effect.provide(executor),
 +      reportErrors,
 +      Effect.scoped,
-+      Effect.catch(() => Effect.logWarning("Account connection retention failed")),
++      Effect.as(jobCompleted),
++      Effect.catch((error) =>
++        Effect.logWarning("Account connection retention failed").pipe(
++          Effect.as(jobFailedWith(Cause.fail(error))),
++        ),
++      ),
 +    );
      const personalDataReporting = Effect.flatten(HostedExecutor).pipe(
        Effect.flatMap((sdk) => sdk[PersonalDataReportingHost].run),
        Effect.provide(executor),
-@@ -504,7 +520,12 @@ export default Api.make(
+@@ -506,7 +527,12 @@ export default Api.make(
        "workflow-reconcile",
        "app-domain-heartbeat",
      );
@@ -414,7 +437,7 @@ index cc915fd..56f4aac 100644
      yield* jobs.schedule("13 * * * *", "pool-migration-inventory");
      // Keep the production poll off the hour. Subject-level cycle times spread actual requests further.
      const testReportingCron = yield* Config.String(
-@@ -536,6 +557,7 @@ export default Api.make(
+@@ -538,6 +564,7 @@ export default Api.make(
        "workflow-reconcile": workflowReconcile,
        "billing-reconcile": billingReconcile,
        "agent-grant-expiry": agentGrantExpiry,

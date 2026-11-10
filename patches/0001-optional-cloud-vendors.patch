@@ -822,7 +822,7 @@ index f8f4616..02dd968 100644
        Effect.fail(
          new McpSessionReleaseBlocked({
 diff --git a/apps/hosted/cloud/src/infrastructure/onboarding.ts b/apps/hosted/cloud/src/infrastructure/onboarding.ts
-index ca8c571..123d3a2 100644
+index ca8c571..0155f80 100644
 --- a/apps/hosted/cloud/src/infrastructure/onboarding.ts
 +++ b/apps/hosted/cloud/src/infrastructure/onboarding.ts
 @@ -11,7 +11,7 @@ import { cloudEmulators } from "./emulators.ts";
@@ -922,6 +922,20 @@ index ca8c571..123d3a2 100644
    const blobs = yield* v1R2Blobs;
    return Option.some<Effect.Effect<V1SourceSettings>>(
      Effect.gen(function* () {
+@@ -448,10 +476,10 @@ export const cloudV1ImportSettings = Effect.gen(function* () {
+     billing:
+       access.source === "live"
+         ? Option.none()
+-        : Option.some(
++        : Option.map(billing, (settings) =>
+             Effect.all({
+-              options: Effect.all({ serverUrl: billing.serverUrl, secretKey: billing.secretKey }),
+-              catalog: billing.catalog,
++              options: Effect.all({ serverUrl: settings.serverUrl, secretKey: settings.secretKey }),
++              catalog: settings.catalog,
+             }),
+           ),
+   });
 diff --git a/apps/hosted/cloud/src/infrastructure/telemetry.ts b/apps/hosted/cloud/src/infrastructure/telemetry.ts
 index eaa3091..06b9253 100644
 --- a/apps/hosted/cloud/src/infrastructure/telemetry.ts
