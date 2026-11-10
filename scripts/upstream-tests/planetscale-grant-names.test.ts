@@ -132,7 +132,7 @@ test("servers without grant prefixes keep reported names unchanged", () => {
     firstPartyGrantedScopes(server, client.allowedScopes, "read_branches read_user", requested),
     ["read_branches", "read_user"],
   );
-  // Without the prefixes, the production grant is refused as before the fix.
+  // The prefixes are what keep the production grant inside the envelope.
   const reported = firstPartyGrantedScopes(
     server,
     client.allowedScopes,

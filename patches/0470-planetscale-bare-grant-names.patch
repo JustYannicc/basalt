@@ -19,7 +19,7 @@
 +/**
 + * The scopes a host client's token response reports, with each bare name resolved for servers
 + * that report a resource-prefixed scope without its prefix, such as `read_branches` for
-+ * `organization:read_branches`. A name outside the allowed closure becomes the requested
++ * `organization:read_branches`. A name outside the allowed closure becomes each requested
 + * `<prefix><name>`, else the first allowed one in the server's narrowest-first order, so a grant
 + * never claims a broader resource than the request named. Unresolved names stay as reported and
 + * the allowed check refuses them.
@@ -42,7 +42,7 @@
 +    if (permitted.has(name)) return [name];
 +    const named = prefixes.map((prefix) => prefix + name).filter((full) => permitted.has(full));
 +    const asked = named.filter((full) => requested.includes(full));
-+    return asked.length > 0 ? asked : named.length > 0 ? [named[0]!] : [name];
++    return asked.length > 0 ? asked : named.length > 0 ? named.slice(0, 1) : [name];
 +  };
 +  return [...new Set(reported.flatMap(resolve))];
 +};
