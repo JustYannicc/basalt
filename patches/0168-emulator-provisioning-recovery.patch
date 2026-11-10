@@ -113,7 +113,7 @@ index 591625e..152f41f 100644
      Effect.withSpan("billing.provisionCatalog"),
    );
 diff --git a/e2e/check-boundary.ts b/e2e/check-boundary.ts
-index fb47553..147e47c 100644
+index d50ce80..458555a 100644
 --- a/e2e/check-boundary.ts
 +++ b/e2e/check-boundary.ts
 @@ -18,6 +18,7 @@ const allowed = new Set([
@@ -134,9 +134,9 @@ index fb47553..147e47c 100644
 +            specifier === "@executor-js/utils/provisioning-request"
 +          )
 +            return;
-           // The runner owns its canonical TCP listener through this external transport SDK.
-           // Application implementations remain forbidden; only this listener adapter may import it.
+           // Listener announcements may contain terminal styling; no other utility imports pass.
            if (
+             label === `support${path.sep}cloud-listener.ts` &&
 diff --git a/e2e/emulator-failures.config.ts b/e2e/emulator-failures.config.ts
 index d960770..39fae85 100644
 --- a/e2e/emulator-failures.config.ts

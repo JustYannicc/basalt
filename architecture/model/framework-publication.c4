@@ -1,0 +1,9 @@
+model {
+  extend basalt.toolsGateway {
+    frameworkPublication = part "Framework publication identity" {
+      description "Published framework manifests bind the protocol, server and browser bytes to reviewed source identity. Build verification compares the actual publication with approved releases."
+      metadata { code ".upstream/packages/sdk/src/contracts/worker-build.ts|.upstream/packages/sdk/src/implementation/framework-identity.ts|.upstream/packages/sdk/src/implementation/basalt-framework-releases.ts" }
+    }
+  }
+  basalt.build -[sync]-> basalt.toolsGateway.frameworkPublication "verify the published framework against approved identities"
+}

@@ -81,10 +81,10 @@ index 0000000..b6065cc
 +  });
 +}).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 503 }))));
 diff --git a/e2e/check-boundary.ts b/e2e/check-boundary.ts
-index 250ed62..af79f0f 100644
+index 73c8b5b..e4e1158 100644
 --- a/e2e/check-boundary.ts
 +++ b/e2e/check-boundary.ts
-@@ -151,7 +151,10 @@ const check = Effect.gen(function* () {
+@@ -165,7 +165,10 @@ const check = Effect.gen(function* () {
            // This adapter starts the complete fork Worker at its HTTP entry. These are
            // runtime SDKs; application source imports remain forbidden in every E2E file.
            if (

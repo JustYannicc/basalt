@@ -48,13 +48,27 @@ index 3ed51b7..a80999c 100644
        assets: {
          // Resolve the dev asset root once before Alchemy hands it to workerd.
 diff --git a/e2e/check-boundary.ts b/e2e/check-boundary.ts
-index 32ec3b1..fb47553 100644
+index 32ec3b1..d50ce80 100644
 --- a/e2e/check-boundary.ts
 +++ b/e2e/check-boundary.ts
-@@ -74,6 +74,13 @@ const check = Effect.gen(function* () {
+@@ -74,6 +74,27 @@ const check = Effect.gen(function* () {
              allowed.has(specifier)
            )
              return;
++          // Listener announcements may contain terminal styling; no other utility imports pass.
++          if (
++            label === `support${path.sep}cloud-listener.ts` &&
++            specifier === "node:util" &&
++            ts.isImportDeclaration(node.parent) &&
++            node.parent.importClause?.name === undefined &&
++            node.parent.importClause?.namedBindings !== undefined &&
++            ts.isNamedImports(node.parent.importClause.namedBindings) &&
++            node.parent.importClause.namedBindings.elements.length === 1 &&
++            node.parent.importClause.namedBindings.elements[0]?.propertyName === undefined &&
++            node.parent.importClause.namedBindings.elements[0]?.name.text ===
++              "stripVTControlCharacters"
++          )
++            return;
 +          // The runner owns its canonical TCP listener through this external transport SDK.
 +          // Application implementations remain forbidden; only this listener adapter may import it.
 +          if (

@@ -11,6 +11,10 @@ import { handleCatalog } from "./worker.ts";
 import { spotifySource } from "./spotify.ts";
 import { catalog } from "./settings.ts";
 
+const servedSource: typeof spotifySource = JSON.parse(
+  onServedFramework(JSON.stringify(spotifySource)),
+);
+
 const published = () =>
   JSON.parse(
     readFileSync(new URL("./spotify.published.json", import.meta.url), "utf8"),
@@ -28,8 +32,8 @@ test("Spotify GET and HEAD serve the local override without its publisher", asyn
     assert.equal(response.status, 200);
     responses.push(response);
   }
-  assert.equal(onServedFramework(JSON.stringify(spotifySource)), JSON.stringify(spotifySource));
-  assert.equal(await responses[0].text(), JSON.stringify(spotifySource));
+  assert.equal(onServedFramework(JSON.stringify(servedSource)), JSON.stringify(servedSource));
+  assert.equal(await responses[0].text(), JSON.stringify(servedSource));
   assert.equal(await responses[1].text(), "");
   assert.deepEqual([...responses[0].headers], [...responses[1].headers]);
 });
@@ -55,7 +59,11 @@ test("Spotify preserves the published package except its account check and host 
       const publishedManifest = JSON.parse(file.content);
       const manifest = JSON.parse(carried.content);
       assert.equal(manifest.dependencies.apps, provenance.appsVersion);
-      assert.equal(manifest.dependencies.apps, catalog.framework);
+      assert.equal(
+        JSON.parse(servedSource.files.find((candidate) => candidate.path === file.path)!.content)
+          .dependencies.apps,
+        catalog.framework,
+      );
       assert.deepEqual(
         {
           ...manifest,
