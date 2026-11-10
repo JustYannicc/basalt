@@ -1,6 +1,11 @@
 import type { ExecProps } from "alchemy/Command/Exec";
 import { Redacted } from "effect";
-import { cloudflareArtifactsApi, ensureEuNamespace, stageNamespaces } from "../ensure-artifacts.ts";
+import {
+  cloudflareArtifactsApi,
+  ensureEuNamespace,
+  failureHeaders,
+  stageNamespaces,
+} from "../ensure-artifacts.ts";
 import { BarrierRefusal } from "./manifest.ts";
 
 const commands: Record<
@@ -86,21 +91,69 @@ export async function admitSourceNamespace(props: ExecProps, api = cloudflareArt
   }
 }
 
+/** The Artifacts client's own operation names, exactly as its failure messages spell them. */
+const operations =
+  "(?:list|namespace creation|namespace deletion|repository deletion|token list|token deletion)";
+const diagnosticsSuffix = String.raw`(?:; diagnostics=(\{.{0,600}\}))?`;
+/** Messages the Artifacts client builds itself; nothing else may reach a public report. */
+const clientMessages = [
+  new RegExp(`^Cloudflare Artifacts ${operations} failed with HTTP (\\d{3})${diagnosticsSuffix}$`),
+  new RegExp(`^Cloudflare Artifacts ${operations} was rejected${diagnosticsSuffix}$`),
+  new RegExp(`^Cloudflare Artifacts ${operations} returned an invalid response$`),
+  /^Cloudflare Artifacts pagination repeated a cursor$/,
+  /^Cloudflare Artifacts pagination did not end$/,
+  /^Invalid Cloudflare Artifacts list response$/,
+  /^Artifacts namespace must have immutable EU jurisdiction; deployment stopped$/,
+];
+/** Each header keeps the exact shape the client reduces it to; quota parameters are numbers only. */
+const diagnosticHeaders: Readonly<Record<string, RegExp>> = {
+  ...failureHeaders,
+  ratelimit: /^r=\d{1,10};t=\d{1,10}(?:, r=\d{1,10};t=\d{1,10}){0,3}$/,
+  "ratelimit-policy": /^q=\d{1,10};w=\d{1,10}(?:, q=\d{1,10};w=\d{1,10}){0,3}$/,
+};
+
+/** Rebuild client diagnostics field by field: numeric codes and exactly shaped header values. */
+function safeDiagnostics(text: string | undefined) {
+  if (!text) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null) return undefined;
+  const source = parsed as { codes?: unknown; headers?: unknown };
+  const codes = Array.isArray(source.codes)
+    ? source.codes.filter(
+        (code): code is number => Number.isSafeInteger(code) && code > 0 && code <= 99_999_999,
+      )
+    : [];
+  const headers: Record<string, string> = {};
+  if (typeof source.headers === "object" && source.headers !== null)
+    for (const [name, pattern] of Object.entries(diagnosticHeaders)) {
+      const value = (source.headers as Record<string, unknown>)[name];
+      if (typeof value === "string" && pattern.test(value)) headers[name] = value;
+    }
+  return JSON.stringify({ codes, headers });
+}
+
 /**
- * Name a failed namespace read by its class, HTTP status and provider codes. The Artifacts client
- * builds its own messages from allow-listed fields; anything else is reduced to its class, since a
- * transport error can carry a host or request detail.
+ * Name a failed namespace read by its class and, for the Artifacts client's own failures, its
+ * HTTP status and provider codes. Any other error, including a transport error, is reduced to
+ * its class, since its text can carry a host or request detail.
  */
 export function readFailure(error: unknown) {
   const kind = error instanceof Error ? error.name || "Error" : typeof error;
-  const message = error instanceof Error ? error.message : "";
-  const status = /\bHTTP (\d{3})\b/.exec(message)?.[1];
-  const diagnostics = /; diagnostics=(\{.{0,600}\})$/.exec(message)?.[1];
-  const known =
-    /^(?:Cloudflare Artifacts [a-z ]+(?:failed with HTTP \d{3}|was rejected|returned an invalid response|pagination repeated a cursor|pagination did not end)|Invalid Cloudflare Artifacts list response|Artifacts namespace must have immutable EU jurisdiction; deployment stopped)/.exec(
-      message,
-    )?.[0];
-  return [kind, status && `HTTP ${status}`, known, diagnostics && `diagnostics=${diagnostics}`]
-    .filter(Boolean)
-    .join("; ");
+  if (!(error instanceof Error) || error.constructor !== Error) return kind;
+  for (const pattern of clientMessages) {
+    const match = pattern.exec(error.message);
+    if (!match) continue;
+    const status = /^\d{3}$/.test(match[1] ?? "") ? match[1] : undefined;
+    const diagnostics = safeDiagnostics(status ? match[2] : match[1]);
+    const summary = error.message.replace(/; diagnostics=.*$/, "");
+    return [kind, status && `HTTP ${status}`, summary, diagnostics && `diagnostics=${diagnostics}`]
+      .filter(Boolean)
+      .join("; ");
+  }
+  return kind;
 }

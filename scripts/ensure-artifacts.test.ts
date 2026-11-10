@@ -526,3 +526,62 @@ test("a transport failure keeps only its class, never its host", async () => {
   assert.match(refusal.delta?.why?.join(" ") ?? "", /TypeError/);
   assert.doesNotMatch(JSON.stringify(refusal.delta), /private\.invalid|ECONNRESET/);
 });
+
+test("only the client's own failures keep detail, and only allow-listed diagnostic fields", async () => {
+  const { readFailure } = await import("./release-barrier/commands.ts");
+  // A transport error that imitates the client's suffix keeps nothing but its class.
+  assert.equal(
+    readFailure(
+      new TypeError('fetch failed; diagnostics={"host":"private.invalid","token":"secret"}'),
+    ),
+    "TypeError",
+  );
+  const forged = readFailure(
+    new Error(
+      'Cloudflare Artifacts list failed with HTTP 403; diagnostics={"codes":[10000],"headers":{"cf-ray":"0123456789abcdef-ZRH","x-host":"private.invalid"},"token":"secret"}',
+    ),
+  );
+  assert.match(forged, /HTTP 403/);
+  assert.match(forged, /10000/);
+  assert.match(forged, /0123456789abcdef-ZRH/);
+  assert.doesNotMatch(forged, /private\.invalid|secret/);
+  assert.equal(readFailure(new Error("unexpected provider text: private.invalid")), "Error");
+});
+
+test("pagination failures name themselves in the refusal", async () => {
+  const { admitSourceNamespace } = await import("./release-barrier/commands.ts");
+  const repeated = scripted([page([], "c1"), page([], "c1")]);
+  const refusal = await admitSourceNamespace(releaseProps, repeated.api).then(
+    () => assert.fail("expected a refusal"),
+    (error: { delta?: { why?: string[] } }) => error,
+  );
+  assert.match(refusal.delta?.why?.join(" ") ?? "", /pagination repeated a cursor/);
+  const { readFailure } = await import("./release-barrier/commands.ts");
+  assert.match(
+    readFailure(new Error("Cloudflare Artifacts pagination did not end")),
+    /did not end/,
+  );
+});
+
+test("detail survives only for the client's real operations, error class and header shapes", async () => {
+  const { readFailure } = await import("./release-barrier/commands.ts");
+  // The exact client wording from another error class is still only its class.
+  assert.equal(
+    readFailure(new TypeError("Cloudflare Artifacts list failed with HTTP 403")),
+    "TypeError",
+  );
+  // An operation the client never names is not the client's message.
+  assert.equal(
+    readFailure(new Error("Cloudflare Artifacts secret token failed with HTTP 403")),
+    "Error",
+  );
+  const shaped = readFailure(
+    new Error(
+      'Cloudflare Artifacts list failed with HTTP 429; diagnostics={"codes":[10429],"headers":{"cf-ray":"private.invalid","retry-after":"30","ratelimit":"r=0;t=30","ratelimit-policy":"\\"private\\";q=10;w=60"}}',
+    ),
+  );
+  assert.match(shaped, /HTTP 429/);
+  assert.match(shaped, /"retry-after":"30"/);
+  assert.match(shaped, /"ratelimit":"r=0;t=30"/);
+  assert.doesNotMatch(shaped, /private/);
+});
