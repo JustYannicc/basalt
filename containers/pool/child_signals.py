@@ -1,10 +1,12 @@
-"""Closed, counts-only projection of child process output."""
+"""Closed projection of child process counts and quota window metadata."""
 
 from __future__ import annotations
 
 import json
 import re
 from typing import Any
+
+from .quota_signals import quota_signal_line
 
 MAX_HOME_SIGNAL_INTEGER = (1 << 63) - 1
 
@@ -278,8 +280,11 @@ class NativePolicyProbeParser:
 
 
 def safe_child_output_line(name: str, line: str) -> str | None:
-    """Return closed Home worker signals and fixed failure counts."""
+    """Return closed Home worker signals and quota window metadata."""
     message = _extract_home_message(name, line)
+    quota = quota_signal_line(message)
+    if quota is not None:
+        return quota
     for marker, fields in (
         (PRIVACY_AUDIT_MARKER, PRIVACY_AUDIT_FIELDS),
         (PRIVACY_PROGRESS_MARKER, PRIVACY_PROGRESS_FIELDS),

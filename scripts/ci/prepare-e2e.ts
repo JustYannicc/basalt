@@ -3,20 +3,21 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { run } from "../process.ts";
 
-export function e2eCorrection(root: string) {
-  const patch = join(root, "e2e/hitl-inventory-lifetime.patch");
-  return existsSync(patch) ? patch : undefined;
+export function e2eCorrections(root: string) {
+  return ["hitl-inventory-lifetime", "webhook-removal-recovery"]
+    .map((name) => join(root, `e2e/${name}.patch`))
+    .filter(existsSync);
 }
 
 /** Test-only corrections follow the carried scenarios without rewriting an immutable carry. */
 export function prepareE2e(root: string, upstream: string) {
-  const patch = e2eCorrection(root);
-  if (patch === undefined) return;
-  const applied = spawnSync("git", ["apply", "--reverse", "--check", patch], {
-    cwd: upstream,
-    stdio: "ignore",
-  });
-  if (applied.status === 0) return;
-  run("git", ["apply", "--check", "--whitespace=error-all", patch], upstream);
-  run("git", ["apply", "--whitespace=error-all", patch], upstream);
+  for (const patch of e2eCorrections(root)) {
+    const applied = spawnSync("git", ["apply", "--reverse", "--check", patch], {
+      cwd: upstream,
+      stdio: "ignore",
+    });
+    if (applied.status === 0) continue;
+    run("git", ["apply", "--check", "--whitespace=error-all", patch], upstream);
+    run("git", ["apply", "--whitespace=error-all", patch], upstream);
+  }
 }

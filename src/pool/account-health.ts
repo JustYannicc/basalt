@@ -1,3 +1,4 @@
+import { accountCollectionFailure, accountReadFailure } from "./account-failure.ts";
 import { subscriptionFailure } from "../../apps/pool/account-health.ts";
 import { identityOf } from "./account-identity.ts";
 import { acquisitionAssertion } from "./account-acquisition-assertion.ts";
@@ -67,7 +68,10 @@ export async function nativeAccountHealth(
         ),
       )
     )
-      return json({ failure: "unauthorized" });
+      return json({
+        failure: "unavailable",
+        diagnostic: accountReadFailure(undefined, input.now?.() ?? Date.now()),
+      });
     if (value.action === "observe") {
       // Await this pass outside the attribution queue, including for unlinked bindings.
       if (!ids.every((id) => hasUsageLimits(files.find((file) => file.id === id)!)))
@@ -76,13 +80,14 @@ export async function nativeAccountHealth(
       const reading = readings[0];
       if (readings.length === 1 && reading != null) {
         const observation = quotaObservation(reading);
-        // A first failed collection has no reading to carry its failure metadata.
-        if (observation.observedAt === null && observation.collection.status === "failed")
+        // A failed refresh must not turn a retained reading into a successful attempt.
+        if (observation.collection.status === "failed")
           return json({
             failure:
               observation.collection.errorCode === "UPSTREAM_RATE_LIMITED"
                 ? "rate_limited"
                 : "unavailable",
+            diagnostic: accountCollectionFailure(reading, input.now?.() ?? Date.now()),
           });
       }
       // Unlimited windows are reported as unlimited; whether a row shows them is the row's choice.
@@ -99,7 +104,19 @@ export async function nativeAccountHealth(
     const failure = checked
       .map(({ account }) => subscriptionFailure(account, input.now?.()))
       .find((reason) => reason !== null);
-    if (failure) return json({ failure });
+    if (failure) {
+      const failed = checked.find(
+        ({ account }) => subscriptionFailure(account, input.now?.()) !== null,
+      );
+      if (failed?.account.credentialFailure) return json({ failure });
+      return json({
+        failure,
+        diagnostic:
+          failed?.quota && quotaObservation(failed.quota).collection.errorCode
+            ? accountCollectionFailure(failed.quota, input.now?.() ?? Date.now())
+            : accountReadFailure(undefined, input.now?.() ?? Date.now()),
+      });
+    }
     const first = checked[0]!;
     const identity =
       first.account.label === first.account.id ? {} : identityOf(first.account, providers);
@@ -110,7 +127,10 @@ export async function nativeAccountHealth(
     return json({
       result: { accountInfo: identity, ...(observation === null ? {} : { observation }) },
     });
-  } catch {
-    return json({ failure: "unavailable" });
+  } catch (error) {
+    return json({
+      failure: "unavailable",
+      diagnostic: accountReadFailure(error, input.now?.() ?? Date.now()),
+    });
   }
 }

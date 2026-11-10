@@ -2,6 +2,7 @@ export type CapacityWeightSource =
   | "reference-plan"
   | "published-session-multiplier"
   | "published-weekly-multiplier"
+  | "plan-multiplier"
   | "unknown-plan"
   | "reported-absolute";
 

@@ -197,9 +197,8 @@ test("the output tail stays bounded across large, partial and secret-shaped line
 });
 
 test("CI collects only the safe AWS diagnostics and existing screenshots", async (t) => {
-  const { mkdir, writeFile, readdir } = await import("node:fs/promises");
+  const { mkdir, writeFile, glob } = await import("node:fs/promises");
   const { createRequire } = await import("node:module");
-  const { collect } = await import("../../scripts/ci-bundles/artifacts.mjs");
   const { parse } = createRequire(
     new URL("../../scripts/architecture/package.json", import.meta.url),
   )("yaml");
@@ -228,9 +227,11 @@ test("CI collects only the safe AWS diagnostics and existing screenshots", async
     "proof-input.json",
   ])
     await writeFile(join(workspace, proof, name), name);
-  const destination = join(directory, "retained");
-  await collect({ artifacts: [artifact.with] }, workspace, {}, destination);
-  assert.deepEqual((await readdir(join(destination, "artifacts", proof))).sort(), safe.sort());
+  assert.equal(artifact.with["include-hidden-files"], true);
+  const collected = [];
+  for await (const path of glob(artifact.with.path.trim().split("\n"), { cwd: workspace }))
+    collected.push(path);
+  assert.deepEqual(collected.sort(), safe.map((name) => join(proof, name)).sort());
 });
 
 test("AWS wire fixtures use strings outside provider credential formats", async () => {

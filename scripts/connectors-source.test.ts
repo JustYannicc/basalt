@@ -97,6 +97,12 @@ function verifyFixture(declaredPlans: boolean) {
           "e2e/support/document-requests.ts",
         ) + "\n",
       );
+      write(
+        "e2e/webhook-removal-recovery.patch",
+        "diff --git a/e2e/support/webhook-removal-case.ts b/e2e/support/webhook-removal-case.ts\n" +
+          "new file mode 100644\n--- /dev/null\n+++ b/e2e/support/webhook-removal-case.ts\n" +
+          "@@ -0,0 +1 @@\n+export const orderedRecovery = true;\n",
+      );
       write(inventorySource, "export const documentScoped = false;\n");
       rmSync(join(root, observerSource));
       prepareTestPlans(root, join(root, "plans-only"));

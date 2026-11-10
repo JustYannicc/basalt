@@ -36,12 +36,8 @@
     }
   },
   "runs": {
-    "cachedProviderPolicyDesktop": [
-      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
-    ],
-    "cachedProviderPolicyPhone": [
-      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
-    ]
+    "cachedProviderPolicyDesktop": ["human-in-the-loop:navigation-and-retained-accounts"],
+    "cachedProviderPolicyPhone": ["human-in-the-loop:navigation-and-retained-accounts"]
   },
   "inputs": [
     ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx",

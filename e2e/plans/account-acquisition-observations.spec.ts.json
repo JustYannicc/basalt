@@ -49,6 +49,7 @@
     ".upstream/apps/hosted/server/src/implementation/app-accounts.ts",
     ".upstream/apps/hosted/server/src/implementation/interactive-accounts.ts",
     ".upstream/apps/hosted/server/src/implementation/pool-account-acquisition.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-account-registry.ts",
     ".upstream/apps/hosted/server/src/implementation/resource-access.ts",
     ".upstream/apps/hosted/web/src/contracts/errors.ts",
     ".upstream/apps/local/server/src/contracts/account-connections.ts",
@@ -68,6 +69,7 @@
     ".upstream/packages/mcp/src/implementation/app-asset-paths.ts",
     ".upstream/packages/mcp/src/implementation/app-assets.ts",
     ".upstream/packages/sdk/src/contracts/account-acquisition-driver.ts",
+    ".upstream/packages/sdk/src/contracts/account-check-failure.ts",
     ".upstream/packages/sdk/src/contracts/account-connection.ts",
     ".upstream/packages/sdk/src/contracts/account-observation.ts",
     ".upstream/packages/sdk/src/contracts/account.ts",
@@ -84,6 +86,7 @@
     ".upstream/packages/sdk/src/implementation/account-acquisition-retirement.ts",
     ".upstream/packages/sdk/src/implementation/account-acquisition-runtime.ts",
     ".upstream/packages/sdk/src/implementation/account-acquisition-schema.ts",
+    ".upstream/packages/sdk/src/implementation/account-check-failure.ts",
     ".upstream/packages/sdk/src/implementation/account-driver-check-schema.ts",
     ".upstream/packages/sdk/src/implementation/account-driver-health.ts",
     ".upstream/packages/sdk/src/implementation/account-driver-observation-store.ts",
@@ -111,8 +114,13 @@
     ".upstream/packages/sdk/src/implementation/storage-migrations.ts",
     ".upstream/packages/sdk/src/implementation/storage.ts",
     ".upstream/packages/sdk/src/index.ts",
+    ".upstream/packages/ui/src/contracts/account-check-recovery.ts",
     ".upstream/packages/ui/src/implementation/dashboard/account-health-line.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/account-health.tsx",
-    ".upstream/playground/sdk/storage.ts"
+    ".upstream/packages/ui/src/implementation/dashboard/account-observation-details.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-observation-format.ts",
+    ".upstream/playground/sdk/storage.ts",
+    "src/pool/account-failure.ts",
+    "src/pool/account-health.ts"
   ]
 }

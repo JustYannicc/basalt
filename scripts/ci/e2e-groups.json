@@ -84,6 +84,11 @@
     "target": "self-host",
     "mode": "managed"
   },
+  "human-in-the-loop:navigation-and-retained-accounts": {
+    "job": "human-in-the-loop-navigation",
+    "target": "self-host",
+    "mode": "managed"
+  },
   "human-in-the-loop:local-navigation-custom-displays-and-scheduled-approvals": {
     "job": "human-in-the-loop",
     "target": "local",
@@ -319,6 +324,11 @@
   "aws-connectors:identity-center": {
     "job": "aws-connectors",
     "target": "self-host",
+    "mode": "managed"
+  },
+  "host-managed-accounts-cloud:account-policy-and-import": {
+    "job": "host-managed-accounts-cloud",
+    "target": "cloud",
     "mode": "managed"
   }
 }

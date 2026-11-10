@@ -14,6 +14,56 @@ function unpack(init: RequestInit | undefined) {
   return { type: item.type, payload: JSON.parse(lines[2]!) };
 }
 
+function assertNoPrivateDiagnostics(value: unknown) {
+  if (typeof value === "number") assert.notEqual(value, 10000);
+  else if (typeof value === "string") {
+    assert.doesNotMatch(value, /private-/);
+    // Match numeric tokens, including HTTP status text, without splitting decimals.
+    for (const token of value.matchAll(
+      /(?<![\w.])(?:HTTP)?[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?(?![\w.])/gi,
+    ))
+      assert.notEqual(Number(token[0].replace(/^HTTP/i, "")), 10000);
+  } else if (Array.isArray(value)) {
+    for (const item of value) assertNoPrivateDiagnostics(item);
+  } else if (value !== null && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) {
+      assertNoPrivateDiagnostics(key);
+      assertNoPrivateDiagnostics(item);
+    }
+  }
+}
+
+test("the privacy assertion accepts a duration containing the status sentinel digits", () => {
+  for (const duration of [
+    0.00014304100000001084,
+    "0.00014304100000001084",
+    10000.25,
+    "duration 10000.25s",
+  ]) {
+    assertNoPrivateDiagnostics([{ payload: { duration } }]);
+  }
+});
+
+test("the privacy assertion rejects private values and status sentinels in nested fields", () => {
+  for (const value of [
+    "private-target@private-host.invalid",
+    "private-secret",
+    10000,
+    "HTTP 10000",
+    "HTTP10000",
+    "HTTP 10000.",
+    "10000",
+  ]) {
+    for (const message of [
+      { payload: { message: value } },
+      { payload: { contexts: { extra: [{ unexpected: value }] } } },
+      { payload: { [String(value)]: "otherwise safe" } },
+    ]) {
+      assert.throws(() => assertNoPrivateDiagnostics([message]), assert.AssertionError);
+    }
+  }
+});
+
 test("disabled monitoring opens no connection and invokes no probe", async (t) => {
   t.mock.method(globalThis, "fetch", async () => {
     assert.fail("disabled monitoring sent a request");
@@ -113,6 +163,6 @@ test("monitor error text and fields reject unbounded or private diagnostic input
   const event = messages.find((message) => message.type === "event")!.payload;
   assert.equal(event.contexts.pool_probe.failures.length, 8);
   assert.equal(event.contexts.pool_probe.check_in_id, receipt.id);
-  assert.doesNotMatch(JSON.stringify(messages), /private-|10000/);
+  assertNoPrivateDiagnostics(messages);
   assert.match(event.message, /runtime:unknown/);
 });
