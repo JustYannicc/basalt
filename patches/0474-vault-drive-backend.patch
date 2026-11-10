@@ -88,17 +88,19 @@ diff --git a/apps/hosted/cloud/src/artifacts-credentials.ts b/apps/hosted/cloud/
 diff --git a/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts b/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
 --- a/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
 +++ b/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
-@@ -7,6 +7,9 @@ import * as Cloudflare from "alchemy/Cloudflare";
+@@ -7,6 +7,11 @@ import * as Cloudflare from "alchemy/Cloudflare";
  import { Stage } from "alchemy/Stage";
  import { Config, Effect, Option, Redacted, Schema } from "effect";
  import { ArtifactsCredentials } from "./artifacts-credentials-worker.ts";
 +import { DriveRequestFailed } from "apps/contracts";
 +import type { DriveBackend } from "@executor-js/sdk/core";
 +import { testStage } from "./stage.ts";
++// The retained bucket is declared once, by Basalt's reviewed release intent.
++import { provisionVaultAttachments } from "../../../../../../scripts/release-barrier/vault-attachments.ts";
  import { cloudEncryptionKey } from "./secrets.ts";
  import { providerFailureCode } from "../implementation/provider-failure.ts";
  
-@@ -94,8 +97,54 @@ interface Coordinator {
+@@ -94,8 +99,55 @@ interface Coordinator {
      trace: TraceContext | undefined,
    ) => Effect.Effect<typeof envelope.Type | null, SourceError, RuntimeContext>;
    readonly alarm: () => Effect.Effect<void, never, RuntimeContext>;
@@ -112,18 +114,19 @@ diff --git a/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts b/apps/hos
 +);
 +
 +/**
-+ * Attachment bytes. Production binds the retained bucket the Basalt stack declares; a test stage
-+ * owns a disposable one, because a reference only resolves once a release has recorded it.
++ * Attachment bytes. Production binds the retained bucket Basalt's release declares, as the
++ * declared resource itself rather than a reference: the stack stays evaluable before a release
++ * records it, and the barrier refuses binding it before its own release by name. A test stage owns
++ * a disposable bucket.
 + */
 +export const VaultAttachments = testStage.pipe(
 +  Effect.orDie,
 +  Effect.flatMap((stage) =>
 +    Option.isSome(stage)
 +      ? Cloudflare.R2.Bucket("VaultAttachmentsPreview", { jurisdiction: "eu", forceDestroy: true })
-+      : Cloudflare.R2.Bucket.ref("VaultAttachments"),
++      : provisionVaultAttachments,
 +  ),
 +);
-+
 +/** A vault's object shares the coordinator class under a name no app code can take. */
 +export const vaultObjectName = (app: string) => `vault:${app}`;
 +
