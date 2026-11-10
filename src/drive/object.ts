@@ -60,6 +60,20 @@ export type VaultReply =
   | { ok: true; value: unknown }
   | { ok: false; error: typeof DriveRequestFailed.Encoded };
 
+/** Expected drive failures are replies; anything else is a defect and propagates as one. */
+export const reply = (result: Effect.Effect<unknown, DriveRequestFailed>): Promise<VaultReply> =>
+  Effect.runPromise(
+    result.pipe(
+      Effect.map((value): VaultReply => ({ ok: true, value })),
+      Effect.catchTag("DriveRequestFailed", (error) =>
+        Effect.succeed<VaultReply>({
+          ok: false,
+          error: Schema.encodeSync(DriveRequestFailed)(error),
+        }),
+      ),
+    ),
+  );
+
 const tokenSeconds = 3600,
   refreshMs = 5 * 60_000;
 const repositoryName = (app: string) => {
@@ -163,18 +177,7 @@ export function vaultObject(input: {
         opened = undefined;
         return { ok: false, error: { _tag: "DriveRequestFailed", reason: "unavailable" } };
       }
-      // Expected drive failures are replies; anything else is a defect and propagates as one.
-      return await Effect.runPromise(
-        dispatch(decoded).pipe(
-          Effect.map((value): VaultReply => ({ ok: true, value })),
-          Effect.catchTag("DriveRequestFailed", (error) =>
-            Effect.succeed<VaultReply>({
-              ok: false,
-              error: Schema.encodeSync(DriveRequestFailed)(error),
-            }),
-          ),
-        ),
-      );
+      return reply(dispatch(decoded));
     },
   };
 }

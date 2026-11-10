@@ -3,7 +3,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { storageFixture } from "./fixture.ts";
-import { vaultObject, type ArtifactsNamespace } from "./object.ts";
+import { Effect } from "effect";
+import { DriveRequestFailed } from "apps/contracts";
+import { reply, vaultObject, type ArtifactsNamespace } from "./object.ts";
 import { backend, git, token } from "./artifacts/test/backend.ts";
 
 const namespace = (server: Awaited<ReturnType<typeof backend>>) => {
@@ -90,4 +92,18 @@ test("the vault object answers drive commands as JSON and writes its repository"
     data.close();
     await server.close();
   }
+});
+
+test("a drive failure is a reply, but a defect propagates instead of hiding as outcome_unknown", async () => {
+  assert.deepEqual(await reply(Effect.succeed({ done: true })), {
+    ok: true,
+    value: { done: true },
+  });
+  const failed = await reply(Effect.fail(new DriveRequestFailed({ reason: "denied" })));
+  assert.equal(failed.ok, false);
+  assert.equal(!failed.ok && failed.error.reason, "denied");
+  await assert.rejects(
+    reply(Effect.die(new Error("storage invariant broken"))),
+    /storage invariant broken/,
+  );
 });
