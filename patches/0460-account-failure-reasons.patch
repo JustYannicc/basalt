@@ -91,190 +91,7 @@ diff --git a/e2e/support/acquisition-product.ts b/e2e/support/acquisition-produc
 diff --git a/e2e/tests/account-acquisition-observations.spec.ts b/e2e/tests/account-acquisition-observations.spec.ts
 --- a/e2e/tests/account-acquisition-observations.spec.ts
 +++ b/e2e/tests/account-acquisition-observations.spec.ts
-@@ -1,5 +1,8 @@
- import { expect, layer } from "@effect/vitest";
- import { Effect, Fiber, Schema } from "effect";
-+import { Browser } from "../support/browser.ts";
-+import { Evidence } from "../support/evidence.ts";
-+import { accountRow, openRowDetails } from "../support/account-rows.ts";
- import { body } from "../support/api.ts";
- import { HostedLive, withHostedCase } from "../support/case.ts";
- import { acquisitionFixture } from "../support/account-acquisition-fixture.ts";
-@@ -13,6 +16,53 @@
-       context,
-       Effect.gen(function* () {
-         const f = yield* acquisitionFixture();
-+        const browser = yield* Browser,
-+          evidence = yield* Evidence;
-+        const capture = (stage: string) =>
-+          Effect.gen(function* () {
-+            yield* browser.login(f.actors.owner);
-+            for (const width of [1280, 390]) {
-+              const image = yield* browser.use(`Capture ${stage} at ${width}px`, (page) =>
-+                page
-+                  .setViewportSize({ width, height: 900 })
-+                  .then(() => page.goto(`/org/${f.actors.organization.slug}/accounts`))
-+                  .then(() => accountRow(page, "Synthetic pasted account").waitFor())
-+                  .then(() =>
-+                    openRowDetails(
-+                      page,
-+                      accountRow(page, "Synthetic pasted account"),
-+                      "Synthetic pasted account",
-+                    ),
-+                  )
-+                  .then(() =>
-+                    accountRow(page, "Synthetic pasted account")
-+                      .locator("[data-attempt-note]")
-+                      .waitFor(),
-+                  )
-+                  .then(() => page.screenshot({ animations: "disabled" })),
-+              );
-+              yield* evidence.attach(`failure-${stage}-${width}.png`, "image/png", image);
-+            }
-+          });
-+        const copy = (expected: string, status?: number) =>
-+          Effect.gen(function* () {
-+            const shown = yield* browser.use("Read retained account failure", (page) =>
-+              page
-+                .goto(`/org/${f.actors.organization.slug}/accounts`)
-+                .then(() =>
-+                  openRowDetails(
-+                    page,
-+                    accountRow(page, "Synthetic pasted account"),
-+                    "Synthetic pasted account",
-+                  ),
-+                )
-+                .then(() => accountRow(page, "Synthetic pasted account").innerText()),
-+            );
-+            expect(shown).toContain(expected);
-+            if (status !== undefined) expect(shown).toContain(`HTTP ${status}`);
-+            else expect(shown).not.toContain("HTTP");
-+            expect(shown).not.toMatch(/PRIVATE_|expired|credits are exhausted|opaque-1/);
-+          });
-         const { account } = yield* f.create(f.actors.owner, {
-           kind: "shared",
-           audience: { kind: "everyone" },
-@@ -29,6 +79,32 @@
-             Effect.andThen(serverControl("clock/advance", 200, { milliseconds: minutes * 60_000 })),
-             Effect.andThen(serverControl("start")),
-           );
-+        const failedAt = new Date(Date.now() - 120_000).toISOString();
-+        const diagnostic = {
-+          source: "provider",
-+          reason: "unavailable",
-+          status: 426,
-+          occurredAt: failedAt,
-+        };
-+        yield* f.backend.driverObservation({ _test_source_failure: diagnostic }, 502);
-+        const neverRead = yield* body(ObservationView, yield* refresh());
-+        expect(neverRead.reports[0]).toMatchObject({
-+          result: null,
-+          lastAttempt: { failure: { tag: "AccountSourceFailure", detail: diagnostic } },
-+        });
-+        yield* f.backend.driverHealth({ _test_source_failure: diagnostic }, 502);
-+        expect((yield* check()).body).toMatchObject({
-+          driver: { check: { failure: { tag: "AccountSourceFailure", detail: diagnostic } } },
-+        });
-+        yield* capture("never-read");
-+        yield* copy("Client version not accepted by the provider", 426);
-+        const failureEvidence = yield* browser.use("Read the failure source time", (page) =>
-+          accountRow(page, "Synthetic pasted account").locator("[data-check-evidence]").innerText(),
-+        );
-+        expect(failureEvidence).toContain("failed");
-+        yield* advance(2);
-+        yield* f.backend.driverObservation(allowance());
-+        yield* f.backend.driverHealth({});
-         const checked = yield* check();
-         expect(checked.status, JSON.stringify(checked.body)).toBe(200);
-         expect(checked.body).toMatchObject({
-@@ -57,7 +133,7 @@
-           lastAttempt: { outcome: "success" },
-           freshness: "fresh",
-         });
--        expect((yield* f.backend.calls).filter((call) => call.step === "observe")).toHaveLength(1);
-+        expect((yield* f.backend.calls).filter((call) => call.step === "observe")).toHaveLength(2);
-         expect(yield* health()).toEqual(before);
-         const hidden = yield* f.api.request(f.actors.member, "GET", `${path}/observations`);
-         expect(hidden.status).toBe(200);
-@@ -65,7 +141,7 @@
-         expect(
-           (yield* f.api.request(f.actors.member, "POST", `${path}/observations/refresh`)).status,
-         ).toBe(403);
--        expect((yield* f.backend.calls).filter((call) => call.step === "observe")).toHaveLength(1);
-+        expect((yield* f.backend.calls).filter((call) => call.step === "observe")).toHaveLength(2);
- 
-         const encoded = Buffer.from("opaque-1").toString("base64");
-         for (const secret of ["opaque-1", encoded]) {
-@@ -103,13 +179,67 @@
-           result: first.reports[0]?.result,
-           lastAttempt: { outcome: "unavailable" },
-         });
-+        yield* advance(2);
-+        yield* f.backend.driverObservation({ _test_source_failure: diagnostic }, 502);
-+        yield* f.backend.driverHealth({ _test_source_failure: diagnostic }, 502);
-+        yield* check();
-+        const retained426 = yield* body(ObservationView, yield* refresh());
-+        expect(retained426.reports[0]?.result).toEqual(first.reports[0]?.result);
-+        yield* capture("retained");
-+        yield* copy("Showing the last successful reading", 426);
-+        for (const status of [426, 401, 403, 429]) {
-+          yield* advance(2);
-+          const reason =
-+            status === 426 ? "rejected" : status === 429 ? "rate_limited" : "unauthorized";
-+          yield* f.backend.driverObservation({ _test_provider_failure: { reason, status } }, 502);
-+          yield* f.backend.driverHealth({ _test_provider_failure: { reason, status } }, 502);
-+          const checked = yield* check();
-+          const retained = yield* body(ObservationView, yield* refresh());
-+          expect(retained.reports[0]).toMatchObject({
-+            result: first.reports[0]?.result,
-+            lastAttempt: {
-+              failure: {
-+                detail: { source: "provider", reason, status, occurredAt: expect.any(String) },
-+              },
-+            },
-+          });
-+          expect(JSON.stringify([retained, checked.body])).not.toMatch(
-+            /PRIVATE_|opaque-1|synthetic-backend-key/,
-+          );
-+          yield* copy(
-+            status === 426
-+              ? "Client version not accepted by the provider"
-+              : status === 429
-+                ? "Rate-limited by the provider"
-+                : "The provider refused this sign-in",
-+            status,
-+          );
-+        }
-+        for (const source of ["home", "transport"]) {
-+          yield* advance(2);
-+          const failure = { source, reason: "unavailable", occurredAt: new Date().toISOString() };
-+          yield* f.backend.driverObservation({ _test_source_failure: failure }, 502);
-+          yield* f.backend.driverHealth({ _test_source_failure: failure }, 502);
-+          yield* check();
-+          const retained = yield* body(ObservationView, yield* refresh());
-+          expect(retained.reports[0]).toMatchObject({
-+            result: first.reports[0]?.result,
-+            lastAttempt: { failure: { detail: failure } },
-+          });
-+          yield* copy(
-+            source === "home"
-+              ? "The account service is unavailable"
-+              : "The service connection failed",
-+          );
-+        }
-         const count = (yield* f.backend.calls).filter((call) => call.step === "observe").length;
-         expect((yield* refresh()).status).toBe(200);
-         expect((yield* f.backend.calls).filter((call) => call.step === "observe")).toHaveLength(
-           count,
-         );
-         yield* f.configure({ revision: "dpl_missing_previous_registration" });
--        expect(yield* read()).toEqual(failed);
-+        const heldReading = yield* read();
-+        expect(heldReading.reports[0]?.result).toEqual(failed.reports[0]?.result);
-         const unavailable = yield* refresh();
-         expect(unavailable.status).toBe(503);
-         expect(unavailable.body).toMatchObject({
-@@ -125,6 +255,7 @@
+@@ -125,6 +125,7 @@
          expect(
            (yield* body(ObservationView, yield* refresh())).reports[0]?.lastAttempt?.outcome,
          ).toBe("success");
@@ -1216,3 +1033,232 @@ diff --git a/packages/ui/src/implementation/dashboard/account-observation-format
      record.result === null ? undefined : "Showing the last successful reading.",
      retry === undefined || Date.parse(retry) <= now
        ? undefined
+diff --git a/e2e/support/account-failure-observations-fixture.ts b/e2e/support/account-failure-observations-fixture.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/account-failure-observations-fixture.ts
+@@ -0,0 +1,79 @@
++import { expect } from "@effect/vitest";
++import { Effect } from "effect";
++import { Browser } from "./browser.ts";
++import { Evidence } from "./evidence.ts";
++import { accountRow, openRowDetails } from "./account-rows.ts";
++import { body } from "./api.ts";
++import { acquisitionFixture } from "./account-acquisition-fixture.ts";
++import { ObservationView } from "./account-observation-fixture.ts";
++import { serverControl } from "./server-control.ts";
++
++export const failureObservationsFixture = Effect.gen(function* () {
++  const f = yield* acquisitionFixture();
++  const browser = yield* Browser,
++    evidence = yield* Evidence;
++  const { account } = yield* f.create(f.actors.owner, {
++    kind: "shared",
++    audience: { kind: "everyone" },
++  });
++  const path = `${f.prefix}/accounts/${account}`;
++  yield* browser.login(f.actors.owner);
++  const read = () =>
++    f.api
++      .request(f.actors.owner, "GET", `${path}/observations`)
++      .pipe(Effect.flatMap((response) => body(ObservationView, response)));
++  const refresh = () => f.api.request(f.actors.owner, "POST", `${path}/observations/refresh`);
++  const check = () => f.api.request(f.actors.owner, "POST", `${path}/health`);
++  const advance = (minutes: number) =>
++    serverControl("stop").pipe(
++      Effect.andThen(serverControl("clock/advance", 200, { milliseconds: minutes * 60_000 })),
++      Effect.andThen(serverControl("start")),
++    );
++  const capture = (stage: string) =>
++    Effect.gen(function* () {
++      for (const width of [1280, 390]) {
++        const image = yield* browser.use(`Capture ${stage} at ${width}px`, (page) =>
++          page
++            .setViewportSize({ width, height: 900 })
++            .then(() => page.goto(`/org/${f.actors.organization.slug}/accounts`))
++            .then(() => accountRow(page, "Synthetic pasted account").waitFor())
++            .then(() =>
++              openRowDetails(
++                page,
++                accountRow(page, "Synthetic pasted account"),
++                "Synthetic pasted account",
++              ),
++            )
++            .then(() =>
++              accountRow(page, "Synthetic pasted account").locator("[data-attempt-note]").waitFor(),
++            )
++            .then(() => page.screenshot({ animations: "disabled" })),
++        );
++        yield* evidence.attach(`failure-${stage}-${width}.png`, "image/png", image);
++      }
++    });
++  const copy = (expected: string, status?: number) =>
++    Effect.gen(function* () {
++      const shown = yield* browser.use("Read retained account failure", (page) =>
++        page
++          .setViewportSize({ width: 390, height: 900 })
++          .then(() => page.goto(`/org/${f.actors.organization.slug}/accounts`))
++          .then(() =>
++            openRowDetails(
++              page,
++              accountRow(page, "Synthetic pasted account"),
++              "Synthetic pasted account",
++            ),
++          )
++          .then(() => accountRow(page, "Synthetic pasted account").innerText()),
++      );
++      expect(shown).toContain(expected);
++      if (status !== undefined) expect(shown).toContain(`HTTP ${status}`);
++      else expect(shown).not.toContain("HTTP");
++      expect(shown).not.toMatch(/PRIVATE_|expired|credits are exhausted|opaque-1/);
++    });
++  const failureTime = browser.use("Read the failure source time", (page) =>
++    accountRow(page, "Synthetic pasted account").locator("[data-check-evidence]").innerText(),
++  );
++  return { ...f, read, refresh, check, advance, capture, copy, failureTime };
++});
+diff --git a/e2e/tests/account-failure-observations.spec.ts b/e2e/tests/account-failure-observations.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/account-failure-observations.spec.ts
+@@ -0,0 +1,140 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect } from "effect";
++import { body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { failureObservationsFixture } from "../support/account-failure-observations-fixture.ts";
++import { allowance, ObservationView } from "../support/account-observation-fixture.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Driver failed readings", (it) => {
++  it.effect(scenarios.accountFailureFirstReading.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* failureObservationsFixture;
++        const diagnostic = {
++          source: "provider",
++          reason: "unavailable",
++          status: 426,
++          occurredAt: new Date(Date.now() - 120_000).toISOString(),
++        };
++        yield* f.backend.driverObservation({ _test_source_failure: diagnostic }, 502);
++        const neverRead = yield* body(ObservationView, yield* f.refresh());
++        expect(neverRead.reports[0]).toMatchObject({
++          result: null,
++          lastAttempt: { failure: { tag: "AccountSourceFailure", detail: diagnostic } },
++        });
++        yield* f.backend.driverHealth({ _test_source_failure: diagnostic }, 502);
++        expect((yield* f.check()).body).toMatchObject({
++          driver: { check: { failure: { tag: "AccountSourceFailure", detail: diagnostic } } },
++        });
++        yield* f.capture("never-read");
++        yield* f.copy("Client version not accepted by the provider", 426);
++        expect(yield* f.failureTime).toContain("failed");
++        yield* f.advance(2);
++        yield* f.backend.driverObservation(allowance());
++        yield* f.backend.driverHealth({});
++        const checked = yield* f.check();
++        expect(checked.status, JSON.stringify(checked.body)).toBe(200);
++        expect(checked.body).toMatchObject({
++          driver: { checkable: true, check: { status: "healthy", current: true } },
++        });
++        const first = yield* body(ObservationView, yield* f.refresh());
++        expect(first.reports[0]?.lastAttempt).not.toHaveProperty("failure");
++        yield* f.advance(6);
++        yield* f.backend.driverObservation({ _test_source_failure: diagnostic }, 502);
++        yield* f.backend.driverHealth({ _test_source_failure: diagnostic }, 502);
++        yield* f.check();
++        const retained = yield* body(ObservationView, yield* f.refresh());
++        expect(retained.reports[0]?.result).toEqual(first.reports[0]?.result);
++        expect(retained.reports[0]?.lastAttempt).toMatchObject({
++          failure: { tag: "AccountSourceFailure", detail: diagnostic },
++        });
++        yield* f.capture("retained");
++        yield* f.copy("Showing the last successful reading", 426);
++        yield* f.advance(2);
++        yield* f.backend.driverObservation(allowance());
++        expect(
++          (yield* body(ObservationView, yield* f.refresh())).reports[0]?.lastAttempt?.outcome,
++        ).toBe("success");
++        expect((yield* f.read()).reports[0]?.lastAttempt).not.toHaveProperty("failure");
++      }),
++    ),
++  );
++  it.effect(scenarios.accountFailureProviderStatuses.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* failureObservationsFixture;
++        yield* f.backend.driverObservation(allowance());
++        const first = yield* body(ObservationView, yield* f.refresh());
++        for (const status of [426, 401, 403, 429]) {
++          yield* f.advance(status === 426 ? 6 : 2);
++          const reason =
++            status === 426 ? "rejected" : status === 429 ? "rate_limited" : "unauthorized";
++          yield* f.backend.driverObservation({ _test_provider_failure: { reason, status } }, 502);
++          yield* f.backend.driverHealth({ _test_provider_failure: { reason, status } }, 502);
++          const checked = yield* f.check();
++          const retained = yield* body(ObservationView, yield* f.refresh());
++          expect(retained.reports[0]).toMatchObject({
++            result: first.reports[0]?.result,
++            lastAttempt: {
++              failure: {
++                detail: { source: "provider", reason, status, occurredAt: expect.any(String) },
++              },
++            },
++          });
++          expect(JSON.stringify([retained, checked.body])).not.toMatch(
++            /PRIVATE_|opaque-1|synthetic-backend-key/,
++          );
++          yield* f.copy(
++            status === 426
++              ? "Client version not accepted by the provider"
++              : status === 429
++                ? "Rate-limited by the provider"
++                : "The provider refused this sign-in",
++            status,
++          );
++        }
++      }),
++    ),
++  );
++  it.effect(scenarios.accountFailureSourceSeparation.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* failureObservationsFixture;
++        yield* f.backend.driverObservation(allowance());
++        const first = yield* body(ObservationView, yield* f.refresh());
++        yield* f.advance(6);
++        const providerFailure = { reason: "rate_limited", status: 429 };
++        yield* f.backend.driverObservation({ _test_provider_failure: providerFailure }, 502);
++        yield* f.backend.driverHealth({ _test_provider_failure: providerFailure }, 502);
++        yield* f.check();
++        const rateLimited = yield* body(ObservationView, yield* f.refresh());
++        expect(rateLimited.reports[0]).toMatchObject({
++          result: first.reports[0]?.result,
++          lastAttempt: { failure: { detail: { source: "provider", ...providerFailure } } },
++        });
++        yield* f.copy("Rate-limited by the provider", 429);
++        for (const source of ["home", "transport"]) {
++          yield* f.advance(2);
++          const failure = { source, reason: "unavailable", occurredAt: new Date().toISOString() };
++          yield* f.backend.driverObservation({ _test_source_failure: failure }, 502);
++          yield* f.backend.driverHealth({ _test_source_failure: failure }, 502);
++          yield* f.check();
++          const retained = yield* body(ObservationView, yield* f.refresh());
++          expect(retained.reports[0]).toMatchObject({
++            result: first.reports[0]?.result,
++            lastAttempt: { failure: { detail: failure } },
++          });
++          yield* f.copy(
++            source === "home"
++              ? "The account service is unavailable"
++              : "The service connection failed",
++          );
++        }
++      }),
++    ),
++  );
++});
