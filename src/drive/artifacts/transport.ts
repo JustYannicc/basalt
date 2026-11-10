@@ -1,5 +1,6 @@
 import { concatBytes, objectId } from "../shared/.generated/strata/git/objects.js";
 import { writePack } from "../shared/.generated/strata/git/write.js";
+import { fetchStream, type FetchInput } from "./fetch-stream.ts";
 import type { Bytes, GitObject } from "../shared/strata/types.ts";
 import {
   AtomicUnsupported,
@@ -27,7 +28,7 @@ import {
 /** Replies above this are refused before decoding; see ReplyTooLarge. */
 export const maximumReplyBytes = 32 * 1024 * 1024;
 
-/** A reply too large to decode in memory, such as a cold fetch of a very large history. */
+/** A whole reply too large to decode in memory. Streamed fetches bypass this collector. */
 export class ReplyTooLarge extends ProtocolError {
   override name = "ReplyTooLarge";
   readonly bytes: number;
@@ -64,7 +65,7 @@ export function createGitRemote(options: RemoteOptions) {
   const root = url.href.replace(/\/$/, ""),
     fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
   let capabilities: readonly string[] = [];
-  async function request(service: string, body?: Bytes) {
+  async function responseFor(service: string, body?: Bytes) {
     let response: Response;
     try {
       const token = (await options.auth()).split("?expires=")[0]!;
@@ -98,8 +99,11 @@ export function createGitRemote(options: RemoteOptions) {
       await response.body?.cancel().catch(() => {});
       throw new ProtocolError("Unexpected Git response content type");
     }
-    // A reply is decoded whole, so it must stay well inside a Durable Object's memory. A cold
-    // fetch of a very large history is refused by name instead of exhausting the isolate.
+    return response;
+  }
+  async function request(service: string, body?: Bytes) {
+    const response = await responseFor(service, body);
+    // Whole-reply paths still need a cap; streamed upload-pack bypasses only this collector.
     const declared = Number(response.headers.get("content-length") ?? 0);
     if (declared > maximumReplyBytes) {
       await response.body?.cancel().catch(() => {});
@@ -190,12 +194,13 @@ export function createGitRemote(options: RemoteOptions) {
         results: { ...results },
       };
     },
-    async fetchObjects(input: {
-      wants: string[];
-      haves?: string[];
-      depth?: never;
-      base?: RemoteOptions["base"];
-    }): Promise<GitObject[]> {
+    /** A sink streams objects into storage and returns an empty array; without it, replies are capped. */
+    async fetchObjects(
+      input: FetchInput & {
+        depth?: never;
+        base?: RemoteOptions["base"];
+      },
+    ): Promise<GitObject[]> {
       if (input.depth !== undefined) throw new ProtocolError("Shallow fetch is not supported");
       const wants = [...new Set(input.wants)],
         haves = [...new Set(input.haves ?? [])];
@@ -206,7 +211,7 @@ export function createGitRemote(options: RemoteOptions) {
       const selected = [
         "side-band-64k",
         "ofs-delta",
-        ...((input.base ?? options.base) ? ["thin-pack"] : []),
+        ...(!input.sink && (input.base ?? options.base) ? ["thin-pack"] : []),
       ].filter((cap) => advertised.capabilities.includes(cap));
       const body = concatBytes([
         ...wants.map((want, index) =>
@@ -216,6 +221,15 @@ export function createGitRemote(options: RemoteOptions) {
         ...haves.map((have) => packet(`have ${have}\n`)),
         packet("done\n"),
       ]);
+      if (input.sink) {
+        await fetchStream(
+          await responseFor("git-upload-pack", body),
+          selected.includes("side-band-64k"),
+          input.sink,
+          input.onRetainedBytes,
+        );
+        return [];
+      }
       const reply = await request("git-upload-pack", body);
       let at = 0;
       while (at < reply.length) {

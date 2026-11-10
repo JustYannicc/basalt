@@ -6,11 +6,10 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { Miniflare } from "miniflare";
+import { largeHistory } from "./test/large-history.ts";
 import { backend, git, token } from "./test/backend.ts";
 
-test("the vault object lands checkpoints from inside a Durable Object", async (t) => {
-  const server = await backend();
-  t.after(() => server.close());
+async function vaultRuntime(t: { after: (cleanup: () => Promise<void>) => void }) {
   const bundle = await build({
     // Untyped like the other Worker fixtures; root types have no Workers globals.
     stdin: {
@@ -40,6 +39,13 @@ test("the vault object lands checkpoints from inside a Durable Object", async (t
     r2Buckets: ["ATTACHMENTS"],
   });
   t.after(() => runtime.dispose());
+  return runtime;
+}
+
+test("the vault object lands checkpoints from inside a Durable Object", async (t) => {
+  const server = await backend();
+  t.after(() => server.close());
+  const runtime = await vaultRuntime(t);
   const call = async (command: unknown) => {
     const response = await runtime.dispatchFetch("http://vault.test", {
       method: "POST",
@@ -93,3 +99,43 @@ test("the vault object lands checkpoints from inside a Durable Object", async (t
   );
   git(server.bare, "fsck", "--full", "--strict");
 });
+
+test(
+  "a fresh Durable Object opens a >32 MiB repository and reads every note version",
+  { timeout: 60000 },
+  async (t) => {
+    const server = await backend();
+    t.after(() => server.close());
+    const { commits, packBytes } = largeHistory(server.root, server.bare);
+    assert.ok(packBytes > 45 * 1024 * 1024);
+    const runtime = await vaultRuntime(t);
+    const call = async (method: string, input: unknown) => {
+      const response = await runtime.dispatchFetch("http://vault.test", {
+        method: "POST",
+        body: JSON.stringify({
+          url: server.url,
+          token,
+          command: { operation: "drive", method, input },
+        }),
+      });
+      assert.equal(response.status, 200, await response.clone().text());
+      const result = (await response.json()) as { ok: boolean; value: unknown };
+      assert.equal(result.ok, true, JSON.stringify(result));
+      return result.value;
+    };
+    const history = (await call("history", { limit: 100 })) as { oid: string }[];
+    assert.deepEqual(
+      history.map((entry) => entry.oid),
+      git(server.bare, "rev-list", "main").toString().trim().split("\n"),
+    );
+    for (const at of commits) {
+      const note = (await call("read", { path: "note.md", at, maxBytes: 262144 })) as {
+        content: string;
+      };
+      assert.equal(note.content, git(server.bare, "show", `${at}:note.md`).toString());
+    }
+    assert.ok(server.control.uploadReplies.at(-1)!.length > 32 * 1024 * 1024);
+    git(server.bare, "fsck", "--full", "--strict");
+    t.diagnostic(`workerd recovered ${commits.length} commits from ${packBytes} packed bytes`);
+  },
+);
