@@ -5,7 +5,8 @@ import type { EntryHeader } from "../shared/strata/git/pack-entries.ts";
 import { RetainedBytes } from "./stream-window.ts";
 import { ProtocolError } from "./wire.ts";
 
-const partBytes = 1024 * 1024;
+/** A part plus its keys stays within 1 MiB; Durable Object SQLite refuses rows near 2 MB. */
+const partBytes = 1024 * 1024 - 4096;
 
 /** One active fetch per vault. SQL owns the pack-wide index, dependencies and ready queue. */
 export function createFetchStaging(storage: TransactionStorage) {

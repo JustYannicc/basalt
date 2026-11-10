@@ -4,7 +4,8 @@ import type { TransactionStorage } from "../shared/strata/sqlite.ts";
 import type { GitObject } from "../shared/strata/types.ts";
 
 // Durable Object SQLite rejects rows near 2 MB.
-const partBytes = 1024 * 1024;
+/** A part plus its keys stays within 1 MiB; Durable Object SQLite refuses rows near 2 MB. */
+const partBytes = 1024 * 1024 - 4096;
 
 /** Object persistence, cache eviction and durable markers for interrupted pack ingestion. */
 export function createObjectCache(

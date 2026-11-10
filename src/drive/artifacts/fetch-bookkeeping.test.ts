@@ -81,6 +81,7 @@ for (const mode of ["offsets", "pending deltas"])
       try {
         let peak = 0,
           written = 0,
+          staged = 0,
           baseReady = false;
         await fetchStream(
           smallObjects(count, forward ? root.oid : undefined),
@@ -90,6 +91,9 @@ for (const mode of ["offsets", "pending deltas"])
             get: async (oid) => (baseReady && oid === root.oid ? root : null),
             async put(object) {
               written++;
+              // The pack's offset index lives in storage, not in memory: sample it as it grows.
+              if (!forward && written % 1000 === 0)
+                staged = Math.max(staged, rows(data, "vault_fetch_offsets"));
               if (object.oid === root.oid) {
                 if (forward) assert.equal(rows(data, "vault_fetch_deltas"), count);
                 baseReady = true;
@@ -101,6 +105,7 @@ for (const mode of ["offsets", "pending deltas"])
           },
         );
         assert.equal(written, count + (forward ? 1 : 0));
+        if (!forward) assert.ok(staged >= count - 1000, `offsets staged: ${staged} of ${count}`);
         peaks.push(peak);
         assertCleared(data);
       } finally {
