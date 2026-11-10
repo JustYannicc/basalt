@@ -25,12 +25,13 @@ export class RuntimeSlotRouter {
   }
 
   async forward(
-    pool: string,
+    pool: string | undefined,
     request: Request,
     port: 8317 | 8327,
     authorize: (signal: AbortSignal) => Promise<Request>,
+    beforeDispatch: () => void = () => {},
   ): Promise<Response> {
-    const pending = this.deps.streams.acquire(pool, request.signal);
+    const pending = this.deps.streams.acquire(pool ?? "", request.signal);
     try {
       request = await authorize(pending.lease.signal);
       const identity = await this.deps.storage.transact(async ({ selection, policies }) => {
@@ -43,7 +44,7 @@ export class RuntimeSlotRouter {
         )
           throw new SlotRefused("selection");
         const policy = policies.find((policy) => policy.pool === pool);
-        if (!policy || policy.dirty) throw new SlotRefused("policy");
+        if (pool !== undefined && (!policy || policy.dirty)) throw new SlotRefused("policy");
         // Only local lease metadata changes here. A retried transaction can safely rebind it.
         pending.bind(executionKey(active.identity));
         return active.identity;
@@ -62,12 +63,23 @@ export class RuntimeSlotRouter {
         policyLeaseUntil: status.policyLeaseUntil,
       });
       pending.lease.signal.throwIfAborted();
+      beforeDispatch();
       const upstream = await this.deps.driver.fetch(
         identity,
         new Request(request, { signal: pending.lease.signal }),
         port,
       );
-      return this.deps.wrap(upstream, pending.lease);
+      const headers = new Headers(upstream.headers);
+      headers.set("X-Signalbox-Pool-Boot", identity.bootId);
+      const tagged =
+        upstream.status === 101
+          ? upstream
+          : new Response(upstream.body, {
+              status: upstream.status,
+              statusText: upstream.statusText,
+              headers,
+            });
+      return this.deps.wrap(tagged, pending.lease);
     } catch (error) {
       pending.lease.release();
       throw error;

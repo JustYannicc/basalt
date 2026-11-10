@@ -33,7 +33,7 @@ export class SlotPromotion {
     this.deps = deps;
     this.clock = clock;
   }
-  async run(value: PromotionIntent): Promise<PromotionReceipt> {
+  async run(value: PromotionIntent, verify?: () => void): Promise<PromotionReceipt> {
     const intent = Schema.decodeUnknownSync(PromotionIntent)(value);
     if (!sameControllerCode(intent.controllerCode, this.deps.controllerCode))
       throw new SlotRefused("identity");
@@ -50,6 +50,7 @@ export class SlotPromotion {
         if (!sameIntent(receipt.intent, intent)) throw new SlotRefused("identity");
         return { receipt };
       }
+      verify?.();
       this.eligible(snapshot, intent);
       const receipt: PromotionReceipt = {
         format: "pool-promotion-receipt-v1",
@@ -72,6 +73,7 @@ export class SlotPromotion {
         this.clock,
       );
       return await this.deps.storage.transact(async (snapshot, transaction) => {
+        verify?.();
         this.eligible(snapshot, intent);
         currentPolicies(started.snapshot!, this.clock);
         healthy(proof, intent.candidate, this.clock);
