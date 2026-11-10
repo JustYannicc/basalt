@@ -59,7 +59,7 @@ function organizationList(request: Request, env: SetupEnv) {
     listed = native(request, env, "organization/list").then(
       async (response) => {
         if (!response.ok) {
-          await response.body?.cancel();
+          await response.body?.cancel().catch(() => undefined);
           return undefined;
         }
         const value: unknown = await response.json().catch(() => undefined);

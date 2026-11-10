@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "The Connect pool picker shows the setup host's label for each pool, its name and team, and falls back to the old owner wording only for hosts that send no label. With exactly one pool it shows that pool as text instead of a picker."
+      constraint "The Connect pool picker shows the setup host's label for each pool, its name and team; without a label it shows the pool's name, else Your pool or Shared pool. With exactly one pool it shows that pool as text instead of a picker. The Connect e2e proves the one-pool text view and that a key is created on that pool."
     }
   }
 }

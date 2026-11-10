@@ -44,3 +44,72 @@ diff --git a/apps/hosted/web/src/implementation/pages/pool-setup.tsx b/apps/host
  
  /** Green needs a model request and, unless the computer is models only, a tool call. */
  export function isConnected(computer: Computer): boolean {
+diff --git a/e2e/tests/pool-setup-connect.spec.ts b/e2e/tests/pool-setup-connect.spec.ts
+--- a/e2e/tests/pool-setup-connect.spec.ts
++++ b/e2e/tests/pool-setup-connect.spec.ts
+@@ -60,6 +60,10 @@ function setupService() {
+     },
+   ];
+   const calls: { method: string; path: string; body: Record<string, unknown> }[] = [];
++  let pools: readonly Record<string, unknown>[] = [
++    { id: "own", name: "", mine: true },
++    { id: "team", name: "Team pool", mine: false },
++  ];
+   let minted = 0;
+   const reply = (route: Route, body: unknown, status = 200) =>
+     route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+@@ -72,10 +76,7 @@ function setupService() {
+     if (path === "computers")
+       return reply(route, {
+         computers,
+-        pools: [
+-          { id: "own", name: "", mine: true },
+-          { id: "team", name: "Team pool", mine: false },
+-        ],
++        pools,
+         undoPrompt: "Undo the setup on this computer.",
+       });
+     if (path === "links") {
+@@ -139,7 +140,11 @@ function setupService() {
+     route.fulfill({
+       path: `../public/brand/assistants/${new URL(route.request().url()).pathname.split("/").pop()}`,
+     });
+-  return { handle, claim, capture, arrive, renameElsewhere, calls };
++  /** The host now lists only these pools, each with the label it derives. */
++  const listPools = (next: readonly Record<string, unknown>[]) => {
++    pools = next;
++  };
++  return { handle, claim, capture, arrive, renameElsewhere, listPools, calls };
+ }
+ 
+ /** Resolves once the element's own transitions end, so a checkpoint shows it at rest. */
+@@ -540,6 +545,29 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+         );
+         yield* browser.checkpoint("Pool endpoint: key and example");
+         expect(service.calls.filter((call) => call.path === "links")).toHaveLength(4);
++
++        service.listPools([{ id: "own", name: "Own pool", mine: true, label: "Own pool · Team" }]);
++        yield* browser.use("Reload Connect with one pool", (page) => page.reload());
++        yield* browser.use("Open the pool endpoint again", (page) =>
++          page.getByRole("tab", { name: "Pool endpoint" }).click(),
++        );
++        yield* browser.use("The one pool shows as its label", (page) =>
++          page.getByRole("tabpanel").getByText("Own pool · Team", { exact: true }).waitFor(),
++        );
++        const pickers = yield* browser.use("Nothing to pick between", (page) =>
++          page.getByRole("tabpanel").getByRole("combobox", { name: "Pool for models" }).count(),
++        );
++        expect(pickers).toBe(0);
++        yield* browser.checkpoint("Pool endpoint: one pool");
++        yield* browser.use("Create a key on the one pool", (page) =>
++          page.getByRole("button", { name: "Create pool key" }).click(),
++        );
++        yield* browser.use("The new key is shown", (page) =>
++          page.getByText("export OPENAI_API_KEY=sk-fake-pool-key").waitFor(),
++        );
++        const links = service.calls.filter((call) => call.path === "links");
++        expect(links).toHaveLength(5);
++        expect(links.at(-1)?.body).toMatchObject({ pool: "own" });
+       }),
+     ),
+   );
