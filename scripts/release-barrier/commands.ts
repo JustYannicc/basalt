@@ -86,21 +86,70 @@ export async function admitSourceNamespace(props: ExecProps, api = cloudflareArt
   }
 }
 
+/** Messages the Artifacts client builds itself; nothing else may reach a public report. */
+const clientMessages = [
+  /^Cloudflare Artifacts [a-z ]{1,40} failed with HTTP (\d{3})(?:; diagnostics=(\{.{0,600}\}))?$/,
+  /^Cloudflare Artifacts [a-z ]{1,40} was rejected(?:; diagnostics=(\{.{0,600}\}))?$/,
+  /^Cloudflare Artifacts [a-z ]{1,40} returned an invalid response$/,
+  /^Cloudflare Artifacts pagination repeated a cursor$/,
+  /^Cloudflare Artifacts pagination did not end$/,
+  /^Invalid Cloudflare Artifacts list response$/,
+  /^Artifacts namespace must have immutable EU jurisdiction; deployment stopped$/,
+];
+const headerValue = /^[A-Za-z0-9=;,. :-]{1,64}$/;
+const diagnosticHeaders = [
+  "cf-ray",
+  "cf-mitigated",
+  "retry-after",
+  "x-ratelimit-limit",
+  "x-ratelimit-remaining",
+  "x-ratelimit-reset",
+  "ratelimit",
+  "ratelimit-policy",
+];
+
+/** Rebuild client diagnostics field by field: numeric codes and allow-listed header values only. */
+function safeDiagnostics(text: string | undefined) {
+  if (!text) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null) return undefined;
+  const source = parsed as { codes?: unknown; headers?: unknown };
+  const codes = Array.isArray(source.codes)
+    ? source.codes.filter(
+        (code): code is number => Number.isSafeInteger(code) && code > 0 && code <= 99_999_999,
+      )
+    : [];
+  const headers: Record<string, string> = {};
+  if (typeof source.headers === "object" && source.headers !== null)
+    for (const name of diagnosticHeaders) {
+      const value = (source.headers as Record<string, unknown>)[name];
+      if (typeof value === "string" && headerValue.test(value)) headers[name] = value;
+    }
+  return JSON.stringify({ codes, headers });
+}
+
 /**
- * Name a failed namespace read by its class, HTTP status and provider codes. The Artifacts client
- * builds its own messages from allow-listed fields; anything else is reduced to its class, since a
- * transport error can carry a host or request detail.
+ * Name a failed namespace read by its class and, for the Artifacts client's own failures, its
+ * HTTP status and provider codes. Any other error, including a transport error, is reduced to
+ * its class, since its text can carry a host or request detail.
  */
 export function readFailure(error: unknown) {
   const kind = error instanceof Error ? error.name || "Error" : typeof error;
-  const message = error instanceof Error ? error.message : "";
-  const status = /\bHTTP (\d{3})\b/.exec(message)?.[1];
-  const diagnostics = /; diagnostics=(\{.{0,600}\})$/.exec(message)?.[1];
-  const known =
-    /^(?:Cloudflare Artifacts [a-z ]+(?:failed with HTTP \d{3}|was rejected|returned an invalid response|pagination repeated a cursor|pagination did not end)|Invalid Cloudflare Artifacts list response|Artifacts namespace must have immutable EU jurisdiction; deployment stopped)/.exec(
-      message,
-    )?.[0];
-  return [kind, status && `HTTP ${status}`, known, diagnostics && `diagnostics=${diagnostics}`]
-    .filter(Boolean)
-    .join("; ");
+  if (!(error instanceof Error) || error.constructor !== Error) return kind;
+  for (const pattern of clientMessages) {
+    const match = pattern.exec(error.message);
+    if (!match) continue;
+    const status = /^\d{3}$/.test(match[1] ?? "") ? match[1] : undefined;
+    const diagnostics = safeDiagnostics(status ? match[2] : match[1]);
+    const summary = error.message.replace(/; diagnostics=.*$/, "");
+    return [kind, status && `HTTP ${status}`, summary, diagnostics && `diagnostics=${diagnostics}`]
+      .filter(Boolean)
+      .join("; ");
+  }
+  return kind;
 }
