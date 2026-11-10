@@ -7188,20 +7188,19 @@ index 0000000..9cd9446
 +}
 diff --git a/packages/apps/src/contracts/account-status.ts b/packages/apps/src/contracts/account-status.ts
 new file mode 100644
-index 0000000..5abcc1b
+index 0000000..1a1acb4
 --- /dev/null
 +++ b/packages/apps/src/contracts/account-status.ts
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,42 @@
 +/** Bounded public display data. Never return credentials, private references or raw responses. */
 +import { Schema } from "effect";
 +
 +const label = Schema.NonEmptyString.check(Schema.isMaxLength(64));
 +const resetsAt = Schema.String.check(
 +  Schema.isMaxLength(35),
-+  // Released account-check schemas omit this pattern, so validation must remain runtime-only.
++  // oxlint-disable-next-line executor/exportable-schema-pattern -- Released protocols 17 and 19 record this exact flagless check.
++  Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/),
 +  Schema.makeFilter((value) => {
-+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/u.test(value))
-+      return false;
 +    const instant = Date.parse(value);
 +    if (!Number.isFinite(instant)) return false;
 +    const zone = value.match(/([+-])(\d{2}):(\d{2})$/);
