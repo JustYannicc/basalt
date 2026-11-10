@@ -52,10 +52,12 @@ export class RuntimeSlots {
     return this.deps.storage.receipt(operationId);
   }
 
-  async adopt(value: SlotIdentity) {
+  async adopt(value: SlotIdentity, expectedPolicyDigest?: string) {
     const identity = this.identity(value);
     const before = await this.inspect();
     if (before.selection) throw new SlotRefused("selection");
+    if (expectedPolicyDigest !== undefined && before.digest !== expectedPolicyDigest)
+      throw new SlotRefused("policy");
     const health = await proveSlot(this.deps.driver, identity, before, this.clock);
     await this.deps.storage.transact(async (current, transaction) => {
       if (current.selection || current.digest !== before.digest) throw new SlotRefused("selection");
@@ -69,11 +71,21 @@ export class RuntimeSlots {
     });
   }
 
-  async stage(value: SlotTarget) {
+  async stage(
+    value: SlotTarget,
+    expected?: { epoch: number; active: SlotIdentity; digest: string },
+  ) {
     const target = Schema.decodeUnknownSync(SlotTarget)(value);
     if (target.controllerId !== this.deps.controllerId) throw new SlotRefused("identity");
     await this.deps.storage.transact(async (snapshot, transaction) => {
       const { selection } = snapshot;
+      if (
+        expected &&
+        (selection?.epoch !== expected.epoch ||
+          snapshot.digest !== expected.digest ||
+          !sameIdentity(selection?.active.identity, expected.active))
+      )
+        throw new SlotRefused("selection");
       if (
         !selection ||
         selection.candidate ||
@@ -130,8 +142,8 @@ export class RuntimeSlots {
     return identity;
   }
 
-  promote(value: PromotionIntent): Promise<PromotionReceipt> {
-    return this.promotion.run(value);
+  promote(value: PromotionIntent, verify?: () => void): Promise<PromotionReceipt> {
+    return this.promotion.run(value, verify);
   }
 
   abortPool(pool: string) {

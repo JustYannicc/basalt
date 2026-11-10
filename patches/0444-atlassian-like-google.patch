@@ -1,0 +1,2939 @@
+diff --git a/packages/sdk/src/contracts/oauth-families.ts b/packages/sdk/src/contracts/oauth-families.ts
+--- a/packages/sdk/src/contracts/oauth-families.ts
++++ b/packages/sdk/src/contracts/oauth-families.ts
+@@ -30,7 +30,9 @@
+   return method.type === "oauth2" &&
+     method.grant !== "client_credentials" &&
+     method.identity === undefined &&
+-    recipe?.legacyIdentity === true
++    recipe !== undefined &&
++    (recipe.consent?.audience === undefined ||
++      method.authorizationParams?.audience === recipe.consent.audience)
+     ? { ...method, identity: { issuer: recipe.issuer, name: recipe.name } }
+     : method;
+ };
+diff --git a/packages/sdk/src/contracts/account-family-recipes.ts b/packages/sdk/src/contracts/account-family-recipes.ts
+--- a/packages/sdk/src/contracts/account-family-recipes.ts
++++ b/packages/sdk/src/contracts/account-family-recipes.ts
+@@ -5,8 +5,6 @@
+   readonly id: string;
+   readonly name: string;
+   readonly issuer: string;
+-  /** Keep identity defaults only where earlier hosts already inserted them. */
+-  readonly legacyIdentity?: true;
+   readonly authorizationUrls: readonly string[];
+   readonly tokenUrls: readonly string[];
+   readonly discoveryUrls?: readonly string[];
+@@ -31,7 +29,6 @@
+     id: "google",
+     name: "Google",
+     issuer: "https://accounts.google.com",
+-    legacyIdentity: true,
+     discoveryUrls: [
+       "https://accounts.google.com",
+       "https://accounts.google.com/",
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
+@@ -1,4 +1,5 @@
+ import { googleDuplicateBindingsV1 } from "./migrations/google-duplicate-bindings-v1.ts";
++import { atlassianFamilyAdoptionV1 } from "./migrations/atlassian-family-adoption-v1.ts";
+ import { atlassianAccountIdentityV1 } from "./migrations/atlassian-account-identity-v1.ts";
+ import { googleAccountIdentityV1 } from "./migrations/google-account-identity-v1.ts";
+ import { releasedRetirementV1 } from "./migrations/released-retirement-v1.ts";
+@@ -8,6 +9,7 @@
+ 
+ /** Migration modules land with their owning feature and remain inert until an exact-ID GO. */
+ export const productionMigrations: Readonly<Record<string, ProductionMigration>> = {
++  [atlassianFamilyAdoptionV1.name]: atlassianFamilyAdoptionV1,
+   [releasedRetirementV1.name]: releasedRetirementV1,
+   [providerAppsOpenAIAnthropic.name]: providerAppsOpenAIAnthropic,
+   [googleAccountIdentityV1.name]: googleAccountIdentityV1,
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts b/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
+@@ -4,6 +4,11 @@
+ 
+ /** These projections are the complete SQL interface; workflow inputs never supply SQL. */
+ export const inventoryQueries = {
++  "catalog-apps": `select a.id, a.name, a.slug, a.active_deployment,
++    a.copied_from, p.creator_id, p.audience, p.revision
++    from executor_apps a join hosted_app_access p on p.id = a.id
++    where a.owner = 'organization:' || $1 and p.organization_id = $1
++    order by a.id limit 2001`,
+   receipts: `select plan_sha256, migration, revision, release, backup_sha256,
+     verification, applied_at::text from private_production_ops_receipts
+     where organization_id = $1 order by applied_at desc, plan_sha256 limit 2001`,
+diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
+--- a/apps/hosted/cloud/src/infrastructure/executor.ts
++++ b/apps/hosted/cloud/src/infrastructure/executor.ts
+@@ -21,6 +21,8 @@
+ import { makeBatchExecutionMemo } from "./batch-execution.ts";
+ import * as Cloudflare from "alchemy/Cloudflare";
+ import { Config, Context, Effect, Option } from "effect";
++import { sourceWriteFence } from "../implementation/source-write-fence.ts";
++import { sourceWriteFrontier } from "../implementation/source-write-frontiers.ts";
+ import { cachedVersionSources } from "../implementation/version-source-cache.ts";
+ import { organizationPublishers } from "../implementation/publishers.ts";
+ import type { AppSources } from "./source.ts";
+@@ -127,7 +129,10 @@
+         secret: key,
+         origin,
+         webhookOrigin,
+-        git: appSources(background),
++        git: sourceWriteFence(
++          appSources(background),
++          sourceWriteFrontier(Context.get(services, SqlClient.SqlClient)),
++        ),
+         blobs: yield* cachedVersionSources(origin, blobs),
+         runtime,
+         workflows,
+diff --git a/apps/hosted/cloud/src/infrastructure/source.ts b/apps/hosted/cloud/src/infrastructure/source.ts
+--- a/apps/hosted/cloud/src/infrastructure/source.ts
++++ b/apps/hosted/cloud/src/infrastructure/source.ts
+@@ -12,7 +12,7 @@
+ ) => RepositoryBackend;
+ 
+ /** Resolve bindings during composition; each Git operation remains scoped to its invocation. */
+-export const cloudAppSources = (tokens: ArtifactsTokens) =>
++export const cloudUncachedSources = (tokens: ArtifactsTokens) =>
+   Effect.gen(function* () {
+     const accountId = yield* Config.String("CLOUDFLARE_ACCOUNT_ID").pipe(
+       Effect.flatMap(
+@@ -21,6 +21,12 @@
+     );
+     const namespace = yield* cloudSourceNamespace;
+     const git = cloudflareRepositories(tokens, { accountId, namespace });
++    return git;
++  }).pipe(Effect.orDie);
++
++export const cloudAppSources = (tokens: ArtifactsTokens) =>
++  Effect.gen(function* () {
++    const git = yield* cloudUncachedSources(tokens);
+     const workspaces = yield* cloudWorkspaceObjects;
+     /** Every caller in an execution shares one cache view, so all working-branch writes invalidate it. */
+     const sources: AppSources = (background) => cachedWorkspaces(git, workspaces, background);
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
+@@ -1,4 +1,8 @@
+ import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
++import { FamilySourceRuntime, prepareFamilySource } from "./migrations/atlassian-family-source.ts";
++import { cloudUncachedSources } from "../source.ts";
++import { cloudArtifactsTokensLive } from "../artifacts-tokens.ts";
++import { cloudBlobs } from "../blobs.ts";
+ import { HttpClientRequest } from "effect/http";
+ import { aesGcmCredentials } from "@executor-js/sdk/core";
+ import { firstPartyOAuthClients } from "@executor-js/hosted-server";
+@@ -39,6 +43,10 @@
+   const clients = yield* firstPartyOAuthClients({
+     testDefinitions: Option.isSome(yield* cloudEmulators),
+   });
++  const sourceRuntime = {
++    repositories: yield* cloudUncachedSources(yield* cloudArtifactsTokensLive),
++    blobs: yield* cloudBlobs,
++  };
+   const wire = yield* cloudOAuthWire;
+   const egress = yield* cloudEgress;
+   const signingKey = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
+@@ -111,6 +119,13 @@
+       "released-interactive-retirement-preflight-v1",
+       true,
+     ),
++    "atlassian-family-source": {
++      name: "atlassian-family-source",
++      run: (request) =>
++        prepareFamilySource(request).pipe(
++          Effect.provideService(FamilySourceRuntime, sourceRuntime),
++        ),
++    },
+     "atlassian-account-proofs": {
+       name: "atlassian-account-proofs",
+       run: (request) =>
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts b/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts
+@@ -89,6 +89,13 @@
+   hosted_group_members: {
+     keys: ["group_id", "member_id"],
+     predicate: `exists (select 1 from hosted_groups g join member m on m.id = entry.member_id where g.id = entry.group_id and g.organization_id = $1 and m."organizationId" = $1)`,
++  },
++  hosted_source_write_frontiers: {
++    keys: ["code"],
++    predicate: `exists (select 1 from executor_deployments d where d.code = entry.code
++      and d.owner = 'organization:' || $1)
++      and not exists (select 1 from executor_deployments d where d.code = entry.code
++      and d.owner <> 'organization:' || $1)`,
+   },
+   executor_apps: id(
+     `${owner} and ${optional("active_deployment", owned("executor_deployments", "active_deployment"))}`,
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/backup.ts b/apps/hosted/cloud/src/infrastructure/production-ops/backup.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/backup.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/backup.ts
+@@ -28,6 +28,7 @@
+   "hosted_app_groups",
+   "hosted_groups",
+   "hosted_group_members",
++  "hosted_source_write_frontiers",
+   "executor_apps",
+   "executor_deployments",
+   "hosted_contributed_departure_jobs",
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts b/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
+@@ -1,3 +1,5 @@
++import { AppCodeId, VersionId } from "@executor-js/sdk/core";
++import { DeploymentSourceRefused } from "../../implementation/source-preservation.ts";
+ import { knownRefusalGuard } from "./refusal-guards.ts";
+ import { Cause, Effect, Option, Schema } from "effect";
+ import { SqlError } from "effect/sql";
+@@ -45,6 +47,16 @@
+   "P0",
+   "XX",
+ ]);
++const SourceRefusal = Schema.Struct({
++  code: AppCodeId,
++  version: VersionId,
++  expected: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
++  actual: Schema.Union([
++    Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
++    Schema.Literals(["missing", "unreadable", "invalid"]),
++  ]),
++});
++
+ export const FailureReceipt = Schema.Struct({
+   format: Schema.Literal("basalt-production-ops-failure-v1"),
+   category: Schema.Literals([
+@@ -62,13 +74,18 @@
+   sqlStateClass: Schema.optionalKey(SqlStateClass),
+   causeKind: Schema.optionalKey(Schema.Literals(["failure", "defect", "interrupted", "composite"])),
+   reason: Schema.optionalKey(Schema.Literal("stale_plan")),
++  source: Schema.optionalKey(SourceRefusal),
+ });
+ type FailureReceipt = typeof FailureReceipt.Type;
+ type Phase = FailureReceipt["phase"];
+ 
+ class DiagnosticFailure extends Error {
+   readonly receipt: FailureReceipt;
+-  readonly guard: { readonly guard: string; readonly reasonCode: string };
++  readonly guard: {
++    readonly guard: string;
++    readonly reasonCode: string;
++    readonly source?: typeof SourceRefusal.Type;
++  };
+   constructor(receipt: FailureReceipt, guard: DiagnosticFailure["guard"]) {
+     super("Production operation refused");
+     this.receipt = receipt;
+@@ -76,9 +93,18 @@
+   }
+ }
+ 
+-/** No message, query, row, response or credential enters this projection. */
++/** No message, query, row, response or credential enters this projection. Source fields are schema-bound ids and hashes. */
+ function classified(error: unknown, phase: Phase): FailureReceipt | undefined {
+   if (error instanceof DiagnosticFailure) return error.receipt;
++  if (error instanceof DeploymentSourceRefused) {
++    const source = Schema.decodeUnknownOption(SourceRefusal)(error);
++    return {
++      format: "basalt-production-ops-failure-v1",
++      category: "refused",
++      phase,
++      ...(Option.isSome(source) ? { source: source.value } : {}),
++    };
++  }
+   if (error instanceof ProviderAppsRefused || error instanceof ProductionOperationRefused)
+     return {
+       format: "basalt-production-ops-failure-v1",
+@@ -156,6 +182,13 @@
+         ? reason.defect
+         : undefined;
+     if (error instanceof DiagnosticFailure) return error.guard;
++    const receipt = classified(error, phase);
++    if (receipt?.source !== undefined)
++      return {
++        guard: "retained_deployment_source",
++        reasonCode: "source_changed",
++        source: receipt.source,
++      };
+     const guard = knownRefusalGuard(error instanceof Error ? error.message : undefined);
+     if (guard !== undefined) return guard;
+   }
+diff --git a/apps/hosted/cloud/src/implementation/migrations.ts b/apps/hosted/cloud/src/implementation/migrations.ts
+--- a/apps/hosted/cloud/src/implementation/migrations.ts
++++ b/apps/hosted/cloud/src/implementation/migrations.ts
+@@ -1,5 +1,6 @@
+ import { migrateToolPolicies } from "@executor-js/hosted-server/tool-policy-schema";
+ import { makeRegistryStorage } from "@executor-js/app-registry";
++import { migrateSourceWriteFrontiers } from "./source-write-frontiers.ts";
+ import { organizationPublishers } from "./publishers.ts";
+ /** The same explicit Postgres migration operation is used locally and in deployment jobs. */
+ import { PgClient, PgTypes } from "@effect/sql-pg";
+@@ -208,6 +209,7 @@
+       yield* migrationPhase("run the cloud product steps");
+       const registry = yield* makeRegistryStorage(yield* organizationPublishers);
+       yield* registry.migrate.pipe(Effect.mapError(migrationFailed("product")));
++      yield* migrateSourceWriteFrontiers.pipe(Effect.mapError(migrationFailed("product")));
+       yield* migrateProductSteps("private_cloud_migrations", {
+         "1_baseline": migrateOnboarding.pipe(Effect.andThen(migrateWelcomeEmails)),
+         "2_billing_seats": migrateBillingSeats,
+diff --git a/apps/hosted/cloud/src/implementation/source-preservation.ts b/apps/hosted/cloud/src/implementation/source-preservation.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/source-preservation.ts
+@@ -0,0 +1,117 @@
++import { Data, Effect, Option, Schema } from "effect";
++import {
++  BlobKey,
++  SourceFiles,
++  type BlobStorage,
++  gitBlobId,
++  inlineBytes,
++  type AppCodeId,
++  type VersionId,
++  type RepositoryBackend,
++} from "@executor-js/sdk/core";
++import { sourceReferences } from "./source-references.ts";
++
++export class SourcePreservationRefused extends Data.TaggedError("SourcePreservationRefused")<{
++  readonly code: string;
++  readonly property: string;
++  readonly expected: string;
++  readonly actual: string;
++}> {}
++
++/** Only ids and fingerprints may leave the signed operator route, never arbitrary source or errors. */
++export class DeploymentSourceRefused extends Data.TaggedError("DeploymentSourceRefused")<{
++  readonly code: AppCodeId;
++  readonly version: VersionId;
++  readonly expected: string;
++  readonly actual: string;
++}> {}
++
++const sourceTree = (files: SourceFiles) =>
++  Effect.gen(function* () {
++    const entries = yield* Effect.forEach(
++      files,
++      (file) =>
++        Effect.gen(function* () {
++          const object = "object" in file ? file.object : yield* gitBlobId(inlineBytes(file));
++          return [file.path, object] as const;
++        }),
++      { concurrency: 4 },
++    );
++    const bytes = new TextEncoder().encode(
++      JSON.stringify(entries.toSorted((a, b) => a[0].localeCompare(b[0]))),
++    );
++    const digest = yield* Effect.promise(() => crypto.subtle.digest("SHA-256", bytes));
++    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(
++      "",
++    );
++  });
++
++/** The immutable seed, every retained version, and the complete editable history must agree. */
++export const pristineSource = (
++  repositories: RepositoryBackend,
++  code: AppCodeId,
++  initial: SourceFiles,
++) =>
++  Effect.gen(function* () {
++    const refuse = (property: string, expected: string, actual: string) =>
++      Effect.fail(new SourcePreservationRefused({ code, property, expected, actual }));
++    const refs = yield* sourceReferences(repositories, code);
++    for (const ref of refs) {
++      if (
++        ref.name !== "HEAD" &&
++        ref.name !== "refs/heads/main" &&
++        !/^refs\/heads\/__executor\/sources\/[a-f0-9]{64}$/u.test(ref.name)
++      )
++        return yield* refuse("saved ref", "only main and host-retained source", ref.name);
++    }
++    const head = refs.find((ref) => ref.name === "refs/heads/main")?.commit;
++    if (head === undefined || refs.find((ref) => ref.name === "HEAD")?.commit !== head)
++      return yield* refuse("main head", "one advertised main head", "missing or inconsistent");
++    const history = yield* repositories.history(code);
++    if (history.length !== 1 || history[0]?.commit !== head || history[0].message !== "Create app")
++      return yield* refuse(
++        "editable history",
++        "one unchanged initial commit",
++        `${history.length} commits, head ${history[0]?.commit ?? "missing"}`,
++      );
++    const tree = yield* sourceTree(initial);
++    for (const commit of new Set(refs.map((ref) => ref.commit))) {
++      const snapshot = yield* repositories.read(code, commit);
++      const actual = yield* sourceTree(snapshot.files);
++      if (snapshot.commit !== commit || actual !== tree)
++        return yield* refuse(`source ${commit}`, tree, actual);
++    }
++    return { head, tree, refs };
++  });
++
++/** Version blobs are immutable inputs too; a files-only deployment never has to touch Git. */
++export const pristineDeploymentSources = (
++  blobs: BlobStorage,
++  code: AppCodeId,
++  versions: readonly VersionId[],
++  initialTree: string,
++) =>
++  Effect.forEach(
++    versions,
++    (version) =>
++      Effect.gen(function* () {
++        const refuse = (actual: string) =>
++          new DeploymentSourceRefused({
++            code,
++            version,
++            expected: initialTree,
++            actual,
++          });
++        const stored = yield* blobs
++          .get(BlobKey.make(`deployments/${version}/source.json`))
++          .pipe(Effect.mapError(() => refuse("unreadable")));
++        if (Option.isNone(stored)) return yield* refuse("missing");
++        const files = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(SourceFiles))(
++          new TextDecoder().decode(stored.value),
++        ).pipe(Effect.mapError(() => refuse("invalid")));
++        const tree = yield* sourceTree(files);
++        if (tree !== initialTree) return yield* refuse(tree);
++        return { version, tree };
++      }),
++    { concurrency: 4 },
++  );
+diff --git a/apps/hosted/cloud/src/implementation/source-references.ts b/apps/hosted/cloud/src/implementation/source-references.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/source-references.ts
+@@ -0,0 +1,72 @@
++import { Effect } from "effect";
++import { SourceError, type AppCodeId, type RepositoryBackend } from "@executor-js/sdk/core";
++
++export interface SourceReference {
++  readonly commit: string;
++  readonly name: string;
++}
++
++/** Inspect every advertised ref; a main-branch read alone would miss saved branches and tags. */
++export const sourceReferences = (repositories: RepositoryBackend, code: AppCodeId) =>
++  Effect.gen(function* () {
++    const response = yield* repositories.request(
++      code,
++      new Request("https://repository.invalid/info/refs?service=git-upload-pack"),
++    );
++    return yield* Effect.tryPromise({
++      try: async () => {
++        if (!response.ok || response.body === null) throw new Error("Unreadable Git advertisement");
++        const reader = response.body.getReader();
++        const chunks: Uint8Array[] = [];
++        let size = 0;
++        try {
++          for (;;) {
++            const next = await reader.read();
++            if (next.done) break;
++            size += next.value.length;
++            if (size > 4 * 1024 * 1024) throw new Error("Git advertisement exceeds its bound");
++            chunks.push(next.value);
++          }
++        } finally {
++          await reader.cancel();
++        }
++        const bytes = new Uint8Array(size);
++        let copied = 0;
++        for (const chunk of chunks) {
++          bytes.set(chunk, copied);
++          copied += chunk.length;
++        }
++        return parseSourceReferences(bytes);
++      },
++      catch: () => new SourceError({ reason: "invalid-source" }),
++    });
++  });
++
++export const parseSourceReferences = (bytes: Uint8Array): readonly SourceReference[] => {
++  const decode = new TextDecoder("utf-8", { fatal: true });
++  const refs = new Map<string, string>();
++  let offset = 0;
++  while (offset < bytes.length) {
++    const prefix = decode.decode(bytes.subarray(offset, offset + 4));
++    if (!/^[a-f0-9]{4}$/iu.test(prefix)) throw new Error("Malformed Git packet length");
++    const length = Number.parseInt(prefix, 16);
++    if (length === 0) {
++      offset += 4;
++      continue;
++    }
++    if (length < 5 || length > 65520 || offset + length > bytes.length)
++      throw new Error("Incomplete Git reference packet");
++    const text = decode.decode(bytes.subarray(offset + 4, offset + length));
++    offset += length;
++    if (text === "# service=git-upload-pack\n") continue;
++    const match = /^([a-f0-9]{40}) (HEAD|refs\/[^\s\0]+)(?:\0[^\n]*)?\n?$/u.exec(text);
++    if (match?.[1] === undefined || match[2] === undefined || refs.has(match[2]))
++      throw new Error("Unrecognized or duplicate Git reference");
++    refs.set(match[2], match[1]);
++  }
++  if (refs.size === 0 || refs.size > 64)
++    throw new Error("Git reference count is outside its bound");
++  return [...refs]
++    .map(([name, commit]) => ({ name, commit }))
++    .toSorted((a, b) => a.name.localeCompare(b.name));
++};
+diff --git a/apps/hosted/cloud/src/implementation/source-write-fence.ts b/apps/hosted/cloud/src/implementation/source-write-fence.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/source-write-fence.ts
+@@ -0,0 +1,44 @@
++import { Effect } from "effect";
++import { SourceError, type AppCodeId, type RepositoryBackend } from "@executor-js/sdk/core";
++import type { SourceWriteFrontier } from "./source-write-frontiers.ts";
++
++/** SQL marks admission and completion only. Concurrent writes never wait for another Git call. */
++export const sourceWriteFence = (
++  git: RepositoryBackend,
++  frontier: SourceWriteFrontier,
++): RepositoryBackend => {
++  const write = <A>(code: AppCodeId, work: Effect.Effect<A, SourceError>) =>
++    Effect.uninterruptibleMask((restore) =>
++      Effect.gen(function* () {
++        yield* frontier.begin(code);
++        const value = yield* restore(work);
++        // Failure or interruption may leave Git running remotely. Never expire that uncertainty.
++        yield* frontier.complete(code);
++        return value;
++      }),
++    );
++  return {
++    ...git,
++    create: (code) => write(code, git.create(code)),
++    commit: (input) => write(input.id, git.commit(input)),
++    request: (code, request) =>
++      request.method === "POST" && new URL(request.url).pathname.endsWith("/git-receive-pack")
++        ? write(
++            code,
++            Effect.gen(function* () {
++              const response = yield* git.request(code, request);
++              if (!response.ok) return yield* new SourceError({ reason: "git" });
++              // A streamed receive-pack is not finished until its report has arrived in full.
++              const body = yield* Effect.tryPromise({
++                try: () => response.arrayBuffer(),
++                catch: () => new SourceError({ reason: "git" }),
++              });
++              return new Response(response.body === null ? null : body, {
++                status: response.status,
++                headers: response.headers,
++              });
++            }),
++          )
++        : git.request(code, request),
++  };
++};
+diff --git a/apps/hosted/cloud/src/implementation/source-write-frontiers.ts b/apps/hosted/cloud/src/implementation/source-write-frontiers.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/source-write-frontiers.ts
+@@ -0,0 +1,66 @@
++import { Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import { SourceError, type AppCodeId } from "@executor-js/sdk/core";
++
++// Fork table: Git writes do not change app SQL rows, so retirement needs its own write frontier.
++export const migrateSourceWriteFrontiers = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  yield* sql`create table if not exists hosted_source_write_frontiers (
++    code text primary key,
++    generation bigint not null default 0 check (generation >= -1),
++    active_writes integer not null default 0 check (active_writes >= 0),
++    prepared_head text,
++    fingerprint text,
++    check ((prepared_head is null) = (fingerprint is null)),
++    check (generation <> -1 or active_writes = 0)
++  )`;
++});
++
++export const SourceFrontier = Schema.Struct({
++  code: Schema.String,
++  // JSON row snapshots use strings so bigint generations never lose precision.
++  generation: Schema.String,
++  active_writes: Schema.Number,
++  prepared_head: Schema.NullOr(Schema.String),
++  fingerprint: Schema.NullOr(Schema.String),
++});
++export type SourceFrontier = typeof SourceFrontier.Type;
++
++/** -1 is a permanent tombstone. A failed write remains active; later app writes still proceed. */
++export const sourceWriteFrontier = (sql: SqlClient.SqlClient) => {
++  const begin = (code: AppCodeId) =>
++    sql
++      .withTransaction(
++        Effect.gen(function* () {
++          yield* sql`set local lock_timeout = '500ms'`;
++          yield* sql`set local statement_timeout = '5s'`;
++          yield* sql`insert into hosted_source_write_frontiers (code) values (${code}) on conflict do nothing`;
++          const rows = yield* sql`update hosted_source_write_frontiers set
++      generation = generation + 1, active_writes = active_writes + 1,
++      prepared_head = null, fingerprint = null
++      where code = ${code} and generation >= 0 returning code`;
++          if (rows.length !== 1) return yield* new SourceError({ reason: "conflict" });
++        }),
++      )
++      .pipe(Effect.mapError(() => new SourceError({ reason: "storage" })));
++  const complete = (code: AppCodeId) =>
++    sql`update hosted_source_write_frontiers
++    set active_writes = active_writes - 1 where code = ${code} and generation >= 0 and active_writes > 0
++    returning code`.pipe(
++      Effect.flatMap((rows) =>
++        rows.length === 1 ? Effect.void : Effect.fail(new SourceError({ reason: "storage" })),
++      ),
++      Effect.mapError(() => new SourceError({ reason: "storage" })),
++    );
++  return { begin, complete };
++};
++export type SourceWriteFrontier = ReturnType<typeof sourceWriteFrontier>;
++
++/** Stable SQL proof reads are separate from Git I/O; every writer invalidates the saved proof. */
++export const readSourceFrontier = (code: AppCodeId) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const rows = yield* sql`select code, generation::text, active_writes, prepared_head, fingerprint
++    from hosted_source_write_frontiers where code = ${code}`;
++    return yield* Schema.decodeUnknownEffect(Schema.Array(SourceFrontier))(rows);
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-adoption-v1.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-adoption-v1.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-adoption-v1.ts
+@@ -0,0 +1,119 @@
++import { Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import type { Json, ProductionMigration } from "../contracts.ts";
++import { canonical, sha256 } from "../crypto.ts";
++import { contention } from "../locking.ts";
++import {
++  FamilyAdoption,
++  familyApps,
++  familyRecord,
++  familyRefused,
++} from "./atlassian-family-records.ts";
++import { familySnapshot, requireStatelessUmbrella } from "./atlassian-family-snapshot.ts";
++import { planFamilyAdoption } from "./atlassian-family-plan.ts";
++
++const inspect = (request: Json) =>
++  Effect.gen(function* () {
++    const input = yield* Schema.decodeUnknownEffect(FamilyAdoption)(request);
++    yield* requireStatelessUmbrella(input.umbrella.app);
++    return yield* planFamilyAdoption(input, yield* familySnapshot(input));
++  });
++
++/** Public account connection owns grant reuse; this SQL step retires only its redundant consumer. */
++export const atlassianFamilyAdoptionV1: ProductionMigration = {
++  name: "atlassian-family-adoption-v1",
++  revision: "1",
++  preflight: "atlassian-family-source",
++  tables: [
++    "hosted_source_write_frontiers",
++    "organization",
++    "member",
++    "executor_apps",
++    "executor_deployments",
++    "hosted_app_access",
++    "hosted_app_groups",
++    "hosted_app_account_links",
++    "executor_accounts",
++    "executor_account_identities",
++    "executor_providers",
++    "executor_oauth_grants",
++    "hosted_account_access",
++    "hosted_account_groups",
++  ],
++  inspect,
++  lockAuthority: (request, plan) =>
++    Effect.gen(function* () {
++      const input = yield* Schema.decodeUnknownEffect(FamilyAdoption)(request);
++      const sql = yield* SqlClient.SqlClient;
++      const source = familyRecord(familyRecord(plan.data)?.sourceFrontier);
++      if (typeof source?.code !== "string")
++        return yield* familyRefused("source frontier is missing");
++      yield* sql`select code from hosted_source_write_frontiers where code = ${source.code} for update nowait`;
++      yield* sql`select pg_advisory_xact_lock(hashtextextended(${`executor-access:${input.organization}`}, 0))`;
++      yield* sql`select id from organization where id = ${input.organization} for update nowait`;
++      yield* sql`select id from member where "organizationId" = ${input.organization}
++        and "userId" = ${input.actor} for share nowait`;
++      for (const selected of familyApps(input).toSorted((a, b) => a.app.localeCompare(b.app))) {
++        yield* sql`select id from executor_apps where id = ${selected.app} and owner = ${`organization:${input.organization}`} for update nowait`;
++        yield* sql`select id from executor_deployments where id = ${selected.version} and owner = ${`organization:${input.organization}`} for share nowait`;
++      }
++    }).pipe(Effect.mapError(contention)),
++  apply: (request, plan) =>
++    Effect.gen(function* () {
++      const input = yield* Schema.decodeUnknownEffect(FamilyAdoption)(request);
++      const current = yield* inspect(request);
++      if (canonical(current) !== canonical(plan))
++        return yield* familyRefused(
++          `${input.umbrella.app}: the reviewed adoption snapshot changed`,
++        );
++      const sql = yield* SqlClient.SqlClient;
++      const source = familyRecord(familyRecord(plan.data)?.sourceFrontier);
++      if (
++        typeof source?.code !== "string" ||
++        typeof source.generation !== "string" ||
++        typeof source.fingerprint !== "string"
++      )
++        return yield* familyRefused("source frontier is missing");
++      const fenced = yield* sql`update hosted_source_write_frontiers set generation = -1
++        where code = ${source.code} and generation::text = ${source.generation}
++        and fingerprint = ${source.fingerprint} and active_writes = 0 returning code`;
++      if (fenced.length !== 1)
++        return yield* familyRefused(
++          `${input.umbrella.app}/${source.code}: source changed or writes are active; source retained`,
++        );
++      const metadata = familyRecord(plan.data)?.metadata;
++      if (typeof metadata !== "string") return yield* familyRefused("adoption metadata is missing");
++      const updated = yield* sql`update organization set metadata = ${metadata}
++        where id = ${input.organization} returning id`;
++      if (updated.length !== 1)
++        return yield* familyRefused(`${input.organization}: metadata update lost its row`);
++      const links =
++        yield* sql`delete from hosted_app_account_links where app = ${input.umbrella.app} returning app`;
++      if (links.length !== input.bindings.length)
++        return yield* familyRefused(
++          `${input.umbrella.app}: umbrella links changed during adoption`,
++        );
++      yield* sql`delete from hosted_app_groups where app_id = ${input.umbrella.app}`;
++      yield* sql`delete from hosted_app_access where id = ${input.umbrella.app}`;
++      const removed = yield* sql`delete from executor_apps where id = ${input.umbrella.app}
++        and owner = ${`organization:${input.organization}`} and active_deployment = ${input.umbrella.version}
++        returning id`;
++      if (removed.length !== 1)
++        return yield* familyRefused(
++          `${input.umbrella.app}: expected active umbrella was not retired`,
++        );
++    }),
++  verify: (request, plan) =>
++    Effect.gen(function* () {
++      const input = yield* Schema.decodeUnknownEffect(FamilyAdoption)(request);
++      const actual = yield* familySnapshot(input);
++      const preserved = familyRecord(plan.data)?.accountsPreserved;
++      const checks = {
++        onlyReviewedRowsChanged: sha256(canonical(actual)) === familyRecord(plan.data)?.afterSha256,
++        umbrellaRetired: !actual.executor_apps?.some((app) => app.id === input.umbrella.app),
++        accountsAndGrantsPreserved:
++          Array.isArray(preserved) && actual.executor_accounts?.length === preserved.length,
++      };
++      return { ok: Object.values(checks).every(Boolean), checks };
++    }),
++};
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-plan.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-plan.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-plan.ts
+@@ -0,0 +1,290 @@
++import { Effect, Schema } from "effect";
++import { ProviderDefinition } from "@executor-js/sdk/core";
++import { canonical, sha256 } from "../crypto.ts";
++import type { Change } from "../contracts.ts";
++import {
++  familyAccounts,
++  familyApps,
++  familyOne,
++  familyRecord,
++  familyRefused,
++  type FamilyAdoption,
++  type FamilyRow,
++  type FamilySnapshot,
++} from "./atlassian-family-records.ts";
++
++const issuer = "https://auth.atlassian.com";
++const rows = (snapshot: FamilySnapshot, table: string) => snapshot[table] ?? [];
++const by = (snapshot: FamilySnapshot, table: string, key: string, value: string) =>
++  familyOne(
++    rows(snapshot, table).filter((row) => row[key] === value),
++    `${table} ${value}`,
++  );
++
++/** The supported connection flow must have created the bindings and links before retirement. */
++export const planFamilyAdoption = (input: FamilyAdoption, snapshot: FamilySnapshot) =>
++  Effect.gen(function* () {
++    const owner = `organization:${input.organization}`;
++    if (new Set(familyApps(input).map((app) => app.app)).size !== 3)
++      return yield* familyRefused("umbrella, Jira and Confluence must be three different app IDs");
++    if (new Set(input.bindings.map((binding) => binding.source)).size !== input.bindings.length)
++      return yield* familyRefused("each umbrella account must appear exactly once");
++    const organization = yield* by(snapshot, "organization", "id", input.organization);
++    const actor = yield* familyOne(rows(snapshot, "member"), `member ${input.actor}`);
++    if (actor.role !== "owner" && actor.role !== "admin")
++      return yield* familyRefused(`${input.actor}: current organization owner or admin required`);
++    const requirements = new Map<string, FamilyRow>();
++    for (const [name, selected] of [
++      ["atlassian", input.umbrella],
++      ["jira", input.jira],
++      ["confluence", input.confluence],
++    ] as const) {
++      const app = yield* by(snapshot, "executor_apps", "id", selected.app);
++      const deployment = yield* by(snapshot, "executor_deployments", "id", selected.version);
++      const policy = yield* by(snapshot, "hosted_app_access", "id", selected.app);
++      const origin = familyRecord(app.copied_from);
++      if (
++        app.owner !== owner ||
++        deployment.owner !== owner ||
++        deployment.code !== app.code ||
++        app.active_deployment !== selected.version ||
++        policy.organization_id !== input.organization
++      )
++        return yield* familyRefused(
++          `${selected.app}: owner or active version differs from ${selected.version}`,
++        );
++      if (
++        origin?.name !== (name === "atlassian" ? name : `@executor.sh/${name}`) ||
++        typeof origin.reference !== "string" ||
++        !URL.canParse(origin.reference) ||
++        new URL(origin.reference).pathname !== `/catalog/apps/${name}.json`
++      )
++        return yield* familyRefused(`${selected.app}: expected the ${name} catalog installation`);
++      const declaration = familyRecord(deployment.requirements);
++      const accounts = familyRecord(declaration?.accounts);
++      if (accounts === undefined)
++        return yield* familyRefused(`${selected.app}: unreadable requirements`);
++      requirements.set(selected.app, accounts);
++      if (
++        name === "atlassian" &&
++        (declaration?.sql === true || declaration?.database !== undefined)
++      )
++        return yield* familyRefused(
++          `${selected.app}: declared database or SQL prevents retirement`,
++        );
++    }
++    const umbrella = yield* by(snapshot, "executor_apps", "id", input.umbrella.app);
++    const frontier = yield* by(
++      snapshot,
++      "hosted_source_write_frontiers",
++      "code",
++      String(umbrella.code),
++    );
++    const sourceVersions = rows(snapshot, "executor_deployments")
++      .filter((version) => version.code === umbrella.code)
++      .map((version) => String(version.id))
++      .sort();
++    if (
++      frontier.generation === "-1" ||
++      frontier.active_writes !== 0 ||
++      typeof frontier.prepared_head !== "string" ||
++      !/^[a-f0-9]{40}$/u.test(frontier.prepared_head) ||
++      typeof frontier.fingerprint !== "string" ||
++      !/^[a-f0-9]{64}:[a-f0-9]{64}$/u.test(frontier.fingerprint) ||
++      frontier.fingerprint.split(":")[0] !== sha256(canonical(sourceVersions))
++    )
++      return yield* familyRefused(
++        `${input.umbrella.app}/${String(umbrella.code)}: unchanged, settled source proof required`,
++      );
++    const retiredFrontier = { ...frontier, generation: "-1" };
++    const accounts = new Map<string, FamilyRow>();
++    for (const id of familyAccounts(input)) {
++      const account = yield* by(snapshot, "executor_accounts", "id", id);
++      const access = yield* by(snapshot, "hosted_account_access", "account_id", id);
++      const identity =
++        typeof account.identity_id === "string"
++          ? yield* by(snapshot, "executor_account_identities", "id", account.identity_id)
++          : undefined;
++      const grantId = account.oauth_grant_id ?? account.id;
++      const grant =
++        typeof grantId === "string"
++          ? yield* by(snapshot, "executor_oauth_grants", "id", grantId)
++          : undefined;
++      const placement = JSON.stringify([input.organization, "personal", input.actor, null, []]);
++      if (
++        account.owner !== owner ||
++        access.organization_id !== input.organization ||
++        access.kind !== "personal" ||
++        access.personal_user_id !== input.actor ||
++        access.audience !== null ||
++        account.site !== null ||
++        identity?.owner !== owner ||
++        identity.issuer !== issuer ||
++        identity.placement !== placement ||
++        typeof identity.subject !== "string" ||
++        identity.subject.length === 0 ||
++        typeof grant?.status !== "string" ||
++        !grant.status.startsWith("ready_") ||
++        (grant.owner !== null && grant.owner !== owner)
++      )
++        return yield* familyRefused(
++          `${id}: a ready grant and this person's verified Atlassian identity are required; reconnect through the app`,
++        );
++      const provider =
++        typeof account.provider === "string"
++          ? yield* by(snapshot, "executor_providers", "id", account.provider)
++          : undefined;
++      const definition = yield* Schema.decodeUnknownEffect(ProviderDefinition)(
++        provider?.definition,
++      ).pipe(Effect.catch(() => familyRefused(`${id}: unreadable provider declaration`)));
++      const method =
++        typeof account.method === "string" ? definition.auth[account.method] : undefined;
++      if (
++        method?.type !== "oauth2" ||
++        method.grant === "client_credentials" ||
++        method.identity?.issuer !== issuer ||
++        method.authorizationParams?.audience !== "api.atlassian.com"
++      )
++        return yield* familyRefused(`${id}: expected the personal Atlassian API OAuth method`);
++      accounts.set(id, account);
++    }
++    const links = rows(snapshot, "hosted_app_account_links");
++    const sourceLinks = links.filter((link) => link.app === input.umbrella.app);
++    if (sourceLinks.length !== input.bindings.length)
++      return yield* familyRefused(
++        `${input.umbrella.app}: exact link selection changed, expected ${input.bindings.length}, found ${sourceLinks.length}`,
++      );
++    for (const binding of input.bindings) {
++      const source = accounts.get(binding.source)!;
++      if (
++        !sourceLinks.some(
++          (link) =>
++            link.account === binding.source &&
++            link.requirement === binding.requirement &&
++            link.subject === input.actor,
++        )
++      )
++        return yield* familyRefused(`${binding.source}: selected umbrella user link is missing`);
++      for (const name of ["jira", "confluence"] as const) {
++        const target = binding[name];
++        const account = accounts.get(target.account)!;
++        const requirement = familyRecord(requirements.get(input[name].app)?.[target.requirement]);
++        if (
++          requirement === undefined ||
++          account.identity_id !== source.identity_id ||
++          requirement.provider !== account.provider ||
++          requirement.scope !== "user" ||
++          !links.some(
++            (link) =>
++              link.app === input[name].app &&
++              link.account === target.account &&
++              link.requirement === target.requirement &&
++              link.subject === input.actor,
++          )
++        )
++          return yield* familyRefused(
++            `${input[name].app}/${target.account}: connect and verify the same identity through ${name} before adoption`,
++          );
++      }
++    }
++    const metadata = familyRecord(
++      typeof organization.metadata === "string"
++        ? yield* Schema.decodeUnknownEffect(Schema.fromJsonString(FamilyRowSchema))(
++            organization.metadata,
++          )
++        : organization.metadata === null
++          ? {}
++          : organization.metadata,
++    );
++    if (metadata === undefined)
++      return yield* familyRefused(`${input.organization}: unreadable metadata`);
++    const recorded = familyRecord(metadata.basaltServiceInstalls) ?? {};
++    const installs = { ...recorded };
++    delete installs[input.umbrella.app];
++    for (const name of ["jira", "confluence"] as const) {
++      const previous = familyRecord(installs[input[name].app]);
++      installs[input[name].app] = {
++        ...previous,
++        id: `@executor.sh/${name}`,
++        newInstance: previous?.newInstance === true,
++      };
++    }
++    const nextMetadata = canonical({ ...metadata, basaltServiceInstalls: installs });
++    const removals = [
++      ...sourceLinks.map((row) => ({
++        table: "hosted_app_account_links",
++        row,
++        key: {
++          app: String(row.app),
++          requirement: String(row.requirement),
++          account: String(row.account),
++          subject: input.actor,
++        },
++      })),
++      ...rows(snapshot, "hosted_app_groups")
++        .filter((row) => row.app_id === input.umbrella.app)
++        .map((row) => ({
++          table: "hosted_app_groups",
++          row,
++          key: {
++            app_id: input.umbrella.app,
++            group_id: String(row.group_id),
++          },
++        })),
++      {
++        table: "hosted_app_access",
++        row: yield* by(snapshot, "hosted_app_access", "id", input.umbrella.app),
++        key: { id: input.umbrella.app },
++      },
++      {
++        table: "executor_apps",
++        row: yield* by(snapshot, "executor_apps", "id", input.umbrella.app),
++        key: { id: input.umbrella.app },
++      },
++    ];
++    const nextOrganization = { ...organization, metadata: nextMetadata };
++    const after: Record<string, readonly FamilyRow[]> = {
++      ...snapshot,
++      organization: [nextOrganization],
++      hosted_source_write_frontiers: [retiredFrontier],
++    };
++    const changes: Change[] = [
++      {
++        table: "hosted_source_write_frontiers",
++        key: { code: String(frontier.code) },
++        action: "update",
++        beforeSha256: sha256(canonical(frontier)),
++        afterSha256: sha256(canonical(retiredFrontier)),
++      },
++      {
++        table: "organization",
++        key: { id: input.organization },
++        action: "update",
++        beforeSha256: sha256(canonical(organization)),
++        afterSha256: sha256(canonical(nextOrganization)),
++      },
++    ];
++    for (const removed of removals) {
++      changes.push({
++        table: removed.table,
++        key: removed.key,
++        action: "delete",
++        beforeSha256: sha256(canonical(removed.row)),
++        afterSha256: null,
++      });
++      after[removed.table] = rows(after, removed.table).filter((row) => row !== removed.row);
++    }
++    return {
++      changes,
++      data: {
++        sourceFrontier: frontier,
++        metadata: nextMetadata,
++        beforeSha256: sha256(canonical(snapshot)),
++        afterSha256: sha256(canonical(after)),
++        accountsPreserved: familyAccounts(input),
++        deploymentsPreserved: rows(snapshot, "executor_deployments").map((row) => String(row.id)),
++      },
++    };
++  });
++
++const FamilyRowSchema = Schema.Record(Schema.String, Schema.Json);
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-records.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-records.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-records.ts
+@@ -0,0 +1,43 @@
++import { Effect, Schema } from "effect";
++import { ProductionOperationRefused } from "../contracts.ts";
++
++const Id = Schema.NonEmptyString.check(Schema.isMaxLength(256));
++const App = Schema.Struct({ app: Id, version: Id });
++export const FamilyAdoption = Schema.Struct({
++  organization: Id,
++  actor: Id,
++  umbrella: App,
++  jira: App,
++  confluence: App,
++  bindings: Schema.Array(
++    Schema.Struct({
++      source: Id,
++      requirement: Id,
++      jira: Schema.Struct({ account: Id, requirement: Id }),
++      confluence: Schema.Struct({ account: Id, requirement: Id }),
++    }),
++  ).check(Schema.isMaxLength(50)),
++});
++export type FamilyAdoption = typeof FamilyAdoption.Type;
++export const FamilyRow = Schema.Record(Schema.String, Schema.Json);
++export type FamilyRow = typeof FamilyRow.Type;
++export type FamilySnapshot = Readonly<Record<string, readonly FamilyRow[]>>;
++export const familyRecord = (value: unknown) => (Schema.is(FamilyRow)(value) ? value : undefined);
++export const familyRefused = (message: string) =>
++  Effect.fail(new ProductionOperationRefused({ message }));
++export const familyOne = (rows: readonly FamilyRow[], label: string) =>
++  rows.length === 1 && rows[0] !== undefined
++    ? Effect.succeed(rows[0])
++    : familyRefused(`${label}: expected exactly one row, found ${rows.length}`);
++
++export const familyApps = (input: FamilyAdoption) => [input.umbrella, input.jira, input.confluence];
++export const familyAccounts = (input: FamilyAdoption) =>
++  [
++    ...new Set(
++      input.bindings.flatMap((binding) => [
++        binding.source,
++        binding.jira.account,
++        binding.confluence.account,
++      ]),
++    ),
++  ].sort();
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-snapshot.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-snapshot.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-snapshot.ts
+@@ -0,0 +1,104 @@
++import { Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import {
++  FamilyRow,
++  familyAccounts,
++  familyApps,
++  familyRefused,
++  type FamilyAdoption,
++} from "./atlassian-family-records.ts";
++
++/** Full protected rows are hashed privately; adoption never rewrites credentials or identity. */
++export const familySnapshot = (input: FamilyAdoption) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const appIds = JSON.stringify(familyApps(input).map((app) => app.app));
++    const versions = JSON.stringify(familyApps(input).map((app) => app.version));
++    const accountIds = JSON.stringify(familyAccounts(input));
++    const selected = "select jsonb_array_elements_text($1::jsonb)";
++    const accounts = `select id from executor_accounts where id in (${selected})`;
++    const queries: Readonly<Record<string, readonly [string, readonly string[]]>> = {
++      organization: ["id = $1", [input.organization]],
++      member: ['"organizationId" = $1 and "userId" = $2', [input.organization, input.actor]],
++      hosted_source_write_frontiers: [
++        "code in (select code from executor_apps where id = $1 union select code from executor_deployments where id = $2)",
++        [input.umbrella.app, input.umbrella.version],
++      ],
++      executor_apps: [`id in (${selected})`, [appIds]],
++      executor_deployments: [
++        `code in (select code from executor_deployments where id in (${selected}))`,
++        [versions],
++      ],
++      hosted_app_access: [`id in (${selected})`, [appIds]],
++      hosted_app_groups: [`app_id in (${selected})`, [appIds]],
++      hosted_app_account_links: [
++        `app in (${selected}) or account in (select jsonb_array_elements_text($2::jsonb))`,
++        [appIds, accountIds],
++      ],
++      executor_accounts: [`id in (${selected})`, [accountIds]],
++      executor_account_identities: [
++        `id in (select identity_id from executor_accounts where id in (${accounts}))`,
++        [accountIds],
++      ],
++      executor_providers: [
++        `id in (select provider from executor_accounts where id in (${accounts}))`,
++        [accountIds],
++      ],
++      executor_oauth_grants: [
++        `id in (select coalesce(oauth_grant_id, id) from executor_accounts where id in (${accounts}))`,
++        [accountIds],
++      ],
++      hosted_account_access: [`account_id in (${accounts})`, [accountIds]],
++      hosted_account_groups: [`account_id in (${accounts})`, [accountIds]],
++    };
++    const snapshot: Record<string, readonly FamilyRow[]> = {};
++    for (const [table, [predicate, params]] of Object.entries(queries)) {
++      const rows = yield* sql.unsafe(
++        `select ${table === "hosted_source_write_frontiers" ? "to_jsonb(entry) || jsonb_build_object('generation', entry.generation::text)" : "to_jsonb(entry)"} as row from ${table} entry where ${predicate}
++        order by to_jsonb(entry)::text limit 2001`,
++        [...params],
++      );
++      if (rows.length > 2000) return yield* familyRefused(`${table}: snapshot exceeds 2000 rows`);
++      snapshot[table] = (yield* Schema.decodeUnknownEffect(
++        Schema.Array(Schema.Struct({ row: FamilyRow })),
++      )(rows)).map(({ row }) => row);
++    }
++    return snapshot;
++  });
++
++/** Declared databases and SQL are refused separately; these are the retained app-owned records. */
++export const requireStatelessUmbrella = (app: string) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const tables = [
++      "executor_app_records",
++      "executor_workflow_runs",
++      "executor_workflow_inputs",
++      "executor_schedules",
++      "executor_scheduled_runs",
++      "executor_webhooks",
++      "executor_events",
++      "executor_event_subscriptions",
++      "executor_app_call_receipts",
++      "executor_webhook_sources",
++      "executor_installations",
++      "executor_profile_app_copies",
++    ];
++    for (const table of tables) {
++      const rows = yield* sql.unsafe(`select 1 from ${table} where app = $1 limit 1`, [app]);
++      if (rows.length !== 0)
++        return yield* familyRefused(
++          `${app}: ${table} is non-empty; retirement would hide saved work`,
++        );
++    }
++    const dependents = yield* sql`select 'app connection' as kind from executor_app_connections
++      where app = ${app} or target = ${app}
++      union all select 'model binding' from hosted_model_bindings
++      where app_id = ${app} or pool_id = ${app}
++      union all select 'unfinished sign-in' from executor_account_connections
++      where target ->> 'app' = ${app} and state ->> 'status' not in ('completed','failed','cancelled','expired')
++
++      limit 1`;
++    if (dependents.length !== 0)
++      return yield* familyRefused(`${app}: ${String(dependents[0]?.kind)} prevents retirement`);
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-source.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-source.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-family-source.ts
+@@ -0,0 +1,117 @@
++import { Context, Effect, Option, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import {
++  AppCodeId,
++  VersionId,
++  BlobKey,
++  SourceFiles,
++  type BlobStorage,
++  type RepositoryBackend,
++} from "@executor-js/sdk/core";
++import {
++  pristineDeploymentSources,
++  pristineSource,
++} from "../../../implementation/source-preservation.ts";
++import { readSourceFrontier } from "../../../implementation/source-write-frontiers.ts";
++import { canonical, sha256 } from "../crypto.ts";
++import type { Json } from "../contracts.ts";
++import { FamilyAdoption, familyOne, familyRefused } from "./atlassian-family-records.ts";
++
++export class FamilySourceRuntime extends Context.Service<
++  FamilySourceRuntime,
++  {
++    readonly repositories: RepositoryBackend;
++    readonly blobs: BlobStorage;
++  }
++>()("basalt/production-ops/FamilySourceRuntime") {}
++
++/** Read Git without a SQL lock, then publish its proof only if no writer crossed that read. */
++export const prepareFamilySource = (request: Json) =>
++  Effect.gen(function* () {
++    const input = yield* Schema.decodeUnknownEffect(FamilyAdoption)(request);
++    const sql = yield* SqlClient.SqlClient;
++    const runtime = yield* FamilySourceRuntime;
++    const apps = yield* sql`select id, code from executor_apps where id = ${input.umbrella.app}
++    and owner = ${`organization:${input.organization}`} and active_deployment = ${input.umbrella.version}`;
++    const app = yield* familyOne(
++      yield* Schema.decodeUnknownEffect(Schema.Array(Schema.Record(Schema.String, Schema.Json)))(
++        apps,
++      ),
++      input.umbrella.app,
++    );
++    const code = yield* Schema.decodeUnknownEffect(AppCodeId)(app.code);
++    // A code fence cannot retire one app while another live app still writes the same lineage.
++    const siblings =
++      yield* sql`select id from executor_apps where code = ${code} and id <> ${input.umbrella.app} limit 1`;
++    if (siblings.length !== 0)
++      return yield* familyRefused(
++        `${input.umbrella.app}/${code}: source lineage is shared by another installed app`,
++      );
++    yield* sql`insert into hosted_source_write_frontiers (code) values (${code}) on conflict do nothing`;
++    const rows = yield* readSourceFrontier(code);
++    const before = rows[0];
++    if (
++      rows.length !== 1 ||
++      before === undefined ||
++      before.generation === "-1" ||
++      before.active_writes !== 0
++    )
++      return yield* familyRefused(
++        `${input.umbrella.app}/${code}: source writes must be settled; active or uncertain writes prevent retirement`,
++      );
++    const versionIds = Effect.gen(function* () {
++      const records =
++        yield* sql`select id, owner from executor_deployments where code = ${code} order by id limit 101`;
++      const versions = yield* Schema.decodeUnknownEffect(
++        Schema.Array(Schema.Struct({ id: VersionId, owner: Schema.String })),
++      )(records);
++      if (
++        versions.length === 0 ||
++        versions.length > 100 ||
++        versions.some((version) => version.owner !== `organization:${input.organization}`)
++      )
++        return yield* familyRefused(
++          `${input.umbrella.app}/${code}: expected 1-100 owned retained deployments`,
++        );
++      return versions.map((version) => version.id).sort();
++    });
++    const versions = yield* versionIds;
++    const proof = yield* Effect.gen(function* () {
++      const stored = yield* runtime.blobs.get(BlobKey.make(`app-source/${code}/initial.json`));
++      if (Option.isNone(stored))
++        return yield* familyRefused(
++          `${input.umbrella.app}/${code}: immutable initial source is missing`,
++        );
++      const initial = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(SourceFiles))(
++        new TextDecoder().decode(stored.value),
++      );
++      const git = yield* pristineSource(runtime.repositories, code, initial);
++      const deployments = yield* pristineDeploymentSources(runtime.blobs, code, versions, git.tree);
++      return { ...git, deployments };
++    }).pipe(
++      Effect.catchTag("SourcePreservationRefused", (error) =>
++        familyRefused(
++          `${input.umbrella.app}/${code}: ${error.property} changed; expected ${error.expected}, found ${error.actual}; source retained`,
++        ),
++      ),
++      Effect.catchTag("SourceError", (error) =>
++        familyRefused(
++          `${input.umbrella.app}/${code}: source proof unavailable (${error.reason}); source retained`,
++        ),
++      ),
++    );
++    if (canonical(yield* versionIds) !== canonical(versions))
++      return yield* familyRefused(
++        `${input.umbrella.app}/${code}: retained deployments changed during source proof`,
++      );
++    // Inspection can recheck the version set in SQL without reading source inside its transaction.
++    const fingerprint = `${sha256(canonical(versions))}:${sha256(canonical(proof))}`;
++    const recorded =
++      yield* sql`update hosted_source_write_frontiers set prepared_head = ${proof.head}, fingerprint = ${fingerprint}
++    where code = ${code} and generation::text = ${before.generation} and active_writes = 0 returning code`;
++    if (recorded.length !== 1)
++      return yield* familyRefused(
++        `${input.umbrella.app}/${code}: source write frontier changed during proof; source retained`,
++      );
++    return { code, generation: before.generation, head: proof.head, fingerprint };
++  });
+diff --git a/e2e/support/atlassian-adoption-fixture.ts b/e2e/support/atlassian-adoption-fixture.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/atlassian-adoption-fixture.ts
+@@ -0,0 +1,246 @@
++import { Effect, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { atlassianAdoptionRows } from "./atlassian-adoption-rows.ts";
++import { productionOpsClient } from "./production-ops-client.ts";
++
++/** Retained app/account rows in the disposable Cloud; no real provider credentials. */
++export const atlassianAdoptionFixture = Effect.gen(function* () {
++  const fixture = yield* atlassianAdoptionRows;
++  const client = yield* productionOpsClient;
++  const { own, database } = fixture;
++  const consumers = ["jira", "confluence"].map((name) => ({
++    name,
++    app: `app_${randomUUID()}`,
++    version: `dpl_${randomUUID()}`,
++    account: `acc_${randomUUID()}`,
++  }));
++  const provider = `prv_${randomUUID()}`;
++  const alternateIdentity = randomUUID();
++  const owner = `organization:${own.organization}`;
++  yield* Effect.addFinalizer(() =>
++    Effect.gen(function* () {
++      yield* database.run({
++        sql: "delete from executor_app_records where app = $1",
++        params: [own.app],
++      });
++      for (const consumer of consumers) {
++        yield* database.run({
++          sql: "delete from hosted_app_account_links where app = $1",
++          params: [consumer.app],
++        });
++        yield* database.run({
++          sql: "delete from hosted_app_access where id = $1",
++          params: [consumer.app],
++        });
++        yield* database.run({
++          sql: "delete from executor_apps where id = $1",
++          params: [consumer.app],
++        });
++        yield* database.run({
++          sql: "delete from hosted_account_access where account_id = $1",
++          params: [consumer.account],
++        });
++        yield* database.run({
++          sql: "delete from executor_accounts where id = $1",
++          params: [consumer.account],
++        });
++        yield* database.run({
++          sql: "delete from executor_deployments where id = $1",
++          params: [consumer.version],
++        });
++      }
++      yield* database.run({
++        sql: "delete from hosted_app_account_links where app = $1",
++        params: [own.app],
++      });
++      yield* database.run({
++        sql: "delete from hosted_account_access where account_id = $1",
++        params: [own.account],
++      });
++      yield* database.run({
++        sql: "delete from executor_accounts where id = $1",
++        params: [own.account],
++      });
++      yield* database.run({
++        sql: "delete from executor_providers where id = $1",
++        params: [provider],
++      });
++      yield* database.run({
++        sql: "delete from executor_account_identities where id = $1",
++        params: [alternateIdentity],
++      });
++      yield* database.run({
++        sql: "delete from private_production_ops_receipts where organization_id = $1 and migration = 'atlassian-family-adoption-v1'",
++        params: [own.organization],
++      });
++    }).pipe(Effect.orDie),
++  );
++  const definition = {
++    name: "Atlassian",
++    auth: {
++      oauth: {
++        type: "oauth2",
++        response: {
++          type: "object",
++          properties: { access_token: { type: "string" } },
++          required: ["access_token"],
++        },
++        authorizationUrl: "https://auth.atlassian.com/authorize",
++        tokenUrl: "https://auth.atlassian.com/oauth/token",
++        scopes: ["read:me"],
++        authorizationParams: { audience: "api.atlassian.com" },
++        tokenEndpointAuthMethod: "client_secret_post",
++        tokenRequestFormat: "json",
++      },
++    },
++  };
++  yield* database.run({
++    sql: "insert into executor_providers (id, definition) values ($1, $2::jsonb)",
++    params: [provider, JSON.stringify(definition)],
++  });
++  yield* database.run({
++    sql: "update executor_account_identities set issuer = 'https://auth.atlassian.com', subject = 'verified-person', label = 'same@example.test', placement = $2 where id = $1",
++    params: [own.identity, JSON.stringify([own.organization, "personal", own.user, null, []])],
++  });
++  yield* database.run({
++    sql: "insert into executor_account_identities select (jsonb_populate_record(null::executor_account_identities, to_jsonb(i) || jsonb_build_object('id', $2::text, 'subject', 'another-person'))).* from executor_account_identities i where id = $1",
++    params: [own.identity, alternateIdentity],
++  });
++  yield* database.run({
++    sql: "update executor_oauth_grants set status = 'ready_fixture' where id = $1",
++    params: [own.grant],
++  });
++  yield* database.run({
++    sql: "update executor_accounts set provider = $2, method = 'oauth', site = null, identity_id = $3, oauth_grant_id = $4 where id = $1",
++    params: [own.account, provider, own.identity, own.grant],
++  });
++  const requirements = JSON.stringify({
++    accounts: { service: { provider, scope: "user", definition, cardinality: "one" } },
++  });
++  yield* database.run({
++    sql: "update executor_deployments set requirements = requirements::jsonb || $2::jsonb where id = $1",
++    params: [own.deployment, requirements],
++  });
++  yield* database.run({
++    sql: "update executor_apps set copied_from = $2::jsonb where id = $1",
++    params: [
++      own.app,
++      JSON.stringify({
++        commit: null,
++        name: "atlassian",
++        reference: "https://catalog.example.test/catalog/apps/atlassian.json",
++      }),
++    ],
++  });
++  yield* database.run({
++    sql: "update hosted_app_account_links set requirement = 'service' where app = $1",
++    params: [own.app],
++  });
++  yield* database.run({
++    sql: "update hosted_app_access set organization_id = $2, creator_id = $3, audience = 'everyone' where id = $1",
++    params: [own.app, own.organization, own.user],
++  });
++  yield* database.run({
++    sql: "insert into hosted_account_access (account_id, organization_id, creator_id, kind, personal_user_id, audience) values ($1, $2, $3, 'personal', $3, null)",
++    params: [own.account, own.organization, own.user],
++  });
++  for (const consumer of consumers) {
++    yield* database.run({
++      sql: "insert into executor_deployments select (jsonb_populate_record(null::executor_deployments, to_jsonb(d) || jsonb_build_object('id', $2::text, 'requirements', (select requirements from executor_deployments where id = $3)))).* from executor_apps a join executor_deployments d on d.id = a.active_deployment where a.id = $1",
++      params: [fixture.sourceTemplate, consumer.version, own.deployment],
++    });
++    yield* database.run({
++      sql: "insert into executor_apps select (jsonb_populate_record(null::executor_apps, to_jsonb(a) || jsonb_build_object('id', $2::text, 'active_deployment', $3::text, 'name', $2::text, 'slug', replace($2::text, '_', '-'), 'copied_from', $4::jsonb))).* from executor_apps a where id = $1",
++      params: [
++        fixture.sourceTemplate,
++        consumer.app,
++        consumer.version,
++        JSON.stringify({
++          commit: null,
++          name: `@executor.sh/${consumer.name}`,
++          reference: `https://catalog.example.test/catalog/apps/${consumer.name}.json`,
++        }),
++      ],
++    });
++    yield* database.run({
++      sql: "insert into hosted_app_access (id, organization_id, creator_id, audience) values ($1, $2, $3, 'everyone')",
++      params: [consumer.app, own.organization, own.user],
++    });
++    yield* database.run({
++      sql: "insert into executor_accounts select (jsonb_populate_record(null::executor_accounts, to_jsonb(a) || jsonb_build_object('id', $2::text))).* from executor_accounts a where id = $1",
++      params: [own.account, consumer.account],
++    });
++    yield* database.run({
++      sql: "insert into hosted_account_access (account_id, organization_id, creator_id, kind, personal_user_id, audience) values ($1, $2, $3, 'personal', $3, null)",
++      params: [consumer.account, own.organization, own.user],
++    });
++    yield* database.run({
++      sql: "insert into hosted_app_account_links (app, requirement, account, subject, linked_by) values ($1, 'service', $2, $3, $3)",
++      params: [consumer.app, consumer.account, own.user],
++    });
++  }
++  for (const [app, name] of [
++    [own.app, "Atlassian"],
++    ...consumers.map((consumer) => [
++      consumer.app,
++      consumer.name === "jira" ? "Jira" : "Confluence",
++    ]),
++  ] as const) {
++    yield* database.run({
++      sql: "update executor_apps set name = $2::text, slug = lower($2::text) where id = $1",
++      params: [app!, name!],
++    });
++  }
++  const [jira, confluence] = consumers;
++  if (jira === undefined || confluence === undefined)
++    return yield* Effect.die("Two consumer fixtures required");
++  const operation = {
++    action: "dry-run",
++    selection: "atlassian-family-adoption-v1",
++    recipient: client.recipient,
++    request: {
++      organization: own.organization,
++      actor: own.user,
++      umbrella: { app: own.app, version: own.deployment },
++      jira: { app: jira.app, version: jira.version },
++      confluence: { app: confluence.app, version: confluence.version },
++      bindings: [
++        {
++          source: own.account,
++          requirement: "service",
++          jira: { account: jira.account, requirement: "service" },
++          confluence: { account: confluence.account, requirement: "service" },
++        },
++      ],
++    },
++  };
++  const protectedRows = database.run({
++    sql: `select
++      (select jsonb_agg(to_jsonb(a) order by id) from executor_accounts a where owner = $1) as accounts,
++      (select jsonb_agg(to_jsonb(a) order by id) from executor_oauth_grants a where owner = $1) as grants,
++      (select jsonb_agg(to_jsonb(a) order by id) from executor_account_identities a where owner = $1) as identities,
++      (select jsonb_agg(to_jsonb(a) order by id) from executor_deployments a where owner = $1) as deployments`,
++    params: [owner],
++  });
++  const Plan = Schema.Struct({
++    plan: Schema.Struct({
++      changes: Schema.Array(
++        Schema.Struct({
++          table: Schema.String,
++          key: Schema.Record(Schema.String, Schema.String),
++          action: Schema.String,
++        }),
++      ),
++    }),
++  });
++  return {
++    ...fixture,
++    ...client,
++    jira,
++    confluence,
++    alternateIdentity,
++    operation,
++    protectedRows,
++    Plan,
++  };
++});
+diff --git a/e2e/support/atlassian-adoption-rows.ts b/e2e/support/atlassian-adoption-rows.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/atlassian-adoption-rows.ts
+@@ -0,0 +1,144 @@
++import { expect } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { HttpClient } from "effect/http";
++import { randomUUID } from "node:crypto";
++import { Api, body } from "./api.ts";
++import { App } from "./contracts.ts";
++import { Workspace } from "./app-authoring.ts";
++import { Actors } from "./actors.ts";
++import { cloudLocks } from "./cloud-locks.ts";
++import { productionOpsAccount } from "./production-ops-account.ts";
++import { nextDataStepSummary } from "./data-steps.ts";
++import { Target } from "./platform.ts";
++import { Evidence } from "./evidence.ts";
++
++/** A stateless retained copy beside one real app/account, confined to this case's organization. */
++export const atlassianAdoptionRows = Effect.gen(function* () {
++  const target = yield* Target;
++  const evidence = yield* Evidence;
++  // Health answers before the first Cloud report finishes; seed only after its final pass.
++  yield* evidence.step(
++    "Wait for the boot data-step report before creating adoption fixtures",
++    Effect.gen(function* () {
++      const http = yield* HttpClient.HttpClient;
++      // Run the local cron once instead of waiting for its next wall-clock minute.
++      yield* Effect.scoped(
++        Effect.gen(function* () {
++          const response = yield* http.get(
++            `${target.metadata.origin}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent("* * * * *")}`,
++          );
++          expect(response.status).toBe(200);
++          yield* response.text;
++        }),
++      );
++      const report = yield* nextDataStepSummary(
++        `${target.directory}/cloud.log`,
++        "10_profile_app_copies",
++        0,
++      );
++      expect(report).toMatchObject({ mode: "report", status: "complete" });
++    }),
++  );
++  const actors = yield* Actors;
++  const database = yield* cloudLocks;
++  const original = yield* productionOpsAccount(actors.owner, actors.organization.id);
++  const users = yield* database
++    .run({
++      sql: 'select "userId" as id from member where "organizationId" = $1 and role = $2',
++      params: [actors.organization.id, "owner"],
++    })
++    .pipe(
++      Effect.flatMap(
++        Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ id: Schema.String }))),
++      ),
++    );
++  const user = users[0]?.id;
++  if (user === undefined) return yield* Effect.die("Fixture owner missing");
++  const own = {
++    organization: actors.organization.id,
++    user,
++    account: `acc_${randomUUID()}`,
++    app: `app_${randomUUID()}`,
++    deployment: `dpl_${randomUUID()}`,
++    grant: `acc_${randomUUID()}`,
++    identity: randomUUID(),
++  };
++  const api = yield* Api;
++  const prefix = `/api/organizations/${actors.organization.id}/apps`;
++  const originalRead = yield* api.request(
++    actors.owner,
++    "GET",
++    `${prefix}/${original.app}/workspace`,
++  );
++  expect(originalRead.status, JSON.stringify(originalRead.body)).toBe(200);
++  const originalSource = yield* body(Workspace, originalRead);
++  const deployed = yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
++    name: "Retained umbrella fixture",
++    files: originalSource.files,
++  });
++  expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++  const umbrella = yield* body(App, deployed);
++  own.app = umbrella.id;
++  const deployments = yield* database
++    .run({
++      sql: "select active_deployment as id from executor_apps where id = $1",
++      params: [own.app],
++    })
++    .pipe(
++      Effect.flatMap(
++        Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ id: Schema.String }))),
++      ),
++    );
++  if (deployments[0] === undefined) return yield* Effect.die("Umbrella deployment missing");
++  own.deployment = deployments[0].id;
++  // Initialize through the public source path, independently of migration preparation.
++  expect((yield* api.request(actors.owner, "GET", `${prefix}/${own.app}/workspace`)).status).toBe(
++    200,
++  );
++  const owner = `organization:${own.organization}`;
++  yield* Effect.addFinalizer(() =>
++    Effect.gen(function* () {
++      yield* database.run({
++        sql: "delete from hosted_app_account_links where app = $1",
++        params: [own.app],
++      });
++      yield* database.run({ sql: "delete from executor_apps where id = $1", params: [own.app] });
++      yield* database.run({
++        sql: "delete from executor_accounts where id = $1",
++        params: [own.account],
++      });
++      yield* database.run({
++        sql: "delete from executor_deployments where id = $1",
++        params: [own.deployment],
++      });
++      yield* database.run({
++        sql: "delete from executor_oauth_grants where id = $1",
++        params: [own.grant],
++      });
++      yield* database.run({
++        sql: "delete from executor_account_identities where id = $1",
++        params: [own.identity],
++      });
++    }).pipe(Effect.orDie),
++  );
++  yield* database.run({
++    sql: "insert into executor_accounts select (jsonb_populate_record(null::executor_accounts, to_jsonb(a) || jsonb_build_object('id', $2::text, 'identity_id', null, 'oauth_grant_id', null))).* from executor_accounts a where id = $1",
++    params: [original.account, own.account],
++  });
++  yield* database.run({
++    sql: "insert into executor_oauth_grants (id, owner, encrypted, status, updated_at) values ($1, $2, decode('00', 'hex'), 'active', now())",
++    params: [own.grant, owner],
++  });
++  yield* database.run({
++    sql: "insert into executor_account_identities (id, owner, placement, issuer, subject, name, label, verified_at, created_at) values ($1, $2, 'personal', 'https://auth.atlassian.com', 'verified-person', 'Atlassian', 'same@example.test', now(), now())",
++    params: [own.identity, owner],
++  });
++  yield* database.run({
++    sql: "insert into hosted_app_account_links (app, requirement, account, subject, linked_by) values ($1, 'service', $2, $3, $3)",
++    params: [own.app, own.account, own.user],
++  });
++  expect(
++    yield* database.run({ sql: "select id from executor_apps where id = $1", params: [own.app] }),
++  ).toHaveLength(1);
++  return { own, database, sourceTemplate: original.app };
++});
+diff --git a/e2e/support/atlassian-family-fixture.ts b/e2e/support/atlassian-family-fixture.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/atlassian-family-fixture.ts
+@@ -0,0 +1,280 @@
++/**
++ * Atlassian family screens: apps declared as the official Jira, Confluence and Trello sources
++ * declare their sign-in (production endpoints, no explicit identity), the browser's trip to the
++ * provider's consent page answered by synthetic issuers, and the Accounts rows they produce.
++ */
++import { expect } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import type { BrowserContext, Page } from "playwright";
++import { Actors } from "./actors.ts";
++import { Api, body } from "./api.ts";
++import { appsManifest } from "./apps-release.ts";
++import { Resource } from "./contracts.ts";
++import { dismissAccountName } from "./name-account.ts";
++
++const atlassianOAuth = (scopes: readonly string[], audience?: string) =>
++  JSON.stringify({
++    authorizationUrl: "https://auth.atlassian.com/authorize",
++    tokenUrl: "https://auth.atlassian.com/oauth/token",
++    tokenEndpointAuthMethod: "client_secret_post",
++    tokenRequestFormat: "json",
++    authorizationParams: { ...(audience === undefined ? {} : { audience }), prompt: "consent" },
++    scopes,
++  });
++
++const googleOAuth = (scopes: readonly string[]) =>
++  JSON.stringify({
++    authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
++    tokenUrl: "https://oauth2.googleapis.com/token",
++    tokenEndpointAuthMethod: "client_secret_post",
++    scopes,
++  });
++
++/** Each app names its provider as its listing does; only the auth declaration matters here. */
++export const familyApps = {
++  jira: {
++    name: "Jira",
++    hosts: ["api.atlassian.com"],
++    oauth: atlassianOAuth(["read:me", "read:jira-work", "offline_access"], "api.atlassian.com"),
++  },
++  confluence: {
++    name: "Confluence",
++    hosts: ["api.atlassian.com"],
++    oauth: atlassianOAuth(
++      ["read:me", "read:confluence-content.all", "offline_access"],
++      "api.atlassian.com",
++    ),
++  },
++  serviceManagement: {
++    name: "Jira Service Management",
++    hosts: ["api.atlassian.com"],
++    // Covered by the Jira grant, so adding it from the saved identity needs no new consent.
++    oauth: atlassianOAuth(["read:me", "offline_access"], "api.atlassian.com"),
++  },
++  // Trello shares Atlassian's authorization server but not its API audience: a separate sign-in.
++  trello: {
++    name: "Trello",
++    hosts: ["api.trello.com"],
++    oauth: atlassianOAuth(["read:board:trello", "read:member:trello", "offline_access"]),
++  },
++  gmail: {
++    name: "Gmail",
++    hosts: ["gmail.googleapis.com"],
++    oauth: googleOAuth(["https://mail.google.com/"]),
++  },
++  calendar: {
++    name: "Google Calendar",
++    hosts: ["www.googleapis.com"],
++    oauth: googleOAuth(["https://www.googleapis.com/auth/calendar"]),
++  },
++} as const;
++
++export type FamilyApp = keyof typeof familyApps;
++
++export const deployFamilyApps = (names: readonly FamilyApp[]) =>
++  Effect.gen(function* () {
++    const api = yield* Api,
++      actors = yield* Actors;
++    const prefix = `/api/organizations/${actors.organization.id}`;
++    const deployed = {} as Record<FamilyApp, { id: string; path: string }>;
++    for (const key of names) {
++      const app = familyApps[key];
++      const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++        name: app.name,
++        files: [
++          appsManifest,
++          {
++            path: "index.ts",
++            content: `import { defineApp, defineProvider, oauth2, router } from "apps";
++const service = defineProvider({ name: ${JSON.stringify(app.name)}, hosts: ${JSON.stringify(app.hosts)}, auth: { oauth: oauth2(${app.oauth}) } });
++export default defineApp({ user: { accounts: { service } } }, { tools: router({}) });`,
++          },
++        ],
++      });
++      expect(response.status, JSON.stringify(response.body)).toBe(200);
++      const { id } = yield* body(Resource, response);
++      const path = `${prefix}/apps/${id}`;
++      yield* Effect.addFinalizer(() =>
++        api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
++      );
++      deployed[key] = { id, path };
++    }
++    const Account = Schema.Struct({
++      id: Schema.String,
++      identity: Schema.optionalKey(Schema.Struct({ id: Schema.String, label: Schema.String })),
++    });
++    const account = (id: string) =>
++      Effect.gen(function* () {
++        const answer = yield* api.request(actors.owner, "GET", `${prefix}/accounts/${id}`);
++        expect(answer.status, JSON.stringify(answer.body)).toBe(200);
++        return (yield* body(Schema.Struct({ account: Account }), answer)).account;
++      });
++    return { apps: deployed, account, prefix };
++  });
++
++/**
++ * The provider's consent page is the only step a browser cannot take on loopback: the shipped
++ * authorization URL is answered by the synthetic issuer, which returns to the product's callback.
++ */
++export const routeProviderConsent = (
++  context: BrowserContext,
++  issuers: { readonly atlassian: string; readonly google: string },
++) =>
++  Promise.all(
++    (
++      [
++        ["https://auth.atlassian.com/authorize**", issuers.atlassian],
++        ["https://accounts.google.com/o/oauth2/v2/auth**", issuers.google],
++      ] as const
++    ).map(([pattern, issuer]) =>
++      context.route(pattern, (route) => {
++        const consent = new URL("/authorize", issuer);
++        consent.search = new URL(route.request().url()).search;
++        return fetch(consent, { redirect: "manual" }).then((answer) => {
++          const location = answer.headers.get("location");
++          return location === null
++            ? route.fulfill({ status: answer.status })
++            : route.fulfill({ status: 302, headers: { location } });
++        });
++      }),
++    ),
++  );
++
++/** Deterministic local family marks stand in for the logo service; any other logo fails. */
++export const routeFamilyMarks = (context: BrowserContext) =>
++  context.route("https://integrations.sh/logo/**", (route) => {
++    const fill = (
++      { "google.com": "#4285f4", "atlassian.com": "#0052cc" } as Record<string, string>
++    )[new URL(route.request().url()).pathname.split("/").pop() ?? ""];
++    return fill === undefined
++      ? route.fulfill({ status: 404 })
++      : route.fulfill({
++          contentType: "image/svg+xml",
++          body: `<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48"><rect width="48" height="48" rx="8" fill="${fill}"/></svg>`,
++        });
++  });
++
++const exactly = (names: readonly string[]) =>
++  new RegExp(`^(${names.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})$`);
++
++/** Accounts rows whose first visible app chip is one of `apps`; later apps may sit behind "+N more". */
++export const familyRows = (page: Page, apps: readonly string[]) =>
++  page.locator(".inventory-row").filter({
++    has: page
++      .locator("[data-used-by]")
++      .getByRole("link")
++      .filter({ hasText: exactly(apps) }),
++  });
++
++/** The row's mark: its accessible name and any family logo it loaded. */
++export const rowMark = (page: Page, apps: readonly string[]) =>
++  familyRows(page, apps)
++    .getByRole("img")
++    .first()
++    .evaluate((element) => ({
++      name: element.getAttribute("aria-label"),
++      logos: [...element.querySelectorAll("img")]
++        .filter((image) => image.complete && image.naturalWidth > 0)
++        .map((image) => image.currentSrc || image.src)
++        .filter((src) => src.includes("/logo/")),
++    }));
++
++export const familyMarkLoaded = (page: Page, apps: readonly string[], domain: string) =>
++  familyRows(page, apps)
++    .locator(`img[src*="/logo/${domain}"]`)
++    .evaluate((image: HTMLImageElement) =>
++      image.complete && image.naturalWidth > 0
++        ? Promise.resolve()
++        : new Promise<void>((resolve, reject) => {
++            image.addEventListener("load", () => resolve(), { once: true });
++            image.addEventListener("error", () => reject(new Error("family mark failed")), {
++              once: true,
++            });
++          }),
++    );
++
++/** Every app the row is used by, opening its "+N more" list when the cell is collapsed. */
++export const rowApps = (page: Page, apps: readonly string[]) => {
++  const row = familyRows(page, apps);
++  const more = row.locator("[data-used-by-more]");
++  return row
++    .locator("[data-used-by]")
++    .getByRole("link")
++    .allInnerTexts()
++    .then((visible) =>
++      more.count().then((count) =>
++        count === 0
++          ? visible.map((name) => name.trim()).sort()
++          : more
++              .click()
++              .then(() => page.locator("[data-used-by-list]").getByRole("link").allInnerTexts())
++              .then((hidden) =>
++                page.keyboard
++                  .press("Escape")
++                  .then(() => [...visible, ...hidden].map((name) => name.trim()).sort()),
++              ),
++      ),
++    );
++};
++
++/**
++ * A loopback callback makes the product open the provider in a new tab. The callback page in that
++ * tab completes the connection, asks to name a new account (a reconnect keeps its name) and
++ * returns that tab to the app's Accounts view. The starting tab stays on its paste-the-address
++ * step and is not used to finish. `start` is the click that opens the provider.
++ */
++export const finishInNewTab = (
++  page: Page,
++  appId: string,
++  start: () => Promise<unknown>,
++  named = true,
++) =>
++  Promise.all([page.context().waitForEvent("page"), start()]).then(([tab]) =>
++    tab
++      .waitForURL(
++        (url) =>
++          url.pathname.endsWith(`/apps/${appId}`) && url.searchParams.get("view") === "accounts",
++      )
++      .then(() => (named ? dismissAccountName(tab) : undefined))
++      .then(() => tab.close()),
++  );
++
++/** Finish the already-open shared consent form without navigating away from what was inspected. */
++export const finishAppSignIn = (
++  page: Page,
++  appId: string,
++  provider: string,
++  include: readonly string[] = [],
++) =>
++  include
++    .reduce(
++      (done, name) =>
++        done.then(() =>
++          page
++            .getByRole("group", { name: "Connect more apps in this sign-in" })
++            .getByRole("checkbox", { name, exact: true })
++            .check(),
++        ),
++      Promise.resolve(),
++    )
++    .then(() =>
++      finishInNewTab(page, appId, () =>
++        page
++          .getByRole("button", {
++            name: new RegExp(`^(Connect ${provider}|Continue with (Atlassian|Google))$`),
++          })
++          .click(),
++      ),
++    );
++
++/** Connect a new account from the app's own Accounts view, including `include` in one sign-in. */
++export const signInFromApp = (
++  page: Page,
++  app: { readonly url: string; readonly id: string },
++  provider: string,
++  include: readonly string[] = [],
++) =>
++  page
++    .goto(app.url)
++    .then(() => page.getByRole("button", { name: "Connect new account", exact: true }).click())
++    .then(() => finishAppSignIn(page, app.id, provider, include));
+diff --git a/e2e/support/atlassian-family-product.ts b/e2e/support/atlassian-family-product.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/atlassian-family-product.ts
+@@ -0,0 +1,169 @@
++import { Effect, FileSystem, Path, Schema } from "effect";
++import { ChildProcess, ChildProcessSpawner } from "effect/process";
++import { Target } from "./platform.ts";
++import { serverControl } from "./server-control.ts";
++import { targetHosts } from "./role-hosts.ts";
++
++// Each scenario runs identical code with validated JSON inputs; check the first copy once.
++let transportTypechecked = false;
++
++const Requests = Schema.Array(
++  Schema.Struct({ method: Schema.String, host: Schema.String, path: Schema.String }),
++);
++
++export const atlassianFamilyClients = {
++  atlassian: { id: "atlassian-family-fixture-client", secret: "atlassian-family-fixture-secret" },
++  google: {
++    id: "atlassian-family-fixture.apps.googleusercontent.com",
++    secret: "atlassian-family-google-secret",
++  },
++} as const;
++
++/**
++ * Keep the shipped Atlassian and Google clients, recipes and endpoints; replace only the external
++ * HTTP transport. Atlassian's JSON token request becomes the synthetic issuer's form request, and
++ * `api.atlassian.com/me` is the issuer's account profile, so subjects and emails stay the
++ * issuer's own.
++ */
++export const atlassianFamilyProduct = (issuers: {
++  readonly atlassian: string;
++  readonly google: string;
++}) =>
++  Effect.gen(function* () {
++    const target = yield* Target,
++      fs = yield* FileSystem.FileSystem,
++      path = yield* Path.Path,
++      processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++    const entry = path.join(target.directory, "atlassian-family-product.ts");
++    const observations = path.join(target.directory, "atlassian-family-requests.jsonl");
++    yield* fs.writeFileString(observations, "");
++    yield* fs.writeFileString(
++      path.join(target.directory, "atlassian-family-transport.json"),
++      JSON.stringify({ ...issuers, observations }),
++    );
++    yield* fs.writeFileString(
++      entry,
++      `import * as Runtime from "@effect/platform-bun/BunRuntime";
++import { main } from "@executor-js/hosted-self-host/server";
++import { appendFileSync, readFileSync } from "node:fs";
++import { Schema } from "effect";
++const { atlassian, google, observations } = Schema.decodeUnknownSync(Schema.Struct({
++  atlassian: Schema.String, google: Schema.String, observations: Schema.String,
++}))(JSON.parse(readFileSync(new URL("./atlassian-family-transport.json", import.meta.url), "utf8")));
++const transport = globalThis.fetch;
++const forward = async (origin: string, destination: string, request: Request, body?: string) => {
++  const headers = new Headers(request.headers);
++  headers.delete("host");
++  headers.delete("content-length");
++  if (body !== undefined) headers.set("content-type", "application/x-www-form-urlencoded");
++  return transport(origin + destination, {
++    method: request.method,
++    headers,
++    ...(request.method === "GET" || request.method === "HEAD"
++      ? {}
++      : { body: body ?? (await request.text()) }),
++  });
++};
++globalThis.fetch = async (input, init) => {
++  const url = new URL(input instanceof Request ? input.url : String(input));
++  // The host's safe HTTP adapter pins the IP and preserves the original HTTP Host.
++  const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
++  const host = headers.get("host") ?? url.host;
++  const hosts = ["auth.atlassian.com", "api.atlassian.com", "accounts.google.com", "oauth2.googleapis.com", "openidconnect.googleapis.com"];
++  if (!hosts.includes(host)) return transport(input, init);
++  const request = new Request(input, init);
++  appendFileSync(observations, JSON.stringify({ method: request.method, host, path: url.pathname }) + "\\n");
++  if (host === "auth.atlassian.com" && url.pathname === "/oauth/token" && request.method === "POST") {
++    // Atlassian takes a JSON token request; the synthetic issuer reads the same fields as a form.
++    const text = await request.text();
++    const json = request.headers.get("content-type")?.includes("json") === true;
++    const fields = json
++      ? new URLSearchParams(Object.entries(JSON.parse(text) as Record<string, unknown>).flatMap(([key, value]) =>
++          typeof value === "string" ? [[key, value]] : []))
++      : new URLSearchParams(text);
++    return forward(atlassian, "/token", request, fields.toString());
++  }
++  if (host === "api.atlassian.com" && url.pathname === "/me") return forward(atlassian, "/profile", request);
++  if (host === "api.atlassian.com" && url.pathname === "/oauth/token/accessible-resources") {
++    const answer = await forward(atlassian, "/resource", request);
++    return answer.ok
++      ? Response.json([{ id: "synthetic-cloud", name: "Synthetic site", url: "https://synthetic.example.test", scopes: [] }])
++      : new Response(null, { status: answer.status });
++  }
++  if (host === "accounts.google.com" && url.pathname === "/.well-known/oauth-authorization-server")
++    return new Response(null, { status: 404 });
++  if (host === "accounts.google.com" && url.pathname === "/.well-known/openid-configuration")
++    return Response.json({
++      issuer: "https://accounts.google.com",
++      authorization_endpoint: "https://accounts.google.com/o/oauth2/v2/auth",
++      token_endpoint: "https://oauth2.googleapis.com/token",
++      userinfo_endpoint: "https://openidconnect.googleapis.com/v1/userinfo",
++      code_challenge_methods_supported: ["S256"],
++      token_endpoint_auth_methods_supported: ["client_secret_post"],
++    });
++  if (host === "oauth2.googleapis.com" && url.pathname === "/token") return forward(google, "/token", request);
++  if (host === "openidconnect.googleapis.com" && url.pathname === "/v1/userinfo") return forward(google, "/userinfo", request);
++  throw new Error("Unexpected Atlassian family fixture request: " + host + url.pathname);
++};
++Runtime.runMain(main);
++`,
++    );
++    const packages = path.join(target.directory, "node_modules", "@executor-js");
++    yield* fs.makeDirectory(packages, { recursive: true });
++    const product = path.join(packages, "hosted-self-host");
++    if (!(yield* fs.exists(product)))
++      yield* fs.symlink(path.resolve("apps/hosted/self-host"), product);
++    const config = path.join(target.directory, "atlassian-family-product.json");
++    yield* fs.writeFileString(
++      config,
++      JSON.stringify({
++        extends: path.resolve("tsconfig.json"),
++        compilerOptions: { typeRoots: [path.resolve("node_modules/@types")] },
++        files: [entry],
++        include: [],
++        exclude: [],
++      }),
++    );
++    if (!transportTypechecked) {
++      const checked = yield* processes.exitCode(
++        ChildProcess.make(path.resolve("node_modules/.bin/tsc-rs"), ["--noEmit", "-p", config], {
++          stdout: "inherit",
++          stderr: "inherit",
++        }),
++      );
++      if (checked !== 0)
++        return yield* Effect.die("Atlassian family transport failed its typecheck");
++      transportTypechecked = true;
++    }
++    const start = Effect.gen(function* () {
++      yield* serverControl("stop");
++      yield* serverControl("environment", 200, {
++        EXECUTOR_E2E_PRODUCT_ENTRY: entry,
++        EXECUTOR_OAUTH_CALLBACK_URL: targetHosts(target).browser + "/oauth/callback",
++        EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID: atlassianFamilyClients.atlassian.id,
++        EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET: atlassianFamilyClients.atlassian.secret,
++        EXECUTOR_OAUTH_TRELLO_CLIENT_ID: atlassianFamilyClients.atlassian.id,
++        EXECUTOR_OAUTH_TRELLO_CLIENT_SECRET: atlassianFamilyClients.atlassian.secret,
++        EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: atlassianFamilyClients.google.id,
++        EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: atlassianFamilyClients.google.secret,
++      });
++      yield* serverControl("start");
++    });
++    return {
++      start,
++      startAfterLegacyWrite: serverControl("environment", 200, {
++        EXECUTOR_OAUTH_CALLBACK_URL: targetHosts(target).browser + "/oauth/callback",
++      }).pipe(Effect.andThen(serverControl("start"))),
++      requests: fs.readFileString(observations).pipe(
++        Effect.flatMap((text) =>
++          Schema.decodeUnknownEffect(Requests)(
++            text
++              .trim()
++              .split("\n")
++              .filter(Boolean)
++              .map((line) => JSON.parse(line)),
++          ),
++        ),
++      ),
++    };
++  });
+diff --git a/e2e/support/atlassian-source-proof.ts b/e2e/support/atlassian-source-proof.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/atlassian-source-proof.ts
+@@ -0,0 +1,184 @@
++import { expect } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Api, body } from "./api.ts";
++import { Actors } from "./actors.ts";
++import { Workspace, Committed } from "./app-authoring.ts";
++import { atlassianAdoptionFixture } from "./atlassian-adoption-fixture.ts";
++import { DryRun } from "./production-ops-migration-proof.ts";
++
++export const savedSourceProof = Effect.gen(function* () {
++  const p = yield* atlassianAdoptionFixture;
++  const actors = yield* Actors;
++  const api = yield* Api;
++  const response = yield* p.request(p.operation);
++  expect(response.status, JSON.stringify(response.body)).toBe(200);
++  const dry = yield* body(DryRun, response);
++  const path = `/api/organizations/${p.own.organization}/apps/${p.own.app}`;
++  const working = yield* body(
++    Workspace,
++    yield* api.request(actors.owner, "GET", `${path}/workspace`),
++  );
++  const files = [
++    ...working.files,
++    { path: "saved-work.md", content: "Keep this private source edit.\n" },
++  ];
++  const save = yield* api.request(actors.owner, "POST", `${path}/commits`, {
++    expected: working.revision.commit,
++    files,
++    message: "Save private app work",
++  });
++  expect(save.status).toBe(200);
++  const committed = yield* body(Committed, save);
++  const protectedRows = yield* p.protectedRows;
++  expect(
++    (yield* p.request({
++      ...p.operation,
++      action: "apply",
++      artifact: dry.artifact,
++      planSha256: dry.artifact.sha256,
++      backupSha256: dry.backupSha256,
++      go: `GO ${dry.artifact.sha256}`,
++    })).status,
++  ).toBe(409);
++  expect((yield* p.request(p.operation)).status).toBe(409);
++  const retained = yield* api.request(actors.owner, "GET", `${path}/workspace`);
++  expect(retained.status).toBe(200);
++  const source = yield* body(Workspace, retained);
++  expect(source.revision).toEqual(committed.revision);
++  expect(source.files).toEqual(
++    expect.arrayContaining([
++      { path: "saved-work.md", content: "Keep this private source edit.\n" },
++    ]),
++  );
++  expect(yield* p.protectedRows).toEqual(protectedRows);
++  // An uncertain earlier write fences retirement, not the person's subsequent saves.
++  const codes = yield* p.database
++    .run({ sql: "select code from executor_apps where id = $1", params: [p.own.app] })
++    .pipe(
++      Effect.flatMap(
++        Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ code: Schema.String }))),
++      ),
++    );
++  const code = codes[0]?.code;
++  if (code === undefined) return yield* Effect.die("Retained source lineage missing");
++  yield* p.database.run({
++    sql: "update hosted_source_write_frontiers set active_writes = 1 where code = $1",
++    params: [code],
++  });
++  expect((yield* p.request(p.operation)).status).toBe(409);
++  const continued = yield* api.request(actors.owner, "POST", `${path}/commits`, {
++    expected: source.revision.commit,
++    files: [...source.files, { path: "continued-work.md", content: "Normal writes still work.\n" }],
++    message: "Continue after uncertain write",
++  });
++  expect(continued.status, JSON.stringify(continued.body)).toBe(200);
++  const continuedRevision = yield* body(Committed, continued);
++  const continuedSource = yield* body(
++    Workspace,
++    yield* api.request(actors.owner, "GET", `${path}/workspace`),
++  );
++  expect(continuedSource.revision).toEqual(continuedRevision.revision);
++  expect(continuedSource.files).toEqual(
++    expect.arrayContaining([{ path: "continued-work.md", content: "Normal writes still work.\n" }]),
++  );
++  expect(
++    yield* p.database.run({
++      sql: "select active_writes from hosted_source_write_frontiers where code = $1",
++      params: [code],
++    }),
++  ).toEqual([{ active_writes: 1 }]);
++  expect((yield* p.request(p.operation)).status).toBe(409);
++  expect(yield* p.protectedRows).toEqual(protectedRows);
++});
++
++/** A direct-files deploy and its later replacement both leave the Git workspace unchanged. */
++export const deployedSourceProof = Effect.gen(function* () {
++  const p = yield* atlassianAdoptionFixture;
++  const actors = yield* Actors;
++  const api = yield* Api;
++  const response = yield* p.request(p.operation);
++  expect(response.status, JSON.stringify(response.body)).toBe(200);
++  const dry = yield* body(DryRun, response);
++  const path = `/api/organizations/${p.own.organization}/apps/${p.own.app}`;
++  const original = yield* body(
++    Workspace,
++    yield* api.request(actors.owner, "GET", `${path}/workspace`),
++  );
++  const savedFile = { path: "saved-deployment.md", content: "Preserve this deployed source.\n" };
++  const deployed = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
++    files: [...original.files, savedFile],
++  });
++  expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++  const edited = yield* body(
++    Schema.Struct({ version: Schema.Struct({ id: Schema.String }) }),
++    deployed,
++  );
++  expect(
++    (yield* body(Workspace, yield* api.request(actors.owner, "GET", `${path}/workspace`))).revision,
++  ).toEqual(original.revision);
++  const protectedRows = yield* p.protectedRows;
++  expect(
++    (yield* p.request({
++      ...p.operation,
++      action: "apply",
++      artifact: dry.artifact,
++      planSha256: dry.artifact.sha256,
++      backupSha256: dry.backupSha256,
++      go: `GO ${dry.artifact.sha256}`,
++    })).status,
++  ).toBe(409);
++  const refuseSource = (response: Parameters<typeof body>[1]) =>
++    Effect.gen(function* () {
++      const failure = yield* body(
++        Schema.Struct({
++          failure: Schema.Struct({
++            source: Schema.Struct({
++              code: Schema.String,
++              version: Schema.String,
++              expected: Schema.String,
++              actual: Schema.String,
++            }),
++          }),
++        }),
++        response,
++      );
++      expect(failure.failure.source).toMatchObject({
++        code: original.revision.code,
++        version: edited.version.id,
++      });
++      expect(failure.failure.source.expected).toMatch(/^[a-f0-9]{64}$/u);
++      expect(failure.failure.source.actual).toMatch(/^[a-f0-9]{64}$/u);
++      expect(failure.failure.source.actual).not.toBe(failure.failure.source.expected);
++    });
++  const inspect = (version: string) =>
++    p.request({
++      ...p.operation,
++      request: { ...p.operation.request, umbrella: { app: p.own.app, version } },
++    });
++  const refused = yield* inspect(edited.version.id);
++  expect(refused.status).toBe(409);
++  yield* refuseSource(refused);
++  const source = yield* api.request(actors.owner, "GET", `${path}/source`);
++  expect(source.status).toBe(200);
++  expect((yield* body(Schema.Struct({ files: Workspace.fields.files }), source)).files).toEqual(
++    expect.arrayContaining([savedFile]),
++  );
++  expect(yield* p.protectedRows).toEqual(protectedRows);
++  // Checking only the active version would miss edited work after a later deployment replaces it.
++  const restored = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
++    files: original.files,
++  });
++  expect(restored.status, JSON.stringify(restored.body)).toBe(200);
++  const active = yield* body(
++    Schema.Struct({ version: Schema.Struct({ id: Schema.String }) }),
++    restored,
++  );
++  const afterRestore = yield* p.protectedRows;
++  const historical = yield* inspect(active.version.id);
++  expect(historical.status).toBe(409);
++  yield* refuseSource(historical);
++  expect(yield* p.protectedRows).toEqual(afterRestore);
++  expect(
++    (yield* body(Workspace, yield* api.request(actors.owner, "GET", `${path}/workspace`))).revision,
++  ).toEqual(original.revision);
++});
+diff --git a/e2e/tests/atlassian-family-adoption.spec.ts b/e2e/tests/atlassian-family-adoption.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/atlassian-family-adoption.spec.ts
+@@ -0,0 +1,139 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { body } from "../support/api.ts";
++import { Actors } from "../support/actors.ts";
++import { Browser } from "../support/browser.ts";
++import { Evidence } from "../support/evidence.ts";
++import { routeFamilyMarks } from "../support/atlassian-family-fixture.ts";
++import { atlassianAdoptionFixture } from "../support/atlassian-adoption-fixture.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Applied, DryRun } from "../support/production-ops-migration-proof.ts";
++import { savedSourceProof, deployedSourceProof } from "../support/atlassian-source-proof.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Atlassian family adoption", (it) => {
++  it.effect(scenarios.cloudAtlassianFamilyAdoption.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const p = yield* atlassianAdoptionFixture;
++        const browser = yield* Browser,
++          actors = yield* Actors,
++          evidence = yield* Evidence;
++        yield* browser.omitNetworkTrace;
++        yield* browser.login(actors.owner);
++        yield* browser.use("Use local fixture provider marks", (page) =>
++          routeFamilyMarks(page.context()),
++        );
++        const captureApps = (state: "before" | "after") =>
++          Effect.gen(function* () {
++            for (const width of [1280, 390] as const) {
++              const png = yield* browser.use(`Read ${state} adoption Apps at ${width} px`, (page) =>
++                page
++                  .setViewportSize({ width, height: width === 390 ? 844 : 900 })
++                  .then(() => page.goto(`/org/${actors.organization.slug}/apps`))
++                  .then(() => page.getByText("Jira", { exact: true }).waitFor())
++                  .then(() => page.getByText("Confluence", { exact: true }).waitFor())
++                  .then(() => page.getByText("Atlassian", { exact: true }).count())
++                  .then((count) => {
++                    expect(count).toBe(state === "before" ? 1 : 0);
++                  })
++                  .then(() => page.screenshot({ fullPage: true })),
++              );
++              yield* evidence.attach(`atlassian-apps-${state}-${width}.png`, "image/png", png);
++            }
++          });
++        yield* captureApps("before");
++        // The first dashboard read materializes its built-in account before the migration snapshot.
++        const before = yield* p.protectedRows;
++        const apply = (dry: typeof DryRun.Type) => ({
++          ...p.operation,
++          action: "apply",
++          artifact: dry.artifact,
++          planSha256: dry.artifact.sha256,
++          backupSha256: dry.backupSha256,
++          go: `GO ${dry.artifact.sha256}`,
++        });
++        // Unverified legacy accounts must reconnect, even when the label matches.
++        yield* p.database.run({
++          sql: "update executor_accounts set identity_id = null where id = $1",
++          params: [p.jira.account],
++        });
++        expect((yield* p.request(p.operation)).status).toBe(409);
++        yield* p.database.run({
++          sql: "update executor_accounts set identity_id = $2 where id = $1",
++          params: [p.jira.account, p.own.identity],
++        });
++        // A verified, different subject with the same label cannot be adopted by inference.
++        yield* p.database.run({
++          sql: "update executor_accounts set identity_id = $2 where id = $1",
++          params: [p.jira.account, p.alternateIdentity],
++        });
++        expect((yield* p.request(p.operation)).status).toBe(409);
++        yield* p.database.run({
++          sql: "update executor_accounts set identity_id = $2 where id = $1",
++          params: [p.jira.account, p.own.identity],
++        });
++        yield* p.database.run({
++          sql: "insert into executor_app_records (id, app, table_name, record_key, value) values ($1, $1, 'saved', 'work', '{}'::jsonb)",
++          params: [p.own.app],
++        });
++        expect((yield* p.request(p.operation)).status).toBe(409);
++        yield* p.database.run({
++          sql: "delete from executor_app_records where app = $1",
++          params: [p.own.app],
++        });
++        expect(yield* p.protectedRows).toEqual(before);
++        const response = yield* p.request(p.operation);
++        expect(response.status, JSON.stringify(response.body)).toBe(200);
++        const dry = yield* body(DryRun, response);
++        const plan = yield* Schema.decodeUnknownEffect(p.Plan)(p.decrypt(dry.artifact));
++        expect(plan.plan.changes.filter((change) => change.table === "executor_apps")).toEqual([
++          expect.objectContaining({ key: { id: p.own.app }, action: "delete" }),
++        ]);
++        expect(
++          plan.plan.changes.some((change) =>
++            ["executor_accounts", "executor_oauth_grants", "executor_deployments"].includes(
++              change.table,
++            ),
++          ),
++        ).toBe(false);
++        yield* p.database.run({
++          sql: "update executor_accounts set label = 'changed after review' where id = $1",
++          params: [p.jira.account],
++        });
++        const changed = yield* p.protectedRows;
++        expect((yield* p.request(apply(dry))).status).toBe(409);
++        expect(yield* p.protectedRows).toEqual(changed);
++        const freshResponse = yield* p.request(p.operation);
++        expect(freshResponse.status, JSON.stringify(freshResponse.body)).toBe(200);
++        const fresh = yield* body(DryRun, freshResponse);
++        const applied = yield* p.request(apply(fresh));
++        expect(applied.status, JSON.stringify(applied.body)).toBe(200);
++        expect(yield* body(Applied, applied)).toMatchObject({
++          repeated: false,
++          verification: { ok: true },
++        });
++        expect(yield* p.protectedRows).toEqual(changed);
++        expect(
++          yield* p.database.run({
++            sql: "select id from executor_apps where id = $1",
++            params: [p.own.app],
++          }),
++        ).toEqual([]);
++        yield* captureApps("after");
++        const replay = yield* p.request(apply(fresh));
++        expect(replay.status, JSON.stringify(replay.body)).toBe(200);
++        expect((yield* body(Applied, replay)).repeated).toBe(true);
++        expect(yield* p.protectedRows).toEqual(changed);
++      }),
++    ),
++  );
++
++  it.effect(scenarios.cloudAtlassianFamilySourcePreservation.title, (context) =>
++    withHostedCase(context, savedSourceProof),
++  );
++  it.effect(scenarios.cloudAtlassianFamilyDeployedSource.title, (context) =>
++    withHostedCase(context, deployedSourceProof),
++  );
++});
+diff --git a/e2e/tests/atlassian-family-screens.spec.ts b/e2e/tests/atlassian-family-screens.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/atlassian-family-screens.spec.ts
+@@ -0,0 +1,447 @@
++/** Jira and Confluence share one Atlassian sign-in the way Gmail and Calendar share Google. */
++import { expect, layer } from "@effect/vitest";
++import { Effect } from "effect";
++import type { Page } from "playwright";
++import { Actors } from "../support/actors.ts";
++import { accountIdentityIssuer } from "../support/account-identity-issuer.ts";
++import {
++  atlassianFamilyClients,
++  atlassianFamilyProduct,
++} from "../support/atlassian-family-product.ts";
++import {
++  deployFamilyApps,
++  familyMarkLoaded,
++  finishInNewTab,
++  familyRows,
++  rowApps,
++  rowMark,
++  routeFamilyMarks,
++  routeProviderConsent,
++  signInFromApp,
++  finishAppSignIn,
++} from "../support/atlassian-family-fixture.ts";
++import { linkedAccountIds } from "../support/app-accounts.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Evidence } from "../support/evidence.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { scenarios } from "../test-plan.ts";
++
++const consentApps = (page: Page) => {
++  const boxes = page
++    .getByRole("group", { name: "Connect more apps in this sign-in" })
++    .getByRole("checkbox");
++  return page
++    .getByRole("button", { name: /^(Connect (Gmail|Jira)|Continue with (Google|Atlassian))$/ })
++    .waitFor()
++    .then(() =>
++      boxes.evaluateAll((items) =>
++        items.map((box) => box.closest("label")?.textContent?.trim() ?? "").sort(),
++      ),
++    );
++};
++
++const fits = (page: Page) =>
++  page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
++
++/** Two synthetic issuers behind the shipped endpoints, the product restarted on that transport. */
++const familySetup = (names: Parameters<typeof deployFamilyApps>[0]) =>
++  Effect.gen(function* () {
++    const atlassian = yield* accountIdentityIssuer,
++      google = yield* accountIdentityIssuer;
++    // Compile the transport while the first server deploys the apps; restart after both finish.
++    const [transport, fixture] = yield* Effect.all(
++      [
++        atlassianFamilyProduct({ atlassian: atlassian.origin, google: google.origin }),
++        deployFamilyApps(names),
++      ],
++      { concurrency: 2 },
++    );
++    yield* transport.start;
++    return { atlassian, google, transport, fixture };
++  });
++
++const openBrowser = (issuers: { atlassian: string; google: string }) =>
++  Effect.gen(function* () {
++    const browser = yield* Browser,
++      actors = yield* Actors;
++    yield* browser.omitNetworkTrace;
++    yield* browser.login(actors.owner);
++    yield* browser.use("Answer provider consent and family marks on loopback", (page) =>
++      Promise.all([
++        routeProviderConsent(page.context(), issuers),
++        routeFamilyMarks(page.context()),
++      ]),
++    );
++    return {
++      accounts: `/org/${actors.organization.slug}/accounts`,
++      app: (id: string) => ({
++        id,
++        url: `/org/${actors.organization.slug}/apps/${id}?view=accounts`,
++      }),
++    };
++  });
++
++layer(HostedLive, { excludeTestServices: true })("Atlassian family screens", (it) => {
++  it.effect(scenarios.atlassianFamilyScreens.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors,
++          browser = yield* Browser,
++          evidence = yield* Evidence;
++        const { atlassian, google, transport, fixture } = yield* familySetup([
++          "jira",
++          "confluence",
++          "serviceManagement",
++          "trello",
++          "gmail",
++          "calendar",
++        ]);
++        const urls = yield* openBrowser({ atlassian: atlassian.origin, google: google.origin });
++        const capture = (name: string) =>
++          Effect.flatMap(
++            browser.use(`Capture ${name}`, (page) => page.screenshot({ fullPage: true })),
++            (png) => evidence.attach(name, "image/png", png),
++          );
++        yield* browser.use("Use desktop width", (page) =>
++          page.setViewportSize({ width: 1280, height: 900 }),
++        );
++
++        // Google is the reference: one sign-in offers the other Google app, nothing else.
++        const gmail = fixture.apps.gmail;
++        const googleTargets = yield* browser.use("Open a fresh Gmail connection", (page) =>
++          page
++            .goto(urls.app(gmail.id).url)
++            .then(() =>
++              page.getByRole("button", { name: "Connect new account", exact: true }).click(),
++            )
++            .then(() => consentApps(page)),
++        );
++        yield* capture("google-consent-1280.png");
++        expect(googleTargets).toEqual(["Google Calendar"]);
++        yield* browser.use("Connect Gmail and Google Calendar in one Google sign-in", (page) =>
++          finishAppSignIn(page, gmail.id, "Gmail", ["Google Calendar"]),
++        );
++        expect((yield* google.metrics).authorizations).toBe(1);
++
++        // Jira gets the same consent, offering exactly the Atlassian apps.
++        const jira = fixture.apps.jira;
++        const atlassianTargets = yield* browser.use("Open a fresh Jira connection", (page) =>
++          page
++            .goto(urls.app(jira.id).url)
++            .then(() =>
++              page.getByRole("button", { name: "Connect new account", exact: true }).click(),
++            )
++            .then(() => consentApps(page)),
++        );
++        yield* capture("atlassian-consent-1280.png");
++        yield* browser.use("Use phone width for the Atlassian form", (page) =>
++          page.setViewportSize({ width: 390, height: 844 }),
++        );
++        yield* capture("atlassian-consent-390.png");
++        expect(yield* browser.use("Check the phone sign-in form fits", fits)).toBe(true);
++        yield* browser.use("Restore desktop width", (page) =>
++          page.setViewportSize({ width: 1280, height: 900 }),
++        );
++        expect(
++          atlassianTargets,
++          "Trello and Google apps are not Atlassian sign-in consumers",
++        ).toEqual(["Confluence", "Jira Service Management"]);
++        yield* browser.use("Connect Jira and Confluence in one Atlassian sign-in", (page) =>
++          finishAppSignIn(page, jira.id, "Jira", ["Confluence"]),
++        );
++        expect((yield* atlassian.metrics).authorizations, "one Atlassian sign-in").toBe(1);
++        const identityOf = (app: "jira" | "confluence" | "trello" | "gmail" | "calendar") =>
++          Effect.gen(function* () {
++            const links = yield* linkedAccountIds(actors.owner, fixture.apps[app].path);
++            expect(links, `${app} has one saved account`).toHaveLength(1);
++            return yield* fixture.account(links[0]!);
++          });
++        const jiraAccount = yield* identityOf("jira");
++        const confluenceAccount = yield* identityOf("confluence");
++        expect(jiraAccount.identity?.id).toBeDefined();
++        expect(confluenceAccount.identity?.id).toBe(jiraAccount.identity?.id);
++        const gmailAccount = yield* identityOf("gmail");
++        expect((yield* identityOf("calendar")).identity?.id).toBe(gmailAccount.identity?.id);
++        expect(gmailAccount.identity?.id).not.toBe(jiraAccount.identity?.id);
++
++        // Trello uses Atlassian's authorization server for another audience: its own sign-in.
++        yield* atlassian.configure({ subject: "trello-member" });
++        const trello = fixture.apps.trello;
++        const trelloTargets = yield* browser.use("Open a fresh Trello connection", (page) =>
++          page
++            .goto(urls.app(trello.id).url)
++            .then(() =>
++              page.getByRole("button", { name: "Connect new account", exact: true }).click(),
++            )
++            .then(() => page.getByRole("button", { name: "Connect Trello", exact: true }).waitFor())
++            .then(() =>
++              page.getByRole("group", { name: "Connect more apps in this sign-in" }).count(),
++            ),
++        );
++        expect(trelloTargets, "Trello offers no Atlassian consumers").toBe(0);
++        yield* browser.use("Connect Trello with its own sign-in", (page) => {
++          const client = page.getByRole("textbox", { name: "Client ID", exact: true });
++          return client
++            .count()
++            .then((shown) =>
++              shown === 0
++                ? undefined
++                : client
++                    .fill(atlassianFamilyClients.atlassian.id)
++                    .then(() =>
++                      page
++                        .getByLabel("Client secret", { exact: true })
++                        .fill(atlassianFamilyClients.atlassian.secret),
++                    ),
++            )
++            .then(() =>
++              finishInNewTab(page, trello.id, () =>
++                page.getByRole("button", { name: "Connect Trello", exact: true }).click(),
++              ),
++            );
++        });
++        const trelloAccount = yield* identityOf("trello");
++        expect(trelloAccount.id).not.toBe(jiraAccount.id);
++        expect(trelloAccount.identity?.id).not.toBe(jiraAccount.identity?.id);
++
++        const inspectAccounts = (width: 1280 | 390) =>
++          Effect.gen(function* () {
++            yield* browser.use(`Open Accounts at ${width} px`, (page) =>
++              page
++                .setViewportSize({ width, height: width === 390 ? 844 : 900 })
++                .then(() => page.goto(urls.accounts))
++                .then(() => familyRows(page, ["Jira", "Confluence"]).waitFor())
++                .then(() =>
++                  Promise.all([
++                    familyMarkLoaded(page, ["Jira", "Confluence"], "atlassian.com"),
++                    familyMarkLoaded(page, ["Gmail", "Google Calendar"], "google.com"),
++                  ]),
++                ),
++            );
++            // Captured before the checks, so a failing run still shows what it read.
++            yield* capture(`atlassian-family-accounts-${width}.png`);
++            const atlassianApps = yield* browser.use("Read the Atlassian apps", (page) =>
++              rowApps(page, ["Jira", "Confluence"]),
++            );
++            const googleApps = yield* browser.use("Read the Google apps", (page) =>
++              rowApps(page, ["Gmail", "Google Calendar"]),
++            );
++            const trelloApps = yield* browser.use("Read the Trello apps", (page) =>
++              rowApps(page, ["Trello"]),
++            );
++            const [atlassianRows, atlassianMark, googleMark, trelloMark, fitted] =
++              yield* browser.use(`Read the family marks at ${width} px`, (page) =>
++                Promise.all([
++                  familyRows(page, ["Jira", "Confluence"]).count(),
++                  rowMark(page, ["Jira", "Confluence"]),
++                  rowMark(page, ["Gmail", "Google Calendar"]),
++                  rowMark(page, ["Trello"]),
++                  fits(page),
++                ]),
++              );
++            expect(atlassianRows, "one Atlassian row").toBe(1);
++            expect(atlassianApps).toEqual(["Confluence", "Jira"]);
++            expect(atlassianMark.name).toBe("Atlassian");
++            expect(atlassianMark.logos).toHaveLength(1);
++            expect(atlassianMark.logos[0]).toContain("/logo/atlassian.com");
++            expect(googleApps).toEqual(["Gmail", "Google Calendar"]);
++            expect(googleMark.name).toBe("Google");
++            expect(trelloApps, "Trello is its own row").toEqual(["Trello"]);
++            expect(trelloMark.name).not.toBe("Atlassian");
++            expect(fitted, `no horizontal overflow at ${width} px`).toBe(true);
++          });
++        yield* inspectAccounts(1280);
++        yield* inspectAccounts(390);
++
++        // Reuse: a later Atlassian app joins the saved identity without another consent.
++        yield* browser.use("Use desktop width for the row menu", (page) =>
++          page.setViewportSize({ width: 1280, height: 900 }),
++        );
++        yield* browser.use("Add an Atlassian app from the saved account", (page) =>
++          familyRows(page, ["Jira", "Confluence"])
++            .getByRole("button", { name: /^Manage / })
++            .click()
++            .then(() =>
++              page.getByRole("menuitem", { name: "Add Atlassian app", exact: true }).click(),
++            )
++            .then(() => page.getByRole("combobox", { name: "App", exact: true }).click())
++            .then(() =>
++              page.getByRole("option", { name: "Jira Service Management", exact: true }).click(),
++            )
++            .then(() => page.getByRole("button", { name: "Add app", exact: true }).waitFor()),
++        );
++        yield* capture("atlassian-family-add-app-1280.png");
++        yield* browser.use("Connect the covered app", (page) =>
++          page
++            .getByRole("button", { name: "Add app", exact: true })
++            .click()
++            .then(() =>
++              page.getByRole("status").filter({ hasText: "Jira Service Management" }).waitFor(),
++            )
++            .then(() => page.getByRole("button", { name: "Done", exact: true }).click())
++            .then(() =>
++              page.getByRole("button", { name: "Done", exact: true }).waitFor({ state: "hidden" }),
++            ),
++        );
++        expect((yield* atlassian.metrics).authorizations, "reuse needs no new consent").toBe(2);
++        const serviceLinks = yield* linkedAccountIds(
++          actors.owner,
++          fixture.apps.serviceManagement.path,
++        );
++        expect(serviceLinks).toHaveLength(1);
++        expect((yield* fixture.account(serviceLinks[0]!)).identity?.id).toBe(
++          jiraAccount.identity?.id,
++        );
++        const requests = yield* transport.requests;
++        expect(requests).toContainEqual({
++          method: "POST",
++          host: "auth.atlassian.com",
++          path: "/oauth/token",
++        });
++        expect(requests).toContainEqual({ method: "GET", host: "api.atlassian.com", path: "/me" });
++        yield* evidence.json("atlassian-family-transport.json", requests);
++      }),
++    ),
++  );
++
++  it.effect(scenarios.atlassianFamilyLegacyIdentity.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors,
++          browser = yield* Browser,
++          evidence = yield* Evidence;
++        const { atlassian, google, transport, fixture } = yield* familySetup([
++          "jira",
++          "confluence",
++        ]);
++        const urls = yield* openBrowser({ atlassian: atlassian.origin, google: google.origin });
++        const capture = (name: string) =>
++          Effect.flatMap(
++            browser.use(`Capture ${name}`, (page) => page.screenshot({ fullPage: true })),
++            (png) => evidence.attach(name, "image/png", png),
++          );
++        yield* atlassian.configure({ subject: "jira-person" });
++        const jira = fixture.apps.jira;
++        yield* browser.use("Connect Jira on its own", (page) =>
++          signInFromApp(page, urls.app(jira.id), "Jira"),
++        );
++        const [retained] = yield* linkedAccountIds(actors.owner, fixture.apps.jira.path);
++        expect(retained).toBeDefined();
++        // A Jira sign-in saved before the host verified identities.
++        const written = yield* legacyStorage([
++          {
++            sql: "UPDATE executor_accounts SET identity_id = NULL WHERE id = $1 RETURNING id",
++            params: [retained!],
++          },
++        ]);
++        expect(written).toEqual([[{ id: retained }]]);
++        yield* transport.startAfterLegacyWrite;
++        yield* browser.login(actors.owner);
++        const prompt =
++          "Atlassian identity not verified, so this sign-in is listed on its own. Reconnect it from Jira to group it.";
++        for (const width of [1280, 390] as const) {
++          yield* browser.use(`The retained Jira sign-in asks to reconnect at ${width} px`, (page) =>
++            page
++              .setViewportSize({ width, height: width === 390 ? 844 : 900 })
++              .then(() => page.goto(urls.accounts))
++              .then(() =>
++                familyRows(page, ["Jira"])
++                  .locator(".unverified-identity")
++                  .filter({ hasText: prompt })
++                  .waitFor(),
++              ),
++          );
++          yield* capture(`atlassian-legacy-before-${width}.png`);
++        }
++
++        // Another Atlassian subject reports the same email; it must stay a different account.
++        yield* atlassian.configure({ subject: "confluence-person" });
++        const confluence = fixture.apps.confluence;
++        yield* browser.use("Use desktop width", (page) =>
++          page.setViewportSize({ width: 1280, height: 900 }),
++        );
++        yield* browser.use("Connect Confluence as a different Atlassian subject", (page) =>
++          signInFromApp(page, urls.app(confluence.id), "Confluence"),
++        );
++        const [confluenceId] = yield* linkedAccountIds(actors.owner, fixture.apps.confluence.path);
++        const confluenceAccount = yield* fixture.account(confluenceId!);
++        expect(confluenceAccount.identity?.label).toBe("same@example.test");
++        const stillRetained = yield* fixture.account(retained!);
++        expect(stillRetained.id).toBe(retained);
++        expect(
++          stillRetained.identity,
++          "the same email never verifies another subject",
++        ).toBeUndefined();
++        expect(yield* linkedAccountIds(actors.owner, fixture.apps.jira.path)).toEqual([retained]);
++
++        // Reconnecting the retained Jira sign-in from Jira, as its prompt says, verifies it in place.
++        yield* atlassian.configure({ subject: "jira-person" });
++        yield* browser.use("Follow the prompt to Jira's accounts", (page) =>
++          page
++            .goto(urls.accounts)
++            .then(() =>
++              familyRows(page, ["Jira"])
++                .locator("[data-used-by]")
++                .getByRole("link")
++                .filter({ hasText: /^Jira$/ })
++                .click(),
++            )
++            .then(() =>
++              page.waitForURL(
++                (url) =>
++                  url.pathname.endsWith(`/apps/${jira.id}`) &&
++                  url.searchParams.get("view") === "accounts",
++              ),
++            ),
++        );
++        yield* browser.use("Reconnect the retained Jira sign-in", (page) =>
++          page
++            .getByRole("region", { name: "Your accounts", exact: true })
++            .getByRole("button", { name: /^Manage .+ in Your accounts( · .+)?$/ })
++            .click()
++            .then(() => page.getByRole("menuitem", { name: "Reconnect", exact: true }).click())
++            .then(() =>
++              finishInNewTab(
++                page,
++                jira.id,
++                () =>
++                  page
++                    .getByRole("dialog")
++                    .getByRole("button", { name: "Reconnect Jira", exact: true })
++                    .click(),
++                false,
++              ),
++            ),
++        );
++        const verified = yield* fixture.account(retained!);
++        expect(verified.id, "reconnecting keeps the account").toBe(retained);
++        expect(verified.identity?.id).toBeDefined();
++        expect(verified.identity?.id, "different subjects stay apart").not.toBe(
++          confluenceAccount.identity?.id,
++        );
++        expect(yield* linkedAccountIds(actors.owner, fixture.apps.jira.path)).toEqual([retained]);
++        for (const width of [1280, 390] as const) {
++          const read = yield* browser.use(`Read the Atlassian rows at ${width} px`, (page) =>
++            page
++              .setViewportSize({ width, height: width === 390 ? 844 : 900 })
++              .then(() => page.goto(urls.accounts))
++              .then(() => familyRows(page, ["Confluence"]).waitFor())
++              .then(() =>
++                Promise.all([
++                  rowApps(page, ["Jira"]),
++                  rowApps(page, ["Confluence"]),
++                  familyRows(page, ["Jira"]).locator(".unverified-identity").count(),
++                  fits(page),
++                ]),
++              ),
++          );
++          yield* capture(`atlassian-legacy-after-${width}.png`);
++          expect(read).toEqual([["Jira"], ["Confluence"], 0, true]);
++        }
++      }),
++    ),
++  );
++});

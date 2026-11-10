@@ -13,6 +13,8 @@ import {
 import { describeContainer } from "./container.ts";
 import { openRecovery, sealRecovery } from "./recovery-envelope.ts";
 import { encodedRecordHash, readForwardPacket, type ForwardPacket } from "./forward-model.ts";
+import { provisioningRefusal } from "./provisioning-refusal.ts";
+import { readRuntimeProvisioningHeader } from "./provisioning-header.ts";
 
 const header = Schema.Struct({
   schemaVersion: Schema.Literal(1),
@@ -36,6 +38,16 @@ export const readForwardJournal = (stack: Pick<CompiledStack, "name" | "stage">,
     const state = yield* yield* State;
     const value = yield* state.getOutput(journalKey(stack));
     if (value === undefined) return undefined;
+    const runtime = readRuntimeProvisioningHeader(value, key);
+    if (runtime) {
+      if (runtime.record.complete) return { complete: true as const };
+      throw provisioningRefusal(
+        "runtime-provisioning-journal-unsettled",
+        "journal.kind",
+        "ordinary-release",
+        "runtime-provisioning",
+      );
+    }
     const parsed = Schema.decodeUnknownSync(header)(value);
     if (parsed.complete) return { complete: true as const };
     return {
@@ -56,21 +68,30 @@ export const writeForwardJournal = (
 ) =>
   Effect.gen(function* () {
     const prior = yield* state.getOutput(journalKey(stack));
+    const runtime = readRuntimeProvisioningHeader(prior, key);
+    if (runtime && !runtime.record.complete)
+      throw provisioningRefusal(
+        "runtime-provisioning-journal-unsettled",
+        "journal.kind",
+        "ordinary-release",
+        "runtime-provisioning",
+      );
     const existing =
-      prior === undefined
+      prior === undefined || runtime
         ? undefined
         : Schema.decodeUnknownSync(
             Schema.Struct({ ...header.fields, previous: Schema.optional(Schema.Unknown) }),
           )(prior);
     const previous =
-      existing?.candidate !== packet.manifest.candidate && existing
+      runtime?.header ??
+      (existing?.candidate !== packet.manifest.candidate && existing
         ? {
             candidate: existing.candidate,
             manifest: existing.manifest,
             sealed: existing.sealed,
             complete: existing.complete,
           }
-        : existing?.previous;
+        : existing?.previous);
     return yield* state.setOutput({
       ...journalKey(stack),
       value: {

@@ -31,7 +31,7 @@ export async function loadDeclaredChanges(root: string): Promise<DeclaredChanges
       type: "Alchemy.DeclaredChanges",
       changed,
       why: [
-        "The fixed repository declaration must match schemaVersion 1 and contain only logical intent.",
+        "The fixed repository declaration must match a supported schema and contain only reviewed intent.",
       ],
     });
   }

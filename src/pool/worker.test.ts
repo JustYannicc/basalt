@@ -297,7 +297,7 @@ test("the Durable Object alarm provisions pending pool members", async () => {
   assert.ok(alarm);
 });
 
-test("a restarted object keeps an already running container alive before any request", async () => {
+test("reconstructing a running or stopped object without a request leaves compute and idle state alone", async () => {
   const env = {
     POOL_DATABASE_URL: "postgres://fake:fake@database.invalid/fake",
     POOL_MANAGEMENT_KEY: "fake-management-key",
@@ -306,6 +306,9 @@ test("a restarted object keeps an already running container alive before any req
   };
   const timeouts: number[] = [];
   const pending: Promise<unknown>[] = [];
+  let writes = 0,
+    starts = 0,
+    destroys = 0;
   const object = (running: boolean) =>
     new PoolContainer(
       {
@@ -314,21 +317,34 @@ test("a restarted object keeps an already running container alive before any req
           setInactivityTimeout: async (ms: number) => {
             timeouts.push(ms);
           },
+          start: () => {
+            starts++;
+          },
+          destroy: async () => {
+            destroys++;
+          },
         },
         waitUntil: (work: Promise<unknown>) => {
           pending.push(work);
         },
-        storage: { get: async () => undefined, put: async () => {} },
+        storage: {
+          get: async () => undefined,
+          put: async () => {
+            writes++;
+          },
+        },
       },
       env,
     );
   object(true);
   await Promise.all(pending);
-  // The same two hours a warm start sets; an object with no request to serve never warms.
-  assert.deepEqual(timeouts, [2 * 60 * 60_000]);
+  assert.deepEqual(timeouts, []);
   object(false);
   await Promise.all(pending);
-  assert.equal(timeouts.length, 1);
+  assert.deepEqual(timeouts, []);
+  assert.equal(writes, 0);
+  assert.equal(starts, 0);
+  assert.equal(destroys, 0);
 });
 
 test("signed access changes reach the computer queue before generic pool-token control routing", async () => {

@@ -1,3 +1,8 @@
+export { PoolRuntime } from "./runtime-do.worker.ts";
+import type { PoolRuntime } from "./runtime-do.worker.ts";
+import { RuntimeHandoff, type HandoffEnvironment } from "./runtime-slots/integration.ts";
+import { handleRuntimeHandoff } from "./runtime-slots/http.ts";
+import { runtimeHandoffPath } from "./runtime-slots/handoff-command.ts";
 import { deploymentReadinessPath, handleDeploymentReadiness } from "./deployment-readiness.ts";
 import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
 import { installNativePolicy } from "./native-policy-install.ts";
@@ -23,9 +28,9 @@ import { requirePoolUse } from "./authorization.ts";
 import { isPoolAcquisitionPath } from "./connection-policy.ts";
 import { requireActivePoolOrganization } from "./organization-access.ts";
 import { failureResponse, unavailable } from "./json.ts";
-import { isPublicModelPath, PoolLifecycle, poolLifecycle, poolPort } from "./lifecycle.ts";
+import { isPublicModelPath, PoolLifecycle, poolPort } from "./lifecycle.ts";
 import { nativeControlPath, nativeModelHeader, nativeSessionPath } from "./native-contract.ts";
-import { nativeSession } from "./native-response.worker.ts";
+import { nativeResponse, nativeSession } from "./native-response.worker.ts";
 import { hasActiveHomeApiKey, homeApiKeyCandidates, type HomeApiKeyLookup } from "./model-auth.ts";
 import { PriceUpkeep } from "./prices.ts";
 import { OverviewPrices } from "./overview-prices.ts";
@@ -76,11 +81,17 @@ import { importRemovalPath } from "./import-removal/contract.ts";
 import { ImportRemoval } from "./import-removal/operation.ts";
 import { handleImportRemoval } from "./import-removal/http.ts";
 import { removalSnapshot } from "./import-removal/snapshot.ts";
-import { handleRuntimeRecovery, RuntimeRecovery, runtimeRecoveryPath } from "./runtime-recovery.ts";
+import {
+  handleRuntimeRecovery,
+  RecoveryRefused,
+  RuntimeRecovery,
+  runtimeRecoveryPath,
+} from "./runtime-recovery.ts";
 import { poolRelease, poolReleasePath } from "./release.ts";
 
-export interface PoolEnvironment extends TelemetryEnv, SentryEnv {
+export interface PoolEnvironment extends TelemetryEnv, SentryEnv, HandoffEnvironment {
   PoolContainer: DurableObjectNamespace<PoolContainer>;
+  PoolRuntime?: DurableObjectNamespace<PoolRuntime>;
   POOL_DATABASE_URL: string;
   POOL_AUTH_DATABASE?: Hyperdrive;
   POOL_MANAGEMENT_KEY: string;
@@ -96,6 +107,7 @@ export interface PoolEnvironment extends TelemetryEnv, SentryEnv {
 
 export class PoolContainer extends DurableObject<PoolEnvironment> {
   private lifecycle: Promise<PoolLifecycle>;
+  private handoff: RuntimeHandoff;
   private control: PoolControl;
   private mirrorHome: HomeClient;
   private computers: Computers;
@@ -113,11 +125,22 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
 
   constructor(ctx: DurableObjectState, env: PoolEnvironment) {
     super(ctx, env);
-    // A restarted object, after a deploy or an eviction, has lost its container's inactivity
-    // timeout, and the platform stops a running container soon after the object goes idle.
-    // Requests that never warm the pool, like an hourly inventory or setup polling, did exactly that.
-    if (ctx.container?.running)
-      ctx.waitUntil(ctx.container.setInactivityTimeout(poolLifecycle.idleTimeoutMs));
+    this.handoff = new RuntimeHandoff(
+      ctx,
+      env,
+      { candidate: productionOpsRelease, workerInput: poolWorkerRevision },
+      {
+        wrap: nativeResponse,
+        ...(env.PoolRuntime
+          ? {
+              remote: (target) => {
+                const namespace = env.PoolRuntime!.jurisdiction("eu");
+                return namespace.get(namespace.idFromString(target.instanceId));
+              },
+            }
+          : {}),
+      },
+    );
     this.lifecycle = createPoolLifecycle(ctx, env);
     this.recovery = new RuntimeRecovery(
       {
@@ -135,10 +158,11 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
             AbortSignal.timeout(2_000),
           );
         },
-        restart: async (beforeStop) => {
-          this.managementReadyUntil = 0;
-          return (await this.lifecycle).restart(beforeStop);
-        },
+        restart: (beforeStop) =>
+          this.handoff.recover(async () => {
+            this.managementReadyUntil = 0;
+            return (await this.lifecycle).restart(beforeStop);
+          }),
       },
       ctx.storage,
       Date.now,
@@ -147,7 +171,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       ),
     );
     this.protection = new RuntimeProtection(this.modelStreams, {
-      check: (signal) => {
+      check: async (signal) => {
+        const selected = await this.handoff.status(signal);
+        if (selected) return selected;
         if (!ctx.container) throw new Error("Pool container unavailable");
         return readRuntimeHealth(ctx.container.getTcpPort(8318), env.POOL_MANAGEMENT_KEY, signal);
       },
@@ -161,17 +187,18 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       ctx.waitUntil(captureProduct(env, event, accountId));
     };
     const home = async (path: string, init?: RequestInit) => {
-      if (!env.POOL_MANAGEMENT_KEY) throw new Error("Pool management key is missing");
-      init?.signal?.throwIfAborted();
-      await this.managementReady();
-      init?.signal?.throwIfAborted();
-      const container = this.ctx.container;
-      if (!container) throw new Error("Pool container unavailable");
-      const headers = new Headers(init?.headers);
-      headers.set("X-Management-Key", env.POOL_MANAGEMENT_KEY);
-      return container
-        .getTcpPort(8327)
-        .fetch(new Request(`http://pool${path}`, { ...init, headers }));
+      const request = new Request(new URL(path, "http://pool"), init);
+      return this.handoff.forward(request, 8327, undefined, async (forwarded, prepared) => {
+        if (!env.POOL_MANAGEMENT_KEY) throw new Error("Pool management key is missing");
+        forwarded.signal.throwIfAborted();
+        await this.legacyManagementReady();
+        forwarded.signal.throwIfAborted();
+        if (!ctx.container) throw new Error("Pool container unavailable");
+        const headers = new Headers(forwarded.headers);
+        headers.set("X-Management-Key", env.POOL_MANAGEMENT_KEY);
+        prepared();
+        return ctx.container.getTcpPort(8327).fetch(new Request(forwarded, { headers }));
+      });
     };
     this.mirrorHome = new HomeClient(home, Date.now, () => this.control.invalidateViews());
     this.overviewPrices = new OverviewPrices(this.mirrorHome);
@@ -254,6 +281,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       invalidateView: (pool) => this.control.invalidateViews(pool),
       reconcile: (pool, accounts) => membership.reconcile(pool, accounts),
       install: async (policy) => {
+        if (await this.handoff.selected()) return this.handoff.slots.install(policy);
         const container = ctx.container;
         if (!container) return unavailable();
         // Durable dirty authority already vetoes model use while a stopped container has no policy.
@@ -269,6 +297,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         );
       },
       abort: (pool) => {
+        this.handoff.abortPool(pool);
         this.modelStreams.abortPool(pool);
         this.computers.abortPool(pool);
       },
@@ -292,7 +321,11 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     });
   }
 
-  private async managementReady(): Promise<void> {
+  private managementReady(): Promise<void> {
+    return this.handoff.ready(() => this.legacyManagementReady());
+  }
+
+  private async legacyManagementReady(): Promise<void> {
     const container = this.ctx.container;
     if (container?.running && Date.now() < this.managementReadyUntil) return;
     if (!this.managementWarming) {
@@ -307,6 +340,27 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   }
 
   async availabilityProbe(pool: string) {
+    const selected = await this.handoff.selected();
+    if (selected) {
+      const runtime = availabilityRuntime(
+        {
+          running: true,
+          getTcpPort: (port) => ({
+            fetch: (input, init) => {
+              if (port !== 8318 && port !== 8327) throw new Error("Invalid probe port");
+              return this.handoff.probeFetch(new Request(input, init), port);
+            },
+          }),
+        },
+        this.env.POOL_MANAGEMENT_KEY,
+        this.env.POOL_APP_SIGNING_KEY,
+      );
+      return probePool(pool, {
+        ...runtime,
+        native: (policy, signal) => this.handoff.probeNative(policy, signal),
+        membership: (target) => this.memberships.inspect(target),
+      });
+    }
     return probePool(pool, {
       ...availabilityRuntime(
         this.ctx.container,
@@ -317,7 +371,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     });
   }
 
-  private automaticRecoveryCondition(pool: string) {
+  private async automaticRecoveryCondition(pool: string) {
+    if (await this.handoff.selected()) return "unknown" as const;
     return observeAutomaticPool(pool, {
       ...availabilityRuntime(
         this.ctx.container,
@@ -329,6 +384,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   }
 
   async automaticRecoveryObservation(pool: string) {
+    if (await this.handoff.selected()) throw new RecoveryRefused(409);
     const [runtime, condition] = await Promise.all([
       this.recovery.inspect(),
       this.automaticRecoveryCondition(pool),
@@ -340,7 +396,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     await this.appModels.tick().catch(() => console.error("POOL_APP_MODEL_KEY_CLEANUP_PENDING"));
     await this.memberships.tick();
     await this.computers.expire();
-    await (await this.lifecycle).warm();
+    await this.handoff.warm(() => this.lifecycle.then((lifecycle) => lifecycle.warm()));
     await this.computers.observeUsage();
     await this.control.expire();
     await this.prices.run();
@@ -379,22 +435,26 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   async deploymentReady() {
     return {
       ...this.deploymentIdentity(),
-      ...(await (await this.lifecycle).deploymentReady()),
+      ...(await this.handoff.deploymentReady(() =>
+        this.lifecycle.then((lifecycle) => lifecycle.deploymentReady()),
+      )),
     };
   }
 
   async migrateCodexWebSockets(approved?: Pick<CodexWebSocketPlan, "digest" | "pending">) {
-    await this.managementReady();
-    const container = this.ctx.container;
-    if (!container) throw new Error("Pool container unavailable");
-    const client = new HomeClient((path, init) => {
-      const headers = new Headers(init?.headers);
-      headers.set("X-Management-Key", this.env.POOL_MANAGEMENT_KEY);
-      return container
-        .getTcpPort(8327)
-        .fetch(new Request(`http://pool${path}`, { ...init, headers }));
-    });
-    return migrateCodexWebSockets(client, approved);
+    return migrateCodexWebSockets(this.mirrorHome, approved);
+  }
+
+  async runtimeHandoff(request: Request) {
+    return handleRuntimeHandoff(
+      request,
+      this.handoff,
+      {
+        candidate: productionOpsRelease,
+        workerInput: poolWorkerRevision,
+      },
+      this.env.POOL_DEPLOYMENT_KEY ?? "",
+    );
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -408,6 +468,11 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     } catch (error) {
       return failureResponse(error);
     }
+    if (pathname === runtimeRecoveryPath && (await this.handoff.selected()))
+      return Response.json(
+        { error: "Selected runtime recovery requires the release handoff" },
+        { status: 409 },
+      );
     if (pathname === runtimeRecoveryPath)
       return handleRuntimeRecovery(
         request,
@@ -547,6 +612,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       streams: this.modelStreams,
       lifecycle: this.lifecycle,
       protection: this.protection,
+      route: (request, target, pool, legacy, beforeDispatch) =>
+        this.handoff.forward(request, target, pool, legacy, beforeDispatch),
+      warm: (legacy) => this.handoff.warm(legacy),
       fetch: (forwarded, target) => {
         if (!this.ctx.container) throw new Error("Pool container unavailable");
         return this.ctx.container.getTcpPort(target).fetch(forwarded);
@@ -617,9 +685,18 @@ export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
       if (request.method !== "GET") return new Response(null, { status: 405 });
       const pool = new URL(request.url).searchParams.get("pool") ?? undefined;
       if (!validProbeTarget(pool)) return new Response(null, { status: 400 });
-      return Response.json(await singleton(this.env).automaticRecoveryObservation(pool), {
-        headers: { "Cache-Control": "no-store" },
-      });
+      try {
+        return Response.json(await singleton(this.env).automaticRecoveryObservation(pool), {
+          headers: { "Cache-Control": "no-store" },
+        });
+      } catch (error) {
+        if (error instanceof RecoveryRefused)
+          return Response.json(
+            { error: "runtime_recovery_refused" },
+            { status: error.status, headers: { "Cache-Control": "no-store" } },
+          );
+        throw error;
+      }
     }
     if (path === "/availability") {
       if (request.method !== "GET") return new Response(null, { status: 405 });
@@ -629,6 +706,7 @@ export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
         headers: { "Cache-Control": "no-store" },
       });
     }
+    if (path === runtimeHandoffPath) return singleton(this.env).runtimeHandoff(request);
     if (path === deploymentReadinessPath)
       return handleDeploymentReadiness(
         request,

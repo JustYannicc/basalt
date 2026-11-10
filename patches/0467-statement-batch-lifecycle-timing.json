@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-statement-batch-lifecycle-timing",
+  "file": "0467-statement-batch-lifecycle-timing.patch",
+  "content_sha256": "470527f468ca15f272c7702f6798b3417629464cea154bbd4a29bb234f1ccf01",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

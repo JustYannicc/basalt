@@ -24,7 +24,9 @@ runs:
     - name: Install system dependencies with bounded mirror downloads
       shell: bash
       working-directory: .upstream
-      run: bash "$GITHUB_ACTION_PATH/install-deps.sh"
+      env:
+        DEBS_CACHE_HIT: ${{ steps.debs.outputs.cache-hit }}
+      run: bash "$GITHUB_ACTION_PATH/install-deps.sh" "$DEBS_CACHE_HIT"
     - uses: actions/cache/save@v4
       if: steps.debs.outputs.cache-hit != 'true'
       with:

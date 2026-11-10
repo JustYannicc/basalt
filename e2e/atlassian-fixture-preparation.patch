@@ -1,0 +1,294 @@
+diff --git a/e2e/support/atlassian-family-product.ts b/e2e/support/atlassian-family-product.ts
+--- a/e2e/support/atlassian-family-product.ts
++++ b/e2e/support/atlassian-family-product.ts
+@@ -1,11 +1,7 @@
+ import { Effect, FileSystem, Path, Schema } from "effect";
+-import { ChildProcess, ChildProcessSpawner } from "effect/process";
+ import { Target } from "./platform.ts";
+ import { serverControl } from "./server-control.ts";
+ import { targetHosts } from "./role-hosts.ts";
+-
+-// Each scenario runs identical code with validated JSON inputs; check the first copy once.
+-let transportTypechecked = false;
+ 
+ const Requests = Schema.Array(
+   Schema.Struct({ method: Schema.String, host: Schema.String, path: Schema.String }),
+@@ -32,8 +28,7 @@
+   Effect.gen(function* () {
+     const target = yield* Target,
+       fs = yield* FileSystem.FileSystem,
+-      path = yield* Path.Path,
+-      processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++      path = yield* Path.Path;
+     const entry = path.join(target.directory, "atlassian-family-product.ts");
+     const observations = path.join(target.directory, "atlassian-family-requests.jsonl");
+     yield* fs.writeFileString(observations, "");
+@@ -45,66 +40,8 @@
+       entry,
+       `import * as Runtime from "@effect/platform-bun/BunRuntime";
+ import { main } from "@executor-js/hosted-self-host/server";
+-import { appendFileSync, readFileSync } from "node:fs";
+-import { Schema } from "effect";
+-const { atlassian, google, observations } = Schema.decodeUnknownSync(Schema.Struct({
+-  atlassian: Schema.String, google: Schema.String, observations: Schema.String,
+-}))(JSON.parse(readFileSync(new URL("./atlassian-family-transport.json", import.meta.url), "utf8")));
+-const transport = globalThis.fetch;
+-const forward = async (origin: string, destination: string, request: Request, body?: string) => {
+-  const headers = new Headers(request.headers);
+-  headers.delete("host");
+-  headers.delete("content-length");
+-  if (body !== undefined) headers.set("content-type", "application/x-www-form-urlencoded");
+-  return transport(origin + destination, {
+-    method: request.method,
+-    headers,
+-    ...(request.method === "GET" || request.method === "HEAD"
+-      ? {}
+-      : { body: body ?? (await request.text()) }),
+-  });
+-};
+-globalThis.fetch = async (input, init) => {
+-  const url = new URL(input instanceof Request ? input.url : String(input));
+-  // The host's safe HTTP adapter pins the IP and preserves the original HTTP Host.
+-  const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+-  const host = headers.get("host") ?? url.host;
+-  const hosts = ["auth.atlassian.com", "api.atlassian.com", "accounts.google.com", "oauth2.googleapis.com", "openidconnect.googleapis.com"];
+-  if (!hosts.includes(host)) return transport(input, init);
+-  const request = new Request(input, init);
+-  appendFileSync(observations, JSON.stringify({ method: request.method, host, path: url.pathname }) + "\\n");
+-  if (host === "auth.atlassian.com" && url.pathname === "/oauth/token" && request.method === "POST") {
+-    // Atlassian takes a JSON token request; the synthetic issuer reads the same fields as a form.
+-    const text = await request.text();
+-    const json = request.headers.get("content-type")?.includes("json") === true;
+-    const fields = json
+-      ? new URLSearchParams(Object.entries(JSON.parse(text) as Record<string, unknown>).flatMap(([key, value]) =>
+-          typeof value === "string" ? [[key, value]] : []))
+-      : new URLSearchParams(text);
+-    return forward(atlassian, "/token", request, fields.toString());
+-  }
+-  if (host === "api.atlassian.com" && url.pathname === "/me") return forward(atlassian, "/profile", request);
+-  if (host === "api.atlassian.com" && url.pathname === "/oauth/token/accessible-resources") {
+-    const answer = await forward(atlassian, "/resource", request);
+-    return answer.ok
+-      ? Response.json([{ id: "synthetic-cloud", name: "Synthetic site", url: "https://synthetic.example.test", scopes: [] }])
+-      : new Response(null, { status: answer.status });
+-  }
+-  if (host === "accounts.google.com" && url.pathname === "/.well-known/oauth-authorization-server")
+-    return new Response(null, { status: 404 });
+-  if (host === "accounts.google.com" && url.pathname === "/.well-known/openid-configuration")
+-    return Response.json({
+-      issuer: "https://accounts.google.com",
+-      authorization_endpoint: "https://accounts.google.com/o/oauth2/v2/auth",
+-      token_endpoint: "https://oauth2.googleapis.com/token",
+-      userinfo_endpoint: "https://openidconnect.googleapis.com/v1/userinfo",
+-      code_challenge_methods_supported: ["S256"],
+-      token_endpoint_auth_methods_supported: ["client_secret_post"],
+-    });
+-  if (host === "oauth2.googleapis.com" && url.pathname === "/token") return forward(google, "/token", request);
+-  if (host === "openidconnect.googleapis.com" && url.pathname === "/v1/userinfo") return forward(google, "/userinfo", request);
+-  throw new Error("Unexpected Atlassian family fixture request: " + host + url.pathname);
+-};
++import { installFamilyTransport } from ${JSON.stringify(path.resolve("apps/hosted/testing/atlassian-family-transport.ts"))};
++installFamilyTransport(new URL("./atlassian-family-transport.json", import.meta.url));
+ Runtime.runMain(main);
+ `,
+     );
+@@ -113,28 +50,6 @@
+     const product = path.join(packages, "hosted-self-host");
+     if (!(yield* fs.exists(product)))
+       yield* fs.symlink(path.resolve("apps/hosted/self-host"), product);
+-    const config = path.join(target.directory, "atlassian-family-product.json");
+-    yield* fs.writeFileString(
+-      config,
+-      JSON.stringify({
+-        extends: path.resolve("tsconfig.json"),
+-        compilerOptions: { typeRoots: [path.resolve("node_modules/@types")] },
+-        files: [entry],
+-        include: [],
+-        exclude: [],
+-      }),
+-    );
+-    if (!transportTypechecked) {
+-      const checked = yield* processes.exitCode(
+-        ChildProcess.make(path.resolve("node_modules/.bin/tsc-rs"), ["--noEmit", "-p", config], {
+-          stdout: "inherit",
+-          stderr: "inherit",
+-        }),
+-      );
+-      if (checked !== 0)
+-        return yield* Effect.die("Atlassian family transport failed its typecheck");
+-      transportTypechecked = true;
+-    }
+     const start = Effect.gen(function* () {
+       yield* serverControl("stop");
+       yield* serverControl("environment", 200, {
+diff --git a/e2e/support/atlassian-family-fixture.ts b/e2e/support/atlassian-family-fixture.ts
+--- a/e2e/support/atlassian-family-fixture.ts
++++ b/e2e/support/atlassian-family-fixture.ts
+@@ -77,28 +77,33 @@
+       actors = yield* Actors;
+     const prefix = `/api/organizations/${actors.organization.id}`;
+     const deployed = {} as Record<FamilyApp, { id: string; path: string }>;
+-    for (const key of names) {
+-      const app = familyApps[key];
+-      const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+-        name: app.name,
+-        files: [
+-          appsManifest,
+-          {
+-            path: "index.ts",
+-            content: `import { defineApp, defineProvider, oauth2, router } from "apps";
++    yield* Effect.forEach(
++      names,
++      (key) =>
++        Effect.gen(function* () {
++          const app = familyApps[key];
++          const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++            name: app.name,
++            files: [
++              appsManifest,
++              {
++                path: "index.ts",
++                content: `import { defineApp, defineProvider, oauth2, router } from "apps";
+ const service = defineProvider({ name: ${JSON.stringify(app.name)}, hosts: ${JSON.stringify(app.hosts)}, auth: { oauth: oauth2(${app.oauth}) } });
+ export default defineApp({ user: { accounts: { service } } }, { tools: router({}) });`,
+-          },
+-        ],
+-      });
+-      expect(response.status, JSON.stringify(response.body)).toBe(200);
+-      const { id } = yield* body(Resource, response);
+-      const path = `${prefix}/apps/${id}`;
+-      yield* Effect.addFinalizer(() =>
+-        api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
+-      );
+-      deployed[key] = { id, path };
+-    }
++              },
++            ],
++          });
++          expect(response.status, JSON.stringify(response.body)).toBe(200);
++          const { id } = yield* body(Resource, response);
++          const path = `${prefix}/apps/${id}`;
++          yield* Effect.addFinalizer(() =>
++            api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
++          );
++          deployed[key] = { id, path };
++        }),
++      { concurrency: 2, discard: true },
++    );
+     const Account = Schema.Struct({
+       id: Schema.String,
+       identity: Schema.optionalKey(Schema.Struct({ id: Schema.String, label: Schema.String })),
+diff --git a/e2e/tests/atlassian-family-screens.spec.ts b/e2e/tests/atlassian-family-screens.spec.ts
+--- a/e2e/tests/atlassian-family-screens.spec.ts
++++ b/e2e/tests/atlassian-family-screens.spec.ts
+@@ -49,7 +49,7 @@
+   Effect.gen(function* () {
+     const atlassian = yield* accountIdentityIssuer,
+       google = yield* accountIdentityIssuer;
+-    // Compile the transport while the first server deploys the apps; restart after both finish.
++    // Prepare the transport and independent apps before restarting the product.
+     const [transport, fixture] = yield* Effect.all(
+       [
+         atlassianFamilyProduct({ atlassian: atlassian.origin, google: google.origin }),
+diff --git a/apps/hosted/testing/atlassian-family-transport.ts b/apps/hosted/testing/atlassian-family-transport.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/testing/atlassian-family-transport.ts
+@@ -0,0 +1,97 @@
++import { appendFileSync, readFileSync } from "node:fs";
++import { Schema } from "effect";
++export const installFamilyTransport = (config: URL) => {
++  const { atlassian, google, observations } = Schema.decodeUnknownSync(
++    Schema.Struct({
++      atlassian: Schema.String,
++      google: Schema.String,
++      observations: Schema.String,
++    }),
++  )(JSON.parse(readFileSync(config, "utf8")));
++  const transport = globalThis.fetch;
++  const forward = async (origin: string, destination: string, request: Request, body?: string) => {
++    const headers = new Headers(request.headers);
++    headers.delete("host");
++    headers.delete("content-length");
++    if (body !== undefined) headers.set("content-type", "application/x-www-form-urlencoded");
++    return transport(origin + destination, {
++      method: request.method,
++      headers,
++      ...(request.method === "GET" || request.method === "HEAD"
++        ? {}
++        : { body: body ?? (await request.text()) }),
++    });
++  };
++  globalThis.fetch = async (input, init) => {
++    const url = new URL(input instanceof Request ? input.url : String(input));
++    // The host's safe HTTP adapter pins the IP and preserves the original HTTP Host.
++    const headers = new Headers(
++      init?.headers ?? (input instanceof Request ? input.headers : undefined),
++    );
++    const host = headers.get("host") ?? url.host;
++    const hosts = [
++      "auth.atlassian.com",
++      "api.atlassian.com",
++      "accounts.google.com",
++      "oauth2.googleapis.com",
++      "openidconnect.googleapis.com",
++    ];
++    if (!hosts.includes(host)) return transport(input, init);
++    const request = new Request(input, init);
++    appendFileSync(
++      observations,
++      JSON.stringify({ method: request.method, host, path: url.pathname }) + "\n",
++    );
++    if (
++      host === "auth.atlassian.com" &&
++      url.pathname === "/oauth/token" &&
++      request.method === "POST"
++    ) {
++      // Atlassian takes a JSON token request; the synthetic issuer reads the same fields as a form.
++      const text = await request.text();
++      const json = request.headers.get("content-type")?.includes("json") === true;
++      const fields = json
++        ? new URLSearchParams(
++            Object.entries(JSON.parse(text) as Record<string, unknown>).flatMap(([key, value]) =>
++              typeof value === "string" ? [[key, value]] : [],
++            ),
++          )
++        : new URLSearchParams(text);
++      return forward(atlassian, "/token", request, fields.toString());
++    }
++    if (host === "api.atlassian.com" && url.pathname === "/me")
++      return forward(atlassian, "/profile", request);
++    if (host === "api.atlassian.com" && url.pathname === "/oauth/token/accessible-resources") {
++      const answer = await forward(atlassian, "/resource", request);
++      return answer.ok
++        ? Response.json([
++            {
++              id: "synthetic-cloud",
++              name: "Synthetic site",
++              url: "https://synthetic.example.test",
++              scopes: [],
++            },
++          ])
++        : new Response(null, { status: answer.status });
++    }
++    if (
++      host === "accounts.google.com" &&
++      url.pathname === "/.well-known/oauth-authorization-server"
++    )
++      return new Response(null, { status: 404 });
++    if (host === "accounts.google.com" && url.pathname === "/.well-known/openid-configuration")
++      return Response.json({
++        issuer: "https://accounts.google.com",
++        authorization_endpoint: "https://accounts.google.com/o/oauth2/v2/auth",
++        token_endpoint: "https://oauth2.googleapis.com/token",
++        userinfo_endpoint: "https://openidconnect.googleapis.com/v1/userinfo",
++        code_challenge_methods_supported: ["S256"],
++        token_endpoint_auth_methods_supported: ["client_secret_post"],
++      });
++    if (host === "oauth2.googleapis.com" && url.pathname === "/token")
++      return forward(google, "/token", request);
++    if (host === "openidconnect.googleapis.com" && url.pathname === "/v1/userinfo")
++      return forward(google, "/userinfo", request);
++    throw new Error("Unexpected Atlassian family fixture request: " + host + url.pathname);
++  };
++};

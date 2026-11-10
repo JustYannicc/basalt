@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The storage.statement.batch span measures the complete bounded statement lifecycle, including cancellation settling, under the unchanged ten-second deadline. The public MCP proof bounds that delivered span to ten through twelve seconds; client timing remains diagnostic because catalog discovery and transport are outside the statement deadline. Typed failure, held-resource release, no author dispatch, fresh-call recovery and cancellation remain independently asserted."
+    }
+  }
+}
