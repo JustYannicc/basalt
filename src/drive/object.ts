@@ -60,6 +60,20 @@ export type VaultReply =
   | { ok: true; value: unknown }
   | { ok: false; error: typeof DriveRequestFailed.Encoded };
 
+/** Expected drive failures are replies; anything else is a defect and propagates as one. */
+export const reply = (result: Effect.Effect<unknown, DriveRequestFailed>): Promise<VaultReply> =>
+  Effect.runPromise(
+    result.pipe(
+      Effect.map((value): VaultReply => ({ ok: true, value })),
+      Effect.catchTag("DriveRequestFailed", (error) =>
+        Effect.succeed<VaultReply>({
+          ok: false,
+          error: Schema.encodeSync(DriveRequestFailed)(error),
+        }),
+      ),
+    ),
+  );
+
 const tokenSeconds = 3600,
   refreshMs = 5 * 60_000;
 const repositoryName = (app: string) => {
@@ -73,13 +87,17 @@ const close = (repo: ArtifactsRepo) => repo[Symbol.dispose]?.();
  * One vault object per app: its storage, its attachment bucket and its Artifacts repository. The
  * write token lives only in this object's memory, is never stored and is never returned.
  */
-export function vaultObject(input: {
-  app: string;
-  storage: TransactionStorage;
-  bucket: VaultBucket;
-  artifacts: ArtifactsNamespace;
-  now?: () => number;
-}) {
+export function vaultObject(
+  input: {
+    app: string;
+    storage: TransactionStorage;
+    bucket: VaultBucket;
+    artifacts: ArtifactsNamespace;
+    now?: () => number;
+  },
+  /** Internal test seam for defects raised by a dispatcher after the vault opens. */
+  dispatcherFactory: typeof createDriveDispatcher = createDriveDispatcher,
+) {
   const now = input.now ?? Date.now,
     name = repositoryName(input.app);
   let opened: ReturnType<typeof open> | undefined;
@@ -137,7 +155,7 @@ export function vaultObject(input: {
       repository: vaultRepository,
       now,
     });
-    return createDriveDispatcher(
+    return dispatcherFactory(
       vault.drive,
       vault.attachments,
       vault.changes,
@@ -163,18 +181,7 @@ export function vaultObject(input: {
         opened = undefined;
         return { ok: false, error: { _tag: "DriveRequestFailed", reason: "unavailable" } };
       }
-      // Expected drive failures are replies; anything else is a defect and propagates as one.
-      return await Effect.runPromise(
-        dispatch(decoded).pipe(
-          Effect.map((value): VaultReply => ({ ok: true, value })),
-          Effect.catchTag("DriveRequestFailed", (error) =>
-            Effect.succeed<VaultReply>({
-              ok: false,
-              error: Schema.encodeSync(DriveRequestFailed)(error),
-            }),
-          ),
-        ),
-      );
+      return reply(dispatch(decoded));
     },
   };
 }

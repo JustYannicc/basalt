@@ -1,5 +1,8 @@
 import { DriveError } from "../shared/.generated/strata/errors.js";
-import { objectId, referencedOids } from "../shared/.generated/strata/git/objects.js";
+import { createObjectCache } from "./object-cache.ts";
+import { createFetchStaging } from "./fetch-staging.ts";
+import type { FetchInput } from "./fetch-stream.ts";
+import { referencedOids } from "../shared/.generated/strata/git/objects.js";
 import { createSqliteRefStore, validateTransaction } from "../shared/.generated/strata/sqlite.js";
 import type { TransactionStorage } from "../shared/strata/sqlite.ts";
 import type {
@@ -18,7 +21,7 @@ export interface VaultRepository {
     updates: ReadonlyArray<{ ref: string; old: string | null; next: string }>;
     objects: ReadonlyArray<GitObject>;
   }): Promise<{ applied: boolean; results: Record<string, string> }>;
-  fetchObjects(input: { wants: string[]; haves?: string[] }): Promise<GitObject[]>;
+  fetchObjects(input: FetchInput): Promise<GitObject[]>;
   /** The binding's readBlob: exact bytes or null. */
   readBlob(oid: string): Promise<Bytes | null>;
 }
@@ -27,8 +30,6 @@ const main = "refs/heads/main";
 const writerPrefix = "refs/heads/writers/",
   conflictPrefix = "refs/heads/conflicts/";
 const conflictRef = (writer: string) => conflictPrefix + writer.slice(writerPrefix.length);
-/** Durable Object SQLite refuses rows near 2 MB, so object bytes are stored in parts below it. */
-const partBytes = 1024 * 1024;
 
 /**
  * The vault's Artifacts repository is the record. This Durable Object is its only writer and keeps
@@ -46,12 +47,6 @@ export function createArtifactsStores(input: {
     { sql } = storage;
   const blobLimit = input.blobCacheBytes ?? 64 * 1024 * 1024,
     now = input.now ?? Date.now;
-  sql.exec(
-    "CREATE TABLE IF NOT EXISTS vault_git_objects (oid TEXT PRIMARY KEY, type TEXT NOT NULL, bytes INTEGER NOT NULL, kept INTEGER NOT NULL, pending INTEGER NOT NULL, used INTEGER NOT NULL)",
-  );
-  sql.exec(
-    "CREATE TABLE IF NOT EXISTS vault_git_parts (oid TEXT NOT NULL, part INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (oid, part))",
-  );
   // The whole transaction travels with its push, so a crash after the push lands can finish it.
   sql.exec(
     "CREATE TABLE IF NOT EXISTS vault_push_intent (id INTEGER PRIMARY KEY CHECK(id = 1), ref TEXT NOT NULL, next TEXT NOT NULL, transaction_json TEXT NOT NULL)",
@@ -66,101 +61,39 @@ export function createArtifactsStores(input: {
   );
   const local = createSqliteRefStore(storage);
 
-  const load = (oid: string, pendingOnly = false): GitObject | undefined => {
-    const meta = [
-      ...sql.exec(
-        `SELECT type, bytes FROM vault_git_objects WHERE oid = ?${pendingOnly ? " AND pending = 1" : ""}`,
-        oid,
-      ),
-    ][0];
-    if (!meta) return undefined;
-    const content = new Uint8Array(Number(meta.bytes));
-    let at = 0;
-    for (const part of sql.exec(
-      "SELECT data FROM vault_git_parts WHERE oid = ? ORDER BY part",
-      oid,
-    )) {
-      const data = new Uint8Array(part.data as ArrayBuffer);
-      content.set(data, at);
-      at += data.length;
-    }
-    if (at !== content.length)
-      throw new DriveError("integrity", "A stored Git object is missing some of its bytes");
-    return { oid, type: String(meta.type) as GitObject["type"], content };
-  };
-  const save = (objects: readonly GitObject[], pending: boolean) =>
-    storage.transactionSync(() => {
-      for (const object of objects) {
-        const exists = [
-          ...sql.exec("SELECT 1 FROM vault_git_objects WHERE oid = ?", object.oid),
-        ][0];
-        if (exists) {
-          sql.exec(
-            "UPDATE vault_git_objects SET pending = MAX(pending, ?), used = ? WHERE oid = ?",
-            pending ? 1 : 0,
-            now(),
-            object.oid,
-          );
-          continue;
-        }
-        // Commits and trees are the clone and never leave; blobs are cache unless unpushed.
-        sql.exec(
-          "INSERT INTO vault_git_objects(oid, type, bytes, kept, pending, used) VALUES (?, ?, ?, ?, ?, ?)",
-          object.oid,
-          object.type,
-          object.content.length,
-          object.type === "blob" ? 0 : 1,
-          pending ? 1 : 0,
-          now(),
-        );
-        for (let part = 0; part * partBytes < Math.max(object.content.length, 1); part++)
-          sql.exec(
-            "INSERT INTO vault_git_parts(oid, part, data) VALUES (?, ?, ?)",
-            object.oid,
-            part,
-            object.content.slice(part * partBytes, (part + 1) * partBytes).buffer,
-          );
-      }
-    });
-  const evict = () => {
-    const cached = [
-      ...sql.exec(
-        "SELECT COALESCE(SUM(bytes), 0) AS total FROM vault_git_objects WHERE kept = 0 AND pending = 0",
-      ),
-    ][0];
-    let excess = Number(cached?.total ?? 0) - blobLimit;
-    if (excess <= 0) return;
-    // Read the candidates fully before deleting any, so no cursor is open across the deletes.
-    const victims = Array.from(
-      sql.exec(
-        "SELECT oid, bytes FROM vault_git_objects WHERE kept = 0 AND pending = 0 ORDER BY used",
-      ),
-    );
-    storage.transactionSync(() => {
-      for (const victim of victims) {
-        if (excess <= 0) break;
-        sql.exec("DELETE FROM vault_git_parts WHERE oid = ?", String(victim.oid));
-        sql.exec("DELETE FROM vault_git_objects WHERE oid = ?", String(victim.oid));
-        excess -= Number(victim.bytes);
-      }
-    });
-  };
-  const verified = async (objects: readonly GitObject[]) => {
-    for (const object of objects)
-      if ((await objectId(object.type, object.content)) !== object.oid)
-        throw new DriveError("integrity", "Artifacts returned a Git object with the wrong id");
-    return objects;
-  };
-  const known = (oid: string) =>
-    [...sql.exec("SELECT 1 FROM vault_git_objects WHERE oid = ?", oid)][0] !== undefined;
+  const cache = createObjectCache(storage, blobLimit, now),
+    staging = createFetchStaging(storage);
+  const { load, save, evict, verified } = cache;
   /** Bring every commit and tree reachable from a remote head into the clone. */
   const fetchHead = async (head: string) => {
-    if (known(head)) return;
+    if (cache.complete(head)) return;
     const haves = [
-      ...sql.exec("SELECT oid FROM vault_git_objects WHERE type = 'commit' LIMIT 256"),
+      ...sql.exec(
+        "SELECT oid FROM vault_git_objects WHERE type = 'commit' AND oid NOT IN (SELECT oid FROM vault_fetch_incomplete) LIMIT 256",
+      ),
     ].map((entry) => String(entry.oid));
-    save(await verified(await repository.fetchObjects({ wants: [head], haves })), false);
-    evict();
+    let complete = false;
+    try {
+      await repository.fetchObjects({
+        wants: [head],
+        haves,
+        sink: {
+          staging,
+          async get(oid) {
+            const stored = load(oid);
+            if (stored) return stored;
+            const content = await repository.readBlob(oid);
+            return content ? { oid, type: "blob", content } : null;
+          },
+          put: cache.putFetched,
+        },
+      });
+      if (!load(head))
+        throw new DriveError("integrity", "Artifacts fetch is missing its requested head");
+      complete = true;
+    } finally {
+      cache.endFetch(complete);
+    }
   };
 
   const objects: ObjectStore = {

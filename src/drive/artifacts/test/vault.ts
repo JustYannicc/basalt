@@ -15,7 +15,7 @@ export const repository = (server: Backend, seen?: string[]): VaultRepository =>
       seen?.push(...Object.values(result.results));
       return result;
     },
-    fetchObjects: (input) => remote.fetchObjects(input),
+    fetchObjects: remote.fetchObjects,
     async readBlob(oid) {
       try {
         return new Uint8Array(git(server.bare, "cat-file", "blob", oid));
