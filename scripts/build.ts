@@ -15,6 +15,7 @@ run(
     "scripts/upstream-tests/pool-framework.test.ts",
     "scripts/upstream-tests/framework-runner-provenance.test.ts",
     "scripts/upstream-tests/framework-facet-provenance.test.ts",
+    "scripts/upstream-tests/framework-workflow-provenance.test.ts",
   ],
   undefined,
   {
