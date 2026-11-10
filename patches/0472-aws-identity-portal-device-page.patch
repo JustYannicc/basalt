@@ -1,13 +1,14 @@
 diff --git a/e2e/support/aws-identity-fixture.ts b/e2e/support/aws-identity-fixture.ts
 --- a/e2e/support/aws-identity-fixture.ts
 +++ b/e2e/support/aws-identity-fixture.ts
-@@ -197,8 +197,8 @@
+@@ -197,8 +197,9 @@
            return yield* json({
              deviceCode,
              userCode,
 -            verificationUri: "https://device.sso.us-east-1.amazonaws.com/",
 -            verificationUriComplete: `https://device.sso.us-east-1.amazonaws.com/?user_code=${userCode}`,
-+            verificationUri: "https://ssoins-0a1b2c3d4e5f6789.us-east-1.portal.amazonaws.com/#/device",
++            verificationUri:
++              "https://ssoins-0a1b2c3d4e5f6789.us-east-1.portal.amazonaws.com/#/device",
 +            verificationUriComplete: `https://ssoins-0a1b2c3d4e5f6789.us-east-1.portal.amazonaws.com/#/device?user_code=${userCode}`,
              expiresIn: 600,
              interval: 1,
