@@ -826,11 +826,12 @@ new file mode 100644
 index 00000000..91ebc25e
 --- /dev/null
 +++ b/internal/runtime/executor/helps/metadata_only_test.go
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,182 @@
 +package helps
 +
 +import (
 +	"context"
++	"encoding/json"
 +	"net/http"
 +	"net/http/httptest"
 +	"strings"
@@ -971,24 +972,62 @@ index 00000000..91ebc25e
 +		}
 +	}
 +}
++
++func TestMetadataOnlyReporterKeepsHomeRefreshFingerprint(t *testing.T) {
++	t.Setenv(diagnostics.MetadataOnlyEnv, "1")
++	auth := &cliproxyauth.Auth{
++		ID: "fingerprint-fixture", Index: "home-fingerprint-fixture", Provider: "codex",
++		Metadata: map[string]any{"access_token": "synthetic-access-token"},
++	}
++	want := authAccessTokenSHA256(auth)
++	if want == "" {
++		t.Fatal("Home refresh requires the credential fingerprint")
++	}
++	reporter := NewUsageReporter(context.Background(), "codex", "gpt-fixture", auth)
++	if reporter.accessTokenHash != "" {
++		t.Fatal("metadata-only reporter retained a credential fingerprint")
++	}
++	reporter.UpdateAccessTokenFingerprint(auth)
++	if reporter.accessTokenHash != "" {
++		t.Fatal("metadata-only reporter retained the refreshed fingerprint")
++	}
++	raw, err := json.Marshal(struct {
++		Auth      cliproxyauth.Auth `json:"auth"`
++		AuthIndex string            `json:"auth_index"`
++	}{Auth: *auth, AuthIndex: auth.Index})
++	if err != nil {
++		t.Fatal(err)
++	}
++	client := &fakeHomeRefreshClient{raw: raw}
++	previous := currentHomeRefreshClient
++	currentHomeRefreshClient = func() homeRefreshClient { return client }
++	t.Cleanup(func() { currentHomeRefreshClient = previous })
++	if _, handled, err := RefreshAuthViaHome(context.Background(), &config.Config{Home: config.HomeConfig{Enabled: true}}, auth); err != nil || !handled {
++		t.Fatalf("Home refresh failed: handled=%v error=%v", handled, err)
++	}
++	if client.accessTokenHash != want {
++		t.Fatal("diagnostic redaction changed the fingerprint sent to Home")
++	}
++}
 diff --git a/internal/runtime/executor/helps/usage_helpers.go b/internal/runtime/executor/helps/usage_helpers.go
 index a037cba6..13a9dd67 100644
 --- a/internal/runtime/executor/helps/usage_helpers.go
 +++ b/internal/runtime/executor/helps/usage_helpers.go
-@@ -22,3 +22,4 @@ import (
- 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
+@@ -23,2 +23,3 @@ import (
 +	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
  	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
-@@ -91,6 +92,7 @@ func NewExecutorUsageReporter(ctx context.Context, executor usageExecutor, model
+@@ -91,6 +92,9 @@ func NewExecutorUsageReporter(ctx context.Context, executor usageExecutor, model
  }
  
  func NewUsageReporter(ctx context.Context, provider, model string, auth *cliproxyauth.Auth) *UsageReporter {
 +	metadataOnly := diagnostics.MetadataOnlyEnabled()
++	// Preserve upstream auth-policy statements while redacting diagnostic fingerprints.
++	authAccessTokenSHA256 := usageTokenFingerprint(metadataOnly)
  	apiKey := APIKeyFromContext(ctx)
  	accessProvider := AccessProviderFromContext(ctx)
  	isNativeKey := false
-@@ -115,19 +117,44 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
+@@ -115,19 +119,38 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
  	}
  	baseURL := ""
  	if auth != nil {
@@ -1004,14 +1043,8 @@ index a037cba6..13a9dd67 100644
  		}
  	}
 +	authID := ""
-+	authIndex := ""
-+	accessTokenHash := ""
 +	if auth != nil {
 +		authID = auth.ID
-+		authIndex = auth.EnsureIndex()
-+		if !metadataOnly {
-+			accessTokenHash = authAccessTokenSHA256(auth)
-+		}
 +	}
 +	if metadataOnly {
 +		if !usage.DiagnosticModelAllowed(ctx, provider, authID, model) {
@@ -1035,7 +1068,7 @@ index a037cba6..13a9dd67 100644
  	reporter := &UsageReporter{
  		requestID:       uuid.NewString(),
  		traceID:         traceID,
-@@ -142,17 +169,24 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
+@@ -142,10 +165,10 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
  		isNativeKey:     isNativeKey,
  		sessionID:       sessionID,
  		parentSessionID: parentSessionID,
@@ -1049,15 +1082,9 @@ index a037cba6..13a9dd67 100644
 +		serviceTier:     "",
  		generate:        usage.GenerateFromContext(ctx),
  		stream:          usage.StreamFromContext(ctx),
--	}
--	if auth != nil {
--		reporter.authID = auth.ID
--		reporter.authIndex = auth.EnsureIndex()
--		reporter.accessTokenHash = authAccessTokenSHA256(auth)
-+		authID:          authID,
-+		authIndex:       authIndex,
-+		accessTokenHash: accessTokenHash,
-+	}
+ 	}
+@@ -156,5 +179,21 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
+ 	}
 +	if !metadataOnly {
 +		reporter.source = resolveUsageSource(auth, apiKey)
 +		reporter.authType = resolveUsageAuthType(auth)
@@ -1066,29 +1093,35 @@ index a037cba6..13a9dd67 100644
 +	} else {
 +		reporter.serviceTier = diagnostics.SafeServiceTier(usage.ServiceTierFromContext(ctx))
 +		reporter.authType = resolveUsageAuthType(auth)
- 	}
++	}
  	return reporter
  }
-@@ -202,12 +236,16 @@ func (r *UsageReporter) UpdateAccessTokenFingerprint(auth *cliproxyauth.Auth) {
++
++func usageTokenFingerprint(metadataOnly bool) func(*cliproxyauth.Auth) string {
++	if metadataOnly {
++		return func(*cliproxyauth.Auth) string { return "" }
++	}
++	return authAccessTokenSHA256
++}
+ 
+ // SetStream records whether the request was executed in streaming mode.
+@@ -200,4 +239,8 @@
+ func (r *UsageReporter) UpdateAccessTokenFingerprint(auth *cliproxyauth.Auth) {
++	// Keep the upstream refresh block intact across source versions.
++	authAccessTokenSHA256 := func(auth *cliproxyauth.Auth) string {
++		return usageTokenFingerprint(diagnostics.MetadataOnlyEnabled())(auth)
++	}
+ 	if r == nil {
  		return
  	}
- 	r.authMu.Lock()
--	r.accessTokenHash = authAccessTokenSHA256(auth)
-+	if diagnostics.MetadataOnlyEnabled() {
-+		r.accessTokenHash = ""
-+	} else {
-+		r.accessTokenHash = authAccessTokenSHA256(auth)
-+	}
- 	r.authMu.Unlock()
- }
- 
+@@ -209,5 +252,5 @@
  func (r *UsageReporter) accessTokenFingerprint() string {
 -	if r == nil {
 +	if r == nil || diagnostics.MetadataOnlyEnabled() {
  		return ""
  	}
  	r.authMu.RLock()
-@@ -218,7 +256,7 @@ func (r *UsageReporter) accessTokenFingerprint() string {
+@@ -218,7 +261,7 @@ func (r *UsageReporter) accessTokenFingerprint() string {
  // ObserveResponseModel stores the model reported by an upstream response or event and
  // ignores payloads without one; the substitution warning is emitted at publish time.
  func (r *UsageReporter) ObserveResponseModel(payload []byte) {
@@ -1097,7 +1130,7 @@ index a037cba6..13a9dd67 100644
  		return
  	}
  	provider := ""
-@@ -242,7 +280,7 @@ func (r *UsageReporter) ObserveResponseModel(payload []byte) {
+@@ -242,7 +285,7 @@ func (r *UsageReporter) ObserveResponseModel(payload []byte) {
  
  // SetResponseModel sets the reported model directly if valid and not already marked final.
  func (r *UsageReporter) SetResponseModel(model string) {
@@ -1106,7 +1139,7 @@ index a037cba6..13a9dd67 100644
  		return
  	}
  	model = strings.TrimSpace(model)
-@@ -259,7 +297,7 @@ func (r *UsageReporter) SetResponseModel(model string) {
+@@ -259,7 +302,7 @@ func (r *UsageReporter) SetResponseModel(model string) {
  // Model substitution detection compares the response against this upstream model,
  // while usage accounting preserves the client's requested model.
  func (r *UsageReporter) SetUpstreamModel(model string) {
@@ -1115,7 +1148,7 @@ index a037cba6..13a9dd67 100644
  		return
  	}
  	r.upstreamModelMu.Lock()
-@@ -285,7 +323,7 @@ func (r *UsageReporter) IsResponseModelFinal() bool {
+@@ -285,7 +328,7 @@ func (r *UsageReporter) IsResponseModelFinal() bool {
  // warnModelSubstitution warns about a silent upstream model swap, and labels the
  // credential by index only, never by account.
  func (r *UsageReporter) warnModelSubstitution(ctx context.Context) {
@@ -1124,7 +1157,7 @@ index a037cba6..13a9dd67 100644
  		return
  	}
  	served := r.ResponseModel()
-@@ -356,6 +394,11 @@ func (r *UsageReporter) SetTranslatedRequestMetadata(payload []byte, format stri
+@@ -356,6 +399,11 @@ func (r *UsageReporter) SetTranslatedRequestMetadata(payload []byte, format stri
  	if r == nil {
  		return
  	}
@@ -1136,7 +1169,7 @@ index a037cba6..13a9dd67 100644
  	r.reasoning = thinking.ExtractTranslatedReasoningEffort(payload, format)
  	r.effectiveServiceTier = extractEffectiveServiceTier(payload)
  }
-@@ -610,7 +653,8 @@ func (r *UsageReporter) publishAttemptRecord(ctx context.Context, record usage.R
+@@ -610,7 +658,8 @@ func (r *UsageReporter) publishAttemptRecord(ctx context.Context, record usage.R
  
  func (r *UsageReporter) publishRecord(ctx context.Context, record usage.Record) {
  	record.ResponseHeaders = internallogging.GetResponseHeaders(ctx)
@@ -1146,7 +1179,7 @@ index a037cba6..13a9dd67 100644
  		ctx = usage.WithCapturedIdentity(ctx, r.apiKey, r.accessProvider, r.isNativeKey)
  	}
  	usage.PublishRecord(ctx, record)
-@@ -717,6 +761,9 @@ func failFromErrors(errs ...error) usage.Failure {
+@@ -717,6 +766,9 @@ func failFromErrors(errs ...error) usage.Failure {
  		if err == nil {
  			continue
  		}
@@ -1156,7 +1189,7 @@ index a037cba6..13a9dd67 100644
  		body := strings.TrimSpace(err.Error())
  		type responseBodyProvider interface {
  			ResponseBody() []byte
-@@ -1007,6 +1054,11 @@ func (b *StreamUsageBuffer) Observe(detail usage.Detail, ok bool) {
+@@ -1007,6 +1059,11 @@ func (b *StreamUsageBuffer) Observe(detail usage.Detail, ok bool) {
  	if b == nil || !ok {
  		return
  	}
@@ -1168,7 +1201,7 @@ index a037cba6..13a9dd67 100644
  	responseServiceTier := strings.TrimSpace(detail.ResponseServiceTier)
  	if responseServiceTier == "" || hasNonZeroTokenUsage(detail) || hasStructuredUsageDetail(detail) {
  		preservedTier := b.detail.ResponseServiceTier
-@@ -1208,7 +1260,7 @@ func (b *StreamUsageBuffer) ObserveOpenAIStream(line []byte) {
+@@ -1208,7 +1265,7 @@ func (b *StreamUsageBuffer) ObserveOpenAIStream(line []byte) {
  	hasTierCandidate := needTier && bytes.Contains(payload, openAIStreamServiceTierMarker)
  	hasToolCallsCandidate := bytes.Contains(payload, openAIStreamToolCallsMarker)
  	hasImageCompletedCandidate := bytes.Contains(payload, openAIStreamImageDoneMarker)
@@ -1177,7 +1210,7 @@ index a037cba6..13a9dd67 100644
  		if model, _ := extractGenericResponseModelEvent(payload); model != "" {
  			b.responseModel = model
  		}
-@@ -1350,7 +1402,7 @@ func (b *StreamUsageBuffer) ObserveClaudeStream(line []byte) {
+@@ -1350,7 +1407,7 @@ func (b *StreamUsageBuffer) ObserveClaudeStream(line []byte) {
  		return
  	}
  	payload := jsonPayload(line)
