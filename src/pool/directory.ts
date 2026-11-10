@@ -16,6 +16,8 @@ import { fail, object, text } from "./json.ts";
 import { setupTtl, type SetupIntent } from "./setup-links.ts";
 import type { PoolClaims } from "./token.ts";
 
+/** A pool choice plus its team, which only the setup host reads; the browser never sees it. */
+export type TeamPoolChoice = PoolChoice & { readonly organization?: string };
 interface PoolEntry extends Omit<PoolAudience, "users" | "authorization" | "managers"> {
   users: string[];
   at: number;
@@ -138,7 +140,7 @@ export class PoolDirectory {
     else if (!existing.users.includes(user)) existing.users = [...existing.users, user];
     await this.save();
   }
-  choices(user: string, issuedAt: number, own: PoolClaims): PoolChoice[] {
+  choices(user: string, issuedAt: number, own: PoolClaims): TeamPoolChoice[] {
     // Ownership alone never lists a pool: deletion empties `users` but keeps `owner`, and its
     // refusal expires, so an owner match would bring deleted pools back. The signed intent's pool stays.
     const pools = Object.values(this.state.pools).filter(
@@ -148,7 +150,12 @@ export class PoolDirectory {
         this.allowed(pool.pool, user, issuedAt),
     );
     // A deleted pool's record may keep an empty organization; that reads as unknown, never as a team.
-    const choice = (id: string, name: string, owner: string, organization: string): PoolChoice => ({
+    const choice = (
+      id: string,
+      name: string,
+      owner: string,
+      organization: string,
+    ): TeamPoolChoice => ({
       id,
       name,
       mine: owner === user,
