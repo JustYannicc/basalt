@@ -46,18 +46,8 @@ test("AWS catalog provenance pins the self-contained published source and depend
     "safe-result.ts",
     "saved-connection.ts",
     "session-store.ts",
-    "ui/access-check.tsx",
-    "ui/api.ts",
-    "ui/app.tsx",
-    "ui/assets.d.ts",
-    "ui/connection-state.ts",
-    "ui/connection.tsx",
-    "ui/controls.tsx",
-    "ui/host.ts",
     "ui/index.html",
-    "ui/inventory.tsx",
-    "ui/main.tsx",
-    "ui/model.ts",
+    "ui/main.js",
     "ui/style.css",
     "vendor/LICENSE",
     "vendor/aws4fetch.d.ts",
@@ -75,8 +65,6 @@ test("AWS catalog provenance pins the self-contained published source and depend
   assert.deepEqual(manifest.dependencies, {
     apps: "0.0.1-beta.104-basalt.12",
     "@modelcontextprotocol/sdk": "1.32.1",
-    react: "19.2.0",
-    "react-dom": "19.2.0",
   });
   assert.deepEqual(provenance.dependencies, manifest.dependencies);
 });

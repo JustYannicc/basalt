@@ -39,6 +39,10 @@ export function renderHowItWorks(parent: HTMLElement) {
       "Notes sync everywhere. Attachments download when you open a note. Pinned folders stay fully offline.",
     ],
     [
+      "Syncs when you pause.",
+      "Your edits go to Basalt together after a few minutes without typing, when you leave Obsidian, or when you choose Sync now. Changes from Basalt arrive when you open Obsidian or a note, and every few minutes while it's open.",
+    ],
+    [
       "Edit offline, sync when you return.",
       "Changes wait on this device until Obsidian is open and online.",
     ],

@@ -66,6 +66,7 @@ export const prepareDeclaredRelease = (
           options.publication,
           options.declarations,
           declaredStorage,
+          options.namespaceRead,
         );
         const workerBaselines = yield* observeWorkerBaselines(prepared.captured, stack, options.io);
         return {

@@ -1,0 +1,320 @@
+name: Clients release
+
+# Releases the Signalbox apps in two manual steps on main, so the published files are exactly the
+# files that passed the platform acceptance walks (#209):
+#   1. Run without publish_run: builds, signs and keeps one signalbox-clients artifact.
+#   2. Walk that run's files, then run with publish_run=<its run id>: publishes those files once as
+#      signalbox-clients-<version>, the repository's Latest release.
+# Pushes and pull requests that touch the release inputs only build, without signing.
+on:
+  push:
+    branches: [main]
+    paths:
+      - clients/package.json
+      - clients/desktop/package.json
+      - clients/mobile/package.json
+      - clients/mobile/app.config.ts
+      - clients/release-notes.md
+      - .github/workflows/clients-release.yml
+  pull_request:
+    paths:
+      - clients/release-notes.md
+      - .github/workflows/clients-release.yml
+  workflow_dispatch:
+    inputs:
+      publish_run:
+        description: Run id of a walked build of this workflow on main to publish; empty builds only.
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clients-release-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    if: inputs.publish_run == ''
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Read the one clients version
+        run: |
+          clients="$(node -p 'require("./clients/package.json").version')"
+          desktop="$(node -p 'require("./clients/desktop/package.json").version')"
+          mobile="$(node -p 'require("./clients/mobile/package.json").version')"
+          phone="$(node -p '/\bversion: "([^"]+)"/.exec(require("node:fs").readFileSync("clients/mobile/app.config.ts", "utf8"))?.[1] ?? "missing"')"
+          if [ "$clients" != "$desktop" ] || [ "$clients" != "$mobile" ] || [ "$clients" != "$phone" ]; then
+            message="Clients release needs one version: clients/package.json is $clients, clients/desktop/package.json is $desktop, clients/mobile/package.json is $mobile and clients/mobile/app.config.ts is $phone."
+            echo "::error::$message"
+            echo "$message" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "version=$clients" >> "$GITHUB_OUTPUT"
+
+  desktop:
+    needs: version
+    if: inputs.publish_run == ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: mac
+          - os: windows-latest
+            platform: win
+          - os: ubuntu-latest
+            platform: linux
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+      - uses: ./.github/actions/desktop-release-assets
+        id: desktop-assets
+      - run: bun install --cwd clients --frozen-lockfile
+      - run: bun install --cwd clients/desktop --frozen-lockfile
+      - run: bun run --cwd clients/desktop build
+      # The keyring's native module is installed for the runner's own architecture only, so each
+      # runner packages its own: Apple Silicon on macos-latest, x64 on Windows and Linux.
+      # Published builds carry the permanent identifiers; package.json keeps the development ones.
+      # Bash on every runner: Windows PowerShell splits a native argument like -c.appId at its dot.
+      - name: Package the app
+        shell: bash
+        run: bun run --cwd clients/desktop package:${{ matrix.platform }} -c.appId=run.signalbox.client -c.productName=Signalbox
+      - name: Package the command line connection
+        if: matrix.platform == 'linux'
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          package="$RUNNER_TEMP/signalbox-cli"
+          mkdir -p "$package"
+          cp clients/desktop/.dist/connection.mjs "$package/signalbox-client.mjs"
+          cp LICENSE "$package/LICENSE"
+          keyring="$(node -p 'require("./clients/package.json").dependencies["@napi-rs/keyring"]')"
+          node -e '
+            const [version, keyring] = process.argv.slice(1);
+            const manifest = {
+              name: "signalbox-client", version, type: "module", license: "Apache-2.0",
+              description: "Connect your local agents to Signalbox models and tools.",
+              bin: { "signalbox-client": "signalbox-client.mjs" },
+              dependencies: { "@napi-rs/keyring": keyring },
+              engines: { node: ">=24.18.0" },
+            };
+            require("node:fs").writeFileSync(process.env.RUNNER_TEMP + "/signalbox-cli/package.json", JSON.stringify(manifest, null, 2) + "\n");
+          ' "$VERSION" "$keyring"
+          sed -i '1{/^#!/!s|^|#!/usr/bin/env node\n|}' "$package/signalbox-client.mjs"
+          (cd "$package" && npm pack --pack-destination "$GITHUB_WORKSPACE/clients/desktop/dist-packages")
+      - uses: actions/cache/save@v4
+        if: steps.desktop-assets.outputs.key != ''
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/basalt-desktop-release-assets
+          key: ${{ steps.desktop-assets.outputs.key }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clients-${{ matrix.platform }}
+          path: |
+            clients/desktop/dist-packages/Signalbox-Client-*
+            clients/desktop/dist-packages/signalbox-client-*.tgz
+          if-no-files-found: error
+
+  android:
+    needs: version
+    if: inputs.publish_run == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      SIGNALBOX_CLIENT_RELEASE: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+      # The runner image ships JDK 17 and the Android SDK.
+      - name: Use the runner's JDK 17
+        run: echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+      - run: bun install --cwd clients --frozen-lockfile
+      - run: bun install --cwd clients/mobile --frozen-lockfile
+      - name: Generate the Android project
+        working-directory: clients/mobile
+        run: npx expo prebuild --platform android --no-install
+      # The Gradle wrapper fetches its distribution from Gradle's own release host, which serves it
+      # from GitHub releases; the cache keeps that to once per wrapper version.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: gradle-wrapper-${{ hashFiles('clients/mobile/android/gradle/wrapper/gradle-wrapper.properties') }}
+      - name: Build the release APK
+        working-directory: clients/mobile/android
+        run: ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a,armeabi-v7a,x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-unsigned
+          path: clients/mobile/android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+
+  # The release key never reaches a job that runs the branch's build code: this job checks out
+  # nothing and re-signs the built APK with the runner's own build tools. Expo signs release
+  # builds with its shared debug key; the project's own key lets later APKs install over this one.
+  sign-android:
+    needs: android
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_run == ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-unsigned
+          path: ${{ runner.temp }}/unsigned
+      - name: Sign with the Signalbox release key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
+            message="Missing ANDROID_RELEASE_KEYSTORE_BASE64 or ANDROID_RELEASE_KEYSTORE_PASSWORD; the APK can't be signed with the release key."
+            echo "::error::$message"
+            echo "$message" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          tools="$ANDROID_HOME/build-tools/$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort -V | tail -n1)"
+          keystore="$RUNNER_TEMP/release.jks"
+          trap 'rm -f "$keystore"' EXIT
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$keystore"
+          mkdir -p "$RUNNER_TEMP/apk"
+          # 16 KB alignment keeps native libraries loadable on 16 KB page-size devices.
+          "$tools/zipalign" -P 16 -f 4 "$RUNNER_TEMP/unsigned/app-release.apk" "$RUNNER_TEMP/apk/aligned.apk"
+          "$tools/apksigner" sign --ks "$keystore" --ks-pass env:KEYSTORE_PASSWORD --ks-key-alias signalbox \
+            --out "$RUNNER_TEMP/apk/Signalbox-android.apk" "$RUNNER_TEMP/apk/aligned.apk"
+          "$tools/zipalign" -c -P 16 4 "$RUNNER_TEMP/apk/Signalbox-android.apk"
+          "$tools/apksigner" verify --print-certs "$RUNNER_TEMP/apk/Signalbox-android.apk" | grep -E 'Signer #1 certificate (DN|SHA-256)'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clients-android
+          path: ${{ runner.temp }}/apk/Signalbox-android.apk
+          if-no-files-found: error
+
+  # One artifact holds the exact files a later publish run releases, with their hashes and source.
+  assemble:
+    needs: [version, desktop, sign-android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: clients-*
+          path: ${{ runner.temp }}/built
+          merge-multiple: true
+      - name: Name the files and record their hashes
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          BUILT: ${{ runner.temp }}/built
+          OUT: ${{ runner.temp }}/release
+        run: |
+          mkdir -p "$OUT"
+          # Names without the version keep releases/latest/download/<name> links stable.
+          take() {
+            if [ ! -f "$BUILT/$1" ]; then
+              message="The build produced no $1. Built files: $(ls "$BUILT")"
+              echo "::error::$message"
+              echo "$message" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            cp "$BUILT/$1" "$OUT/$2"
+          }
+          take "Signalbox-Client-$VERSION-mac-arm64.dmg" Signalbox-mac-arm64.dmg
+          take "Signalbox-Client-$VERSION-mac-arm64.zip" Signalbox-mac-arm64.zip
+          take "Signalbox-Client-$VERSION-win-x64.exe" Signalbox-windows-x64-setup.exe
+          take "Signalbox-Client-$VERSION-win-x64.zip" Signalbox-windows-x64.zip
+          take "Signalbox-Client-$VERSION-linux-x86_64.AppImage" Signalbox-linux-x86_64.AppImage
+          take "Signalbox-Client-$VERSION-linux-amd64.deb" Signalbox-linux-amd64.deb
+          take Signalbox-android.apk Signalbox-android.apk
+          take "signalbox-client-$VERSION.tgz" signalbox-cli.tgz
+          (cd "$OUT" && sha256sum -- * > SHA256SUMS.txt)
+          printf '%s\n' "$VERSION" > "$RUNNER_TEMP/version.txt"
+          printf '%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/commit.txt"
+          {
+            echo "Signalbox apps $VERSION from $GITHUB_SHA. Walk these files, then publish them with publish_run=$GITHUB_RUN_ID."
+            echo '```'
+            cat "$OUT/SHA256SUMS.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signalbox-clients
+          path: |
+            ${{ runner.temp }}/release/*
+            ${{ runner.temp }}/version.txt
+            ${{ runner.temp }}/commit.txt
+          if-no-files-found: error
+
+  publish:
+    # Any other event or branch would publish unwalked files under a permanent version.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_run != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Check the walked run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ inputs.publish_run }}
+        run: |
+          fail() {
+            echo "::error::$1"
+            echo "$1" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+          [[ "$RUN" =~ ^[0-9]+$ ]] || fail "publish_run must be a run id, not '$RUN'."
+          seen="$(gh run view "$RUN" --repo "$GITHUB_REPOSITORY" --json workflowName,headBranch,event,conclusion --jq '[.workflowName, .headBranch, .event, .conclusion] | join(" ")')"
+          [ "$seen" = "Clients release main workflow_dispatch success" ] ||
+            fail "Run $RUN isn't a successful manual Clients release build on main (saw: $seen)."
+          gh run download "$RUN" --repo "$GITHUB_REPOSITORY" --name signalbox-clients --dir "$RUNNER_TEMP/walked"
+          cd "$RUNNER_TEMP/walked"
+          sha256sum -c SHA256SUMS.txt || fail "Run $RUN's files don't match their recorded SHA256SUMS.txt."
+          echo "VERSION=$(cat version.txt)" >> "$GITHUB_ENV"
+          echo "COMMIT=$(cat commit.txt)" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.COMMIT }}
+      - name: Publish the walked files once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ inputs.publish_run }}
+          WALKED: ${{ runner.temp }}/walked
+        run: |
+          fail() {
+            echo "::error::$1"
+            echo "$1" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+          tag="signalbox-clients-$VERSION"
+          state="$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null || echo missing)"
+          [ "$state" != "false" ] ||
+            fail "$tag is already published, and published versions never change. To publish $COMMIT, raise version in clients/package.json, clients/desktop/package.json, clients/mobile/package.json and clients/mobile/app.config.ts."
+          # An interrupted create leaves a draft nobody can see; replace it with these files.
+          if [ "$state" = "true" ]; then gh release delete "$tag" --yes; fi
+          # A bare assignment keeps ls-remote's status; the peeled line, listed last, names the commit.
+          refs="$(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}")"
+          existing="$(printf '%s\n' "$refs" | tail -n1 | cut -f1)"
+          [ -z "$existing" ] || [ "$existing" = "$COMMIT" ] ||
+            fail "The tag $tag already points at $existing, not the walked commit $COMMIT. Delete that tag, or raise the clients version."
+          sed -e "s/{version}/$VERSION/g" -e "s|{repository}|$GITHUB_REPOSITORY|g" clients/release-notes.md > "$RUNNER_TEMP/notes.md"
+          gh release create "$tag" --target "$COMMIT" --latest \
+            --title "Signalbox apps $VERSION" --notes-file "$RUNNER_TEMP/notes.md" \
+            "$WALKED"/Signalbox-* "$WALKED"/signalbox-cli.tgz "$WALKED"/SHA256SUMS.txt
+          echo "Published $tag from run $RUN at $COMMIT." >> "$GITHUB_STEP_SUMMARY"

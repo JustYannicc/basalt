@@ -2,6 +2,7 @@ import { Schema, Option } from "effect";
 import { DriveCommand, type DriveImportPlan } from "apps/contracts";
 import { DriveError, decodeAttachmentPointer, sha256 } from "./shared/index.ts";
 import type { importManifest } from "./import-manifest.ts";
+import { isTextPath } from "./text-files.ts";
 import type { createDriveService } from "./service.ts";
 import type { vaultAttachments } from "./attachment-service.ts";
 import type { meteredBucket } from "./io-quota.ts";
@@ -35,7 +36,7 @@ export function importService(input: {
                 bytes: pointer.bytes,
                 hash: pointer.oid,
               };
-            if (content.length === 0 && !edit.path.endsWith(".md"))
+            if (content.length === 0 && !isTextPath(edit.path))
               return {
                 path: edit.path,
                 kind: "attachment" as const,

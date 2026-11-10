@@ -95,6 +95,15 @@
             "mode": "manual",
             "requires": "remove when the pin moves to \u2265 v1.1.8 and the upstream paid omitted-zero, free/unknown-profile, retained-window, supported-client and metadata-only collection regressions pass on the new pin."
           }
+        },
+        {
+          "identity": "cliproxy-home-collection-field-presence",
+          "file": "0477-home-collection-field-presence.patch",
+          "sha256": "e629d15bc078d1a6d15cde112b73b4d0a0577c871807f8c6da0f508b61386801",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after pinned Home exposes bounded per-collection field-presence, null and quantity-validity handoffs independently of logs, and the authenticated pool view preserves them in pool-owned storage without response bodies, amounts or credentials. Home database models and versions must remain unchanged."
+          }
         }
       ]
     },

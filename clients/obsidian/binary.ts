@@ -1,12 +1,13 @@
 import { binaryConflictTools } from "./binary-conflicts.ts";
 import { binaryDownloader } from "./binary-download.ts";
 import { linkedAttachments } from "./binary-links.ts";
-import { blobId, maximumFileBytes, safePath, type LocalVault, type RemoteVault } from "./types.ts";
+import { blobId, safePath, type LocalVault, type RemoteVault } from "./types.ts";
 import type { AttachmentPort, DeviceMode } from "./attachments.ts";
-import type { BinaryIo, BinaryStateStore, RemoteBinary } from "./binary-types.ts";
+import type { BinaryIo, BinarySnapshot, BinaryStateStore, RemoteBinary } from "./binary-types.ts";
 import { decodeBinaryState, pointerIdentity } from "./binary-state.ts";
 import { binaryUploader } from "./binary-upload.ts";
 import { incrementalSha256 } from "../../src/drive/shared/bytes.ts";
+import { isTextContent, isTextPath, maximumTextBytes } from "../../src/drive/text-files.ts";
 export async function createBinaryClient(input: {
   text: LocalVault;
   io: BinaryIo;
@@ -83,18 +84,58 @@ export async function createBinaryClient(input: {
     required = needed;
   };
 
-  const upload = binaryUploader({ ...input, state, save, check });
+  const uploadFile = binaryUploader({ ...input, state, save, check });
+  // A path already kept as an attachment stays one. Text must also decode losslessly, or its
+  // exact bytes go up as an attachment instead of being mangled by a text round trip.
+  const textual = async (path: string, snapshot: BinarySnapshot) =>
+    isTextPath(path) &&
+    !state.files[path] &&
+    snapshot.bytes <= maximumTextBytes &&
+    // The desktop reader refuses zero-length reads, and an empty file is valid text anyway.
+    (snapshot.bytes === 0 || isTextContent(await input.io.read(path, snapshot, 0, snapshot.bytes)));
+  // A pull compares this against blobs; no pointer or note can contain a NUL byte.
+  const changed = "\u0000changed attachment";
+  const look = async (path: string, upload: boolean): Promise<string | null> => {
+    const file = await input.io.snapshot(path);
+    if (!file) {
+      const known = state.files[path],
+        pending = state.downloads[path];
+      if (known?.materialized && pending && input.io.pendingSnapshot) {
+        const recovered = await input.io.pendingSnapshot(path, pending.id);
+        if (recovered?.stamp === known.stamp) return known.pointer;
+      }
+      return known?.materialized ? null : (known?.pointer ?? null);
+    }
+    if (file.bytes === 0 || (await textual(path, file))) return input.text.read(path);
+    if (!safePath(path)) throw new Error("Unsafe local attachment path");
+    if (!upload) {
+      const known = state.files[path];
+      if (!known?.materialized) return changed;
+      if (known.stamp === file.stamp) return known.pointer;
+      // A rewrite with the same bytes is no edit; hash it, without uploading, to tell.
+      const identity = pointerIdentity(known.pointer);
+      if (identity?.bytes !== file.bytes) return changed;
+      const hash = incrementalSha256();
+      for (let offset = 0; offset < file.bytes; offset += 1048576)
+        hash.update(
+          await input.io.read(path, file, offset, Math.min(1048576, file.bytes - offset)),
+        );
+      return hash.digest() === identity.oid ? known.pointer : changed;
+    }
+    let work = uploading.get(path);
+    if (!work) {
+      work = uploadFile(path, file).finally(() => uploading.delete(path));
+      uploading.set(path, work);
+    }
+    return work;
+  };
   const local: LocalVault = {
     binary: true,
     initialSource: input.mode === "full",
     async importEntry(file) {
       const snapshot = await input.io.snapshot(file.path);
       if (!snapshot) return null;
-      if (
-        file.path.endsWith(".md") &&
-        !state.files[file.path] &&
-        snapshot.bytes <= maximumFileBytes
-      ) {
+      if (await textual(file.path, snapshot)) {
         const content = await input.text.read(file.path);
         return content === null
           ? null
@@ -134,35 +175,13 @@ export async function createBinaryClient(input: {
           .map(([path, value]) => ({ path, bytes: pointerIdentity(value.pointer)!.bytes })),
       ];
     },
-    async read(path) {
-      const file = await input.io.snapshot(path);
-      if (!file) {
-        const known = state.files[path],
-          pending = state.downloads[path];
-        if (known?.materialized && pending && input.io.pendingSnapshot) {
-          const recovered = await input.io.pendingSnapshot(path, pending.id);
-          if (recovered?.stamp === known.stamp) return known.pointer;
-        }
-        return known?.materialized ? null : (known?.pointer ?? null);
-      }
-      if (
-        (path.endsWith(".md") && !state.files[path] && file.bytes <= maximumFileBytes) ||
-        file.bytes === 0
-      )
-        return input.text.read(path);
-      if (!safePath(path)) throw new Error("Unsafe local attachment path");
-      let work = uploading.get(path);
-      if (!work) {
-        work = upload(path, file).finally(() => uploading.delete(path));
-        uploading.set(path, work);
-      }
-      return work;
-    },
+    read: (path) => look(path, true),
+    inspect: (path) => look(path, false),
     async replace(path, expected, content, context) {
       const identity = pointerIdentity(content ?? ""),
         known = state.files[path];
       if (!identity && !known) return input.text.replace(path, expected, content, context);
-      if ((await local.read(path)) !== expected) return false;
+      if ((await look(path, false)) !== expected) return false;
       const snapshot = await input.io.snapshot(path);
       if (content === null) {
         if (snapshot && !(await input.io.preserve(path, snapshot))) return false;

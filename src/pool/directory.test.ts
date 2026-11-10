@@ -5,9 +5,13 @@ import { PoolDirectory } from "./directory.ts";
 import { setupTtl } from "./setup-links.ts";
 import { fixture, member, owner, pool } from "./test/computers.ts";
 
-const audience = (users = pool.users) => ({ action: "audience" as const, pools: [{ ...pool, users }] });
+const audience = (users = pool.users) => ({
+  action: "audience" as const,
+  pools: [{ ...pool, users }],
+});
 const own = { pool: "own-pool", owner: member, organization: "own-organization" };
-const entry = async (f: ReturnType<typeof fixture>) => (await PoolDirectory.load(f.storage, f.now())).entry(pool.pool)!;
+const entry = async (f: ReturnType<typeof fixture>) =>
+  (await PoolDirectory.load(f.storage, f.now())).entry(pool.pool)!;
 
 test("a newer stale projection cannot re-add a removed user; a projection after grace can", async () => {
   const f = fixture();
@@ -17,12 +21,23 @@ test("a newer stale projection cannot re-add a removed user; a projection after 
   f.advance(1);
   assert.equal((await f.access(audience())).status, 200);
   assert.deepEqual((await entry(f)).users, [owner]);
-  assert.equal((await f.action("switch", member, personal.intent, { id: personal.computer.id, pool: pool.pool })).status, 403);
+  assert.equal(
+    (
+      await f.action("switch", member, personal.intent, {
+        id: personal.computer.id,
+        pool: pool.pool,
+      })
+    ).status,
+    403,
+  );
   f.advance(accessGrace);
   assert.equal((await f.access(audience())).status, 200);
   assert.deepEqual((await entry(f)).users, [owner, member]);
   const fresh = await f.intent(member, own);
-  assert.equal((await f.action("switch", member, fresh, { id: personal.computer.id, pool: pool.pool })).status, 200);
+  assert.equal(
+    (await f.action("switch", member, fresh, { id: personal.computer.id, pool: pool.pool })).status,
+    200,
+  );
 });
 
 test("a host-authorized setup restores a re-shared user after refusal while old projections stay blocked", async () => {
@@ -45,7 +60,10 @@ test("pool deletion beats a newer audience and older audiences cannot resurrect 
   const computer = await f.create();
   await f.access(audience(), f.now() + 2);
   const deletedAt = f.now();
-  assert.equal((await f.access({ action: "pool-deleted", pool: pool.pool }, deletedAt)).status, 200);
+  assert.equal(
+    (await f.access({ action: "pool-deleted", pool: pool.pool }, deletedAt)).status,
+    200,
+  );
   assert.equal(f.server.keys.length, 0);
   assert.equal((await f.registry())[computer.computer.id]!.state, "removed");
   assert.deepEqual((await entry(f)).users, []);
@@ -60,6 +78,20 @@ test("pool deletion beats a newer audience and older audiences cannot resurrect 
   assert.equal((await f.registry())[restored.computer.id]!.state, "active");
 });
 
+test("a deleted pool stays out of its owner's choices after its refusal expires", async () => {
+  const f = fixture();
+  await f.access(audience());
+  await f.access({ action: "pool-deleted", pool: pool.pool });
+  f.advance(accessGrace + setupTtl + 1);
+  await f.expire();
+  const other = { pool: "other-pool", owner, organization: "other-organization" };
+  const listed = await f.action("computers", owner, await f.intent(owner, other));
+  assert.equal(listed.status, 200);
+  assert.deepEqual(((await listed.json()) as { pools: unknown }).pools, [
+    { id: other.pool, name: "", mine: true, organization: other.organization },
+  ]);
+});
+
 test("rolled-back person deletion recovers through a later host call and lazily recreates Home user", async () => {
   const f = fixture();
   await f.access(audience());
@@ -71,7 +103,11 @@ test("rolled-back person deletion recovers through a later host call and lazily 
   f.advance(accessGrace + 1);
   const fresh = await f.intent();
   assert.equal(f.server.users.length, 0);
-  const created = await f.action("links", member, fresh, { name: "Restored", toolsKeyId: "restored", toolsToken: "restored" });
+  const created = await f.action("links", member, fresh, {
+    name: "Restored",
+    toolsKeyId: "restored",
+    toolsToken: "restored",
+  });
   assert.equal(created.status, 200, await created.clone().text());
   assert.equal(f.server.users.length, 1);
   assert.equal(f.server.keys.length, 1);
@@ -82,7 +118,9 @@ test("later audiences restore deleted pools and people after grace", async () =>
   for (const action of ["pool-deleted", "person-deleted"] as const) {
     const f = fixture();
     await f.access(audience());
-    await f.access(action === "pool-deleted" ? { action, pool: pool.pool } : { action, user: member });
+    await f.access(
+      action === "pool-deleted" ? { action, pool: pool.pool } : { action, user: member },
+    );
     await f.access(audience(), f.now() + 1);
     assert.ok(!(await entry(f)).users.includes(member));
     f.advance(accessGrace + 1);
@@ -97,7 +135,10 @@ test("failed provisioning stays pending and does not fail an unrelated removal",
   const logged = t.mock.method(console, "error", () => {});
   const computer = await f.create();
   f.server.userFailure = true;
-  const change = { action: "audience" as const, pools: [{ ...pool, users: [owner, "new-member"] }] };
+  const change = {
+    action: "audience" as const,
+    pools: [{ ...pool, users: [owner, "new-member"] }],
+  };
   const response = await f.access(change);
   assert.equal(response.status, 200, await response.clone().text());
   assert.deepEqual(await response.json(), { revoked: 1, provisioned: 0 });
@@ -108,7 +149,16 @@ test("failed provisioning stays pending and does not fail an unrelated removal",
   f.restart();
   f.server.userFailure = false;
   const fresh = await f.intent("new-member");
-  assert.equal((await f.action("links", "new-member", fresh, { name: "Lazy", toolsKeyId: "lazy", toolsToken: "lazy" })).status, 200);
+  assert.equal(
+    (
+      await f.action("links", "new-member", fresh, {
+        name: "Lazy",
+        toolsKeyId: "lazy",
+        toolsToken: "lazy",
+      })
+    ).status,
+    200,
+  );
   const retried = await f.access(change);
   assert.deepEqual(await retried.json(), { revoked: 0, provisioned: 0 });
   assert.deepEqual((await entry(f)).pending, []);
@@ -121,7 +171,7 @@ test("refusals expire only after every pre-refusal setup intent expires, on acce
     await f.access({ action: "person-deleted", user: owner });
     const before = f.now() + accessGrace;
     f.advance(accessGrace + setupTtl);
-    const prune = () => alarm ? f.expire() : f.access({ action: "audience", pools: [] });
+    const prune = () => (alarm ? f.expire() : f.access({ action: "audience", pools: [] }));
     await prune();
     let directory = await PoolDirectory.load(f.storage, f.now());
     assert.equal(directory.allowed(pool.pool, member, before - 1), false);
@@ -139,8 +189,11 @@ test("refusals expire only after every pre-refusal setup intent expires, on acce
 test("legacy permanent tombstones become time-bound refusals once", async () => {
   const f = fixture();
   await f.storage.put("pool-directory-v1", {
-    pools: { [JSON.stringify(pool.pool)]: { ...pool, users: [], at: f.now(), pending: [], deleted: true } },
-    refusals: {}, people: { [JSON.stringify(member)]: f.now() },
+    pools: {
+      [JSON.stringify(pool.pool)]: { ...pool, users: [], at: f.now(), pending: [], deleted: true },
+    },
+    refusals: {},
+    people: { [JSON.stringify(member)]: f.now() },
   });
   assert.equal((await f.context()).status, 403);
   assert.equal((await entry(f)).deleted, undefined);
@@ -160,7 +213,8 @@ test("deleting an owner revokes members on every owned pool, without affecting t
   assert.equal(response.status, 200, await response.clone().text());
   assert.deepEqual(await response.json(), { revoked: 2, provisioned: 0 });
   assert.equal(f.server.keys.length, 1);
-  for (const id of [shared.computer.id, second.computer.id]) assert.equal((await f.registry())[id]!.state, "removed");
+  for (const id of [shared.computer.id, second.computer.id])
+    assert.equal((await f.registry())[id]!.state, "removed");
   assert.equal((await f.registry())[personal.computer.id]!.state, "active");
   assert.equal((await f.context(member)).status, 403);
   assert.equal((await f.context(member, otherOwned)).status, 403);
@@ -170,15 +224,20 @@ test("deleting an owner revokes members on every owned pool, without affecting t
 test("a personal revoke in flight can finish after access removal", async () => {
   const f = fixture();
   const computer = await f.create();
-  assert.equal((await f.action("revoke", member, computer.intent, { id: computer.computer.id })).status, 200);
+  assert.equal(
+    (await f.action("revoke", member, computer.intent, { id: computer.computer.id })).status,
+    200,
+  );
   assert.equal((await f.registry())[computer.computer.id]!.state, "revoking");
   assert.equal((await f.access(audience([owner]))).status, 200);
-  assert.equal((await f.action("revoked", member, computer.intent, { id: computer.computer.id })).status, 200);
+  assert.equal(
+    (await f.action("revoked", member, computer.intent, { id: computer.computer.id })).status,
+    200,
+  );
   const finished = (await f.registry())[computer.computer.id]!;
   assert.equal(finished.state, "revoked");
   assert.equal(finished.revokedAt, new Date(f.now()).toISOString());
 });
-
 
 test("provisioning continues after one failure and counts only successful creations", async (t) => {
   const f = fixture();
@@ -197,15 +256,20 @@ test("provisioning continues after one failure and counts only successful creati
 
 test("native audiences keep pool choices stable and never turn management into use", async () => {
   const f = fixture();
-  const change = { action: "audience" as const, pools: [{ ...pool, users: [member],
-    authorization: "executor-app-v1" as const, managers: [owner] }] };
+  const change = {
+    action: "audience" as const,
+    pools: [
+      { ...pool, users: [member], authorization: "executor-app-v1" as const, managers: [owner] },
+    ],
+  };
   assert.equal((await f.access(change)).status, 200);
   assert.equal((await f.context(owner)).status, 403);
   const setup = await f.intent(member);
   const choices = await f.action("computers", member, setup);
   assert.equal(choices.status, 200);
-  assert.deepEqual((await choices.json() as { pools: unknown }).pools,
-    [{ id: pool.pool, name: pool.name, mine: false }]);
+  assert.deepEqual(((await choices.json()) as { pools: unknown }).pools, [
+    { id: pool.pool, name: pool.name, mine: false, organization: pool.organization },
+  ]);
   const directory = await PoolDirectory.load(f.storage, f.now());
   assert.deepEqual(directory.permissions(pool.pool, owner), { canUse: false, canManage: true });
   assert.deepEqual(directory.permissions(pool.pool, member), { canUse: true, canManage: false });
@@ -218,8 +282,15 @@ test("native audiences keep pool choices stable and never turn management into u
 
 test("a retained audience writer can revoke native use but cannot restore a denied grant", async () => {
   const f = fixture();
-  assert.equal((await f.access({ action: "audience", pools: [{ ...pool, users: [member],
-    authorization: "executor-app-v1", managers: [owner] }] })).status, 200);
+  assert.equal(
+    (
+      await f.access({
+        action: "audience",
+        pools: [{ ...pool, users: [member], authorization: "executor-app-v1", managers: [owner] }],
+      })
+    ).status,
+    200,
+  );
   f.advance(1);
   assert.equal((await f.access(audience([owner, member, "new-person"]))).status, 200);
   assert.deepEqual((await entry(f)).users, [member]);
@@ -234,8 +305,15 @@ test("a retained audience writer can revoke native use but cannot restore a deni
 
 test("native pool deletion stays denied after setup tombstones expire", async () => {
   const f = fixture();
-  assert.equal((await f.access({ action: "audience", pools: [{ ...pool,
-    authorization: "executor-app-v1", managers: [owner] }] })).status, 200);
+  assert.equal(
+    (
+      await f.access({
+        action: "audience",
+        pools: [{ ...pool, authorization: "executor-app-v1", managers: [owner] }],
+      })
+    ).status,
+    200,
+  );
   assert.equal((await f.access({ action: "pool-deleted", pool: pool.pool })).status, 200);
   f.advance(accessGrace + setupTtl + 1);
   await f.expire();
@@ -247,18 +325,31 @@ test("native pool deletion stays denied after setup tombstones expire", async ()
 test("native managers set caps only with use access and demotion survives restart", async () => {
   const writes: unknown[][] = [];
   const f = fixture({
-    summary: async () => { throw new Error("A cap write must not query the summary"); },
-    setCap: async (...args) => { writes.push(args); },
+    summary: async () => {
+      throw new Error("A cap write must not query the summary");
+    },
+    setCap: async (...args) => {
+      writes.push(args);
+    },
   });
-  const project = (managers: string[]) => f.access({ action: "audience", pools: [{ ...pool,
-    authorization: "executor-app-v1", managers }] });
+  const project = (managers: string[]) =>
+    f.access({
+      action: "audience",
+      pools: [{ ...pool, authorization: "executor-app-v1", managers }],
+    });
   assert.equal((await project([owner, member])).status, 200);
   const setup = await f.intent(member);
-  assert.equal((await f.action("cap", member, setup, { member: "capped-person", weekly: 10 })).status, 200);
+  assert.equal(
+    (await f.action("cap", member, setup, { member: "capped-person", weekly: 10 })).status,
+    200,
+  );
   assert.deepEqual(writes, [[pool.pool, owner, "capped-person", 10]]);
   f.advance(1);
   assert.equal((await project([owner])).status, 200);
   f.restart();
-  assert.equal((await f.action("cap", member, setup, { member: "capped-person", weekly: 20 })).status, 403);
+  assert.equal(
+    (await f.action("cap", member, setup, { member: "capped-person", weekly: 20 })).status,
+    403,
+  );
   assert.equal(writes.length, 1);
 });
