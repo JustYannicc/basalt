@@ -13,8 +13,9 @@ export const defaultLimits: QuotaLimits = {
   currentBytes: 20_000_000_000,
   files: 100_000,
   retainedBytes: 21_000_000_000,
-  classA: 5_000,
-  classB: 50_000,
+  // A guardrail against runaway writes, not a throttle: a heavy Obsidian day must fit.
+  classA: 100_000,
+  classB: 1_000_000,
   readBytes: 50_000_000_000,
 };
 
