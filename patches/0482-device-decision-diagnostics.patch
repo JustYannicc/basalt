@@ -136,6 +136,7 @@ diff --git a/packages/mcp-auth/src/implementation/device-authorization.ts b/pack
                }
                return DeviceDecision.make({ status: "approved" });
 diff --git a/packages/mcp-auth/src/implementation/device-decision-step.ts b/packages/mcp-auth/src/implementation/device-decision-step.ts
+new file mode 100644
 --- /dev/null
 +++ b/packages/mcp-auth/src/implementation/device-decision-step.ts
 @@ -0,0 +1,29 @@
@@ -330,6 +331,7 @@ diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/h
    });
  const computerIdentity = (access: NativeGrantAccess) => ({
 diff --git a/apps/hosted/server/src/implementation/native-control-error.ts b/apps/hosted/server/src/implementation/native-control-error.ts
+new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/native-control-error.ts
 @@ -0,0 +1,45 @@

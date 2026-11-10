@@ -1,7 +1,7 @@
 {
   "identity": "basalt-device-decision-diagnostics",
   "file": "0482-device-decision-diagnostics.patch",
-  "content_sha256": "b48c6fa18c406876e98c976a3df37a73c0ae421b4caa1b9889eaa5cbbb4c8245",
+  "content_sha256": "fe5aa8ed3e2de80caf402ff64c4755bdf473be347a7a57f8e7487ede325cb8b8",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
