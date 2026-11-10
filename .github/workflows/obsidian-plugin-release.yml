@@ -1,0 +1,60 @@
+name: Obsidian plugin release
+
+# Publishes Basalt Sync once per manifest version as the release BRAT installs from.
+# The tag is basalt-sync-<version> and never becomes the repository's Latest release.
+on:
+  push:
+    branches: [main]
+    paths:
+      - clients/obsidian/**
+      - src/drive/shared/bytes.ts
+      - .github/workflows/obsidian-plugin-release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: obsidian-plugin-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - name: Install the bundler the repo pins
+        run: npm install --no-save --no-package-lock --prefix "$RUNNER_TEMP/bundler" esbuild@0.28.2
+      - name: Build main.js, manifest.json and styles.css
+        run: node clients/obsidian/build.mjs --esbuild "$RUNNER_TEMP/bundler/node_modules/.bin/esbuild" --outdir "$RUNNER_TEMP/basalt-sync"
+      - name: Publish the manifest version once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIST: ${{ runner.temp }}/basalt-sync
+          PUBLISHED: ${{ runner.temp }}/published
+        run: |
+          version="$(node -p 'require("./clients/obsidian/manifest.json").version')"
+          tag="basalt-sync-$version"
+          if gh release view "$tag" --json tagName >/dev/null 2>&1; then
+            gh release download "$tag" --dir "$PUBLISHED" --pattern main.js --pattern manifest.json --pattern styles.css
+            for file in main.js manifest.json styles.css; do
+              if ! cmp -s "$DIST/$file" "$PUBLISHED/$file"; then
+                message="$tag is already published and its $file differs from this build ($(sha256sum "$PUBLISHED/$file" | cut -c1-12) published, $(sha256sum "$DIST/$file" | cut -c1-12) built). Published versions never change: raise version in clients/obsidian/manifest.json and versions.json."
+                echo "::error::$message"
+                echo "$message" >> "$GITHUB_STEP_SUMMARY"
+                exit 1
+              fi
+            done
+            echo "$tag is already published with this exact build." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh release create "$tag" --target "$GITHUB_SHA" --latest=false \
+            --title "Basalt Sync $version" \
+            --notes "Basalt Sync $version for Obsidian. Install it from Connect Obsidian in Basalt, which adds it through BRAT." \
+            "$DIST/main.js" "$DIST/manifest.json" "$DIST/styles.css"
+          echo "Published $tag." >> "$GITHUB_STEP_SUMMARY"

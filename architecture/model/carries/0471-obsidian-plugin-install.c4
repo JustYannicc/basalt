@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Connect Obsidian opens the plugin's connect link only after an explicit Connect, because Obsidian silently rejects an action no enabled plugin registers and the browser cannot observe that. The install step reads the exact basalt-sync release for the dashboard's pinned plugin version from the brand's public source repository on the outside service and links BRAT only when that release holds main.js, manifest.json and styles.css; a missing release says the plugin is not available yet, and a failed check offers a retry. The pinned version must equal the plugin manifest's."
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-obsidian-plugin-install",
+  "file": "0471-obsidian-plugin-install.patch",
+  "content_sha256": "19a03df7076301822e6bd64da658ce8750bd16f33a2ab5534b012e9083232451",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
