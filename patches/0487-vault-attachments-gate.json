@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-vault-attachments-gate",
+  "file": "0487-vault-attachments-gate.patch",
+  "content_sha256": "14f9eb9fe8eb62326936445be25010836535bf6b1790ee45226ce7f1c5d03ec8",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
