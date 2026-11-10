@@ -1,7 +1,4 @@
-import { fileURLToPath } from "node:url";
 import { freezeUpload } from "./version-request.ts";
-import { classEntries, declaredClassBaseline } from "./declared-class-contract.ts";
-import { loadDeclaredChanges } from "./declared-file.ts";
 import type { FrozenContainer } from "./container.ts";
 import { assertJournaledBaselineInput, type ForwardInputProof } from "./forward-worker-input.ts";
 import { safeInputHash, servingWorkerSettings, workerInputHash } from "./serving-worker-input.ts";
@@ -181,14 +178,6 @@ export async function probeWorkerSettings(
       )
     )
       throw new BarrierRefusal("candidate-worker-coverage");
-    // The release expands declared SQLite classes before admitting candidates, so the probe judges
-    // each candidate against live settings as that expansion will leave them.
-    const classes = classEntries(
-      yield* Effect.tryPromise({
-        try: () => loadDeclaredChanges(fileURLToPath(new URL("../../", import.meta.url))),
-        catch: (error) => error,
-      }),
-    );
     let retirements: ReturnType<typeof candidateSettingsWithRetirements> | undefined;
     const context = yield* Effect.context<Credentials | HttpClient.HttpClient>();
     const rows = yield* Effect.promise(() =>
@@ -268,19 +257,11 @@ export async function probeWorkerSettings(
               await run(verifyRepairBaseline({ ...input, baseline }, declaration.metadata, repair));
             }
             readStage = "freeze-worker-upload";
-            const expansion = classes.find((entry) => entry.fqn === worker.role);
             const frozen = await freezeUpload(
               {
                 fqn: worker.role,
                 request: { ...input, metadata: declaration.metadata },
-                previousSettings: expansion
-                  ? declaredClassBaseline(
-                      settings,
-                      declaration.metadata,
-                      worker.scriptName,
-                      expansion,
-                    )
-                  : settings,
+                previousSettings: settings,
                 previousProps: {},
                 props: {},
               },

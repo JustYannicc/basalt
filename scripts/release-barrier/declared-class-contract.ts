@@ -154,68 +154,8 @@ export function classRequestVerdict(
       { fqn: entry.fqn, existing: true },
       { fqn: upload.fqn, existing: !!upload.previous },
     );
-  const expected = declaredClassDelta(old!, metadata, upload.request.scriptName, entry, fail);
-  const migration = metadata.migrations;
-  if (
-    !migration ||
-    "steps" in migration ||
-    !migration.oldTag ||
-    !migration.newTag ||
-    migration.oldTag === migration.newTag ||
-    classTag(old!.tags ?? []) !== migration.oldTag ||
-    classTag(metadata.tags) !== migration.newTag ||
-    canonical(sorted("newSqliteClasses" in migration ? (migration.newSqliteClasses ?? []) : [])) !==
-      canonical(sorted(entry.newSqliteClasses)) ||
-    Object.entries(migration).some(
-      ([key, value]) =>
-        !["oldTag", "newTag", "newSqliteClasses"].includes(key) &&
-        value != null &&
-        (!Array.isArray(value) || value.length),
-    )
-  )
-    fail(
-      "declared-class-migration-mismatch",
-      { newSqliteClasses: entry.newSqliteClasses, additiveOnly: true },
-      { migrations: migration ?? null },
-    );
-  // Keep the ordinary settings and metadata guards. Only this exact declaration's class/tag delta is projected as observed.
-  versionMetadata(
-    {
-      ...upload,
-      request: { ...upload.request, metadata: { ...metadata, migrations: undefined } },
-      previousSettings: {
-        ...old!,
-        bindings: [...(old!.bindings ?? []), ...expected],
-        tags: metadata.tags,
-      },
-    },
-    proof?.versions,
-    proof?.baseline,
-    proof?.repair,
-  );
-  return {
-    entry: digest(canonical(entry)),
-    oldTag: migration!.oldTag!,
-    newTag: migration!.newTag!,
-    newSqliteClasses: [...entry.newSqliteClasses],
-    addedBindings: expected,
-  };
-}
-
-/**
- * The exact additive class delta a declaration authorizes: its local bindings are the only new
- * ones, nothing existing changes, and only its classes gain Durable Object tags. Both the release
- * and the read-only baseline probe judge a candidate through this one rule.
- */
-export function declaredClassDelta(
-  old: { bindings?: readonly BindingIdentity[] | null; tags?: readonly string[] | null },
-  metadata: Workers.PutScriptMetadata,
-  scriptName: string,
-  entry: SqliteClassDeclaration,
-  fail: (reason: string, expected: unknown, actual: unknown) => never,
-) {
-  const before = local(old.bindings ?? [], scriptName);
-  const after = local(metadata.bindings ?? [], scriptName);
+  const before = local(old!.bindings ?? [], upload.request.scriptName);
+  const after = local(metadata.bindings ?? [], upload.request.scriptName);
   const expected = entry.addedBindings.map(({ location: _location, ...binding }) => binding);
   const project = (binding: (typeof after)[number]) => ({
     type: binding.type,
@@ -241,7 +181,30 @@ export function declaredClassDelta(
       { bindings: [...before.map(project), ...expected] },
       { bindings: after.map(project) },
     );
-  const oldMap = getDurableObjectTagMap(old.tags ?? []);
+  const migration = metadata.migrations;
+  if (
+    !migration ||
+    "steps" in migration ||
+    !migration.oldTag ||
+    !migration.newTag ||
+    migration.oldTag === migration.newTag ||
+    classTag(old!.tags ?? []) !== migration.oldTag ||
+    classTag(metadata.tags) !== migration.newTag ||
+    canonical(sorted("newSqliteClasses" in migration ? (migration.newSqliteClasses ?? []) : [])) !==
+      canonical(sorted(entry.newSqliteClasses)) ||
+    Object.entries(migration).some(
+      ([key, value]) =>
+        !["oldTag", "newTag", "newSqliteClasses"].includes(key) &&
+        value != null &&
+        (!Array.isArray(value) || value.length),
+    )
+  )
+    fail(
+      "declared-class-migration-mismatch",
+      { newSqliteClasses: entry.newSqliteClasses, additiveOnly: true },
+      { migrations: migration ?? null },
+    );
+  const oldMap = getDurableObjectTagMap(old!.tags ?? []);
   const nextMap = getDurableObjectTagMap(metadata.tags ?? []);
   if (
     Object.entries(oldMap).some(([key, value]) => nextMap[key] !== value) ||
@@ -259,32 +222,32 @@ export function declaredClassDelta(
           !tag.startsWith("alchemy:migration-tag:"),
       )
       .sort();
-  if (canonical(stripDoTags(old.tags ?? [])) !== canonical(stripDoTags(metadata.tags)))
+  if (canonical(stripDoTags(old!.tags ?? [])) !== canonical(stripDoTags(metadata.tags)))
     fail(
       "declared-class-tags-mismatch",
-      { tags: stripDoTags(old.tags ?? []) },
+      { tags: stripDoTags(old!.tags ?? []) },
       { tags: stripDoTags(metadata.tags) },
     );
-  return expected;
-}
-
-/** Live settings as they will be once the declared class expansion has run, for baseline comparison. */
-export function declaredClassBaseline(
-  settings: Workers.GetScriptScriptAndVersionSettingResponse,
-  metadata: Workers.PutScriptMetadata,
-  scriptName: string,
-  entry: SqliteClassDeclaration,
-): Workers.GetScriptScriptAndVersionSettingResponse {
-  const fail = (reason: string, expected: unknown, actual: unknown): never => {
-    throw declaredMismatch(reason, entry.fqn, expected, actual, entry.type);
-  };
-  // A repeated release can find the expansion already live; then the candidate compares as is.
-  const live = local(settings.bindings ?? [], scriptName).map((binding) => binding.className);
-  if (entry.newSqliteClasses.every((name) => live.includes(name))) return settings;
-  const expected = declaredClassDelta(settings, metadata, scriptName, entry, fail);
+  // Keep the ordinary settings and metadata guards. Only this exact declaration's class/tag delta is projected as observed.
+  versionMetadata(
+    {
+      ...upload,
+      request: { ...upload.request, metadata: { ...metadata, migrations: undefined } },
+      previousSettings: {
+        ...old!,
+        bindings: [...(old!.bindings ?? []), ...expected],
+        tags: metadata.tags,
+      },
+    },
+    proof?.versions,
+    proof?.baseline,
+    proof?.repair,
+  );
   return {
-    ...settings,
-    bindings: [...(settings.bindings ?? []), ...expected] as typeof settings.bindings,
-    tags: metadata.tags ?? [],
+    entry: digest(canonical(entry)),
+    oldTag: migration!.oldTag!,
+    newTag: migration!.newTag!,
+    newSqliteClasses: [...entry.newSqliteClasses],
+    addedBindings: expected,
   };
 }
