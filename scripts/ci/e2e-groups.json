@@ -348,5 +348,10 @@
     "target": "cloud",
     "mode": "managed",
     "command": "node scripts/production-ops/prove-scope.ts"
+  },
+  "host-managed-accounts-cloud:isolated-cold-listing-telemetry": {
+    "job": "host-managed-accounts-cloud",
+    "target": "cloud",
+    "mode": "managed"
   }
 }

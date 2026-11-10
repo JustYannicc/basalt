@@ -1,0 +1,928 @@
+diff --git a/packages/sdk/src/implementation/app-runner.ts b/packages/sdk/src/implementation/app-runner.ts
+--- a/packages/sdk/src/implementation/app-runner.ts
++++ b/packages/sdk/src/implementation/app-runner.ts
+@@ -62,2 +62,3 @@
+ import { projectBuildAccounts } from "./app-account-projection.ts";
++import { observeRunner, runnerPhase } from "./runner-progress.ts";
+ 
+@@ -579,2 +580,3 @@
+               Effect.withSpan("runtime.app.cold_start.load"),
++              (work) => runnerPhase("worker-code", work),
+               Effect.result,
+@@ -592,7 +594,14 @@
+         };
+-        const worker =
+-          name === null ? host.loader.get(null, load) : loadWorker(host.loader, name, load).worker;
+-        const entry = yield* Schema.decodeUnknownEffect(AppRpcEntrypoint)(
+-          worker.getEntrypoint(),
+-        ).pipe(Effect.catch(() => failed("internal")));
++        const entry = yield* runnerPhase(
++          "worker-entry",
++          Effect.suspend(() => {
++            const worker =
++              name === null
++                ? host.loader.get(null, load)
++                : loadWorker(host.loader, name, load).worker;
++            return Schema.decodeUnknownEffect(AppRpcEntrypoint)(worker.getEntrypoint()).pipe(
++              Effect.catch(() => failed("internal")),
++            );
++          }),
++        );
+         const workflow =
+@@ -609,3 +618,4 @@
+                 );
+-        const cache = options.cache === null ? undefined : yield* options.cache;
++        const cache =
++          options.cache === null ? undefined : yield* runnerPhase("cache-open", options.cache);
+         const closeCache = cache?.close ?? Effect.void;
+@@ -636,2 +646,3 @@
+             Effect.withSpan("runtime.app.rpc.start"),
++            (work) => runnerPhase("worker-start", work),
+             Effect.onError(() => closeCache),
+@@ -695,2 +706,3 @@
+           Effect.withSpan("runtime.app.rpc.result"),
++          (work) => runnerPhase("worker-result", work),
+         );
+@@ -859,7 +871,7 @@
+         // the host's current model whichever protocol the retained bundle speaks.
+-        const { protocol, load } = yield* protocolOf(
+-          invocation.build,
+-          capabilities.load,
+-          host.waitUntil,
+-          () => wakeSupervisor("build"),
++        const { protocol, load } = yield* runnerPhase(
++          "protocol",
++          protocolOf(invocation.build, capabilities.load, host.waitUntil, () =>
++            wakeSupervisor("build"),
++          ),
+         );
+@@ -898,3 +910,3 @@
+           return yield* failed("unsupported");
+-        const accounts = yield* accountsFor(invocation.accounts);
++        const accounts = yield* runnerPhase("accounts", accountsFor(invocation.accounts));
+         const body = protocol.invocation({
+@@ -964,3 +976,5 @@
+                   Effect.mapError(() => new CacheError({ reason: "invalid" })),
+-                  Effect.flatMap(leases.transport),
++                  Effect.flatMap((command) =>
++                    runnerPhase("cache-command", leases.transport(command)),
++                  ),
+                   Effect.tap(() =>
+@@ -1011,3 +1025,8 @@
+           : result;
+-      }).pipe(Effect.scoped, timing.report, Effect.withSpan("runtime.app.invoke"));
++      }).pipe(
++        (work) => observeRunner(invocation, work),
++        Effect.scoped,
++        timing.report,
++        Effect.withSpan("runtime.app.invoke"),
++      );
+     },
+@@ -1018,3 +1037,5 @@
+     declare: (bundle: LoadedWorkerBuild, headers: Readonly<Record<string, string>>) =>
+-      declare(bundle, headers, true),
++      declare(bundle, headers, true).pipe((work) =>
++        observeRunner({ app: null, build: null, command: { operation: "requirements" } }, work),
++      ),
+   };
+diff --git a/packages/sdk/src/implementation/remote-app-runner.ts b/packages/sdk/src/implementation/remote-app-runner.ts
+--- a/packages/sdk/src/implementation/remote-app-runner.ts
++++ b/packages/sdk/src/implementation/remote-app-runner.ts
+@@ -42,6 +42,7 @@
+ import { invocationBuildLoader } from "./app-runtime.ts";
+ import { asciiJson } from "./ascii-json.ts";
+ import { AppCallWorkflow } from "./app-call-context.ts";
++import { observeRunner, runnerPhase } from "./runner-progress.ts";
+ 
+ type Callback = (input: unknown) => Promise<unknown>;
+ 
+@@ -417,11 +418,15 @@
+           const build = yield* Schema.decodeUnknownEffect(BuildId)(decoded.build);
+           // The caller's trace context travels in the invocation's headers; the runner's spans join it.
+           return yield* Effect.gen(function* () {
+-            const loader = yield* invocationBuildLoader(decoded, read(build));
++            const loader = yield* invocationBuildLoader(
++              decoded,
++              runnerPhase("build-read", read(build)),
++            );
+             return yield* loader.refused(
+               runner.invoke(decoded, yield* localCapabilities(capabilities, loader.load)),
+             );
+           }).pipe(
++            (work) => observeRunner(decoded, work),
+             Effect.provideService(RunnerIngress, ingress),
+             withRemoteSpan(
+               new Request("https://app-runner.internal", { headers: decoded.headers }),
+diff --git a/packages/sdk/src/implementation/runner-progress.ts b/packages/sdk/src/implementation/runner-progress.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/runner-progress.ts
+@@ -0,0 +1,101 @@
++/** Runner records do not depend on an app returning or a collector accepting an export. */
++import { Cause, Context, Effect, Exit, Option, Ref } from "effect";
++
++type Phase =
++  | "invocation"
++  | "build-read"
++  | "protocol"
++  | "accounts"
++  | "worker-entry"
++  | "worker-code"
++  | "cache-open"
++  | "worker-start"
++  | "worker-result"
++  | "cache-command";
++type Status = "started" | "completed" | "failed" | "interrupted";
++type RecordProgress = (phase: Phase, status: Status) => void;
++
++const Progress = Context.Reference<RecordProgress | undefined>("sdk/RunnerProgress", {
++  defaultValue: () => undefined,
++});
++// Reference defaults are cached once in this SDK isolate and remain injectable by a host.
++const RunnerState = Context.Reference("sdk/RunnerObservationState", {
++  defaultValue: () => ({ isolate: crypto.randomUUID(), active: Ref.makeUnsafe(0) }),
++});
++
++/** Counts calls in this SDK isolate, not loaded or resident dynamic Workers. */
++export const observeRunner = <A, E, R>(
++  invocation: {
++    readonly app: string | null;
++    readonly build: string | null;
++    readonly command: { readonly operation: string };
++  },
++  work: Effect.Effect<A, E, R>,
++) =>
++  Effect.gen(function* () {
++    if ((yield* Progress) !== undefined) return yield* work;
++    const state = yield* RunnerState;
++    return yield* Effect.acquireUseRelease(
++      Ref.update(state.active, (active) => active + 1),
++      () =>
++        Effect.gen(function* () {
++          const inspection = invocation.command.operation === "inspect";
++          const span = yield* Effect.currentSpan.pipe(Effect.option);
++          const traceId = Option.isSome(span) ? span.value.traceId : null;
++          let attempt: string | undefined;
++          const started = performance.now();
++          let records = 0;
++          const progress: RecordProgress = (phase, status) => {
++            // A native OOM may originate in another call's cold load.
++            if (!inspection && phase !== "worker-code") return;
++            // Cache callbacks can repeat indefinitely. Keep a terminal slot after truncation.
++            if (records >= 48 && phase !== "invocation") return;
++            try {
++              attempt ??= crypto.randomUUID();
++              console.log(
++                JSON.stringify({
++                  type: "executor.runner.progress",
++                  inspection,
++                  traceId,
++                  attempt,
++                  isolate: state.isolate,
++                  app: invocation.app,
++                  build: invocation.build,
++                  sequence: ++records,
++                  phase,
++                  status,
++                  elapsedMs: Math.max(0, performance.now() - started),
++                  activeInvocations: Ref.getUnsafe(state.active),
++                  truncated: records > 48,
++                }),
++              );
++            } catch {}
++          };
++          return yield* runnerPhase("invocation", work).pipe(
++            Effect.provideService(Progress, progress),
++          );
++        }),
++      () => Ref.update(state.active, (active) => active - 1),
++    );
++  });
++
++export const runnerPhase = <A, E, R>(phase: Phase, work: Effect.Effect<A, E, R>) =>
++  Effect.gen(function* () {
++    const progress = yield* Progress;
++    if (progress === undefined) return yield* work;
++    progress(phase, "started");
++    return yield* work.pipe(
++      Effect.onExit((exit) =>
++        Effect.sync(() =>
++          progress(
++            phase,
++            Exit.isSuccess(exit)
++              ? "completed"
++              : Cause.hasInterrupts(exit.cause)
++                ? "interrupted"
++                : "failed",
++          ),
++        ),
++      ),
++    );
++  });
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -38,6 +38,7 @@
+ import { freePort } from "./ports.ts";
+ import { cloudRuntimeControl } from "./cloud-runtime-control.ts";
+ import { cloudLogActivity } from "./cloud-log-activity.ts";
++import { nativeProcessDiagnostics } from "./native-process-diagnostics.ts";
+ import { productionOpsDatabaseFixture } from "./production-ops-database-fixture.ts";
+ import { productionOpsDatabaseProxy } from "./production-ops-database-proxy.ts";
+ import { statementBatchProxy } from "./statement-batch-proxy.ts";
+@@ -629,6 +630,14 @@
+             JSON.stringify({ launch: ++launchCount, stage: `${stage}${suffix}` }) + "\n",
+             { flag: "a", mode: 0o600 },
+           );
++          const native = yield* nativeProcessDiagnostics(
++            Number(server.pid),
++            directory,
++            launchCount,
++          ).pipe(
++            Effect.provideService(FileSystem.FileSystem, fs),
++            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, processes),
++          );
+           // A failed apply or run leaves `alchemy dev` running so healthy resources keep serving, but in a
+           // run nothing will edit the sources it waits on, so the Worker that failed never starts.
+           const mcpStarted = yield* Deferred.make<void>();
+@@ -643,6 +652,7 @@
+             ],
+             (line) =>
+               Effect.gen(function* () {
++                yield* native.observe(line);
+                 yield* logActivity.written;
+                 const address = cloudApiAddress(line);
+                 if (address !== undefined) yield* listener.set(address);
+diff --git a/e2e/support/native-process-diagnostics.ts b/e2e/support/native-process-diagnostics.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/native-process-diagnostics.ts
+@@ -0,0 +1,222 @@
++/** Bounded native evidence belongs to the runner that launched these processes. */
++import { Effect, FileSystem, Option, Schedule, Schema, Semaphore } from "effect";
++import { ChildProcess, ChildProcessSpawner } from "effect/process";
++import { createHash } from "node:crypto";
++
++interface ProcessSample {
++  readonly at: number;
++  readonly available: boolean;
++  readonly truncated: boolean;
++  readonly workers: ReadonlyArray<{
++    readonly pid: number;
++    readonly parent: number;
++    readonly rssKiB: number;
++  }>;
++}
++interface NativeEvent {
++  readonly at: number;
++  readonly generation: number;
++  readonly event: "ready" | "started" | "heap-oom" | "abort" | "replacement" | "gc";
++  readonly pid?: number;
++  readonly isolate?: string;
++  readonly heapUsedMiB?: number;
++  readonly heapCapacityMiB?: number;
++}
++const Allocation = Schema.Struct({
++  type: Schema.Literal("executor.runner.progress"),
++  isolate: Schema.String,
++  app: Schema.NullOr(Schema.String),
++  build: Schema.NullOr(Schema.String),
++  attempt: Schema.String,
++  phase: Schema.Literal("worker-code"),
++  status: Schema.Literals(["started", "completed", "failed", "interrupted"]),
++});
++type AllocationRecord = typeof Allocation.Type & {
++  readonly at: number;
++  readonly generation: number;
++};
++interface Generation {
++  readonly id: number;
++  readonly pids: number[];
++}
++interface FailureSnapshot {
++  readonly at: number;
++  readonly trigger: NativeEvent["event"];
++  readonly samples: ReadonlyArray<ProcessSample>;
++  readonly events: ReadonlyArray<NativeEvent>;
++  readonly allocations: ReadonlyArray<AllocationRecord>;
++  readonly generations: ReadonlyArray<Generation>;
++}
++
++export const nativeProcessDiagnostics = (root: number, directory: string, launch: number) =>
++  Effect.gen(function* () {
++    const fs = yield* FileSystem.FileSystem;
++    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++    const samples: ProcessSample[] = [];
++    const events: NativeEvent[] = [];
++    const allocations: AllocationRecord[] = [];
++    const generations: Generation[] = [{ id: 1, pids: [] }];
++    let generation = 1;
++    let failureSnapshot: FailureSnapshot | null = null;
++    yield* fs
++      .makeDirectory(`${directory}/report`, { recursive: true })
++      .pipe(Effect.catchCause(() => Effect.void));
++    const file = `${directory}/report/native-processes-${launch}.json`;
++    const writer = yield* Semaphore.make(1);
++    const persist = writer
++      .withPermits(1)(
++        Effect.suspend(() =>
++          fs
++            .writeFileString(
++              `${file}.pending`,
++              JSON.stringify({
++                // GC capacity and RSS do not establish the effective isolate heap limit.
++                version: 1,
++                root,
++                launch,
++                effectiveHeapLimitMiB: null,
++                residentDynamicWorkers: null,
++                samples,
++                events,
++                allocations,
++                generations,
++                failureSnapshot,
++              }),
++              { mode: 0o600 },
++            )
++            .pipe(Effect.andThen(fs.rename(`${file}.pending`, file))),
++        ),
++      )
++      .pipe(Effect.catchCause(() => Effect.void));
++    const sample = Effect.gen(function* () {
++      const text = yield* processes.string(
++        ChildProcess.make("ps", ["-axo", "pid=,ppid=,rss=,comm="]),
++      );
++      const rows = text.split("\n").flatMap((line) => {
++        const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/u.exec(line);
++        return match === null
++          ? []
++          : [
++              {
++                pid: Number(match[1]),
++                parent: Number(match[2]),
++                rssKiB: Number(match[3]),
++                worker: /(?:^|\/)workerd(?:\.exe)?$/u.test(match[4]!),
++              },
++            ];
++      });
++      const descendants = new Set([root]);
++      for (let changed = true; changed;) {
++        changed = false;
++        for (const row of rows)
++          if (!descendants.has(row.pid) && descendants.has(row.parent)) {
++            descendants.add(row.pid);
++            changed = true;
++          }
++      }
++      const workers = rows
++        .filter((row) => row.worker && descendants.has(row.pid))
++        .map(({ pid, parent, rssKiB }) => ({ pid, parent, rssKiB }));
++      return {
++        at: Date.now(),
++        available: true,
++        truncated: workers.length > 128,
++        workers: workers.slice(0, 128),
++      };
++    }).pipe(
++      Effect.timeout("1 second"),
++      Effect.catchCause(() =>
++        Effect.succeed({ at: Date.now(), available: false, truncated: false, workers: [] }),
++      ),
++      Effect.tap((value) =>
++        Effect.sync(() => {
++          samples.push(value);
++          if (samples.length > 120) samples.shift();
++        }),
++      ),
++      Effect.andThen(persist),
++    );
++    yield* persist;
++    yield* Effect.addFinalizer(() => persist);
++    yield* sample.pipe(Effect.repeat(Schedule.spaced("5 seconds")), Effect.forkScoped);
++    return {
++      observe: (line: string) =>
++        Effect.sync(() => {
++          const appdata = line.includes("[AppData]");
++          const start =
++            appdata && line.length < 8192 ? line.indexOf('{"type":"executor.runner.progress"') : -1;
++          if (start >= 0) {
++            let value: unknown;
++            try {
++              value = JSON.parse(line.slice(start));
++            } catch {
++              value = undefined;
++            }
++            const parsed = Schema.decodeUnknownOption(Allocation)(value);
++            if (
++              Option.isSome(parsed) &&
++              Object.values(parsed.value).every((value) => value === null || value.length <= 256)
++            ) {
++              allocations.push({ ...parsed.value, at: Date.now(), generation });
++              if (allocations.length > 64) allocations.shift();
++            }
++          }
++          const gc = appdata
++            ? /\[(\d+):(0x[\da-f]+)\].*?->\s*([\d.]+)\s*\(([\d.]+)\) MB/u.exec(line)
++            : null;
++          const event: NativeEvent | undefined =
++            gc !== null
++              ? {
++                  at: Date.now(),
++                  generation,
++                  event: "gc",
++                  pid: Number(gc[1]),
++                  isolate: createHash("sha256").update(gc[2]!).digest("hex").slice(0, 16),
++                  heapUsedMiB: Number(gc[3]),
++                  heapCapacityMiB: Number(gc[4]),
++                }
++              : appdata && line.includes("JavaScript heap out of memory")
++                ? { at: Date.now(), generation, event: "heap-oom" }
++                : appdata && line.includes("Received signal #6")
++                  ? { at: Date.now(), generation, event: "abort" }
++                  : appdata && line.includes("ready at ")
++                    ? { at: Date.now(), generation, event: "ready" }
++                    : appdata && line.includes("Started in ")
++                      ? { at: Date.now(), generation, event: "started" }
++                      : /appdata[^\n]*exited unexpectedly[^\n]*starting a replacement/u.test(line)
++                        ? { at: Date.now(), generation, event: "replacement" }
++                        : undefined;
++          if (event === undefined) return false;
++          events.push(event);
++          if (events.length > 128) events.shift();
++          const current = generations.at(-1)!;
++          if (
++            event.pid !== undefined &&
++            !current.pids.includes(event.pid) &&
++            current.pids.length < 4
++          )
++            current.pids.push(event.pid);
++          // AppData stdout is drained before the runtime announces and starts its replacement.
++          // GC PIDs and SDK allocations therefore share this scoped native generation, not a time guess.
++          if (event.event === "replacement") {
++            generations.push({ id: ++generation, pids: [] });
++            if (generations.length > 16) generations.shift();
++          }
++          if (
++            failureSnapshot !== null ||
++            !["heap-oom", "abort", "replacement"].includes(event.event)
++          )
++            return false;
++          // Keep the first failure's pre-exit history even if the suite runs for another hour.
++          failureSnapshot = {
++            at: event.at,
++            trigger: event.event,
++            samples: [...samples],
++            events: [...events],
++            allocations: [...allocations],
++            generations: generations.map(({ id, pids }) => ({ id, pids: [...pids] })),
++          };
++          return true;
++        }).pipe(Effect.flatMap((captured) => (captured ? persist : Effect.void))),
++    };
++  });
+diff --git a/e2e/support/management-app.ts b/e2e/support/management-app.ts
+--- a/e2e/support/management-app.ts
++++ b/e2e/support/management-app.ts
+@@ -6,6 +6,10 @@
+ import { fixtureRequest, FixtureFailed } from "../sdk/fixtures.ts";
+ import { Target } from "./platform.ts";
+ import type { Response } from "./platform.ts";
++import {
++  managementSetupDiagnostics,
++  type ManagementSetupRecord,
++} from "./management-setup-diagnostics.ts";
+ 
+ export const managementApp = (actor: Session, organizationId?: string) =>
+   Effect.gen(function* () {
+@@ -21,33 +25,51 @@
+   actor: Session,
+   organizationId: string,
+   target: typeof Target.Service,
++  report?: (record: ManagementSetupRecord) => void,
+ ) =>
+   Effect.gen(function* () {
+     const clients = yield* SessionClients;
++    const diagnostic = managementSetupDiagnostics(report);
+     if (target.metadata.target !== "cloud")
+       return yield* waitForManagementApp(organizationId, (path) =>
+         clients.request(actor, "GET", path),
+       );
+-    if (target.fixtures === undefined || target.scenarioId === undefined)
++    const fixtures = target.fixtures;
++    const scenarioId = target.scenarioId;
++    if (fixtures === undefined || scenarioId === undefined)
+       return yield* new FixtureFailed({
+         operation: "Management provisioning requires its fixture capability",
+       });
+     // Read-only requests skip dispatch, so explicitly start the fixture's queued provisioning.
+-    yield* body(
+-      Schema.Struct({ status: Schema.Literal("ready") }),
+-      yield* clients.request(actor, "POST", "/api/onboarding/prepare"),
++    yield* diagnostic.step("prepare", (response) =>
++      clients.request(actor, "POST", "/api/onboarding/prepare").pipe(
++        Effect.tap((value) => Effect.sync(() => response(value))),
++        Effect.flatMap((value) => body(Schema.Struct({ status: Schema.Literal("ready") }), value)),
++      ),
+     );
+-    const session = yield* body(
+-      Schema.Struct({ user: Schema.Struct({ id: Schema.String }) }),
+-      yield* clients.request(actor, "GET", "/api/auth/get-session"),
++    const session = yield* diagnostic.step("session", (response) =>
++      clients.request(actor, "GET", "/api/auth/get-session").pipe(
++        Effect.tap((value) => Effect.sync(() => response(value))),
++        Effect.flatMap((value) =>
++          body(Schema.Struct({ user: Schema.Struct({ id: Schema.String }) }), value),
++        ),
++      ),
+     );
+-    yield* fixtureRequest(target.fixtures, "/management-provisioned", {
+-      id: target.scenarioId,
+-      user: session.user.id,
+-    }).pipe(
+-      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ ready: Schema.Literal(true) }))),
++    yield* diagnostic.step("provisioning", () =>
++      fixtureRequest(fixtures, "/management-provisioned", {
++        id: scenarioId,
++        user: session.user.id,
++      }).pipe(
++        Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ ready: Schema.Literal(true) }))),
++      ),
+     );
+-    return yield* readManagementApp(organizationId, (path) => clients.request(actor, "GET", path));
++    return yield* diagnostic.step("inventory", (response) =>
++      readManagementApp(organizationId, (path) =>
++        clients
++          .request(actor, "GET", path)
++          .pipe(Effect.tap((value) => Effect.sync(() => response(value)))),
++      ),
++    );
+   });
+ 
+ const waitForManagementApp = (
+diff --git a/e2e/support/management-setup-diagnostics.ts b/e2e/support/management-setup-diagnostics.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/management-setup-diagnostics.ts
+@@ -0,0 +1,107 @@
++/** Setup runs before case Evidence exists. These records contain no response values. */
++import { Cause, Effect, Exit, Schema } from "effect";
++import { RequestFailed } from "./api.ts";
++import type { Response } from "./platform.ts";
++
++type Step = "prepare" | "session" | "provisioning" | "inventory";
++export interface ManagementSetupRecord {
++  readonly step: Step;
++  readonly method: "GET" | "POST";
++  readonly route: string;
++  readonly startedAt: number;
++  finishedAt?: number;
++  outcome: "started" | "completed" | "schema" | "request" | "fixture" | "interrupted" | "other";
++  response?: {
++    readonly status: number;
++    readonly shape: "object" | "array" | "null" | "string" | "number" | "boolean" | "other";
++    readonly statusField: "ready" | "draft" | "invitation" | "v1" | "missing" | "other";
++    readonly errorTag: "OnboardingUnavailable" | "missing" | "other";
++  };
++}
++
++export const managementSetupDiagnostics = (
++  report: (record: ManagementSetupRecord) => void = () => {},
++) => {
++  const step = <A, E, R>(
++    name: Step,
++    work: (response: (response: Response) => void) => Effect.Effect<A, E, R>,
++  ) =>
++    Effect.suspend(() => {
++      const request = {
++        prepare: { method: "POST", route: "/api/onboarding/prepare" },
++        session: { method: "GET", route: "/api/auth/get-session" },
++        provisioning: { method: "POST", route: "/management-provisioned" },
++        inventory: { method: "GET", route: "/api/organizations/:organization/inventory" },
++      } as const;
++      const record: ManagementSetupRecord = {
++        step: name,
++        ...request[name],
++        startedAt: Date.now(),
++        outcome: "started",
++      };
++      // Recording is not part of provisioning's success contract.
++      try {
++        report(record);
++      } catch {}
++      return work((response) => {
++        const value = response.body;
++        const object =
++          typeof value === "object" && value !== null && !Array.isArray(value) ? value : undefined;
++        const status = object !== undefined && "status" in object ? object.status : undefined;
++        const error = object !== undefined && "_tag" in object ? object._tag : undefined;
++        record.response = {
++          status: response.status,
++          shape:
++            value === null
++              ? "null"
++              : Array.isArray(value)
++                ? "array"
++                : typeof value === "object"
++                  ? "object"
++                  : typeof value === "string"
++                    ? "string"
++                    : typeof value === "number"
++                      ? "number"
++                      : typeof value === "boolean"
++                        ? "boolean"
++                        : "other",
++          statusField:
++            status === "ready" || status === "draft" || status === "invitation" || status === "v1"
++              ? status
++              : object !== undefined && !("status" in object)
++                ? "missing"
++                : "other",
++          errorTag:
++            error === "OnboardingUnavailable"
++              ? error
++              : object !== undefined && !("_tag" in object)
++                ? "missing"
++                : "other",
++        };
++      }).pipe(
++        Effect.onExit((exit) =>
++          Effect.sync(() => {
++            record.finishedAt = Date.now();
++            if (Exit.isSuccess(exit)) {
++              record.outcome = "completed";
++              return;
++            }
++            const error = Cause.squash(exit.cause);
++            record.outcome = Cause.hasInterrupts(exit.cause)
++              ? "interrupted"
++              : Schema.isSchemaError(error)
++                ? "schema"
++                : Schema.is(RequestFailed)(error)
++                  ? "request"
++                  : typeof error === "object" &&
++                      error !== null &&
++                      "_tag" in error &&
++                      error._tag === "FixtureFailed"
++                    ? "fixture"
++                    : "other";
++          }),
++        ),
++      );
++    });
++  return { step };
++};
+diff --git a/e2e/support/lifecycle.ts b/e2e/support/lifecycle.ts
+--- a/e2e/support/lifecycle.ts
++++ b/e2e/support/lifecycle.ts
+@@ -8,6 +8,7 @@
+ import { Actors } from "./actors.ts";
+ import { prepareManagementApp } from "./management-app.ts";
+ import { SessionClients } from "./api.ts";
++import type { ManagementSetupRecord } from "./management-setup-diagnostics.ts";
+ import { scenarios, type TestPlan } from "../test-plan.ts";
+ 
+ /** An extra Testing SDK scenario acquired by setup. The test may close its scope early. */
+@@ -49,6 +50,10 @@
+     let completedAt: number | undefined;
+     let save = (_finishedAt: number): Effect.Effect<void> => Effect.void;
+     let discard: Effect.Effect<void> = Effect.void;
++    const managementSetup: Array<{
++      readonly role: "owner" | "admin" | "member";
++      readonly record: ManagementSetupRecord;
++    }> = [];
+     // A passing scenario's server data is never read again; failures keep theirs for diagnosis.
+     context.onTestFinished(({ task }) =>
+       Effect.runPromise(
+@@ -75,6 +80,7 @@
+                 JSON.stringify(
+                   {
+                     title: context.task.name,
++                    managementSetup,
+                     setupMs: readyAt === undefined ? finishedAt - startedAt : readyAt - startedAt,
+                     scenarioMs:
+                       readyAt === undefined || completedAt === undefined
+@@ -110,7 +116,10 @@
+             if (plan.managementApps !== undefined)
+               yield* Effect.forEach(
+                 plan.managementApps,
+-                (role) => prepareManagementApp(actors[role], actors.organization.id, target),
++                (role) =>
++                  prepareManagementApp(actors[role], actors.organization.id, target, (record) => {
++                    if (managementSetup.length < 24) managementSetup.push({ role, record });
++                  }),
+                 { concurrency: 3, discard: true },
+               ).pipe(Effect.provideContext(fixtures));
+             return { target, actors };
+diff --git a/e2e/support/runner-progress-evidence.ts b/e2e/support/runner-progress-evidence.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/runner-progress-evidence.ts
+@@ -0,0 +1,79 @@
++/** Read immediate runner records after a public listing, independently of the trace collector. */
++import { Effect, FileSystem, Option, Schema } from "effect";
++import { HttpClient, HttpClientRequest } from "effect/http";
++import { FixtureFailed } from "../sdk/fixtures.ts";
++import { CloudLogRevision } from "./cloud-log-activity.ts";
++import { Target } from "./platform.ts";
++
++const Progress = Schema.Struct({
++  type: Schema.Literal("executor.runner.progress"),
++  inspection: Schema.Boolean,
++  traceId: Schema.NullOr(Schema.String),
++  attempt: Schema.String,
++  isolate: Schema.String,
++  app: Schema.String,
++  build: Schema.String,
++  sequence: Schema.Number,
++  phase: Schema.String,
++  status: Schema.Literals(["started", "completed", "failed", "interrupted"]),
++  elapsedMs: Schema.Number,
++  activeInvocations: Schema.Number,
++  truncated: Schema.Boolean,
++});
++
++export const runnerProgressEvidence = (app: string) =>
++  Effect.gen(function* () {
++    const target = yield* Target;
++    const fs = yield* FileSystem.FileSystem;
++    const http = yield* HttpClient.HttpClient;
++    const fixtures = target.fixtures;
++    if (fixtures === undefined) return yield* Effect.die("Managed Cloud log control required");
++    const revision = (after?: number) =>
++      Effect.scoped(
++        Effect.gen(function* () {
++          const request = yield* HttpClientRequest.post(
++            `${fixtures.origin}/runtime/cloud-log`,
++          ).pipe(
++            HttpClientRequest.bearerToken(fixtures.token),
++            HttpClientRequest.bodyJson(after === undefined ? {} : { after }),
++          );
++          const response = yield* http.execute(request);
++          if (response.status !== 200)
++            return yield* new FixtureFailed({
++              operation: "Runner progress log wait",
++              status: response.status,
++            });
++          return yield* response.json.pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(CloudLogRevision)),
++          );
++        }),
++      );
++    let current = yield* revision();
++    for (;;) {
++      const text = yield* fs.readFileString(`${target.directory}/cloud.log`);
++      const records = text.split("\n").flatMap((line) => {
++        const start = line.indexOf('{"type":"executor.runner.progress"');
++        if (start < 0) return [];
++        let value: unknown;
++        try {
++          value = JSON.parse(line.slice(start));
++        } catch {
++          return [];
++        }
++        const decoded = Schema.decodeUnknownOption(Progress)(value);
++        if (
++          Option.isNone(decoded) ||
++          decoded.value.app !== app ||
++          typeof value !== "object" ||
++          value === null
++        )
++          return [];
++        return [{ record: decoded.value, keys: Object.keys(value).sort() }];
++      });
++      if (
++        records.some(({ record }) => record.phase === "invocation" && record.status === "completed")
++      )
++        return records;
++      current = yield* revision(current.revision);
++    }
++  });
+diff --git a/e2e/tests/import-runtime-evidence.spec.ts b/e2e/tests/import-runtime-evidence.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/import-runtime-evidence.spec.ts
+@@ -0,0 +1,124 @@
++/** A public management listing leaves diagnostics even before a case can collect traces. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Exit, FileSystem, Layer, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { SessionClients } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { frameworkSession } from "../support/framework.ts";
++import { McpOAuth } from "../support/mcp-oauth.ts";
++import { McpClient } from "../support/mcp-client.ts";
++import { Target } from "../support/platform.ts";
++import { Evidence } from "../support/evidence.ts";
++import { managementApp, prepareManagementApp } from "../support/management-app.ts";
++import type { ManagementSetupRecord } from "../support/management-setup-diagnostics.ts";
++import { runnerProgressEvidence } from "../support/runner-progress-evidence.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Import runtime evidence", (it) => {
++  it.effect(scenarios.importRuntimeEvidence.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors;
++        const { execute, queries } = yield* frameworkSession;
++        const searched = yield* execute(
++          'return await tools.search({ query: "importCustom", limit: 10 });',
++        ).pipe(
++          Effect.flatMap(
++            Schema.decodeUnknownEffect(
++              Schema.Struct({ items: Schema.Array(Schema.Struct({ path: Schema.String })) }),
++            ),
++          ),
++        );
++        expect(searched.items.some(({ path }) => path === `${queries}.apps.importCustom`)).toBe(
++          true,
++        );
++        const target = yield* Target;
++        expect(target.metadata.target).toBe("cloud");
++        {
++          const evidence = yield* Evidence;
++          const { app } = yield* managementApp(actors.owner);
++          const progress = yield* runnerProgressEvidence(app.id);
++          yield* evidence.json("runner-progress", progress);
++          expect(
++            progress.some(
++              ({ record }) => record.phase === "worker-start" && record.status === "completed",
++            ),
++          ).toBe(true);
++          expect(
++            progress.some(
++              ({ record }) => record.phase === "worker-result" && record.status === "completed",
++            ),
++          ).toBe(true);
++          for (const { keys } of progress)
++            expect(keys).toEqual([
++              "activeInvocations",
++              "app",
++              "attempt",
++              "build",
++              "elapsedMs",
++              "inspection",
++              "isolate",
++              "phase",
++              "sequence",
++              "status",
++              "traceId",
++              "truncated",
++              "type",
++            ]);
++          const fs = yield* FileSystem.FileSystem;
++          const native = yield* fs
++            .readFileString(`${target.directory}/report/native-processes-1.json`)
++            .pipe(
++              Effect.flatMap(
++                Schema.decodeUnknownEffect(
++                  Schema.fromJsonString(
++                    Schema.Struct({
++                      effectiveHeapLimitMiB: Schema.Null,
++                      residentDynamicWorkers: Schema.Null,
++                      samples: Schema.Array(
++                        Schema.Struct({
++                          available: Schema.Boolean,
++                          workers: Schema.Array(
++                            Schema.Struct({
++                              pid: Schema.Number,
++                              parent: Schema.Number,
++                              rssKiB: Schema.Number,
++                            }),
++                          ),
++                        }),
++                      ),
++                    }),
++                  ),
++                ),
++              ),
++            );
++          expect(
++            native.samples.some(
++              (sample) => sample.available && sample.workers.some((worker) => worker.rssKiB > 0),
++            ),
++          ).toBe(true);
++          yield* evidence.json("native-process-samples", native);
++
++          const clients = yield* SessionClients;
++          const anonymous = yield* clients.session();
++          const setup: ManagementSetupRecord[] = [];
++          const rejected = yield* prepareManagementApp(
++            anonymous,
++            actors.organization.id,
++            target,
++            (record) => setup.push(record),
++          ).pipe(Effect.exit);
++          expect(Exit.isFailure(rejected)).toBe(true);
++          expect(setup).toHaveLength(1);
++          expect(setup[0]!.step).toBe("prepare");
++          expect(setup[0]!.outcome).toBe("schema");
++          expect(setup[0]!.response?.status).toBe(401);
++          expect(setup[0]!.response?.statusField).toBe("missing");
++          expect(JSON.stringify(setup)).not.toContain(actors.organization.id);
++          yield* evidence.json("rejected-management-setup", setup);
++        }
++      }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
++    ),
++  );
++});

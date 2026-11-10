@@ -1,0 +1,26 @@
+{
+  "scenarios": {
+    "coldListingTelemetry": {
+      "fixtures": "actors",
+      "title": "Cold listings export active phases and lease state before discovery times out",
+      "targets": {
+        "cloud": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The interrupted Worker RPC return channel and Cloud background lifetime are Cloud-owned."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The interrupted Worker RPC return channel and Cloud background lifetime are Cloud-owned."
+        }
+      }
+    }
+  },
+  "runs": {
+    "coldListingTelemetry": [
+      "host-managed-accounts-cloud:isolated-cold-listing-telemetry"
+    ]
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-import-runtime-proof",
+  "file": "0464-import-runtime-proof.patch",
+  "content_sha256": "563461a216397f696d8c668efed274466bf99864652c49cc20a59d4384d9dcb8",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

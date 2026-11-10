@@ -1,0 +1,30 @@
+{
+  "scenarios": {
+    "importRuntimeEvidence": {
+      "fixtures": "actors",
+      "managementApps": [
+        "owner"
+      ],
+      "title": "Management listings retain runner, native process and setup failure diagnostics",
+      "targets": {
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Native process history and setup response evidence belong to the managed Cloud harness."
+        },
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Native process history and setup response evidence belong to the managed Cloud harness."
+        }
+      }
+    }
+  },
+  "runs": {
+    "importRuntimeEvidence": [
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement"
+    ]
+  }
+}

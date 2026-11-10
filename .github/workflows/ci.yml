@@ -799,6 +799,12 @@ jobs:
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
         uses: ./.github/actions/setup-browser
+      - name: Verify active cold-listing telemetry in its own Cloud runtime
+        working-directory: .upstream
+        run: >-
+          bun run e2e:cloud --test-name
+          "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-cloud:isolated-cold-listing-telemetry)"
+          --workers 1
       - name: Verify the private OAuth transport and hosted placement
         working-directory: .upstream
         run: >-
