@@ -48,7 +48,15 @@ jobs:
         run: |
           version="$(node -p 'require("./clients/obsidian/manifest.json").version')"
           tag="basalt-sync-$version"
-          if gh release view "$tag" --json tagName >/dev/null 2>&1; then
+          draft="$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null || echo missing)"
+          # An interrupted create leaves a draft that BRAT can't see: finish it with this build.
+          if [ "$draft" = "true" ]; then
+            gh release upload "$tag" --clobber "$DIST/main.js" "$DIST/manifest.json" "$DIST/styles.css"
+            gh release edit "$tag" --draft=false --latest=false
+            echo "Published $tag from its interrupted draft." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ "$draft" = "false" ]; then
             gh release download "$tag" --dir "$PUBLISHED" --pattern main.js --pattern manifest.json --pattern styles.css
             for file in main.js manifest.json styles.css; do
               if ! cmp -s "$DIST/$file" "$PUBLISHED/$file"; then
