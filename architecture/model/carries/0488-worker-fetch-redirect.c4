@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Worker fetches use manual redirect handling because workerd rejects the error mode before dispatch. Native grants, provider credential mirrors and pool login exports refuse non-success responses without following Location; credentials never reach a redirected destination. Node-only and browser redirect policies remain unchanged."
+    }
+  }
+}

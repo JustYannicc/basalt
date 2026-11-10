@@ -1,20 +1,14 @@
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { Effect, Option, Redacted } from "effect";
 
-const require = createRequire(
-  new URL("../../.upstream/apps/hosted/cloud/package.json", import.meta.url),
-);
-const { betterAuth } = await import(require.resolve("better-auth"));
-const { memoryAdapter } = await import(require.resolve("better-auth/adapters/memory"));
-const { authOptions } =
-  await import("../../.upstream/apps/hosted/server/src/implementation/auth.ts");
-const { provisionHostedOAuthResources } =
-  await import("../../.upstream/apps/hosted/server/src/implementation/mcp-oauth.ts");
+import { betterAuth } from "better-auth";
+import { memoryAdapter } from "better-auth/adapters/memory";
+import { authOptions } from "../../.upstream/apps/hosted/server/src/implementation/auth.ts";
+import { provisionHostedOAuthResources } from "../../.upstream/apps/hosted/server/src/implementation/mcp-oauth.ts";
 const origin = "http://localhost:3000";
 
 export async function fixture(
-  control: (request: Request) => Promise<Response>,
+  control?: (request: Request) => Promise<Response>,
   signingKey = "ab".repeat(32),
 ) {
   const key = Option.some(Redacted.make(signingKey));
@@ -117,13 +111,13 @@ export async function fixture(
   assert.equal(started.status, 200, await started.clone().text());
   const { user_code } = await started.json();
   const oldFetch = globalThis.fetch;
-  globalThis.fetch = async (input, init) => control(new Request(input, init));
+  if (control) globalThis.fetch = async (input, init) => control(new Request(input, init));
   return {
     request,
     user_code,
     db,
     [Symbol.dispose]() {
-      globalThis.fetch = oldFetch;
+      if (control) globalThis.fetch = oldFetch;
     },
   };
 }
