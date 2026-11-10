@@ -1229,7 +1229,7 @@ jobs:
           if-no-files-found: warn
   production-ops-atlassian-adoption:
     needs: select
-    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'production-ops-atlassian-adoption')
+    if: contains(fromJSON(needs.select.outputs.jobs), 'production-ops-atlassian-adoption')
     runs-on: ubuntu-latest
     timeout-minutes: 14
     steps:
