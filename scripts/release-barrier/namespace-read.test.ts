@@ -143,3 +143,56 @@ for (const [status, codes] of [
     );
     assert.equal(http.calls.length, 1);
   });
+
+for (const errors of [
+  [...Array.from({ length: 10 }, () => ({ code: 10004 })), { code: 10000 }],
+  [{ code: 10004 }, {}],
+  [{ code: 10004 }, null],
+  [{ code: 10004 }, { code: "10004" }],
+])
+  test(`namespace admission does not retry incomplete diagnostic codes ${JSON.stringify(errors)}`, async () => {
+    const http = provider([() => Response.json({ success: false, errors }, { status: 403 })]);
+    await assert.rejects(
+      admitSourceNamespace(props, http.api, {
+        wait: async () => assert.fail("unexpected retry"),
+      }),
+      /source-namespace-not-ready/,
+    );
+    assert.equal(http.calls.length, 1);
+  });
+
+test("namespace admission retries repeated 10004 entries only when every error has that code", async () => {
+  const http = provider([() => denied(1, 403, Array(11).fill(10004)), readable, readable]);
+  const waits: number[] = [];
+  await admitSourceNamespace(props, http.api, {
+    wait: async (ms) => {
+      waits.push(ms);
+    },
+  });
+  assert.deepEqual(waits, [1000]);
+  assert.equal(http.calls.length, 3);
+});
+
+for (const body of ["not-json private provider text", JSON.stringify({ success: true })])
+  test(`namespace admission preserves HTTP metadata when a successful response cannot decode: ${body}`, async (context) => {
+    const directory = await mkdtemp(join(tmpdir(), "namespace-invalid-"));
+    context.after(() => rm(directory, { recursive: true, force: true }));
+    const evidence = releaseEvidence(directory, "a".repeat(40));
+    const http = provider([() => new Response(body, { headers: { "cf-ray": ray(1) } })]);
+    const refusal = await admitSourceNamespace(props, http.api, {
+      record: evidence.namespaceRead,
+      wait: async () => assert.fail("unexpected retry"),
+    }).then(
+      () => assert.fail("expected refusal"),
+      (error: unknown) => error,
+    );
+    const receipt = await evidence.failure(refusal);
+    assert.equal(receipt.reason, "source-namespace-not-ready");
+    assert.deepEqual(receipt.activated, []);
+    assert.equal(http.calls.length, 1);
+    assert.deepEqual(
+      receipt.namespaceReads?.map((read) => [read.attempt, read.status, read.codes, read.ray]),
+      [[1, 200, [], ray(1)]],
+    );
+    assert.doesNotMatch(JSON.stringify(receipt), /private provider text/);
+  });

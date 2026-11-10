@@ -56,8 +56,7 @@ export function namespaceAdmissionReader(
         if (
           !(result.error instanceof ArtifactsHttpFailure) ||
           response?.status !== 403 ||
-          response.codes.length !== 1 ||
-          response.codes[0] !== 10004 ||
+          result.error.onlyErrorCode !== 10004 ||
           attempt === 3
         )
           throw result.error;

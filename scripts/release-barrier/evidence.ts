@@ -76,7 +76,7 @@ export function releaseEvidence(directory: string, candidate: string, encryption
           ),
           attempt: Schema.Literals([1, 2, 3]),
           at: Schema.String.check(
-            Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/),
+            Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u),
           ),
           status: Schema.NullOr(
             Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 100, maximum: 599 })),
@@ -88,7 +88,7 @@ export function releaseEvidence(directory: string, candidate: string, encryption
             ),
           ).check(Schema.isMaxLength(10)),
           ray: Schema.optional(
-            Schema.String.check(Schema.isPattern(/^[a-f0-9]{16}(?:-[A-Z]{3})?$/i)),
+            Schema.String.check(Schema.isPattern(/^[a-fA-F0-9]{16}(?:-[a-zA-Z]{3})?$/u)),
           ),
         }),
       )(read);

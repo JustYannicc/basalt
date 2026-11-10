@@ -6,10 +6,12 @@ export interface ArtifactsResponse {
 
 export class ArtifactsHttpFailure extends Error {
   readonly response: ArtifactsResponse;
+  readonly onlyErrorCode: number | undefined;
 
-  constructor(message: string, response: ArtifactsResponse) {
+  constructor(message: string, response: ArtifactsResponse, onlyErrorCode?: number) {
     super(message);
     this.response = response;
+    this.onlyErrorCode = onlyErrorCode;
   }
 }
 
@@ -63,6 +65,18 @@ export async function artifactsHttpFailure(
         codes.add(code);
     }
   }
+  // Retry eligibility uses every error, independently of the capped diagnostic list.
+  const firstCode = [...codes][0];
+  const onlyErrorCode =
+    firstCode !== undefined &&
+    Array.isArray(errors) &&
+    errors.length > 0 &&
+    errors.every(
+      (entry) =>
+        typeof entry === "object" && entry !== null && "code" in entry && entry.code === firstCode,
+    )
+      ? firstCode
+      : undefined;
   const headers: Record<string, string> = {};
   for (const [name, pattern] of Object.entries(failureHeaders)) {
     const value = response.headers.get(name);
@@ -94,5 +108,6 @@ export async function artifactsHttpFailure(
       codes: [...codes],
       ...(headers["cf-ray"] ? { ray: headers["cf-ray"] } : {}),
     },
+    onlyErrorCode,
   );
 }

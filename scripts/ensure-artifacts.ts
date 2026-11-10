@@ -1,4 +1,5 @@
 import {
+  ArtifactsHttpFailure,
   artifactsHttpFailure,
   failureHeaders,
   type ArtifactsResponse,
@@ -83,7 +84,14 @@ export function cloudflareArtifactsApi(
     if (cursor) target.searchParams.set("cursor", cursor);
     // Pages keep the envelope: the items are `result` and the next cursor is in `result_info`.
     const response = await request(target, "GET", undefined, signal);
-    const page = await envelope<T[]>(response, "list");
+    const page = await envelope<T[]>(response, "list").catch(async (error: unknown) => {
+      if (!signal || error instanceof ArtifactsHttpFailure) throw error;
+      throw await artifactsHttpFailure(
+        response,
+        "Cloudflare Artifacts list returned an invalid response",
+        {},
+      );
+    });
     const ray = response.headers.get("cf-ray");
     const next = page.result_info?.cursor;
     return {
