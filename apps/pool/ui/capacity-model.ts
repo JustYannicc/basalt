@@ -1,4 +1,9 @@
 import { accountPlanName } from "apps";
+import {
+  hasCurrentLimitReading,
+  supportedLimitWindows,
+  type LimitAccount,
+} from "./capacity-support.ts";
 import type {
   CapacityAggregate,
   CapacityForecast,
@@ -10,7 +15,7 @@ import type {
 } from "../capacity-contract.ts";
 
 // One line per provider window and unit. History preserves gaps; forecast and refill data stay
-// separate from measured points. A window a lab doesn't report simply has no line.
+// separate from measured points. Supported limits without readings keep an empty line.
 
 export const hourMs = 3_600_000;
 export const dayMs = 24 * hourMs;
@@ -27,6 +32,10 @@ export interface CapacityLine {
   readonly points: readonly CapacityHistoryPoint[];
   readonly forecast: CapacityForecast | null;
   readonly refills: readonly CapacityRefillEvent[];
+  /** Plan support only. An empty supported line contains no measured or inferred balance. */
+  readonly supportedAccounts?: number;
+  readonly missingCurrentReading?: boolean;
+  readonly lastReadingAt?: number;
 }
 
 export interface CapacityLab {
@@ -47,7 +56,10 @@ export function windowLabel(seconds: number): string {
   return `${Math.round(seconds / 60)}-minute`;
 }
 
-export function capacityLabs(history: PoolCapacityHistory): CapacityLab[] {
+export function capacityLabs(
+  history: PoolCapacityHistory,
+  accounts: readonly LimitAccount[] = [],
+): CapacityLab[] {
   const labs = new Map<string, Map<string, CapacityHistoryPoint[]>>();
   for (const point of history.points) {
     const key = JSON.stringify([point.provider, point.windowSeconds, point.mode, point.unit.id]);
@@ -55,8 +67,17 @@ export function capacityLabs(history: PoolCapacityHistory): CapacityLab[] {
     labs.set(point.provider, lines);
     lines.set(key, [...(lines.get(key) ?? []), point]);
   }
+  const supported = new Map<string, Map<number, number>>();
+  for (const account of accounts) {
+    for (const seconds of supportedLimitWindows(account)) {
+      const windows = supported.get(account.provider) ?? new Map<number, number>();
+      windows.set(seconds, (windows.get(seconds) ?? 0) + 1);
+      supported.set(account.provider, windows);
+      if (!labs.has(account.provider)) labs.set(account.provider, new Map());
+    }
+  }
   return [...labs].map(([provider, lines]) => {
-    const built = [...lines].map(([key, points]) => {
+    const built: CapacityLine[] = [...lines].map(([key, points]) => {
       const first = points[0]!;
       const label = windowLabel(first.windowSeconds) + (first.mode ? ` · ${first.mode}` : "");
       const forecast =
@@ -85,12 +106,52 @@ export function capacityLabs(history: PoolCapacityHistory): CapacityLab[] {
         refills,
       };
     });
+    for (const [seconds, count] of supported.get(provider) ?? []) {
+      if (built.some((line) => line.windowSeconds === seconds)) continue;
+      const unit =
+        built[0]?.unit ??
+        (provider === "claude"
+          ? { id: "claude-pro-equivalent", label: "Pro-eq" }
+          : provider === "codex"
+            ? { id: "chatgpt-plus-equivalent", label: "Plus-eq" }
+            : { id: `${provider}-account-equivalent`, label: "account-eq" });
+      built.push({
+        key: JSON.stringify([provider, seconds, null, unit.id]),
+        windowSeconds: seconds,
+        mode: null,
+        unit,
+        label: windowLabel(seconds),
+        points: [],
+        forecast: null,
+        refills: [],
+        supportedAccounts: count,
+      });
+    }
     // Two units on one window would otherwise share a label.
-    const named = built.map((line) =>
-      built.some((other) => other !== line && other.label === line.label)
-        ? { ...line, label: `${line.label} · ${line.unit.label}` }
-        : line,
-    );
+    const named = built.map((line) => {
+      const members = accounts.filter((account) => account.provider === provider);
+      const windows = members.flatMap((account) =>
+        account.windows.filter((window) => window.windowSeconds === line.windowSeconds),
+      );
+      const times = [
+        ...line.points.map((point) => (point.raw?.last ?? point.last).observedAt.to),
+        ...windows.map((window) => Date.parse(window.observedAt ?? "")),
+      ].filter((at) => Number.isFinite(at) && at <= history.to);
+      return {
+        ...line,
+        ...(line.windowSeconds === 18_000 && members.length > 0
+          ? {
+              missingCurrentReading: !members.some((account) =>
+                hasCurrentLimitReading(account, 18_000, history.to),
+              ),
+              ...(times.length > 0 ? { lastReadingAt: Math.max(...times) } : {}),
+            }
+          : {}),
+        label: built.some((other) => other !== line && other.label === line.label)
+          ? `${line.label} · ${line.unit.label}`
+          : line.label,
+      };
+    });
     const ordered = named.sort(
       (a, b) => b.windowSeconds - a.windowSeconds || a.label.localeCompare(b.label),
     );
@@ -222,6 +283,7 @@ export function pressing(
   const fallback = lab.lines[0];
   if (!weekly || !five) return { key: fallback?.key ?? "", text: null };
   const isFresh = (line: CapacityLine) => {
+    if (line.missingCurrentReading) return false;
     const latest = line.points.filter(isMeasuredCapacityPoint).at(-1);
     return Boolean(
       latest &&
@@ -239,7 +301,10 @@ export function pressing(
     );
   };
   const forecastReady = (line: CapacityLine) =>
-    !withheld && line.forecast?.status === "estimated" && line.forecast.points.length > 0;
+    !withheld &&
+    !line.missingCurrentReading &&
+    line.forecast?.status === "estimated" &&
+    line.forecast.points.length > 0;
   const projectedRunOut = (line: CapacityLine) =>
     forecastReady(line) ? line.forecast!.runsOutAt : null;
   const readyLines = lab.lines.filter(forecastReady);
@@ -284,6 +349,7 @@ export function pressing(
   }
   // Nothing runs out: the window with less left now is the one to watch.
   const left = (line: CapacityLine) => {
+    if (line.missingCurrentReading) return null;
     const latest = line.points.filter(isMeasuredCapacityPoint).at(-1);
     return latest && latest.last.full > 0 ? latest.last.remaining / latest.last.full : null;
   };
@@ -324,6 +390,18 @@ export function verdict(
   readonly detail: string | null;
 } {
   const forecast = line?.forecast;
+  if (line?.missingCurrentReading || (line?.supportedAccounts && line.points.length === 0)) {
+    const label = line.windowSeconds === 18_000 ? "5-hour" : "weekly";
+    return {
+      tone: "learn",
+      short: `No current ${label} reading`,
+      text: "A fresh provider reading will show how much remains.",
+      detail:
+        line.lastReadingAt === undefined
+          ? `No previous ${label} reading is available.`
+          : `Last ${label} reading: ${new Date(line.lastReadingAt).toISOString().slice(0, 16).replace("T", " ")} UTC.`,
+    };
+  }
   if (
     line?.windowSeconds === 18_000 &&
     line.points.length > 0 &&
