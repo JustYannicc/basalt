@@ -435,3 +435,94 @@ test("the release admits a stage only when both namespaces already exist in the 
   );
   assert.ok(!sourcesOnly.state.calls.some((call) => call.startsWith("create:")));
 });
+
+const releaseProps = {
+  command: "node ensure-artifacts.ts",
+  env: {
+    CLOUDFLARE_ACCOUNT_ID: "account",
+    CLOUDFLARE_API_TOKEN: "deploy-token-fixture",
+    CLOUD_SOURCE_NAMESPACE: "basalt-production-apps",
+  },
+};
+/** The real HTTP client over a scripted provider, one response per list request. */
+const scripted = (pages: Array<() => Response>) => {
+  const urls: string[] = [];
+  return {
+    urls,
+    api: (account: string, token: string) =>
+      cloudflareArtifactsApi(account, token, async (input) => {
+        urls.push(String(input));
+        const next = pages.shift();
+        if (!next) throw new Error("unexpected request");
+        return next();
+      }),
+  };
+};
+const page = (result: unknown[], cursor?: string) => () =>
+  Response.json({
+    success: true,
+    errors: [],
+    messages: [],
+    result,
+    result_info: cursor ? { cursor } : {},
+  });
+
+test("a second namespace, extra fields and a paged listing still admit", async () => {
+  const { admitSourceNamespace } = await import("./release-barrier/commands.ts");
+  const both = [
+    { namespace: "basalt-production-apps", jurisdiction: "eu", created_at: "2026-10-01T00:00:00Z" },
+    { namespace: "basalt-production-vaults", jurisdiction: "eu", repos: 0 },
+    { namespace: "basalt-scratch-deleting" },
+  ];
+  // Each namespace is read with its own full listing, here split over two pages.
+  const provider = scripted([
+    page(both.slice(0, 1), "c1"),
+    page(both.slice(1)),
+    page(both.slice(0, 2), "c2"),
+    page(both.slice(2)),
+  ]);
+  await admitSourceNamespace(releaseProps, provider.api);
+  assert.equal(provider.urls.length, 4);
+  assert.ok(provider.urls[1]!.includes("cursor=c1"));
+});
+
+test("a refused namespace read names its class, HTTP status and provider codes", async () => {
+  const { admitSourceNamespace } = await import("./release-barrier/commands.ts");
+  const provider = scripted([
+    () =>
+      Response.json(
+        {
+          success: false,
+          errors: [{ code: 10000, message: "Authentication error" }],
+          result: null,
+        },
+        { status: 403 },
+      ),
+  ]);
+  const refusal = await admitSourceNamespace(releaseProps, provider.api).then(
+    () => assert.fail("expected a refusal"),
+    (error: { reason: string; delta?: { why?: string[]; changed: unknown[] } }) => error,
+  );
+  assert.equal(refusal.reason, "source-namespace-not-ready");
+  const detail = refusal.delta?.why?.join(" ") ?? "";
+  assert.match(detail, /basalt-production-apps/);
+  assert.match(detail, /HTTP 403/);
+  assert.match(detail, /10000/);
+  assert.doesNotMatch(JSON.stringify(refusal.delta), /deploy-token-fixture|Authentication error/);
+});
+
+test("a transport failure keeps only its class, never its host", async () => {
+  const { admitSourceNamespace } = await import("./release-barrier/commands.ts");
+  const provider = scripted([
+    () => {
+      throw new TypeError("fetch failed: connect ECONNRESET api.private.invalid:443");
+    },
+  ]);
+  const refusal = await admitSourceNamespace(releaseProps, provider.api).then(
+    () => assert.fail("expected a refusal"),
+    (error: { reason: string; delta?: { why?: string[] } }) => error,
+  );
+  assert.equal(refusal.reason, "source-namespace-not-ready");
+  assert.match(refusal.delta?.why?.join(" ") ?? "", /TypeError/);
+  assert.doesNotMatch(JSON.stringify(refusal.delta), /private\.invalid|ECONNRESET/);
+});
