@@ -34,7 +34,10 @@ test("a retained startup capsule cannot be moved to another runtime or opened un
   const sealed = await sealConfiguration(configuration, "b".repeat(64), "first-target");
   await assert.rejects(openConfiguration(sealed, "b".repeat(64), "different-target"));
   await assert.rejects(openConfiguration(sealed, "c".repeat(64), "first-target"));
-  const modified = { ...sealed, ciphertext: `ff${sealed.ciphertext.slice(2)}` };
+  const ciphertext = Buffer.from(sealed.ciphertext, "hex");
+  ciphertext[0] = ciphertext[0]! ^ 0x01;
+  const modified = { ...sealed, ciphertext: ciphertext.toString("hex") };
+  assert.notEqual(modified.ciphertext, sealed.ciphertext);
   await assert.rejects(openConfiguration(modified, "b".repeat(64), "first-target"));
 });
 

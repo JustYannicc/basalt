@@ -10,6 +10,7 @@ import {
   membershipReadPrefix,
 } from "../../src/pool/membership-contract.ts";
 import { nativeMembershipKey } from "../../src/pool/runtime-slots/storage.ts";
+import type { EndpointEnvironment } from "../../src/pool/runtime-slots/endpoint.ts";
 import { deploymentReadinessPrefix } from "../../src/pool/deployment-readiness.ts";
 import { openEnvelope, signEnvelope, signPoolToken } from "../../src/pool/token.ts";
 import type {
@@ -233,7 +234,7 @@ export async function handoffWorker(options: { rotateSigningKey?: boolean; adopt
     assert.equal(adopted.status, 200, await adopted.clone().text());
     adoptionAck = await adopted.json();
   }
-  const currentEnv = { ...workerEnv, ...(options.adopt === false ? {} : nextEnv) };
+  let currentEnv = { ...workerEnv, ...(options.adopt === false ? {} : nextEnv) };
   // Model and Home requests keep the admitted runtime settings after current bindings advance.
   worker = new PoolContainer(old.ctx, currentEnv);
   const token = await signPoolToken(env.POOL_APP_SIGNING_KEY, claims);
@@ -306,6 +307,11 @@ export async function handoffWorker(options: { rotateSigningKey?: boolean; adopt
     intent,
     loseStartReply: () => {
       loseStartReply = true;
+    },
+    advanceCurrentBindings: (bindings: Partial<EndpointEnvironment>) => {
+      currentEnv = { ...currentEnv, ...bindings };
+      worker = new PoolContainer(old.ctx, currentEnv);
+      return worker;
     },
     reconstruct: (bound = true) => {
       worker = new PoolContainer(old.ctx, {
