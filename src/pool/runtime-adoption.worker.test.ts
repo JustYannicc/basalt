@@ -155,6 +155,8 @@ for (const corruption of ["fingerprint", "ciphertext"] as const)
     const key = launchWitnessKey(f.old.target.slotId),
       record = await f.old.storage.get<WitnessRecord>(key);
     assert.ok(record);
+    const ciphertext = Buffer.from(record.sealed.ciphertext, "hex");
+    ciphertext[0] = ciphertext[0]! ^ 1;
     const next =
       corruption === "fingerprint"
         ? {
@@ -165,11 +167,14 @@ for (const corruption of ["fingerprint", "ciphertext"] as const)
             ...record,
             sealed: {
               ...record.sealed,
-              ciphertext:
-                (record.sealed.ciphertext.startsWith("A") ? "B" : "A") +
-                record.sealed.ciphertext.slice(1),
+              ciphertext: ciphertext.toString("hex"),
             },
           };
+    if (corruption === "ciphertext")
+      assert.notDeepEqual(
+        Buffer.from(next.sealed.ciphertext, "hex"),
+        Buffer.from(record.sealed.ciphertext, "hex"),
+      );
     await f.old.storage.put(key, next);
     assert.equal((await witness(f)).status, 409);
   });
