@@ -88,6 +88,15 @@
           }
         },
         {
+          "identity": "cliproxy-home-xai-subscription-quota",
+          "file": "0469-home-xai-subscription-quota.patch",
+          "sha256": "ea8e7bd4d1a7619358288dd764f8e861a17394d0a29d1c07138f4259c0b15201",
+          "retirement": {
+            "mode": "manual",
+            "requires": "remove when the pin moves to \u2265 v1.1.8 and the upstream paid omitted-zero, free/unknown-profile, retained-window, supported-client and metadata-only collection regressions pass on the new pin."
+          }
+        },
+        {
           "identity": "cliproxy-home-collection-field-presence",
           "file": "0477-home-collection-field-presence.patch",
           "sha256": "e629d15bc078d1a6d15cde112b73b4d0a0577c871807f8c6da0f508b61386801",

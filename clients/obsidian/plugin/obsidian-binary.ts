@@ -9,11 +9,11 @@ function desktopReader(plugin: Plugin): DesktopReader | undefined {
   if (!Platform.isDesktopApp || !(adapter instanceof FileSystemAdapter)) return undefined;
   if (!plugin.manifest.dir)
     throw new Error("Obsidian did not provide this plugin's installation path");
-  // This optional asset is required only on desktop; its Node imports never enter main.js.
+  // Bundled into main.js but evaluated only here, so phones never load its Node built-ins.
   const module: unknown = require("./desktop-reader.cjs");
   const exported = object(module);
   if (typeof exported.createReader !== "function")
-    throw new Error("The desktop byte reader is missing. Reinstall Basalt Sync.");
+    throw new Error("The desktop byte reader is invalid. Reinstall Basalt Sync.");
   const raw: unknown = exported.createReader(adapter.getBasePath()),
     reader = object(raw);
   const snapshot = reader.snapshot,

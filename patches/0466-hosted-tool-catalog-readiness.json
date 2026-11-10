@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-hosted-tool-catalog-readiness",
+  "file": "0466-hosted-tool-catalog-readiness.patch",
+  "content_sha256": "008aa6bb5793883d1d55eb68cc4585734bad107fce345ab6121f8a6ac2b0cce4",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
