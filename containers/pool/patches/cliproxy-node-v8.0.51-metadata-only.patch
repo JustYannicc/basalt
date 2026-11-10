@@ -826,12 +826,11 @@ new file mode 100644
 index 00000000..91ebc25e
 --- /dev/null
 +++ b/internal/runtime/executor/helps/metadata_only_test.go
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,174 @@
 +package helps
 +
 +import (
 +	"context"
-+	"encoding/json"
 +	"net/http"
 +	"net/http/httptest"
 +	"strings"
@@ -991,14 +990,7 @@ index 00000000..91ebc25e
 +	if reporter.accessTokenHash != "" {
 +		t.Fatal("metadata-only reporter retained the refreshed fingerprint")
 +	}
-+	raw, err := json.Marshal(struct {
-+		Auth      cliproxyauth.Auth `json:"auth"`
-+		AuthIndex string            `json:"auth_index"`
-+	}{Auth: *auth, AuthIndex: auth.Index})
-+	if err != nil {
-+		t.Fatal(err)
-+	}
-+	client := &fakeHomeRefreshClient{raw: raw}
++	client := &fakeHomeRefreshClient{raw: []byte(`{"auth":{"provider":"codex","metadata":{"access_token":"synthetic-access-token"}},"auth_index":"home-fingerprint-fixture"}`)}
 +	previous := currentHomeRefreshClient
 +	currentHomeRefreshClient = func() homeRefreshClient { return client }
 +	t.Cleanup(func() { currentHomeRefreshClient = previous })
