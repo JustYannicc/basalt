@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { previewReceipt, requireSuccessfulSmoke } from "./receipt.ts";
 
-function smoke(): any {
+function smoke() {
   return {
     version: 1,
     mode: "preview",
@@ -48,33 +48,32 @@ test("failed, skipped, duplicate, partial and unsafe smoke reports stay red", ()
       revoke: false,
     })) {
       const report = smoke();
-      report.clients[index][field] = value;
-      assert.throws(() => requireSuccessfulSmoke(report), `${index} ${field}`);
+      const broken = {
+        ...report,
+        clients: report.clients.map((client, position) =>
+          position === index ? { ...client, [field]: value } : client,
+        ),
+      };
+      assert.throws(() => requireSuccessfulSmoke(broken), `${index} ${field}`);
     }
   }
   for (const mutate of [
-    (report: any) => {
-      report.clients[1].client = "claude";
-    },
-    (report: any) => {
-      report.clients.pop();
-    },
-    (report: any) => {
-      report.clients.reverse();
-    },
-    (report: any) => {
-      report.clients[0].stdout = "raw transcript";
-    },
-    (report: any) => {
-      report.origin = "unexpected field";
-    },
-    (report: any) => {
-      report.mode = "full";
-    },
+    (report: ReturnType<typeof smoke>) => ({
+      ...report,
+      clients: [report.clients[0], { ...report.clients[1], client: "claude" }],
+    }),
+    (report: ReturnType<typeof smoke>) => ({ ...report, clients: report.clients.slice(0, 1) }),
+    (report: ReturnType<typeof smoke>) => ({ ...report, clients: report.clients.toReversed() }),
+    (report: ReturnType<typeof smoke>) => ({
+      ...report,
+      clients: report.clients.map((client, index) =>
+        index === 0 ? { ...client, stdout: "raw transcript" } : client,
+      ),
+    }),
+    (report: ReturnType<typeof smoke>) => ({ ...report, origin: "unexpected field" }),
+    (report: ReturnType<typeof smoke>) => ({ ...report, mode: "full" }),
   ]) {
-    const report = smoke();
-    mutate(report);
-    assert.throws(() => requireSuccessfulSmoke(report));
+    assert.throws(() => requireSuccessfulSmoke(mutate(smoke())));
   }
 });
 
