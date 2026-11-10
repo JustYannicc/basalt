@@ -46,7 +46,7 @@ index 48d794d..c389e08 100644
  
      "motion": ["motion@12.43.0", "", { "dependencies": { "framer-motion": "^12.43.0", "tslib": "^2.4.0" }, "peerDependencies": { "@emotion/is-prop-valid": "*", "react": "^18.0.0 || ^19.0.0", "react-dom": "^18.0.0 || ^19.0.0" }, "optionalPeers": ["@emotion/is-prop-valid", "react", "react-dom"] }, "sha512-BQgQbSa9Hn3/mtbib0MK53y6JSANa+YKUKlaYnWzAVDH424RYQ5LVpV3pNiWH00BA2z4ojsSdMzqT7g2FQwjuQ=="],
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 1f3ca3a..529bcbd 100644
+index 06fe43a..d0ac1a8 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -82,6 +82,7 @@ export const productBrand = {
@@ -57,17 +57,7 @@ index 1f3ca3a..529bcbd 100644
  } as const;
  /**
   * The execute budget of the lazy stall scenario: longer than execute's 10 s discovery wait, so a
-@@ -5838,7 +5839,8 @@ export const scenarios = plan({
-     fixtures: "actors",
-     file: "cloud-app-query-auth.spec.ts",
-     appOrigin: true,
--    title: "Cloud app queries read current authorization without deleting expired verification records",
-+    title:
-+      "Cloud app queries read current authorization without deleting expired verification records",
-     targets: {
-       cloud: managedCloud,
-       "self-host": na("AppPages has a separate Better Auth adapter only on Cloud."),
-@@ -6786,6 +6788,7 @@ export const scenarios = plan({
+@@ -6775,6 +6776,7 @@ export const scenarios = plan({
        EXECUTOR_PRODUCT_DOCS_URL: productBrand.docs,
        EXECUTOR_PRODUCT_PRIVACY_URL: productBrand.privacy,
        EXECUTOR_PRODUCT_SOURCE_URL: productBrand.source,

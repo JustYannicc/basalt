@@ -4,6 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import { test } from "node:test";
 import { Effect } from "effect";
+import { admitFramework } from "../../.upstream/packages/sdk/src/implementation/framework-provenance.ts";
 import { poolFrameworkVersion } from "../pool-app-bundle.ts";
 
 const upstream = fileURLToPath(new URL("../../.upstream/", import.meta.url));
@@ -75,7 +76,7 @@ test(
     assert.equal(JSON.parse(files["framework-reference.json"]!).version, poolFrameworkVersion);
     const { appProtocol } = await load("packages/sdk/src/implementation/app-protocols.ts");
     await Effect.runPromise(appProtocol(runtime.protocol));
-    const { admitFramework } = await load("packages/sdk/src/implementation/framework-provenance.ts");
+
     const admitted = await Effect.runPromise(admitFramework({
       framework: { version: runtime.version, modules: runtime.server },
       protocol: runtime.protocol,
