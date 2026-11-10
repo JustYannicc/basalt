@@ -1,5 +1,6 @@
 diff --git a/apps/hosted/cloud/src/infrastructure/batch-execution.ts b/apps/hosted/cloud/src/infrastructure/batch-execution.ts
 new file mode 100644
+index 0000000..663d9b5
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/batch-execution.ts
 @@ -0,0 +1,30 @@
@@ -34,9 +35,10 @@ new file mode 100644
 +    Effect.flatMap(BatchScope, (scope) => (scope === undefined ? memo : Scope.provide(memo, scope))),
 +  );
 diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
+index 1247968..2b9a628 100644
 --- a/apps/hosted/cloud/src/infrastructure/executor.ts
 +++ b/apps/hosted/cloud/src/infrastructure/executor.ts
-@@ -14,7 +14,7 @@
+@@ -21,7 +21,7 @@ import {
  } from "@executor-js/sdk/core";
  import { hostedEventAuthority } from "@executor-js/hosted-server/events";
  import { SqlClient } from "effect/sql";
@@ -45,7 +47,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/clou
  import * as Cloudflare from "alchemy/Cloudflare";
  import { Config, Context, Effect, FiberSet, Option } from "effect";
  import { FetchHttpClient, HttpClient } from "effect/http";
-@@ -99,7 +99,7 @@
+@@ -122,7 +122,7 @@ export const cloudExecutor = Effect.fn(function* (
    const blobs = yield* cloudBlobs;
    // App storage, hosted permission checks and Better Auth share the event's client.
    const database = (yield* InvocationDatabase).pipe(Effect.mapError(() => new StorageError()));
@@ -55,6 +57,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/clou
        const key = yield* secrets.encryptionKey;
        const services = yield* database;
 diff --git a/apps/hosted/cloud/src/infrastructure/invocation-database.ts b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
+index 7a5ac2e..d35ab84 100644
 --- a/apps/hosted/cloud/src/infrastructure/invocation-database.ts
 +++ b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
 @@ -3,7 +3,7 @@
@@ -66,7 +69,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/invocation-database.ts b/apps/
  import { Context, Effect, Layer, Option, Scope } from "effect";
  import { SqlClient, type SqlError } from "effect/sql";
  import {
-@@ -36,7 +36,7 @@
+@@ -36,7 +36,7 @@ export const cloudInvocationDatabase = Layer.effect(
    InvocationDatabase,
    Effect.gen(function* () {
      const connection = yield* cloudDatabaseConnection;
@@ -76,17 +79,18 @@ diff --git a/apps/hosted/cloud/src/infrastructure/invocation-database.ts b/apps/
          const object = yield* Effect.serviceOption(ObjectDatabase);
          if (Option.isSome(object)) return yield* object.value.sql;
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+index f3d45fd..f4c2edc 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
-@@ -88,6 +88,7 @@
-   type BackgroundJob,
+@@ -90,6 +90,7 @@ import {
  } from "./infrastructure/background-jobs.ts";
+ import { handledJob, jobCompleted, jobFailed } from "./contracts/job-outcome.ts";
  import { cloudEgress } from "./infrastructure/executor.ts";
 +import { withBatchExecution } from "./infrastructure/batch-execution.ts";
  import { cloudProduct } from "./infrastructure/product.ts";
  import { cloudAuthDatabase } from "./infrastructure/auth-database.ts";
  import { EventCleanup, sqlCancellation } from "./infrastructure/event-cleanup.ts";
-@@ -704,6 +705,7 @@
+@@ -755,6 +756,7 @@ export default Api.make(
      return {
        fetch: handle.pipe(
          roleHosts,
@@ -94,8 +98,43 @@ diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
          withNotFoundDocument,
          Effect.tapCause(reportCloudFailure),
          Effect.catchTag("AuthenticationUnavailable", () =>
+diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
+index 594bb55..a3d068a 100644
+--- a/e2e/ci-selection.ts
++++ b/e2e/ci-selection.ts
+@@ -105,7 +105,7 @@ const jobs = {
+     runner: 3,
+ 
+     pattern:
+-      "Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud cron jobs record their outcome|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|Cloud's schedule coordinator keeps nine slow scheduled runs|a webhook source reconciling for an activation that another supersedes|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)|Hosted MCP operation and bearer-check spans name|Hosted management API request spans name only|Hosted request spans record the client, the credential|Cloud's gateway names an authenticated MCP request's organization",
++      "Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud cron jobs record their outcome|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|Cloud's schedule coordinator keeps nine slow scheduled runs|a webhook source reconciling for an activation that another supersedes|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)|Hosted MCP operation and bearer-check spans name|Hosted management API request spans name only|Hosted request spans record the client, the credential|Cloud's gateway names an authenticated MCP request's organization",
+   },
+   // Cloud's hosts: role hosts, the edge and sign-in on `app.`. Run in `cloud-product`, their
+   // load kept the team installation's workflow span from arriving within its 30-second wait, so
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 3102aec..904ec1d 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -2515,6 +2515,16 @@ export const scenarios = plan({
+       local: na("Local has no hosted provisioning jobs."),
+     },
+   },
++  cloudDashboardBatchResources: {
++    fixtures: "actors",
++    file: "cloud-dashboard-batch-resources.spec.ts",
++    title: "Cloud dashboard batches share one SQL pool and executor within each request",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("Self-host builds its executor and SQL pool at startup."),
++      local: na("The local dashboard does not batch its reads."),
++    },
++  },
+   cloudMcpObjectConnections: {
+     fixtures: "actors",
+     file: "cloud-database-placement.spec.ts",
 diff --git a/e2e/tests/cloud-dashboard-batch-resources.spec.ts b/e2e/tests/cloud-dashboard-batch-resources.spec.ts
 new file mode 100644
+index 0000000..1dc06bc
 --- /dev/null
 +++ b/e2e/tests/cloud-dashboard-batch-resources.spec.ts
 @@ -0,0 +1,127 @@
@@ -226,35 +265,3 @@ new file mode 100644
 +    ),
 +  );
 +});
-diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
---- a/e2e/test-plan.ts
-+++ b/e2e/test-plan.ts
-@@ -1967,6 +1967,16 @@
-         "Cloud installs a new team in its request with an immediate wake, or in its provisioning workflow, whose next step requests the schedule-wake job.",
-       ),
-       local: na("Local has no hosted provisioning jobs."),
-+    },
-+  },
-+  cloudDashboardBatchResources: {
-+    fixtures: "actors",
-+    file: "cloud-dashboard-batch-resources.spec.ts",
-+    title: "Cloud dashboard batches share one SQL pool and executor within each request",
-+    targets: {
-+      cloud: managedCloud,
-+      "self-host": na("Self-host builds its executor and SQL pool at startup."),
-+      local: na("The local dashboard does not batch its reads."),
-     },
-   },
-   cloudMcpObjectConnections: {
-diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
---- a/e2e/ci-selection.ts
-+++ b/e2e/ci-selection.ts
-@@ -103,7 +103,7 @@
-     runner: 3,
- 
-     pattern:
--      "Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)",
-+      "Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)",
-   },
-   // Cloud's hosts: role hosts, the edge and sign-in on `app.`. Run in `cloud-product`, their
-   // load kept the team installation's workflow span from arriving within its 30-second wait, so

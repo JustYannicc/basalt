@@ -1,8 +1,8 @@
 diff --git a/apps/hosted/cloud/alchemy.github.ts b/apps/hosted/cloud/alchemy.github.ts
-index af77c04f2..504def13a 100644
+index 447ae67..fb59181 100644
 --- a/apps/hosted/cloud/alchemy.github.ts
 +++ b/apps/hosted/cloud/alchemy.github.ts
-@@ -73,6 +73,11 @@ const productionSecrets = [
+@@ -71,6 +71,11 @@ const productionSecrets = [
    "POSTHOG_PERSONAL_API_KEY",
    "SENTRY_AUTH_TOKEN",
  ] as const;
@@ -14,7 +14,7 @@ index af77c04f2..504def13a 100644
  
  /** A secret from `.env.ci.op`; unset and empty are both absent. */
  const nonEmptySecret = (name: string) =>
-@@ -107,6 +112,7 @@ const productionVariables = [
+@@ -105,6 +110,7 @@ const productionVariables = [
    "SENTRY_TEAM",
    "SENTRY_URL",
  ] as const;
@@ -22,7 +22,7 @@ index af77c04f2..504def13a 100644
  
  /**
   * Required status checks on `main`. These are the contexts reported by `ci.yml` calling
-@@ -252,29 +258,37 @@ export default Alchemy.Stack(
+@@ -250,29 +256,37 @@ export default Alchemy.Stack(
      );
  
      yield* Effect.forEach(productionSecrets, (secret) =>
@@ -81,7 +81,7 @@ index af77c04f2..504def13a 100644
  
      /**
 diff --git a/apps/hosted/cloud/alchemy.run.ts b/apps/hosted/cloud/alchemy.run.ts
-index cdb7fc98c..79ecfd643 100644
+index cdb7fc9..79ecfd6 100644
 --- a/apps/hosted/cloud/alchemy.run.ts
 +++ b/apps/hosted/cloud/alchemy.run.ts
 @@ -2,7 +2,6 @@
@@ -110,7 +110,7 @@ index cdb7fc98c..79ecfd643 100644
          ),
        ),
 diff --git a/apps/hosted/cloud/alchemy.test-cleanup.ts b/apps/hosted/cloud/alchemy.test-cleanup.ts
-index 024ce6cd6..b022508da 100644
+index 024ce6c..b022508 100644
 --- a/apps/hosted/cloud/alchemy.test-cleanup.ts
 +++ b/apps/hosted/cloud/alchemy.test-cleanup.ts
 @@ -2,7 +2,6 @@
@@ -139,7 +139,7 @@ index 024ce6cd6..b022508da 100644
        Neon.providers(),
        TestStageDomainCleanup().pipe(Layer.provide(cleanupState)),
 diff --git a/apps/hosted/cloud/alchemy.test-infrastructure.ts b/apps/hosted/cloud/alchemy.test-infrastructure.ts
-index b44141c35..e67fa7bd8 100644
+index b44141c..e67fa7b 100644
 --- a/apps/hosted/cloud/alchemy.test-infrastructure.ts
 +++ b/apps/hosted/cloud/alchemy.test-infrastructure.ts
 @@ -5,7 +5,7 @@ import * as GitHub from "alchemy/GitHub";
@@ -199,7 +199,7 @@ index b44141c35..e67fa7bd8 100644
      // the existing OAuth proxy; previews still own their signing and encryption secrets.
      for (const name of ["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"] as const)
 diff --git a/apps/hosted/cloud/scripts/development-web.ts b/apps/hosted/cloud/scripts/development-web.ts
-index ac90dd17b..05b7018e5 100644
+index ac90dd1..05b7018 100644
 --- a/apps/hosted/cloud/scripts/development-web.ts
 +++ b/apps/hosted/cloud/scripts/development-web.ts
 @@ -105,6 +105,10 @@ const main = Effect.scoped(
@@ -214,10 +214,10 @@ index ac90dd17b..05b7018e5 100644
          documentation: new URL("/docs/", origin).href,
        },
 diff --git a/apps/hosted/cloud/scripts/worker-sizes.ts b/apps/hosted/cloud/scripts/worker-sizes.ts
-index 03556620d..5ec174d55 100644
+index 465246e..9ae869d 100644
 --- a/apps/hosted/cloud/scripts/worker-sizes.ts
 +++ b/apps/hosted/cloud/scripts/worker-sizes.ts
-@@ -90,9 +90,10 @@ const {
+@@ -106,9 +106,10 @@ const {
  
  /**
   * Worker props read deploy configuration, but each value becomes a binding, not uploaded
@@ -231,7 +231,7 @@ index 03556620d..5ec174d55 100644
   */
  const deployConfiguration = {
    NODE_ENV: "production",
-@@ -105,10 +106,6 @@ const deployConfiguration = {
+@@ -121,10 +122,6 @@ const deployConfiguration = {
    EXECUTOR_BUILD_VERSION: "0".repeat(40),
    EXECUTOR_APP_UI_BASE_URL: "https://executor.app",
    CLOUD_PLACEMENT_REGION: "aws:us-east-1",
@@ -242,7 +242,7 @@ index 03556620d..5ec174d55 100644
    PLANETSCALE_ORGANIZATION: "unused",
    PLANETSCALE_DATABASE_NAME: "unused",
    PLANETSCALE_CLUSTER_SIZE: "unused",
-@@ -121,7 +118,6 @@ const deployConfiguration = {
+@@ -137,7 +134,6 @@ const deployConfiguration = {
    GOOGLE_CLIENT_SECRET: "unused",
    OAUTH_PROXY_SECRET: "0".repeat(32),
    OAUTH_PROXY_PRODUCTION_URL: "https://executor.sh",
@@ -250,7 +250,7 @@ index 03556620d..5ec174d55 100644
    POSTHOG_PERSONAL_API_KEY: "unused",
    SENTRY_AUTH_TOKEN: "unused",
    AUTH_EMAIL_DOMAIN: "executor.sh",
-@@ -148,7 +144,7 @@ const production: Target = {
+@@ -164,7 +160,7 @@ const production: Target = {
      EXECUTOR_OAUTH_GITHUB_CLIENT_ID: "unused",
      EXECUTOR_OAUTH_GITHUB_CLIENT_SECRET: "unused",
      // Evaluate the v1 import's production path too: it binds v1's blob bucket.
@@ -260,7 +260,7 @@ index 03556620d..5ec174d55 100644
      // The import requires v1's ID for every first-party client production offers.
      V1_FIRST_PARTY_CLIENT_IDS: JSON.stringify({ github: "unused" }),
 diff --git a/apps/hosted/cloud/src/contracts/billing.ts b/apps/hosted/cloud/src/contracts/billing.ts
-index b434885e5..87f55b3f4 100644
+index b434885..87f55b3 100644
 --- a/apps/hosted/cloud/src/contracts/billing.ts
 +++ b/apps/hosted/cloud/src/contracts/billing.ts
 @@ -30,6 +30,8 @@ export const BillingPlan = Schema.Struct({
@@ -333,10 +333,10 @@ index b434885e5..87f55b3f4 100644
    )
    .middleware(RequireOrganization)
 diff --git a/apps/hosted/cloud/src/contracts/onboarding.ts b/apps/hosted/cloud/src/contracts/onboarding.ts
-index af11069c9..3154d061a 100644
+index d946cc2..c334a77 100644
 --- a/apps/hosted/cloud/src/contracts/onboarding.ts
 +++ b/apps/hosted/cloud/src/contracts/onboarding.ts
-@@ -139,11 +139,13 @@ export class CompanyLookupFailed extends Schema.TaggedError<CompanyLookupFailed>
+@@ -181,11 +181,13 @@ export class CompanyLookupFailed extends Schema.TaggedError<CompanyLookupFailed>
    "CompanyLookupFailed",
    {},
  ) {}
@@ -353,19 +353,19 @@ index af11069c9..3154d061a 100644
  >()("cloud/CompanyLookup") {}
  
 diff --git a/apps/hosted/cloud/src/implementation/billing.ts b/apps/hosted/cloud/src/implementation/billing.ts
-index 1180ee435..194275ad2 100644
+index eb974d6..d2f8ea5 100644
 --- a/apps/hosted/cloud/src/implementation/billing.ts
 +++ b/apps/hosted/cloud/src/implementation/billing.ts
 @@ -7,7 +7,7 @@ import {
    type OrganizationId,
  } from "@executor-js/hosted-server";
  import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
--import { Cause, Effect, Layer, Schema } from "effect";
-+import { Cause, Effect, Layer, Option, Schema } from "effect";
+-import { Cause, Effect, Fiber, Layer, Schema } from "effect";
++import { Cause, Effect, Fiber, Layer, Option, Schema } from "effect";
  import { FetchHttpClient, HttpServerRequest } from "effect/http";
  import { AutumnClient, type AutumnRequestFailed } from "../contracts/autumn.ts";
  import { autumnLive, autumnReads } from "./autumn-client.ts";
-@@ -21,6 +21,7 @@ import { reportCloudFailure } from "./error-reporting.ts";
+@@ -22,6 +22,7 @@ import { v1BillingHold } from "./v1-import/billing.ts";
  import { HttpApiBuilder } from "effect/http-api";
  import {
    Billing,
@@ -373,7 +373,7 @@ index 1180ee435..194275ad2 100644
    BillingOverview,
    BillingPlanUnavailable,
    BillingUnavailable,
-@@ -56,7 +57,36 @@ const active = (customer: Subscriptions, plans: ReadonlyArray<string>) =>
+@@ -57,7 +58,36 @@ const active = (customer: Subscriptions, plans: ReadonlyArray<string>) =>
  /** Resolve the selected Autumn environment once; each invocation owns its client. */
  export const billingLive = Effect.gen(function* () {
    // Resolve during initialization so Alchemy binds every value into the Worker environment.
@@ -411,7 +411,7 @@ index 1180ee435..194275ad2 100644
    // Test-stage settings resolve at runtime, so build the client inside the invocation, not here.
    const members = yield* billingMembers;
    const client = yield* makeExecutionMemo(
-@@ -87,6 +117,7 @@ export const billingLive = Effect.gen(function* () {
+@@ -103,6 +133,7 @@ export const billingLive = Effect.gen(function* () {
        // The billing provider lists plans in its own order; the page shows the smallest first.
        const offered = [catalog.free, catalog.team, catalog.enterprise];
        return yield* Schema.decodeUnknownEffect(BillingOverview)({
@@ -419,7 +419,7 @@ index 1180ee435..194275ad2 100644
          enterprise: active(customer, [catalog.enterprise]),
          plans: plans.list
            .filter((plan) => !plan.archived && offered.includes(plan.id))
-@@ -244,6 +275,7 @@ export const billingLive = Effect.gen(function* () {
+@@ -266,6 +297,7 @@ export const billingLive = Effect.gen(function* () {
      Layer.succeed(
        Billing,
        Billing.of({
@@ -428,7 +428,7 @@ index 1180ee435..194275ad2 100644
          checkout: (organization, plan, returnUrl) =>
            Effect.gen(function* () {
 diff --git a/apps/hosted/cloud/src/implementation/company-profile.ts b/apps/hosted/cloud/src/implementation/company-profile.ts
-index 4d563988d..2358b1e4e 100644
+index 4d56398..2358b1e 100644
 --- a/apps/hosted/cloud/src/implementation/company-profile.ts
 +++ b/apps/hosted/cloud/src/implementation/company-profile.ts
 @@ -78,3 +78,9 @@ export const companyLookupLive = (
@@ -442,7 +442,7 @@ index 4d563988d..2358b1e4e 100644
 +  CompanyLookup.of({ lookup: () => Effect.succeed(undefined) }),
 +);
 diff --git a/apps/hosted/cloud/src/implementation/dashboard.ts b/apps/hosted/cloud/src/implementation/dashboard.ts
-index a7ed741bb..10a69e10a 100644
+index a7ed741..10a69e1 100644
 --- a/apps/hosted/cloud/src/implementation/dashboard.ts
 +++ b/apps/hosted/cloud/src/implementation/dashboard.ts
 @@ -17,6 +17,8 @@ export interface CloudPageHosts {
@@ -463,10 +463,10 @@ index a7ed741bb..10a69e10a 100644
      });
  
 diff --git a/apps/hosted/cloud/src/implementation/onboarding.ts b/apps/hosted/cloud/src/implementation/onboarding.ts
-index f956d4356..6eea4609c 100644
+index 197bef0..cf5eb5f 100644
 --- a/apps/hosted/cloud/src/implementation/onboarding.ts
 +++ b/apps/hosted/cloud/src/implementation/onboarding.ts
-@@ -95,6 +95,10 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
+@@ -98,6 +98,10 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
        if (!(yield* store.claimCompany(domain, lease))) return null;
        const result = yield* lookup.lookup(domain).pipe(Effect.timeout("2 seconds"), Effect.result);
        if (Result.isSuccess(result)) {
@@ -478,7 +478,7 @@ index f956d4356..6eea4609c 100644
          return result.success;
        }
 diff --git a/apps/hosted/cloud/src/implementation/v1-membership.ts b/apps/hosted/cloud/src/implementation/v1-membership.ts
-index 7c76c5072..22a66c9aa 100644
+index 7c76c50..22a66c9 100644
 --- a/apps/hosted/cloud/src/implementation/v1-membership.ts
 +++ b/apps/hosted/cloud/src/implementation/v1-membership.ts
 @@ -1,5 +1,5 @@
@@ -551,7 +551,7 @@ index 7c76c5072..22a66c9aa 100644
            const ids = yield* organizations(email);
 diff --git a/apps/hosted/cloud/src/infrastructure/axiom-provider.ts b/apps/hosted/cloud/src/infrastructure/axiom-provider.ts
 new file mode 100644
-index 000000000..e6f41b55c
+index 0000000..e6f41b5
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/axiom-provider.ts
 @@ -0,0 +1,11 @@
@@ -568,7 +568,7 @@ index 000000000..e6f41b55c
 +);
 diff --git a/apps/hosted/cloud/src/infrastructure/axiom-settings.ts b/apps/hosted/cloud/src/infrastructure/axiom-settings.ts
 new file mode 100644
-index 000000000..139d69b32
+index 0000000..139d69b
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/axiom-settings.ts
 @@ -0,0 +1,40 @@
@@ -613,7 +613,7 @@ index 000000000..139d69b32
 +  });
 +});
 diff --git a/apps/hosted/cloud/src/infrastructure/billing.ts b/apps/hosted/cloud/src/infrastructure/billing.ts
-index 8a3d71fb3..bdf4d4ab0 100644
+index 8a3d71f..bdf4d4a 100644
 --- a/apps/hosted/cloud/src/infrastructure/billing.ts
 +++ b/apps/hosted/cloud/src/infrastructure/billing.ts
 @@ -75,13 +75,28 @@ export const assertKeyEnvironment = (
@@ -736,7 +736,7 @@ index 8a3d71fb3..bdf4d4ab0 100644
      return provision(Output.asOutput(serverUrl), Output.asOutput(secretKey));
    const catalog = yield* Output.stackRef<BillingCatalog>("executor-next-billing", {
 diff --git a/apps/hosted/cloud/src/infrastructure/development.ts b/apps/hosted/cloud/src/infrastructure/development.ts
-index 60777e3b8..4a61670af 100644
+index 60777e3..4a61670 100644
 --- a/apps/hosted/cloud/src/infrastructure/development.ts
 +++ b/apps/hosted/cloud/src/infrastructure/development.ts
 @@ -4,8 +4,9 @@ import * as Docker from "alchemy/Docker";
@@ -759,13 +759,13 @@ index 60777e3b8..4a61670af 100644
          SITE_BUILD_HASH: site.hash.output,
          DATABASE_URL: cloudDevelopmentDatabaseUrl(password, configuration.databasePort),
 diff --git a/apps/hosted/cloud/src/infrastructure/mcp-session-release.ts b/apps/hosted/cloud/src/infrastructure/mcp-session-release.ts
-index f81972762..332a0cfae 100644
+index f8f4616..02dd968 100644
 --- a/apps/hosted/cloud/src/infrastructure/mcp-session-release.ts
 +++ b/apps/hosted/cloud/src/infrastructure/mcp-session-release.ts
 @@ -23,6 +23,11 @@ import {
    releaseRefusalReport,
  } from "../contracts/release-guard.ts";
- import { telemetryDatasets } from "./telemetry.ts";
+ import { telemetryDatasets, telemetryExport } from "./telemetry.ts";
 +import {
 +  axiomSessionQuerySettings,
 +  axiomSettings,
@@ -797,7 +797,7 @@ index f81972762..332a0cfae 100644
          HttpClientRequest.bodyJsonUnsafe({ apl }),
        ),
      );
-@@ -234,9 +237,21 @@ export const mcpSessionRetirementGate = Effect.gen(function* () {
+@@ -239,9 +242,21 @@ export const mcpSessionRetirementGate = Effect.gen(function* () {
    const since = DateTime.addDuration(gateway.createdAt, propagation);
    if (DateTime.isLessThan(yield* DateTime.now, since))
      return yield* blocked(
@@ -822,7 +822,7 @@ index f81972762..332a0cfae 100644
        Effect.fail(
          new McpSessionReleaseBlocked({
 diff --git a/apps/hosted/cloud/src/infrastructure/onboarding.ts b/apps/hosted/cloud/src/infrastructure/onboarding.ts
-index 3a3a7a418..ac79aed1b 100644
+index ca8c571..123d3a2 100644
 --- a/apps/hosted/cloud/src/infrastructure/onboarding.ts
 +++ b/apps/hosted/cloud/src/infrastructure/onboarding.ts
 @@ -11,7 +11,7 @@ import { cloudEmulators } from "./emulators.ts";
@@ -834,16 +834,16 @@ index 3a3a7a418..ac79aed1b 100644
  import { makeOnboarding } from "../implementation/onboarding.ts";
  import {
    v1MembershipDisabled,
-@@ -36,7 +36,7 @@ import {
+@@ -35,7 +35,7 @@ import {
    v1ImportWriterName,
    v1LiveSettings,
  } from "./v1-import-settings.ts";
 -import { autumnServer, billingSettings } from "./billing.ts";
 +import { autumnServer, billingSettings, type BillingSettings } from "./billing.ts";
+ import type { AutumnOptions } from "../contracts/autumn.ts";
+ import type { BillingCatalog } from "../contracts/billing-catalog.ts";
  import { cloudDatabaseConnection, v1DatabaseConnection } from "./database.ts";
- import {
-   CheckSince,
-@@ -47,6 +47,12 @@ import {
+@@ -48,6 +48,12 @@ import {
  
  const configured = (value: string) => value !== "";
  
@@ -856,7 +856,7 @@ index 3a3a7a418..ac79aed1b 100644
  /**
   * v1's Postgres, as an accessor for the connection string. Production reads it through its
   * read-only PlanetScale role (`v1DatabaseConnection`). Emulated Cloud may instead name a
-@@ -121,14 +127,21 @@ const cloudV1Membership = (
+@@ -122,14 +128,21 @@ const cloudV1Membership = (
        ),
      );
      // v1 billed each WorkOS organization in the same Autumn account v2 bills from.
@@ -880,7 +880,7 @@ index 3a3a7a418..ac79aed1b 100644
          } satisfies V1MembershipSettings;
        }),
      );
-@@ -144,7 +157,16 @@ export const cloudOnboarding = Effect.gen(function* () {
+@@ -145,7 +158,16 @@ export const cloudOnboarding = Effect.gen(function* () {
          Redacted.make(Redacted.value(emulators.value).company.token),
          `${Redacted.value(emulators.value).company.baseUrl}/v1/brand/retrieve`,
        )
@@ -898,7 +898,7 @@ index 3a3a7a418..ac79aed1b 100644
    const v1Settings = yield* cloudV1Membership(emulators);
    const connection = yield* cloudDatabaseConnection;
    const service = yield* makeExecutionMemo(
-@@ -211,7 +233,10 @@ const cloudV1EmulatedSource = (
+@@ -218,7 +240,10 @@ const cloudV1EmulatedSource = (
      if (Option.isNone(emulators) || Option.isNone(database))
        return Option.none<Effect.Effect<V1SourceSettings>>();
      const workos = Redacted.value(emulators.value).workos;
@@ -910,7 +910,7 @@ index 3a3a7a418..ac79aed1b 100644
      const connection = database.value;
      return Option.some<Effect.Effect<V1SourceSettings>>(
        Effect.gen(function* () {
-@@ -235,7 +260,10 @@ const cloudV1ProductionSource = Effect.gen(function* () {
+@@ -242,7 +267,10 @@ const cloudV1ProductionSource = Effect.gen(function* () {
    const database = yield* cloudV1Database(true, false);
    if (Option.isNone(database)) return yield* Effect.die(new Error(missingV1PlanetscaleDatabase));
    const connection = database.value;
@@ -923,7 +923,7 @@ index 3a3a7a418..ac79aed1b 100644
    return Option.some<Effect.Effect<V1SourceSettings>>(
      Effect.gen(function* () {
 diff --git a/apps/hosted/cloud/src/infrastructure/telemetry.ts b/apps/hosted/cloud/src/infrastructure/telemetry.ts
-index abbee9979..13f6224a3 100644
+index eaa3091..06b9253 100644
 --- a/apps/hosted/cloud/src/infrastructure/telemetry.ts
 +++ b/apps/hosted/cloud/src/infrastructure/telemetry.ts
 @@ -14,6 +14,7 @@ import { Config, Effect, Layer, Option, Redacted, Schema } from "effect";
@@ -934,8 +934,8 @@ index abbee9979..13f6224a3 100644
  
  const binding = "EXECUTOR_TELEMETRY";
  
-@@ -36,6 +37,8 @@ export const telemetryDatasets = Effect.gen(function* () {
- });
+@@ -50,6 +51,8 @@ export const telemetryExport = Effect.gen(function* () {
+ }).pipe(Effect.orDie);
  
  export const telemetryResources = Effect.gen(function* () {
 +  const axiom = yield* axiomSettings.pipe(Effect.orDie);
@@ -943,7 +943,7 @@ index abbee9979..13f6224a3 100644
    const stage = yield* Stage;
    const { shared, names } = yield* telemetryDatasets;
    // Axiom marks ownership per stage; every test stage takes the shared datasets over on deploy.
-@@ -106,7 +109,7 @@ export const telemetryResources = Effect.gen(function* () {
+@@ -120,7 +123,7 @@ export const telemetryResources = Effect.gen(function* () {
        [names.metrics]: { ingest: ["create"] },
      },
    });
@@ -952,9 +952,9 @@ index abbee9979..13f6224a3 100644
  });
  
  /**
-@@ -117,7 +120,9 @@ export const telemetryResources = Effect.gen(function* () {
- export const cloudObservability = Effect.gen(function* () {
-   if ((yield* AlchemyContext).dev) return {};
+@@ -152,7 +155,9 @@ export const cloudObservability = Effect.gen(function* () {
+   };
+   if (!(yield* telemetryExport)) return { observability: native };
    const stage = yield* Stage;
 -  const { names, traces, ingest } = yield* telemetryResources;
 +  const resources = yield* telemetryResources;
@@ -963,7 +963,7 @@ index abbee9979..13f6224a3 100644
    const destination = yield* Cloudflare.Workers.ObservabilityDestination("PlatformTraces", {
      name: `executor-next-${stage}-platform-traces`,
      url: traces.otelTracesEndpoint,
-@@ -150,7 +155,9 @@ export const telemetryBindings = Effect.gen(function* () {
+@@ -191,7 +196,9 @@ export const telemetryBindings = Effect.gen(function* () {
      const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(TelemetryConfig))(config);
      return { [binding]: Output.asOutput(Redacted.make(encoded)) };
    }
@@ -971,10 +971,10 @@ index abbee9979..13f6224a3 100644
 +  const resources = yield* telemetryResources;
 +  if (Option.isNone(resources)) return { [binding]: Output.asOutput(Redacted.make("null")) };
 +  const { names, traces, logs, metrics, ingest } = resources.value;
-   const version = yield* Config.NonEmptyString("EXECUTOR_BUILD_VERSION");
-   const environment = yield* Stage;
    return {
-@@ -197,6 +204,7 @@ export const cloudTelemetry = Layer.unwrap(
+     [binding]: Output.all(
+       traces.otelTracesEndpoint,
+@@ -236,6 +243,7 @@ export const cloudTelemetry = Layer.unwrap(
      const bound = yield* context.get<unknown>(binding);
      // Alchemy env props may arrive JSON-decoded; RuntimeContext.set uses a redacted marker.
      const value = Redacted.isRedacted(bound) ? Redacted.value(bound) : bound;
@@ -983,7 +983,7 @@ index abbee9979..13f6224a3 100644
        Schema.Union([Schema.fromJsonString(TelemetryConfig), TelemetryConfig]),
      )(value).pipe(Effect.catch(() => Effect.die(new Error("Invalid telemetry configuration"))));
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index 8bb6bfbd5..55ca0439d 100644
+index fb45630..2c03d41 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -30,6 +30,7 @@ import {
@@ -994,7 +994,7 @@ index 8bb6bfbd5..55ca0439d 100644
  import { BillingMeter } from "./contracts/billing-meter.ts";
  import { billingBindings } from "./infrastructure/billing.ts";
  import { frameworkDocumentation, registryRoutes, gitRoutes } from "@executor-js/app-management";
-@@ -345,6 +346,7 @@ export default Api.make(
+@@ -363,6 +364,7 @@ export default Api.make(
          : null,
        // Documentation is a site page, served by the edge when the deployment has role hosts.
        documentation: new URL("/docs/", auth.hosts.site).href,
@@ -1003,7 +1003,7 @@ index 8bb6bfbd5..55ca0439d 100644
      const appUi = hostedAppUi(
        appAddresses(auth.origin, yield* cloudAppUiBase.pipe(Effect.orDie)),
 diff --git a/apps/hosted/cloud/web/src/contracts/billing.ts b/apps/hosted/cloud/web/src/contracts/billing.ts
-index 798e36835..1e063e90c 100644
+index 798e368..1e063e9 100644
 --- a/apps/hosted/cloud/web/src/contracts/billing.ts
 +++ b/apps/hosted/cloud/web/src/contracts/billing.ts
 @@ -4,13 +4,19 @@ import { revalidated } from "@executor-js/ui/contracts/refresh";
@@ -1028,7 +1028,7 @@ index 798e36835..1e063e90c 100644
  
  /** Only the cloud browser imports the cloud API contract. Its reads batch with the page's others. */
 diff --git a/apps/hosted/cloud/web/src/contracts/document.ts b/apps/hosted/cloud/web/src/contracts/document.ts
-index 6101f8b6b..897349513 100644
+index 6101f8b..8973495 100644
 --- a/apps/hosted/cloud/web/src/contracts/document.ts
 +++ b/apps/hosted/cloud/web/src/contracts/document.ts
 @@ -5,6 +5,8 @@ import type { CloudEntryPage } from "../../../src/contracts/entry.ts";
@@ -1041,7 +1041,7 @@ index 6101f8b6b..897349513 100644
     * The host whose passkeys no longer sign in here, once the dashboard has moved off it
     * (`v2.executor.sh`); null while the dashboard still serves its own host.
 diff --git a/apps/hosted/cloud/web/src/implementation/components/billing-settings.tsx b/apps/hosted/cloud/web/src/implementation/components/billing-settings.tsx
-index f2ba8503d..28c7b6187 100644
+index f2ba850..28c7b61 100644
 --- a/apps/hosted/cloud/web/src/implementation/components/billing-settings.tsx
 +++ b/apps/hosted/cloud/web/src/implementation/components/billing-settings.tsx
 @@ -1,3 +1,5 @@
@@ -1078,7 +1078,7 @@ index f2ba8503d..28c7b6187 100644
      <BillingSettingsCard>
        <Button
 diff --git a/apps/hosted/cloud/web/src/implementation/components/navigation.tsx b/apps/hosted/cloud/web/src/implementation/components/navigation.tsx
-index d04cc113f..a2057f579 100644
+index d04cc11..a2057f5 100644
 --- a/apps/hosted/cloud/web/src/implementation/components/navigation.tsx
 +++ b/apps/hosted/cloud/web/src/implementation/components/navigation.tsx
 @@ -1,3 +1,5 @@
@@ -1097,7 +1097,7 @@ index d04cc113f..a2057f579 100644
      <>
        <HugeiconsIcon icon={CreditCardIcon} strokeWidth={2} size={16} aria-hidden />
 diff --git a/apps/hosted/cloud/web/src/implementation/components/page-pending.tsx b/apps/hosted/cloud/web/src/implementation/components/page-pending.tsx
-index a1ddae39c..23026ed83 100644
+index a1ddae3..23026ed 100644
 --- a/apps/hosted/cloud/web/src/implementation/components/page-pending.tsx
 +++ b/apps/hosted/cloud/web/src/implementation/components/page-pending.tsx
 @@ -1,9 +1,13 @@
@@ -1115,7 +1115,7 @@ index a1ddae39c..23026ed83 100644
  }
  
 diff --git a/apps/hosted/cloud/web/src/implementation/document.ts b/apps/hosted/cloud/web/src/implementation/document.ts
-index 37f6b1680..bcc24a234 100644
+index 37f6b16..bcc24a2 100644
 --- a/apps/hosted/cloud/web/src/implementation/document.ts
 +++ b/apps/hosted/cloud/web/src/implementation/document.ts
 @@ -8,6 +8,7 @@ import type { CloudDocumentContext } from "../contracts/document.ts";
@@ -1135,7 +1135,7 @@ index 37f6b1680..bcc24a234 100644
      Atom.initialValue(documentationBaseAtom, document.documentation),
    ];
 diff --git a/apps/hosted/cloud/web/src/implementation/pages/billing.tsx b/apps/hosted/cloud/web/src/implementation/pages/billing.tsx
-index 194bc7d6b..73278a23f 100644
+index 194bc7d..73278a2 100644
 --- a/apps/hosted/cloud/web/src/implementation/pages/billing.tsx
 +++ b/apps/hosted/cloud/web/src/implementation/pages/billing.tsx
 @@ -1,3 +1,4 @@
@@ -1246,7 +1246,7 @@ index 194bc7d6b..73278a23f 100644
    if (organization.role === "member")
      return (
 diff --git a/e2e/tests/empty-state-billing.spec.ts b/e2e/tests/empty-state-billing.spec.ts
-index 392b611f4..78880ae47 100644
+index 392b611..78880ae 100644
 --- a/e2e/tests/empty-state-billing.spec.ts
 +++ b/e2e/tests/empty-state-billing.spec.ts
 @@ -21,11 +21,12 @@ layer(HostedLive, { excludeTestServices: true })("Billing empty state", (it) =>

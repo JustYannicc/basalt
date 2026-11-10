@@ -1,8 +1,8 @@
 diff --git a/apps/hosted/cloud/src/contracts/onboarding.ts b/apps/hosted/cloud/src/contracts/onboarding.ts
-index d308cab..36ca037 100644
+index ef52455..af7e637 100644
 --- a/apps/hosted/cloud/src/contracts/onboarding.ts
 +++ b/apps/hosted/cloud/src/contracts/onboarding.ts
-@@ -185,6 +185,10 @@ export class Onboarding extends Context.Service<
+@@ -227,6 +227,10 @@ export class Onboarding extends Context.Service<
       * `create`: false only when the account belongs on Executor v1. Fails closed.
       */
      readonly allowsOrganization: (userId: string) => Effect.Effect<boolean, OnboardingUnavailable>;
@@ -143,7 +143,7 @@ index 0000000..4d34ed7
 +  }
 +};
 diff --git a/apps/hosted/cloud/src/implementation/auth-options.ts b/apps/hosted/cloud/src/implementation/auth-options.ts
-index d5b450c..ec411d5 100644
+index f9eea2a..3988274 100644
 --- a/apps/hosted/cloud/src/implementation/auth-options.ts
 +++ b/apps/hosted/cloud/src/implementation/auth-options.ts
 @@ -1,4 +1,10 @@
@@ -157,7 +157,7 @@ index d5b450c..ec411d5 100644
  import { siteVisitorCookie } from "@executor-js/marketing/site-visitor";
  import type { BetterAuthOptions } from "better-auth";
  import { APIError } from "better-auth/api";
-@@ -129,6 +135,7 @@ export const cloudAuthOptions = (
+@@ -130,6 +136,7 @@ export const cloudAuthOptions = (
    onOperation?: (usage: NativeAuthUsage) => Promise<void>,
    allowsOrganization?: (userId: string) => Promise<boolean>,
    grants?: GrantObservers,
@@ -165,7 +165,7 @@ index d5b450c..ec411d5 100644
  ) => {
    const base = authOptions(settings, ipAddressHeaders, grants);
    // A test stage that signs in through production's proxy uses production's callback, which the
-@@ -204,6 +211,11 @@ export const cloudAuthOptions = (
+@@ -205,6 +212,11 @@ export const cloudAuthOptions = (
          },
        },
        user: {
@@ -177,7 +177,7 @@ index d5b450c..ec411d5 100644
          create: {
            before: async (user, context) =>
              (await ssoVerifiedEmail(user.email, context))
-@@ -337,7 +349,10 @@ export const cloudAuthOptions = (
+@@ -340,7 +352,10 @@ export const cloudAuthOptions = (
          onNone: () => [],
        }),
        ...base.plugins,
@@ -188,9 +188,9 @@ index d5b450c..ec411d5 100644
          ...(billing === undefined
            ? {}
            : {
-@@ -365,7 +380,7 @@ export const cloudAuthOptions = (
-       }),
-       ...(billing === undefined ? [] : [cloudMemberLimit(billing)]),
+@@ -370,7 +385,7 @@ export const cloudAuthOptions = (
+       // Server only: sessions for members v1 vouches for (`v1-session-handoff.ts`).
+       v1HandoffSessions(),
        // The native migrator creates tables in plugin order; SSO references organization.
 -      cloudSso(billing),
 +      cloudSso(billing, access),
@@ -198,7 +198,7 @@ index d5b450c..ec411d5 100644
          storeOTP: "hashed",
          expiresIn: emailCodeExpiresIn,
 diff --git a/apps/hosted/cloud/src/implementation/onboarding-store.ts b/apps/hosted/cloud/src/implementation/onboarding-store.ts
-index 90a88bd..6f1e037 100644
+index 80ecbe0..7ef377b 100644
 --- a/apps/hosted/cloud/src/implementation/onboarding-store.ts
 +++ b/apps/hosted/cloud/src/implementation/onboarding-store.ts
 @@ -84,6 +84,10 @@ export const makeOnboardingStore = Effect.gen(function* () {
@@ -225,7 +225,7 @@ index 90a88bd..6f1e037 100644
      `.pipe(Effect.flatMap(Schema.decodeUnknownEffect(OnboardingReady.fields.organizations)));
      });
    const company = (domain: string) =>
-@@ -187,6 +192,7 @@ export const makeOnboardingStore = Effect.gen(function* () {
+@@ -221,6 +226,7 @@ export const makeOnboardingStore = Effect.gen(function* () {
      setUpTeam,
      user,
      lockUser,
@@ -234,10 +234,10 @@ index 90a88bd..6f1e037 100644
      create,
      company,
 diff --git a/apps/hosted/cloud/src/implementation/onboarding.ts b/apps/hosted/cloud/src/implementation/onboarding.ts
-index 6eea460..3aa31a8 100644
+index cf5eb5f..f52c7ff 100644
 --- a/apps/hosted/cloud/src/implementation/onboarding.ts
 +++ b/apps/hosted/cloud/src/implementation/onboarding.ts
-@@ -20,6 +20,7 @@ import {
+@@ -21,6 +21,7 @@ import {
    OnboardingUnavailable,
    CreateTeam,
    type OnboardingCreated,
@@ -245,7 +245,7 @@ index 6eea460..3aa31a8 100644
    TeamIconNotFound,
    V1Membership,
    onboardingExperiment,
-@@ -146,6 +147,21 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
+@@ -149,6 +150,21 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
        Effect.withSpan("onboarding.prepare"),
      );
  
@@ -267,7 +267,7 @@ index 6eea460..3aa31a8 100644
    const create: typeof Onboarding.Service.create = (userId, input) =>
      Effect.gen(function* () {
        const selected = yield* Schema.decodeUnknownEffect(Schema.toType(CreateTeam))({
-@@ -175,18 +191,11 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
+@@ -178,18 +194,11 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
              if (state.invitation !== null)
                return found({ status: "invitation", invitation: state.invitation });
              if (state.provisioned) return found({ status: "ready", organizations: [] });
@@ -291,11 +291,11 @@ index 6eea460..3aa31a8 100644
            }),
          )
          .pipe(recoverSetupConnection);
-@@ -273,5 +282,37 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
+@@ -329,5 +338,38 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
        Effect.mapError(() => new OnboardingUnavailable()),
        Effect.withSpan("onboarding.allowsOrganization"),
      );
--  return Onboarding.of({ prepare, create, allowsOrganization, setup, icon });
+-  return Onboarding.of({ prepare, create, allowsOrganization, setup, gate, icon });
 +  const ensurePersonalOrganization: typeof Onboarding.Service.ensurePersonalOrganization = (
 +    userId,
 +  ) =>
@@ -327,6 +327,7 @@ index 6eea460..3aa31a8 100644
 +    allowsOrganization,
 +    ensurePersonalOrganization,
 +    setup,
++    gate,
 +    icon,
 +  });
  });
@@ -367,7 +368,7 @@ index 64d7e0b..e32e282 100644
      saml: {
        enableInResponseToValidation: true,
 diff --git a/apps/hosted/cloud/src/infrastructure/auth.ts b/apps/hosted/cloud/src/infrastructure/auth.ts
-index 2f3d3a5..879bcb2 100644
+index b00645f..67a6b7e 100644
 --- a/apps/hosted/cloud/src/infrastructure/auth.ts
 +++ b/apps/hosted/cloud/src/infrastructure/auth.ts
 @@ -1,3 +1,4 @@
@@ -375,7 +376,7 @@ index 2f3d3a5..879bcb2 100644
  import { BrowserSession } from "@executor-js/hosted-server/browser/contracts";
  import { HostedAppSessions } from "@executor-js/hosted-server/app-ui";
  import { authObservability } from "../implementation/auth-observability.ts";
-@@ -38,7 +39,7 @@ import { BetterAuthApiError, isAPIErrorLike } from "@alchemy.run/better-auth";
+@@ -39,7 +40,7 @@ import { BetterAuthApiError, isAPIErrorLike } from "@alchemy.run/better-auth";
  import { cloudSessionCookiePrefix } from "../contracts/browser.ts";
  import { RuntimeContext } from "alchemy";
  import * as Cloudflare from "alchemy/Cloudflare";
@@ -383,8 +384,8 @@ index 2f3d3a5..879bcb2 100644
 +import { Config, Context, Effect, Layer, Option, Redacted, Schema, type Scope } from "effect";
  import { HttpBody, HttpServerRequest, HttpServerResponse } from "effect/http";
  import type { SendAuthEmail } from "../contracts/email.ts";
- import { cloudSecrets, v1McpForwardSecret } from "./secrets.ts";
-@@ -83,6 +84,11 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
+ import { cloudSecrets, v1McpForwardSecret, v1SessionHandoffSecret } from "./secrets.ts";
+@@ -88,6 +89,11 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
          signal: current.signal,
        });
      };
@@ -396,7 +397,7 @@ index 2f3d3a5..879bcb2 100644
      const observation = authObservability();
      const options = cloudAuthOptions(
        settings,
-@@ -154,6 +160,21 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
+@@ -159,6 +165,21 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
              ),
            ),
        },
@@ -418,7 +419,7 @@ index 2f3d3a5..879bcb2 100644
      );
      const database = yield* AuthDatabase;
      const makeInstance = (secret: string) =>
-@@ -203,7 +224,7 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
+@@ -225,7 +246,7 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
      );
      // Bearer authentication reads its rows in one statement on the client this invocation
      // shares with Better Auth and the executor.
@@ -427,7 +428,7 @@ index 2f3d3a5..879bcb2 100644
      const identity = Layer.effect(
        Authentication,
        Effect.gen(function* () {
-@@ -253,7 +274,15 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
+@@ -275,7 +296,15 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
                .pipe(Effect.withSpan("auth.membership")),
            removeOrganization: (organizationId) =>
              adapter
@@ -445,19 +446,19 @@ index 2f3d3a5..879bcb2 100644
          });
        }),
 diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
-index 61f8265..90ef10a 100644
+index 7d36816..1247968 100644
 --- a/apps/hosted/cloud/src/infrastructure/executor.ts
 +++ b/apps/hosted/cloud/src/infrastructure/executor.ts
-@@ -3,6 +3,8 @@ import { urlPolicyConfig, type HostEgress } from "@executor-js/utils/url-policy"
- import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
- import { makeRegistryStorage } from "@executor-js/app-registry";
- import { firstPartyOAuthClients } from "@executor-js/hosted-server";
+@@ -9,6 +9,8 @@ import {
+ } from "@executor-js/hosted-server";
+ import { servesBuiltApiDocument } from "../contracts/browser.ts";
+ import api from "../../.generated/executor-api-revision.json" with { type: "json" };
 +import { AccessLifecycle } from "@executor-js/hosted-server/access-lifecycle";
 +import { poolAccessLifecycle } from "@executor-js/hosted-server/pool-access-hook";
  import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
  import {
    createExecutor,
-@@ -14,7 +16,7 @@ import { hostedEventAuthority } from "@executor-js/hosted-server/events";
+@@ -21,7 +23,7 @@ import { hostedEventAuthority } from "@executor-js/hosted-server/events";
  import { SqlClient } from "effect/sql";
  import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
  import * as Cloudflare from "alchemy/Cloudflare";
@@ -466,7 +467,7 @@ index 61f8265..90ef10a 100644
  import { FetchHttpClient, HttpClient } from "effect/http";
  import { cachedVersionSources } from "../implementation/version-source-cache.ts";
  import { organizationPublishers } from "../implementation/publishers.ts";
-@@ -26,7 +28,13 @@ import { cloudRuntime } from "./runtime.ts";
+@@ -33,7 +35,13 @@ import { cloudRuntime } from "./runtime.ts";
  import { durableDeclarations } from "./durable-declarations.ts";
  import { InvocationDatabase } from "./invocation-database.ts";
  import { cloudSecrets } from "./secrets.ts";
@@ -481,7 +482,7 @@ index 61f8265..90ef10a 100644
  import { cloudEmulators } from "./emulators.ts";
  import { missingFirstPartyGitHubClient } from "./first-party-oauth-settings.ts";
  import { cloudAccountSignIns } from "../implementation/oauth-proxy-settings.ts";
-@@ -74,6 +82,10 @@ export const cloudExecutor = Effect.fn(function* (
+@@ -81,6 +89,10 @@ export const cloudExecutor = Effect.fn(function* (
    // Resolve during initialization so Alchemy binds every value into the Worker environment.
    const secrets = yield* cloudSecrets.pipe(Effect.orDie);
    const origin = yield* cloudOrigin.pipe(Effect.orDie);
@@ -491,8 +492,8 @@ index 61f8265..90ef10a 100644
 +  );
    // New app webhooks register on the canonical API origin (`api.` once it is canonical); every
    // origin keeps delivering, so existing subscriptions keep the URL they stored.
-   const webhookOrigin = (yield* cloudResourceOrigins.pipe(Effect.orDie)).api[0];
-@@ -113,7 +125,10 @@ export const cloudExecutor = Effect.fn(function* (
+   const resourceOrigins = yield* cloudResourceOrigins.pipe(Effect.orDie);
+@@ -136,7 +148,10 @@ export const cloudExecutor = Effect.fn(function* (
          Effect.suspend(() =>
            closing ? Effect.succeed(false) : FiberSet.run(refreshes, work).pipe(Effect.as(true)),
          );
@@ -505,10 +506,10 @@ index 61f8265..90ef10a 100644
          database: storage,
          secret: key,
 diff --git a/apps/hosted/cloud/src/infrastructure/onboarding.ts b/apps/hosted/cloud/src/infrastructure/onboarding.ts
-index ac79aed..6cf0c58 100644
+index 123d3a2..5d5bbb5 100644
 --- a/apps/hosted/cloud/src/infrastructure/onboarding.ts
 +++ b/apps/hosted/cloud/src/infrastructure/onboarding.ts
-@@ -208,6 +208,12 @@ export const cloudOnboarding = Effect.gen(function* () {
+@@ -209,6 +209,12 @@ export const cloudOnboarding = Effect.gen(function* () {
            Effect.provide(RuntimeContext.phantom),
            Effect.mapError(() => new OnboardingUnavailable()),
          ),
@@ -601,7 +602,7 @@ index 83b48c2..05269d7 100644
        HostedExecutor,
        sdk.pipe(Effect.map((executor) => withDeploySetupWake(withExecutorAnalytics(executor)))),
 diff --git a/apps/hosted/cloud/src/infrastructure/provisioning.ts b/apps/hosted/cloud/src/infrastructure/provisioning.ts
-index ee4c9f3..f68511e 100644
+index 89466a0..f951997 100644
 --- a/apps/hosted/cloud/src/infrastructure/provisioning.ts
 +++ b/apps/hosted/cloud/src/infrastructure/provisioning.ts
 @@ -14,6 +14,8 @@ import {
@@ -613,7 +614,7 @@ index ee4c9f3..f68511e 100644
  import { appDataSupervisors } from "./app-data.ts";
  import { cloudEmail } from "./email.ts";
  import { cloudWelcomeEmails } from "./welcome-email.ts";
-@@ -50,8 +52,15 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
+@@ -51,8 +53,15 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
      // placed handler to, in a step of its own that is retried until the handler has woken it.
      const jobs = yield* cloudBackgroundJobs;
      const encryptionKey = yield* workflowEncryptionKey;
@@ -630,7 +631,7 @@ index ee4c9f3..f68511e 100644
          emails.deliverUser(id).pipe(
            Effect.provide(RuntimeContext.phantom),
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
-index 98b2382..3d1bd3d 100644
+index 1e2785a..a334349 100644
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
 @@ -27,6 +27,8 @@
@@ -873,10 +874,10 @@ index 0000000..86e037d
 +  };
 +};
 diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted/server/src/implementation/provisioning.ts
-index 36cde7f..16f6246 100644
+index 73ff037..fb046ac 100644
 --- a/apps/hosted/server/src/implementation/provisioning.ts
 +++ b/apps/hosted/server/src/implementation/provisioning.ts
-@@ -33,6 +33,8 @@ export class ProvisioningFailed extends Schema.TaggedError<ProvisioningFailed>()
+@@ -34,6 +34,8 @@ export class ProvisioningFailed extends Schema.TaggedError<ProvisioningFailed>()
  /** Optional product services stay owned by the host, not by shared auth or the SDK. */
  export interface ProvisioningServices {
    readonly requireVerifiedEmail: boolean;
@@ -885,7 +886,7 @@ index 36cde7f..16f6246 100644
    readonly user: (id: string) => Effect.Effect<void, ProvisioningFailed>;
    readonly billing: (id: OrganizationId) => Effect.Effect<void, ProvisioningFailed>;
    readonly domain: Effect.Effect<void, ProvisioningFailed>;
-@@ -185,6 +187,7 @@ export const provision = (id: string, services: ProvisioningServices) =>
+@@ -186,6 +188,7 @@ export const provision = (id: string, services: ProvisioningServices) =>
          case "member": {
            const initialize = yield* OrganizationDefaults;
            const rotationOnly = job.id.startsWith(poolRotationJobPrefix);
@@ -1020,7 +1021,7 @@ index 534197f..643417d 100644
                                  }}
                                >
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
-index 8f11c8f..23e1f90 100644
+index 9715a86..8174f08 100644
 --- a/packages/sdk/src/contracts/executor.ts
 +++ b/packages/sdk/src/contracts/executor.ts
 @@ -77,7 +77,37 @@ export interface AccountConnectionCompletion {

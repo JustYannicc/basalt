@@ -1,7 +1,7 @@
 {
   "identity": "basalt-sentry-otel-destination",
   "file": "0014-sentry-otel-destination.patch",
-  "content_sha256": "b04dab9403e6aad10a5ed654a90b667d64e9dfb20e8c0ce70b3adc86b1dddb63",
+  "content_sha256": "1161e430ae050e6e6c638a02f6b43af80b6ac56aaf5ac1b5e2330282777dde46",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

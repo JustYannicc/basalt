@@ -1,7 +1,7 @@
 {
   "identity": "basalt-pool-migration-inventory",
   "file": "0042-pool-migration-inventory.patch",
-  "content_sha256": "137befda8a0861e9a4415abb621b20d79e6d301b572730817a20223cb20916dd",
+  "content_sha256": "658edf9f4f8a35ef053ce6923fed9be37147f09e2857a088f3b8d85a52ea24a4",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

@@ -1,7 +1,7 @@
 {
   "identity": "executor-instant-navigation",
   "file": "0034-instant-navigation.patch",
-  "content_sha256": "e964c14f380a51412bdaddd5628156aaf4d77d9847d99982914504344c61c25c",
+  "content_sha256": "b7abea8a17d82c428d814faf32882245cc1158024d80f8adb5c20bd56f6476c5",
   "kind": "upstream",
   "upstream_pull_request": 2437,
   "database_sensitive": false,

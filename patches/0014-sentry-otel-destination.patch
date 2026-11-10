@@ -1,4 +1,5 @@
 diff --git a/apps/hosted/cloud/src/implementation/error-reporting.ts b/apps/hosted/cloud/src/implementation/error-reporting.ts
+index 4f5e3f3..12aa378 100644
 --- a/apps/hosted/cloud/src/implementation/error-reporting.ts
 +++ b/apps/hosted/cloud/src/implementation/error-reporting.ts
 @@ -1,6 +1,6 @@
@@ -9,7 +10,7 @@ diff --git a/apps/hosted/cloud/src/implementation/error-reporting.ts b/apps/host
  import { CurrentRuntimeContext } from "alchemy/RuntimeContext";
  import { Cause, Context, Effect, ErrorReporter, Option, Schema, SchemaAST, Tracer } from "effect";
  import { CurrentUserId, CurrentOrganization } from "@executor-js/hosted-server";
-@@ -41,7 +41,52 @@
+@@ -41,7 +41,52 @@ const Settings = Schema.Struct({
    dsn: Schema.String,
    environment: Schema.String,
    release: Schema.String,
@@ -62,7 +63,7 @@ diff --git a/apps/hosted/cloud/src/implementation/error-reporting.ts b/apps/host
  /** The reporting boundary never replaces the failure of a product operation. */
  export class SentryTransportFailed extends Schema.TaggedError<SentryTransportFailed>()(
    "SentryTransportFailed",
-@@ -69,12 +114,14 @@
+@@ -69,12 +114,14 @@ export const withCloudSentry = <A, E, R>(
      const config = yield* Schema.decodeUnknownEffect(Settings)(value).pipe(Effect.orDie);
      const client = yield* Effect.acquireRelease(
        Effect.sync(() => {
@@ -200,7 +201,7 @@ index ee5a60c..c6b141b 100644
      yield* Config.Redacted("SENTRY_AUTH_TOKEN");
      yield* Command.Exec(sourceMapUploads[worker], {
 diff --git a/apps/hosted/cloud/src/infrastructure/telemetry.ts b/apps/hosted/cloud/src/infrastructure/telemetry.ts
-index 13f6224..eedea4a 100644
+index 06b9253..d7f4b07 100644
 --- a/apps/hosted/cloud/src/infrastructure/telemetry.ts
 +++ b/apps/hosted/cloud/src/infrastructure/telemetry.ts
 @@ -15,9 +15,23 @@ import { testStage } from "./stage.ts";
@@ -227,9 +228,9 @@ index 13f6224..eedea4a 100644
  /**
   * Configured stages own their datasets and never adopt the original Executor's telemetry.
   * Test stages share one retained set and are told apart by the environment field, so a
-@@ -120,6 +134,12 @@ export const telemetryResources = Effect.gen(function* () {
- export const cloudObservability = Effect.gen(function* () {
-   if ((yield* AlchemyContext).dev) return {};
+@@ -155,6 +169,12 @@ export const cloudObservability = Effect.gen(function* () {
+   };
+   if (!(yield* telemetryExport)) return { observability: native };
    const stage = yield* Stage;
 +  const direct = yield* directSentryOtlp;
 +  if (direct.configured) {
@@ -240,15 +241,13 @@ index 13f6224..eedea4a 100644
    const resources = yield* telemetryResources;
    if (Option.isNone(resources)) return {};
    const { names, traces, ingest } = resources.value;
-@@ -155,6 +175,25 @@ export const telemetryBindings = Effect.gen(function* () {
+@@ -196,6 +216,23 @@ export const telemetryBindings = Effect.gen(function* () {
      const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(TelemetryConfig))(config);
      return { [binding]: Output.asOutput(Redacted.make(encoded)) };
    }
 +  const direct = yield* directSentryOtlp;
 +  if (direct.configured) {
 +    if (!direct.target) return { [binding]: Output.asOutput(Redacted.make("null")) };
-+    const version = yield* Config.NonEmptyString("EXECUTOR_BUILD_VERSION");
-+    const environment = yield* Stage;
 +    return {
 +      [binding]: Output.asOutput(Redacted.make(JSON.stringify({
 +        service: "executor-cloud",

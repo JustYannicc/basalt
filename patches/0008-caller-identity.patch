@@ -1,5 +1,5 @@
 diff --git a/apps/docs/content/author-an-app.mdx b/apps/docs/content/author-an-app.mdx
-index d9d56ff7e1..6aee5f0d89 100644
+index d9d56ff..6aee5f0 100644
 --- a/apps/docs/content/author-an-app.mdx
 +++ b/apps/docs/content/author-an-app.mdx
 @@ -140,6 +140,7 @@ const requirements = {
@@ -10,25 +10,12 @@ index d9d56ff7e1..6aee5f0d89 100644
    ctx.user.accounts.github; // the caller's own linked account
  };
  ```
-diff --git a/bun.lock b/bun.lock
-index afc8616d7c..04fd035bc6 100644
---- a/bun.lock
-+++ b/bun.lock
-@@ -486,7 +486,7 @@
-     },
-     "packages/apps": {
-       "name": "apps",
--      "version": "0.0.1-beta.103",
-+      "version": "0.0.1-beta.104",
-       "dependencies": {
-         "@cfworker/json-schema": "4.1.1",
-         "@csstools/css-tokenizer": "4.0.2",
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index caed05bc63..97bfaf5a09 100644
+index 8ef56da..6f3d34e 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -7212,6 +7212,25 @@ export const scenarios = plan({
-       local: na("This scenario uses hosted memberships, API keys and MCP."),
+@@ -8368,6 +8368,25 @@ export const scenarios = plan({
+       local: na("This scenario uses hosted app management routes."),
      },
    },
 +  appCallerIdentity: {
@@ -55,10 +42,10 @@ index caed05bc63..97bfaf5a09 100644
      file: "workflows.spec.ts",
 diff --git a/e2e/tests/app-caller-identity.spec.ts b/e2e/tests/app-caller-identity.spec.ts
 new file mode 100644
-index 0000000000..d40d9e7574
+index 0000000..f450dae
 --- /dev/null
 +++ b/e2e/tests/app-caller-identity.spec.ts
-@@ -0,0 +1,263 @@
+@@ -0,0 +1,291 @@
 +/** A shared app's handlers and cached dynamic declarations stay bound to the calling user. */
 +import { expect, layer } from "@effect/vitest";
 +import { Clock, Effect, Schema } from "effect";
@@ -74,6 +61,25 @@ index 0000000000..d40d9e7574
 +const source = `import {
 +  defineApp, dynamicRouter, mutation, object, query, router, string, workflow
 +} from "apps";
++import { createAppHandler, hostContext } from "apps/host";
++const portable = createAppHandler(defineApp({}, {
++  tools: router({ who: query({ input: object({}) }, async (ctx) => ({
++    hasUser: "user" in ctx, id: ctx.user?.id ?? null,
++  })) }),
++}));
++const direct = query({ input: object({}) }, async (ctx) => {
++  const invoke = async (accounts, caller) => {
++    const response = await portable(new Request("https://app.invalid", {
++      method: "POST", body: JSON.stringify({ operation: "call", tool: "who", input: {} }),
++    }), hostContext(accounts, undefined, caller));
++    return { status: response.status, body: await response.json() };
++  };
++  return {
++    caller: await invoke({ app: {} }, ctx.user.id),
++    app: await invoke({ app: {} }, undefined),
++    subjectless: await invoke({ app: {}, user: {} }, undefined),
++  };
++});
 +const who = query({ input: object({}) }, async (ctx) => ctx.user.id ?? "missing");
 +const spoof = mutation({ input: object({ userId: string() }) }, async (ctx, input) => ({
 +  callerId: ctx.user.id ?? "missing",
@@ -96,7 +102,7 @@ index 0000000000..d40d9e7574
 +    }],
 +    resolve: async (requested) => requested === name ? fromFactory : undefined,
 +  });
-+  return { tools: router({ who, spoof, generated, launch }), workflows: { record } };
++  return { tools: router({ who, direct, spoof, generated, launch }), workflows: { record } };
 +});`;
 +
 +const SessionIdentity = Schema.NullOr(
@@ -200,6 +206,15 @@ index 0000000000..d40d9e7574
 +        expect(yield* query(actors.owner)).toBe(ownerId);
 +        expect(yield* query(actors.member)).toBe(memberId);
 +        expect(yield* query(actors.owner)).toBe(ownerId);
++
++        // Portable hosts can supply a caller without any user-account requirements.
++        const direct = yield* call(actors.member, "direct", "query", {});
++        expect(direct.status).toBe(200);
++        expect(direct.body).toEqual({
++          caller: { status: 200, body: { ok: true, value: { hasUser: true, id: memberId } } },
++          app: { status: 200, body: { ok: true, value: { hasUser: false, id: null } } },
++          subjectless: { status: 200, body: { ok: true, value: { hasUser: true, id: null } } },
++        });
 +
 +        // Subscription queries execute lazily, after the HTTP handler's auth scope has ended.
 +        const subscribe = (actor: Session) =>
@@ -322,22 +337,9 @@ index 0000000000..d40d9e7574
 +    ),
 +  );
 +});
-diff --git a/e2e/tests/app-package.spec.ts b/e2e/tests/app-package.spec.ts
-index b4f2ab14da..06dfc1122c 100644
---- a/e2e/tests/app-package.spec.ts
-+++ b/e2e/tests/app-package.spec.ts
-@@ -147,7 +147,7 @@ layer(HostedLive, { excludeTestServices: true })("Packaged apps", (it) => {
-         expect(rejected.body).toMatchObject({
-           _tag: "VersionBuildFailed",
-           reason:
--            "This app's apps framework uses host protocol 99. This host supports protocol 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13. Declare a supported apps version.",
-+            "This app's apps framework uses host protocol 99. This host supports protocol 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14. Declare a supported apps version.",
-         });
-         expect((yield* call("queries.version")).body).toEqual(Published);
-         expect(
 diff --git a/e2e/tests/local-app-caller-identity.spec.ts b/e2e/tests/local-app-caller-identity.spec.ts
 new file mode 100644
-index 0000000000..baa5fb269a
+index 0000000..baa5fb2
 --- /dev/null
 +++ b/e2e/tests/local-app-caller-identity.spec.ts
 @@ -0,0 +1,64 @@
@@ -406,7 +408,7 @@ index 0000000000..baa5fb269a
 +  );
 +});
 diff --git a/packages/apps/README.md b/packages/apps/README.md
-index 779c2247f7..b398f7f812 100644
+index 779c224..b398f7f 100644
 --- a/packages/apps/README.md
 +++ b/packages/apps/README.md
 @@ -71,6 +71,18 @@ Accounts bind at execution time. Live documents cannot change credential
@@ -428,45 +430,14 @@ index 779c2247f7..b398f7f812 100644
  Requirements are declared by scope. `user: { accounts }` holds each caller's
  own accounts, read as `ctx.user.accounts`; `app: { accounts }` holds the app's
  own accounts, which people who can edit the app link for everyone, read as
-diff --git a/packages/apps/package.json b/packages/apps/package.json
-index 5a4523803e..570fd05b61 100644
---- a/packages/apps/package.json
-+++ b/packages/apps/package.json
-@@ -1,6 +1,6 @@
- {
-   "name": "apps",
--  "version": "0.0.1-beta.103",
-+  "version": "0.0.1-beta.104",
-   "private": true,
-   "description": "TypeScript apps with typed tools, accounts, storage, and UI.",
-   "type": "module",
 diff --git a/packages/apps/protocols/14.json b/packages/apps/protocols/14.json
-new file mode 100644
-index 0000000000..736d79a088
---- /dev/null
+index 6fb9929..736d79a 100644
+--- a/packages/apps/protocols/14.json
 +++ b/packages/apps/protocols/14.json
-@@ -0,0 +1,190 @@
-+{
-+  "protocol": 14,
-+  "previous": 13,
-+  "messages": {
-+    "invocation": {
-+      "_tag": "Objects",
-+      "propertySignatures": [
-+        {
-+          "name": "command",
-+          "type": {
-+            "$message": "request"
-+          },
-+          "isOptional": false
-+        },
-+        {
-+          "name": "accounts",
-+          "type": {
-+            "$message": "accounts"
-+          },
-+          "isOptional": false
-+        },
+@@ -19,6 +19,24 @@
+           },
+           "isOptional": false
+         },
 +        {
 +          "name": "caller",
 +          "type": {
@@ -485,159 +456,2314 @@ index 0000000000..736d79a088
 +          },
 +          "isOptional": true
 +        },
-+        {
-+          "name": "approval",
-+          "type": {
-+            "_tag": "Objects",
-+            "propertySignatures": [
-+              {
-+                "name": "tool",
-+                "type": {
-+                  "_tag": "String",
-+                  "checks": [
-+                    {
-+                      "_tag": "Filter",
-+                      "representation": {
-+                        "id": "effect/schema/isMinLength",
-+                        "payload": {
-+                          "minLength": 1
-+                        }
-+                      }
-+                    }
-+                  ]
-+                },
-+                "isOptional": false
-+              },
-+              {
-+                "name": "input",
-+                "type": {
-+                  "_tag": "Declaration",
-+                  "representation": {
-+                    "id": "effect/schema/Json",
-+                    "payload": null
-+                  }
-+                },
-+                "isOptional": false
-+              }
-+            ]
-+          },
-+          "isOptional": true
-+        },
-+        {
-+          "name": "replay",
-+          "type": {
-+            "_tag": "Objects",
-+            "propertySignatures": [
-+              {
-+                "name": "key",
-+                "type": {
-+                  "_tag": "String",
-+                  "checks": [
-+                    {
-+                      "_tag": "Filter",
-+                      "representation": {
-+                        "id": "effect/schema/isMinLength",
-+                        "payload": {
-+                          "minLength": 1
-+                        }
-+                      }
-+                    }
-+                  ]
-+                },
-+                "isOptional": false
-+              },
-+              {
-+                "name": "fingerprint",
-+                "type": {
-+                  "_tag": "String",
-+                  "checks": [
-+                    {
-+                      "_tag": "Filter",
-+                      "representation": {
-+                        "id": "effect/schema/isMinLength",
-+                        "payload": {
-+                          "minLength": 1
-+                        }
-+                      }
-+                    }
-+                  ]
-+                },
-+                "isOptional": false
-+              }
-+            ]
-+          },
-+          "isOptional": true
-+        },
-+        {
-+          "name": "deadline",
-+          "type": {
-+            "_tag": "Number",
-+            "checks": [
-+              {
-+                "_tag": "Filter",
-+                "representation": {
-+                  "id": "effect/schema/isFinite",
-+                  "payload": null
-+                }
-+              },
-+              {
-+                "_tag": "Filter",
-+                "representation": {
-+                  "id": "effect/schema/isGreaterThanOrEqualTo",
-+                  "payload": {
-+                    "minimum": 0
-+                  }
-+                }
-+              }
-+            ]
-+          },
-+          "isOptional": true
-+        },
-+        {
-+          "name": "workflowRun",
-+          "type": {
-+            "_tag": "String",
-+            "checks": [
-+              {
-+                "_tag": "Filter",
-+                "representation": {
-+                  "id": "effect/schema/isMinLength",
-+                  "payload": {
-+                    "minLength": 1
-+                  }
-+                }
-+              }
-+            ]
-+          },
-+          "isOptional": true
-+        }
-+      ]
-+    }
-+  },
-+  "unchanged": [
-+    "request",
-+    "response",
+         {
+           "name": "approval",
+           "type": {
+@@ -146,527 +164,12 @@
+           "isOptional": true
+         }
+       ]
+-    },
+-    "requirements": {
+-      "_tag": "Objects",
+-      "propertySignatures": [
+-        {
+-          "name": "capabilities",
+-          "type": {
+-            "_tag": "Objects",
+-            "propertySignatures": [
+-              {
+-                "name": "skills",
+-                "type": {
+-                  "_tag": "Literal",
+-                  "literal": true
+-                },
+-                "isOptional": false
+-              },
+-              {
+-                "name": "toolIndex",
+-                "type": {
+-                  "_tag": "Literal",
+-                  "literal": true
+-                },
+-                "isOptional": true
+-              },
+-              {
+-                "name": "skillSources",
+-                "type": {
+-                  "_tag": "Literal",
+-                  "literal": true
+-                },
+-                "isOptional": true
+-              },
+-              {
+-                "name": "scheduledTools",
+-                "type": {
+-                  "_tag": "Literal",
+-                  "literal": true
+-                },
+-                "isOptional": true
+-              },
+-              {
+-                "name": "sharedDefinitions",
+-                "type": {
+-                  "_tag": "Literal",
+-                  "literal": true
+-                },
+-                "isOptional": true
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "database",
+-          "type": {
+-            "_tag": "Objects",
+-            "propertySignatures": [],
+-            "indexSignatures": [
+-              {
+-                "parameter": {
+-                  "_tag": "String",
+-                  "checks": [
+-                    {
+-                      "_tag": "Filter"
+-                    }
+-                  ]
+-                },
+-                "type": {
+-                  "_tag": "Objects",
+-                  "propertySignatures": [
+-                    {
+-                      "name": "fields",
+-                      "type": {
+-                        "_tag": "Objects",
+-                        "propertySignatures": [],
+-                        "indexSignatures": [
+-                          {
+-                            "parameter": {
+-                              "_tag": "String",
+-                              "checks": [
+-                                {
+-                                  "_tag": "Filter"
+-                                }
+-                              ]
+-                            },
+-                            "type": {
+-                              "_tag": "Objects",
+-                              "propertySignatures": [
+-                                {
+-                                  "name": "kind",
+-                                  "type": {
+-                                    "_tag": "Union",
+-                                    "types": [
+-                                      {
+-                                        "_tag": "Literal",
+-                                        "literal": "string"
+-                                      },
+-                                      {
+-                                        "_tag": "Literal",
+-                                        "literal": "number"
+-                                      },
+-                                      {
+-                                        "_tag": "Literal",
+-                                        "literal": "boolean"
+-                                      },
+-                                      {
+-                                        "_tag": "Literal",
+-                                        "literal": "id"
+-                                      },
+-                                      {
+-                                        "_tag": "Literal",
+-                                        "literal": "userId"
+-                                      }
+-                                    ]
+-                                  },
+-                                  "isOptional": false
+-                                },
+-                                {
+-                                  "name": "optional",
+-                                  "type": {
+-                                    "_tag": "Union",
+-                                    "types": [
+-                                      {
+-                                        "_tag": "Boolean"
+-                                      },
+-                                      {
+-                                        "_tag": "Null"
+-                                      }
+-                                    ]
+-                                  },
+-                                  "isOptional": true
+-                                },
+-                                {
+-                                  "name": "default",
+-                                  "type": {
+-                                    "_tag": "Union",
+-                                    "types": [
+-                                      {
+-                                        "_tag": "Union",
+-                                        "types": [
+-                                          {
+-                                            "_tag": "String"
+-                                          },
+-                                          {
+-                                            "_tag": "Number",
+-                                            "checks": [
+-                                              {
+-                                                "_tag": "Filter",
+-                                                "representation": {
+-                                                  "id": "effect/schema/isFinite",
+-                                                  "payload": null
+-                                                }
+-                                              }
+-                                            ]
+-                                          },
+-                                          {
+-                                            "_tag": "Boolean"
+-                                          }
+-                                        ]
+-                                      },
+-                                      {
+-                                        "_tag": "Null"
+-                                      }
+-                                    ]
+-                                  },
+-                                  "isOptional": true
+-                                },
+-                                {
+-                                  "name": "references",
+-                                  "type": {
+-                                    "_tag": "Union",
+-                                    "types": [
+-                                      {
+-                                        "_tag": "String",
+-                                        "checks": [
+-                                          {
+-                                            "_tag": "Filter"
+-                                          }
+-                                        ]
+-                                      },
+-                                      {
+-                                        "_tag": "Null"
+-                                      }
+-                                    ]
+-                                  },
+-                                  "isOptional": true
+-                                }
+-                              ]
+-                            }
+-                          }
+-                        ]
+-                      },
+-                      "isOptional": false
+-                    },
+-                    {
+-                      "name": "indexes",
+-                      "type": {
+-                        "_tag": "Arrays",
+-                        "rest": [
+-                          {
+-                            "_tag": "Objects",
+-                            "propertySignatures": [
+-                              {
+-                                "name": "name",
+-                                "type": {
+-                                  "_tag": "String",
+-                                  "checks": [
+-                                    {
+-                                      "_tag": "Filter"
+-                                    }
+-                                  ]
+-                                },
+-                                "isOptional": false
+-                              },
+-                              {
+-                                "name": "fields",
+-                                "type": {
+-                                  "_tag": "Arrays",
+-                                  "elements": [
+-                                    {
+-                                      "isOptional": false,
+-                                      "type": {
+-                                        "_tag": "String",
+-                                        "checks": [
+-                                          {
+-                                            "_tag": "Filter"
+-                                          }
+-                                        ]
+-                                      }
+-                                    }
+-                                  ],
+-                                  "rest": [
+-                                    {
+-                                      "_tag": "String",
+-                                      "checks": [
+-                                        {
+-                                          "_tag": "Filter"
+-                                        }
+-                                      ]
+-                                    }
+-                                  ]
+-                                },
+-                                "isOptional": false
+-                              }
+-                            ]
+-                          }
+-                        ]
+-                      },
+-                      "isOptional": false
+-                    }
+-                  ]
+-                }
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "accounts",
+-          "type": {
+-            "_tag": "Objects",
+-            "propertySignatures": [
+-              {
+-                "name": "app",
+-                "type": {
+-                  "$shared": "3bf9db42acceec3a"
+-                },
+-                "isOptional": false
+-              },
+-              {
+-                "name": "user",
+-                "type": {
+-                  "$shared": "3bf9db42acceec3a"
+-                },
+-                "isOptional": false
+-              }
+-            ]
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "sql",
+-          "type": {
+-            "_tag": "Literal",
+-            "literal": true
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "events",
+-          "type": {
+-            "_tag": "Objects",
+-            "propertySignatures": [],
+-            "indexSignatures": [
+-              {
+-                "parameter": {
+-                  "_tag": "String",
+-                  "checks": [
+-                    {
+-                      "_tag": "Filter",
+-                      "representation": {
+-                        "id": "effect/schema/isPattern",
+-                        "payload": {
+-                          "source": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$",
+-                          "flags": "u"
+-                        }
+-                      }
+-                    },
+-                    {
+-                      "_tag": "Filter",
+-                      "representation": {
+-                        "id": "effect/schema/isMaxLength",
+-                        "payload": {
+-                          "maxLength": 64
+-                        }
+-                      }
+-                    }
+-                  ]
+-                },
+-                "type": {
+-                  "_tag": "Objects",
+-                  "propertySignatures": [
+-                    {
+-                      "name": "description",
+-                      "type": {
+-                        "_tag": "String",
+-                        "checks": [
+-                          {
+-                            "_tag": "Filter",
+-                            "representation": {
+-                              "id": "effect/schema/isMinLength",
+-                              "payload": {
+-                                "minLength": 1
+-                              }
+-                            }
+-                          },
+-                          {
+-                            "_tag": "Filter",
+-                            "representation": {
+-                              "id": "effect/schema/isMaxLength",
+-                              "payload": {
+-                                "maxLength": 1000
+-                              }
+-                            }
+-                          }
+-                        ]
+-                      },
+-                      "isOptional": false
+-                    },
+-                    {
+-                      "name": "filters",
+-                      "type": {
+-                        "_tag": "Objects",
+-                        "propertySignatures": [],
+-                        "indexSignatures": [
+-                          {
+-                            "parameter": {
+-                              "_tag": "String"
+-                            },
+-                            "type": {
+-                              "_tag": "Declaration",
+-                              "representation": {
+-                                "id": "effect/schema/Json",
+-                                "payload": null
+-                              }
+-                            }
+-                          }
+-                        ]
+-                      },
+-                      "isOptional": false
+-                    },
+-                    {
+-                      "name": "payload",
+-                      "type": {
+-                        "_tag": "Objects",
+-                        "propertySignatures": [],
+-                        "indexSignatures": [
+-                          {
+-                            "parameter": {
+-                              "_tag": "String"
+-                            },
+-                            "type": {
+-                              "_tag": "Declaration",
+-                              "representation": {
+-                                "id": "effect/schema/Json",
+-                                "payload": null
+-                              }
+-                            }
+-                          }
+-                        ]
+-                      },
+-                      "isOptional": false
+-                    }
+-                  ]
+-                }
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "icons",
+-          "type": {
+-            "_tag": "Arrays",
+-            "rest": [
+-              {
+-                "_tag": "Objects",
+-                "propertySignatures": [
+-                  {
+-                    "name": "src",
+-                    "type": {
+-                      "_tag": "String",
+-                      "checks": [
+-                        {
+-                          "_tag": "Filter",
+-                          "representation": {
+-                            "id": "effect/schema/isPattern",
+-                            "payload": {
+-                              "source": "^(?:data:image\\/(?:svg\\+xml|png|webp|jpeg);base64,[A-Za-z0-9+/]*={0,2}|https:\\/\\/\\S+)$",
+-                              "flags": "u"
+-                            }
+-                          }
+-                        },
+-                        {
+-                          "_tag": "Filter",
+-                          "representation": {
+-                            "id": "effect/schema/isMaxLength",
+-                            "payload": {
+-                              "maxLength": 32768
+-                            }
+-                          }
+-                        }
+-                      ]
+-                    },
+-                    "isOptional": false
+-                  },
+-                  {
+-                    "name": "mimeType",
+-                    "type": {
+-                      "_tag": "String"
+-                    },
+-                    "isOptional": true
+-                  },
+-                  {
+-                    "name": "sizes",
+-                    "type": {
+-                      "_tag": "Arrays",
+-                      "rest": [
+-                        {
+-                          "_tag": "String"
+-                        }
+-                      ]
+-                    },
+-                    "isOptional": true
+-                  },
+-                  {
+-                    "name": "theme",
+-                    "type": {
+-                      "_tag": "Union",
+-                      "types": [
+-                        {
+-                          "_tag": "Literal",
+-                          "literal": "light"
+-                        },
+-                        {
+-                          "_tag": "Literal",
+-                          "literal": "dark"
+-                        }
+-                      ]
+-                    },
+-                    "isOptional": true
+-                  }
+-                ]
+-              }
+-            ],
+-            "checks": [
+-              {
+-                "_tag": "Filter",
+-                "representation": {
+-                  "id": "effect/schema/isMaxLength",
+-                  "payload": {
+-                    "maxLength": 8
+-                  }
+-                }
+-              },
+-              {
+-                "_tag": "Filter",
+-                "annotations": {
+-                  "message": "An app's icons total at most 32768 characters"
+-                }
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        }
+-      ]
+-    },
+-    "accounts": {
+-      "_tag": "Objects",
+-      "propertySignatures": [
+-        {
+-          "name": "app",
+-          "type": {
+-            "$shared": "8f895899daebbf64"
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "user",
+-          "type": {
+-            "$shared": "8f895899daebbf64"
+-          },
+-          "isOptional": true
+-        }
+-      ]
+     }
+   },
+   "unchanged": [
+     "request",
+     "response",
 +    "requirements",
-+    "catalog",
-+    "catalogSummary",
-+    "sharedCatalog",
-+    "skills",
-+    "elicitationRequest",
-+    "elicitationReply",
-+    "workflowStep",
-+    "workflowStepReply",
-+    "workflowControl",
-+    "cacheCommand",
-+    "cacheReply",
-+    "accountCheck",
+     "catalog",
+     "catalogSummary",
+     "sharedCatalog",
+@@ -679,1771 +182,9 @@
+     "cacheCommand",
+     "cacheReply",
+     "accountCheck",
 +    "accounts",
-+    "migrate"
-+  ],
-+  "references": {},
+     "migrate"
+   ],
+   "references": {},
+-  "shared": {
+-    "0b0d667e3c209b0c": {
+-      "parameter": {
+-        "_tag": "String",
+-        "checks": [
+-          {
+-            "_tag": "Filter",
+-            "representation": {
+-              "id": "effect/schema/isMinLength",
+-              "payload": {
+-                "minLength": 1
+-              }
+-            }
+-          }
+-        ]
+-      },
+-      "type": {
+-        "$shared": "eb35fd8191fe5b27"
+-      }
+-    },
+-    "0ecd52d712f10938": {
+-      "_tag": "Objects",
+-      "propertySignatures": [
+-        {
+-          "name": "type",
+-          "type": {
+-            "_tag": "Literal",
+-            "literal": "oauth2"
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "scopeSeparator",
+-          "type": {
+-            "_tag": "String",
+-            "checks": [
+-              {
+-                "_tag": "Filter",
+-                "representation": {
+-                  "id": "effect/schema/isMinLength",
+-                  "payload": {
+-                    "minLength": 1
+-                  }
+-                }
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "tokenRequestFormat",
+-          "type": {
+-            "_tag": "Union",
+-            "types": [
+-              {
+-                "_tag": "Literal",
+-                "literal": "form"
+-              },
+-              {
+-                "_tag": "Literal",
+-                "literal": "json"
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "tokenResponse",
+-          "type": {
+-            "_tag": "Objects",
+-            "propertySignatures": [
+-              {
+-                "name": "path",
+-                "type": {
+-                  "_tag": "String",
+-                  "checks": [
+-                    {
+-                      "_tag": "Filter",
+-                      "representation": {
+-                        "id": "effect/schema/isPattern",
+-                        "payload": {
+-                          "source": "^[^.]+(\\.[^.]+)*$",
+-                          "flags": ""
+-                        }
+-                      }
+-                    }
+-                  ]
+-                },
+-                "isOptional": false
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "grant",
+-          "type": {
+-            "_tag": "Literal",
+-            "literal": "authorization_code"
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "authorizationParams",
+-          "type": {
+-            "_tag": "Objects",
+-            "propertySignatures": [],
+-            "indexSignatures": [
+-              {
+-                "parameter": {
+-                  "_tag": "String"
+-                },
+-                "type": {
+-                  "_tag": "String"
+-                }
+-              }
+-            ],
+-            "checks": [
+-              {
+-                "_tag": "Filter",
+-                "annotations": {
+-                  "message": "Authorization parameters cannot replace protocol parameters such as state or scope."
+-                }
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "tokenEndpointAuthMethod",
+-          "type": {
+-            "_tag": "Union",
+-            "types": [
+-              {
+-                "_tag": "Literal",
+-                "literal": "none"
+-              },
+-              {
+-                "_tag": "Literal",
+-                "literal": "client_secret_post"
+-              },
+-              {
+-                "_tag": "Literal",
+-                "literal": "client_secret_basic"
+-              },
+-              {
+-                "_tag": "Literal",
+-                "literal": "client_secret_basic_raw"
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "resource",
+-          "type": {
+-            "_tag": "Union",
+-            "types": [
+-              {
+-                "_tag": "String",
+-                "checks": [
+-                  {
+-                    "_tag": "Filter"
+-                  }
+-                ]
+-              },
+-              {
+-                "_tag": "Null"
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "authorizationUrl",
+-          "type": {
+-            "_tag": "String",
+-            "checks": [
+-              {
+-                "_tag": "Filter"
+-              }
+-            ]
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "tokenUrl",
+-          "type": {
+-            "_tag": "String",
+-            "checks": [
+-              {
+-                "_tag": "Filter"
+-              }
+-            ]
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "revocationUrl",
+-          "type": {
+-            "_tag": "String",
+-            "checks": [
+-              {
+-                "_tag": "Filter"
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "scopes",
+-          "type": {
+-            "_tag": "Arrays",
+-            "rest": [
+-              {
+-                "_tag": "String"
+-              }
+-            ]
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "issuer",
+-          "type": {
+-            "_tag": "String",
+-            "checks": [
+-              {
+-                "_tag": "Filter"
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "discover",
+-          "type": {
+-            "_tag": "Never"
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "authorizationServerMetadataUrl",
+-          "type": {
+-            "_tag": "Never"
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "response",
+-          "type": {
+-            "_tag": "Objects",
+-            "propertySignatures": [],
+-            "indexSignatures": [
+-              {
+-                "parameter": {
+-                  "_tag": "String"
+-                },
+-                "type": {
+-                  "_tag": "Declaration",
+-                  "representation": {
+-                    "id": "effect/schema/Json",
+-                    "payload": null
+-                  }
+-                }
+-              }
+-            ]
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "plain",
+-          "type": {
+-            "_tag": "Arrays",
+-            "rest": [
+-              {
+-                "_tag": "String",
+-                "checks": [
+-                  {
+-                    "_tag": "Filter",
+-                    "representation": {
+-                      "id": "effect/schema/isMinLength",
+-                      "payload": {
+-                        "minLength": 1
+-                      }
+-                    }
+-                  }
+-                ]
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "raw",
+-          "type": {
+-            "_tag": "Arrays",
+-            "rest": [
+-              {
+-                "_tag": "String",
+-                "checks": [
+-                  {
+-                    "_tag": "Filter",
+-                    "representation": {
+-                      "id": "effect/schema/isMinLength",
+-                      "payload": {
+-                        "minLength": 1
+-                      }
+-                    }
+-                  }
+-                ]
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "$shared": "7fa3e0fa96a362fd"
+-        }
+-      ]
+-    },
+-    "14bd4853b682e21b": {
+-      "_tag": "Objects",
+-      "propertySignatures": [
+-        {
+-          "name": "type",
+-          "type": {
+-            "_tag": "Literal",
+-            "literal": "oauth2"
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "grant",
+-          "type": {
+-            "_tag": "Literal",
+-            "literal": "client_credentials"
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "tokenUrl",
+-          "type": {
+-            "_tag": "String",
+-            "checks": [
+-              {
+-                "_tag": "Filter"
+-              }
+-            ]
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "revocationUrl",
+-          "type": {
+-            "_tag": "String",
+-            "checks": [
+-              {
+-                "_tag": "Filter"
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "scopes",
+-          "type": {
+-            "_tag": "Arrays",
+-            "rest": [
+-              {
+-                "_tag": "String"
+-              }
+-            ]
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "scopeSeparator",
+-          "type": {
+-            "_tag": "String",
+-            "checks": [
+-              {
+-                "_tag": "Filter",
+-                "representation": {
+-                  "id": "effect/schema/isMinLength",
+-                  "payload": {
+-                    "minLength": 1
+-                  }
+-                }
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "tokenRequestFormat",
+-          "type": {
+-            "_tag": "Union",
+-            "types": [
+-              {
+-                "_tag": "Literal",
+-                "literal": "form"
+-              },
+-              {
+-                "_tag": "Literal",
+-                "literal": "json"
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "tokenEndpointAuthMethod",
+-          "type": {
+-            "_tag": "Union",
+-            "types": [
+-              {
+-                "_tag": "Literal",
+-                "literal": "client_secret_post"
+-              },
+-              {
+-                "_tag": "Literal",
+-                "literal": "client_secret_basic"
+-              },
+-              {
+-                "_tag": "Literal",
+-                "literal": "client_secret_basic_raw"
+-              }
+-            ]
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "resource",
+-          "type": {
+-            "_tag": "Union",
+-            "types": [
+-              {
+-                "_tag": "String",
+-                "checks": [
+-                  {
+-                    "_tag": "Filter"
+-                  }
+-                ]
+-              },
+-              {
+-                "_tag": "Null"
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "authorizationUrl",
+-          "type": {
+-            "_tag": "Never"
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "discover",
+-          "type": {
+-            "_tag": "Never"
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "authorizationServerMetadataUrl",
+-          "type": {
+-            "_tag": "Never"
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "response",
+-          "type": {
+-            "_tag": "Objects",
+-            "propertySignatures": [],
+-            "indexSignatures": [
+-              {
+-                "parameter": {
+-                  "_tag": "String"
+-                },
+-                "type": {
+-                  "_tag": "Declaration",
+-                  "representation": {
+-                    "id": "effect/schema/Json",
+-                    "payload": null
+-                  }
+-                }
+-              }
+-            ]
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "plain",
+-          "type": {
+-            "_tag": "Arrays",
+-            "rest": [
+-              {
+-                "_tag": "String",
+-                "checks": [
+-                  {
+-                    "_tag": "Filter",
+-                    "representation": {
+-                      "id": "effect/schema/isMinLength",
+-                      "payload": {
+-                        "minLength": 1
+-                      }
+-                    }
+-                  }
+-                ]
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "raw",
+-          "type": {
+-            "_tag": "Arrays",
+-            "rest": [
+-              {
+-                "_tag": "String",
+-                "checks": [
+-                  {
+-                    "_tag": "Filter",
+-                    "representation": {
+-                      "id": "effect/schema/isMinLength",
+-                      "payload": {
+-                        "minLength": 1
+-                      }
+-                    }
+-                  }
+-                ]
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "$shared": "7fa3e0fa96a362fd"
+-        }
+-      ]
+-    },
+-    "16c7d426e69479e6": {
+-      "_tag": "Objects",
+-      "propertySignatures": [
+-        {
+-          "name": "name",
+-          "type": {
+-            "_tag": "String",
+-            "checks": [
+-              {
+-                "_tag": "Filter",
+-                "representation": {
+-                  "id": "effect/schema/isMinLength",
+-                  "payload": {
+-                    "minLength": 1
+-                  }
+-                }
+-              }
+-            ]
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "$shared": "b7c44cc1d6ecfb85"
+-        },
+-        {
+-          "name": "hosts",
+-          "type": {
+-            "_tag": "Arrays",
+-            "rest": [
+-              {
+-                "_tag": "Union",
+-                "types": [
+-                  {
+-                    "_tag": "String",
+-                    "checks": [
+-                      {
+-                        "_tag": "Filter",
+-                        "representation": {
+-                          "id": "effect/schema/isPattern",
+-                          "payload": {
+-                            "source": "^(\\*\\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$",
+-                            "flags": ""
+-                          }
+-                        }
+-                      }
+-                    ]
+-                  },
+-                  {
+-                    "_tag": "String",
+-                    "checks": [
+-                      {
+-                        "_tag": "Filter",
+-                        "representation": {
+-                          "id": "effect/schema/isPattern",
+-                          "payload": {
+-                            "source": "^(\\*\\.)?[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?(?:\\.[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?)*(?::[0-9]{1,5})?$",
+-                            "flags": ""
+-                          }
+-                        }
+-                      }
+-                    ]
+-                  }
+-                ]
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        }
+-      ]
+-    },
+-    "308a91c53c50f2fb": {
+-      "_tag": "Objects",
+-      "propertySignatures": [
+-        {
+-          "name": "type",
+-          "type": {
+-            "_tag": "Literal",
+-            "literal": "oauth2"
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "grant",
+-          "type": {
+-            "_tag": "Literal",
+-            "literal": "client_credentials"
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "discover",
+-          "type": {
+-            "_tag": "String",
+-            "checks": [
+-              {
+-                "_tag": "Filter"
+-              }
+-            ]
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "authorizationServerMetadataUrl",
+-          "type": {
+-            "_tag": "String",
+-            "checks": [
+-              {
+-                "_tag": "Filter"
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "authorizationUrl",
+-          "type": {
+-            "_tag": "Never"
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "tokenUrl",
+-          "type": {
+-            "_tag": "Never"
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "revocationUrl",
+-          "type": {
+-            "_tag": "Never"
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "scopes",
+-          "type": {
+-            "_tag": "Arrays",
+-            "rest": [
+-              {
+-                "_tag": "String"
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "scopeSeparator",
+-          "type": {
+-            "_tag": "String",
+-            "checks": [
+-              {
+-                "_tag": "Filter",
+-                "representation": {
+-                  "id": "effect/schema/isMinLength",
+-                  "payload": {
+-                    "minLength": 1
+-                  }
+-                }
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "tokenRequestFormat",
+-          "type": {
+-            "_tag": "Union",
+-            "types": [
+-              {
+-                "_tag": "Literal",
+-                "literal": "form"
+-              },
+-              {
+-                "_tag": "Literal",
+-                "literal": "json"
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "tokenEndpointAuthMethod",
+-          "type": {
+-            "_tag": "Union",
+-            "types": [
+-              {
+-                "_tag": "Literal",
+-                "literal": "client_secret_post"
+-              },
+-              {
+-                "_tag": "Literal",
+-                "literal": "client_secret_basic"
+-              },
+-              {
+-                "_tag": "Literal",
+-                "literal": "client_secret_basic_raw"
+-              }
+-            ]
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "resource",
+-          "type": {
+-            "_tag": "Union",
+-            "types": [
+-              {
+-                "_tag": "String",
+-                "checks": [
+-                  {
+-                    "_tag": "Filter"
+-                  }
+-                ]
+-              },
+-              {
+-                "_tag": "Null"
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "response",
+-          "type": {
+-            "_tag": "Objects",
+-            "propertySignatures": [],
+-            "indexSignatures": [
+-              {
+-                "parameter": {
+-                  "_tag": "String"
+-                },
+-                "type": {
+-                  "_tag": "Declaration",
+-                  "representation": {
+-                    "id": "effect/schema/Json",
+-                    "payload": null
+-                  }
+-                }
+-              }
+-            ]
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "plain",
+-          "type": {
+-            "_tag": "Arrays",
+-            "rest": [
+-              {
+-                "_tag": "String",
+-                "checks": [
+-                  {
+-                    "_tag": "Filter",
+-                    "representation": {
+-                      "id": "effect/schema/isMinLength",
+-                      "payload": {
+-                        "minLength": 1
+-                      }
+-                    }
+-                  }
+-                ]
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "raw",
+-          "type": {
+-            "_tag": "Arrays",
+-            "rest": [
+-              {
+-                "_tag": "String",
+-                "checks": [
+-                  {
+-                    "_tag": "Filter",
+-                    "representation": {
+-                      "id": "effect/schema/isMinLength",
+-                      "payload": {
+-                        "minLength": 1
+-                      }
+-                    }
+-                  }
+-                ]
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "$shared": "7fa3e0fa96a362fd"
+-        }
+-      ]
+-    },
+-    "3634cfd2d0b776b7": {
+-      "_tag": "Union",
+-      "types": [
+-        {
+-          "$shared": "6fe43caea1192cbc"
+-        },
+-        {
+-          "_tag": "Objects",
+-          "propertySignatures": [
+-            {
+-              "name": "in",
+-              "type": {
+-                "_tag": "Literal",
+-                "literal": "query"
+-              },
+-              "isOptional": false
+-            },
+-            {
+-              "name": "name",
+-              "type": {
+-                "_tag": "String",
+-                "checks": [
+-                  {
+-                    "_tag": "Filter",
+-                    "representation": {
+-                      "id": "effect/schema/isMinLength",
+-                      "payload": {
+-                        "minLength": 1
+-                      }
+-                    }
+-                  }
+-                ]
+-              },
+-              "isOptional": false
+-            },
+-            {
+-              "name": "value",
+-              "type": {
+-                "_tag": "Arrays",
+-                "rest": [
+-                  {
+-                    "_tag": "Union",
+-                    "types": [
+-                      {
+-                        "_tag": "String"
+-                      },
+-                      {
+-                        "_tag": "Objects",
+-                        "propertySignatures": [
+-                          {
+-                            "name": "field",
+-                            "type": {
+-                              "_tag": "String",
+-                              "checks": [
+-                                {
+-                                  "_tag": "Filter",
+-                                  "representation": {
+-                                    "id": "effect/schema/isMinLength",
+-                                    "payload": {
+-                                      "minLength": 1
+-                                    }
+-                                  }
+-                                }
+-                              ]
+-                            },
+-                            "isOptional": false
+-                          }
+-                        ]
+-                      },
+-                      {
+-                        "_tag": "Objects",
+-                        "propertySignatures": [
+-                          {
+-                            "name": "base64",
+-                            "type": {
+-                              "_tag": "Arrays",
+-                              "rest": [
+-                                {
+-                                  "_tag": "Union",
+-                                  "types": [
+-                                    {
+-                                      "_tag": "String"
+-                                    },
+-                                    {
+-                                      "_tag": "Objects",
+-                                      "propertySignatures": [
+-                                        {
+-                                          "name": "field",
+-                                          "type": {
+-                                            "_tag": "String",
+-                                            "checks": [
+-                                              {
+-                                                "_tag": "Filter",
+-                                                "representation": {
+-                                                  "id": "effect/schema/isMinLength",
+-                                                  "payload": {
+-                                                    "minLength": 1
+-                                                  }
+-                                                }
+-                                              }
+-                                            ]
+-                                          },
+-                                          "isOptional": false
+-                                        }
+-                                      ]
+-                                    }
+-                                  ]
+-                                }
+-                              ],
+-                              "checks": [
+-                                {
+-                                  "_tag": "Filter",
+-                                  "representation": {
+-                                    "id": "effect/schema/isMinLength",
+-                                    "payload": {
+-                                      "minLength": 1
+-                                    }
+-                                  }
+-                                }
+-                              ]
+-                            },
+-                            "isOptional": false
+-                          }
+-                        ]
+-                      }
+-                    ]
+-                  }
+-                ],
+-                "checks": [
+-                  {
+-                    "_tag": "Filter",
+-                    "representation": {
+-                      "id": "effect/schema/isMinLength",
+-                      "payload": {
+-                        "minLength": 1
+-                      }
+-                    }
+-                  }
+-                ]
+-              },
+-              "isOptional": false
+-            }
+-          ]
+-        }
+-      ]
+-    },
+-    "3bf9db42acceec3a": {
+-      "_tag": "Objects",
+-      "propertySignatures": [],
+-      "indexSignatures": [
+-        {
+-          "$shared": "ec59a578c4f756be"
+-        }
+-      ]
+-    },
+-    "4ded759dcdba2403": {
+-      "_tag": "Arrays",
+-      "rest": [
+-        {
+-          "$shared": "3634cfd2d0b776b7"
+-        }
+-      ]
+-    },
+-    "5524a0d67586f021": {
+-      "_tag": "Objects",
+-      "propertySignatures": [
+-        {
+-          "$shared": "d1167380b135e5b7"
+-        },
+-        {
+-          "name": "cardinality",
+-          "type": {
+-            "_tag": "Union",
+-            "types": [
+-              {
+-                "_tag": "Literal",
+-                "literal": "one"
+-              },
+-              {
+-                "_tag": "Literal",
+-                "literal": "many"
+-              }
+-            ]
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "health",
+-          "type": {
+-            "_tag": "Literal",
+-            "literal": true
+-          },
+-          "isOptional": true
+-        }
+-      ]
+-    },
+-    "6fe43caea1192cbc": {
+-      "_tag": "Objects",
+-      "propertySignatures": [
+-        {
+-          "name": "in",
+-          "type": {
+-            "_tag": "Literal",
+-            "literal": "header"
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "name",
+-          "type": {
+-            "_tag": "String",
+-            "checks": [
+-              {
+-                "_tag": "Filter",
+-                "representation": {
+-                  "id": "effect/schema/isPattern",
+-                  "payload": {
+-                    "source": "^[!#$%&'*+.^_`|~0-9a-z-]+$",
+-                    "flags": "u"
+-                  }
+-                }
+-              }
+-            ]
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "value",
+-          "type": {
+-            "_tag": "Arrays",
+-            "rest": [
+-              {
+-                "_tag": "Union",
+-                "types": [
+-                  {
+-                    "_tag": "String"
+-                  },
+-                  {
+-                    "_tag": "Objects",
+-                    "propertySignatures": [
+-                      {
+-                        "name": "field",
+-                        "type": {
+-                          "_tag": "String",
+-                          "checks": [
+-                            {
+-                              "_tag": "Filter",
+-                              "representation": {
+-                                "id": "effect/schema/isMinLength",
+-                                "payload": {
+-                                  "minLength": 1
+-                                }
+-                              }
+-                            }
+-                          ]
+-                        },
+-                        "isOptional": false
+-                      }
+-                    ]
+-                  },
+-                  {
+-                    "_tag": "Objects",
+-                    "propertySignatures": [
+-                      {
+-                        "name": "base64",
+-                        "type": {
+-                          "_tag": "Arrays",
+-                          "rest": [
+-                            {
+-                              "_tag": "Union",
+-                              "types": [
+-                                {
+-                                  "_tag": "String"
+-                                },
+-                                {
+-                                  "_tag": "Objects",
+-                                  "propertySignatures": [
+-                                    {
+-                                      "name": "field",
+-                                      "type": {
+-                                        "_tag": "String",
+-                                        "checks": [
+-                                          {
+-                                            "_tag": "Filter",
+-                                            "representation": {
+-                                              "id": "effect/schema/isMinLength",
+-                                              "payload": {
+-                                                "minLength": 1
+-                                              }
+-                                            }
+-                                          }
+-                                        ]
+-                                      },
+-                                      "isOptional": false
+-                                    }
+-                                  ]
+-                                }
+-                              ]
+-                            }
+-                          ],
+-                          "checks": [
+-                            {
+-                              "_tag": "Filter",
+-                              "representation": {
+-                                "id": "effect/schema/isMinLength",
+-                                "payload": {
+-                                  "minLength": 1
+-                                }
+-                              }
+-                            }
+-                          ]
+-                        },
+-                        "isOptional": false
+-                      }
+-                    ]
+-                  }
+-                ]
+-              }
+-            ],
+-            "checks": [
+-              {
+-                "_tag": "Filter",
+-                "representation": {
+-                  "id": "effect/schema/isMinLength",
+-                  "payload": {
+-                    "minLength": 1
+-                  }
+-                }
+-              }
+-            ]
+-          },
+-          "isOptional": false
+-        }
+-      ]
+-    },
+-    "7219e966084f0ccc": {
+-      "_tag": "Union",
+-      "types": [
+-        {
+-          "$shared": "8711fcb92cf01b4f"
+-        },
+-        {
+-          "$shared": "b76001a0bf1cec6d"
+-        },
+-        {
+-          "$shared": "0ecd52d712f10938"
+-        },
+-        {
+-          "$shared": "308a91c53c50f2fb"
+-        },
+-        {
+-          "$shared": "14bd4853b682e21b"
+-        }
+-      ]
+-    },
+-    "7fa3e0fa96a362fd": {
+-      "name": "request",
+-      "type": {
+-        "$shared": "4ded759dcdba2403"
+-      },
+-      "isOptional": true
+-    },
+-    "8711fcb92cf01b4f": {
+-      "_tag": "Objects",
+-      "propertySignatures": [
+-        {
+-          "name": "type",
+-          "type": {
+-            "_tag": "Literal",
+-            "literal": "secrets"
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "label",
+-          "type": {
+-            "_tag": "String"
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "fields",
+-          "type": {
+-            "_tag": "Objects",
+-            "propertySignatures": [],
+-            "indexSignatures": [
+-              {
+-                "parameter": {
+-                  "_tag": "String"
+-                },
+-                "type": {
+-                  "_tag": "Declaration",
+-                  "representation": {
+-                    "id": "effect/schema/Json",
+-                    "payload": null
+-                  }
+-                }
+-              }
+-            ]
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "plain",
+-          "type": {
+-            "_tag": "Arrays",
+-            "rest": [
+-              {
+-                "_tag": "String",
+-                "checks": [
+-                  {
+-                    "_tag": "Filter",
+-                    "representation": {
+-                      "id": "effect/schema/isMinLength",
+-                      "payload": {
+-                        "minLength": 1
+-                      }
+-                    }
+-                  }
+-                ]
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "raw",
+-          "type": {
+-            "_tag": "Arrays",
+-            "rest": [
+-              {
+-                "_tag": "String",
+-                "checks": [
+-                  {
+-                    "_tag": "Filter",
+-                    "representation": {
+-                      "id": "effect/schema/isMinLength",
+-                      "payload": {
+-                        "minLength": 1
+-                      }
+-                    }
+-                  }
+-                ]
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "$shared": "7fa3e0fa96a362fd"
+-        }
+-      ]
+-    },
+-    "8f895899daebbf64": {
+-      "_tag": "Objects",
+-      "propertySignatures": [],
+-      "indexSignatures": [
+-        {
+-          "$shared": "0b0d667e3c209b0c"
+-        }
+-      ]
+-    },
+-    "92f04f71889cd483": {
+-      "name": "provider",
+-      "type": {
+-        "$shared": "16c7d426e69479e6"
+-      },
+-      "isOptional": false
+-    },
+-    "b76001a0bf1cec6d": {
+-      "_tag": "Objects",
+-      "propertySignatures": [
+-        {
+-          "name": "type",
+-          "type": {
+-            "_tag": "Literal",
+-            "literal": "oauth2"
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "scopeSeparator",
+-          "type": {
+-            "_tag": "String",
+-            "checks": [
+-              {
+-                "_tag": "Filter",
+-                "representation": {
+-                  "id": "effect/schema/isMinLength",
+-                  "payload": {
+-                    "minLength": 1
+-                  }
+-                }
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "tokenRequestFormat",
+-          "type": {
+-            "_tag": "Union",
+-            "types": [
+-              {
+-                "_tag": "Literal",
+-                "literal": "form"
+-              },
+-              {
+-                "_tag": "Literal",
+-                "literal": "json"
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "tokenResponse",
+-          "type": {
+-            "_tag": "Objects",
+-            "propertySignatures": [
+-              {
+-                "name": "path",
+-                "type": {
+-                  "_tag": "String",
+-                  "checks": [
+-                    {
+-                      "_tag": "Filter",
+-                      "representation": {
+-                        "id": "effect/schema/isPattern",
+-                        "payload": {
+-                          "source": "^[^.]+(\\.[^.]+)*$",
+-                          "flags": ""
+-                        }
+-                      }
+-                    }
+-                  ]
+-                },
+-                "isOptional": false
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "grant",
+-          "type": {
+-            "_tag": "Literal",
+-            "literal": "authorization_code"
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "authorizationParams",
+-          "type": {
+-            "_tag": "Objects",
+-            "propertySignatures": [],
+-            "indexSignatures": [
+-              {
+-                "parameter": {
+-                  "_tag": "String"
+-                },
+-                "type": {
+-                  "_tag": "String"
+-                }
+-              }
+-            ],
+-            "checks": [
+-              {
+-                "_tag": "Filter",
+-                "annotations": {
+-                  "message": "Authorization parameters cannot replace protocol parameters such as state or scope."
+-                }
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "tokenEndpointAuthMethod",
+-          "type": {
+-            "_tag": "Union",
+-            "types": [
+-              {
+-                "_tag": "Literal",
+-                "literal": "none"
+-              },
+-              {
+-                "_tag": "Literal",
+-                "literal": "client_secret_post"
+-              },
+-              {
+-                "_tag": "Literal",
+-                "literal": "client_secret_basic"
+-              },
+-              {
+-                "_tag": "Literal",
+-                "literal": "client_secret_basic_raw"
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "resource",
+-          "type": {
+-            "_tag": "Union",
+-            "types": [
+-              {
+-                "_tag": "String",
+-                "checks": [
+-                  {
+-                    "_tag": "Filter"
+-                  }
+-                ]
+-              },
+-              {
+-                "_tag": "Null"
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "discover",
+-          "type": {
+-            "_tag": "String",
+-            "checks": [
+-              {
+-                "_tag": "Filter"
+-              }
+-            ]
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "authorizationServerMetadataUrl",
+-          "type": {
+-            "_tag": "String",
+-            "checks": [
+-              {
+-                "_tag": "Filter"
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "authorizationUrl",
+-          "type": {
+-            "_tag": "Never"
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "tokenUrl",
+-          "type": {
+-            "_tag": "Never"
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "revocationUrl",
+-          "type": {
+-            "_tag": "Never"
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "scopes",
+-          "type": {
+-            "_tag": "Arrays",
+-            "rest": [
+-              {
+-                "_tag": "String"
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "response",
+-          "type": {
+-            "_tag": "Objects",
+-            "propertySignatures": [],
+-            "indexSignatures": [
+-              {
+-                "parameter": {
+-                  "_tag": "String"
+-                },
+-                "type": {
+-                  "_tag": "Declaration",
+-                  "representation": {
+-                    "id": "effect/schema/Json",
+-                    "payload": null
+-                  }
+-                }
+-              }
+-            ]
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "plain",
+-          "type": {
+-            "_tag": "Arrays",
+-            "rest": [
+-              {
+-                "_tag": "String",
+-                "checks": [
+-                  {
+-                    "_tag": "Filter",
+-                    "representation": {
+-                      "id": "effect/schema/isMinLength",
+-                      "payload": {
+-                        "minLength": 1
+-                      }
+-                    }
+-                  }
+-                ]
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "raw",
+-          "type": {
+-            "_tag": "Arrays",
+-            "rest": [
+-              {
+-                "_tag": "String",
+-                "checks": [
+-                  {
+-                    "_tag": "Filter",
+-                    "representation": {
+-                      "id": "effect/schema/isMinLength",
+-                      "payload": {
+-                        "minLength": 1
+-                      }
+-                    }
+-                  }
+-                ]
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "$shared": "7fa3e0fa96a362fd"
+-        }
+-      ]
+-    },
+-    "b7c44cc1d6ecfb85": {
+-      "name": "auth",
+-      "type": {
+-        "$shared": "f1e4d4d57a79238b"
+-      },
+-      "isOptional": false
+-    },
+-    "d1167380b135e5b7": {
+-      "name": "definition",
+-      "type": {
+-        "$shared": "16c7d426e69479e6"
+-      },
+-      "isOptional": false
+-    },
+-    "e595f516132f1469": {
+-      "parameter": {
+-        "_tag": "String",
+-        "checks": [
+-          {
+-            "_tag": "Filter",
+-            "representation": {
+-              "id": "effect/schema/isMinLength",
+-              "payload": {
+-                "minLength": 1
+-              }
+-            }
+-          }
+-        ]
+-      },
+-      "type": {
+-        "$shared": "7219e966084f0ccc"
+-      }
+-    },
+-    "e73afc906c84fa0a": {
+-      "_tag": "Arrays",
+-      "rest": [
+-        {
+-          "$shared": "fc1adb7991b01447"
+-        }
+-      ]
+-    },
+-    "eb35fd8191fe5b27": {
+-      "_tag": "Union",
+-      "types": [
+-        {
+-          "$shared": "fc1adb7991b01447"
+-        },
+-        {
+-          "$shared": "e73afc906c84fa0a"
+-        }
+-      ]
+-    },
+-    "ec59a578c4f756be": {
+-      "parameter": {
+-        "_tag": "String",
+-        "checks": [
+-          {
+-            "_tag": "Filter",
+-            "representation": {
+-              "id": "effect/schema/isMinLength",
+-              "payload": {
+-                "minLength": 1
+-              }
+-            }
+-          }
+-        ]
+-      },
+-      "type": {
+-        "$shared": "5524a0d67586f021"
+-      }
+-    },
+-    "f1e4d4d57a79238b": {
+-      "_tag": "Objects",
+-      "propertySignatures": [],
+-      "indexSignatures": [
+-        {
+-          "$shared": "e595f516132f1469"
+-        }
+-      ]
+-    },
+-    "fc1adb7991b01447": {
+-      "_tag": "Objects",
+-      "propertySignatures": [
+-        {
+-          "name": "id",
+-          "type": {
+-            "_tag": "String",
+-            "checks": [
+-              {
+-                "_tag": "Filter",
+-                "representation": {
+-                  "id": "effect/schema/isStartingWith",
+-                  "payload": {
+-                    "startsWith": "acc_"
+-                  }
+-                }
+-              },
+-              {
+-                "_tag": "Filter",
+-                "representation": {
+-                  "id": "effect/schema/isMinLength",
+-                  "payload": {
+-                    "minLength": 5
+-                  }
+-                }
+-              }
+-            ]
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "$shared": "92f04f71889cd483"
+-        },
+-        {
+-          "name": "method",
+-          "type": {
+-            "_tag": "String",
+-            "checks": [
+-              {
+-                "_tag": "Filter",
+-                "representation": {
+-                  "id": "effect/schema/isMinLength",
+-                  "payload": {
+-                    "minLength": 1
+-                  }
+-                }
+-              }
+-            ]
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "generation",
+-          "type": {
+-            "_tag": "Number",
+-            "checks": [
+-              {
+-                "_tag": "Filter",
+-                "representation": {
+-                  "id": "effect/schema/isInt",
+-                  "payload": null
+-                }
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "fields",
+-          "type": {
+-            "_tag": "Objects",
+-            "propertySignatures": [],
+-            "indexSignatures": [
+-              {
+-                "parameter": {
+-                  "_tag": "String"
+-                },
+-                "type": {
+-                  "_tag": "Declaration",
+-                  "representation": {
+-                    "id": "effect/schema/Json",
+-                    "payload": null
+-                  }
+-                }
+-              }
+-            ]
+-          },
+-          "isOptional": false
+-        }
+-      ]
+-    }
+-  }
 +  "shared": {}
-+}
+ }
 diff --git a/packages/apps/src/contracts/app.ts b/packages/apps/src/contracts/app.ts
-index 7f51e36391..eae8ca21d1 100644
+index 7f51e36..eae8ca2 100644
 --- a/packages/apps/src/contracts/app.ts
 +++ b/packages/apps/src/contracts/app.ts
 @@ -96,7 +96,11 @@ export interface AppAccountsContext<Slots extends AccountSlots> {
@@ -654,21 +2780,10 @@ index 7f51e36391..eae8ca21d1 100644
  
  /**
 diff --git a/packages/apps/src/contracts/host.ts b/packages/apps/src/contracts/host.ts
-index 75a74bec22..63569098c9 100644
+index 1e2dcbc..6356909 100644
 --- a/packages/apps/src/contracts/host.ts
 +++ b/packages/apps/src/contracts/host.ts
-@@ -87,8 +87,9 @@ export { protocol9 } from "./protocols/9.ts";
- export { protocol10 } from "./protocols/10.ts";
- export { protocol11 } from "./protocols/11.ts";
- export { protocol12 } from "./protocols/12.ts";
-+export { protocol13 } from "./protocols/13.ts";
- export {
--  current as protocol13,
-+  current as protocol14,
-   AccountCheckCommand,
-   CredentialHost,
-   MigrateCommand,
-@@ -207,6 +208,8 @@ export const scopedSlots = <Slot>(accounts: {
+@@ -208,6 +208,8 @@ export const scopedSlots = <Slot>(accounts: {
  
  /** Trusted invocation context, supplied separately from the Request. */
  export interface HostContext {
@@ -677,62 +2792,116 @@ index 75a74bec22..63569098c9 100644
    /** Trusted host deadline; never accepted in public operation JSON. */
    readonly deadline?: typeof InvocationDeadline.Type;
    /** Host-owned cache storage and refresh lifetime, separate from app database transactions. */
-diff --git a/packages/apps/src/contracts/protocol-version.ts b/packages/apps/src/contracts/protocol-version.ts
-index f0ab1c6d9e..095656f48d 100644
---- a/packages/apps/src/contracts/protocol-version.ts
-+++ b/packages/apps/src/contracts/protocol-version.ts
-@@ -3,4 +3,4 @@
-  * snapshot. Its schemas are `protocols/current.ts`; released protocols are frozen. See notes/apps-publishing.md.
-  * This file has no imports so the package build script can read it directly.
-  */
--export const frameworkProtocol = 13;
-+export const frameworkProtocol = 14;
 diff --git a/packages/apps/src/contracts/protocols/13.ts b/packages/apps/src/contracts/protocols/13.ts
-new file mode 100644
-index 0000000000..cb18e16af4
---- /dev/null
+index fc70394..cb18e16 100644
+--- a/packages/apps/src/contracts/protocols/13.ts
 +++ b/packages/apps/src/contracts/protocols/13.ts
-@@ -0,0 +1,102 @@
-+/**
+@@ -1,63 +1,23 @@
+ /**
+- * Host protocol 13: protocol 12 plus account scopes, confirmed tool kinds and shared catalog
+- * definitions.
+- *
+- * Requirements and resolved accounts are nested by scope: `app` for accounts linked to the app for
+- * everyone, `user` for the caller's; a tool's schedule may run in the `app` scope. Tools may say their kind is confirmed (`kindConfirmed`). A
+- * build may declare `capabilities.sharedDefinitions`; the host then may ask an inspection for
+- * `definitions: "shared"`, answered with a shared catalog that sends each `$defs` once. Every other
+- * message is protocol 12's, re-exported unchanged.
+- *
+- * Released and frozen like the earlier ones: `bun run check` compares `protocol13` with
+- * `packages/apps/protocols/13.json`. The module imports only `effect` and earlier protocol modules,
+- * so no change elsewhere can alter it. Define the next protocol instead of editing this file. See
+- * notes/apps-publishing.md.
 + * Host protocol 13 adds app and user account scopes. App-scope work omits user accounts.
 + * This released boundary imports only earlier protocols and remains frozen.
-+ */
-+import { Schema } from "effect";
-+import {
-+  DeclaredRequirements as PreviousRequirements,
+  */
+ import { Schema } from "effect";
+ import {
+-  AccountId,
+-  AppSkillName,
+-  JsonObject,
+-  JsonValue,
+-  OperationSchedule as PreviousSchedule,
+-  ToolAnnotations,
+-  WebhookCommand,
+-  WorkflowCommand,
+-  WorkflowReplay,
+-  WorkflowRunId,
+-} from "./1.ts";
+-import {
+-  AccountCheckCommand,
+-  DeclaredProvider,
+   DeclaredRequirements as PreviousRequirements,
+-  HostRouterError,
+-  InvocationDeadline,
+-  MigrateCommand,
+-  RouterIcon,
+-  ToolKind,
+-  TrustedToolApproval,
 +  HostInvocation as PreviousInvocation,
 +  ResolvedAccounts as PreviousAccounts,
 +  HostedTool as PreviousTool,
 +  HostedRouter,
 +  HostRequest as PreviousRequest,
-+  protocol12,
-+} from "./12.ts";
+   protocol12,
+ } from "./12.ts";
 +import { JsonValue, OperationSchedule as PreviousSchedule } from "./1.ts";
-+
-+export * from "./12.ts";
-+
-+export const DeclaredRequirements = Schema.Struct({
+ 
+ export * from "./12.ts";
+ 
+-/** One requirement: its provider, how many accounts it takes, and whether it has a check. */
+-export const DeclaredAccountSlot = Schema.Struct({
+-  definition: DeclaredProvider,
+-  cardinality: Schema.Literals(["one", "many"]),
+-  health: Schema.optionalKey(Schema.Literal(true)),
+-});
+-export type DeclaredAccountSlot = typeof DeclaredAccountSlot.Type;
+-
+-/** One scope's requirements, by name. */
+-export const DeclaredAccountSlots = Schema.Record(Schema.NonEmptyString, DeclaredAccountSlot);
+-export type DeclaredAccountSlots = typeof DeclaredAccountSlots.Type;
+-
+-/**
+- * Protocol 12's requirements, nested by scope, with the sharedDefinitions capability. A name is
+- * used in one scope only.
+- */
+ export const DeclaredRequirements = Schema.Struct({
 +  ...PreviousRequirements.fields,
-+  capabilities: Schema.optionalKey(
-+    Schema.Struct({
-+      skills: Schema.Literal(true),
-+      toolIndex: Schema.optionalKey(Schema.Literal(true)),
-+      skillSources: Schema.optionalKey(Schema.Literal(true)),
-+      scheduledTools: Schema.optionalKey(Schema.Literal(true)),
-+      sharedDefinitions: Schema.optionalKey(Schema.Literal(true)),
-+    }),
-+  ),
+   capabilities: Schema.optionalKey(
+     Schema.Struct({
+       skills: Schema.Literal(true),
+@@ -67,178 +27,76 @@ export const DeclaredRequirements = Schema.Struct({
+       sharedDefinitions: Schema.optionalKey(Schema.Literal(true)),
+     }),
+   ),
+-  database: PreviousRequirements.fields.database,
+-  accounts: Schema.Struct({ app: DeclaredAccountSlots, user: DeclaredAccountSlots }),
+-  sql: PreviousRequirements.fields.sql,
+-  events: PreviousRequirements.fields.events,
+-  icons: PreviousRequirements.fields.icons,
 +  accounts: Schema.Struct({
 +    app: PreviousRequirements.fields.accounts,
 +    user: PreviousRequirements.fields.accounts,
 +  }),
-+});
-+
+ });
+-export type DeclaredRequirements = typeof DeclaredRequirements.Type;
+ 
+-/** Host-resolved credentials for one stable saved account. */
+-export const ResolvedAccount = Schema.Struct({
+-  id: AccountId,
+-  provider: DeclaredProvider,
+-  method: Schema.NonEmptyString,
+-  generation: Schema.optionalKey(Schema.Int),
+-  fields: JsonObject,
 +export const ResolvedAccounts = Schema.Struct({
 +  app: PreviousAccounts,
 +  user: Schema.optionalKey(PreviousAccounts),
-+});
-+
+ });
+-export type ResolvedAccount = typeof ResolvedAccount.Type;
+ 
+-/** One scope's resolved accounts by requirement; [] differs from a missing slot. */
+-export const ResolvedAccountSlots = Schema.Record(
+-  Schema.NonEmptyString,
+-  Schema.Union([ResolvedAccount, Schema.Array(ResolvedAccount)]),
 +export const HostRequest = Schema.Union(
 +  PreviousRequest.members.map((member) => {
 +    if ("fields" in member && "detail" in member.fields)
@@ -742,64 +2911,170 @@ index 0000000000..cb18e16af4
 +      });
 +    return member;
 +  }),
-+);
-+
-+export const OperationSchedule = Schema.Struct({
-+  name: PreviousSchedule.fields.name,
-+  scope: Schema.optionalKey(Schema.Literal("app")),
-+  timing: PreviousSchedule.fields.timing,
-+  input: PreviousSchedule.fields.input,
-+});
-+export const HostedTool = Schema.Struct({
+ );
+-export type ResolvedAccountSlots = typeof ResolvedAccountSlots.Type;
+ 
+-/** An invocation's accounts by scope. `user` is absent for work without a caller. */
+-export const ResolvedAccounts = Schema.Struct({
+-  app: ResolvedAccountSlots,
+-  user: Schema.optionalKey(ResolvedAccountSlots),
+-});
+-export type ResolvedAccounts = typeof ResolvedAccounts.Type;
+-
+-/** Protocol 12's operation schedule; an app's schedule may run with its app accounts. */
+ export const OperationSchedule = Schema.Struct({
+   name: PreviousSchedule.fields.name,
+   scope: Schema.optionalKey(Schema.Literal("app")),
+   timing: PreviousSchedule.fields.timing,
+   input: PreviousSchedule.fields.input,
+ });
+-export type OperationSchedule = typeof OperationSchedule.Type;
+-
+-/**
+- * Protocol 12's tool description. A tool may say its kind is confirmed, and its schedules may
+- * name the app scope.
+- */
+ export const HostedTool = Schema.Struct({
 +  ...PreviousTool.fields,
-+  schedules: Schema.optionalKey(Schema.Array(OperationSchedule)),
-+});
-+export const HostedToolSummary = HostedTool.mapFields(
-+  ({ inputSchema: _input, outputSchema: _output, _meta, ...fields }) => fields,
-+);
-+export const HostedCatalog = Schema.Struct({
-+  tools: Schema.Array(HostedTool),
-+  routers: Schema.Array(HostedRouter),
-+});
-+export const HostedCatalogSummary = Schema.Struct({
-+  tools: Schema.Array(HostedToolSummary),
-+  routers: Schema.Array(HostedRouter),
-+});
-+export const HostedSharedTool = Schema.Struct({
-+  ...HostedTool.fields,
+   schedules: Schema.optionalKey(Schema.Array(OperationSchedule)),
+-  name: Schema.NonEmptyString,
+-  router: Schema.optionalKey(Schema.NonEmptyString),
+-  tags: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
+-  description: Schema.String,
+-  inputSchema: JsonObject,
+-  readOnly: Schema.optionalKey(Schema.Boolean),
+-  kindConfirmed: Schema.optionalKey(Schema.Boolean),
+-  title: Schema.optionalKey(Schema.String),
+-  outputSchema: Schema.optionalKey(JsonObject),
+-  annotations: Schema.optionalKey(ToolAnnotations),
+-  _meta: Schema.optionalKey(JsonObject),
+ });
+-export type HostedTool = typeof HostedTool.Type;
+-
+-/** Catalog entry without schemas. */
+ export const HostedToolSummary = HostedTool.mapFields(
+   ({ inputSchema: _input, outputSchema: _output, _meta, ...fields }) => fields,
+ );
+-export type HostedToolSummary = typeof HostedToolSummary.Type;
+-
+-/** One router in a live catalog. */
+-export const HostedRouter = Schema.Struct({
+-  path: Schema.String,
+-  title: Schema.optionalKey(Schema.String),
+-  description: Schema.optionalKey(Schema.String),
+-  icons: Schema.optionalKey(Schema.Array(RouterIcon)),
+-  tags: Schema.optionalKey(Schema.Record(Schema.NonEmptyString, Schema.String)),
+-  skill: Schema.optionalKey(AppSkillName),
+-  error: Schema.optionalKey(HostRouterError),
+-});
+-export type HostedRouter = typeof HostedRouter.Type;
+-
+-/** A live evaluation's tools and the routers that group them. */
+ export const HostedCatalog = Schema.Struct({
+   tools: Schema.Array(HostedTool),
+   routers: Schema.Array(HostedRouter),
+ });
+-export type HostedCatalog = typeof HostedCatalog.Type;
+-
+-/** A catalog without tool schemas. */
+ export const HostedCatalogSummary = Schema.Struct({
+   tools: Schema.Array(HostedToolSummary),
+   routers: Schema.Array(HostedRouter),
+ });
+-export type HostedCatalogSummary = typeof HostedCatalogSummary.Type;
+-
+-/** A tool schema whose `$defs` a shared catalog sends once, beside its tools. */
+-export const SharedSchemaKey = Schema.Literals(["inputSchema", "outputSchema"]);
+-export type SharedSchemaKey = typeof SharedSchemaKey.Type;
+-
+-/** A tool of a shared catalog; `shared` names the schemas whose `$defs` the catalog holds. */
+ export const HostedSharedTool = Schema.Struct({
+   ...HostedTool.fields,
+-  shared: Schema.optionalKey(Schema.Array(SharedSchemaKey)),
 +  shared: Schema.optionalKey(Schema.Array(Schema.Literals(["inputSchema", "outputSchema"]))),
-+});
-+export const HostedSharedCatalog = Schema.Struct({
-+  tools: Schema.Array(HostedSharedTool),
-+  routers: Schema.Array(HostedRouter),
-+  definitions: Schema.Array(JsonValue),
-+  defs: Schema.Array(Schema.Record(Schema.String, Schema.Int)),
-+});
-+
-+export const HostInvocation = Schema.Struct({
+ });
+-export type HostedSharedTool = typeof HostedSharedTool.Type;
+-
+-/** A catalog that sends each `$defs` its tools' schemas hold once, and each definition once. */
+ export const HostedSharedCatalog = Schema.Struct({
+   tools: Schema.Array(HostedSharedTool),
+   routers: Schema.Array(HostedRouter),
+   definitions: Schema.Array(JsonValue),
+   defs: Schema.Array(Schema.Record(Schema.String, Schema.Int)),
+ });
+-export type HostedSharedCatalog = typeof HostedSharedCatalog.Type;
+ 
+-/** Protocol 12's commands; an inspection may ask for shared definitions. */
+-export const HostRequest = Schema.Union([
+-  WorkflowCommand,
+-  WebhookCommand,
+-  Schema.Struct({ operation: Schema.Literal("requirements") }),
+-  Schema.Struct({
+-    operation: Schema.Literal("inspect"),
+-    detail: Schema.optionalKey(Schema.Literal("summary")),
+-    tools: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
+-    scheduled: Schema.optionalKey(Schema.Literal(true)),
+-    definitions: Schema.optionalKey(Schema.Literal("shared")),
+-  }),
+-  Schema.Struct({
+-    operation: Schema.Literal("skills"),
+-    sources: Schema.optionalKey(Schema.Literal(true)),
+-  }),
+-  Schema.Struct({
+-    operation: Schema.Literal("query"),
+-    name: Schema.NonEmptyString,
+-    input: JsonValue,
+-  }),
+-  Schema.Struct({
+-    operation: Schema.Literal("mutate"),
+-    name: Schema.NonEmptyString,
+-    input: JsonValue,
+-  }),
+-  Schema.Struct({
+-    operation: Schema.Literal("call"),
+-    tool: Schema.NonEmptyString,
+-    kind: Schema.optionalKey(ToolKind),
+-    input: JsonValue,
+-  }),
+-  AccountCheckCommand,
+-  MigrateCommand,
+-]);
+-export type HostRequest = typeof HostRequest.Type;
+-
+-/** The JSON body the host sends to a bundle's generated server entry. */
+ export const HostInvocation = Schema.Struct({
+-  command: HostRequest,
 +  ...PreviousInvocation.fields,
-+  accounts: ResolvedAccounts,
+   accounts: ResolvedAccounts,
+-  approval: Schema.optionalKey(TrustedToolApproval),
+-  replay: Schema.optionalKey(WorkflowReplay),
+-  deadline: Schema.optionalKey(InvocationDeadline),
+-  workflowRun: Schema.optionalKey(WorkflowRunId),
 +  command: HostRequest,
-+});
-+
-+export const protocol13 = {
-+  version: 13,
-+  schemas: {
-+    ...protocol12.schemas,
+ });
+-export type HostInvocation = typeof HostInvocation.Type;
+ 
+-/** Every message of protocol 13, in the order its snapshot records them. */
+ export const protocol13 = {
+   version: 13,
+   schemas: {
+     ...protocol12.schemas,
 +    requirements: DeclaredRequirements,
 +    accounts: ResolvedAccounts,
-+    invocation: HostInvocation,
-+    request: HostRequest,
-+    catalog: HostedCatalog,
-+    catalogSummary: HostedCatalogSummary,
-+    sharedCatalog: HostedSharedCatalog,
-+  },
-+} as const;
+     invocation: HostInvocation,
+     request: HostRequest,
+-    requirements: DeclaredRequirements,
+     catalog: HostedCatalog,
+     catalogSummary: HostedCatalogSummary,
+     sharedCatalog: HostedSharedCatalog,
+-    accounts: ResolvedAccounts,
+   },
+ } as const;
 diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/src/contracts/protocols/current.ts
-index 09e48ec241..294dcb08cd 100644
+index e8d5b71..cdcb1b9 100644
 --- a/packages/apps/src/contracts/protocols/current.ts
 +++ b/packages/apps/src/contracts/protocols/current.ts
-@@ -571,6 +571,8 @@ export type HostResponse = typeof HostResponse.Type;
+@@ -583,6 +583,8 @@ export type HostResponse = typeof HostResponse.Type;
  export const HostInvocation = Schema.Struct({
    command: HostRequest,
    accounts: ResolvedAccounts,
@@ -808,26 +3083,8 @@ index 09e48ec241..294dcb08cd 100644
    approval: Schema.optionalKey(TrustedToolApproval),
    replay: Schema.optionalKey(WorkflowReplay),
    deadline: Schema.optionalKey(InvocationDeadline),
-diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/src/contracts/protocols/released.ts
-index e2368feb16..0c5187ac1e 100644
---- a/packages/apps/src/contracts/protocols/released.ts
-+++ b/packages/apps/src/contracts/protocols/released.ts
-@@ -15,6 +15,7 @@ import { protocol9 } from "./9.ts";
- import { protocol10 } from "./10.ts";
- import { protocol11 } from "./11.ts";
- import { protocol12 } from "./12.ts";
-+import { protocol13 } from "./13.ts";
- 
- export const releasedProtocols = [
-   protocol1,
-@@ -29,4 +30,5 @@ export const releasedProtocols = [
-   protocol10,
-   protocol11,
-   protocol12,
-+  protocol13,
- ] as const;
 diff --git a/packages/apps/src/host.ts b/packages/apps/src/host.ts
-index e84dd66eb3..671942e06a 100644
+index e84dd66..671942e 100644
 --- a/packages/apps/src/host.ts
 +++ b/packages/apps/src/host.ts
 @@ -22,8 +22,21 @@ import {
@@ -855,14 +3112,28 @@ index e84dd66eb3..671942e06a 100644
      ? {}
      : {
 diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
-index 3e7dc3f155..ac3f8677d0 100644
+index 3e7dc3f..4a5b39e 100644
 --- a/packages/apps/src/implementation/host.ts
 +++ b/packages/apps/src/implementation/host.ts
-@@ -352,7 +352,11 @@ function bindAccounts(
+@@ -336,7 +336,7 @@ function bindScope(
+ 
+ /**
+  * Bind an invocation's accounts by scope: `ctx.app.accounts` always, and `ctx.user.accounts` when
+- * the invocation has a caller. Without `user` accounts the context has no `user`.
++ * the host supplies a caller or a user-account scope. App-only work has neither.
+  */
+ function bindAccounts(
+   slots: ScopedSlots,
+@@ -350,9 +350,14 @@ function bindAccounts(
+           Redacted.value(context.accounts),
+         );
          const app = yield* bindScope(slots.app, declarations.accounts.app, selected.app);
-         if (selected.user === undefined) return { app: { accounts: app } };
-         const user = yield* bindScope(slots.user, declarations.accounts.user, selected.user);
+-        if (selected.user === undefined) return { app: { accounts: app } };
+-        const user = yield* bindScope(slots.user, declarations.accounts.user, selected.user);
 -        return { app: { accounts: app }, user: { accounts: user } };
++        if (selected.user === undefined && context.caller === undefined)
++          return { app: { accounts: app } };
++        const user = yield* bindScope(slots.user, declarations.accounts.user, selected.user ?? {});
 +        const id =
 +          context.caller === undefined
 +            ? undefined
@@ -871,7 +3142,7 @@ index 3e7dc3f155..ac3f8677d0 100644
        }),
      new HostAccountsInvalid(),
    );
-@@ -715,7 +719,12 @@ function dispatch(
+@@ -715,7 +720,12 @@ function dispatch(
              Effect.gen(function* () {
                const current = yield* execution.resolve();
                const accounts = yield* safe(
@@ -886,10 +3157,10 @@ index 3e7dc3f155..ac3f8677d0 100644
                );
                return {
 diff --git a/packages/sdk/src/contracts/workerd-host.ts b/packages/sdk/src/contracts/workerd-host.ts
-index 0a22f0dea3..d3429fce3b 100644
+index b579bb0..d369c02 100644
 --- a/packages/sdk/src/contracts/workerd-host.ts
 +++ b/packages/sdk/src/contracts/workerd-host.ts
-@@ -30,6 +30,7 @@ export const WorkerInvocation = Schema.Struct({
+@@ -33,6 +33,7 @@ export const WorkerInvocation = Schema.Struct({
    database: Schema.Boolean,
    command: HostRequest,
    accounts: HostAccounts,
@@ -897,7 +3168,7 @@ index 0a22f0dea3..d3429fce3b 100644
    approval: Schema.optionalKey(TrustedToolApproval),
    replay: Schema.optionalKey(WorkflowReplay),
    deadline: Schema.optionalKey(InvocationDeadline),
-@@ -126,5 +127,6 @@ export const PreparedWorkflow = Schema.Union([
+@@ -129,5 +130,6 @@ export const PreparedWorkflow = Schema.Union([
      state: Schema.Literal("execute"),
      seed: WorkflowSeed,
      accounts: HostAccounts,
@@ -905,42 +3176,66 @@ index 0a22f0dea3..d3429fce3b 100644
    }),
  ]);
 diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
-index d63bcdba56..8d5f264cde 100644
+index 499524a..9803637 100644
 --- a/packages/sdk/src/implementation/app-protocols.ts
 +++ b/packages/sdk/src/implementation/app-protocols.ts
-@@ -57,11 +57,11 @@ export interface AppProtocol {
-   readonly sealedCredentials: boolean;
+@@ -65,7 +65,7 @@ export interface AppProtocol {
+   readonly accounts: (accounts: ResolvedAccounts) => ResolvedAccounts;
  }
  
--/** Protocol 13 is the host's current protocol, so its messages need no conversion. */
--const protocol13: AppProtocol = {
--  version: 13,
+-/** Protocol 14 is the host's current protocol, so its messages need no conversion. */
 +/** Protocol 14 adds the caller's host identity beside the invocation's account bindings. */
-+const protocol14: AppProtocol = {
-+  version: 14,
+ const protocol14: AppProtocol = {
+   version: 14,
    workerEntry: appBridge,
--  nodeEntry: nodeAppEntry(13),
-+  nodeEntry: nodeAppEntry(14),
-   invocation: (input) => JSON.stringify(input),
-   request: (command) => command,
-   refuse: () => undefined,
-@@ -71,6 +71,15 @@ const protocol13: AppProtocol = {
+@@ -77,7 +77,7 @@ const protocol14: AppProtocol = {
+   workflow: (execution) => execution,
+   concurrentData: true,
    sealedCredentials: true,
+-  accounts: (accounts) => accounts,
++  accounts: (accounts) => retainedAccounts(accounts),
  };
  
+ /** A credential host with an underscore, which bundles of protocol 13 and earlier reject. */
+@@ -100,25 +100,22 @@ const slotsWithoutUnderscoredHosts = (slots: ResolvedAccountSlots): ResolvedAcco
+     ]),
+   );
+ 
+-/**
+- * Protocol 13 is protocol 14 with credential hosts that never hold an underscore. An account its
+- * bundle uses can still carry one: connected through a later app that declared it, and granted by
+- * this app's wildcard. Its bundles read each account's hosts but never decide from them where a
+- * credential goes: a sealed handle carries the hosts it was sealed for and the outbound network
+- * checks those. So such a bundle receives each account without its underscored hosts, which it
+- * would otherwise reject with the whole invocation. Every other message and reply is unchanged.
+- */
++/** Retained Basalt bundles keep the strict credential-host grammar. */
++const retainedAccounts = (accounts: ResolvedAccounts): ResolvedAccounts =>
++  accounts.user === undefined
++    ? { app: slotsWithoutUnderscoredHosts(accounts.app) }
++    : {
++        app: slotsWithoutUnderscoredHosts(accounts.app),
++        user: slotsWithoutUnderscoredHosts(accounts.user),
++      };
++
 +/** Earlier builds have no caller identity field. Keep their retained entry body unchanged. */
 +const withoutCaller = ({ caller: _caller, ...input }: HostInvocation) => input;
-+const protocol13: AppProtocol = {
-+  ...protocol14,
-+  version: 13,
-+  nodeEntry: nodeAppEntry(13),
+ const protocol13: AppProtocol = {
+   ...protocol14,
+   version: 13,
+   nodeEntry: nodeAppEntry(13),
+-  accounts: (accounts) =>
+-    accounts.user === undefined
+-      ? { app: slotsWithoutUnderscoredHosts(accounts.app) }
+-      : {
+-          app: slotsWithoutUnderscoredHosts(accounts.app),
+-          user: slotsWithoutUnderscoredHosts(accounts.user),
+-        },
 +  invocation: (input) => JSON.stringify(withoutCaller(input)),
-+};
-+
+ };
+ 
  /**
-  * Bundles of protocol 12 and earlier read one flat record of requirements and accounts. They
-  * declare no app requirements, so they have no app accounts: the host sends them the invocation's
-@@ -94,8 +103,8 @@ const scopedRequirements = (command: HostRequest, body: unknown) =>
+@@ -144,8 +141,8 @@ const scopedRequirements = (command: HostRequest, body: unknown) =>
  
  /** Protocol 12 and earlier: the invocation's and each workflow step's accounts, unscoped. */
  const unscoped = {
@@ -951,7 +3246,7 @@ index d63bcdba56..8d5f264cde 100644
    workflow: (execution: WorkflowExecution): WorkflowExecution => ({
      ...execution,
      resolve: () =>
-@@ -214,7 +223,7 @@ type LegacyVersion = keyof typeof legacyProtocols;
+@@ -264,7 +261,7 @@ type LegacyVersion = keyof typeof legacyProtocols;
   */
  const prefixKind = (tool: string) =>
    tool.startsWith("queries.") ? "query" : tool.startsWith("mutations.") ? "mutation" : undefined;
@@ -960,27 +3255,19 @@ index d63bcdba56..8d5f264cde 100644
    command.operation === "call"
      ? { operation: "call", tool: command.tool, input: command.input }
      : command;
-@@ -272,6 +281,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
-     protocol11,
-     protocol12,
-     protocol13,
-+    protocol14,
-   ].map((protocol) => [protocol.version, protocol]),
- );
- 
 diff --git a/packages/sdk/src/implementation/app-runner.ts b/packages/sdk/src/implementation/app-runner.ts
-index bea73bfe11..d371a18b65 100644
+index 29114ce..67eff31 100644
 --- a/packages/sdk/src/implementation/app-runner.ts
 +++ b/packages/sdk/src/implementation/app-runner.ts
-@@ -124,6 +124,7 @@ export interface AppRunnerHost {
+@@ -126,6 +126,7 @@ export interface AppRunnerHost {
  
  /** The authorized call. Credentials travel here, never in a Worker name or retained code. */
  export interface AppInvocation {
 +  readonly caller?: string;
    readonly app: string;
    readonly build: string;
-   readonly database: boolean;
-@@ -837,6 +838,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
+   /**
+@@ -857,6 +858,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
          const body = protocol.invocation({
            command: invocation.command,
            accounts,
@@ -989,23 +3276,23 @@ index bea73bfe11..d371a18b65 100644
            ...(invocation.replay === undefined ? {} : { replay: invocation.replay }),
            ...(invocation.deadline === undefined ? {} : { deadline: invocation.deadline }),
 diff --git a/packages/sdk/src/implementation/app-runtime.ts b/packages/sdk/src/implementation/app-runtime.ts
-index 2fbd374a2f..af3eab0c42 100644
+index d0dbf30..e5c49a3 100644
 --- a/packages/sdk/src/implementation/app-runtime.ts
 +++ b/packages/sdk/src/implementation/app-runtime.ts
-@@ -169,6 +169,7 @@ export const appRuntime = (host: AppRuntimeHost) =>
+@@ -187,6 +187,7 @@ export const appRuntime = (host: AppRuntimeHost) =>
              database: input.database,
              command,
              accounts: Redacted.value(input.accounts),
 +            ...(input.caller === undefined ? {} : { caller: input.caller }),
              // Workers RPC structured-clones its arguments; Effect headers carry a prototype it rejects.
              headers: Object.fromEntries(Object.entries(yield* traceHeaders)),
-             ...(input.approval === undefined ? {} : { approval: input.approval }),
+             ...(input.hostApi === undefined ? {} : { hostApi: input.hostApi }),
 diff --git a/packages/sdk/src/implementation/declarations.ts b/packages/sdk/src/implementation/declarations.ts
-index ed259a9b07..6281381f1c 100644
+index 8e58ad9..f30120c 100644
 --- a/packages/sdk/src/implementation/declarations.ts
 +++ b/packages/sdk/src/implementation/declarations.ts
-@@ -115,6 +115,8 @@ export const makeDeclarations = (options: {
-             state.version.build,
+@@ -149,6 +149,8 @@ export const makeDeclarations = (options: {
+             appCacheNamespace(state.version.build, versionHostApi(options.hostApi, state.version)),
              // A caller's evaluation and actorless work see different contexts: only one has `user`.
              state.scope,
 +            // Factories may vary tools and skills by caller, even with no user accounts.
@@ -1014,7 +3301,7 @@ index ed259a9b07..6281381f1c 100644
            ]),
          ),
 diff --git a/packages/sdk/src/implementation/runtime.ts b/packages/sdk/src/implementation/runtime.ts
-index 4dd137bc57..be63c3d4ca 100644
+index ee541bf..c6ae90a 100644
 --- a/packages/sdk/src/implementation/runtime.ts
 +++ b/packages/sdk/src/implementation/runtime.ts
 @@ -41,11 +41,15 @@ export interface ResolvedAppRuntime {
@@ -1078,10 +3365,10 @@ index 4dd137bc57..be63c3d4ca 100644
      readonly kind?: "query" | "mutation";
      readonly input: Json;
 diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
-index 16f3aa5121..522eff8fb6 100644
+index 6f23216..5825fb6 100644
 --- a/packages/sdk/src/implementation/tools.ts
 +++ b/packages/sdk/src/implementation/tools.ts
-@@ -467,7 +467,10 @@ function resolveFor(
+@@ -503,7 +503,10 @@ function resolveFor(
        state.scope === "app"
          ? { app: selections.app }
          : { app: selections.app, user: selections.user };
@@ -1093,7 +3380,7 @@ index 16f3aa5121..522eff8fb6 100644
    });
  }
  
-@@ -555,7 +558,7 @@ const renewRefused = (
+@@ -591,7 +594,7 @@ const renewRefused = (
        accounts.user === undefined
          ? { app: replaceScope(accounts.app) }
          : { app: replaceScope(accounts.app), user: replaceScope(accounts.user) };
@@ -1103,7 +3390,7 @@ index 16f3aa5121..522eff8fb6 100644
  
  function invocation(
 diff --git a/packages/sdk/src/implementation/worker-bridge.ts b/packages/sdk/src/implementation/worker-bridge.ts
-index 910c6ee413..6ae119bcfa 100644
+index 910c6ee..6ae119b 100644
 --- a/packages/sdk/src/implementation/worker-bridge.ts
 +++ b/packages/sdk/src/implementation/worker-bridge.ts
 @@ -35,14 +35,14 @@ export default {
@@ -1133,7 +3420,7 @@ index 910c6ee413..6ae119bcfa 100644
  
  /**
 diff --git a/packages/sdk/src/implementation/workerd-client.ts b/packages/sdk/src/implementation/workerd-client.ts
-index 88931948fc..804161c9af 100644
+index d93a7bf..adb2f60 100644
 --- a/packages/sdk/src/implementation/workerd-client.ts
 +++ b/packages/sdk/src/implementation/workerd-client.ts
 @@ -93,6 +93,7 @@ export const workerdHostHandler = (options: {
@@ -1145,10 +3432,10 @@ index 88931948fc..804161c9af 100644
            }
            case "load": {
 diff --git a/packages/sdk/src/implementation/workerd-entry.ts b/packages/sdk/src/implementation/workerd-entry.ts
-index bf9a830855..67bc6c1b27 100644
+index 656e3e8..0db5f61 100644
 --- a/packages/sdk/src/implementation/workerd-entry.ts
 +++ b/packages/sdk/src/implementation/workerd-entry.ts
-@@ -443,7 +443,7 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string
+@@ -454,7 +454,7 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string
              run: Schema.decodeUnknownSync(WorkflowRunId)(event.payload.run),
            }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(PreparedWorkflow)));
            if (prepared.state === "complete") return prepared.output;
@@ -1157,91 +3444,11 @@ index bf9a830855..67bc6c1b27 100644
            const native = <A>(work: () => Promise<A>) =>
              Effect.tryPromise({ try: work, catch: decodeWorkflowFailure });
            const execution: WorkflowExecution = {
-@@ -497,6 +497,7 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string
-                 build: seed.build,
+@@ -509,6 +509,7 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string
+                 ...(seed.hostApi === undefined ? {} : { hostApi: seed.hostApi }),
                  database: false,
                  accounts,
 +                ...(caller === undefined ? {} : { caller }),
                  command: { operation: "workflow-run", name: seed.name, input: seed.input },
                  headers: {},
                },
-diff --git a/e2e/tests/app-caller-identity.spec.ts b/e2e/tests/app-caller-identity.spec.ts
-index d40d9e7574..f450dae9d8 100644
---- a/e2e/tests/app-caller-identity.spec.ts
-+++ b/e2e/tests/app-caller-identity.spec.ts
-@@ -13,6 +13,25 @@ import { Browser } from "../support/browser.ts";
- const source = `import {
-   defineApp, dynamicRouter, mutation, object, query, router, string, workflow
- } from "apps";
-+import { createAppHandler, hostContext } from "apps/host";
-+const portable = createAppHandler(defineApp({}, {
-+  tools: router({ who: query({ input: object({}) }, async (ctx) => ({
-+    hasUser: "user" in ctx, id: ctx.user?.id ?? null,
-+  })) }),
-+}));
-+const direct = query({ input: object({}) }, async (ctx) => {
-+  const invoke = async (accounts, caller) => {
-+    const response = await portable(new Request("https://app.invalid", {
-+      method: "POST", body: JSON.stringify({ operation: "call", tool: "who", input: {} }),
-+    }), hostContext(accounts, undefined, caller));
-+    return { status: response.status, body: await response.json() };
-+  };
-+  return {
-+    caller: await invoke({ app: {} }, ctx.user.id),
-+    app: await invoke({ app: {} }, undefined),
-+    subjectless: await invoke({ app: {}, user: {} }, undefined),
-+  };
-+});
- const who = query({ input: object({}) }, async (ctx) => ctx.user.id ?? "missing");
- const spoof = mutation({ input: object({ userId: string() }) }, async (ctx, input) => ({
-   callerId: ctx.user.id ?? "missing",
-@@ -35,7 +54,7 @@ export default defineApp({}, async (ctx) => {
-     }],
-     resolve: async (requested) => requested === name ? fromFactory : undefined,
-   });
--  return { tools: router({ who, spoof, generated, launch }), workflows: { record } };
-+  return { tools: router({ who, direct, spoof, generated, launch }), workflows: { record } };
- });`;
- 
- const SessionIdentity = Schema.NullOr(
-@@ -140,6 +159,15 @@ layer(HostedLive, { excludeTestServices: true })("App caller identity", (it) =>
-         expect(yield* query(actors.member)).toBe(memberId);
-         expect(yield* query(actors.owner)).toBe(ownerId);
- 
-+        // Portable hosts can supply a caller without any user-account requirements.
-+        const direct = yield* call(actors.member, "direct", "query", {});
-+        expect(direct.status).toBe(200);
-+        expect(direct.body).toEqual({
-+          caller: { status: 200, body: { ok: true, value: { hasUser: true, id: memberId } } },
-+          app: { status: 200, body: { ok: true, value: { hasUser: false, id: null } } },
-+          subjectless: { status: 200, body: { ok: true, value: { hasUser: true, id: null } } },
-+        });
-+
-         // Subscription queries execute lazily, after the HTTP handler's auth scope has ended.
-         const subscribe = (actor: Session) =>
-           Effect.gen(function* () {
-diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
-index ac3f8677d0..4a5b39e752 100644
---- a/packages/apps/src/implementation/host.ts
-+++ b/packages/apps/src/implementation/host.ts
-@@ -336,7 +336,7 @@ function bindScope(
- 
- /**
-  * Bind an invocation's accounts by scope: `ctx.app.accounts` always, and `ctx.user.accounts` when
-- * the invocation has a caller. Without `user` accounts the context has no `user`.
-+ * the host supplies a caller or a user-account scope. App-only work has neither.
-  */
- function bindAccounts(
-   slots: ScopedSlots,
-@@ -350,8 +350,9 @@ function bindAccounts(
-           Redacted.value(context.accounts),
-         );
-         const app = yield* bindScope(slots.app, declarations.accounts.app, selected.app);
--        if (selected.user === undefined) return { app: { accounts: app } };
--        const user = yield* bindScope(slots.user, declarations.accounts.user, selected.user);
-+        if (selected.user === undefined && context.caller === undefined)
-+          return { app: { accounts: app } };
-+        const user = yield* bindScope(slots.user, declarations.accounts.user, selected.user ?? {});
-         const id =
-           context.caller === undefined
-             ? undefined

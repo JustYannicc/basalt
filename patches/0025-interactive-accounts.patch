@@ -230,7 +230,7 @@ index d771651..b9e3a83 100644
    )
    .add(
 diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/server/src/implementation/accounts.ts
-index a3dcc6d..42f44c5 100644
+index 9d5d688..203930b 100644
 --- a/apps/hosted/server/src/implementation/accounts.ts
 +++ b/apps/hosted/server/src/implementation/accounts.ts
 @@ -1,3 +1,9 @@
@@ -241,9 +241,9 @@ index a3dcc6d..42f44c5 100644
 +  cancelInteractive,
 +} from "./interactive-accounts.ts";
  import { accountOAuthRedirectUri } from "./auth.ts";
+ import { audited } from "./security-audit.ts";
  import { ScheduleWakeup } from "../contracts/schedules.ts";
- import { CurrentAuthorization } from "../contracts/authorization.ts";
-@@ -32,6 +38,7 @@ import {
+@@ -33,6 +39,7 @@ import {
    type OwnerId,
    type OAuthClientSelection,
    StorageError,
@@ -251,7 +251,7 @@ index a3dcc6d..42f44c5 100644
  } from "@executor-js/sdk/core";
  import { connectionClient, usableOAuthClients } from "./oauth-clients.ts";
  import { Effect, Schema } from "effect";
-@@ -96,6 +103,7 @@ export const getAccount = Effect.gen(function* () {
+@@ -98,6 +105,7 @@ export const getAccount = Effect.gen(function* () {
      health: visibleHealth(health, apps),
      revocation,
      canManage: access.canManage,
@@ -259,7 +259,7 @@ index a3dcc6d..42f44c5 100644
    };
  });
  /** Keep only the checks of apps the caller can see. */
-@@ -191,7 +199,8 @@ export const disconnectAccount = Effect.gen(function* () {
+@@ -193,7 +201,8 @@ export const disconnectAccount = Effect.gen(function* () {
    const executor = yield* Effect.flatten(HostedExecutor);
    yield* executor.accounts.get({ owner, account });
    const [first, ...rest] = yield* appLinkApps(yield* policyDatabase, account);
@@ -267,9 +267,9 @@ index a3dcc6d..42f44c5 100644
 +  const binding = yield* executor[InteractiveHost].binding({ owner, account });
 +  if (first !== undefined && binding === undefined)
      return yield* new AccountLinkedToApp({ account, apps: [first, ...rest] });
-   return yield* executor.accounts.remove({ owner, account });
- });
-@@ -404,6 +413,14 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
+   return yield* executor.accounts
+     .remove({ owner, account })
+@@ -412,6 +421,14 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
            startOAuth(owner, { connection: params.connection, ...payload, redirectUri }),
          ),
        )
@@ -870,7 +870,7 @@ index fb840e6..ff52a29 100644
            Effect.catchTags({
              SqlError: () => new StorageError(),
 diff --git a/apps/hosted/web/src/contracts/apps.ts b/apps/hosted/web/src/contracts/apps.ts
-index 2973c5d..e0b3cb0 100644
+index 78ae3c2..ff53042 100644
 --- a/apps/hosted/web/src/contracts/apps.ts
 +++ b/apps/hosted/web/src/contracts/apps.ts
 @@ -1,3 +1,4 @@
@@ -878,7 +878,7 @@ index 2973c5d..e0b3cb0 100644
  import { hydrated } from "@executor-js/ui/contracts/http";
  import { revalidated } from "@executor-js/ui/contracts/refresh";
  import { pollingQuery } from "@executor-js/ui/contracts/polling";
-@@ -285,6 +286,9 @@ export function appConnectionAtoms(key: {
+@@ -286,6 +287,9 @@ export function appConnectionAtoms(key: {
    };
    return {
      request,
@@ -888,7 +888,7 @@ index 2973c5d..e0b3cb0 100644
      oauthSetup: (method: string) => oauthSetup(method),
      submit: HostedClient.runtime.fn(
        (payload: { method: string; fields: typeof AccountFieldsInput.Type }, get) =>
-@@ -517,6 +521,21 @@ export function acknowledgeApp(
+@@ -520,6 +524,21 @@ export function acknowledgeApp(
   * A saved connection for an app requirement links its account to the requirement, so the app's
   * links, its requirements' choices and its discovery are read again.
   */
@@ -911,10 +911,10 @@ index 2973c5d..e0b3cb0 100644
    get: Atom.FnContext,
    key: ConnectionKey,
 diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
-index ce5cf7f..3a2a703 100644
+index 1fe30e0..f37bea7 100644
 --- a/apps/hosted/web/src/contracts/errors.ts
 +++ b/apps/hosted/web/src/contracts/errors.ts
-@@ -57,6 +57,17 @@ const errorMessage = Match.type<HostedError>().pipe(
+@@ -58,6 +58,17 @@ const errorMessage = Match.type<HostedError>().pipe(
        "This app changed while you were editing. Reload its source and try again.",
      AppDataNotFound: () => "This data operation is no longer available. Reload the app.",
      AppDataFailed: () => "The app could not complete this data operation.",
@@ -1015,7 +1015,7 @@ index 0000000..4064cc9
 +/** void -> void. Closing the dialog cancels its server-held session. */
 +export const cancelInteractiveConnectionAtom = (key: Key) => actions(new ConnectionKey(key)).cancel;
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts.tsx b/apps/hosted/web/src/implementation/pages/app-accounts.tsx
-index 002a311..ea97a5f 100644
+index e026b4c..ec28649 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts.tsx
 @@ -118,6 +118,9 @@ export function AppAccounts({
@@ -1079,16 +1079,17 @@ index 002a311..ea97a5f 100644
        onSaved={onSaved}
        onAuthorized={(value) =>
 diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
-index 8e3d16d..cc61fb6 100644
+index 5c8e81d..d95235d 100644
 --- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
 +++ b/apps/hosted/web/src/implementation/pages/connect-account.tsx
-@@ -17,12 +17,17 @@ import type {
+@@ -20,13 +20,18 @@ import type {
    HostedOAuthStartResult,
  } from "@executor-js/hosted-server";
  import { Link } from "@tanstack/react-router";
--import { createContext, useContext, useState } from "react";
+-import { createContext, useContext, useRef } from "react";
 +import { createContext, useContext, useEffect, useRef, useState } from "react";
- import { Cause, Match, Option, Exit, Schema } from "effect";
+ import { AtomRegistry } from "effect/reactivity";
+ import { Cause, Effect, Match, Option, Exit, Schema } from "effect";
  import { Button } from "@executor-js/ui/components/button";
  import { OAuthFields, OAuthSetup } from "@executor-js/ui/dashboard/oauth-fields";
  import { HostedFailure } from "../components/dashboard-bindings.tsx";
@@ -1101,7 +1102,7 @@ index 8e3d16d..cc61fb6 100644
  import { accountToNameAtom, checkCredentialsAtom } from "../../contracts/accounts.ts";
  import {
    oauthSetupAtom,
-@@ -32,6 +37,12 @@ import {
+@@ -36,6 +41,12 @@ import {
    PendingOAuth,
    type OAuthReturn,
  } from "../../contracts/apps.ts";
@@ -1112,9 +1113,9 @@ index 8e3d16d..cc61fb6 100644
 +  submitInteractiveConnectionAtom,
 +} from "../../contracts/interactive-accounts.ts";
  import { useOrganizationDetails, useOrganizationRoute } from "../components/organization.tsx";
- import { RegisterServiceClient } from "./oauth-clients.tsx";
- 
-@@ -65,6 +76,22 @@ export function ConnectionFields({
+ import {
+   oauthClientsAtom,
+@@ -75,6 +86,22 @@ export function ConnectionFields({
    const params = { organization, connection: connection.id };
    const submit = useAtomSet(submitConnectionAtom(params), { mode: "promiseExit" });
    const startOAuth = useAtomSet(startOAuthAtom(params), { mode: "promiseExit" });
@@ -1137,7 +1138,7 @@ index 8e3d16d..cc61fb6 100644
    if (connection.state.status !== "pending")
      return (
        <>
-@@ -98,6 +125,7 @@ export function ConnectionFields({
+@@ -109,6 +136,7 @@ export function ConnectionFields({
        }
        submit={submit}
        start={startOAuth}
@@ -1145,7 +1146,7 @@ index 8e3d16d..cc61fb6 100644
        onSaved={onSaved}
        {...(onPendingChange ? { onPendingChange } : {})}
        onAuthorized={(value) =>
-@@ -118,6 +146,20 @@ export function ConnectionFields({
+@@ -130,6 +158,20 @@ export function ConnectionFields({
    );
  }
  
@@ -1166,7 +1167,7 @@ index 8e3d16d..cc61fb6 100644
  /** Render known provider metadata; the caller owns creating or resuming the connection attempt. */
  export function HostedAccountForm<A extends HostedOAuthSignIn>({
    setupQuery,
-@@ -133,7 +175,10 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -146,7 +188,10 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
    onAuthorized,
    onPendingChange,
    app,
@@ -1177,7 +1178,7 @@ index 8e3d16d..cc61fb6 100644
    readonly provider: Provider;
    /** The canonical site saved by the host for this connection. */
    readonly site?: string | undefined;
-@@ -160,6 +205,28 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -178,6 +223,28 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
    const checkCredentials = useAtomSet(checkCredentialsAtom, { mode: "promiseExit" });
    // Only administrators register clients, so members are told to enter their own details.
    const role = useOrganizationDetails()?.role;
@@ -1205,9 +1206,9 @@ index 8e3d16d..cc61fb6 100644
 +  );
    const admin = role !== undefined && role !== "member";
    const registry = useContext(RegistryContext);
-   // Registering replaces the account form, since it is a form itself, then returns to the method.
-@@ -198,7 +265,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
-       initialMethod={method}
+   const register = useAtomSet(registerOAuthClientAtom(organization), { mode: "promiseExit" });
+@@ -253,7 +320,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+       initialMethod={initialMethod}
        Failure={HostedFailure}
        submitLabel={account ? "Save credentials" : "Connect account"}
 -      submit={submit}
@@ -1215,7 +1216,7 @@ index 8e3d16d..cc61fb6 100644
        {...(app === undefined || app === null
          ? {}
          : {
-@@ -207,6 +274,23 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -265,6 +332,23 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
            })}
        onSaved={saved}
        {...(onPendingChange ? { onPendingChange } : {})}
@@ -1239,20 +1240,30 @@ index 8e3d16d..cc61fb6 100644
        oauth={({ method, disabled, onPendingChange, access }) => (
          <OAuthSetup
            query={
-@@ -254,7 +338,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -300,7 +384,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+                 if (required) refresh();
                  return required;
                }}
-               start={(input: OAuthSubmission) =>
--                start({ method, ...input }).then((exit) =>
-+                inOrder(() => start({ method, ...input })).then((exit) =>
-                   Exit.map(exit, (value) => ({
-                     ...value,
-                     // Entered details reopen after a failed return; chosen clients do not.
+-              start={async (input: OAuthSubmission) => {
++              start={(input: OAuthSubmission) => inOrder(async () => {
+                 const saved = await savedClient(
+                   input,
+                   setup !== "unresolved" && setup.grant === "authorization_code"
+@@ -327,7 +411,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+                     Schema.is(OAuthClientInput)(input.client),
+                   ...(registeredClient !== undefined ? { registeredClient } : {}),
+                 }));
+-              }}
++              })}
+               onAuthorized={(value) => {
+                 refresh();
+                 if (value.status !== "completed") {
 diff --git a/apps/local/server/src/contracts/account-connections.ts b/apps/local/server/src/contracts/account-connections.ts
-index 50536fb..21dd03f 100644
+index dddf4fc..eec7261 100644
 --- a/apps/local/server/src/contracts/account-connections.ts
 +++ b/apps/local/server/src/contracts/account-connections.ts
-@@ -1,3 +1,8 @@
+@@ -1,4 +1,9 @@
+ import { RequestRejection } from "@executor-js/sdk/core";
 +import {
 +  InteractiveRetirementBusy,
 +  InteractiveRetirementFailed,
@@ -1261,7 +1272,7 @@ index 50536fb..21dd03f 100644
  import { UserFacingError } from "@executor-js/utils/user-facing-error";
  /** Local browser handoff. These grants authorize one SDK connection, never a dashboard session. */
  import { Schema } from "effect";
-@@ -84,6 +89,9 @@ export const ConnectionOAuthStart = Schema.Struct({
+@@ -85,6 +90,9 @@ export const ConnectionOAuthStart = Schema.Struct({
  });
  
  const errors = [
@@ -1272,7 +1283,7 @@ index 50536fb..21dd03f 100644
    AuthForbidden,
    StorageError,
 diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
-index 43e8e08..35b665a 100644
+index 66d7972..2649ea6 100644
 --- a/apps/local/server/src/contracts/dashboard.ts
 +++ b/apps/local/server/src/contracts/dashboard.ts
 @@ -1,3 +1,8 @@
@@ -1284,7 +1295,7 @@ index 43e8e08..35b665a 100644
  import {
    blockedRecovery,
    LocalOwnerMigration,
-@@ -261,6 +266,9 @@ export const AppAccountTarget = Schema.Struct({
+@@ -262,6 +267,9 @@ export const AppAccountTarget = Schema.Struct({
    site: Schema.optional(Schema.NonEmptyString),
  });
  const appConnectionErrors = [
@@ -1294,7 +1305,7 @@ index 43e8e08..35b665a 100644
    AccountSiteInvalid,
    StorageError,
    CredentialsError,
-@@ -589,7 +597,15 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+@@ -590,7 +598,15 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
        HttpApiEndpoint.delete("deleteApp", "/dashboard/api/apps/:app", {
          params: { app: AppId },
          success: Schema.Struct({ app: AppId }),
@@ -1311,7 +1322,7 @@ index 43e8e08..35b665a 100644
        }),
      )
      .add(
-@@ -803,6 +819,9 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+@@ -804,6 +820,9 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
          params: { account: AccountId },
          success: Schema.Struct({ account: AccountId }),
          error: [
@@ -1321,7 +1332,7 @@ index 43e8e08..35b665a 100644
            StorageError,
            AccountLinkedToApp,
            AccountWebhooksActive,
-@@ -837,6 +856,9 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+@@ -838,6 +857,9 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
          payload: Schema.Struct({ callbackUrl: Schema.RedactedFromValue(HttpUrl) }),
          success: Account,
          error: [
@@ -1332,7 +1343,7 @@ index 43e8e08..35b665a 100644
            CredentialsError,
            ProviderNotFound,
 diff --git a/apps/local/web/src/contracts/errors.ts b/apps/local/web/src/contracts/errors.ts
-index 7fa5ad1..c60366b 100644
+index dc041a5..30837f5 100644
 --- a/apps/local/web/src/contracts/errors.ts
 +++ b/apps/local/web/src/contracts/errors.ts
 @@ -53,6 +53,22 @@ const errorMessage = Match.type<DashboardError>().pipe(
@@ -1648,11 +1659,11 @@ index 0000000..0269e06
 +  ${withWorkflow ? "workflows: { hold }, schedules: { tick: appInterval({ minutes: 1 }, tick, {}) }," : ""}
 +  connect: { identity: handlers, sharedIdentity: handlers } });`;
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 71ad888..f11aadf 100644
+index b011d2b..4271514 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -7263,6 +7263,107 @@ export const scenarios = plan({
-       local: na("This scenario uses hosted memberships, API keys and MCP."),
+@@ -8389,6 +8389,107 @@ export const scenarios = plan({
+       local: na("This scenario uses hosted app management routes."),
      },
    },
 +  interactiveAccountVersionRemoval: {
@@ -7708,7 +7719,7 @@ index 74740a3..8783bd2 100644
 +export const frameworkProtocol = 16;
 diff --git a/packages/apps/src/contracts/protocols/15.ts b/packages/apps/src/contracts/protocols/15.ts
 new file mode 100644
-index 00000000..ee93678d
+index 0000000..ee93678
 --- /dev/null
 +++ b/packages/apps/src/contracts/protocols/15.ts
 @@ -0,0 +1,715 @@
@@ -8428,7 +8439,7 @@ index 00000000..ee93678d
 +  readonly schemas: Partial<Record<MessageName, Schema.Top>>;
 +};
 diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/src/contracts/protocols/current.ts
-index 8b9fe02..70815db 100644
+index fc80c5d..8ba1115 100644
 --- a/packages/apps/src/contracts/protocols/current.ts
 +++ b/packages/apps/src/contracts/protocols/current.ts
 @@ -13,6 +13,7 @@
@@ -8439,7 +8450,7 @@ index 8b9fe02..70815db 100644
  import { ProviderSite } from "@executor-js/utils/account-site";
  import { CacheCommand, CacheReply } from "@executor-js/app-cache/contracts";
  import { frameworkProtocol } from "../protocol-version.ts";
-@@ -118,6 +119,7 @@ const exposure = {
+@@ -126,6 +127,7 @@ const exposure = {
  
  /** Serializable authentication declarations interpreted by the trusted host. */
  export const DeclaredAuthMethod = Schema.Union([
@@ -8447,7 +8458,7 @@ index 8b9fe02..70815db 100644
    Schema.Struct({
      type: Schema.Literal("secrets"),
      label: Schema.String,
-@@ -413,6 +415,7 @@ export type MigrateResult = typeof MigrateResult.Type;
+@@ -425,6 +427,7 @@ export type MigrateResult = typeof MigrateResult.Type;
  
  /** Framework-owned dispatch, independent of app-authored HTTP routing. */
  export const HostRequest = Schema.Union([
@@ -8455,6 +8466,146 @@ index 8b9fe02..70815db 100644
    WorkflowCommand,
    WebhookCommand,
    Schema.Struct({ operation: Schema.Literal("requirements") }),
+diff --git a/packages/apps/src/contracts/protocols/oauth-15.ts b/packages/apps/src/contracts/protocols/oauth-15.ts
+new file mode 100644
+index 0000000..2e58871
+--- /dev/null
++++ b/packages/apps/src/contracts/protocols/oauth-15.ts
+@@ -0,0 +1,134 @@
++/** OAuth declaration shape frozen for host protocol 15. */
++import { Schema } from "effect";
++
++const HttpUrl = Schema.String.check(
++  Schema.makeFilter((value) => {
++    try {
++      const url = new URL(value);
++      return url.protocol === "https:" || url.protocol === "http:";
++    } catch {
++      return false;
++    }
++  }),
++);
++
++const OAuthClientAuth = Schema.Literals([
++  "none",
++  "client_secret_post",
++  "client_secret_basic",
++  "client_secret_basic_raw",
++]);
++const OAuthSecretClientAuth = Schema.Literals([
++  "client_secret_post",
++  "client_secret_basic",
++  "client_secret_basic_raw",
++]);
++
++const reservedAuthorizationParams = [
++  "response_type",
++  "client_id",
++  "redirect_uri",
++  "state",
++  "scope",
++  "code_challenge",
++  "code_challenge_method",
++  "nonce",
++  "resource",
++  "request",
++  "request_uri",
++] as const;
++const reserved: ReadonlySet<string> = new Set(reservedAuthorizationParams);
++
++const OAuthAuthorizationParams = Schema.Record(Schema.String, Schema.String).check(
++  Schema.makeFilter((params) => Object.keys(params).every((key) => !reserved.has(key)), {
++    message: "Authorization parameters cannot replace protocol parameters such as state or scope.",
++  }),
++);
++
++const declaredAuthorizationQuery = Schema.makeFilter(
++  (config: {
++    readonly authorizationUrl: string;
++    readonly authorizationParams?: Readonly<Record<string, string>>;
++  }) => {
++    const keys = [...new URL(config.authorizationUrl).searchParams.keys()];
++    const owned = keys.filter((key) => reserved.has(key));
++    if (owned.length > 0)
++      return {
++        path: ["authorizationUrl"],
++        issue: `authorizationUrl cannot set protocol parameters: ${owned.join(", ")}.`,
++      };
++    const repeated = keys.filter((key) => Object.hasOwn(config.authorizationParams ?? {}, key));
++    if (repeated.length > 0)
++      return {
++        path: ["authorizationParams"],
++        issue: `Declare each parameter once; authorizationUrl already sets: ${repeated.join(", ")}.`,
++      };
++    return undefined;
++  },
++);
++
++const OAuthTokenRequestFormat = Schema.Literals(["form", "json"]);
++const OAuthTokenResponse = Schema.Struct({
++  path: Schema.String.check(Schema.isPattern(/^[^.]+(\.[^.]+)*$/)),
++  requiredOnExchange: Schema.optionalKey(Schema.Boolean),
++});
++
++const tokenRequestOptions = {
++  scopeSeparator: Schema.optionalKey(Schema.String.check(Schema.isMinLength(1))),
++  tokenRequestFormat: Schema.optionalKey(OAuthTokenRequestFormat),
++};
++const oauthOptions = {
++  ...tokenRequestOptions,
++  tokenResponse: Schema.optionalKey(OAuthTokenResponse),
++  grant: Schema.optionalKey(Schema.Literal("authorization_code")),
++  authorizationParams: Schema.optionalKey(OAuthAuthorizationParams),
++  tokenEndpointAuthMethod: Schema.optionalKey(OAuthClientAuth),
++  confidentialTokenEndpointAuthMethod: Schema.optionalKey(OAuthSecretClientAuth),
++  resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
++};
++
++export const OAuth2Config = Schema.Union([
++  Schema.Struct({
++    ...oauthOptions,
++    discover: HttpUrl,
++    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
++    authorizationUrl: Schema.optionalKey(Schema.Never),
++    tokenUrl: Schema.optionalKey(Schema.Never),
++    revocationUrl: Schema.optionalKey(Schema.Never),
++    scopes: Schema.optionalKey(Schema.Array(Schema.String)),
++  }),
++  Schema.Struct({
++    ...oauthOptions,
++    authorizationUrl: HttpUrl,
++    tokenUrl: HttpUrl,
++    revocationUrl: Schema.optionalKey(HttpUrl),
++    scopes: Schema.Array(Schema.String),
++    issuer: Schema.optionalKey(HttpUrl),
++    discover: Schema.optionalKey(Schema.Never),
++    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
++  }).check(declaredAuthorizationQuery),
++  Schema.Struct({
++    grant: Schema.Literal("client_credentials"),
++    discover: HttpUrl,
++    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
++    authorizationUrl: Schema.optionalKey(Schema.Never),
++    tokenUrl: Schema.optionalKey(Schema.Never),
++    revocationUrl: Schema.optionalKey(Schema.Never),
++    scopes: Schema.optionalKey(Schema.Array(Schema.String)),
++    ...tokenRequestOptions,
++    tokenEndpointAuthMethod: OAuthSecretClientAuth,
++    resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
++  }),
++  Schema.Struct({
++    grant: Schema.Literal("client_credentials"),
++    tokenUrl: HttpUrl,
++    revocationUrl: Schema.optionalKey(HttpUrl),
++    scopes: Schema.Array(Schema.String),
++    ...tokenRequestOptions,
++    tokenEndpointAuthMethod: OAuthSecretClientAuth,
++    resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
++    authorizationUrl: Schema.optionalKey(Schema.Never),
++    discover: Schema.optionalKey(Schema.Never),
++    authorizationServerMetadataUrl: Schema.optionalKey(Schema.Never),
++  }),
++]);
 diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/src/contracts/protocols/released.ts
 index b505d6a..1a4b06c 100644
 --- a/packages/apps/src/contracts/protocols/released.ts
@@ -9005,7 +9156,7 @@ index 603681c..114380d 100644
          AccountConnectionClosed,
          AccountConnectionTargetChanged,
 diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
-index 7beaff2..049b181 100644
+index a491cf2..acf7550 100644
 --- a/packages/sdk/src/contracts/account.ts
 +++ b/packages/sdk/src/contracts/account.ts
 @@ -1,3 +1,4 @@
@@ -9013,7 +9164,7 @@ index 7beaff2..049b181 100644
  import { UserFacingError } from "@executor-js/utils/user-facing-error";
  import { ApiError } from "@executor-js/utils/api-error";
  /** Saved reusable accounts. Products decide access; pending setup lives in account-connection.ts. */
-@@ -322,7 +323,13 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
+@@ -388,7 +389,13 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
        params: accountParams,
        query: ownerQuery,
        success: Schema.Struct({ account: AccountId }),
@@ -9029,7 +9180,7 @@ index 7beaff2..049b181 100644
        OpenApi.Description,
        "Delete a saved account and its local credentials. Inspect the apps it is linked to and confirm the intended account first. When the service supports revocation, also asks it to revoke the account's OAuth grant after the deletion, best effort; accounts.revocation reports whether it will. To stop using the account in only one app, unlink it from that app instead.",
 diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/apps.ts
-index 7959503..894c039 100644
+index ddf4988..abb2bcd 100644
 --- a/packages/sdk/src/contracts/apps.ts
 +++ b/packages/sdk/src/contracts/apps.ts
 @@ -1,3 +1,4 @@
@@ -9037,7 +9188,7 @@ index 7959503..894c039 100644
  import { UserFacingError, type ErrorPresentation } from "@executor-js/utils/user-facing-error";
  import { ApiError } from "@executor-js/utils/api-error";
  import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
-@@ -300,6 +301,7 @@ export const AccountSelectionInvalid = UserFacingError.define({
+@@ -321,6 +322,7 @@ export const AccountSelectionInvalid = UserFacingError.define({
        "expected_one",
        "expected_many",
        "provider_mismatch",
@@ -9045,7 +9196,7 @@ index 7959503..894c039 100644
        "duplicate_account",
      ]),
    },
-@@ -346,6 +348,15 @@ export const AccountSelectionInvalid = UserFacingError.define({
+@@ -367,6 +369,15 @@ export const AccountSelectionInvalid = UserFacingError.define({
                "This account can’t be selected or reconnected for this requirement. Start a new connection for it without `account` (with the Executor app, appAccounts.userConnect or appAccounts.appConnect for the requirement, without `account`), and give the user the returned URL. If the provider change was unintended, restore the previous definition and redeploy instead. Keep the old account; never substitute another identity automatically. Verify tool discovery once the new account is selected.",
            },
          },
@@ -9061,7 +9212,7 @@ index 7959503..894c039 100644
          duplicate_account: {
            title: "Account selected twice",
            description: `The same account is selected more than once for “${slot}”.`,
-@@ -653,7 +664,13 @@ export const AppsGroup = HttpApiGroup.make("apps")
+@@ -674,7 +685,13 @@ export const AppsGroup = HttpApiGroup.make("apps")
        params: appParams,
        query: ownerQuery,
        success: Schema.Struct({ app: AppId }),
@@ -9077,7 +9228,7 @@ index 7959503..894c039 100644
        OpenApi.Description,
        "Delete one app, its schedules and its webhook sources. Saved accounts, retained versions and other copies are kept. Repeating removal is safe.",
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
-index 23e1f90..3d3e5b7 100644
+index 8174f08..50cc13a 100644
 --- a/packages/sdk/src/contracts/executor.ts
 +++ b/packages/sdk/src/contracts/executor.ts
 @@ -1,3 +1,4 @@
@@ -9107,7 +9258,7 @@ index 23e1f90..3d3e5b7 100644
    /**
     * Host-only deployment guard, in each short reservation/persistence transaction. The final
     * check runs after compilation and before saving or promoting the app; no external I/O.
-@@ -453,6 +469,7 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
+@@ -471,6 +487,7 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
    readonly [WorkflowHost]: import("./workflow-runtime.ts").WorkflowHost;
    readonly [RepositoryHost]: RepositoryHost;
    readonly [StorageHost]: StorageHost;
@@ -9115,7 +9266,7 @@ index 23e1f90..3d3e5b7 100644
    readonly [PrefetchHost]: PrefetchHost;
    readonly [SavedOAuthClientsHost]: import("./oauth-clients.ts").SavedOAuthClients;
    readonly [OwnerMovesHost]: import("./owner.ts").OwnerMoves;
-@@ -479,6 +496,7 @@ export type PromiseExecutor = Promisify<
+@@ -497,6 +514,7 @@ export type PromiseExecutor = Promisify<
      | typeof WorkflowHost
      | typeof WebhookSourceHost
      | typeof RepositoryHost
@@ -9124,7 +9275,7 @@ index 23e1f90..3d3e5b7 100644
      | typeof PrefetchHost
      | typeof SavedOAuthClientsHost
 diff --git a/packages/sdk/src/contracts/index.ts b/packages/sdk/src/contracts/index.ts
-index 63307d0..36fe1bb 100644
+index 15a7a5a..7c7598b 100644
 --- a/packages/sdk/src/contracts/index.ts
 +++ b/packages/sdk/src/contracts/index.ts
 @@ -2,6 +2,8 @@
@@ -9319,10 +9470,10 @@ index 0000000..258c331
 +});
 +export type InteractiveReconnectUnsupported = typeof InteractiveReconnectUnsupported.Type;
 diff --git a/packages/sdk/src/contracts/runtime.ts b/packages/sdk/src/contracts/runtime.ts
-index 77b1453..664a84e 100644
+index 3a01159..d2cb1ff 100644
 --- a/packages/sdk/src/contracts/runtime.ts
 +++ b/packages/sdk/src/contracts/runtime.ts
-@@ -489,6 +489,14 @@ export interface Runtime<Requirements = never> {
+@@ -529,6 +529,14 @@ export interface Runtime<Requirements = never> {
     * Run one slot's provider check with the single account in `accounts`, without evaluating the
     * app. Send only to builds whose requirements declare a check for that slot.
     */
@@ -9514,20 +9665,20 @@ index ef23be1..6d0eee6 100644
    };
  };
 diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
-index 81a80cf..3fa5390 100644
+index 364d662..49ae9b0 100644
 --- a/packages/sdk/src/implementation/account-health.ts
 +++ b/packages/sdk/src/implementation/account-health.ts
-@@ -27,6 +27,8 @@ import { AppNotFound } from "../contracts/apps.ts";
+@@ -29,6 +29,8 @@ import { AppNotFound } from "../contracts/apps.ts";
  import { type AccountCredential, invocationAccount, validateFields } from "./provider.ts";
  import { StoredVersion, type StoredAccount } from "../contracts/storage.ts";
  import { storedAccount } from "./accounts.ts";
 +import { interactiveBinding, interactiveBindings } from "./interactive-state.ts";
 +import type { InteractiveBinding } from "../contracts/interactive-accounts.ts";
- import { query, type Query } from "./database.ts";
+ import { inOrder, query, type Query } from "./database.ts";
  import type { makeOAuth } from "./oauth.ts";
  import type { FirstPartyOAuthClient } from "../contracts/oauth.ts";
-@@ -128,7 +130,12 @@ export const makeAccountHealth = (
-   listApps: ListApps,
+@@ -131,7 +133,12 @@ export const makeAccountHealth = (
+   hostApi: HostApi | undefined,
  ) => {
    /** One account's health from the apps that use it and its recorded checks. */
 -  const project = (account: HealthAccount, apps: readonly App[], rows: readonly CheckRow[]) =>
@@ -9540,7 +9691,7 @@ index 81a80cf..3fa5390 100644
      Effect.gen(function* () {
        const latest = rows
          .filter((row) => row.info !== null && row.infoCheckedAt !== null)
-@@ -137,8 +144,12 @@ export const makeAccountHealth = (
+@@ -140,8 +147,12 @@ export const makeAccountHealth = (
          latest === undefined ? Option.none() : Schema.decodeUnknownOption(AccountInfo)(latest.info);
        return {
          account: account.id,
@@ -9555,32 +9706,32 @@ index 81a80cf..3fa5390 100644
          apps: yield* Effect.forEach(apps, (app) =>
            Effect.gen(function* () {
              const row = rows.find((item) => item.app === app.id);
-@@ -169,7 +180,12 @@ export const makeAccountHealth = (
-       const rows = yield* query(() =>
-         db.findMany("accountChecks", { where: (b) => b("account", "=", account.id) }),
+@@ -180,7 +191,12 @@ export const makeAccountHealth = (
+           query(() => db.findMany("accountChecks", { where: (b) => b("account", "=", id) })),
+         ),
        );
--      return yield* project(account, apps, rows);
+-      return yield* project(stored, apps, rows);
 +      return yield* project(
-+        account,
++        stored,
 +        apps,
 +        rows,
-+        yield* interactiveBinding(db, { account: account.id, owner: account.owner }),
++        yield* interactiveBinding(db, { account: stored.id, owner: stored.owner }),
 +      );
      });
  
    /**
-@@ -191,6 +207,10 @@ export const makeAccountHealth = (
-       const rows = yield* query(() =>
-         db.findMany("accountChecks", { where: (b) => b("account", "in", ids) }),
+@@ -199,6 +215,10 @@ export const makeAccountHealth = (
        );
+       if (accounts.length === 0) return [];
+       const ids = accounts.map((account) => account.id);
 +      const acquired = yield* interactiveBindings(db, {
 +        accounts: ids,
 +        ...(input.owner === undefined ? {} : { owner: input.owner }),
 +      });
        const linked = [...new Set(input.links.map((link) => link.app))];
-       const apps = linked.length === 0 ? [] : yield* listApps({ ids: linked });
-       return yield* Effect.forEach(accounts, (account) =>
-@@ -200,6 +220,7 @@ export const makeAccountHealth = (
+       const [rows, apps] = yield* inOrder(
+         query(() => db.findMany("accountChecks", { where: (b) => b("account", "in", ids) })),
+@@ -211,6 +231,7 @@ export const makeAccountHealth = (
              input.links.some((link) => link.app === app.id && link.account === account.id),
            ),
            rows.filter((row) => row.account === account.id),
@@ -9589,10 +9740,10 @@ index 81a80cf..3fa5390 100644
        );
      }).pipe(Effect.withSpan("sdk.accounts.listHealth"));
 diff --git a/packages/sdk/src/implementation/accounts.ts b/packages/sdk/src/implementation/accounts.ts
-index 7f7f44b..b78ca17 100644
+index b9bbb10..6ec053e 100644
 --- a/packages/sdk/src/implementation/accounts.ts
 +++ b/packages/sdk/src/implementation/accounts.ts
-@@ -348,7 +348,7 @@ export const makeAccounts = (
+@@ -416,7 +416,7 @@ export const makeAccounts = (
        );
        const method = provider.definition.auth[account.method];
        if (method === undefined) return unavailable;
@@ -9601,7 +9752,7 @@ index 7f7f44b..b78ca17 100644
          return {
            state: "saved",
            reconnectAt: null,
-@@ -405,7 +405,7 @@ export const credentialsReadable = (db: Query, credentials: Credentials) => (acc
+@@ -473,7 +473,7 @@ export const credentialsReadable = (db: Query, credentials: Credentials) => (acc
      );
      const method = provider.definition.auth[stored.value.method];
      if (method === undefined) return false;
@@ -9611,11 +9762,11 @@ index 7f7f44b..b78ca17 100644
        db.findFirst("oauthGrants", { where: (b) => b("id", "=", account) }),
      );
 diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
-index ee2126e..1bc5bc2 100644
+index 8eda2cd..5061148 100644
 --- a/packages/sdk/src/implementation/app-protocols.ts
 +++ b/packages/sdk/src/implementation/app-protocols.ts
-@@ -59,23 +59,75 @@ export interface AppProtocol {
-   readonly sealedCredentials: boolean;
+@@ -67,16 +67,43 @@ export interface AppProtocol {
+   readonly accounts: (accounts: ResolvedAccounts) => ResolvedAccounts;
  }
  
 +/** Protocol 16 adds app-owned interactive account acquisition. */
@@ -9660,7 +9811,10 @@ index ee2126e..1bc5bc2 100644
 +  }),
    concurrentData: true,
    sealedCredentials: true,
- };
+   accounts: (accounts) => retainedAccounts(accounts),
+@@ -111,9 +138,34 @@ const retainedAccounts = (accounts: ResolvedAccounts): ResolvedAccounts =>
+         user: slotsWithoutUnderscoredHosts(accounts.user),
+       };
  
 +const withoutInteractiveAccount = (account: HostAccount): HostAccount => ({
 +  ...account,
@@ -9694,7 +9848,7 @@ index ee2126e..1bc5bc2 100644
    const { site: _providerSite, ...definition } = provider;
    return { ...rest, provider: definition };
  };
-@@ -213,7 +265,7 @@ const protocol9: AppProtocol = {
+@@ -251,7 +303,7 @@ const protocol9: AppProtocol = {
    version: 9,
    nodeEntry: nodeAppEntry(9),
    refuse: (command) =>
@@ -9703,7 +9857,7 @@ index ee2126e..1bc5bc2 100644
        ? Schema.encodeSync(HostOperationNotFound)(new HostOperationNotFound())
        : undefined,
    concurrentData: false,
-@@ -290,6 +342,8 @@ const legacyProtocol = (version: LegacyVersion): AppProtocol => {
+@@ -328,6 +380,8 @@ const legacyProtocol = (version: LegacyVersion): AppProtocol => {
      invocation: (input) => unscoped.invocation({ ...input, command: legacyCommand(input.command) }),
      request: legacyCommand,
      refuse: (command) => {
@@ -9712,7 +9866,7 @@ index ee2126e..1bc5bc2 100644
        if (command.operation !== "call" || command.kind === undefined) return undefined;
        const actual = prefixKind(command.tool);
        return actual === undefined || actual === command.kind
-@@ -335,6 +389,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
+@@ -374,6 +428,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
      protocol13,
      protocol14,
      protocol15,
@@ -9720,7 +9874,7 @@ index ee2126e..1bc5bc2 100644
    ].map((protocol) => [protocol.version, protocol]),
  );
  
-@@ -354,6 +409,23 @@ export const appProtocol = (
+@@ -393,6 +448,23 @@ export const appProtocol = (
  };
  
  /** Compatibility messages converted by the per-site account adapters above. */
@@ -9745,10 +9899,10 @@ index ee2126e..1bc5bc2 100644
    { message: "accounts", protocols: [13, 14], adapter: "withoutSiteAccounts" },
    { message: "invocation", protocols: [14], adapter: "protocol14.invocation" },
 diff --git a/packages/sdk/src/implementation/app-runner.ts b/packages/sdk/src/implementation/app-runner.ts
-index d371a18..ad10c0f 100644
+index 67eff31..2338d1a 100644
 --- a/packages/sdk/src/implementation/app-runner.ts
 +++ b/packages/sdk/src/implementation/app-runner.ts
-@@ -153,6 +153,7 @@ export interface AppCapabilities {
+@@ -160,6 +160,7 @@ export interface AppCapabilities {
  /** Operations an app with a database serves from its data facet, with its storage. */
  const dataOperations: ReadonlySet<HostRequest["operation"]> = new Set([
    "migrate",
@@ -9756,7 +9910,7 @@ index d371a18..ad10c0f 100644
    "call",
    "query",
    "mutate",
-@@ -165,6 +166,7 @@ const dataOperations: ReadonlySet<HostRequest["operation"]> = new Set([
+@@ -172,6 +173,7 @@ const dataOperations: ReadonlySet<HostRequest["operation"]> = new Set([
  ]);
  const writeOperations: ReadonlySet<HostRequest["operation"]> = new Set([
    "migrate",
@@ -9765,20 +9919,20 @@ index d371a18..ad10c0f 100644
    "webhook-register",
    "webhook-handle",
 diff --git a/packages/sdk/src/implementation/app-runtime.ts b/packages/sdk/src/implementation/app-runtime.ts
-index af3eab0..02ac489 100644
+index e5c49a3..596b14e 100644
 --- a/packages/sdk/src/implementation/app-runtime.ts
 +++ b/packages/sdk/src/implementation/app-runtime.ts
-@@ -400,6 +400,8 @@ export const appRuntime = (host: AppRuntimeHost) =>
-         ).pipe(Effect.withSpan(span("call"))),
-       webhook: (input) =>
-         dispatch(input, input.command, Json, HostCallError).pipe(Effect.withSpan(span("webhook"))),
+@@ -437,6 +437,8 @@ export const appRuntime = (host: AppRuntimeHost) =>
+             "executor.webhook.operation": webhookOperations[input.command.operation],
+           }),
+         ),
 +      connect: (input) =>
-+        dispatch(input, input.command, Json, HostCallError).pipe(Effect.withSpan(span("connect"))),
++        dispatch(input, input.command, Json, HostCallError).pipe(traced("connect", app(input))),
        checkAccount: ({ requirement, ...input }) =>
          dispatch(
            { ...input, database: false },
 diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
-index 4c87319..6cdd555 100644
+index 3126344..f7c4aa3 100644
 --- a/packages/sdk/src/implementation/apps.ts
 +++ b/packages/sdk/src/implementation/apps.ts
 @@ -3,7 +3,7 @@ import { AppWorkflowsActive } from "../contracts/apps.ts";
@@ -9844,7 +9998,7 @@ index 4c87319..6cdd555 100644
  /** Read a configured app, applying an optional owner constraint. */
  
  /** Carry the runtime's stage, location and underlying failure to the deployer. */
-@@ -763,22 +808,7 @@ export const makeApps = (
+@@ -766,22 +811,7 @@ export const makeApps = (
                  set: { createdAt: app.createdAt },
                }),
              );
@@ -9868,7 +10022,7 @@ index 4c87319..6cdd555 100644
              if (lifecycle) yield* lifecycle.appRemoving(app.id);
              yield* query(() =>
                tx.deleteMany("workflowRuns", { where: (b) => b("app", "=", app.id) }),
-@@ -831,13 +861,9 @@ export const makeApps = (
+@@ -834,13 +864,9 @@ export const makeApps = (
          // The lineage's public files belong to no other app: release them once its row is gone.
          // A failed release leaves files no version can serve; it does not undo the removal.
          Effect.tap(({ code }) =>
@@ -9991,7 +10145,7 @@ index e50a8d5..a7b985d 100644
 +) =>
 +  lifecycle?.connectionSaving === undefined ? save : lifecycle.connectionSaving(connection, save);
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index d2e8115..135f853 100644
+index 636ca6c..3a7c217 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
 @@ -1,3 +1,6 @@
@@ -10030,9 +10184,9 @@ index d2e8115..135f853 100644
 +import { makeInteractiveAccounts } from "./interactive-accounts.ts";
 +import { InteractiveHost } from "../contracts/interactive-accounts.ts";
  import { makeAccountConnections } from "./account-connections.ts";
- import { credentialsReadable, makeAccounts, storedAccount } from "./accounts.ts";
- import { makeSavedOAuthClients } from "./saved-oauth-clients.ts";
-@@ -161,6 +177,14 @@ export const createExecutor = (
+ import {
+   credentialsReadable,
+@@ -168,6 +184,14 @@ export const createExecutor = (
        workflows.controls,
        options.hooks,
      );
@@ -10047,7 +10201,7 @@ index d2e8115..135f853 100644
      const connections = makeAccountConnections(db, credentials, crypto, options.hooks, sitePolicy);
      const { add, replaceCredentials, readCredentials, ...accountOperations } = makeAccounts(
        db,
-@@ -169,6 +193,14 @@ export const createExecutor = (
+@@ -176,6 +200,14 @@ export const createExecutor = (
        options.hooks,
        oauth.revokeRemoved,
      );
@@ -10062,7 +10216,7 @@ index d2e8115..135f853 100644
      const { checkCredentials, ...accountHealth } = makeAccountHealth(
        db,
        runtime,
-@@ -245,11 +277,27 @@ export const createExecutor = (
+@@ -263,11 +295,27 @@ export const createExecutor = (
          new URL("/api/oauth/callback", origin).href,
        ]),
        [OwnerMovesHost]: makeOwnerMoves(db, credentials),
@@ -10090,7 +10244,7 @@ index d2e8115..135f853 100644
          ...accountHealth,
          revocation: (input) =>
            storedAccount(db, input.account, input.owner).pipe(
-@@ -261,6 +309,14 @@ export const createExecutor = (
+@@ -279,6 +327,14 @@ export const createExecutor = (
        accountConnections: {
          ...connections,
          ...oauth.connections,
@@ -10105,7 +10259,7 @@ index d2e8115..135f853 100644
          findOAuth: (input) =>
            Effect.flatMap(oauth.findOAuth(input), ({ redirectUri, ...found }) =>
              Effect.map(connections.get(found), (connection) => ({ ...connection, redirectUri })),
-@@ -269,6 +325,27 @@ export const createExecutor = (
+@@ -287,6 +343,27 @@ export const createExecutor = (
        oauthClients: oauth.clients,
        apps: {
          ...apps,
@@ -10133,7 +10287,7 @@ index d2e8115..135f853 100644
          deploy: (input) =>
            apps
              .deploy(input)
-@@ -280,7 +357,20 @@ export const createExecutor = (
+@@ -298,7 +375,20 @@ export const createExecutor = (
          activate: (input) => apps.activate(input).pipe(Effect.tap((app) => activated(app.id))),
          checkCredentials,
        },
@@ -11466,7 +11620,7 @@ index f976201..ea5217f 100644
    });
  
 diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
-index 172dd25..6f79d23 100644
+index 8d7d736..fc8b349 100644
 --- a/packages/sdk/src/implementation/oauth.ts
 +++ b/packages/sdk/src/implementation/oauth.ts
 @@ -36,6 +36,7 @@ import {
@@ -11477,7 +11631,7 @@ index 172dd25..6f79d23 100644
    lockConnection,
    recordSignInFailure,
    startSignIn,
-@@ -1685,61 +1686,69 @@ export const makeOAuth = (
+@@ -1793,63 +1794,70 @@ export const makeOAuth = (
          const encryptedCredentials = yield* encrypt(account.id, fields);
          const encryptedGrant = yield* encrypt(account.id, grant);
          const ready = `ready_${yield* nextId}`;
@@ -11503,7 +11657,7 @@ index 172dd25..6f79d23 100644
 -                tx.create("accounts", { ...saved, site: saved.site ?? null, encryptedCredentials }),
 -              );
 -              if (lifecycle) yield* lifecycle.accountCreated(saved);
--            } else
+-            } else {
 -              // Connecting an existing account again starts a new credential generation.
 -              yield* query(() =>
 -                tx.updateMany("accounts", {
@@ -11551,6 +11705,7 @@ index 172dd25..6f79d23 100644
 +                    },
 +                  }),
 +                );
++              if (stored !== undefined) yield* resumeWaitingSources(tx, stored.id);
 +              const state = {
 +                encrypted: encryptedGrant,
 +                status: ready,
@@ -11563,6 +11718,8 @@ index 172dd25..6f79d23 100644
 +                  update: state,
                  }),
                );
+-              yield* resumeWaitingSources(tx, stored.id);
+-            }
 -            const state = {
 -              encrypted: encryptedGrant,
 -              status: ready,
@@ -11599,7 +11756,7 @@ index 172dd25..6f79d23 100644
          );
          return { status: "completed" as const, account: saved };
        }
-@@ -2255,110 +2264,114 @@ export const makeOAuth = (
+@@ -2375,111 +2383,115 @@ export const makeOAuth = (
          ).pipe(Effect.flatMap((grant) => encrypt(attempt.account, grant)));
        const encryptedCredentials = yield* encrypt(attempt.account, fields);
        const ready = `ready_${yield* nextId}`;
@@ -11702,6 +11859,7 @@ index 172dd25..6f79d23 100644
 +                  },
 +                }),
 +              );
++              yield* resumeWaitingSources(tx, target.id);
 +            } else {
 +              yield* query(() =>
 +                tx.create("accounts", {
@@ -11713,6 +11871,7 @@ index 172dd25..6f79d23 100644
 -                },
 -              }),
 -            );
+-            yield* resumeWaitingSources(tx, target.id);
 -          } else {
 +                  credentialGeneration: 0,
 +                }),
@@ -11811,7 +11970,7 @@ index 172dd25..6f79d23 100644
        );
      });
  
-@@ -2382,7 +2395,10 @@ export const makeOAuth = (
+@@ -2506,7 +2518,10 @@ export const makeOAuth = (
        if (rejected !== undefined)
          yield* Effect.annotateCurrentSpan("oauth.renewal.trigger", "credentials_rejected");
        // Secrets the user brought.
@@ -11823,19 +11982,27 @@ index 172dd25..6f79d23 100644
          return {
            fields: yield* credentials.decrypt(account.id, account.encryptedCredentials),
            firstParty: undefined,
-@@ -2828,7 +2844,11 @@ export const makeOAuth = (
-   const usable = (account: StoredAccount, provider: ProviderDefinition) =>
-     Effect.gen(function* () {
-       yield* Effect.annotateCurrentSpan("oauth.provider.id", account.provider);
--      if (provider.auth[account.method]?.type === "secrets") return;
-+      if (
-+        provider.auth[account.method]?.type === "secrets" ||
-+        provider.auth[account.method]?.type === "interactive"
-+      )
-+        return;
-       const reconnect = (reason: ReconnectReason) =>
-         reconnectRequired("oauth.usable", account.id, reason);
-       const row = yield* query(() =>
+@@ -2964,7 +2979,9 @@ export const makeOAuth = (
+       const granted = [
+         ...new Set(
+           checks
+-            .filter(({ account, provider }) => provider.auth[account.method]?.type !== "secrets")
++            .filter(({ account, provider }) =>
++              provider.auth[account.method]?.type !== "secrets" &&
++              provider.auth[account.method]?.type !== "interactive")
+             .map(({ account }) => account.id),
+         ),
+       ];
+@@ -2978,7 +2995,8 @@ export const makeOAuth = (
+       for (const { account, provider } of checks) {
+         // The provider of the account checked last: on failure, the one that failed.
+         yield* Effect.annotateCurrentSpan("oauth.provider.id", account.provider);
+-        if (provider.auth[account.method]?.type === "secrets") continue;
++        if (provider.auth[account.method]?.type === "secrets" ||
++            provider.auth[account.method]?.type === "interactive") continue;
+         const reconnect = (reason: ReconnectReason) =>
+           reconnectRequired("oauth.usable", account.id, reason);
+         const row = grants.get(account.id);
 diff --git a/packages/sdk/src/implementation/removal-validation.ts b/packages/sdk/src/implementation/removal-validation.ts
 new file mode 100644
 index 0000000..190b3ab
@@ -11851,10 +12018,10 @@ index 0000000..190b3ab
 +    Effect.catchTag("InteractiveChangeValidated", () => Effect.void),
 +  );
 diff --git a/packages/sdk/src/implementation/runtime.ts b/packages/sdk/src/implementation/runtime.ts
-index be63c3d..00acb76 100644
+index c6ae90a..7d69cbe 100644
 --- a/packages/sdk/src/implementation/runtime.ts
 +++ b/packages/sdk/src/implementation/runtime.ts
-@@ -236,6 +236,7 @@ export const toEffectRuntime = (
+@@ -237,6 +237,7 @@ export const toEffectRuntime = (
      workflow: (input) => runtime.workflow(input).pipe(provide),
      webhook: (input) => runtime.webhook(input).pipe(provide),
      call: (input) => runtime.call(input).pipe(provide),
@@ -11908,18 +12075,18 @@ index 09cf756..bda4fd7 100644
      const selections = yield* Effect.forEach(scoped, ([slot, required]) => {
        const selection = validated.get(slot);
 diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
-index 68ec5bb..5047b2d 100644
+index 051f1db..f04e297 100644
 --- a/packages/sdk/src/implementation/tools.ts
 +++ b/packages/sdk/src/implementation/tools.ts
-@@ -164,6 +164,7 @@ export function snapshot(
+@@ -199,6 +199,7 @@ export function snapshot(
       * the scope it was captured in: without a caller it binds no `user`. Replaces `accounts`.
       */
      captured?: { readonly accounts: SelectedAccounts; readonly scope: AccountScope } | undefined;
 +    connecting?: string;
    },
-   ahead?: SnapshotReads,
+   readAhead?: SnapshotReads,
  ) {
-@@ -199,6 +200,7 @@ export function snapshot(
+@@ -235,6 +236,7 @@ export function snapshot(
              input.captured.scope,
            ),
        ahead?.accounts,
@@ -11927,7 +12094,7 @@ index 68ec5bb..5047b2d 100644
      );
      return { app, version, scope, selections, accounts, actor: yield* CurrentActor };
    });
-@@ -241,7 +243,7 @@ class GrantHint {
+@@ -277,7 +279,7 @@ class GrantHint {
  }
  /** Whether any of these sign-in types reads a grant; an unknown definition may. */
  const readsGrant = (types: ReadonlyArray<string | undefined> | undefined) =>
@@ -11957,7 +12124,7 @@ index 11d1d08..e3b8988 100644
      "router",
      "approval",
 diff --git a/packages/ui/src/contracts/credentials.ts b/packages/ui/src/contracts/credentials.ts
-index cf6a24f..ac3a639 100644
+index 0ceae44..a2d79df 100644
 --- a/packages/ui/src/contracts/credentials.ts
 +++ b/packages/ui/src/contracts/credentials.ts
 @@ -62,7 +62,7 @@ export const accountFields = (
@@ -11985,10 +12152,10 @@ index cf6a24f..ac3a639 100644
  /** New accounts are named after sign-in, once the connected identity is known. */
  export interface OAuthSubmission {
 diff --git a/packages/ui/src/implementation/dashboard/account-form.tsx b/packages/ui/src/implementation/dashboard/account-form.tsx
-index 54cf913..21e2f5b 100644
+index ab33fca..027f322 100644
 --- a/packages/ui/src/implementation/dashboard/account-form.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-form.tsx
-@@ -16,6 +16,7 @@ import {
+@@ -22,6 +22,7 @@ import {
    credentialValues,
    type AccountSubmission,
    type AccountOAuthProps,
@@ -11996,7 +12163,7 @@ index 54cf913..21e2f5b 100644
  } from "../../contracts/credentials.ts";
  import { CredentialFields } from "../components/credential-fields.tsx";
  import { Button } from "../components/button.tsx";
-@@ -40,6 +41,7 @@ export function AccountForm<A, E>({
+@@ -47,6 +48,7 @@ export function AccountForm<A, E>({
    submit,
    onSaved,
    oauth,
@@ -12004,7 +12171,7 @@ index 54cf913..21e2f5b 100644
    Failure,
    onPendingChange,
    initialMethod,
-@@ -61,6 +63,8 @@ export function AccountForm<A, E>({
+@@ -71,6 +73,8 @@ export function AccountForm<A, E>({
    readonly submit: (input: AccountSubmission) => Promise<Exit.Exit<A, E>>;
    readonly onSaved: (value: NoInfer<A>) => void;
    readonly oauth: (props: AccountOAuthProps) => ReactNode;
@@ -12013,7 +12180,7 @@ index 54cf913..21e2f5b 100644
    readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
    readonly disabled?: boolean;
    readonly onPendingChange?: (pending: boolean) => void;
-@@ -173,6 +177,10 @@ export function AccountForm<A, E>({
+@@ -183,6 +187,10 @@ export function AccountForm<A, E>({
                ),
            })}
          </div>
@@ -12025,10 +12192,10 @@ index 54cf913..21e2f5b 100644
          <>
            <p className="text-xs leading-relaxed text-muted-foreground">
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index c051320..ed27395 100644
+index cdf7e73..6fbb1ed 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-@@ -56,11 +56,14 @@ const accountName = (account: AccountSummary) => account.label || "Unnamed accou
+@@ -66,11 +66,14 @@ const accountName = (account: AccountSummary) => account.label || "Unnamed accou
  export function LinkedAccountMenu<A, E>({
    label,
    unlink,
@@ -12043,7 +12210,7 @@ index c051320..ed27395 100644
    readonly unlink?: Atom.AtomResultFn<void, A, E> | undefined;
    readonly Failure: ComponentType<FailureProps<E>>;
    readonly onUnlinked?: (() => void) | undefined;
-@@ -68,6 +71,7 @@ export function LinkedAccountMenu<A, E>({
+@@ -78,6 +81,7 @@ export function LinkedAccountMenu<A, E>({
  }) {
    const [error, setError] = useState<Cause.Cause<E>>();
    const [pending, setPending] = useState(false);
@@ -12051,7 +12218,7 @@ index c051320..ed27395 100644
    if (children === undefined && unlink === undefined) return null;
    return (
      <>
-@@ -86,7 +90,12 @@ export function LinkedAccountMenu<A, E>({
+@@ -96,7 +100,12 @@ export function LinkedAccountMenu<A, E>({
          <DropdownMenuContent align="end" className="min-w-44">
            {children}
            {children && unlink && <DropdownMenuSeparator />}
@@ -12065,7 +12232,7 @@ index c051320..ed27395 100644
              <UnlinkItem
                unlink={unlink}
                label="Unlink"
-@@ -103,6 +112,18 @@ export function LinkedAccountMenu<A, E>({
+@@ -113,6 +122,18 @@ export function LinkedAccountMenu<A, E>({
            )}
          </DropdownMenuContent>
        </DropdownMenu>
@@ -12084,7 +12251,7 @@ index c051320..ed27395 100644
        {error && (
          <div className="basis-full text-xs">
            <Failure cause={error} />
-@@ -612,8 +633,23 @@ function EditableChoices<E>({
+@@ -673,8 +694,23 @@ function EditableChoices<E>({
      }),
    );
    const ready = Option.isSome(loaded) && edit.connecting !== true;
@@ -12108,7 +12275,7 @@ index c051320..ed27395 100644
        key={choice.account.id}
        app={app}
        slot={slot}
-@@ -657,11 +693,27 @@ function EditableChoices<E>({
+@@ -718,11 +754,27 @@ function EditableChoices<E>({
          size="sm"
          className="h-10 w-full justify-start rounded-none px-3.5 text-[13px] text-muted-foreground hover:text-foreground"
          disabled={edit.connecting === true}
@@ -12137,7 +12304,7 @@ index c051320..ed27395 100644
      </div>
    );
  }
-@@ -676,7 +728,10 @@ function ChoiceRow<E>({
+@@ -737,7 +789,10 @@ function ChoiceRow<E>({
    edit,
    data,
    Failure,
@@ -12148,7 +12315,7 @@ index c051320..ed27395 100644
    readonly app: App;
    readonly slot: string;
    readonly requirement: AccountRequirement;
-@@ -699,11 +754,15 @@ function ChoiceRow<E>({
+@@ -760,11 +815,15 @@ function ChoiceRow<E>({
    const [error, setError] = useState<Cause.Cause<E>>();
    const id = useId();
    const name = accountName(account);
@@ -12164,7 +12331,7 @@ index c051320..ed27395 100644
    };
    return (
      <li aria-busy={pending} className={cn(rowClass, "hover:bg-muted/25 focus-within:bg-muted/25")}>
-@@ -715,7 +774,9 @@ function ChoiceRow<E>({
+@@ -776,7 +835,9 @@ function ChoiceRow<E>({
            disabled={!ready || pending}
            className={radioClass}
            onClick={() => {
@@ -12175,7 +12342,7 @@ index c051320..ed27395 100644
            }}
          >
            <RadioGroup.Indicator className={radioDot} />
-@@ -726,7 +787,19 @@ function ChoiceRow<E>({
+@@ -787,7 +848,19 @@ function ChoiceRow<E>({
            checked={linked}
            aria-label={name}
            disabled={!ready || pending}
@@ -12196,7 +12363,7 @@ index c051320..ed27395 100644
          />
        )}
        <label htmlFor={id} className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5">
-@@ -749,6 +822,86 @@ function ChoiceRow<E>({
+@@ -810,6 +883,86 @@ function ChoiceRow<E>({
    );
  }
  
@@ -12635,144 +12802,3 @@ index a25fc57..ba20ce4 100644
  };
  
  /**
-
-diff --git a/packages/apps/src/contracts/protocols/oauth-15.ts b/packages/apps/src/contracts/protocols/oauth-15.ts
-new file mode 100644
-index 00000000..2e588715
---- /dev/null
-+++ b/packages/apps/src/contracts/protocols/oauth-15.ts
-@@ -0,0 +1,134 @@
-+/** OAuth declaration shape frozen for host protocol 15. */
-+import { Schema } from "effect";
-+
-+const HttpUrl = Schema.String.check(
-+  Schema.makeFilter((value) => {
-+    try {
-+      const url = new URL(value);
-+      return url.protocol === "https:" || url.protocol === "http:";
-+    } catch {
-+      return false;
-+    }
-+  }),
-+);
-+
-+const OAuthClientAuth = Schema.Literals([
-+  "none",
-+  "client_secret_post",
-+  "client_secret_basic",
-+  "client_secret_basic_raw",
-+]);
-+const OAuthSecretClientAuth = Schema.Literals([
-+  "client_secret_post",
-+  "client_secret_basic",
-+  "client_secret_basic_raw",
-+]);
-+
-+const reservedAuthorizationParams = [
-+  "response_type",
-+  "client_id",
-+  "redirect_uri",
-+  "state",
-+  "scope",
-+  "code_challenge",
-+  "code_challenge_method",
-+  "nonce",
-+  "resource",
-+  "request",
-+  "request_uri",
-+] as const;
-+const reserved: ReadonlySet<string> = new Set(reservedAuthorizationParams);
-+
-+const OAuthAuthorizationParams = Schema.Record(Schema.String, Schema.String).check(
-+  Schema.makeFilter((params) => Object.keys(params).every((key) => !reserved.has(key)), {
-+    message: "Authorization parameters cannot replace protocol parameters such as state or scope.",
-+  }),
-+);
-+
-+const declaredAuthorizationQuery = Schema.makeFilter(
-+  (config: {
-+    readonly authorizationUrl: string;
-+    readonly authorizationParams?: Readonly<Record<string, string>>;
-+  }) => {
-+    const keys = [...new URL(config.authorizationUrl).searchParams.keys()];
-+    const owned = keys.filter((key) => reserved.has(key));
-+    if (owned.length > 0)
-+      return {
-+        path: ["authorizationUrl"],
-+        issue: `authorizationUrl cannot set protocol parameters: ${owned.join(", ")}.`,
-+      };
-+    const repeated = keys.filter((key) => Object.hasOwn(config.authorizationParams ?? {}, key));
-+    if (repeated.length > 0)
-+      return {
-+        path: ["authorizationParams"],
-+        issue: `Declare each parameter once; authorizationUrl already sets: ${repeated.join(", ")}.`,
-+      };
-+    return undefined;
-+  },
-+);
-+
-+const OAuthTokenRequestFormat = Schema.Literals(["form", "json"]);
-+const OAuthTokenResponse = Schema.Struct({
-+  path: Schema.String.check(Schema.isPattern(/^[^.]+(\.[^.]+)*$/)),
-+  requiredOnExchange: Schema.optionalKey(Schema.Boolean),
-+});
-+
-+const tokenRequestOptions = {
-+  scopeSeparator: Schema.optionalKey(Schema.String.check(Schema.isMinLength(1))),
-+  tokenRequestFormat: Schema.optionalKey(OAuthTokenRequestFormat),
-+};
-+const oauthOptions = {
-+  ...tokenRequestOptions,
-+  tokenResponse: Schema.optionalKey(OAuthTokenResponse),
-+  grant: Schema.optionalKey(Schema.Literal("authorization_code")),
-+  authorizationParams: Schema.optionalKey(OAuthAuthorizationParams),
-+  tokenEndpointAuthMethod: Schema.optionalKey(OAuthClientAuth),
-+  confidentialTokenEndpointAuthMethod: Schema.optionalKey(OAuthSecretClientAuth),
-+  resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
-+};
-+
-+export const OAuth2Config = Schema.Union([
-+  Schema.Struct({
-+    ...oauthOptions,
-+    discover: HttpUrl,
-+    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
-+    authorizationUrl: Schema.optionalKey(Schema.Never),
-+    tokenUrl: Schema.optionalKey(Schema.Never),
-+    revocationUrl: Schema.optionalKey(Schema.Never),
-+    scopes: Schema.optionalKey(Schema.Array(Schema.String)),
-+  }),
-+  Schema.Struct({
-+    ...oauthOptions,
-+    authorizationUrl: HttpUrl,
-+    tokenUrl: HttpUrl,
-+    revocationUrl: Schema.optionalKey(HttpUrl),
-+    scopes: Schema.Array(Schema.String),
-+    issuer: Schema.optionalKey(HttpUrl),
-+    discover: Schema.optionalKey(Schema.Never),
-+    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
-+  }).check(declaredAuthorizationQuery),
-+  Schema.Struct({
-+    grant: Schema.Literal("client_credentials"),
-+    discover: HttpUrl,
-+    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
-+    authorizationUrl: Schema.optionalKey(Schema.Never),
-+    tokenUrl: Schema.optionalKey(Schema.Never),
-+    revocationUrl: Schema.optionalKey(Schema.Never),
-+    scopes: Schema.optionalKey(Schema.Array(Schema.String)),
-+    ...tokenRequestOptions,
-+    tokenEndpointAuthMethod: OAuthSecretClientAuth,
-+    resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
-+  }),
-+  Schema.Struct({
-+    grant: Schema.Literal("client_credentials"),
-+    tokenUrl: HttpUrl,
-+    revocationUrl: Schema.optionalKey(HttpUrl),
-+    scopes: Schema.Array(Schema.String),
-+    ...tokenRequestOptions,
-+    tokenEndpointAuthMethod: OAuthSecretClientAuth,
-+    resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
-+    authorizationUrl: Schema.optionalKey(Schema.Never),
-+    discover: Schema.optionalKey(Schema.Never),
-+    authorizationServerMetadataUrl: Schema.optionalKey(Schema.Never),
-+  }),
-+]);

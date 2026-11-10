@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/src/implementation/product-analytics.ts b/apps/hosted/cloud/src/implementation/product-analytics.ts
-index e35cbc13c..daa9db8c4 100644
+index efc2b74..f93234d 100644
 --- a/apps/hosted/cloud/src/implementation/product-analytics.ts
 +++ b/apps/hosted/cloud/src/implementation/product-analytics.ts
 @@ -1,7 +1,7 @@
@@ -15,7 +15,7 @@ index e35cbc13c..daa9db8c4 100644
 @@ -19,6 +19,15 @@ import {
    HttpServerResponse,
  } from "effect/http";
- import { evaluateFlag, FeatureFlags } from "./feature-flags.ts";
+ import { evaluateFlags, FeatureFlags } from "./feature-flags.ts";
 +import {
 +  readRelayAnalyticsOptOut,
 +  readTelemetryRelaySettings,
@@ -145,9 +145,9 @@ index e35cbc13c..daa9db8c4 100644
          add,
        }),
        Effect.provideService(FeatureFlags, {
--        evaluate: (key, distinctId) => evaluateFlag(config, key, distinctId),
-+        evaluate: (key, distinctId) =>
-+          config === undefined ? Effect.succeed(undefined) : evaluateFlag(config, key, distinctId),
+-        evaluate: (keys, distinctId) => evaluateFlags(config, keys, distinctId),
++        evaluate: (keys, distinctId) =>
++          config === undefined ? Effect.succeed({}) : evaluateFlags(config, keys, distinctId),
        }),
        Effect.provideService(ProductAnalytics, {
          enabled: true,
@@ -195,7 +195,7 @@ index e35cbc13c..daa9db8c4 100644
  });
 diff --git a/apps/hosted/cloud/src/implementation/telemetry-relay.ts b/apps/hosted/cloud/src/implementation/telemetry-relay.ts
 new file mode 100644
-index 000000000..133aa2521
+index 0000000..133aa25
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/telemetry-relay.ts
 @@ -0,0 +1,161 @@
@@ -361,10 +361,10 @@ index 000000000..133aa2521
 +  );
 +};
 diff --git a/apps/hosted/cloud/src/infrastructure/auth.ts b/apps/hosted/cloud/src/infrastructure/auth.ts
-index e252e751a..8f97d9eaa 100644
+index ef37bab..b00645f 100644
 --- a/apps/hosted/cloud/src/infrastructure/auth.ts
 +++ b/apps/hosted/cloud/src/infrastructure/auth.ts
-@@ -112,12 +112,19 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
+@@ -115,12 +115,19 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
        },
        (usage) =>
          runCallback(
@@ -391,7 +391,7 @@ index e252e751a..8f97d9eaa 100644
              Effect.provideService(CurrentUserId, usage.userId),
              Effect.provideService(CurrentUsage, { source: "dashboard" }),
 diff --git a/apps/hosted/cloud/src/infrastructure/posthog.ts b/apps/hosted/cloud/src/infrastructure/posthog.ts
-index 1ee2627b4..4f4996467 100644
+index 1ee2627..4f49964 100644
 --- a/apps/hosted/cloud/src/infrastructure/posthog.ts
 +++ b/apps/hosted/cloud/src/infrastructure/posthog.ts
 @@ -7,9 +7,49 @@ import type { PostHogOutput } from "./posthog-output.ts";
@@ -470,7 +470,7 @@ index 1ee2627b4..4f4996467 100644
          output.pipe(Output.map((value) => value.apiToken)),
          output.pipe(Output.map((value) => value.apiHost)),
 diff --git a/apps/hosted/server/src/contracts/feedback.ts b/apps/hosted/server/src/contracts/feedback.ts
-index d9688cda5..5510d27f4 100644
+index d9688cd..5510d27 100644
 --- a/apps/hosted/server/src/contracts/feedback.ts
 +++ b/apps/hosted/server/src/contracts/feedback.ts
 @@ -19,7 +19,7 @@ export const HostedFeedback = HttpApiGroup.make("feedback")
@@ -483,7 +483,7 @@ index d9688cda5..5510d27f4 100644
    )
    .middleware(RequireOrganization);
 diff --git a/apps/hosted/server/src/contracts/product-analytics.ts b/apps/hosted/server/src/contracts/product-analytics.ts
-index 47dfe438a..3a976d566 100644
+index 9ada56d..e18336e 100644
 --- a/apps/hosted/server/src/contracts/product-analytics.ts
 +++ b/apps/hosted/server/src/contracts/product-analytics.ts
 @@ -18,6 +18,8 @@ export interface UsageProperties {
@@ -495,8 +495,7 @@ index 47dfe438a..3a976d566 100644
    readonly version_id?: string;
    readonly account_id?: string;
    readonly provider_id?: string;
-@@ -47,13 +49,17 @@ export type UsageEvent =
-   | "tool_execution_completed"
+@@ -48,12 +50,16 @@ export type UsageEvent =
    | "tool_approval_requested"
    | "tool_search_empty"
    | "account_connected"
@@ -514,10 +513,10 @@ index 47dfe438a..3a976d566 100644
    | "schedule_run_completed";
  
 diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/server/src/implementation/accounts.ts
-index b05a2108b..9ef6b66b7 100644
+index 18eebc7..16110cd 100644
 --- a/apps/hosted/server/src/implementation/accounts.ts
 +++ b/apps/hosted/server/src/implementation/accounts.ts
-@@ -45,6 +45,7 @@ import {
+@@ -46,6 +46,7 @@ import {
    organizationOwner,
  } from "../contracts/organization.ts";
  import { HostedExecutor } from "../contracts/executor.ts";
@@ -525,7 +524,7 @@ index b05a2108b..9ef6b66b7 100644
  import { currentOwner, ownedConnection } from "./access.ts";
  import { appLinkApps, appLinkedAccounts, callerLinkedAccounts } from "./app-accounts.ts";
  import { AccountLinkedToApp } from "../contracts/accounts.ts";
-@@ -110,7 +111,10 @@ export const checkCredentials = (
+@@ -112,7 +113,10 @@ export const checkCredentials = (
    Effect.gen(function* () {
      const executor = yield* Effect.flatten(HostedExecutor);
      yield* requireAppAccess(input.app, "use");
@@ -537,7 +536,7 @@ index b05a2108b..9ef6b66b7 100644
    });
  /** Run the checks of the apps the caller linked the account to, with their own account access. */
  export const checkAccount = Effect.gen(function* () {
-@@ -274,6 +278,9 @@ export const submitConnection = (
+@@ -282,6 +286,9 @@ export const submitConnection = (
      );
      return yield* executor.accountConnections.submit({ ...input, owner }).pipe(
        accountDestination(intent.destination),
@@ -547,7 +546,7 @@ index b05a2108b..9ef6b66b7 100644
        Effect.tap(() => Effect.flatten(ScheduleWakeup)),
      );
    });
-@@ -310,6 +317,9 @@ export const completeOAuth = (
+@@ -318,6 +325,9 @@ export const completeOAuth = (
      );
      return yield* executor.accountConnections.completeOAuth({ ...input, owner }).pipe(
        accountDestination(intent.destination),
@@ -558,7 +557,7 @@ index b05a2108b..9ef6b66b7 100644
      );
    });
 diff --git a/apps/hosted/server/src/implementation/apps.ts b/apps/hosted/server/src/implementation/apps.ts
-index 5baccd3fc..2f6477c73 100644
+index 5baccd3..2f6477c 100644
 --- a/apps/hosted/server/src/implementation/apps.ts
 +++ b/apps/hosted/server/src/implementation/apps.ts
 @@ -14,8 +14,9 @@ import { CurrentOrganizationNamespace } from "../contracts/organization.ts";
@@ -595,7 +594,7 @@ index 5baccd3fc..2f6477c73 100644
      const files = yield* scopeGeneratedPackage(generated.files, namespace, input.name).pipe(
        Effect.mapError(
 diff --git a/apps/hosted/server/src/implementation/product-analytics.ts b/apps/hosted/server/src/implementation/product-analytics.ts
-index 8f48b2831..14b65ae21 100644
+index ef40bc0..29f5a7a 100644
 --- a/apps/hosted/server/src/implementation/product-analytics.ts
 +++ b/apps/hosted/server/src/implementation/product-analytics.ts
 @@ -1,7 +1,7 @@
@@ -607,7 +606,7 @@ index 8f48b2831..14b65ae21 100644
  import {
    observeUsage,
    recordUsage,
-@@ -16,12 +16,14 @@ const observeTool = <A extends ToolCallResult | ToolResumeResult, E, R>(
+@@ -33,12 +33,14 @@ const observeTool = <A extends ToolCallResult | ToolResumeResult, E, R>(
  ) =>
    Effect.gen(function* () {
      const started = yield* Clock.currentTimeMillis;
@@ -624,7 +623,7 @@ index 8f48b2831..14b65ae21 100644
              duration_ms: Math.max(0, (yield* Clock.currentTimeMillis) - started),
            };
            if (Exit.isFailure(exit)) {
-@@ -32,14 +34,19 @@ const observeTool = <A extends ToolCallResult | ToolResumeResult, E, R>(
+@@ -49,14 +51,19 @@ const observeTool = <A extends ToolCallResult | ToolResumeResult, E, R>(
              return;
            }
            const status = exit.value.status;
@@ -646,7 +645,7 @@ index 8f48b2831..14b65ae21 100644
            }
          }),
        ),
-@@ -57,7 +64,23 @@ export const withExecutorAnalytics = (executor: Executor): Executor => ({
+@@ -74,7 +81,23 @@ export const withExecutorAnalytics = (executor: Executor): Executor => ({
          executor.tools.call(input, options),
        ),
      resume: (input, options) =>
@@ -672,7 +671,7 @@ index 8f48b2831..14b65ae21 100644
    appData: {
      ...executor.appData,
 diff --git a/e2e/sdk/suite.ts b/e2e/sdk/suite.ts
-index 2903c3689..9413ce642 100644
+index b8bc923..7fb11bd 100644
 --- a/e2e/sdk/suite.ts
 +++ b/e2e/sdk/suite.ts
 @@ -181,6 +181,16 @@ export const runSuite = ({
@@ -692,7 +691,7 @@ index 2903c3689..9413ce642 100644
        const empty = targets.filter(
          (target) =>
            !plan.some(
-@@ -279,6 +289,7 @@ export const runSuite = ({
+@@ -282,6 +292,7 @@ export const runSuite = ({
                          commit,
                          observeUI,
                          authRateLimit,
@@ -700,7 +699,7 @@ index 2903c3689..9413ce642 100644
                          browserOrigin: rollback ? "deployment" : "app",
                          ...Option.match(production, {
                            onNone: () => ({}),
-@@ -377,6 +388,7 @@ export const runSuite = ({
+@@ -380,6 +391,7 @@ export const runSuite = ({
                            E2E_WORKERS: String(interactive || observeUI ? 1 : targetWorkers),
                            E2E_TARGET: target,
                            E2E_CLOUD_MODE: cloudMode,
@@ -709,7 +708,7 @@ index 2903c3689..9413ce642 100644
                            ...(catalogs === undefined
                              ? {}
 diff --git a/e2e/support/analytics-collector.ts b/e2e/support/analytics-collector.ts
-index 5bdb32095..f5f74f0b1 100644
+index 5bdb320..f5f74f0 100644
 --- a/e2e/support/analytics-collector.ts
 +++ b/e2e/support/analytics-collector.ts
 @@ -12,6 +12,8 @@ export const startAnalyticsCollector = (directory: string) =>
@@ -753,10 +752,10 @@ index 5bdb32095..f5f74f0b1 100644
              HttpRouter.add(
                "GET",
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
-index e62111b79..57c0ea8ba 100644
+index 9a2405e..bb41f97 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
-@@ -120,6 +120,8 @@ export const startCloudEnvironment = (input: {
+@@ -121,6 +121,8 @@ export const startCloudEnvironment = (input: {
     * scenarios that prove it.
     */
    readonly authRateLimit: boolean;
@@ -765,7 +764,7 @@ index e62111b79..57c0ea8ba 100644
    /**
     * Which host serves the dashboard and sign-in: `app.` of the origin, or, with the rollback
     * switch (`CLOUD_BROWSER_ORIGIN=deployment`), the origin itself.
-@@ -251,6 +253,12 @@ export const startCloudEnvironment = (input: {
+@@ -257,6 +259,12 @@ export const startCloudEnvironment = (input: {
        EXECUTOR_BUILD_VERSION: input.commit,
        POSTHOG_LOCAL_TEST_PORT: String(analyticsPort),
        SENTRY_LOCAL_TEST_PORT: String(analyticsPort),
@@ -779,10 +778,10 @@ index e62111b79..57c0ea8ba 100644
        VITE_SENTRY_DSN: `http://synthetic@127.0.0.1:${analyticsPort}/1`,
        OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `${collector}/v1/traces`,
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 7d50ef03f..d618168fa 100644
+index 9d04309..b011d2b 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -2313,6 +2313,17 @@ export const scenarios = plan({
+@@ -2908,6 +2908,17 @@ export const scenarios = plan({
        local: na("Local does not export product analytics or replay."),
      },
    },
@@ -802,7 +801,7 @@ index 7d50ef03f..d618168fa 100644
      title:
 diff --git a/e2e/tests/telemetry-relay.spec.ts b/e2e/tests/telemetry-relay.spec.ts
 new file mode 100644
-index 000000000..7864a3661
+index 0000000..7864a36
 --- /dev/null
 +++ b/e2e/tests/telemetry-relay.spec.ts
 @@ -0,0 +1,210 @@

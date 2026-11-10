@@ -1,7 +1,7 @@
 {
   "identity": "executor-google-admin-shared-oauth",
   "file": "0039-google-admin-shared-oauth.patch",
-  "content_sha256": "e4743654a179ec198047f193226ee3d234b1d45b6e99ad17d0f953e6d2766f54",
+  "content_sha256": "57451ab0a216f55cf402ea066576ed5018f34f9dbaeee3e96c99dd92ad0488c7",
   "kind": "upstream",
   "upstream_pull_request": 2460,
   "database_sensitive": false,

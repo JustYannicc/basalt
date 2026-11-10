@@ -1,8 +1,9 @@
 diff --git a/e2e/tests/oauth-client-recovery.spec.ts b/e2e/tests/oauth-client-recovery.spec.ts
-index 709ba2477..3fc2d062e 100644
+index 709ba24..3fc2d06 100644
 --- a/e2e/tests/oauth-client-recovery.spec.ts
 +++ b/e2e/tests/oauth-client-recovery.spec.ts
-@@ -324,7 +324,5 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+@@ -323,9 +323,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+           page
              .getByRole("combobox", { name: "OAuth client" })
              .click()
 -            .then(() =>
@@ -11,11 +12,13 @@ index 709ba2477..3fc2d062e 100644
 +            .then(() => page.getByRole("option", { name: /^Your own .+ app \(OAuth\)$/ }).click()),
          );
          yield* browser.checkpoint("Account client can be replaced");
+         yield* browser.use("Try an invalid replacement", (page) =>
 diff --git a/e2e/tests/oauth-connect-storyboard.spec.ts b/e2e/tests/oauth-connect-storyboard.spec.ts
-index 6145ba2a8..80c05fc9c 100644
+index da225cd..7996703 100644
 --- a/e2e/tests/oauth-connect-storyboard.spec.ts
 +++ b/e2e/tests/oauth-connect-storyboard.spec.ts
-@@ -94,11 +94,16 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+@@ -93,13 +93,18 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+           browser.use(`Wait for ${name}`, (page) =>
              page.getByRole("button", { name, exact: true }).waitFor({ state: "visible" }),
            );
 -        const chooseClient = (name: string) =>
@@ -34,46 +37,57 @@ index 6145ba2a8..80c05fc9c 100644
 +        const ownClient = /^Your own .+ app \(OAuth\)$/;
          const click = (name: string) =>
            browser.use(`Click ${name}`, (page) =>
-@@ -396,5 +401,5 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+             page.getByRole("button", { name, exact: true }).click(),
+@@ -395,7 +400,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+             .waitFor(),
          );
          yield* capture("New-account-client-options");
 -        yield* chooseClient("Enter client details");
 +        yield* chooseClient(ownClient);
          yield* capture("Manual-client-dialog");
          yield* click("Close");
-@@ -493,5 +498,5 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+         const accountId = (yield* body(
+@@ -492,7 +497,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+             ),
          );
          yield* capture("Reconnect-current-client");
 -        yield* chooseClient("Enter client details");
 +        yield* chooseClient(ownClient);
          yield* capture("Manual-client-details");
          yield* browser.use("Show the form on mobile", (page) =>
+           page.setViewportSize({ width: 390, height: 844 }),
 diff --git a/packages/ui/src/implementation/dashboard/account-form.tsx b/packages/ui/src/implementation/dashboard/account-form.tsx
-index 21e2f5bd4..8c6ebe5e8 100644
+index 027f322..38a1dd8 100644
 --- a/packages/ui/src/implementation/dashboard/account-form.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-form.tsx
-@@ -30,4 +30,5 @@ import {
+@@ -36,6 +36,7 @@ import {
+ } from "../components/select.tsx";
  import { useProductBrand } from "../hooks/product-brand.ts";
  import { siteCredentialHosts } from "@executor-js/utils/account-site";
 +import { methodLabels } from "./method-labels.ts";
  
  /** One credential form for creation, reconnection and agent handoff; the host owns saving, naming and navigation. */
-@@ -79,4 +80,5 @@ export function AccountForm<A, E>({
+ export function AccountForm<A, E>({
+@@ -88,6 +89,7 @@ export function AccountForm<A, E>({
+   const methods = Object.entries(provider.definition.auth).sort(
      ([, a], [, b]) => Number(b.type === "oauth2") - Number(a.type === "oauth2"),
    );
 +  const labels = methodLabels(provider.definition.name, methods);
    const [method, setMethod] = useState(account?.method ?? initialMethod ?? methods[0]?.[0] ?? "");
    const [values, setValues] = useState<Readonly<Record<string, string>>>({});
-@@ -159,5 +161,5 @@ export function AccountForm<A, E>({
+   const [submitting, setPending] = useState(false);
+@@ -168,7 +170,7 @@ export function AccountForm<A, E>({
+             <SelectContent>
                {methods.map(([name, auth]) => (
                  <SelectItem key={name} value={name}>
 -                  {auth.type === "oauth2" ? `Sign in with ${provider.definition.name}` : auth.label}
 +                  {labels.get(name)}
                  </SelectItem>
                ))}
+             </SelectContent>
 diff --git a/packages/ui/src/implementation/dashboard/method-labels.ts b/packages/ui/src/implementation/dashboard/method-labels.ts
 new file mode 100644
-index 000000000..df2cbf861
+index 0000000..df2cbf8
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/method-labels.ts
 @@ -0,0 +1,51 @@
@@ -129,10 +143,11 @@ index 000000000..df2cbf861
 +  );
 +};
 diff --git a/packages/ui/src/implementation/dashboard/oauth-fields.tsx b/packages/ui/src/implementation/dashboard/oauth-fields.tsx
-index 1e5b036e0..e97dca4ea 100644
+index dc0144e..f47de7d 100644
 --- a/packages/ui/src/implementation/dashboard/oauth-fields.tsx
 +++ b/packages/ui/src/implementation/dashboard/oauth-fields.tsx
-@@ -228,7 +228,7 @@ export function OAuthFields<A, E>({
+@@ -238,9 +238,9 @@ export function OAuthFields<A, E>({
+         );
        }
        case "automatic":
 -        return "Automatic";
@@ -142,10 +157,4 @@ index 1e5b036e0..e97dca4ea 100644
 +        return machine ? "New client credentials" : `Your own ${providerName} app (OAuth)`;
      }
    };
-@@ -317,5 +317,5 @@ export function OAuthFields<A, E>({
-         }}
-       />
--      Enter client details for this account
-+      Use your own {providerName} app for this account
-     </label>
-   );
+   const connect = () => {

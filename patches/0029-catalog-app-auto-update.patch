@@ -1,6 +1,6 @@
 diff --git a/apps/hosted/cloud/src/contracts/workflow-instance-id.ts b/apps/hosted/cloud/src/contracts/workflow-instance-id.ts
 new file mode 100644
-index 000000000..7831ba375
+index 0000000..7831ba3
 --- /dev/null
 +++ b/apps/hosted/cloud/src/contracts/workflow-instance-id.ts
 @@ -0,0 +1,47 @@
@@ -52,10 +52,11 @@ index 000000000..7831ba375
 +  return { name, message };
 +};
 diff --git a/apps/hosted/cloud/src/implementation/default-app.ts b/apps/hosted/cloud/src/implementation/default-app.ts
-index d3e7fcd8a..e41cb2414 100644
+index d3e7fcd..e41cb24 100644
 --- a/apps/hosted/cloud/src/implementation/default-app.ts
 +++ b/apps/hosted/cloud/src/implementation/default-app.ts
-@@ -5,4 +5,8 @@ import type { Executor } from "@executor-js/sdk/core";
+@@ -4,6 +4,10 @@ import type { HostedApiDocument } from "@executor-js/hosted-server/contracts";
+ import type { Executor } from "@executor-js/sdk/core";
  import { Effect, type Option, type Redacted } from "effect";
  import { withPoolDefaults } from "@executor-js/hosted-server/pool-defaults";
 +import {
@@ -64,7 +65,9 @@ index d3e7fcd8a..e41cb2414 100644
 +} from "@executor-js/hosted-server/catalog-app-defaults";
  export { executorCloudApiDocument } from "../contracts/api.ts";
  
-@@ -13,7 +17,9 @@ export const defaultApp = (
+ /** Load the management contract behind this feature's module boundary. */
+@@ -12,8 +16,10 @@ export const defaultApp = (
+   origin: string,
    document: Effect.Effect<HostedApiDocument>,
    poolKey: Option.Option<Redacted.Redacted<string>>,
 +  catalogFeed?: CatalogAppFeed,
@@ -76,16 +79,19 @@ index d3e7fcd8a..e41cb2414 100644
 +    return yield* withCatalogAppDefaults(executor, catalogFeed, pools);
    });
 diff --git a/apps/hosted/cloud/src/infrastructure/data-steps.ts b/apps/hosted/cloud/src/infrastructure/data-steps.ts
-index 6e7ae8736..c01e82404 100644
+index 93d0a42..b6eb895 100644
 --- a/apps/hosted/cloud/src/infrastructure/data-steps.ts
 +++ b/apps/hosted/cloud/src/infrastructure/data-steps.ts
-@@ -21,4 +21,5 @@ import {
+@@ -25,6 +25,7 @@ import {
+ } from "@executor-js/hosted-server";
  import { Clock, Config, Effect, Option } from "effect";
  import { queuePoolAppUpgrades } from "@executor-js/hosted-server/pool-app-upgrades";
 +import { queueCatalogAppUpdates } from "@executor-js/hosted-server/catalog-app-upgrades";
  import { SqlClient } from "effect/sql";
  import { cloudBlobs } from "./blobs.ts";
-@@ -60,4 +61,7 @@ export const cloudDataSteps = (agentGrants: AgentGrantExpiry) =>
+ import { jobUnitCounts } from "../contracts/job-outcome.ts";
+@@ -73,6 +74,9 @@ export const cloudDataSteps = (agentGrants: AgentGrantExpiry) =>
+     // The build framework step rewrites retained builds in the same bucket the executor reads.
      const blobs = yield* cloudBlobs;
      let queuePools: ReturnType<typeof queuePoolAppUpgrades> | undefined;
 +    // Each Basalt release sweeps installed copies of the feed's apps once.
@@ -93,32 +99,40 @@ index 6e7ae8736..c01e82404 100644
 +    const queueCatalog = Option.map(catalogFeed, (feed) => queueCatalogAppUpdates(feed));
      return Effect.gen(function* () {
        // A redeploy leaves its app's webhook sources pending; the job wakes reconciliation for them.
-@@ -70,4 +74,6 @@ export const cloudDataSteps = (agentGrants: AgentGrantExpiry) =>
+       const wake = yield* ScheduleWakeup;
+@@ -83,6 +87,8 @@ export const cloudDataSteps = (agentGrants: AgentGrantExpiry) =>
+         queuePools ??= queuePoolAppUpgrades(poolKey.value);
          yield* queuePools.pipe(Effect.provideService(SqlClient.SqlClient, sql));
        }
 +      if (Option.isSome(queueCatalog))
 +        yield* queueCatalog.value.pipe(Effect.provideService(SqlClient.SqlClient, sql));
        const deadline = (yield* Clock.currentTimeMillis) + tickBudgetMs;
        const steps = hostDataSteps({
+         executor,
 diff --git a/apps/hosted/cloud/src/infrastructure/product.ts b/apps/hosted/cloud/src/infrastructure/product.ts
-index 24dc295b6..ad103f25c 100644
+index cafe26a..2f00b30 100644
 --- a/apps/hosted/cloud/src/infrastructure/product.ts
 +++ b/apps/hosted/cloud/src/infrastructure/product.ts
-@@ -20,5 +20,5 @@ import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
+@@ -19,7 +19,7 @@ import { AppRepositoryRecovery, RepositoryHost, StorageError } from "@executor-j
+ import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
  import { RuntimeContext } from "alchemy";
  import type * as Cloudflare from "alchemy/Cloudflare";
 -import { Config, Effect, Layer } from "effect";
 +import { Config, Effect, Layer, Option } from "effect";
  import { AppDomainDatabase } from "../implementation/app-domain-records.ts";
+ import { RemovedOrganizations } from "../implementation/organization-removal.ts";
  import { V1ImportDatabase, V1ImportUnavailable } from "../contracts/v1-import.ts";
-@@ -32,4 +32,6 @@ import { PoolAppSource } from "@executor-js/hosted-server/pool-defaults";
+@@ -32,6 +32,8 @@ import type { AppDataSupervisor } from "./app-data.ts";
+ import { PoolAppSource } from "@executor-js/hosted-server/pool-defaults";
  import { cloudPoolAppSource } from "./pool-app-source.ts";
  import { PoolAppSigningKey } from "../contracts/pools.ts";
 +import { cachedFeedClient } from "../implementation/catalog-feed-cache.ts";
 +import { cloudEgress } from "./executor.ts";
  
  /**
-@@ -69,4 +71,7 @@ export const cloudProduct = Effect.fn(function* (
+  * Every hosted service the cloud Workers provide, composed over {@link cloudProductServices}. The
+@@ -69,12 +71,24 @@ export const cloudProduct = Effect.fn(function* (
+       const { defaultApp, executorCloudApiDocument } = yield* Effect.promise(
          () => import("../implementation/default-app.ts"),
        );
 +      // Catalog app updates read the feed installs read, through the same cache.
@@ -126,7 +140,8 @@ index 24dc295b6..ad103f25c 100644
 +      const egress = yield* cloudEgress;
        return yield* withDatabase(
          defaultApp(
-@@ -75,4 +80,13 @@ export const cloudProduct = Effect.fn(function* (
+           yield* sdk,
+           apiOrigin,
            Effect.sync(() => (document ??= executorCloudApiDocument(apiOrigin))),
            poolKey,
 +          Option.isNone(feedUrl)
@@ -140,17 +155,21 @@ index 24dc295b6..ad103f25c 100644
 +              },
          ).pipe(Effect.provideService(PoolAppSource, poolSource)),
        );
+     }).pipe(
 diff --git a/apps/hosted/cloud/src/infrastructure/provisioning.ts b/apps/hosted/cloud/src/infrastructure/provisioning.ts
-index f68511e9e..d2d9eecb0 100644
+index f951997..0a2b382 100644
 --- a/apps/hosted/cloud/src/infrastructure/provisioning.ts
 +++ b/apps/hosted/cloud/src/infrastructure/provisioning.ts
-@@ -35,4 +35,5 @@ import {
+@@ -35,6 +35,7 @@ import {
+   workflowResults,
    workflowResultInput,
  } from "./workflow-results.ts";
 +import { dispatchFailureReason, workflowInstanceId } from "../contracts/workflow-instance-id.ts";
  
  /** Each committed lifecycle action has its own workflow, so unrelated failures do not block setup. */
-@@ -243,18 +244,25 @@ export const dispatchProvisioning = <R>(
+ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
+@@ -244,20 +245,27 @@ export const dispatchProvisioning = <R>(
+         Effect.gen(function* () {
            const status = yield* Effect.tryPromise({
              try: async () => {
 +              // Jobs keep their own IDs; the instance ID is one Cloudflare accepts for any of them.
@@ -183,23 +202,27 @@ index f68511e9e..d2d9eecb0 100644
 +            catch: (cause) => cause,
            });
            const persisted =
-@@ -270,5 +278,10 @@ export const dispatchProvisioning = <R>(
+             status === "complete"
+@@ -271,7 +279,12 @@ export const dispatchProvisioning = <R>(
+             yield* Effect.logError("Provisioning workflow needs attention", { job: job.id });
            if (job.kind === "team" && persisted === "running") yield* installTeam(job.id);
          }).pipe(
--          Effect.catch(() => Effect.logWarning("Provisioning dispatch failed", { job: job.id })),
-+          Effect.catch((cause) =>
+-          Effect.tapError(() => Effect.logWarning("Provisioning dispatch failed", { job: job.id })),
++          Effect.tapError((cause) =>
 +            Effect.logWarning("Provisioning dispatch failed", {
 +              kind: job.kind,
 +              reason: dispatchFailureReason(cause),
 +            }),
 +          ),
+           Effect.result,
          ),
-       { concurrency: 4, discard: true },
+       { concurrency: 4 },
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
-index 3d1bd3dc5..057847cbc 100644
+index a334349..f0ab7a9 100644
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
-@@ -31,5 +31,7 @@
+@@ -30,7 +30,9 @@
+     "./access-lifecycle": "./src/contracts/access-lifecycle.ts",
      "./pool-access-hook": "./src/implementation/pool-access-hook.ts",
      "./pool-defaults": "./src/implementation/pool-defaults.ts",
 -    "./pool-app-upgrades": "./src/implementation/pool-app-upgrades.ts"
@@ -208,17 +231,21 @@ index 3d1bd3dc5..057847cbc 100644
 +    "./catalog-app-upgrades": "./src/implementation/catalog-app-upgrades.ts"
    },
    "dependencies": {
+     "@better-auth/api-key": "1.7.16",
 diff --git a/apps/hosted/server/src/contracts/apps.ts b/apps/hosted/server/src/contracts/apps.ts
-index 8df17a2c9..30b2ae57b 100644
+index 9b34125..27caa06 100644
 --- a/apps/hosted/server/src/contracts/apps.ts
 +++ b/apps/hosted/server/src/contracts/apps.ts
-@@ -40,4 +40,5 @@ import {
+@@ -39,6 +39,7 @@ import {
+ } from "@executor-js/sdk/core";
  import { Schema } from "effect";
  import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 +import { ApiError } from "@executor-js/utils/api-error";
  import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
  import {
-@@ -68,4 +69,19 @@ const deployErrors = [
+   OrganizationReference,
+@@ -68,6 +69,21 @@ const deployErrors = [
+   OrganizationForbidden,
  ] as const;
  const prefix = "/api/organizations/:organization/apps";
 +/** A catalog source held back for a manager to apply. */
@@ -238,7 +265,9 @@ index 8df17a2c9..30b2ae57b 100644
 +export type CatalogUpdateUnavailable = typeof CatalogUpdateUnavailable.Type;
  // Versions were called deployments. The former paths and field names stay accepted, and responses
  // repeat the former field names, so API callers written before the rename keep working.
-@@ -191,4 +207,35 @@ export const HostedApps = HttpApiGroup.make("apps")
+ const versionsOptions = {
+@@ -191,6 +207,37 @@ export const HostedApps = HttpApiGroup.make("apps")
+       .annotate(RequiredAction, "read")
        .annotate(OpenApi.Deprecated, true),
    )
 +  .add(
@@ -274,9 +303,10 @@ index 8df17a2c9..30b2ae57b 100644
 +  )
    .add(
      HttpApiEndpoint.post("activate", `${prefix}/:app/activate`, {
+       params: app,
 diff --git a/apps/hosted/server/src/contracts/catalog-app-updates.ts b/apps/hosted/server/src/contracts/catalog-app-updates.ts
 new file mode 100644
-index 000000000..830fdfb22
+index 0000000..830fdfb
 --- /dev/null
 +++ b/apps/hosted/server/src/contracts/catalog-app-updates.ts
 @@ -0,0 +1,7 @@
@@ -288,30 +318,36 @@ index 000000000..830fdfb22
 +  defaultValue: () => false,
 +});
 diff --git a/apps/hosted/server/src/implementation/apps.ts b/apps/hosted/server/src/implementation/apps.ts
-index 2f6477c73..6ae1d48bd 100644
+index 20dc40d..3d08321 100644
 --- a/apps/hosted/server/src/implementation/apps.ts
 +++ b/apps/hosted/server/src/implementation/apps.ts
-@@ -1,4 +1,4 @@
+@@ -1,5 +1,5 @@
  import { sourceDisplay, sourceDisplayFile } from "@executor-js/app-management/source-display";
 -import { requireAppAccess } from "./resource-policy.ts";
 +import { policyDatabase, requireAppAccess } from "./resource-policy.ts";
  /** App use cases and routes. Hosts supply an SDK; they do not enumerate these operations. */
  import { CatalogImportFailed, deployedCopy, type CustomAppInput } from "@executor-js/catalog";
-@@ -11,5 +11,5 @@ import {
+ import { appUiIndicator } from "./app-ui.ts";
+@@ -11,7 +11,7 @@ import {
+   type OwnerId,
  } from "@executor-js/sdk/core";
  import { Effect } from "effect";
 -import { CurrentOrganizationNamespace } from "../contracts/organization.ts";
 +import { CurrentOrganization, CurrentOrganizationNamespace } from "../contracts/organization.ts";
  import { HttpApiBuilder } from "effect/http-api";
  import { HostedApi } from "../contracts/api.ts";
-@@ -19,4 +19,6 @@ import { HostedExecutor } from "../contracts/executor.ts";
+ import type { DeployApp, InstallApp } from "../contracts/apps.ts";
+@@ -19,6 +19,8 @@ import { executorCatalogPackage, HostedCatalog } from "../contracts/catalog.ts";
+ import { HostedExecutor } from "../contracts/executor.ts";
  import { recordUsage } from "../contracts/product-analytics.ts";
  import { appManagerOwner, currentOwner } from "./access.ts";
 +import { applyCatalogAppOffer, catalogAppOffer } from "./catalog-app-offers.ts";
 +import { SqlClient } from "effect/sql";
  
  /** Install a catalog entry as a new app without replacing an existing name. */
-@@ -117,4 +119,24 @@ export const appSource = (owner: OwnerId, app: AppId, version?: VersionId) =>
+ export const installApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
+@@ -117,6 +119,26 @@ export const appSource = (owner: OwnerId, app: AppId, version?: VersionId) =>
+       ...(version === undefined ? {} : { version }),
      });
    });
 +/** A catalog update held back for this app, which a manager may apply. */
@@ -336,7 +372,9 @@ index 2f6477c73..6ae1d48bd 100644
 +  });
  /** Activation moves a pointer; it never rewinds app data or upstream side effects. */
  export const activateApp = (
-@@ -192,4 +214,10 @@ export const hostedAppHandlers = HttpApiBuilder.group(HostedApi, "apps", (handle
+   owner: OwnerId,
+@@ -192,6 +214,12 @@ export const hostedAppHandlers = HttpApiBuilder.group(HostedApi, "apps", (handle
+     .handle("legacySourceDisplayFile", ({ params, query }) =>
        versionDisplayFile(params, query.path),
      )
 +    .handle("catalogUpdate", ({ params }) =>
@@ -347,9 +385,10 @@ index 2f6477c73..6ae1d48bd 100644
 +    )
      .handle("activate", ({ params, payload }) =>
        Effect.flatMap(appManagerOwner(params.app), (owner) =>
+         activateApp(owner, params.app, payload.version, payload.expectedVersion),
 diff --git a/apps/hosted/server/src/implementation/catalog-app-defaults.ts b/apps/hosted/server/src/implementation/catalog-app-defaults.ts
 new file mode 100644
-index 000000000..af49ce368
+index 0000000..af49ce3
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/catalog-app-defaults.ts
 @@ -0,0 +1,285 @@
@@ -640,7 +679,7 @@ index 000000000..af49ce368
 +  });
 diff --git a/apps/hosted/server/src/implementation/catalog-app-offers.ts b/apps/hosted/server/src/implementation/catalog-app-offers.ts
 new file mode 100644
-index 000000000..0c37ab049
+index 0000000..0c37ab0
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/catalog-app-offers.ts
 @@ -0,0 +1,124 @@
@@ -770,7 +809,7 @@ index 000000000..0c37ab049
 +  );
 diff --git a/apps/hosted/server/src/implementation/catalog-app-records.ts b/apps/hosted/server/src/implementation/catalog-app-records.ts
 new file mode 100644
-index 000000000..bd19fcc4f
+index 0000000..bd19fcc
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/catalog-app-records.ts
 @@ -0,0 +1,141 @@
@@ -917,7 +956,7 @@ index 000000000..bd19fcc4f
 +  );
 diff --git a/apps/hosted/server/src/implementation/catalog-app-updates.ts b/apps/hosted/server/src/implementation/catalog-app-updates.ts
 new file mode 100644
-index 000000000..2858520c4
+index 0000000..2858520
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/catalog-app-updates.ts
 @@ -0,0 +1,132 @@
@@ -1055,7 +1094,7 @@ index 000000000..2858520c4
 +};
 diff --git a/apps/hosted/server/src/implementation/catalog-app-upgrades.ts b/apps/hosted/server/src/implementation/catalog-app-upgrades.ts
 new file mode 100644
-index 000000000..55e3e34b6
+index 0000000..55e3e34
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/catalog-app-upgrades.ts
 @@ -0,0 +1,47 @@
@@ -1108,7 +1147,7 @@ index 000000000..55e3e34b6
 +};
 diff --git a/apps/hosted/server/src/implementation/catalog-app-workspace.ts b/apps/hosted/server/src/implementation/catalog-app-workspace.ts
 new file mode 100644
-index 000000000..e28d32d89
+index 0000000..e28d32d
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/catalog-app-workspace.ts
 @@ -0,0 +1,289 @@
@@ -1402,16 +1441,19 @@ index 000000000..e28d32d89
 +    };
 +  });
 diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted/server/src/implementation/provisioning.ts
-index 16f6246d4..bb59522c2 100644
+index fb046ac..f2d05e2 100644
 --- a/apps/hosted/server/src/implementation/provisioning.ts
 +++ b/apps/hosted/server/src/implementation/provisioning.ts
-@@ -4,4 +4,5 @@ import { Effect, Exit, Schedule, Schema } from "effect";
+@@ -4,6 +4,7 @@ import { Effect, Exit, Schedule, Schema } from "effect";
  import { SqlClient } from "effect/sql";
+ import { traceFailure } from "@executor-js/telemetry/failed-span";
  import { PoolTokenRotation, poolRotationJobPrefix } from "../contracts/pool-defaults.ts";
 +import { CatalogAppSweep, catalogAppJobPrefix } from "../contracts/catalog-app-updates.ts";
  import { OrganizationId } from "../contracts/organization.ts";
  import {
-@@ -188,5 +189,6 @@ export const provision = (id: string, services: ProvisioningServices) =>
+   OrganizationDefaults,
+@@ -188,7 +189,8 @@ export const provision = (id: string, services: ProvisioningServices) =>
+         case "member": {
            const initialize = yield* OrganizationDefaults;
            const rotationOnly = job.id.startsWith(poolRotationJobPrefix);
 -          if (!rotationOnly) yield* services.member?.(job.user_id) ?? Effect.void;
@@ -1419,17 +1461,21 @@ index 16f6246d4..bb59522c2 100644
 +          if (!rotationOnly && !catalogOnly) yield* services.member?.(job.user_id) ?? Effect.void;
            const [member] = yield* managers(
              job.organization_id,
-@@ -198,4 +200,5 @@ export const provision = (id: string, services: ProvisioningServices) =>
+             services.requireVerifiedEmail,
+@@ -198,6 +200,7 @@ export const provision = (id: string, services: ProvisioningServices) =>
+           if (member !== undefined)
              yield* initialize(job.organization_id, member).pipe(
                Effect.provideService(PoolTokenRotation, rotationOnly),
 +              Effect.provideService(CatalogAppSweep, catalogOnly),
              );
            return;
+         }
 diff --git a/apps/hosted/web/src/contracts/apps.ts b/apps/hosted/web/src/contracts/apps.ts
-index e0b3cb06d..3f13fcd54 100644
+index ff53042..c18f34b 100644
 --- a/apps/hosted/web/src/contracts/apps.ts
 +++ b/apps/hosted/web/src/contracts/apps.ts
-@@ -93,4 +93,7 @@ const versionsQuery = Atom.family((key: AppKey) =>
+@@ -93,6 +93,9 @@ const appQuery = Atom.family(
+ const versionsQuery = Atom.family((key: AppKey) =>
    HostedClient.query("apps", "versions", hydrated({ params: key })).pipe(revalidated),
  );
 +const catalogUpdateQuery = Atom.family((key: AppKey) =>
@@ -1437,13 +1483,15 @@ index e0b3cb06d..3f13fcd54 100644
 +);
  const sourceQuery = Atom.family((key: SourceKey) =>
    HostedClient.query(
-@@ -171,4 +174,5 @@ const activateApp = Atom.family((key: AppKey) =>
+     "apps",
+@@ -171,11 +174,29 @@ const activateApp = Atom.family((key: AppKey) =>
+             acknowledgeApp(get, key.organization, saved);
              get.refresh(toolsAtom(key));
              get.refresh(versionsAtom(key));
 +            get.refresh(catalogUpdateQuery(key));
            }),
          ),
-@@ -176,4 +180,21 @@ const activateApp = Atom.family((key: AppKey) =>
+       ),
    ),
  );
 +/** Apply the catalog update the app's Versions tab offers. */
@@ -1465,7 +1513,9 @@ index e0b3cb06d..3f13fcd54 100644
 +  applyCatalogUpdate(new AppKey(key));
  const renameApp = Atom.family((key: AppKey) =>
    HostedClient.runtime.fn((name: string, get) =>
-@@ -493,4 +514,9 @@ export const versionsAtom = (key: {
+     Effect.flatMap(HostedClient, (client) =>
+@@ -495,6 +516,11 @@ export const versionsAtom = (key: {
+   readonly organization: OrganizationReference;
    readonly app: AppId;
  }) => versionsQuery(new AppKey(key));
 +/** A newer catalog version waiting in Versions, or null. */
@@ -1475,11 +1525,13 @@ index e0b3cb06d..3f13fcd54 100644
 +}) => catalogUpdateQuery(new AppKey(key));
  
  /** Apply a complete saved app to metadata readers; unknown tool results must be reloaded. */
+ export function acknowledgeApp(
 diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
-index 3a2a70362..def986ed9 100644
+index f37bea7..afe5915 100644
 --- a/apps/hosted/web/src/contracts/errors.ts
 +++ b/apps/hosted/web/src/contracts/errors.ts
-@@ -198,4 +198,11 @@ const errorMessage = Match.type<HostedError>().pipe(
+@@ -198,6 +198,13 @@ const errorMessage = Match.type<HostedError>().pipe(
+     StorageError: () => "Your data could not load. Try again.",
      AccountNotFound: () => "This account is no longer available in this organization.",
      CatalogUnavailable: () => "The app catalog could not be reached. Try again.",
 +    CatalogUpdateUnavailable: ({ reason }) =>
@@ -1491,31 +1543,39 @@ index 3a2a70362..def986ed9 100644
 +      })[reason],
      FeedbackUnavailable: () => "Feedback could not be sent. Try again.",
      FeedbackDisabled: ({ message }) => message,
+     HttpClientError: () =>
 diff --git a/apps/hosted/web/src/implementation/pages/app-source.tsx b/apps/hosted/web/src/implementation/pages/app-source.tsx
-index 08aedc779..26e2c3e5f 100644
+index 08aedc7..26e2c3e 100644
 --- a/apps/hosted/web/src/implementation/pages/app-source.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-source.tsx
-@@ -22,4 +22,6 @@ import {
+@@ -21,6 +21,8 @@ import { useContext, useState } from "react";
+ import {
    activateAppAtom,
    appAtom,
 +  applyCatalogUpdateAtom,
 +  catalogUpdateAtom,
    versionsAtom,
    sourceAtom,
-@@ -34,4 +36,6 @@ export function AppVersions({ app }: { readonly app: App }) {
+   sourceFileAtom,
+@@ -33,6 +35,8 @@ import { useOrganizationRoute } from "../components/organization.tsx";
+ export function AppVersions({ app }: { readonly app: App }) {
    const { organization } = useOrganizationRoute();
    const [selected, setSelected] = useState<VersionId>();
 +  const update = useAtomValue(catalogUpdateAtom({ organization, app: app.id }));
 +  const waiting = AsyncResult.isSuccess(update) ? update.value : null;
    const version = selected ?? app.activeVersion;
    if (version === null)
-@@ -63,4 +67,5 @@ export function AppVersions({ app }: { readonly app: App }) {
+     return (
+@@ -62,6 +66,7 @@ export function AppVersions({ app }: { readonly app: App }) {
+                 <ActivateVersion key={version} app={app} version={version} />
                )
              }
 +            notice={waiting !== null && <CatalogUpdate app={app} update={waiting} />}
            />
          )}
-@@ -70,4 +75,89 @@ export function AppVersions({ app }: { readonly app: App }) {
+       </QueryView>
+@@ -69,6 +74,91 @@ export function AppVersions({ app }: { readonly app: App }) {
+   );
  }
  
 +/** A held-back catalog update; applying one that breaks accounts or replaces edits asks first. */
@@ -1605,22 +1665,26 @@ index 08aedc779..26e2c3e5f 100644
 +
  /** The shown version is known from the app, so its source loads alongside the version list. */
  function ReadSourceEarly({ app, version }: { readonly app: App; readonly version: VersionId }) {
+   const { organization } = useOrganizationRoute();
 diff --git a/packages/app-management/src/data-steps.ts b/packages/app-management/src/data-steps.ts
-index 25b0eb568..54f7fdb58 100644
+index 25b0eb5..54f7fdb 100644
 --- a/packages/app-management/src/data-steps.ts
 +++ b/packages/app-management/src/data-steps.ts
-@@ -6,5 +6,5 @@ export * from "./contracts/local-owners.ts";
+@@ -5,7 +5,7 @@ export * from "./contracts/executor-app-redeploy.ts";
+ export * from "./contracts/local-owners.ts";
  export { createDataStepJournal, runDataSteps } from "./implementation/data-steps.ts";
  export type { DataStepRunOptions } from "./implementation/data-steps.ts";
 -export { frameworkPinStep, pinnedOnly } from "./implementation/framework-pin.ts";
 +export { frameworkPinStep, pinnedOnly, withFrameworkPin } from "./implementation/framework-pin.ts";
  export type { FrameworkPinHost } from "./implementation/framework-pin.ts";
  export { buildFrameworkOnceStep } from "./implementation/build-framework-once.ts";
+ export type { BuildFrameworkHost } from "./implementation/build-framework-once.ts";
 diff --git a/packages/app-management/src/implementation/framework-pin.ts b/packages/app-management/src/implementation/framework-pin.ts
-index f4c1fa268..b525629d9 100644
+index adaaa14..7df2684 100644
 --- a/packages/app-management/src/implementation/framework-pin.ts
 +++ b/packages/app-management/src/implementation/framework-pin.ts
-@@ -119,4 +119,25 @@ export const pinnedOnly = (workspace: SourceFiles, running: SourceFiles): boolea
+@@ -118,6 +118,27 @@ export const pinnedOnly = (workspace: SourceFiles, running: SourceFiles): boolea
+   );
  };
  
 +/**
@@ -1646,11 +1710,13 @@ index f4c1fa268..b525629d9 100644
 +
  /** A JSON value with object keys sorted, so equal documents compare equal whatever their key order. */
  const canonical = (value: unknown): unknown =>
+   Array.isArray(value)
 diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/apps.ts
-index 894c039ce..8ec41e6cc 100644
+index abb2bcd..5f04fb9 100644
 --- a/packages/sdk/src/contracts/apps.ts
 +++ b/packages/sdk/src/contracts/apps.ts
-@@ -203,4 +203,9 @@ export const DeployedApp = DeployedAppFields.pipe(
+@@ -223,6 +223,11 @@ export const DeployedApp = DeployedAppFields.pipe(
+ );
  export type DeployedApp = typeof DeployedApp.Type;
  
 +/**
@@ -1660,25 +1726,33 @@ index 894c039ce..8ec41e6cc 100644
 +const ExpectedVersion = Schema.optional(Schema.NullOr(VersionId));
  /** Deploy complete files or read an existing commit; deploying never edits Git. */
  export const DeployAppInput = Schema.Union([
-@@ -211,4 +216,5 @@ export const DeployAppInput = Schema.Union([
+   Schema.Struct({
+@@ -231,6 +236,7 @@ export const DeployAppInput = Schema.Union([
+     files: SourceFiles,
      app: Schema.optional(Schema.Never),
      commit: Schema.optional(Schema.Never),
 +    expectedVersion: Schema.optional(Schema.Never),
    }),
    Schema.Struct({
-@@ -218,4 +224,5 @@ export const DeployAppInput = Schema.Union([
+     owner: OwnerId,
+@@ -238,6 +244,7 @@ export const DeployAppInput = Schema.Union([
+     files: SourceFiles,
      commit: Schema.optional(Schema.Never),
      name: Schema.optional(Schema.Never),
 +    expectedVersion: ExpectedVersion,
    }),
    Schema.Struct({
-@@ -225,4 +232,5 @@ export const DeployAppInput = Schema.Union([
+     owner: OwnerId,
+@@ -245,6 +252,7 @@ export const DeployAppInput = Schema.Union([
+     commit: SourceCommit,
      files: Schema.optional(Schema.Never),
      name: Schema.optional(Schema.Never),
 +    expectedVersion: ExpectedVersion,
    }),
  ]);
-@@ -629,8 +637,9 @@ export const AppsGroup = HttpApiGroup.make("apps")
+ 
+@@ -649,10 +657,11 @@ export const AppsGroup = HttpApiGroup.make("apps")
+         AppNotFound,
          AccountNotFound,
          AccountSelectionInvalid,
 +        AppVersionChanged,
@@ -1689,11 +1763,13 @@ index 894c039ce..8ec41e6cc 100644
 +      "Deploy app source files. index.ts exports defineApp from apps. Creates a new named app, or deploys files or an existing commit by app ID. Never writes Git. The newest successful version activates automatically. With expectedVersion, a deploy to an existing app fails with AppVersionChanged unless that version is still active when it would activate. Returns the app and the new version's metadata; the files are not echoed. Discover tools in the next execute call.",
      ),
    )
+   .add(
 diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
-index 6cdd555eb..0da257224 100644
+index f7c4aa3..23e1647 100644
 --- a/packages/sdk/src/implementation/apps.ts
 +++ b/packages/sdk/src/implementation/apps.ts
-@@ -443,4 +443,21 @@ export const makeApps = (
+@@ -445,6 +445,23 @@ export const makeApps = (
+     reserved?: AppId,
    ) =>
      Effect.gen(function* () {
 +      // Checked before building, before migrations and under the final app lock before activating.
@@ -1715,13 +1791,17 @@ index 6cdd555eb..0da257224 100644
 +            );
        // Reserve an order before building. Only successful promotions advance the other counter.
        const before =
-@@ -451,4 +468,5 @@ export const makeApps = (
+         input.app === undefined
+@@ -453,6 +470,7 @@ export const makeApps = (
+               Effect.gen(function* () {
                  if (lifecycle?.appDeploying) yield* lifecycle.appDeploying(input.owner);
                  const current = yield* lockApp(tx, { app: input.app, owner: input.owner });
 +                yield* expectActive(current);
                  const deploySequence = current.deploySequence + 1;
                  yield* query(() =>
-@@ -547,4 +565,11 @@ export const makeApps = (
+                   tx.updateMany("apps", {
+@@ -549,6 +567,13 @@ export const makeApps = (
+         }).pipe(Effect.mapError(() => new StorageError()));
        const retainedFiles: SourceFiles = [...codeFiles, ...publicFiles.retained];
        if (before !== null) yield* droppedMigrations(db, before.code);
 +      // Migrations change the app's database even when the deploy fails later, so a deploy that
@@ -1733,13 +1813,17 @@ index 6cdd555eb..0da257224 100644
 +        );
        if (requirements.sql === true)
          yield* runtime.migrate({ app: appId, build: built.build }).pipe(
-@@ -596,4 +621,5 @@ export const makeApps = (
+           Effect.mapError((error) => {
+@@ -598,6 +623,7 @@ export const makeApps = (
+             return yield* Effect.fail(new AppNotFound({ app: input.app }));
            if (existing !== undefined && input.app === undefined)
              return yield* Effect.fail(new AppNameTaken({ owner: input.owner, name: deployName }));
 +          if (existing !== undefined) yield* expectActive(existing);
            if (existing !== undefined) yield* droppedMigrations(tx, existing.code);
            const createdAt = new Date(yield* Clock.currentTimeMillis);
-@@ -720,5 +746,8 @@ export const makeApps = (
+           const promote = existing === undefined || sequence > existing.activatedSequence;
+@@ -722,7 +748,10 @@ export const makeApps = (
+             });
        const create = { owner: input.owner, name: input.name, files: snapshot.files };
        return snapshot.activation === "deploy" && reserved?.save !== true
 -        ? (yield* deploy(create, snapshot.origin, snapshot.stored, reserved?.id)).app
@@ -1749,30 +1833,35 @@ index 6cdd555eb..0da257224 100644
 +          )).app
          : yield* authoring.create(create, snapshot.origin, snapshot.stored, reserved?.id);
      }).pipe(Effect.withSpan("sdk.apps.copy"));
+   return {
 diff --git a/packages/ui/src/contracts/dashboard.ts b/packages/ui/src/contracts/dashboard.ts
-index ff52c9e57..731c694e2 100644
+index 4401a1b..fbde5ca 100644
 --- a/packages/ui/src/contracts/dashboard.ts
 +++ b/packages/ui/src/contracts/dashboard.ts
-@@ -86,4 +86,6 @@ export interface AppVersionsProps<E> {
+@@ -85,6 +85,8 @@ export interface AppVersionsProps<E> {
+   readonly file: (version: VersionId, path: string) => Query<SourceDisplayFile, E>;
    readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
    readonly actions?: ReactNode;
 +  /** A host's status line above the versions, such as an available update. */
 +  readonly notice?: ReactNode;
  }
  /** Common command input; a host adapter supplies its own API route parameters. */
+ export interface InstallApp extends CatalogImport {
 diff --git a/packages/ui/src/implementation/dashboard/app-versions.tsx b/packages/ui/src/implementation/dashboard/app-versions.tsx
-index dddf24bb2..e9f12a986 100644
+index dddf24b..e9f12a9 100644
 --- a/packages/ui/src/implementation/dashboard/app-versions.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-versions.tsx
-@@ -16,4 +16,5 @@ export function AppVersions<E>({
+@@ -15,11 +15,13 @@ export function AppVersions<E>({
+   file,
    Failure,
    actions,
 +  notice,
  }: AppVersionsProps<E>) {
    const { result, refresh } = useQuery(query);
-@@ -21,4 +22,5 @@ export function AppVersions<E>({
+   const isActive = version === app.activeVersion;
    return (
      <section aria-label="App versions" className="flex min-h-0 flex-1 flex-col">
 +      {notice}
        <div className="grid min-h-0 flex-1 grid-cols-[220px_minmax(0,1fr)] max-[900px]:grid-cols-1 max-[900px]:grid-rows-[auto_minmax(0,1fr)]">
          <nav
+           aria-label="Version history"

@@ -1,7 +1,7 @@
 {
   "identity": "basalt-product-feedback",
   "file": "0047-product-feedback.patch",
-  "content_sha256": "9e93d6226dc1cc562be50a63124a0cbe6a2d68439114c105052659b69bbaa551",
+  "content_sha256": "83560eca8cc764b8927e86897a89c5b4837d42243e1404f07a5905d784a5f064",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

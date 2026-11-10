@@ -1,8 +1,9 @@
 diff --git a/CONTEXT.md b/CONTEXT.md
-index 0de995751..f3954cbfd 100644
+index 0de9957..f3954cb 100644
 --- a/CONTEXT.md
 +++ b/CONTEXT.md
-@@ -9,5 +9,11 @@ access those resources.
+@@ -8,7 +8,13 @@ access those resources.
+ **Provider**:
  A service/auth definition authored in app code, with named authentication
  methods. Matching normalized definitions have the same provider reference and
 -can reuse accounts. It has no separately registered owner or slug.
@@ -15,11 +16,13 @@ index 0de995751..f3954cbfd 100644
 +registered owner or slug.
  
  **Authentication method**:
+ One named way to connect an account, such as OAuth or API-key fields.
 diff --git a/apps/docs/content/concepts/providers-and-accounts.md b/apps/docs/content/concepts/providers-and-accounts.md
-index 0774c4172..5012333e9 100644
+index 46db5be..90409f4 100644
 --- a/apps/docs/content/concepts/providers-and-accounts.md
 +++ b/apps/docs/content/concepts/providers-and-accounts.md
-@@ -29,5 +29,13 @@ A provider is not registered anywhere and has no owner and no slug. Two apps
+@@ -28,7 +28,15 @@ browser sign-in.
+ A provider is not registered anywhere and has no owner and no slug. Two apps
  that declare the same provider resolve to the same provider reference, so an
  account saved for one can be used by the other. You do not coordinate an
 -identifier between apps; matching definitions are enough.
@@ -34,11 +37,13 @@ index 0774c4172..5012333e9 100644
 +reference, and accounts saved for the earlier one don't fit it.
  
  A provider reference is also not permission. Knowing it does not let an app read
+ an account. Access is authorized separately.
 diff --git a/apps/hosted/server/src/implementation/catalog-app-defaults.ts b/apps/hosted/server/src/implementation/catalog-app-defaults.ts
-index 42410dced..42db3232e 100644
+index af49ce3..e46489c 100644
 --- a/apps/hosted/server/src/implementation/catalog-app-defaults.ts
 +++ b/apps/hosted/server/src/implementation/catalog-app-defaults.ts
-@@ -98,5 +98,7 @@ export const updateCatalogApp = (
+@@ -102,7 +102,9 @@ const decideCatalogApp = (
+         deployed: false,
        } satisfies CatalogOutcome;
      // Compile without saving: requirements decide before anything, migrations included, runs.
 -    const built = yield* executor.apps.build({ owner, name: app.name, files });
@@ -47,11 +52,13 @@ index 42410dced..42db3232e 100644
 +    const built = yield* executor.apps.build({ owner, name: app.name, files, app: app.id });
      const breaks = breakingChanges(
        yield* input.links,
+       app.requirements.accounts,
 diff --git a/packages/app-templates/executor/skills/app-authoring/accounts.md b/packages/app-templates/executor/skills/app-authoring/accounts.md
-index b19389c9a..77f2ca91a 100644
+index 3da52ca..15bac64 100644
 --- a/packages/app-templates/executor/skills/app-authoring/accounts.md
 +++ b/packages/app-templates/executor/skills/app-authoring/accounts.md
-@@ -17,8 +17,10 @@ Use `user` unless the account belongs to the team rather than to whoever calls
+@@ -16,10 +16,12 @@ Each requirement is one of two scopes:
+ Use `user` unless the account belongs to the team rather than to whoever calls
  the tool. A requirement name is used once across both scopes.
  
 -**The provider ID comes from the whole definition except `hosts`, including
@@ -66,22 +73,26 @@ index b19389c9a..77f2ca91a 100644
 +the connect form, so you can change them at any time.
  
  This is a complete `index.ts` for Vercel with an API token:
+ 
 diff --git a/packages/app-templates/src/implementation/executor-skill-digests.gen.ts b/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
-index 611f774c7..804846458 100644
+index f424068..a54c4a2 100644
 --- a/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
 +++ b/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
-@@ -4,5 +4,5 @@
+@@ -3,7 +3,7 @@
+ /** SHA-256 of each file the Executor app publishes as a skill, keyed by `<skill>/<file>`. */
  export const executorSkillDigests: Readonly<Record<string, string>> = {
    "app-authoring/SKILL.md": "09694ffe3aa62cbaec0ea9fead118392107440267dd3b6f4676595e45e1eba6e",
--  "app-authoring/accounts.md": "142fd6cc82e6537a6e47b0c58e7930c8218952e57bf9ed24836081270c225778",
-+  "app-authoring/accounts.md": "43c37bbe785e0ab99a70464db056b15ce33c04970e9d840aadaca104c1873bc2",
-   "app-authoring/deploy.md": "dab905832c653eb6a22d6bfd64e4ec3b8cb994288972f61f29fe23c945d75822",
+-  "app-authoring/accounts.md": "a0ac083c813faa53739f3ea1af54dbb7b8467f51237dc167b46f0b829ad539ab",
++  "app-authoring/accounts.md": "0e649973ce415fb954158ebc2e20e1652c659a4e9b92d6a5f717e5381057e68c",
+   "app-authoring/deploy.md": "2df76fb22f6b0b04032c28c3b589199ca1aea91fd36548944ce797d32f8154af",
    "app-authoring/events.md": "8f7465e35c6c94b06978b89680181df60c741225de3ba8158f22f76ee7e91a5a",
+   "app-authoring/integrations.md": "8cebbe564eb0ed589be0894ccd3765941f3d80f0aea2db434fd9c99ce21135da",
 diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
-index 049b181c5..6bf86191b 100644
+index a8c99a7..6d42804 100644
 --- a/packages/sdk/src/contracts/account.ts
 +++ b/packages/sdk/src/contracts/account.ts
-@@ -432,4 +432,7 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
+@@ -499,5 +499,8 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
+       query: AccountInputs.providers.fields,
        success: Schema.Array(Provider),
        error: StorageError,
 -    }).annotate(OpenApi.Description, "Provider definitions of an owner's saved accounts."),
@@ -91,21 +102,24 @@ index 049b181c5..6bf86191b 100644
 +    ),
    );
 diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/apps.ts
-index 894c039ce..45ea7a6ce 100644
+index 76ac497..8a19ba6 100644
 --- a/packages/sdk/src/contracts/apps.ts
 +++ b/packages/sdk/src/contracts/apps.ts
-@@ -342,5 +342,5 @@ export const AccountSelectionInvalid = UserFacingError.define({
+@@ -372,7 +372,7 @@ export const AccountSelectionInvalid = UserFacingError.define({
+         },
          provider_mismatch: {
            title: "Account belongs to another provider",
 -          description: `The account was connected for a different provider definition than the one this app now declares for “${slot}”. Changing a provider’s name, labels, fields or OAuth scopes makes it a new provider, and accounts connected for the old one don’t fit it.`,
 +          description: `The account was connected for a different provider definition than the one this app now declares for “${slot}”. Changing a provider’s name, methods, fields or OAuth scopes makes it a new provider, and accounts connected for the old one don’t fit it. Changing only a secrets method’s label, or its fields’ titles and descriptions, doesn’t.`,
            recovery: {
              action: "Open Accounts and connect a new account for this requirement.",
+             instructions:
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
-index a026bcd31..3231dba6b 100644
+index ca70562..c4617ec 100644
 --- a/packages/sdk/src/contracts/executor.ts
 +++ b/packages/sdk/src/contracts/executor.ts
-@@ -454,5 +454,6 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
+@@ -473,12 +473,14 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
+      * Host-only: compile source files as `deploy` would and return the requirements they declare,
       * writing nothing: no app, version or source is saved, and the build is neither retained nor
       * cached. For checks that must not create anything, such as the v1 import's dry run. Fails
 -     * like `deploy`'s build, except that a compiler that did not answer is `BuildUnanswered`.
@@ -113,17 +127,19 @@ index a026bcd31..3231dba6b 100644
 +     * `app`, its provider IDs are the ones a deploy to that app would give.
       */
      readonly build: (input: {
-@@ -460,4 +461,5 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
+       readonly owner: OwnerId;
        readonly name: string;
        readonly files: SourceFiles;
 +      readonly app?: AppId;
      }) => Effect.Effect<
        { readonly requirements: typeof AppRequirements.Type },
+       VersionBuildFailed | BuildMemoryExceeded | BuildUnanswered | StorageError
 diff --git a/packages/sdk/src/contracts/provider.ts b/packages/sdk/src/contracts/provider.ts
-index ead5982cc..e87ba8a8e 100644
+index 226b677..6692bd1 100644
 --- a/packages/sdk/src/contracts/provider.ts
 +++ b/packages/sdk/src/contracts/provider.ts
-@@ -29,5 +29,9 @@ export const ProviderDefinition = Schema.Struct({
+@@ -28,7 +28,11 @@ export const ProviderDefinition = Schema.Struct({
+ 
  export type ProviderDefinition = typeof ProviderDefinition.Type;
  
 -/** A provider reference with its definition, as exposed in app requirements. */
@@ -134,17 +150,21 @@ index ead5982cc..e87ba8a8e 100644
 + */
  export const Provider = Schema.Struct({
    id: ProviderId,
+   definition: ProviderDefinition,
 diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
-index 6cdd555eb..a87b17fb3 100644
+index 04390ab..ac6cd26 100644
 --- a/packages/sdk/src/implementation/apps.ts
 +++ b/packages/sdk/src/implementation/apps.ts
-@@ -43,4 +43,5 @@ import {
+@@ -42,6 +42,7 @@ import {
+   OwnerId,
    StorageError,
    JsonObject,
 +  type ProviderId,
  } from "../contracts/shared.ts";
  import { StoredApp, StoredVersion } from "../contracts/storage.ts";
-@@ -238,4 +239,69 @@ export const gotApp = (row: { readonly deployment: unknown }) => {
+ import { query, transaction, type Query } from "./database.ts";
+@@ -237,6 +238,71 @@ export const gotApp = (row: { readonly deployment: unknown }) => {
+   return projectedApp({ app, version });
  };
  
 +/**
@@ -214,7 +234,9 @@ index 6cdd555eb..a87b17fb3 100644
 +
  /** Project an app without reading or decoding its retained source files. */
  function project(db: Query, app: StoredApp) {
-@@ -316,7 +382,12 @@ export const makeApps = (
+   if (app.activeVersion === null)
+@@ -318,9 +384,14 @@ export const makeApps = (
+     owner: OwnerId,
      name: string,
      suppliedFiles: unknown,
 -    check?: { readonly unanswered: () => E },
@@ -228,20 +250,26 @@ index 6cdd555eb..a87b17fb3 100644
 +      const { check } = options;
        const files = yield* Schema.decodeUnknownEffect(SourceFiles)(suppliedFiles).pipe(
          Effect.mapError(
-@@ -396,5 +467,5 @@ export const makeApps = (
+           () =>
+@@ -398,7 +469,7 @@ export const makeApps = (
+           message: reason,
          });
        }
 -      const entries = yield* Effect.forEach(declared, ([slot, scope, value]) =>
 +      const identified = yield* Effect.forEach(declared, ([slot, scope, value]) =>
          identifyProvider(value.definition, crypto).pipe(
            Effect.map((provider) => ({
-@@ -407,4 +478,5 @@ export const makeApps = (
+             slot,
+@@ -410,6 +481,7 @@ export const makeApps = (
+           })),
          ),
        );
 +      const entries = yield* chooseProviderIds(db, crypto, identified, options.previous);
        const requirements: AppRequirements = {
          ...(built.requirements.capabilities === undefined
-@@ -483,6 +555,12 @@ export const makeApps = (
+           ? {}
+@@ -505,8 +577,14 @@ export const makeApps = (
+         input.commit === undefined
            ? input.files
            : yield* sources.read({ code, commit: input.commit });
 +      const previous = before === null ? undefined : (yield* project(db, before)).requirements;
@@ -255,13 +283,17 @@ index 6cdd555eb..a87b17fb3 100644
 +        );
        // The app's database lives in its data facet, keyed by app ID, so a new app's ID is chosen
        // before its migrations run. A failed migration fails the deploy before anything activates.
-@@ -601,4 +679,5 @@ export const makeApps = (
+       const appId =
+@@ -631,6 +709,7 @@ export const makeApps = (
+           const promote = existing === undefined || sequence > existing.activatedSequence;
            for (const { provider } of entries) {
              // Apps sharing a provider ID can declare different hosts; the row keeps what they share.
 +            // Its display text is the last deploy's; forms read the version's own definition.
              const definition = yield* Schema.decodeUnknownEffect(JsonObject)(provider.shared).pipe(
                Effect.mapError(() => new StorageError()),
-@@ -727,10 +806,20 @@ export const makeApps = (
+             );
+@@ -760,12 +839,22 @@ export const makeApps = (
+     ...authoring,
      deploy: (input: DeployInput) => deploy(input),
      build: (input: Parameters<Executor["apps"]["build"]>[0]) =>
 -      buildSource(input.owner, input.name, input.files, {
@@ -288,11 +320,13 @@ index 6cdd555eb..a87b17fb3 100644
 +      }).pipe(Effect.withSpan("sdk.apps.build")),
      copy: (input: Parameters<Executor["apps"]["copy"]>[0]) => copy(input),
      copyAs: (input: Parameters<Executor["apps"]["copyAs"]>[0]) => copy(input, input),
+     get: (input: Parameters<Executor["apps"]["get"]>[0]) =>
 diff --git a/packages/sdk/src/implementation/provider.ts b/packages/sdk/src/implementation/provider.ts
-index 2bb75d20f..c7777e0fb 100644
+index 3871cf3..8cecc5a 100644
 --- a/packages/sdk/src/implementation/provider.ts
 +++ b/packages/sdk/src/implementation/provider.ts
-@@ -29,17 +29,80 @@ function canonical(value: Json): string {
+@@ -29,25 +29,112 @@ export function canonical(value: Json): string {
+   return JSON.stringify(value);
  }
  
 +/** JSON Schema keywords whose value is one schema, or a list of them for `items` before 2020-12. */
@@ -383,7 +417,7 @@ index 2bb75d20f..c7777e0fb 100644
 +    const content = yield* Schema.decodeUnknownEffect(JsonObject)(value).pipe(
        Effect.mapError(() => new StorageError()),
      );
-@@ -47,5 +110,29 @@ export const identifyProvider = (definition: ProviderDefinition, crypto: Crypto.
+     const hash = yield* crypto
        .digest("SHA-256", new TextEncoder().encode(canonical(content)))
        .pipe(Effect.mapError(() => new StorageError()));
 -    return { id: ProviderId.make(`prv_${Hex.encode(hash)}`), definition: parsed, shared };
@@ -414,3 +448,4 @@ index 2bb75d20f..c7777e0fb 100644
 +    return { identity, legacy, definition: parsed, shared };
    });
  
+ /**
