@@ -9,9 +9,9 @@ model {
       }
     }
     obsidianSync = part "Obsidian Sync" {
-      description "A thin plugin connects through a browser-created app-scoped connection and device authorization. Credentials stay in Obsidian's secure storage. Local queues and exact receipts resume initial imports and offline edits. The Mac mirrors all content with bounded desktop file reads. Phones fetch note attachments on opening or pinning and evict only verified local copies. Journaled publication preserves changed local bytes and conflicting branches remain reviewable. The browser bundle contains no Node imports; the optional desktop reader is a separate guarded asset. Actual iPhone resource-range and file publication behavior still need device proof."
+      description "A thin plugin connects through a browser-created app-scoped connection and device authorization. Credentials stay in Obsidian's secure storage. Local queues and exact receipts resume initial imports and offline edits. The Mac mirrors all content with bounded desktop file reads. Phones fetch note attachments on opening or pinning and evict only verified local copies. Journaled publication preserves changed local bytes and conflicting branches remain reviewable. The plugin ships as main.js, manifest.json and styles.css only, so standard Obsidian installers carry all of it. The desktop reader is bundled into main.js behind a lazy require that only desktop runs; the build loads main.js with every Node built-in failing to prove phones never evaluate it. Each manifest version is published once as a basalt-sync-<version> source repository release that is never Latest, and a changed build under a published version fails the release. Actual iPhone resource-range and file publication behavior still need device proof."
       metadata {
-        code "clients/obsidian"
+        code "clients/obsidian|.github/workflows/obsidian-plugin-release.yml"
         libraries "obsidian"
       }
     }
@@ -30,4 +30,6 @@ model {
   basalt.build.cloudDriveProof -> basalt.toolsGateway "Verifies installed app transports"
   basalt.build.cloudDriveProof -> basalt.toolsGateway.obsidianSync "Verifies the public plugin transport"
   basalt.toolsGateway.obsidianSync -> basalt.toolsGateway.cloudDrive "Syncs manifest entries and pinned revisions"
+  basalt.toolsGateway.obsidianSync -[sync]-> repositoryApi "publish each plugin version once as a release"
+  basalt.toolsGateway.obsidianSync -[sync]-> packageSource "download the pinned bundler"
 }

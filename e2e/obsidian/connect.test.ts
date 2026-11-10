@@ -9,7 +9,16 @@ import {
   obsidianTools,
   supportsObsidian,
 } from "../../.upstream/apps/hosted/web/src/contracts/obsidian-connection.ts";
-import { parseConnectLink } from "../../clients/obsidian/link.ts";
+import {
+  basaltSyncReleaseStatus,
+  basaltSyncRepository,
+  basaltSyncTag,
+  basaltSyncVersion,
+  bratInstallLink,
+} from "../../.upstream/apps/hosted/web/src/contracts/obsidian-plugin.ts";
+import { parseConnectLink, protocolAction } from "../../clients/obsidian/link.ts";
+import manifest from "../../clients/obsidian/manifest.json" with { type: "json" };
+import versions from "../../clients/obsidian/versions.json" with { type: "json" };
 
 test("a renamed cloud app produces a plugin-readable link with only its exact tool scope", () => {
   const app = {
@@ -30,6 +39,9 @@ test("a renamed cloud app produces a plugin-readable link with only its exact to
   const link = new URL(
     obsidianConnectLink(app, "https://cloud.fixture.invalid/mcp?connection=fixture-device"),
   );
+  // Obsidian answers "Unrecognized URI action" unless this is the action the plugin registers.
+  assert.equal(link.protocol, "obsidian:");
+  assert.equal(link.host || link.pathname.replace(/^\/+/u, ""), protocolAction);
   const request = parseConnectLink(Object.fromEntries(link.searchParams));
   assert.equal(request.config.appId, app.id);
   assert.equal(request.config.appSlug, app.slug);
@@ -44,4 +56,33 @@ test("a renamed cloud app produces a plugin-readable link with only its exact to
     false,
   );
   assert.equal(Boolean(supportsObsidian({ requirements: { accounts: {} } }, all)), false);
+});
+
+test("the dashboard installs the plugin release this checkout publishes", () => {
+  assert.equal(basaltSyncVersion, manifest.version);
+  assert.equal(Object.hasOwn(versions, manifest.version), true);
+  assert.equal(manifest.id, protocolAction);
+  assert.equal(basaltSyncRepository("https://github.com/owner/repo"), "owner/repo");
+  assert.equal(basaltSyncRepository("https://github.com/owner/repo.git"), "owner/repo");
+  assert.equal(basaltSyncRepository("https://gitlab.com/owner/repo"), null);
+  assert.equal(basaltSyncRepository("https://github.com/owner"), null);
+  assert.equal(basaltSyncRepository(undefined), null);
+  const link = new URL(bratInstallLink("owner/repo"));
+  assert.equal(link.protocol, "obsidian:");
+  assert.equal(link.host || link.pathname.replace(/^\/+/u, ""), "brat");
+  assert.equal(link.searchParams.get("plugin"), "owner/repo");
+  assert.equal(link.searchParams.get("version"), basaltSyncTag);
+});
+
+test("BRAT is linked only once the release holds every file Obsidian installs", () => {
+  const assets = (...names: string[]) => ({ assets: names.map((name) => ({ name })) });
+  assert.equal(
+    basaltSyncReleaseStatus(200, assets("main.js", "manifest.json", "styles.css")),
+    "available",
+  );
+  assert.equal(basaltSyncReleaseStatus(200, assets("main.js", "manifest.json")), "unavailable");
+  assert.equal(basaltSyncReleaseStatus(200, {}), "unavailable");
+  assert.equal(basaltSyncReleaseStatus(404, null), "unavailable");
+  const limited = basaltSyncReleaseStatus(403, null);
+  assert.equal(typeof limited === "object" && limited._tag, "BasaltSyncReleaseUnreachable");
 });
