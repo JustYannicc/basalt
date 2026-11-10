@@ -79,6 +79,7 @@ const program = Effect.gen(function* () {
             ? hostedScopes
             : metadata.scopes_supported,
       omitGrantedScope: omitsGrantedScope,
+      bareGrantNames: mode === "hosted",
       ...(["expanded", "exceeded"].includes(mode)
         ? {
             configuredScopes: [

@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { storageFixture } from "./fixture.ts";
 import { openVault } from "./vault.ts";
+import { defaultLimits } from "./quota-limits.ts";
 
 test("a durable content quota refuses an oversized save without losing accepted history", async () => {
   const data = storageFixture(),
@@ -211,4 +212,9 @@ test("one owner shares durable quotas across vaults and monthly I/O limits retai
     other.close();
     account.close();
   }
+});
+
+test("the default monthly R2 allowance is 100,000 metered writes and 1,000,000 metered reads", () => {
+  assert.equal(defaultLimits.classA, 100_000);
+  assert.equal(defaultLimits.classB, 1_000_000);
 });

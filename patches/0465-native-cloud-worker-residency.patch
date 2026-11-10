@@ -1,0 +1,252 @@
+diff --git a/packages/sdk/src/workerd.ts b/packages/sdk/src/workerd.ts
+--- a/packages/sdk/src/workerd.ts
++++ b/packages/sdk/src/workerd.ts
+@@ -37,3 +37,10 @@
+   type CredentialOutbound,
+ } from "./implementation/credential-handles.ts";
+ export { NetworkUnreachable, networkUnreachableResponse } from "./implementation/app-network.ts";
++
++export {
++  makeAppWorkerResidency,
++  defaultAppWorkerLimit,
++  defaultAppWorkerIdleSeconds,
++  type AppWorkerResidency,
++} from "./implementation/app-worker-residency.ts";
+diff --git a/apps/hosted/cloud/src/app-data.ts b/apps/hosted/cloud/src/app-data.ts
+--- a/apps/hosted/cloud/src/app-data.ts
++++ b/apps/hosted/cloud/src/app-data.ts
+@@ -15,11 +15,16 @@
+ import { AppData, runnerReadsBuilds } from "./infrastructure/app-data-worker.ts";
+ import { AppDataSupervisor, appDataSupervisors } from "./infrastructure/app-data.ts";
+ import { RuntimeContext } from "alchemy";
++import { defaultProviderMode } from "alchemy/ProviderMode";
+ import { CacheCommand } from "@executor-js/app-cache/contracts";
+ import { BlobStore } from "@executor-js/sdk/core";
+ import {
+   IsolateStarted,
+   makeAppRunner,
++  makeAppWorkerResidency,
++  defaultAppWorkerLimit,
++  defaultAppWorkerIdleSeconds,
++  type AppWorkerResidency,
+   serveAppRunner,
+   type AppDataHost,
+   type AppRunnerHost,
+@@ -134,10 +139,21 @@
+   Effect.map(Option.getOrUndefined),
+ );
+ 
++// oxlint-disable-next-line executor/no-module-level-mutable-state -- native workerd keeps named Workers for the process lifetime, so every request shares its residency bound
++let nativeResidency: AppWorkerResidency | undefined;
++
+ /** What every runner in this Worker reads builds from and loads app code with. */
+ const runnerBindings = Effect.gen(function* () {
+   const environment = yield* Cloudflare.WorkerEnvironment;
++  const supervisors = yield* appDataSupervisors;
+   const credentials = yield* appCredentialOutbound;
++  const residency =
++    environment.APP_DATA_NATIVE_RUNTIME === true
++      ? (nativeResidency ??= makeAppWorkerResidency({
++          limit: defaultAppWorkerLimit,
++          idleSeconds: defaultAppWorkerIdleSeconds,
++        }))
++      : undefined;
+   // The runner reads builds itself, by the ID each invocation names, so callers never load,
+   // decode or send app code. The cache keys match the ones a deploy warms.
+   const blobs = yield* cloudBuildReader;
+@@ -174,6 +190,19 @@
+           loader: yield* Schema.decodeUnknownEffect(NativeLoader)(environment.AppDataLoader).pipe(
+             Effect.orDie,
+           ),
++          ...(residency === undefined
++            ? {}
++            : {
++                residency,
++                // A later request's trim owns the stub and its I/O, not the call that loaded it.
++                unloadFacet: (app: string, identity: string) =>
++                  Effect.suspend(() =>
++                    supervisors
++                      .getByName(app)
++                      .unload(identity)
++                      .pipe(Effect.provide(RuntimeContext.phantom)),
++                  ),
++              }),
+           outbound: yield* credentials.outbound,
+           credentialKey: credentials.key,
+           data: options.data,
+@@ -209,6 +238,8 @@
+         loader,
+         yield* credentials.outbound,
+         serves,
++        false,
++        environment.APP_DATA_NATIVE_RUNTIME === true,
+       );
+       // A database call's runner runs here, beside the facet it calls: the caller reaches this
+       // object directly instead of through a runner isolate that would only forward the call.
+@@ -234,6 +265,7 @@
+               supervisor: { ...running, wokeEarlier, wokeByWake, isolateWoke, colo: colo() },
+             })),
+           ),
++        unload: supervisor.unload,
+         evaluated: supervisor.evaluated,
+         wake: supervisor.wake,
+         invoke: (
+@@ -292,6 +324,8 @@
+       workersDev: false,
+       compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
+       env: {
++        // Local providers run native workerd; live providers deploy to Cloudflare, which owns eviction.
++        APP_DATA_NATIVE_RUNTIME: (yield* defaultProviderMode) === "local",
+         ...(yield* telemetryBindings),
+         ...(yield* appOutboundBindings),
+         [runnerReadsBuilds.name]: runnerReadsBuilds.value,
+diff --git a/apps/hosted/cloud/src/infrastructure/app-data.ts b/apps/hosted/cloud/src/infrastructure/app-data.ts
+--- a/apps/hosted/cloud/src/infrastructure/app-data.ts
++++ b/apps/hosted/cloud/src/infrastructure/app-data.ts
+@@ -6,7 +6,7 @@
+ import { AppData } from "./app-data-worker.ts";
+ 
+ type FacetSupervisor = Effect.Success<ReturnType<typeof makeFacetSupervisor>>;
+-type Supervisor = Pick<FacetSupervisor, "invoke" | "cancel" | "evaluated" | "wake"> & {
++type Supervisor = Pick<FacetSupervisor, "invoke" | "cancel" | "evaluated" | "wake" | "unload"> & {
+   /**
+    * A cache command. `trace` is the caller's trace ID and `invocation` its runner invocation's
+    * opaque ID, compared with the call that woke the supervisor; the reply also says how the
+diff --git a/packages/app-data/src/cloudflare.ts b/packages/app-data/src/cloudflare.ts
+--- a/packages/app-data/src/cloudflare.ts
++++ b/packages/app-data/src/cloudflare.ts
+@@ -223,6 +223,8 @@
+    * process never unloads named Workers itself sets this; Cloudflare unloads them.
+    */
+   unloadReplacedFacets = false,
++  /** Bound idle facets without changing reuse between account selections below that bound. */
++  unloadIdleFacets = unloadReplacedFacets,
+ ) =>
+   Effect.gen(function* () {
+     const metadata = yield* Semaphore.make(1);
+@@ -821,7 +823,7 @@
+       unload: (identity: string) =>
+         enter(
+           Effect.gen(function* () {
+-            if (!unloadReplacedFacets) return false;
++            if (!unloadIdleFacets) return false;
+             while (finishing > 0) {
+               const current = finished;
+               yield* Effect.promise(() => current);
+@@ -831,7 +833,8 @@
+             const name = `${supervisor}:${identity}`;
+             const loaded = workerName(name);
+             const recorded = loadedFacets.get(supervisor)?.loaded === loaded;
+-            if (active !== loaded && !recorded) return false;
++            // Hosts that retain replaced facets evict older selections through their residency.
++            if (unloadReplacedFacets && active !== loaded && !recorded) return false;
+             if (active === loaded) {
+               state.facets.abort("data", "Unloaded by the app Worker limit");
+               active = undefined;
+diff --git a/packages/sdk/src/implementation/app-worker-residency.ts b/packages/sdk/src/implementation/app-worker-residency.ts
+--- a/packages/sdk/src/implementation/app-worker-residency.ts
++++ b/packages/sdk/src/implementation/app-worker-residency.ts
+@@ -10,7 +10,8 @@
+  * hold until it settles); while every loaded Worker is busy the limit is
+  * exceeded until calls finish. Below the limit, a Worker left idle for the configured idle time is
+  * unloaded too, so an app called once does not keep its isolate for the life of the process. The
+- * next call of an unloaded Worker cold-starts it from its build.
++ * next call of an unloaded Worker cold-starts it from its build. A runtime that refuses an unload
++ * leaves the Worker resident; a later trim or idle sweep retries it.
+  *
+  * The state lives in the runner's own isolate, which workerd keeps for the life of the process.
+  * Cloud has no residency: Cloudflare unloads its Workers itself.
+@@ -49,6 +50,7 @@
+ interface Resident {
+   active: number;
+   lastUsed: number;
++  retryAt: number;
+   unloading: Promise<void> | undefined;
+   readonly unload: Unload;
+ }
+@@ -103,6 +105,7 @@
+   const unload = (name: string, resident: Resident) =>
+     resident.unload.run.pipe(
+       Effect.timeoutOption(unloadLimit),
++      Effect.catchCause(() => Effect.succeed(Option.some(false))),
+       Effect.tap((settled) =>
+         Effect.sync(() => {
+           if (Option.isNone(settled)) resident.unload.abandon();
+@@ -115,15 +118,34 @@
+           "executor.worker.unload_timed_out": Option.isNone(settled),
+         }),
+       ),
++      Effect.tap((settled) =>
++        Effect.gen(function* () {
++          if (Option.getOrElse(settled, () => true)) {
++            if (residents.get(name) === resident) residents.delete(name);
++          } else {
++            // An expired but refused unload must not spin the request's idle sweep.
++            resident.retryAt = (yield* Clock.currentTimeMillis) + idleMillis;
++          }
++        }),
++      ),
+       Effect.withSpan("runtime.app.worker.unload"),
+       Effect.asVoid,
+       Effect.catchCause(() => Effect.void),
+       Effect.ensuring(
+         Effect.sync(() => {
+-          if (residents.get(name) === resident) residents.delete(name);
++          resident.unloading = undefined;
+         }),
+       ),
+     );
++
++  const startUnload = (name: string, resident: Resident, services: Context.Context<never>) => {
++    // Claim before running: even a synchronous refusal must clear an already-installed promise.
++    const unloading = Promise.resolve().then(() =>
++      Effect.runPromiseWith(services)(unload(name, resident)),
++    );
++    resident.unloading = unloading;
++    return unloading;
++  };
+ 
+   /** Unload least recently used idle Workers until at most `limit` stay loaded. */
+   const trim = () =>
+@@ -141,9 +163,7 @@
+         if (loaded <= limit) break;
+         loaded--;
+         // Claimed synchronously, so a call of this name waits instead of reaching the old Worker.
+-        const unloading = Effect.runPromiseWith(services)(unload(name, resident));
+-        resident.unloading = unloading;
+-        unloads.push(unloading);
++        unloads.push(startUnload(name, resident, services));
+       }
+       return unloads.length === 0 ? Effect.void : Effect.promise(() => Promise.all(unloads));
+     });
+@@ -154,11 +174,9 @@
+       const unloads: Array<Promise<void>> = [];
+       for (const [name, resident] of residents) {
+         if (resident.unloading !== undefined || resident.active > 0) continue;
+-        if (now - resident.lastUsed < idleMillis) continue;
++        if (now < Math.max(resident.lastUsed + idleMillis, resident.retryAt)) continue;
+         // Claimed synchronously, as in `trim`, so a call of this name waits for the unload.
+-        const unloading = Effect.runPromiseWith(services)(unload(name, resident));
+-        resident.unloading = unloading;
+-        unloads.push(unloading);
++        unloads.push(startUnload(name, resident, services));
+       }
+       return unloads.length === 0 ? Effect.void : Effect.promise(() => Promise.all(unloads));
+     });
+@@ -168,7 +186,7 @@
+     let next: number | undefined;
+     for (const resident of residents.values()) {
+       if (resident.unloading !== undefined || resident.active > 0) continue;
+-      const expiry = resident.lastUsed + idleMillis;
++      const expiry = Math.max(resident.lastUsed + idleMillis, resident.retryAt);
+       if (next === undefined || expiry < next) next = expiry;
+     }
+     return next;
+@@ -226,6 +244,7 @@
+         resident = current ?? {
+           active: 0,
+           lastUsed: now,
++          retryAt: 0,
+           unloading: undefined,
+           unload,
+         };

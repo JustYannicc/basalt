@@ -29,7 +29,6 @@ import {
   providerReadbacks,
   capturePreviewProviderInventory,
   verifyPreviewProvidersAbsent,
-  type PreviewProviderReadbacks,
 } from "./provider-absence.ts";
 
 const rootFromModule = fileURLToPath(new URL("../../", import.meta.url));
@@ -41,10 +40,26 @@ const databaseConfig = "../../../../scripts/preview/stack/alchemy.database.ts";
 type StackAction = "deploy" | "destroy";
 export interface LifecycleServices {
   readonly stateReader: (environment: NodeJS.ProcessEnv) => PreviewStateReader;
-  readonly captureProviders: (identity: PreviewIdentity, inventory: PreviewInventory, environment: NodeJS.ProcessEnv) => Promise<PreviewInventory["providers"]>;
-  readonly build: (root: string, identity: PreviewIdentity, source: NodeJS.ProcessEnv) => Promise<void>;
-  readonly deploy: (identity: PreviewIdentity, environment: NodeJS.ProcessEnv, seedFile: string) => Promise<void>;
-  readonly destroyStack: (stack: "basalt" | "database", identity: PreviewIdentity, environment: NodeJS.ProcessEnv) => Promise<void>;
+  readonly captureProviders: (
+    identity: PreviewIdentity,
+    inventory: PreviewInventory,
+    environment: NodeJS.ProcessEnv,
+  ) => Promise<PreviewInventory["providers"]>;
+  readonly build: (
+    root: string,
+    identity: PreviewIdentity,
+    source: NodeJS.ProcessEnv,
+  ) => Promise<void>;
+  readonly deploy: (
+    identity: PreviewIdentity,
+    environment: NodeJS.ProcessEnv,
+    seedFile: string,
+  ) => Promise<void>;
+  readonly destroyStack: (
+    stack: "basalt" | "database",
+    identity: PreviewIdentity,
+    environment: NodeJS.ProcessEnv,
+  ) => Promise<void>;
   readonly deleteArtifacts: (namespace: string, environment: NodeJS.ProcessEnv) => Promise<void>;
   readonly verifyProviders: (
     identity: PreviewIdentity,
@@ -54,14 +69,32 @@ export interface LifecycleServices {
 }
 
 function safeEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return Object.fromEntries([
-    "PATH", "HOME", "TMPDIR", "LANG", "CI", "GITHUB_ACTIONS", "BUN_INSTALL", "NODE_OPTIONS",
-  ].flatMap((name) => source[name] === undefined ? [] : [[name, source[name]]])) as NodeJS.ProcessEnv;
+  return Object.fromEntries(
+    [
+      "PATH",
+      "HOME",
+      "TMPDIR",
+      "LANG",
+      "CI",
+      "GITHUB_ACTIONS",
+      "BUN_INSTALL",
+      "NODE_OPTIONS",
+    ].flatMap((name) => (source[name] === undefined ? [] : [[name, source[name]]])),
+  ) as NodeJS.ProcessEnv;
 }
 
-function runChild(command: string, args: readonly string[], cwd: string, environment: NodeJS.ProcessEnv): Promise<void> {
+function runChild(
+  command: string,
+  args: readonly string[],
+  cwd: string,
+  environment: NodeJS.ProcessEnv,
+): Promise<void> {
   return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(command, [...args], { cwd, env: environment, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, [...args], {
+      cwd,
+      env: environment,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let size = 0;
     let tooMuchOutput = false;
     const discard = (chunk: Buffer) => {
@@ -85,8 +118,12 @@ function runChild(command: string, args: readonly string[], cwd: string, environ
     child.once("close", (code, signal) => {
       process.removeListener("SIGINT", onInterrupt);
       process.removeListener("SIGTERM", onTerminate);
-      if (tooMuchOutput) return rejectPromise(new Error("Preview command output exceeded its private bound"));
-      if (code !== 0) return rejectPromise(new Error("Preview command failed" + (signal ? " with " + signal : " with exit " + code)));
+      if (tooMuchOutput)
+        return rejectPromise(new Error("Preview command output exceeded its private bound"));
+      if (code !== 0)
+        return rejectPromise(
+          new Error("Preview command failed" + (signal ? " with " + signal : " with exit " + code)),
+        );
       resolvePromise();
     });
   });
@@ -98,30 +135,59 @@ async function runAlchemy(
   identity: PreviewIdentity,
   environment: NodeJS.ProcessEnv,
 ): Promise<void> {
-  await runChild("bun", [
-    "exec", "alchemy", "--log-level", "none", action, config,
-    "--stage", identity.stage, "--yes", "--no-input",
-  ], cloudDirectory, environment);
+  await runChild(
+    "bun",
+    [
+      "exec",
+      "alchemy",
+      "--log-level",
+      "none",
+      action,
+      config,
+      "--stage",
+      identity.stage,
+      "--yes",
+      "--no-input",
+    ],
+    cloudDirectory,
+    environment,
+  );
 }
 
 function identityFromManifest(
   value: Awaited<ReturnType<typeof readPreviewManifest>>,
   identity: PreviewIdentity,
 ): void {
-  if (value.pullRequest !== identity.pullRequest || value.stage !== identity.stage ||
-    value.sourceNamespace !== identity.sourceNamespace || value.databaseName !== identity.databaseName ||
-    value.origin !== identity.origin) throw new Error("Preview manifest does not match the requested PR identity");
+  if (
+    value.pullRequest !== identity.pullRequest ||
+    value.stage !== identity.stage ||
+    value.sourceNamespace !== identity.sourceNamespace ||
+    value.databaseName !== identity.databaseName ||
+    value.origin !== identity.origin
+  )
+    throw new Error("Preview manifest does not match the requested PR identity");
 }
 
-function seedIds(value: unknown, identity: PreviewIdentity): { organizationId: string; poolAppId: string } {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Preview seed output is invalid");
+function seedIds(
+  value: unknown,
+  identity: PreviewIdentity,
+): { organizationId: string; poolAppId: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Preview seed output is invalid");
   const seed = value as Record<string, unknown>;
   const organization = seed.organization;
-  if (seed.version !== 1 || seed.stage !== identity.stage || seed.origin !== identity.origin ||
-    typeof organization !== "object" || organization === null || Array.isArray(organization) ||
+  if (
+    seed.version !== 1 ||
+    seed.stage !== identity.stage ||
+    seed.origin !== identity.origin ||
+    typeof organization !== "object" ||
+    organization === null ||
+    Array.isArray(organization) ||
     typeof (organization as Record<string, unknown>).id !== "string" ||
     typeof (organization as Record<string, unknown>).slug !== "string" ||
-    typeof seed.poolAppId !== "string") throw new Error("Preview seed output does not match its stage");
+    typeof seed.poolAppId !== "string"
+  )
+    throw new Error("Preview seed output does not match its stage");
   const organizationId = (organization as Record<string, unknown>).id as string;
   const poolAppId = seed.poolAppId;
   if (!/^[A-Za-z0-9_-]{1,256}$/.test(organizationId) || !/^[A-Za-z0-9_-]{1,256}$/.test(poolAppId))
@@ -129,31 +195,50 @@ function seedIds(value: unknown, identity: PreviewIdentity): { organizationId: s
   return { organizationId, poolAppId };
 }
 
-async function materializePreviewBrand(root: string, identity: PreviewIdentity, action: () => Promise<void>): Promise<void> {
+async function materializePreviewBrand(
+  root: string,
+  identity: PreviewIdentity,
+  action: () => Promise<void>,
+): Promise<void> {
   const path = join(root, "brand.ts");
   const original = await readFile(path, "utf8");
   const metadata = await stat(path);
   const host = new URL(identity.origin).hostname;
   const domain = identity.origin.replace(/^https:\/\/app\.pr-[0-9]+\./, "");
-  const hostPattern = /(^  host: )"[^\"]+"(,?$)/m;
-  const zonePattern = /(^  zone: )"[^\"]+"(,?$)/m;
+  const hostPattern = /(^  host: )"[^"]+"(,?$)/m;
+  const zonePattern = /(^  zone: )"[^"]+"(,?$)/m;
   const hostMatches = original.match(new RegExp(hostPattern.source, "gm")) ?? [];
   const zoneMatches = original.match(new RegExp(zonePattern.source, "gm")) ?? [];
   if (hostMatches.length !== 1 || zoneMatches.length !== 1)
     throw new Error("The preview brand build seam changed");
   const changed = original
-    .replace(hostPattern, (_match, prefix: string, suffix: string) => prefix + JSON.stringify(host) + suffix)
-    .replace(zonePattern, (_match, prefix: string, suffix: string) => prefix + JSON.stringify(domain) + suffix);
+    .replace(
+      hostPattern,
+      (_match, prefix: string, suffix: string) => prefix + JSON.stringify(host) + suffix,
+    )
+    .replace(
+      zonePattern,
+      (_match, prefix: string, suffix: string) => prefix + JSON.stringify(domain) + suffix,
+    );
   if (changed === original) throw new Error("The preview brand build seam did not change");
   await writeFile(path, changed, { mode: metadata.mode & 0o777 });
+  let failed = false;
+  let failure: unknown;
   try {
     await action();
-  } finally {
-    const current = await readFile(path, "utf8");
-    if (current !== changed) throw new Error("Preview brand source changed during the isolated build; restore it before retrying");
-    await writeFile(path, original, { mode: metadata.mode & 0o777 });
-    await chmod(path, metadata.mode & 0o777);
+  } catch (error) {
+    failed = true;
+    failure = error;
   }
+  // A changed seam is reported instead of the build's own failure and is left for review.
+  const current = await readFile(path, "utf8");
+  if (current !== changed)
+    throw new Error(
+      "Preview brand source changed during the isolated build; restore it before retrying",
+    );
+  await writeFile(path, original, { mode: metadata.mode & 0o777 });
+  await chmod(path, metadata.mode & 0o777);
+  if (failed) throw failure;
 }
 
 function liveServices(source: NodeJS.ProcessEnv): LifecycleServices {
@@ -168,21 +253,31 @@ function liveServices(source: NodeJS.ProcessEnv): LifecycleServices {
       await runAlchemy("deploy", mainConfig, identity, environment);
     },
     destroyStack: async (stack, identity, environment) => {
-      await runAlchemy("destroy", stack === "basalt" ? cleanupConfig : databaseConfig, identity, environment);
+      await runAlchemy(
+        "destroy",
+        stack === "basalt" ? cleanupConfig : databaseConfig,
+        identity,
+        environment,
+      );
     },
     deleteArtifacts: async (namespace, environment) => {
       const account = environment.CLOUDFLARE_ACCOUNT_ID;
       const token = environment.CLOUDFLARE_API_TOKEN;
       if (!account || !token) throw new Error("Preview cleanup credentials are missing");
-      const { cloudflareArtifactsApi } = await import("../ensure-artifacts.ts");
-      await deleteEuNamespace(cloudflareArtifactsApi(account, token), namespace);
+      const { cloudflareArtifactsApi, stageNamespaces } = await import("../ensure-artifacts.ts");
+      const api = cloudflareArtifactsApi(account, token);
+      for (const name of stageNamespaces(namespace)) await deleteEuNamespace(api, name);
     },
     verifyProviders: (identity, inventory, environment) =>
       verifyPreviewProvidersAbsent(identity, inventory, providerReadbacks(environment)),
   };
 }
 
-export async function planPreview(root: string, pullRequest: number, source: NodeJS.ProcessEnv): Promise<void> {
+export async function planPreview(
+  root: string,
+  pullRequest: number,
+  source: NodeJS.ProcessEnv,
+): Promise<void> {
   const identity = previewIdentity(pullRequest, source);
   await writePreviewManifest(manifestPath(root, pullRequest), newPreviewManifest(identity));
 }
@@ -193,14 +288,16 @@ export async function deployPreview(
   source: NodeJS.ProcessEnv,
   services = liveServices(source),
 ): Promise<void> {
-  if (source.GITHUB_ACTIONS !== "true") throw new Error("Release previews run only in GitHub Actions");
+  if (source.GITHUB_ACTIONS !== "true")
+    throw new Error("Release previews run only in GitHub Actions");
   if (source.PREVIEW_MANIFEST_CHECKPOINTED !== "1")
     throw new Error("The encrypted cleanup checkpoint must be uploaded before deployment");
   const config = previewEnvironment(pullRequest, source);
   const path = manifestPath(root, pullRequest);
   const manifest = await readPreviewManifest(path, pullRequest);
   identityFromManifest(manifest, config);
-  if (manifest.phase !== "planned") throw new Error("Preview deployment needs a fresh planned checkpoint");
+  if (manifest.phase !== "planned")
+    throw new Error("Preview deployment needs a fresh planned checkpoint");
   const initial = await capturePreviewInventory(config, services.stateReader(config.deploy));
   if (inventoryResourceCount(initial) !== 0)
     throw new Error("Preview stage has existing remote state; recover it before deploying again");
@@ -245,8 +342,11 @@ export async function destroyPreview(
     ["database", () => services.destroyStack("database", config, config.providers)],
     ["artifacts", () => services.deleteArtifacts(config.sourceNamespace, config.providers)],
   ] as const) {
-    try { await action(); }
-    catch { failures.push(new Error("Preview " + stack + " cleanup failed")); }
+    try {
+      await action();
+    } catch {
+      failures.push(new Error("Preview " + stack + " cleanup failed"));
+    }
   }
   if (failures.length) throw new AggregateError(failures, "Preview cleanup did not finish");
   await updatePreviewManifest(path, pullRequest, "destroyed", undefined, inventory);
@@ -266,7 +366,8 @@ export async function verifyPreview(
   if (!inventory) throw new Error("No pre-destroy remote inventory was captured");
 
   const remaining = await capturePreviewInventory(config, services.stateReader(config.providers));
-  if (inventoryResourceCount(remaining) !== 0) throw new Error("Preview Alchemy stage state is still present");
+  if (inventoryResourceCount(remaining) !== 0)
+    throw new Error("Preview Alchemy stage state is still present");
   await services.verifyProviders(config, inventory, config.providers);
   if (inventoryResourceCount(inventory) === 0)
     throw new Error("Preview was not backed by a non-empty pre-destroy remote inventory");

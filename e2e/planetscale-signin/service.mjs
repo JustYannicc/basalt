@@ -67,6 +67,7 @@ export async function startPlanetScale({
   refuseScope,
   refreshScopes,
   configuredScopes,
+  bareGrantNames = false,
 }) {
   const calls = [];
   const failures = [];
@@ -198,7 +199,10 @@ export async function startPlanetScale({
         body.grant_type === "refresh_token" && refreshScopes !== undefined
           ? refreshScopes
           : grant.granted.split(/\s+/u)
-      ).filter((scope) => scope !== refuseScope);
+      )
+        .filter((scope) => scope !== refuseScope)
+        // Production token responses name each permission without its resource prefix.
+        .map((scope) => (bareGrantNames ? scope.replace(/^[a-z]+:/u, "") : scope));
       calls.at(-1).reportedScopes = omitGrantedScope ? null : granted;
       if (refuseScope !== undefined)
         assert.ok(granted.length < grant.granted.split(/\s+/u).length, `Requested ${refuseScope}`);

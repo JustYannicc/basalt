@@ -514,7 +514,12 @@ export const proveContainerStack = (source, recompile, scenario) =>
                       assert.equal(init.method, "GET");
                       return Response.json({
                         success: true,
-                        result: [{ namespace: "basalt-production-apps", jurisdiction: "eu" }],
+                        result: ["basalt-production-apps", "basalt-production-vaults"].map(
+                          (namespace) => ({
+                            namespace,
+                            jurisdiction: "eu",
+                          }),
+                        ),
                       });
                     }),
                   baseline: (worker) =>

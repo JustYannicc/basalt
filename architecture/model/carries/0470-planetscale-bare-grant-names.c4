@@ -1,0 +1,7 @@
+model {
+  extend basalt.catalog {
+    metadata {
+      constraint "The hosted database sign-in resolves each granted permission the provider reports without its resource prefix to the requested prefixed scope, otherwise the narrowest published one, and saves that canonical set, so a saved grant never claims a broader resource than the request named. A name matching no published scope stays refused, and renewals resolve against the grant's original request."
+    }
+  }
+}

@@ -86,6 +86,15 @@
             "mode": "manual",
             "requires": "Retire after pinned Home emits one bounded metadata-only record per claimed quota collection with account references and returned vendor window field paths and durations before parsing, and passes actual collector, omitted and unusable window, privacy and real-child container stdout regressions."
           }
+        },
+        {
+          "identity": "cliproxy-home-xai-subscription-quota",
+          "file": "0469-home-xai-subscription-quota.patch",
+          "sha256": "ea8e7bd4d1a7619358288dd764f8e861a17394d0a29d1c07138f4259c0b15201",
+          "retirement": {
+            "mode": "manual",
+            "requires": "remove when the pin moves to \u2265 v1.1.8 and the upstream paid omitted-zero, free/unknown-profile, retained-window, supported-client and metadata-only collection regressions pass on the new pin."
+          }
         }
       ]
     },
