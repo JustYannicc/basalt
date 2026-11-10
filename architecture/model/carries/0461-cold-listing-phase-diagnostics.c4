@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Cold Worker listings export fixed phase names, closed statuses and bounded durations while evaluation is still running. The existing app telemetry privacy filter, trace ownership and bounded host queue remain authoritative. The host drains exports through waitUntil after invocation release so collector latency cannot delay a listing result; an optional internal callback has a two-MiB invocation budget and 64-batch limit. Runners without an exporter and retained frameworks keep their final-envelope return path. The trusted runner records RPC exits even when a stopped isolate cannot export its final span. A traced publish or renewal reads only its fencing metadata before expired rows are removed, with no additional writes. Cache diagnostics expose only fixed lease states, counts and known refusal classes, never keys, values, bodies, addresses or credentials. Discovery bounds, cache lease ownership, renewal schedules, operation order and retries are unchanged. Cloud proofs retain active phase and lease evidence before the discovery cutoff and successful cold management listing phases."
+    }
+  }
+}
