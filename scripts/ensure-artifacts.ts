@@ -22,7 +22,7 @@ export interface ArtifactsApi {
 
 export type ArtifactsFetch = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
-const failureHeaders = {
+export const failureHeaders = {
   "cf-ray": /^[a-f0-9]{16}(?:-[A-Z]{3})?$/i,
   "cf-mitigated": /^challenge$/,
   "retry-after": /^\d{1,10}$/,

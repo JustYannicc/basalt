@@ -1,6 +1,11 @@
 import type { ExecProps } from "alchemy/Command/Exec";
 import { Redacted } from "effect";
-import { cloudflareArtifactsApi, ensureEuNamespace, stageNamespaces } from "../ensure-artifacts.ts";
+import {
+  cloudflareArtifactsApi,
+  ensureEuNamespace,
+  failureHeaders,
+  stageNamespaces,
+} from "../ensure-artifacts.ts";
 import { BarrierRefusal } from "./manifest.ts";
 
 const commands: Record<
@@ -86,29 +91,28 @@ export async function admitSourceNamespace(props: ExecProps, api = cloudflareArt
   }
 }
 
+/** The Artifacts client's own operation names, exactly as its failure messages spell them. */
+const operations =
+  "(?:list|namespace creation|namespace deletion|repository deletion|token list|token deletion)";
+const diagnosticsSuffix = String.raw`(?:; diagnostics=(\{.{0,600}\}))?`;
 /** Messages the Artifacts client builds itself; nothing else may reach a public report. */
 const clientMessages = [
-  /^Cloudflare Artifacts [a-z ]{1,40} failed with HTTP (\d{3})(?:; diagnostics=(\{.{0,600}\}))?$/,
-  /^Cloudflare Artifacts [a-z ]{1,40} was rejected(?:; diagnostics=(\{.{0,600}\}))?$/,
-  /^Cloudflare Artifacts [a-z ]{1,40} returned an invalid response$/,
+  new RegExp(`^Cloudflare Artifacts ${operations} failed with HTTP (\\d{3})${diagnosticsSuffix}$`),
+  new RegExp(`^Cloudflare Artifacts ${operations} was rejected${diagnosticsSuffix}$`),
+  new RegExp(`^Cloudflare Artifacts ${operations} returned an invalid response$`),
   /^Cloudflare Artifacts pagination repeated a cursor$/,
   /^Cloudflare Artifacts pagination did not end$/,
   /^Invalid Cloudflare Artifacts list response$/,
   /^Artifacts namespace must have immutable EU jurisdiction; deployment stopped$/,
 ];
-const headerValue = /^[A-Za-z0-9=;,. :-]{1,64}$/;
-const diagnosticHeaders = [
-  "cf-ray",
-  "cf-mitigated",
-  "retry-after",
-  "x-ratelimit-limit",
-  "x-ratelimit-remaining",
-  "x-ratelimit-reset",
-  "ratelimit",
-  "ratelimit-policy",
-];
+/** Each header keeps the exact shape the client reduces it to; quota parameters are numbers only. */
+const diagnosticHeaders: Readonly<Record<string, RegExp>> = {
+  ...failureHeaders,
+  ratelimit: /^r=\d{1,10};t=\d{1,10}(?:, r=\d{1,10};t=\d{1,10}){0,3}$/,
+  "ratelimit-policy": /^q=\d{1,10};w=\d{1,10}(?:, q=\d{1,10};w=\d{1,10}){0,3}$/,
+};
 
-/** Rebuild client diagnostics field by field: numeric codes and allow-listed header values only. */
+/** Rebuild client diagnostics field by field: numeric codes and exactly shaped header values. */
 function safeDiagnostics(text: string | undefined) {
   if (!text) return undefined;
   let parsed: unknown;
@@ -126,9 +130,9 @@ function safeDiagnostics(text: string | undefined) {
     : [];
   const headers: Record<string, string> = {};
   if (typeof source.headers === "object" && source.headers !== null)
-    for (const name of diagnosticHeaders) {
+    for (const [name, pattern] of Object.entries(diagnosticHeaders)) {
       const value = (source.headers as Record<string, unknown>)[name];
-      if (typeof value === "string" && headerValue.test(value)) headers[name] = value;
+      if (typeof value === "string" && pattern.test(value)) headers[name] = value;
     }
   return JSON.stringify({ codes, headers });
 }

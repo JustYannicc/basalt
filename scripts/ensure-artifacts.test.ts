@@ -562,3 +562,26 @@ test("pagination failures name themselves in the refusal", async () => {
     /did not end/,
   );
 });
+
+test("detail survives only for the client's real operations, error class and header shapes", async () => {
+  const { readFailure } = await import("./release-barrier/commands.ts");
+  // The exact client wording from another error class is still only its class.
+  assert.equal(
+    readFailure(new TypeError("Cloudflare Artifacts list failed with HTTP 403")),
+    "TypeError",
+  );
+  // An operation the client never names is not the client's message.
+  assert.equal(
+    readFailure(new Error("Cloudflare Artifacts secret token failed with HTTP 403")),
+    "Error",
+  );
+  const shaped = readFailure(
+    new Error(
+      'Cloudflare Artifacts list failed with HTTP 429; diagnostics={"codes":[10429],"headers":{"cf-ray":"private.invalid","retry-after":"30","ratelimit":"r=0;t=30","ratelimit-policy":"\\"private\\";q=10;w=60"}}',
+    ),
+  );
+  assert.match(shaped, /HTTP 429/);
+  assert.match(shaped, /"retry-after":"30"/);
+  assert.match(shaped, /"ratelimit":"r=0;t=30"/);
+  assert.doesNotMatch(shaped, /private/);
+});
