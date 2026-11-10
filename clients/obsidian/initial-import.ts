@@ -1,7 +1,6 @@
 import { dictionary } from "./dictionary.ts";
 import {
   blobId,
-  maximumFileBytes,
   safePath,
   type LocalFile,
   type LocalVault,
@@ -9,6 +8,7 @@ import {
   type SyncState,
 } from "./types.ts";
 import type { ImportEntry, ImportPlan } from "./import-types.ts";
+import { isTextPath, maximumTextBytes } from "../../src/drive/text-files.ts";
 
 export function initialImport(input: {
   state: SyncState;
@@ -27,7 +27,7 @@ export function initialImport(input: {
     check();
     if (!safePath(file.path)) return null;
     if (local.importEntry) return local.importEntry(file);
-    if (!file.path.endsWith(".md") || file.bytes > maximumFileBytes)
+    if (!isTextPath(file.path) || file.bytes > maximumTextBytes)
       throw new Error(
         `Import ${file.path} from your Mac; this device cannot read it within its file limit. Its bytes are kept.`,
       );

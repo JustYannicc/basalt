@@ -13,6 +13,7 @@ model {
       metadata {
         code "clients/obsidian|.github/workflows/obsidian-plugin-release.yml"
         libraries "obsidian"
+        constraint "Sync follows Git, not a timer. File events only mark the working tree dirty. One checkpoint commits every dirty path, deletes included, from one base and pushes it: after about three idle minutes, when Obsidian is hidden, or on Sync now. Remote checks are fetches every five minutes, on opening a note and on return, and never commit. A file keeps an older base only while its local edit outlived a cloud edit, so that commit merges instead of overwriting. Listed text formats up to 1 MiB that decode as UTF-8 without NUL bytes are Git text; everything else, including larger text, goes behind an attachment pointer."
       }
     }
   }

@@ -10,6 +10,11 @@ export interface LocalVault {
   readonly binary?: boolean;
   files(): Promise<LocalFile[]>;
   read(path: string): Promise<string | null>;
+  /**
+   * Like read, but never uploads. An attachment changed since its last pointer reads as a value
+   * no blob matches, which is all a pull needs to keep it as a local edit.
+   */
+  inspect?(path: string): Promise<string | null>;
   replace(
     path: string,
     expected: string | null,
