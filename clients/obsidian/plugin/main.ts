@@ -90,7 +90,7 @@ export default class BasaltSyncPlugin extends Plugin implements SyncHost {
 
     if (!requireApiVersion("1.12.3"))
       this.failure =
-        "Update Obsidian to use Basalt Sync. It needs secure storage and bounded attachment writes.";
+        "Update Obsidian to use Signalbox Sync. It needs secure storage and bounded attachment writes.";
     else
       try {
         const storage = this.app.secretStorage;
@@ -239,7 +239,7 @@ export default class BasaltSyncPlugin extends Plugin implements SyncHost {
   }
 
   private handleLink(params: Record<string, string>) {
-    if (!this.controller) return new Notice(this.failure ?? "Basalt Sync isn't ready yet.");
+    if (!this.controller) return new Notice(this.failure ?? "Signalbox Sync isn't ready yet.");
     try {
       new ConnectModal(this, parseConnectLink(params)).open();
     } catch (failure) {
@@ -346,7 +346,7 @@ export default class BasaltSyncPlugin extends Plugin implements SyncHost {
   }
 
   async connect(config: DeviceConfig) {
-    if (!this.controller) throw new Error(this.failure ?? "Basalt Sync isn't ready yet.");
+    if (!this.controller) throw new Error(this.failure ?? "Signalbox Sync isn't ready yet.");
     this.authError = null;
     this.clearPoll();
     await this.controller.begin(config);

@@ -1,0 +1,112 @@
+diff --git a/apps/hosted/web/src/contracts/obsidian-plugin.ts b/apps/hosted/web/src/contracts/obsidian-plugin.ts
+--- a/apps/hosted/web/src/contracts/obsidian-plugin.ts
++++ b/apps/hosted/web/src/contracts/obsidian-plugin.ts
+@@ -5,11 +5,11 @@ import { browserOnly, dashboardHttpClient } from "@executor-js/ui/contracts/http
+ import { basaltSyncVersion } from "./obsidian-plugin-version.ts";
+ 
+ /**
+- * The Basalt Sync version this dashboard connects to; it names the plugin's release tag. Basalt's
++ * The Signalbox Sync version this dashboard connects to; it names the plugin's release tag. Basalt's
+  * upstream preparation generates it from the plugin manifest, so a plugin bump needs no carry.
+  */
+ export { basaltSyncVersion };
+-export const basaltSyncTag = `basalt-sync-${basaltSyncVersion}`;
++export const basaltSyncTag = `signalbox-sync-${basaltSyncVersion}`;
+ /** Obsidian downloads exactly these files when it installs a plugin. */
+ export const basaltSyncFiles = ["main.js", "manifest.json", "styles.css"] as const;
+ /** BRAT is the community plugin that installs a plugin from a GitHub release. */
+@@ -19,7 +19,7 @@ const githubRepository =
+   /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/u;
+ 
+ /**
+- * Where Basalt Sync is published: the deployment's own public source repository, when that is
++ * Where Signalbox Sync is published: the deployment's own public source repository, when that is
+  * on GitHub. Anything else has nowhere to install from.
+  */
+ export const basaltSyncRepository = (source: string | undefined): string | null =>
+@@ -32,7 +32,7 @@ export const bratInstallLink = (repository: string) =>
+ export class BasaltSyncReleaseUnreachable extends Data.TaggedError("BasaltSyncReleaseUnreachable")<{
+   readonly status: number | null;
+ }> {
+-  readonly message = "Couldn't check whether Basalt Sync can be installed. Check again.";
++  readonly message = "Couldn't check whether Signalbox Sync can be installed. Check again.";
+ }
+ 
+ /**
+diff --git a/apps/hosted/web/src/contracts/obsidian-connection.ts b/apps/hosted/web/src/contracts/obsidian-connection.ts
+--- a/apps/hosted/web/src/contracts/obsidian-connection.ts
++++ b/apps/hosted/web/src/contracts/obsidian-connection.ts
+@@ -57,5 +57,5 @@ export function obsidianConnectLink(app: Pick<App, "id" | "slug">, connection: s
+     appId: app.id,
+     appSlug: app.slug,
+   });
+-  return `obsidian://basalt-sync?${query.toString().replace(/\+/gu, "%20")}`;
++  return `obsidian://signalbox-sync?${query.toString().replace(/\+/gu, "%20")}`;
+ }
+diff --git a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx b/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
+--- a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
++++ b/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
+@@ -85,7 +85,7 @@ function ConnectObsidian({ app }: { readonly app: App }) {
+   const [step, setStep] = useState<Step>({ kind: "idle" });
+   const name = appDisplayName(app, brand);
+ 
+-  // Opening Obsidian waits for an explicit Connect: without Basalt Sync installed and enabled,
++  // Opening Obsidian waits for an explicit Connect: without Signalbox Sync installed and enabled,
+   // Obsidian only answers "Unrecognized URI action", and the browser can't tell that happened.
+   const connect = async () => {
+     setStep({ kind: "preparing" });
+@@ -182,22 +182,22 @@ function ConnectSteps({
+     <ol className="space-y-4 rounded-md bg-muted/50 p-3 text-[13px] leading-5">
+       <li className="space-y-2">
+         <div>
+-          <p className="font-medium text-foreground">1. Install Basalt Sync in Obsidian</p>
++          <p className="font-medium text-foreground">1. Install Signalbox Sync in Obsidian</p>
+           <p className="text-muted-foreground">Once in each vault, on each device.</p>
+         </div>
+         {AsyncResult.isFailure(release) ? (
+           <div className="flex flex-wrap items-center gap-2">
+             <p role="alert" className="text-destructive">
+-              Couldn't check whether Basalt Sync can be installed.
++              Couldn't check whether Signalbox Sync can be installed.
+             </p>
+             <Button variant="outline" size="sm" onClick={refresh}>
+               Check again
+             </Button>
+           </div>
+         ) : !AsyncResult.isSuccess(release) ? (
+-          <p className="text-muted-foreground">Checking for Basalt Sync…</p>
++          <p className="text-muted-foreground">Checking for Signalbox Sync…</p>
+         ) : !installable || repository === null ? (
+-          <p className="text-muted-foreground">Basalt Sync isn't available to install yet.</p>
++          <p className="text-muted-foreground">Signalbox Sync isn't available to install yet.</p>
+         ) : (
+           <ol className="space-y-2">
+             <li className="flex items-center justify-between gap-3">
+@@ -211,11 +211,11 @@ function ConnectSteps({
+             </li>
+             <li className="flex items-center justify-between gap-3">
+               <span className="text-muted-foreground">
+-                Add Basalt Sync. Confirm in BRAT, which installs and enables it.
++                Add Signalbox Sync. Confirm in BRAT, which installs and enables it.
+               </span>
+               <Button variant={added ? "outline" : "default"} size="sm" asChild>
+                 <a href={bratInstallLink(repository)} onClick={() => setAdded(true)}>
+-                  Add Basalt Sync
++                  Add Signalbox Sync
+                 </a>
+               </Button>
+             </li>
+@@ -248,11 +248,11 @@ function ConnectSteps({
+           )}
+           {step.kind === "opened" && (
+             <p className="text-muted-foreground">
+-              Obsidian said "Unrecognized URI action"? Basalt Sync isn't installed or enabled in
++              Obsidian said "Unrecognized URI action"? Signalbox Sync isn't installed or enabled in
+               that vault yet.{" "}
+               {installable
+                 ? "Do step 1, then Connect again."
+-                : "It can be connected once Basalt Sync is available to install."}{" "}
++                : "It can be connected once Signalbox Sync is available to install."}{" "}
+               Obsidian didn't open?{" "}
+               <a
+                 className="font-medium text-foreground underline underline-offset-2"

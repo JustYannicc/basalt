@@ -124,7 +124,7 @@ function fixture() {
     adapter,
     vault,
     local,
-    privateRoot: ".obsidian/plugins/basalt-sync/cache/app",
+    privateRoot: ".obsidian/plugins/signalbox-sync/cache/app",
     transferRoot: "Basalt transfers/device/app",
     ownership,
     id: () => String(++clock),

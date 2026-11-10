@@ -1,8 +1,8 @@
 import { connectionUrl } from "./auth.ts";
 import type { DeviceConfig } from "./controller.ts";
 
-/** `obsidian://basalt-sync?...` is the only way a vault gets connected. */
-export const protocolAction = "basalt-sync";
+/** `obsidian://signalbox-sync?...` is the only way a vault gets connected. */
+export const protocolAction = "signalbox-sync";
 
 export interface ConnectRequest {
   config: DeviceConfig;

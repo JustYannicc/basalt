@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "The dashboard's Basalt Sync version is generated during upstream preparation from the plugin manifest, so Connect always links the release that the manifest's version publishes and a plugin release needs no carry."
+      constraint "The dashboard's Obsidian plugin version is generated during upstream preparation from the plugin manifest, so Connect always links the release that the manifest's version publishes and a plugin release needs no carry."
     }
   }
 }
