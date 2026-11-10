@@ -46,7 +46,14 @@ test("a failed readiness child retains both streams, its exit code and the contr
           spawn: (command) => {
             if (command._tag === "StandardCommand" && command.command === "docker")
               return native.spawn(
-                ChildProcess.make(process.execPath, ["-e", ""], { stdout: "pipe", stderr: "pipe" }),
+                ChildProcess.make(
+                  process.execPath,
+                  [
+                    "-e",
+                    command.args[0] === "port" ? 'process.stdout.write("127.0.0.1:15432\\n")' : "",
+                  ],
+                  { stdout: "pipe", stderr: "pipe" },
+                ),
               );
             if (
               command._tag === "StandardCommand" &&
