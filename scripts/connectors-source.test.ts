@@ -7,6 +7,10 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { verifyConnectorsSource } from "./connectors-source.ts";
 import { poolWorkerRevisionPath, poolWorkerRevisionSource } from "./pool-worker-revision.ts";
+import {
+  obsidianPluginVersionPath,
+  obsidianPluginVersionSource,
+} from "./obsidian-plugin-version.ts";
 import { bundlePoolApp } from "./pool-app-bundle.ts";
 import { prepareTestPlans } from "./ci/declarations.ts";
 import { prepareE2e } from "./ci/prepare-e2e.ts";
@@ -121,6 +125,9 @@ function verifyFixture(declaredPlans: boolean) {
     write(opsRelease, opsSource);
     const revision = `.upstream/${poolWorkerRevisionPath}`;
     write(revision, poolWorkerRevisionSource(root));
+    write("clients/obsidian/manifest.json", JSON.stringify({ version: "0.2.0" }));
+    const pluginVersion = `.upstream/${obsidianPluginVersionPath}`;
+    write(pluginVersion, obsidianPluginVersionSource(root));
 
     assert.deepEqual(verifyConnectorsSource(root), {
       commit: pin,
@@ -153,11 +160,14 @@ function verifyFixture(declaredPlans: boolean) {
     );
     assert.throws(() => verifyConnectorsSource(root), /Generated pool Worker revision differs/);
     write(revision, poolWorkerRevisionSource(root));
+    write(pluginVersion, obsidianPluginVersionSource(root).replace("0.2.0", "9.9.9"));
+    assert.throws(() => verifyConnectorsSource(root), /Generated Obsidian plugin version differs/);
+    write(pluginVersion, obsidianPluginVersionSource(root));
     const extraSource = ".upstream/apps/hosted/cloud/src/implementation/unexpected.ts";
     write(extraSource, "export const unexpected = true;\n");
     assert.throws(
       () => verifyConnectorsSource(root),
-      /Unexpected source in the prepared tools runtime/,
+      /Unexpected source in the prepared tools runtime: apps\/hosted\/cloud\/src\/implementation\/unexpected\.ts/,
     );
     rmSync(join(root, extraSource));
     const generated = ".upstream/apps/hosted/server/src/implementation/native-contract.ts";

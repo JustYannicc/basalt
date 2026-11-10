@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The Obsidian plugin is Signalbox Sync: Connect Obsidian names it so, opens its signalbox-sync URI action and links BRAT to its signalbox-sync-<version> release, the tag the release workflow publishes from its fixed signalbox-sync prefix and the plugin manifest's version. A test requires that prefix to equal the manifest's id. The dialog reads that release from the outside service as an anonymous request with no credentials, trace or extra headers, because the service allows any origin only for simple uncredentialed reads."
+    }
+  }
+}

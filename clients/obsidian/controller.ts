@@ -179,7 +179,7 @@ export async function createController(input: {
               : base.state,
     };
   };
-  const sync = () => {
+  const run = (fetchOnly: boolean) => {
     if (closed || pending || !current || current.paused || !client) return Promise.resolve();
     if (active) return active;
     const work = (async () => {
@@ -187,7 +187,7 @@ export async function createController(input: {
         await remote?.close();
         await open();
       }
-      await client?.run();
+      await (fetchOnly ? client?.pull() : client?.run());
       await binary?.flush();
     })();
     changed();
@@ -265,7 +265,10 @@ export async function createController(input: {
       secrets.set(key + "-pending", "");
       changed();
     },
-    sync,
+    /** A checkpoint: commits and pushes every local change, then pulls. */
+    sync: () => run(false),
+    /** Brings cloud changes down without committing anything. */
+    pull: () => run(true),
     async pause(value: boolean) {
       if (current) {
         current.paused = value;

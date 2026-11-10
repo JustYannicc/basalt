@@ -9,7 +9,7 @@ type Scope =
   | { kind: "failed"; message: string };
 
 /**
- * Opened by the `obsidian://basalt-sync` link. Nothing is sent until the person confirms the
+ * Opened by the `obsidian://signalbox-sync` link. Nothing is sent until the person confirms the
  * vault and server they see here, so a stray link can't quietly point the vault elsewhere.
  */
 export class ConnectModal extends Modal {

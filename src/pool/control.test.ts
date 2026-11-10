@@ -1311,3 +1311,75 @@ test("pool view preserves app members and classifies subscriptions separately", 
   assert.ok(f.home.members.some(({ auth_id }) => auth_id === "jev-key"));
   assert.ok(f.home.files.has("jev-key"));
 });
+
+test("pool view retains closed collection field flags across stored snapshots", async () => {
+  const f = await fixture();
+  f.home.addFile("a", "codex");
+  f.home.addGroup("pool-a", 10, ["a"]);
+  const flags = {
+    present: true,
+    null: false,
+    quantity_null: true,
+    quantity_valid: false,
+    five_hour: true,
+  };
+  let handoff = true;
+  f.home.override = (path) =>
+    path.endsWith("/quota/credentials/a")
+      ? Response.json({
+          credential: { credential_id: "a", provider: "codex" },
+          windows: [],
+          collection: {
+            status: "success",
+            freshness: "fresh",
+            observed_at: f.deps.now().toISOString(),
+            diagnostic: handoff
+              ? {
+                  attempted_at: f.deps.now().toISOString(),
+                  provider: "codex",
+                  response_received: true,
+                  json_valid: true,
+                  primary_window: { ...flags, private_token: "private-secret", used_percent: 23 },
+                  secondary_window: {
+                    ...flags,
+                    quantity_null: false,
+                    quantity_valid: true,
+                    five_hour: false,
+                  },
+                  private_body: "private-secret",
+                }
+              : null,
+          },
+        })
+      : undefined;
+  const first = await f.call("/pool");
+  assert.equal(first.status, 200);
+  const body = await first.text();
+  assert.ok(!body.includes("private-"));
+  const expected = {
+    attemptedAt: f.deps.now().toISOString(),
+    provider: "codex",
+    responseReceived: true,
+    jsonValid: true,
+    primaryWindow: {
+      present: true,
+      null: false,
+      quantityNull: true,
+      quantityValid: false,
+      fiveHour: true,
+    },
+    secondaryWindow: {
+      present: true,
+      null: false,
+      quantityNull: false,
+      quantityValid: true,
+      fiveHour: false,
+    },
+  };
+  assert.deepEqual((JSON.parse(body) as PoolView).accounts[0]?.collection?.diagnostic, expected);
+  f.restart();
+  handoff = false;
+  f.advance(61_000);
+  const retained = (await (await f.call("/pool?fresh=true")).json()) as PoolView;
+  assert.deepEqual(retained.accounts[0]?.collection?.diagnostic, expected);
+});

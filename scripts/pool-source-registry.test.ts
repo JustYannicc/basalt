@@ -77,6 +77,12 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         );
         assert.match(patch.retirement.requires, /actual collector, omitted and unusable window/);
         assert.match(patch.retirement.requires, /real-child container stdout/);
+      } else if (patch.identity === "cliproxy-home-collection-field-presence") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0477-home-collection-field-presence.patch");
+        assert.match(patch.retirement.requires, /independently of logs/);
+        assert.match(patch.retirement.requires, /authenticated pool view/);
+        assert.match(patch.retirement.requires, /without response bodies, amounts or credentials/);
       } else if (patch.identity === "cliproxy-home-xai-device") {
         assert.equal(name, "home");
         assert.equal(patch.file, "0399-home-xai-device.patch");

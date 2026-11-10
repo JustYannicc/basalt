@@ -1,0 +1,5 @@
+{
+  "extends": "../../../../tsconfig.json",
+  "include": ["../transport.ts", "../transport.test.ts", "./backend.ts", "./worker.ts"],
+  "exclude": []
+}
