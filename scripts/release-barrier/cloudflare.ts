@@ -1,6 +1,8 @@
 import * as Workers from "@distilled.cloud/cloudflare/workers";
 import * as Retry from "@distilled.cloud/cloudflare/Retry";
 import { Effect } from "effect";
+import * as HttpClient from "effect/http/HttpClient";
+import { uploadResponseDiagnostic, withUploadFailure } from "./upload-failure.ts";
 import { BarrierRefusal, type FrozenWorker } from "./manifest.ts";
 import { uploadRequest } from "./version-request.ts";
 import type { ActiveWorkerPlacement } from "./script-placement.ts";
@@ -55,10 +57,30 @@ export const readBaseline = (worker: Pick<FrozenWorker, "accountId" | "scriptNam
   readCurrentDeployment(worker).pipe(Effect.map((current) => current.versions));
 
 export const uploadVersion = (worker: FrozenWorker) =>
-  Workers.createScriptVersion(uploadRequest(worker)).pipe(
-    Effect.map((result) => ({ versionId: result.id, startupTimeMs: result.startupTimeMs })),
-    Retry.none,
-  );
+  Effect.gen(function* () {
+    const client = yield* HttpClient.HttpClient;
+    let diagnostic: ReturnType<typeof uploadResponseDiagnostic> | undefined;
+    const observed = client.pipe(
+      HttpClient.tap((response) => {
+        if (response.status < 400) return Effect.void;
+        diagnostic = uploadResponseDiagnostic(response.status, undefined);
+        return response.json.pipe(
+          Effect.match({
+            onFailure: () => {},
+            onSuccess: (body) => {
+              diagnostic = uploadResponseDiagnostic(response.status, body);
+            },
+          }),
+        );
+      }),
+    );
+    return yield* Workers.createScriptVersion(uploadRequest(worker)).pipe(
+      Effect.provideService(HttpClient.HttpClient, observed),
+      Effect.map((result) => ({ versionId: result.id, startupTimeMs: result.startupTimeMs })),
+      Retry.none,
+      withUploadFailure(worker.id, () => diagnostic),
+    );
+  });
 
 /** Diagnostic identity only; admission always uses the deployment's immutable serving versions. */
 export const readLatestVersion = (worker: Pick<FrozenWorker, "accountId" | "scriptName">) =>
