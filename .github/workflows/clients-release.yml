@@ -87,8 +87,9 @@ jobs:
       - run: bun run --cwd clients/desktop build
       # The keyring's native module is installed for the runner's own architecture only, so each
       # runner packages its own: Apple Silicon on macos-latest, x64 on Windows and Linux.
-      - name: Package the unsigned app
-        run: bun run --cwd clients/desktop package:${{ matrix.platform }}
+      # Published builds carry the permanent identifiers; package.json keeps the development ones.
+      - name: Package the app
+        run: bun run --cwd clients/desktop package:${{ matrix.platform }} -c.appId=run.signalbox.client -c.productName=Signalbox
       - name: Package the command line connection
         if: matrix.platform == 'linux'
         shell: bash
@@ -132,6 +133,8 @@ jobs:
     if: inputs.publish_run == ''
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    env:
+      SIGNALBOX_CLIENT_RELEASE: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-node

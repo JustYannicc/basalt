@@ -4,18 +4,18 @@ These builds aren't signed by Apple, Microsoft or Google yet. Each system shows 
 
 ## Mac
 
-Download **Signalbox-mac-arm64.dmg**, for Macs with Apple silicon (M1 or later). Open it and drag Signalbox Client to Applications.
+Download **Signalbox-mac-arm64.dmg**, for Macs with Apple silicon (M1 or later). Open it and drag Signalbox to Applications.
 
 The first time you open it, macOS says it can't check the app for malicious software:
 
-1. Open Signalbox Client from Applications. When the warning appears, click **Done**.
-2. Open **System Settings → Privacy & Security**. Scroll down to **Security**, click **Open Anyway** next to Signalbox Client, and confirm with your password or Touch ID.
+1. Open Signalbox from Applications. When the warning appears, click **Done**.
+2. Open **System Settings → Privacy & Security**. Scroll down to **Security**, click **Open Anyway** next to Signalbox, and confirm with your password or Touch ID.
 3. Click **Open Anyway** once more. After that, the app opens normally.
 
-If macOS says Signalbox Client **"is damaged and can't be opened"**, the app is fine: macOS says that about unsigned downloads. Open Terminal, run this, then open the app again:
+If macOS says Signalbox **"is damaged and can't be opened"**, the app is fine: macOS says that about unsigned downloads. Open Terminal, run this, then open the app again:
 
 ```sh
-xattr -dr com.apple.quarantine "/Applications/Signalbox Client.app"
+xattr -dr com.apple.quarantine "/Applications/Signalbox.app"
 ```
 
 ## Android
@@ -25,7 +25,7 @@ On your phone, download **Signalbox-android.apk** and open it.
 1. Android asks whether your browser may install apps. Tap **Settings**, turn on **Allow from this source**, then go back.
 2. Tap **Install**. If Play Protect warns that it doesn't recognize the app, tap **More details → Install anyway**.
 
-The app shows up as **Signalbox Client Dev** while the phone app is in preview.
+Later versions install over this one and keep your sign-in.
 
 ## iPhone and iPad
 
