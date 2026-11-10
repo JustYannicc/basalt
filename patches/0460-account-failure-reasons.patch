@@ -359,6 +359,52 @@ diff --git a/e2e/tests/account-observations.spec.ts b/e2e/tests/account-observat
          });
          const now = new Date().toISOString();
          const future = new Date(Date.now() + 365 * 86_400_000).toISOString();
+diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status-storage.spec.ts
+--- a/e2e/tests/account-status-storage.spec.ts
++++ b/e2e/tests/account-status-storage.spec.ts
+@@ -133,14 +133,31 @@
+         expect(beforeFailure.health.info).toEqual({ displayName: "Checked fixture identity" });
+         expect(beforeFailure.health.infoCheckedAt).toEqual(expect.any(String));
+         yield* fixture.statusBackend.answer({ status: 503, body: {} });
+-        expect((yield* fixture.check()).status).toBe(200);
++        const failureStartedAt = Date.now();
++        expect((yield* fixture.check()).status).toBe(200);
++        const failureFinishedAt = Date.now();
+         const failed = yield* body(AccountHealth, yield* fixture.read());
+         expect(failed.health.info).toEqual(beforeFailure.health.info);
+         expect(failed.health.infoCheckedAt).toEqual(beforeFailure.health.infoCheckedAt);
++        const failure = yield* Schema.decodeUnknownEffect(
++          Schema.Struct({
++            failure: Schema.Struct({
++              detail: Schema.Struct({ occurredAt: Schema.String }),
++            }),
++          }),
++        )(failed.health.apps[0]?.check);
++        const occurredAt = failure.failure.detail.occurredAt;
++        expect(Date.parse(occurredAt)).toBeGreaterThanOrEqual(failureStartedAt);
++        expect(Date.parse(occurredAt)).toBeLessThanOrEqual(failureFinishedAt);
++        const checkFailure = {
++          phase: "vendor",
++          tag: "ProviderError",
++          detail: { source: "provider", reason: "unavailable", status: 503, occurredAt },
++        };
+         expect(failed.health.apps[0]?.check).toMatchObject({
+           status: "upstream_unavailable",
+           reason: "unavailable",
+-          failure: { phase: "vendor", tag: "ProviderError" },
++          failure: checkFailure,
+         });
+         const persisted = yield* legacyStorage([
+           {
+@@ -154,7 +171,7 @@
+               account_info: {
+                 displayName: "Checked fixture identity",
+                 checkReason: "unavailable",
+-                checkFailure: { phase: "vendor", tag: "ProviderError" },
++                checkFailure,
+               },
+             },
+           ],
 diff --git a/e2e/tests/native-subscription-health.spec.ts b/e2e/tests/native-subscription-health.spec.ts
 --- a/e2e/tests/native-subscription-health.spec.ts
 +++ b/e2e/tests/native-subscription-health.spec.ts
