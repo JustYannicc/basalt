@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Managed Cloud databases use the live port allocated and held by Docker, including cloned database targets. The production-operations alternate endpoint is a scoped listener forwarding to that same database. Pull, create, start and readiness failures retain Docker diagnostics with database passwords redacted; container ownership and scoped removal survive startup failure and interruption. Diagnostic fixtures supply Docker's published-port output before exercising readiness-child failures."
+    }
+  }
+}

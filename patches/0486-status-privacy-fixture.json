@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-status-privacy-fixture",
+  "file": "0486-status-privacy-fixture.patch",
+  "content_sha256": "6b4c4b226f72ca0e077425bf3b9ab1f02e08197f07050c1ed1466d8be2f8fcea",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
