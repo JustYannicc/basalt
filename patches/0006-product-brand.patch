@@ -1276,6 +1276,26 @@ index 152c937..a0c5359 100644
          >
            <Skeleton className="h-9 w-full" aria-label="Loading organizations" />
          </AccountSettingPending>
+diff --git a/apps/hosted/web/src/implementation/components/add-app.tsx b/apps/hosted/web/src/implementation/components/add-app.tsx
+index 049af6a..71d8c4d 100644
+--- a/apps/hosted/web/src/implementation/components/add-app.tsx
++++ b/apps/hosted/web/src/implementation/components/add-app.tsx
+@@ -1,5 +1,5 @@
+ import { Link, useNavigate } from "@tanstack/react-router";
+-import type { DeployedApp } from "@executor-js/sdk";
++import type { App } from "@executor-js/sdk";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { ArrowLeft02Icon } from "@hugeicons/core-free-icons";
+ import {
+@@ -34,7 +34,7 @@ function useAddAppDialogs() {
+     endpoint: `${mcpOrigin}/mcp`,
+     mutation: atoms.importCustom,
+     Failure: HostedFailure,
+-    onInstalled: (app: DeployedApp) =>
++    onInstalled: (app: App) =>
+       navigate({
+         to: "/org/$organizationSlug/apps/$appId",
+         search: { view: Object.keys(app.requirements.accounts).length ? "accounts" : "overview" },
 diff --git a/apps/hosted/web/src/implementation/components/auth.tsx b/apps/hosted/web/src/implementation/components/auth.tsx
 index 66140ae..e290df3 100644
 --- a/apps/hosted/web/src/implementation/components/auth.tsx
@@ -2051,6 +2071,26 @@ index efc5ac3..d3d9419 100644
    const [offset, setOffset] = useState(0);
    const query = apiKeysAtom(offset);
    const keys = useAtomValue(query);
+diff --git a/apps/local/web/src/implementation/components/add-app.tsx b/apps/local/web/src/implementation/components/add-app.tsx
+index 051e7ea..24d3937 100644
+--- a/apps/local/web/src/implementation/components/add-app.tsx
++++ b/apps/local/web/src/implementation/components/add-app.tsx
+@@ -1,5 +1,5 @@
+ import { Link, useNavigate } from "@tanstack/react-router";
+-import type { DeployedApp } from "@executor-js/sdk";
++import type { App } from "@executor-js/sdk";
+ import {
+   MakeYourOwn as SharedMakeYourOwn,
+   AddAppMenu as SharedMenu,
+@@ -13,7 +13,7 @@ function useAddAppDialogs() {
+   return {
+     mutation: dashboardAtoms.importCustom,
+     Failure,
+-    onInstalled: (app: DeployedApp) =>
++    onInstalled: (app: App) =>
+       navigate({
+         to: Object.keys(app.requirements.accounts).length ? "/apps/$appId/setup" : "/apps/$appId",
+         params: { appId: app.id },
 diff --git a/apps/local/web/src/implementation/routes/__root.tsx b/apps/local/web/src/implementation/routes/__root.tsx
 index 1b5ee08..9a47156 100644
 --- a/apps/local/web/src/implementation/routes/__root.tsx
@@ -2605,17 +2645,31 @@ index bec3160..71aa90f 100644
            <>
              Your {provider} sign-in is only sent to{" "}
 diff --git a/packages/ui/src/implementation/dashboard/add-app.tsx b/packages/ui/src/implementation/dashboard/add-app.tsx
-index dce28a0..5983abb 100644
+index dce28a0..27b2c66 100644
 --- a/packages/ui/src/implementation/dashboard/add-app.tsx
 +++ b/packages/ui/src/implementation/dashboard/add-app.tsx
-@@ -28,6 +28,7 @@ import {
+@@ -1,6 +1,6 @@
+ import { useState, type ReactElement, type ReactNode } from "react";
+ import type { CustomAppInput } from "@executor-js/catalog/contracts";
+-import type { DeployedApp } from "@executor-js/sdk";
++import type { App } from "@executor-js/sdk";
+ import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+ import {
+   AiMagicIcon,
+@@ -28,10 +28,11 @@ import {
  import { Textarea } from "../components/textarea.tsx";
  import { AgentSetupPrompt, newAppPrompt } from "./agent-setup.tsx";
  import { CustomAppForm } from "./custom-app.tsx";
 +import { useProductBrand } from "../hooks/product-brand.ts";
  
  /** The product's bindings for the custom app and MCP server dialogs. */
- export type AddAppDialogProps<E> = MutationProps<CustomAppInput, DeployedApp, E> & {
+-export type AddAppDialogProps<E> = MutationProps<CustomAppInput, DeployedApp, E> & {
+-  readonly onInstalled: (app: DeployedApp) => void | Promise<void>;
++export type AddAppDialogProps<E> = MutationProps<CustomAppInput, App, E> & {
++  readonly onInstalled: (app: App) => void | Promise<void>;
+   /** This installation's MCP URL, included so an unconnected agent can connect first. */
+   readonly endpoint?: string;
+ };
 @@ -222,6 +223,7 @@ function AddAppDialogs<E>({
  
  /** A custom app starts as a description that the user's agent turns into code. */

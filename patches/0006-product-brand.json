@@ -1,7 +1,7 @@
 {
   "identity": "executor-product-brand",
   "file": "0006-product-brand.patch",
-  "content_sha256": "eaf4b86a78ba01edc09954f4ffac574e90bcc92c60ca13bd72fc1c6e8be76019",
+  "content_sha256": "eb9f000d626059c35a840b2a67c29eeb326f7b40e73330b07453cbdaec7c473c",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

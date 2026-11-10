@@ -1,7 +1,7 @@
 model {
   extend basalt.brandConfig {
     metadata {
-      constraint "One product configuration supplies sign-in, email, dashboard, setup, OAuth metadata and MCP names and logos. Branding changes display text without changing account or protocol identity. Cursor and OpenCode remain separate setup choices, and generated app prompts use the configured product name. Suppressed founder email is completed no-work while enabled delivery retains partial and failed job outcomes."
+      constraint "One product configuration supplies sign-in, email, dashboard, setup, OAuth metadata and MCP names and logos. Branding changes display text without changing account or protocol identity. Custom MCP import callbacks accept undeployed app records, so navigation does not require an active build. Cursor and OpenCode remain separate setup choices, and generated app prompts use the configured product name. Suppressed founder email is completed no-work while enabled delivery retains partial and failed job outcomes."
     }
   }
 }
