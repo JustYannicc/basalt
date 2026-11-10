@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "App inspection progress records come from the trusted runner before and after build, account, Worker and cache work, independently of app telemetry and collector delivery. Other calls retain only cold Worker code-load progress so an earlier allocation can be correlated with a later disconnect. They correlate by trace, attempt and SDK isolate and contain only opaque app/build identities, closed phases and numeric measurements; active calls do not imply resident Workers. Managed Cloud records bounded RSS history only for descendants of its captured server PID, and projects native AppData GC, OOM, abort and replacement output without raw log text. Allocation records and native GC PIDs join the same AppData generation across drained replacement boundaries. The first native failure freezes its pre-exit history before the rolling ring can overwrite it. Unknown heap limits and resident dynamic Worker counts remain explicit. Management setup retains closed step, route, HTTP status, response shape and outcome in the lifecycle report even if setup fails before case evidence exists. All three records survive evidence export. Diagnostics preserve request ordering, assertions, retries and deadlines."
+    }
+  }
+}
