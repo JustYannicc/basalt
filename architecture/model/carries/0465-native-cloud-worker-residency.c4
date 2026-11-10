@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "Hosted AppData running under the local provider uses the SDK's process-wide native runtime residency, shared across requests, with its existing limit and active-call holds. Deployed runtime adapters keep platform-owned eviction and no residency. Native Cloud evicts idle app and data-facet runtime adapters only through this bound, preserving account-selection reuse below it; unfinished calls and releases keep their runtime adapters loaded. Eviction creates its supervisor RPC stub lazily in the trimming request. Residency never shares invocation runners, build Effects or request-owned I/O. The same selection applies outside CI."
+      constraint "Hosted AppData running under the local provider uses the SDK's process-wide native runtime residency, shared across requests, with its existing limit and active-call holds. Deployed runtime adapters keep platform-owned eviction and no residency. Native Cloud evicts idle app and data-facet runtime adapters only through this bound, preserving account-selection reuse below it; unfinished calls and releases keep their runtime adapters loaded. A refused eviction stays tracked and is retried on later trims or idle sweeps; refusal defers the next sweep without changing last-use order. Eviction creates its supervisor RPC stub lazily in the trimming request. Residency never shares invocation runners, build Effects or request-owned I/O. The same selection applies outside CI."
     }
   }
 }
