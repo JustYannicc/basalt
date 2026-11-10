@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Account-status privacy fixtures use a two-character punctuation credential that cannot collide with generated identifiers or timestamps. Whole-response checks retain raw-secret rejection and short-secret redaction; encoded short secrets are checked as complete JSON strings to exclude unrelated identifier substrings. Runtime privacy rules remain unchanged."
+    }
+  }
+}
