@@ -115,9 +115,9 @@ model {
       description "Retained EU database provisioned by reviewed release intent once the deploy credential's full read-only native plan succeeds, before the site Worker adds its binding. Creation acknowledgement, native ownership, fresh readiness and binding activation are separate receipts. A lost create response never permits retry or adoption. PublicSite binds the resource this single declaration yields; the exported native reference serves bindings once the database is recorded. Class expansion replans preserve frozen database ownership. Every release exit appends storage creation and readiness plus class expansion outcomes to the job summary, even after a later refusal. Public summaries omit physical storage identities and configuration values. One row per lowercased email with its first sign-up time; the table creates itself on first write, so it has no migration history. Repeat sign-ups and filled trap fields answer exactly like a new sign-up. A provider rate limit counts five attempts per client IP a minute without storing the address. Operators read and delete rows in the provider's database console or command-line tool, never through CI logs."
     }
 
-    vaultRecords = store "Vault records" {
+    vaultRecords = store "Vault attachments" {
       #basalt
-      description "Retained EU vault storage provisioned by reviewed release intent before any vault code binds it: one SQLite object per vault, which serializes its writes and keeps its receipts and caches, and one bucket of content-addressed attachment bytes that a vault's Git tree points to. Attachment objects are immutable and never deleted, so every version a pointer named stays restorable. Vault text and history live in each vault's fork."
+      description "Retained EU bucket of content-addressed attachment bytes that a vault's Git tree points to, provisioned by reviewed release intent before any vault code binds it. Objects are immutable and never deleted, so every version a pointer named stays restorable. Vault text and history live in each vault's fork."
     }
 
     catalog = module "Connector catalog" {
@@ -340,7 +340,7 @@ model {
   basalt.site -[sync]-> basalt.siteWaitlist "store waiting-list sign-ups"
   basalt.deployment -[sync]-> basalt.site "provision apex site Worker"
   basalt.deployment -[sync]-> basalt.siteWaitlist "provision exactly declared retained database after candidate admission"
-  basalt.deployment -[sync]-> basalt.vaultRecords "provision exactly declared retained bucket and SQLite class after candidate admission"
+  basalt.deployment -[sync]-> basalt.vaultRecords "provision exactly declared retained bucket after candidate admission"
   basalt.deployment -[sync]-> basalt.catalog "provision read-only feed Worker"
   basalt.build -[sync]-> basalt.catalog "read catalog configuration"
   basalt.router -[sync]-> basalt.brandConfig "read brand configuration"

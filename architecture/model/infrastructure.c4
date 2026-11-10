@@ -13,7 +13,7 @@ model {
     metadata { resources "resource-60887fd142e719d28a18bdb97e1343926287cfea67cc89cf60606ffc3ca4ed91" }
   }
   extend basalt.vaultRecords {
-    metadata { resources "resource-0a96a0413bb4a118c657319edec9bb584c0d3732223de21255f4ba1356fe377c|resource-cd59467e50adada42b7698d9672959dc006bc0ff06b9bfecd1e685d75e8c6cc6" }
+    metadata { resources "resource-cd59467e50adada42b7698d9672959dc006bc0ff06b9bfecd1e685d75e8c6cc6" }
   }
   extend basalt.router {
     metadata { resources "resource-c8523f56ad69ebaf1dd20b2aa35f30c6570ca954bef6f0bceafb37adcbb8d78f|resource-d8b9aa1b37df9f99e19fa98b53b1e21dc6a3b3a21bda98460e9bea4a96edcd9e|resource-2d0912f096d4ea6992cc8817d403d4d3fe340178ea7be30c3cafec982fcafac3|resource-721600e34818bb7949a6d3811ab6eee08b82af12a6106e9cf9c54960371e1838|resource-f668c0bb0d55cc271f34e53cc4be481aa6c1e6653b218ed149cb5fd6807bec03" }

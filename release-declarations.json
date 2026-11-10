@@ -37,27 +37,6 @@
         "nativeStateRow": true,
         "recoveryDescriptor": true
       }
-    },
-    {
-      "action": "add-sqlite-class",
-      "type": "Cloudflare.Worker",
-      "fqn": "ArtifactsCredentials",
-      "newSqliteClasses": [
-        "VaultDrive"
-      ],
-      "addedBindings": [
-        {
-          "type": "durable_object_namespace",
-          "name": "VaultDrive",
-          "className": "VaultDrive",
-          "location": "local"
-        }
-      ],
-      "retention": {
-        "data": true,
-        "nativeStateRow": true,
-        "recoveryDescriptor": true
-      }
     }
   ]
 }
