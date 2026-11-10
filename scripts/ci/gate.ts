@@ -1,8 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { heavyJobs } from "./areas.ts";
 
-export const fastJobs = ["select", "fast", "cpa-pipeline", "client-connection", "boat-check"];
-export const bundleJobs = ["boat-bundle"];
+export const fastJobs = ["select", "fast", "cpa-pipeline", "client-connection"];
 export const conditionalJobs = ["baseline-probe", "workerd-assets"];
 
 export function gateErrors(
@@ -16,7 +15,7 @@ export function gateErrors(
   if (full === false && selected.length) errors.push("Fast lane selected heavy jobs");
   if (full === true && [...selected].sort().join("\n") !== [...heavyJobs].sort().join("\n"))
     errors.push("Full suite must select every heavy job");
-  const expected = [...fastJobs, ...heavyJobs, ...bundleJobs, ...conditionalJobs];
+  const expected = [...fastJobs, ...heavyJobs, ...conditionalJobs];
   if (
     new Set(selected).size !== selected.length ||
     selected.some((job) => !heavyJobs.includes(job))
@@ -31,8 +30,7 @@ export function gateErrors(
       fastJobs.includes(job) ||
       (job === "baseline-probe" && baselineProbeRequired) ||
       (job === "workerd-assets" && selected.includes("upstream-image")) ||
-      (selected.includes(job) && !boat.includes(job)) ||
-      (bundleJobs.includes(job) && boat.length > 0);
+      selected.includes(job);
     if (needs[job]?.result !== (required ? "success" : "skipped"))
       errors.push(
         `${job}: expected ${required ? "success" : "skipped"}, got ${needs[job]?.result ?? "missing"}`,

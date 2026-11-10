@@ -45,9 +45,7 @@ if (process.env.GITHUB_OUTPUT)
       "boat_jobs=" +
       JSON.stringify(routed.boatJobs) +
       "\n" +
-      "boat_jobs_csv=" +
-      routed.boatJobs.join(",") +
-      "\nmatrices=" +
+      "matrices=" +
       JSON.stringify(matrices) +
       "\n",
   );

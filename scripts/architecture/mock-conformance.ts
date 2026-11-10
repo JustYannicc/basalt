@@ -235,7 +235,7 @@ export function mockConformanceErrors(root: string, requiredJobs: readonly strin
           !requiredJobs.includes(proof.job) ||
           !gate.includes(proof.job) ||
           !object(job) ||
-          job.if !== `contains(fromJSON(needs.select.outputs.hosted_jobs), '${proof.job}')` ||
+          job.if !== `contains(fromJSON(needs.select.outputs.jobs), '${proof.job}')` ||
           !runsScenario(root, job, proof, scenario)
         )
           errors.push(`${label}: required CI job does not run this scenario`);

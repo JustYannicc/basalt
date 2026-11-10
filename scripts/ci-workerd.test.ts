@@ -138,7 +138,7 @@ test("only the selected workerd warming job can populate a missing archive cache
   );
   assert.equal(
     workflow.jobs["workerd-assets"].if,
-    "contains(fromJSON(needs.select.outputs.hosted_jobs), 'upstream-image')",
+    "contains(fromJSON(needs.select.outputs.jobs), 'upstream-image')",
   );
   assert.deepEqual(workflow.jobs["upstream-image"].needs, ["select", "workerd-assets"]);
   const action = parse(

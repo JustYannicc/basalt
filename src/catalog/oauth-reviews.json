@@ -1509,7 +1509,7 @@
           "kind": "automatic",
           "protocol": "cimd",
           "metadata": "https://api.us.elevenlabs.io/.well-known/oauth-authorization-server",
-          "metadataSha256": "2a74d8ace0c536cbe0af7f7dd67b7b9e6e529803b57d868c44e3e21c7d8f5f76"
+          "metadataSha256": "4e5d8c43dca2881e16d2452a6463357c4e478b21b8b7fe6358748a59160c54a1"
         }
       }
     },
@@ -3645,6 +3645,10 @@
       "entry": "plaid",
       "package": "@executor.sh/plaid",
       "methods": {
+        "clientCredentials": {
+          "kind": "deferred",
+          "message": "Use your Plaid Production client ID and secret. Production approval for at least one product is required; this method does not use browser sign-in."
+        },
         "oauth": {
           "kind": "deferred",
           "message": "Signalbox has not verified one-click sign-in for Plaid yet. You can connect with your own OAuth app."

@@ -1,0 +1,67 @@
+name: Bounded automatic pool recovery
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    if: github.ref == 'refs/heads/main' && vars.POOL_AUTOMATIC_RECOVERY_PLAN != '' && vars.POOL_AUTOMATIC_RECOVERY_PLAN_SHA256 != ''
+    environment:
+      name: production-release
+      deployment: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Prepare the pinned operator dependencies
+        run: npm run prepare:upstream
+      - name: Observe the exact target three times one minute apart
+        run: bun scripts/runtime-recovery/automatic-entry.ts observe
+        env:
+          AUTOMATIC_RECOVERY_TARGET_JSON: ${{ vars.POOL_AUTOMATIC_RECOVERY_PLAN }}
+          AUTOMATIC_RECOVERY_TARGET_SHA256: ${{ vars.POOL_AUTOMATIC_RECOVERY_PLAN_SHA256 }}
+          RECOVERY_OUTPUT_DIRECTORY: ${{ runner.temp }}/automatic-recovery
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      - name: Retain evidence before any restart
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: automatic-recovery-before-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/automatic-recovery
+          if-no-files-found: error
+          retention-days: 30
+      - name: Request one bounded restart through the reviewed route
+        run: bun scripts/runtime-recovery/automatic-entry.ts apply
+        env:
+          AUTOMATIC_RECOVERY_TARGET_JSON: ${{ vars.POOL_AUTOMATIC_RECOVERY_PLAN }}
+          AUTOMATIC_RECOVERY_TARGET_SHA256: ${{ vars.POOL_AUTOMATIC_RECOVERY_PLAN_SHA256 }}
+          RECOVERY_OUTPUT_DIRECTORY: ${{ runner.temp }}/automatic-recovery
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          POOL_APP_SIGNING_KEY: ${{ secrets.POOL_APP_SIGNING_KEY }}
+      - name: Retain the operation and any uncertain submission marker
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: automatic-recovery-result-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/automatic-recovery
+          if-no-files-found: error
+          retention-days: 30

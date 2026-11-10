@@ -30,6 +30,7 @@ const layouts = {
   ],
   "vercel-sign-in": ["vercel-sign-in/ci"],
   "elevenlabs-sign-in": ["elevenlabs-sign-in/ci"],
+  "neon-key-reuse": ["neon-key-reuse/ci"],
   "catalog-compat": [
     "catalog-compat/ci",
     "elevenlabs-discovery/ci",

@@ -25,12 +25,12 @@
     "mode": "managed"
   },
   "host-managed-accounts-cloud:shared-account-families-and-consumer-capability-refusals": {
-    "job": "host-managed-accounts-cloud",
+    "job": "host-managed-accounts-runtime",
     "target": "local",
     "mode": "managed"
   },
   "host-managed-accounts-cloud:one-saved-provider-account-supplies-two-native-pools": {
-    "job": "host-managed-accounts-cloud",
+    "job": "host-managed-accounts-runtime",
     "target": "self-host",
     "mode": "managed"
   },
@@ -81,6 +81,11 @@
   },
   "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab": {
     "job": "human-in-the-loop",
+    "target": "self-host",
+    "mode": "managed"
+  },
+  "human-in-the-loop:navigation-and-retained-accounts": {
+    "job": "human-in-the-loop-navigation",
     "target": "self-host",
     "mode": "managed"
   },
@@ -319,6 +324,11 @@
   "aws-connectors:identity-center": {
     "job": "aws-connectors",
     "target": "self-host",
+    "mode": "managed"
+  },
+  "host-managed-accounts-cloud:account-policy-and-import": {
+    "job": "host-managed-accounts-cloud",
+    "target": "cloud",
     "mode": "managed"
   }
 }

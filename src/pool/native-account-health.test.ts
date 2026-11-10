@@ -16,6 +16,10 @@ function fixture(
   options: {
     unnamed?: boolean;
     error?: string;
+    upstreamStatus?: unknown;
+    errorAt?: string;
+    homeStatus?: number;
+    transportFailure?: boolean;
     stale?: boolean;
     disabled?: boolean;
     deleted?: boolean;
@@ -52,6 +56,12 @@ function fixture(
         return Response.json({ accepted: 1 });
       }
       assert.ok(path.endsWith("/quota/credentials/bound-id"));
+      if (options.transportFailure) throw new TypeError("PRIVATE_TRANSPORT_DIAGNOSTIC");
+      if (options.homeStatus)
+        return Response.json(
+          { message: "PRIVATE_HOME_DIAGNOSTIC" },
+          { status: options.homeStatus },
+        );
       return Response.json({
         credential: { credential_id: "bound-id", plan: { name: "Pro" } },
         collection: {
@@ -70,7 +80,15 @@ function fixture(
             : { observed_at: new Date(now - (completed ? 0 : 31 * 60_000)).toISOString() }),
           last_attempt_at: new Date(now - (completed || queued ? 0 : 31 * 60_000)).toISOString(),
           ...(options.error
-            ? { error: { code: options.error, message: "PRIVATE_DIAGNOSTIC" } }
+            ? {
+                error: {
+                  code: options.error,
+                  upstream_status_code: options.upstreamStatus,
+                  occurred_at: options.errorAt,
+                  request_id: "PRIVATE_VENDOR_REQUEST_ID",
+                  message: "PRIVATE_DIAGNOSTIC",
+                },
+              }
             : {}),
         },
         windows:
@@ -196,7 +214,9 @@ test("native checks preserve credential rejection and rate limits without return
   ]) {
     const f = fixture({ error }),
       response = await f.check();
-    assert.deepEqual(await response!.json(), { failure });
+    const body = await response!.json();
+    assert.equal(body.failure, failure);
+    assert.equal(JSON.stringify(body).includes("PRIVATE_"), false);
   }
 });
 
@@ -217,7 +237,7 @@ test("invalid assertions and mismatched bindings never probe another credential"
     { reference: "another-id" },
     { reference: 'sbhrefs1:["bound-id","another-id"]' },
   ])
-    assert.deepEqual(await (await f.check(changes))!.json(), { failure: "unauthorized" });
+    assert.equal((await (await f.check(changes))!.json()).diagnostic.source, "home");
   assert.equal(
     f.calls.some((path) => path.includes("/quota/")),
     false,
@@ -327,6 +347,81 @@ test("a first collection that actually fails reports its failure even without a 
     ["UPSTREAM_UNAVAILABLE", "unavailable"],
   ]) {
     const f = fixture({ first: true, error });
-    assert.deepEqual(await (await f.check({ action: "observe" }))!.json(), { failure });
+    assert.equal((await (await f.check({ action: "observe" }))!.json()).failure, failure);
+  }
+});
+
+test("failed native reads retain the provider status and failure time without a usage reading", async () => {
+  const occurredAt = "2029-12-31T23:59:58.123Z";
+  for (const first of [true, false]) {
+    const f = fixture({
+      first,
+      error: "UPSTREAM_UNAVAILABLE",
+      upstreamStatus: 426,
+      errorAt: occurredAt,
+    });
+    for (const action of ["check", "observe"]) {
+      const response = await f.check({ action });
+      assert.deepEqual(await response!.json(), {
+        failure: "unavailable",
+        diagnostic: { source: "provider", reason: "unavailable", status: 426, occurredAt },
+      });
+    }
+  }
+});
+
+test("Home HTTP statuses and transport failures never become provider status evidence", async () => {
+  for (const [options, source] of [
+    [{ homeStatus: 426 }, "home"],
+    [{ transportFailure: true }, "transport"],
+  ] as const) {
+    const response = await fixture(options).check({ action: "observe" });
+    assert.deepEqual(await response!.json(), {
+      failure: "unavailable",
+      diagnostic: { source, reason: "unavailable", occurredAt: new Date(now).toISOString() },
+    });
+  }
+});
+
+test("collector diagnostics accept only bounded status and normalized failure times", async () => {
+  for (const upstreamStatus of [401, 403, 429, 426, "426", 0, 600, 426.5, null]) {
+    const valid =
+      typeof upstreamStatus === "number" &&
+      Number.isInteger(upstreamStatus) &&
+      upstreamStatus >= 100 &&
+      upstreamStatus <= 599;
+    const error =
+      upstreamStatus === 401 || upstreamStatus === 403
+        ? "UPSTREAM_AUTH_REJECTED"
+        : upstreamStatus === 429
+          ? "UPSTREAM_RATE_LIMITED"
+          : "UPSTREAM_UNAVAILABLE";
+    const body = await (await fixture({
+      first: true,
+      error,
+      upstreamStatus,
+      errorAt: "2099-01-01T00:00:00Z",
+    }).check({ action: "observe" }))!.json();
+    assert.equal(body.diagnostic.status, valid ? upstreamStatus : undefined);
+    assert.equal(body.diagnostic.source, valid ? "provider" : "transport");
+    assert.equal(body.diagnostic.occurredAt, new Date(now).toISOString());
+    assert.equal(/PRIVATE_|bound-id/.test(JSON.stringify(body)), false);
+  }
+});
+
+test("failure times normalize vendor precision and reject invalid calendar dates", async () => {
+  for (const [errorAt, expected] of [
+    ["2029-12-31T23:59:58.123456789Z", "2029-12-31T23:59:58.123Z"],
+    ["2030-01-01T00:59:58+01:00", "2029-12-31T23:59:58.000Z"],
+    ["2029-02-29T00:00:00Z", new Date(now).toISOString()],
+    ["not a date", new Date(now).toISOString()],
+  ]) {
+    const body = await (await fixture({
+      first: true,
+      error: "UPSTREAM_UNAVAILABLE",
+      upstreamStatus: 426,
+      errorAt,
+    }).check({ action: "observe" }))!.json();
+    assert.equal(body.diagnostic.occurredAt, expected);
   }
 });

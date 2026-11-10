@@ -138,30 +138,14 @@
     }
   },
   "runs": {
-    "initialCatalogControlsDesktop": [
-      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
-    ],
-    "initialCatalogControlsPhone": [
-      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
-    ],
-    "initialCatalogDraftDesktop": [
-      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
-    ],
-    "initialCatalogDraftPhone": [
-      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
-    ],
-    "cachedMethodsDesktop": [
-      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
-    ],
-    "cachedMethodsPhone": [
-      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
-    ],
-    "cachedDraftDesktop": [
-      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
-    ],
-    "cachedDraftPhone": [
-      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
-    ]
+    "initialCatalogControlsDesktop": ["human-in-the-loop:navigation-and-retained-accounts"],
+    "initialCatalogControlsPhone": ["human-in-the-loop:navigation-and-retained-accounts"],
+    "initialCatalogDraftDesktop": ["human-in-the-loop:navigation-and-retained-accounts"],
+    "initialCatalogDraftPhone": ["human-in-the-loop:navigation-and-retained-accounts"],
+    "cachedMethodsDesktop": ["human-in-the-loop:navigation-and-retained-accounts"],
+    "cachedMethodsPhone": ["human-in-the-loop:navigation-and-retained-accounts"],
+    "cachedDraftDesktop": ["human-in-the-loop:navigation-and-retained-accounts"],
+    "cachedDraftPhone": ["human-in-the-loop:navigation-and-retained-accounts"]
   },
   "inputs": [
     ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx",

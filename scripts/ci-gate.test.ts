@@ -40,7 +40,7 @@ test("the real workflow dependencies reach the aggregate CLI in fast and full la
   assert.deepEqual(workflow.jobs["upstream-image"].needs, ["select", "workerd-assets"]);
   assert.equal(
     workflow.jobs["workerd-assets"].if,
-    "contains(fromJSON(needs.select.outputs.hosted_jobs), 'upstream-image')",
+    "contains(fromJSON(needs.select.outputs.jobs), 'upstream-image')",
   );
   for (const full of [false, true]) {
     const selected = full ? heavyJobs : [];

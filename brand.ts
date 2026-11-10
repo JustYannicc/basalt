@@ -44,7 +44,7 @@ export const brand = {
     region: "Zurich, Switzerland",
     email: "info@signalbox.run",
     /** When the legal pages last changed, as they print it. */
-    updated: "29 October 2026",
+    updated: "9 November 2026",
   },
 } as const;
 

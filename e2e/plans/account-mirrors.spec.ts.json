@@ -3,7 +3,7 @@
   "runs": {},
   "config": [
     {
-      "job": "host-managed-accounts-cloud",
+      "job": "host-managed-accounts-runtime",
       "config": "account-mirrors.config.ts"
     }
   ],

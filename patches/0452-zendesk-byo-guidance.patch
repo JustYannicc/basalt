@@ -1,0 +1,14 @@
+diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/hosted/server/src/implementation/first-party-oauth.ts
+index 7e77044..dd8395d 100644
+--- a/apps/hosted/server/src/implementation/first-party-oauth.ts
++++ b/apps/hosted/server/src/implementation/first-party-oauth.ts
+@@ -589,7 +589,8 @@ export const firstPartyOAuthClients = (options: { readonly testDefinitions: bool
+       allowedScopes: ["read", "write"],
+       setupInstructions:
+         "In Zendesk Admin Center, open Apps and integrations > APIs > OAuth clients. " +
+-        "Add this callback URL to the public OAuth client {clientId} with read and write access; no client secret is needed.",
++        "If the Client ID below already exists there as a public client, add the Callback URL below to it with read and write access; no secret is needed. " +
++        "To use a company-owned client instead, create one there with read and write access, then choose Your own Zendesk app (OAuth), register the Redirect URL it shows, and enter the client's ID and secret, if it has one.",
+     }).pipe(Effect.orDie);
+     clients.push(
+       tenant,
