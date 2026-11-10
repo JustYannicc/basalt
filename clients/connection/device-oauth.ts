@@ -22,6 +22,10 @@ type NativeAuthPath =
   | "/api/auth/oauth2/token"
   | "/api/auth/native/access"
   | "/api/auth/native/revoke";
+// React Native's fetch sends a URLSearchParams body as text/plain, which the token and device
+// endpoints refuse with 415, so form bodies go as strings with an explicit content type.
+const formHeaders = { "content-type": "application/x-www-form-urlencoded" };
+
 export async function authRequest(
   origin: string,
   path: NativeAuthPath,
@@ -46,7 +50,8 @@ export async function tokenRequest(
     "/api/auth/oauth2/token",
     {
       method: "POST",
-      body: new URLSearchParams(fields),
+      headers: formHeaders,
+      body: new URLSearchParams(fields).toString(),
     },
     signal,
   );
@@ -114,13 +119,14 @@ export async function signInDevice(
     "/api/auth/oauth2/device-authorization",
     {
       method: "POST",
+      headers: formHeaders,
       body: new URLSearchParams({
         client_id,
         scope: "native offline_access",
         resource: `${origin}/native`,
         code_challenge: challenge,
         code_challenge_method: "S256",
-      }),
+      }).toString(),
     },
     options.signal,
   );
