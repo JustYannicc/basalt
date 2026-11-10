@@ -22,8 +22,8 @@ type NativeAuthPath =
   | "/api/auth/oauth2/token"
   | "/api/auth/native/access"
   | "/api/auth/native/revoke";
-// React Native's fetch sends a URLSearchParams body as text/plain, which the token and device
-// endpoints refuse with 415, so form bodies go as strings with an explicit content type.
+// The phone's fetch (Expo's, or React Native's own) doesn't declare a URLSearchParams body as a
+// form, and the token and device endpoints refuse anything else with 415.
 const formHeaders = { "content-type": "application/x-www-form-urlencoded" };
 
 export async function authRequest(
