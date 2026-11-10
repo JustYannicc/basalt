@@ -214,7 +214,7 @@ test("one owner shares durable quotas across vaults and monthly I/O limits retai
   }
 });
 
-test("the default monthly R2 allowance is a guardrail a heavy Obsidian user never reaches", () => {
+test("the default monthly R2 allowance is 100,000 metered writes and 1,000,000 metered reads", () => {
   assert.equal(defaultLimits.classA, 100_000);
   assert.equal(defaultLimits.classB, 1_000_000);
 });
