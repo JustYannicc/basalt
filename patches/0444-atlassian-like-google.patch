@@ -65,9 +65,23 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts b/
      verification, applied_at::text from private_production_ops_receipts
      where organization_id = $1 order by applied_at desc, plan_sha256 limit 2001`,
 diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
+index ca40ba3..dc68375 100644
 --- a/apps/hosted/cloud/src/infrastructure/executor.ts
 +++ b/apps/hosted/cloud/src/infrastructure/executor.ts
-@@ -21,6 +21,8 @@
+@@ -4,11 +4,7 @@ export { cloudEgress } from "./egress.ts";
+ /** Cloud composition: Postgres is authoritative; no organization data is stored in a DO. */
+ import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
+ import { makeRegistryRuntimeStorage } from "@executor-js/app-registry";
+-import {
+-  firstPartyOAuthClients,
+-  hostedApi,
+-  hostedApiRevision,
+-} from "@executor-js/hosted-server";
++import { firstPartyOAuthClients, hostedApi, hostedApiRevision } from "@executor-js/hosted-server";
+ import { servesBuiltApiDocument } from "../contracts/browser.ts";
+ import api from "../../.generated/executor-api-revision.json" with { type: "json" };
+ import { AccessLifecycle } from "@executor-js/hosted-server/access-lifecycle";
+@@ -28,6 +24,8 @@ import { SqlClient } from "effect/sql";
  import { makeBatchExecutionMemo } from "./batch-execution.ts";
  import * as Cloudflare from "alchemy/Cloudflare";
  import { Config, Context, Effect, Option } from "effect";
@@ -76,7 +90,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/clou
  import { cachedVersionSources } from "../implementation/version-source-cache.ts";
  import { organizationPublishers } from "../implementation/publishers.ts";
  import type { AppSources } from "./source.ts";
-@@ -127,7 +129,10 @@
+@@ -150,7 +148,10 @@ export const cloudExecutor = Effect.fn(function* (
          secret: key,
          origin,
          webhookOrigin,

@@ -1,14 +1,21 @@
 diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.tsx b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.tsx
-index bdfc6d7..d09496d 100644
+index bdfc6d7..cb24696 100644
 --- a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.tsx
 +++ b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.tsx
-@@ -1,4 +1,5 @@
- import { createFileRoute, Outlet, redirect, useChildMatches, useLocation } from "@tanstack/react-router";
+@@ -1,4 +1,11 @@
+-import { createFileRoute, Outlet, redirect, useChildMatches, useLocation } from "@tanstack/react-router";
++import {
++  createFileRoute,
++  Outlet,
++  redirect,
++  useChildMatches,
++  useLocation,
++} from "@tanstack/react-router";
 +import { useState } from "react";
  import { DashboardEntryPending } from "@executor-js/hosted-web/entry";
  import { CloudPagePending } from "../components/page-pending.tsx";
  import { ErrorTrackingProvider } from "@executor-js/ui/dashboard/error-tracking";
-@@ -73,9 +74,19 @@ function OrganizationPending() {
+@@ -73,9 +80,19 @@ function OrganizationPending() {
  /**
   * The router reuses one unkeyed child match, and its Suspense boundary, across pages. A page that
   * suspends there keeps the previous page mounted under display:none, and that page's subscriptions

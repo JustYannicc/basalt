@@ -1,7 +1,7 @@
 {
   "identity": "basalt-catalog-count-nouns",
   "file": "0438-catalog-count-nouns.patch",
-  "content_sha256": "223aa675300a70e6d2cfa885a11327ab5cb19709d53d972490a4cb7758071f02",
+  "content_sha256": "e5b85b57c6666a98da620402bdbf853c5d74d8e72c44e02f68e786e554be5d61",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

@@ -31,19 +31,23 @@ index 135d348..b1c91c5 100644
            }),
            Effect.flatMap(Schema.encodeEffect(CloudCompileResult)),
 diff --git a/apps/hosted/cloud/src/implementation/runtime-build-cache.ts b/apps/hosted/cloud/src/implementation/runtime-build-cache.ts
-index 2b2f7c1..b5e2b10 100644
+index 2b2f7c1..a00d7e7 100644
 --- a/apps/hosted/cloud/src/implementation/runtime-build-cache.ts
 +++ b/apps/hosted/cloud/src/implementation/runtime-build-cache.ts
-@@ -2,7 +2,7 @@
+@@ -2,7 +2,11 @@
   * Private cache of immutable executable builds, read by the app runner in the AppData Worker.
   * Invocation context never enters this store.
   */
 -import { type BuildId, RuntimeBuildUnavailable } from "@executor-js/sdk/core";
-+import { type BuildId, RuntimeBuildUnavailable, FrameworkProvenanceRefused } from "@executor-js/sdk/core";
++import {
++  type BuildId,
++  RuntimeBuildUnavailable,
++  FrameworkProvenanceRefused,
++} from "@executor-js/sdk/core";
  import {
    type FrameworkIdentity,
    InlinedWorkerBuild,
-@@ -164,7 +164,7 @@ const readOnce = <A, R>(
+@@ -164,7 +168,7 @@ const readOnce = <A, R>(
    part: { readonly value: (entry: Entry) => A | undefined; readonly entry: (value: A) => Entry },
    read: Effect.Effect<
      { readonly value: A; readonly source: "hit" | "miss" },
@@ -52,7 +56,7 @@ index 2b2f7c1..b5e2b10 100644
      R
    >,
    deadline: number,
-@@ -364,7 +364,7 @@ export const cachedRuntimeBuilds = <R>(
+@@ -364,7 +368,7 @@ export const cachedRuntimeBuilds = <R>(
      ) => Effect.Effect<StoredWorkerBuild, RuntimeBuildUnavailable, R>;
      readonly framework: (
        identity: FrameworkIdentity,
@@ -61,16 +65,18 @@ index 2b2f7c1..b5e2b10 100644
    },
    background: (write: Effect.Effect<void>) => Effect.Effect<void>,
  ) => {
-@@ -394,7 +394,7 @@ export const cachedRuntimeBuilds = <R>(
+@@ -394,7 +398,9 @@ export const cachedRuntimeBuilds = <R>(
        yield* Effect.annotateCurrentSpan("executor.build.framework_cache", source);
        return value;
      });
 -  return (build: BuildId): Effect.Effect<LoadedWorkerBuild, RuntimeBuildUnavailable, R> =>
-+  return (build: BuildId): Effect.Effect<LoadedWorkerBuild, RuntimeBuildUnavailable | FrameworkProvenanceRefused, R> =>
++  return (
++    build: BuildId,
++  ): Effect.Effect<LoadedWorkerBuild, RuntimeBuildUnavailable | FrameworkProvenanceRefused, R> =>
      Effect.gen(function* () {
        const deadline = (yield* Clock.currentTimeMillis) + readTimeout;
        const { value, source, bytes } = yield* readOnce(
-@@ -419,7 +419,7 @@ export const cachedRuntimeBuilds = <R>(
+@@ -419,7 +425,7 @@ export const cachedRuntimeBuilds = <R>(
          "executor.build.cache": source,
          "executor.build.record_accounted_bytes": bytes,
        });
@@ -80,7 +86,7 @@ index 2b2f7c1..b5e2b10 100644
        Effect.tap(() =>
          Effect.annotateCurrentSpan({
 diff --git a/apps/hosted/cloud/src/infrastructure/runtime.ts b/apps/hosted/cloud/src/infrastructure/runtime.ts
-index fed55fa..a442749 100644
+index fed55fa..a0eef1c 100644
 --- a/apps/hosted/cloud/src/infrastructure/runtime.ts
 +++ b/apps/hosted/cloud/src/infrastructure/runtime.ts
 @@ -6,6 +6,7 @@ import {
@@ -91,12 +97,13 @@ index fed55fa..a442749 100644
    describeBuildCause,
    RuntimeAppsDependencyMissing,
    ownsDatabase,
-@@ -197,7 +198,7 @@ export const cloudRuntime = Effect.fn(function* (
+@@ -197,7 +198,8 @@ export const cloudRuntime = Effect.fn(function* (
                    ? "queued"
                    : Schema.is(BuildMemoryExceeded)(error)
                      ? "compile"
 -                    : Schema.is(RuntimeProtocolUnsupported)(error)
-+                    : (Schema.is(RuntimeProtocolUnsupported)(error) || Schema.is(FrameworkProvenanceRefused)(error))
++                    : Schema.is(RuntimeProtocolUnsupported)(error) ||
++                        Schema.is(FrameworkProvenanceRefused)(error)
                        ? "protocol"
                        : Schema.is(RuntimeAppsDependencyMissing)(error)
                          ? "dependencies"
@@ -1016,7 +1023,7 @@ index eb27814..058e660 100644
      | BuildMemoryExceeded,
      Requirements
 diff --git a/packages/sdk/src/contracts/tools.ts b/packages/sdk/src/contracts/tools.ts
-index 43ef4c5..1089b0f 100644
+index 43ef4c5..495f11f 100644
 --- a/packages/sdk/src/contracts/tools.ts
 +++ b/packages/sdk/src/contracts/tools.ts
 @@ -43,6 +43,7 @@ import {
@@ -1027,7 +1034,209 @@ index 43ef4c5..1089b0f 100644
  } from "./runtime.ts";
  import type { CatalogReadOptions } from "./declarations.ts";
  import type { Executor } from "./executor.ts";
-@@ -910,6 +911,7 @@ export const EvaluationRuntime = Schema.Union([
+@@ -74,9 +75,10 @@ import { VersionNotFound } from "./version.ts";
+ import { OAuthReconnectRequired, OAuthRenewalFailed } from "./oauth.ts";
+ 
+ /** Retention bound for a pending SDK approval and its consumed marker. */
+-export const ToolApprovalLimits = /* @__PURE__ */ (() => Schema.Struct({
+-  ttlMs: Schema.Int.check(Schema.isGreaterThan(0)),
+-}))();
++export const ToolApprovalLimits = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    ttlMs: Schema.Int.check(Schema.isGreaterThan(0)),
++  }))();
+ export type ToolApprovalLimits = typeof ToolApprovalLimits.Type;
+ /** Current consume-once approval lifetime; this does not extend a live tool invocation. */
+ export const defaultToolApprovalLimits = ToolApprovalLimits.make({ ttlMs: 15 * 60 * 1000 });
+@@ -343,36 +345,38 @@ const elicitationRecovery = {
+   },
+ } as const;
+ /** A running tool could not complete its user interaction. Earlier effects may have completed. */
+-export const ToolElicitationFailed = /* @__PURE__ */ (() => UserFacingError.define({
+-  tag: "ToolElicitationFailed",
+-  status: 422,
+-  fields: {
+-    app: AppId,
+-    version: VersionId,
+-    tool: ToolName,
+-    reason: ElicitationFailed.fields.reason,
+-    mayHaveWritten: MayHaveWritten,
+-  },
+-  recorded: ({ reason }) => elicitationFailures[reason],
+-  presentation: callPresentation(({ reason }) => {
+-    const { action, instructions, retryable } = elicitationRecovery[reason];
+-    return {
+-      title: "The tool needed more input",
+-      description: elicitationFailures[reason],
+-      recovery: { action, instructions },
+-      retryable,
+-    };
+-  }),
+-}))();
++export const ToolElicitationFailed = /* @__PURE__ */ (() =>
++  UserFacingError.define({
++    tag: "ToolElicitationFailed",
++    status: 422,
++    fields: {
++      app: AppId,
++      version: VersionId,
++      tool: ToolName,
++      reason: ElicitationFailed.fields.reason,
++      mayHaveWritten: MayHaveWritten,
++    },
++    recorded: ({ reason }) => elicitationFailures[reason],
++    presentation: callPresentation(({ reason }) => {
++      const { action, instructions, retryable } = elicitationRecovery[reason];
++      return {
++        title: "The tool needed more input",
++        description: elicitationFailures[reason],
++        recovery: { action, instructions },
++        retryable,
++      };
++    }),
++  }))();
+ export type ToolElicitationFailed = typeof ToolElicitationFailed.Type;
+ 
+ /** One callable in an app's live definition. inputSchema is a JSON Schema document. */
+-export const ToolFields = /* @__PURE__ */ (() => Schema.Struct({
+-  ...HostedTool.fields,
+-  app: AppId,
+-  version: VersionId,
+-  name: ToolName,
+-}))();
++export const ToolFields = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    ...HostedTool.fields,
++    app: AppId,
++    version: VersionId,
++    name: ToolName,
++  }))();
+ export const Tool = ToolFields.pipe(withLegacyKeys({ version: "deployment" }));
+ 
+ export type Tool = typeof Tool.Type;
+@@ -394,37 +398,40 @@ export type ToolRouter = typeof ToolRouter.Type;
+ export const toolPageChars = 16 * 1024 * 1024;
+ 
+ /** One page of a live catalog, evaluated with the named accounts. */
+-const ToolPageFields = /* @__PURE__ */ (() => Schema.Struct({
+-  version: VersionId,
+-  /** The accounts the catalog was evaluated with; calls name the same accounts. */
+-  accounts: AppAccounts,
+-  items: Schema.Array(Tool),
+-  /** Every router in the catalog, on every page. */
+-  routers: Schema.Array(ToolRouter),
+-  next: Schema.optional(Cursor),
+-}))();
++const ToolPageFields = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    version: VersionId,
++    /** The accounts the catalog was evaluated with; calls name the same accounts. */
++    accounts: AppAccounts,
++    items: Schema.Array(Tool),
++    /** Every router in the catalog, on every page. */
++    routers: Schema.Array(ToolRouter),
++    next: Schema.optional(Cursor),
++  }))();
+ export const ToolPage = ToolPageFields.pipe(withLegacyKeys({ version: "deployment" }));
+ 
+ export type ToolPage = typeof ToolPage.Type;
+ 
+ /** One callable's name and description. Its schemas are read with tools.get. */
+-export const ToolSummaryFields = /* @__PURE__ */ (() => Schema.Struct({
+-  ...HostedToolSummary.fields,
+-  app: AppId,
+-  version: VersionId,
+-  name: ToolName,
+-}))();
++export const ToolSummaryFields = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    ...HostedToolSummary.fields,
++    app: AppId,
++    version: VersionId,
++    name: ToolName,
++  }))();
+ export const ToolSummary = ToolSummaryFields.pipe(withLegacyKeys({ version: "deployment" }));
+ 
+ export type ToolSummary = typeof ToolSummary.Type;
+ 
+ /** The whole live catalog without schemas, evaluated with the named accounts. */
+-const ToolIndexFields = /* @__PURE__ */ (() => Schema.Struct({
+-  version: VersionId,
+-  accounts: AppAccounts,
+-  items: Schema.Array(ToolSummary),
+-  routers: Schema.Array(ToolRouter),
+-}))();
++const ToolIndexFields = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    version: VersionId,
++    accounts: AppAccounts,
++    items: Schema.Array(ToolSummary),
++    routers: Schema.Array(ToolRouter),
++  }))();
+ export const ToolIndex = ToolIndexFields.pipe(withLegacyKeys({ version: "deployment" }));
+ 
+ export type ToolIndex = typeof ToolIndex.Type;
+@@ -433,7 +440,8 @@ export type ToolIndex = typeof ToolIndex.Type;
+  * A listing kept as search rows: its declaration key, so a new version, account selection or
+  * credential generation is another one.
+  */
+-export const ToolSearchListing = /* @__PURE__ */ (() => Schema.String.pipe(Schema.brand("ToolSearchListing")))();
++export const ToolSearchListing = /* @__PURE__ */ (() =>
++  Schema.String.pipe(Schema.brand("ToolSearchListing")))();
+ export type ToolSearchListing = typeof ToolSearchListing.Type;
+ 
+ /** One app target's current listing, kept as search rows. */
+@@ -557,14 +565,15 @@ const skillInstructions =
+  * The error an app's own code threw, or the specific app data failure it hit. The message, code
+  * and fields are the app's own, bounded and with the invocation's account secrets replaced.
+  */
+-export const AppFailure = /* @__PURE__ */ (() => Schema.Struct({
+-  source: FailureSource,
+-  errorName: FailureName,
+-  code: Schema.optional(FailureCode),
+-  message: FailureMessage,
+-  /** The thrown error's own scalar fields, such as `reason` or `pointer`. */
+-  fields: Schema.optional(FailureFields),
+-}))();
++export const AppFailure = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    source: FailureSource,
++    errorName: FailureName,
++    code: Schema.optional(FailureCode),
++    message: FailureMessage,
++    /** The thrown error's own scalar fields, such as `reason` or `pointer`. */
++    fields: Schema.optional(FailureFields),
++  }))();
+ export type AppFailure = typeof AppFailure.Type;
+ 
+ /** The thrown error's fields as `name: value` pairs, each value as JSON. */
+@@ -674,15 +683,16 @@ const skillPresentation = ({
+  * An MCP server's failure: its safe phase, reason and HTTP status, and the JSON-RPC error it
+  * answered with, such as a refusal and how to fix it.
+  */
+-export const McpFailure = /* @__PURE__ */ (() => Schema.Struct({
+-  phase: McpError.fields.phase,
+-  reason: McpError.fields.reason,
+-  status: McpError.fields.status,
+-  /** The JSON-RPC error the server answered with, bounded and with account secrets replaced. */
+-  upstream: McpError.fields.upstream,
+-  /** The refused request carried the session ID the server issued at initialization. */
+-  session: McpError.fields.session,
+-}))();
++export const McpFailure = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    phase: McpError.fields.phase,
++    reason: McpError.fields.reason,
++    status: McpError.fields.status,
++    /** The JSON-RPC error the server answered with, bounded and with account secrets replaced. */
++    upstream: McpError.fields.upstream,
++    /** The refused request carried the session ID the server issued at initialization. */
++    session: McpError.fields.session,
++  }))();
+ export type McpFailure = typeof McpFailure.Type;
+ 
+ /** An MCP failure's fields, without keys for absent ones. */
+@@ -910,6 +920,7 @@ export const EvaluationRuntime = Schema.Union([
      failure: Schema.optional(RuntimeFailure),
    }),
    Schema.Struct({ kind: Schema.Literal("build") }),
@@ -1035,7 +1244,7 @@ index 43ef4c5..1089b0f 100644
    Schema.Struct({
      kind: Schema.Literal("protocol"),
      protocol: Schema.Int,
-@@ -1038,6 +1040,13 @@ const runtimePresentation = (runtime: EvaluationRuntime): CausePresentation => {
+@@ -1038,6 +1049,16 @@ const runtimePresentation = (runtime: EvaluationRuntime): CausePresentation => {
        );
        return { title: "Tools could not be loaded", description: loaded(description), ...rest };
      }
@@ -1043,13 +1252,16 @@ index 43ef4c5..1089b0f 100644
 +      return {
 +        title: "App framework was refused",
 +        description: loaded(runtime.error.message),
-+        recovery: { action: "Ask the instance maintainer to verify this retained framework before retrying.", instructions: `${loadingInstructions} Preserve the exact build and framework objects. Compare their hashes and source evidence with the approved release registry; do not relabel or overwrite them.` },
++        recovery: {
++          action: "Ask the instance maintainer to verify this retained framework before retrying.",
++          instructions: `${loadingInstructions} Preserve the exact build and framework objects. Compare their hashes and source evidence with the approved release registry; do not relabel or overwrite them.`,
++        },
 +        retryable: false,
 +      };
      case "protocol":
        return {
          title: "App build is not supported",
-@@ -1069,6 +1078,8 @@ const recordedRuntime = (runtime: EvaluationRuntime) => {
+@@ -1069,6 +1090,8 @@ const recordedRuntime = (runtime: EvaluationRuntime) => {
        return `the app's Worker failed (${runtime.failure ?? "unreported"})`;
      case "build":
        return "the app's build could not be read";
@@ -1058,7 +1270,7 @@ index 43ef4c5..1089b0f 100644
      case "protocol":
        return "the app's build uses a host protocol this host does not run";
      case "framework":
-@@ -1084,6 +1095,7 @@ const evaluationRuntime = (error: unknown): EvaluationRuntime | undefined => {
+@@ -1084,6 +1107,7 @@ const evaluationRuntime = (error: unknown): EvaluationRuntime | undefined => {
        ...(error.reason === undefined ? {} : { failure: error.reason }),
      };
    if (Schema.is(RuntimeBuildUnavailable)(error)) return { kind: "build" };
@@ -1066,6 +1278,1175 @@ index 43ef4c5..1089b0f 100644
    if (Schema.is(RuntimeProtocolUnsupported)(error))
      return { kind: "protocol", protocol: error.protocol, supported: error.supported };
    if (Schema.is(HostRequestInvalid)(error))
+@@ -1102,77 +1126,78 @@ const evaluationRuntime = (error: unknown): EvaluationRuntime | undefined => {
+  * failed during a call that may write, after the host handed the call to the app's code, which
+  * includes its factory: that code may have made changes before the failure, whatever it reports.
+  */
+-export const AppEvaluationFailed = /* @__PURE__ */ (() => UserFacingError.define({
+-  tag: "AppEvaluationFailed",
+-  status: 502,
+-  fields: {
+-    app: AppId,
+-    version: VersionId,
+-    reason: Schema.String,
+-    /** Present when the app's remote skill loader caused the failure. */
+-    skills: Schema.optional(
+-      Schema.Struct({
+-        reason: SkillLoadFailed.fields.reason,
+-        message: SkillLoadFailed.fields.message,
+-        status: SkillLoadFailed.fields.status,
+-        missing: SkillLoadFailed.fields.missing,
+-      }),
+-    ),
+-    /** Present when the app's own code threw while loading its definition. */
+-    failure: Schema.optional(AppFailure),
+-    /**
+-     * Present when the app's MCP server failed before a request reached a tool: while connecting,
+-     * including the session a tool call opens, or while listing its tools.
+-     */
+-    mcp: Schema.optional(McpFailure),
+-    /**
+-     * Present when the app's Worker, its build or its framework failed without an error of the
+-     * app's own: the runtime failure Executor observed or matched.
+-     */
+-    runtime: Schema.optional(EvaluationRuntime),
+-    mayHaveWritten: MayHaveWritten,
+-  },
+-  recorded: ({ skills, mcp, failure, runtime }) =>
+-    `Tools could not be loaded: ${
++export const AppEvaluationFailed = /* @__PURE__ */ (() =>
++  UserFacingError.define({
++    tag: "AppEvaluationFailed",
++    status: 502,
++    fields: {
++      app: AppId,
++      version: VersionId,
++      reason: Schema.String,
++      /** Present when the app's remote skill loader caused the failure. */
++      skills: Schema.optional(
++        Schema.Struct({
++          reason: SkillLoadFailed.fields.reason,
++          message: SkillLoadFailed.fields.message,
++          status: SkillLoadFailed.fields.status,
++          missing: SkillLoadFailed.fields.missing,
++        }),
++      ),
++      /** Present when the app's own code threw while loading its definition. */
++      failure: Schema.optional(AppFailure),
++      /**
++       * Present when the app's MCP server failed before a request reached a tool: while connecting,
++       * including the session a tool call opens, or while listing its tools.
++       */
++      mcp: Schema.optional(McpFailure),
++      /**
++       * Present when the app's Worker, its build or its framework failed without an error of the
++       * app's own: the runtime failure Executor observed or matched.
++       */
++      runtime: Schema.optional(EvaluationRuntime),
++      mayHaveWritten: MayHaveWritten,
++    },
++    recorded: ({ skills, mcp, failure, runtime }) =>
++      `Tools could not be loaded: ${
++        mcp !== undefined
++          ? recordedMcp(mcp)
++          : failure !== undefined
++            ? recordedApp(failure)
++            : skills !== undefined
++              ? `the app's skill source failed (${skills.reason})${recordedStatus(skills.status)}`
++              : runtime !== undefined
++                ? recordedRuntime(runtime)
++                : "the app's definition could not be evaluated"
++      }`,
++    presentation: callPresentation(({ skills, mcp, failure, runtime }) =>
+       mcp !== undefined
+-        ? recordedMcp(mcp)
+-        : failure !== undefined
+-          ? recordedApp(failure)
+-          : skills !== undefined
+-            ? `the app's skill source failed (${skills.reason})${recordedStatus(skills.status)}`
+-            : runtime !== undefined
+-              ? recordedRuntime(runtime)
+-              : "the app's definition could not be evaluated"
+-    }`,
+-  presentation: callPresentation(({ skills, mcp, failure, runtime }) =>
+-    mcp !== undefined
+-      ? mcpFailurePresentation(mcp)
+-      : runtime !== undefined && failure === undefined
+-        ? runtimePresentation(runtime)
+-        : failure !== undefined
+-          ? (hostApiChanging(failure) ?? {
+-              title: "Tools could not be loaded",
+-              description: `Could not load this app’s tool definitions. ${appFailureText(failure)}`,
+-              recovery: {
+-                action: "Try again. If this continues, investigate this error and fix its cause.",
+-                instructions: `The app's factory or dynamic tool loader failed with this error. It does not show whether the cause is the app's code, a service the app calls, or Executor, such as its storage or network. A transient cause, such as an unavailable upstream, may clear on retry. Otherwise find where the error is raised and what caused it, fix the cause, and verify that the app's tools load. Error: ${appFailureText(failure)}`,
+-              },
+-              retryable: true,
+-            })
+-          : skills === undefined
+-            ? {
++        ? mcpFailurePresentation(mcp)
++        : runtime !== undefined && failure === undefined
++          ? runtimePresentation(runtime)
++          : failure !== undefined
++            ? (hostApiChanging(failure) ?? {
+                 title: "Tools could not be loaded",
+-                description: "Executor could not load this app’s tool definitions.",
++                description: `Could not load this app’s tool definitions. ${appFailureText(failure)}`,
+                 recovery: {
+-                  action:
+-                    "Try again. If this continues, copy the fix prompt to investigate the app.",
+-                  instructions: evaluationInstructions,
++                  action: "Try again. If this continues, investigate this error and fix its cause.",
++                  instructions: `The app's factory or dynamic tool loader failed with this error. It does not show whether the cause is the app's code, a service the app calls, or Executor, such as its storage or network. A transient cause, such as an unavailable upstream, may clear on retry. Otherwise find where the error is raised and what caused it, fix the cause, and verify that the app's tools load. Error: ${appFailureText(failure)}`,
+                 },
+                 retryable: true,
+-              }
+-            : skillPresentation(skills),
+-  ),
+-}))();
++              })
++            : skills === undefined
++              ? {
++                  title: "Tools could not be loaded",
++                  description: "Executor could not load this app’s tool definitions.",
++                  recovery: {
++                    action:
++                      "Try again. If this continues, copy the fix prompt to investigate the app.",
++                    instructions: evaluationInstructions,
++                  },
++                  retryable: true,
++                }
++              : skillPresentation(skills),
++    ),
++  }))();
+ /** Parsed evaluation failure; raw runtime diagnostics never enter its presentation. */
+ export type AppEvaluationFailed = typeof AppEvaluationFailed.Type;
+ /**
+@@ -1193,34 +1218,35 @@ export const hostObservedEvaluation = ({ runtime }: AppEvaluationFailed) =>
+  * stopped before it finished. While it still runs, callers with a shorter wait, and briefly after
+  * it gave up, every reader, are told this at once rather than wait for the same slow app again.
+  */
+-export const ToolListingTimedOut = /* @__PURE__ */ (() => UserFacingError.define({
+-  tag: "ToolListingTimedOut",
+-  status: 504,
+-  fields: {
+-    app: AppId,
+-    version: VersionId,
+-    elapsedMs: Schema.Number,
+-    /** The listing is still running in the background. */
+-    running: Schema.Boolean,
+-  },
+-  recorded: ({ elapsedMs, running }) =>
+-    running
+-      ? `Listing the app's tools has run for ${elapsedMs}ms, longer than this request waits`
+-      : `Listing the app's tools timed out after ${elapsedMs}ms`,
+-  presentation: ({ elapsedMs, running }) => ({
+-    title: "App tools did not load in time",
+-    description: running
+-      ? `Listing this app's tools timed out: it has been running for ${elapsedMs}ms, longer than this request waits, so the app is unavailable until it finishes.`
+-      : `Listing this app's tools timed out after ${elapsedMs}ms, so the app is unavailable until a later listing finishes.`,
+-    retryable: true,
+-    recovery: {
+-      action:
+-        "Try again shortly. If this continues, check that the app's upstream server responds.",
+-      instructions:
+-        "Tell the user this app's tools could not be listed in time; its server may be slow or offline. Its tools cannot be called until a listing finishes. Other apps remain usable.",
++export const ToolListingTimedOut = /* @__PURE__ */ (() =>
++  UserFacingError.define({
++    tag: "ToolListingTimedOut",
++    status: 504,
++    fields: {
++      app: AppId,
++      version: VersionId,
++      elapsedMs: Schema.Number,
++      /** The listing is still running in the background. */
++      running: Schema.Boolean,
+     },
+-  }),
+-}))();
++    recorded: ({ elapsedMs, running }) =>
++      running
++        ? `Listing the app's tools has run for ${elapsedMs}ms, longer than this request waits`
++        : `Listing the app's tools timed out after ${elapsedMs}ms`,
++    presentation: ({ elapsedMs, running }) => ({
++      title: "App tools did not load in time",
++      description: running
++        ? `Listing this app's tools timed out: it has been running for ${elapsedMs}ms, longer than this request waits, so the app is unavailable until it finishes.`
++        : `Listing this app's tools timed out after ${elapsedMs}ms, so the app is unavailable until a later listing finishes.`,
++      retryable: true,
++      recovery: {
++        action:
++          "Try again shortly. If this continues, check that the app's upstream server responds.",
++        instructions:
++          "Tell the user this app's tools could not be listed in time; its server may be slow or offline. Its tools cannot be called until a listing finishes. Other apps remain usable.",
++      },
++    }),
++  }))();
+ export type ToolListingTimedOut = typeof ToolListingTimedOut.Type;
+ 
+ const searchFailures = {
+@@ -1233,33 +1259,34 @@ const searchFailures = {
+  * execution found was since removed. Search reports the app unavailable instead of ranking none
+  * of its tools, which would look like an app without matches.
+  */
+-export const ToolSearchUnavailable = /* @__PURE__ */ (() => UserFacingError.define({
+-  tag: "ToolSearchUnavailable",
+-  status: 503,
+-  fields: {
+-    app: AppId,
+-    reason: Schema.Literals(["unsaved", "removed"]),
+-  },
+-  recorded: ({ reason }) => searchFailures[reason],
+-  presentation: ({ reason }) => ({
+-    title: "App tools are not searchable",
+-    description: searchFailures[reason],
+-    retryable: reason === "unsaved",
+-    recovery:
+-      reason === "unsaved"
+-        ? {
+-            action:
+-              "Try again. If this continues, copy the fix prompt into your agent to check this instance’s storage.",
+-            instructions:
+-              "Check this instance’s storage availability and safe diagnostics for the failed tool search write. Do not change the app or its accounts to work around a storage failure. Other apps remain searchable.",
+-          }
+-        : {
+-            action: "Search again in a new execute.",
+-            instructions:
+-              "Tell the user this execution ran long enough that the app's earlier tool listing was removed. A new execute finds the current listing. Other apps remain searchable.",
+-          },
+-  }),
+-}))();
++export const ToolSearchUnavailable = /* @__PURE__ */ (() =>
++  UserFacingError.define({
++    tag: "ToolSearchUnavailable",
++    status: 503,
++    fields: {
++      app: AppId,
++      reason: Schema.Literals(["unsaved", "removed"]),
++    },
++    recorded: ({ reason }) => searchFailures[reason],
++    presentation: ({ reason }) => ({
++      title: "App tools are not searchable",
++      description: searchFailures[reason],
++      retryable: reason === "unsaved",
++      recovery:
++        reason === "unsaved"
++          ? {
++              action:
++                "Try again. If this continues, copy the fix prompt into your agent to check this instance’s storage.",
++              instructions:
++                "Check this instance’s storage availability and safe diagnostics for the failed tool search write. Do not change the app or its accounts to work around a storage failure. Other apps remain searchable.",
++            }
++          : {
++              action: "Search again in a new execute.",
++              instructions:
++                "Tell the user this execution ran long enough that the app's earlier tool listing was removed. A new execute finds the current listing. Other apps remain searchable.",
++            },
++    }),
++  }))();
+ export type ToolSearchUnavailable = typeof ToolSearchUnavailable.Type;
+ 
+ /**
+@@ -1291,12 +1318,8 @@ export const ToolSearchStale = UserFacingError.define({
+ export type ToolSearchStale = typeof ToolSearchStale.Type;
+ 
+ /** Why renewing an account's refused credentials failed, as resolving them reports it. */
+-export const RenewalFailure = /* @__PURE__ */ (() => Schema.Union([
+-  OAuthReconnectRequired,
+-  OAuthRenewalFailed,
+-  StorageError,
+-  CredentialsError,
+-]))();
++export const RenewalFailure = /* @__PURE__ */ (() =>
++  Schema.Union([OAuthReconnectRequired, OAuthRenewalFailed, StorageError, CredentialsError]))();
+ export type RenewalFailure = typeof RenewalFailure.Type;
+ 
+ /**
+@@ -1343,121 +1366,122 @@ const renewalRecovery = (
+ };
+ 
+ /** Recognized provider failure, enriched only with trusted selected-account metadata. */
+-export const AppProviderFailed = /* @__PURE__ */ (() => UserFacingError.define({
+-  tag: "AppProviderFailed",
+-  status: 502,
+-  fields: {
+-    app: AppId,
+-    version: VersionId,
+-    reason: ProviderError.fields.reason,
+-    status: ProviderError.fields.status,
+-    /** Whether the service failed while connecting, listing the app's tools or running one. */
+-    phase: ProviderError.fields.phase,
+-    /** The error code and description the service stated, with account secrets replaced. */
+-    upstream: ProviderError.fields.upstream,
+-    account: Schema.optional(
+-      Schema.Struct({ id: AccountId, label: Schema.String, provider: Schema.String }),
+-    ),
+-    /**
+-     * The service refused the account's credentials during a mutation, and Executor has since
+-     * renewed them. The mutation was not repeated, because it may have made changes before the
+-     * refusal; a later call uses the renewed credentials.
+-     */
+-    credentialsRenewed: Schema.optional(Schema.Literal(true)),
+-    /**
+-     * The service refused the account's credentials during a call that may write, and renewing
+-     * them failed with this error. The call was not repeated.
+-     */
+-    renewalFailure: Schema.optional(RenewalFailure),
+-    mayHaveWritten: MayHaveWritten,
+-  },
+-  recorded: ({ reason, status, phase }) =>
+-    `The connected service failed (${reason})${recordedStatus(status)}${phaseText(phase)}`,
+-  presentation: callPresentation(
+-    ({ reason, status, phase, upstream, account, credentialsRenewed, renewalFailure }) => {
+-      const service = account === undefined ? "The connected service" : account.provider;
+-      const target = account === undefined ? "" : ` for account “${account.label}”`;
+-      /** The HTTP status, then the phase the failure happened in. */
+-      const context = `${status === undefined ? "" : ` (HTTP ${status})`}${phaseText(phase)}`;
+-      const reported = upstreamText(upstream, "The service reported");
+-      const instructions =
+-        "Do not print credentials or raw responses, switch accounts, or change authentication methods automatically.";
+-      switch (reason) {
+-        case "unavailable":
+-          return {
+-            title: "Service temporarily unavailable",
+-            description: `${service} returned a server error${context}.${reported}`,
+-            recovery: {
+-              action:
+-                "Wait at least 30 seconds before trying again, at most twice. If it keeps failing, report the repeated server error.",
+-              instructions: `The response does not identify the root cause. Check service status and request-specific diagnostics if available. Do not change credentials without authentication evidence. ${instructions}`,
+-            },
+-            retryable: true,
+-          };
+-        case "unauthorized":
+-          if (credentialsRenewed === true)
++export const AppProviderFailed = /* @__PURE__ */ (() =>
++  UserFacingError.define({
++    tag: "AppProviderFailed",
++    status: 502,
++    fields: {
++      app: AppId,
++      version: VersionId,
++      reason: ProviderError.fields.reason,
++      status: ProviderError.fields.status,
++      /** Whether the service failed while connecting, listing the app's tools or running one. */
++      phase: ProviderError.fields.phase,
++      /** The error code and description the service stated, with account secrets replaced. */
++      upstream: ProviderError.fields.upstream,
++      account: Schema.optional(
++        Schema.Struct({ id: AccountId, label: Schema.String, provider: Schema.String }),
++      ),
++      /**
++       * The service refused the account's credentials during a mutation, and Executor has since
++       * renewed them. The mutation was not repeated, because it may have made changes before the
++       * refusal; a later call uses the renewed credentials.
++       */
++      credentialsRenewed: Schema.optional(Schema.Literal(true)),
++      /**
++       * The service refused the account's credentials during a call that may write, and renewing
++       * them failed with this error. The call was not repeated.
++       */
++      renewalFailure: Schema.optional(RenewalFailure),
++      mayHaveWritten: MayHaveWritten,
++    },
++    recorded: ({ reason, status, phase }) =>
++      `The connected service failed (${reason})${recordedStatus(status)}${phaseText(phase)}`,
++    presentation: callPresentation(
++      ({ reason, status, phase, upstream, account, credentialsRenewed, renewalFailure }) => {
++        const service = account === undefined ? "The connected service" : account.provider;
++        const target = account === undefined ? "" : ` for account “${account.label}”`;
++        /** The HTTP status, then the phase the failure happened in. */
++        const context = `${status === undefined ? "" : ` (HTTP ${status})`}${phaseText(phase)}`;
++        const reported = upstreamText(upstream, "The service reported");
++        const instructions =
++          "Do not print credentials or raw responses, switch accounts, or change authentication methods automatically.";
++        switch (reason) {
++          case "unavailable":
++            return {
++              title: "Service temporarily unavailable",
++              description: `${service} returned a server error${context}.${reported}`,
++              recovery: {
++                action:
++                  "Wait at least 30 seconds before trying again, at most twice. If it keeps failing, report the repeated server error.",
++                instructions: `The response does not identify the root cause. Check service status and request-specific diagnostics if available. Do not change credentials without authentication evidence. ${instructions}`,
++              },
++              retryable: true,
++            };
++          case "unauthorized":
++            if (credentialsRenewed === true)
++              return {
++                title: "Access renewed; request not repeated",
++                description: `${service} rejected the credentials${target}${context}.${reported} The account’s access was renewed, but this call was not repeated automatically.`,
++                recovery: {
++                  action: "The renewed access is used from now on.",
++                  instructions: `The account’s access was renewed but this call was not repeated. Renewal does not establish whether an earlier part of the call changed data. ${instructions}`,
++                },
++                retryable: false,
++              };
++            // The renewal's own error says what failed. Only a call that may write reports it, so
++            // its recovery is the one for such a call, never repeating it.
++            if (renewalFailure !== undefined)
++              return {
++                title: renewalFailure.title,
++                description: `${service} rejected the credentials${target}${context}.${reported} Renewing the account’s access failed: ${renewalFailure.description}`,
++                ...renewalRecovery(renewalFailure),
++                retryable: false,
++              };
+             return {
+-              title: "Access renewed; request not repeated",
+-              description: `${service} rejected the credentials${target}${context}.${reported} The account’s access was renewed, but this call was not repeated automatically.`,
++              title: "Authentication failed",
++              description: `${service} rejected the credentials${target}${context}.${reported}`,
+               recovery: {
+-                action: "The renewed access is used from now on.",
+-                instructions: `The account’s access was renewed but this call was not repeated. Renewal does not establish whether an earlier part of the call changed data. ${instructions}`,
++                action:
++                  "Check how the request authenticates. Update credentials or reconnect only if the evidence requires it.",
++                instructions: `The provider rejected authentication. This does not establish whether credentials are expired, revoked, missing, or sent incorrectly. ${instructions}`,
+               },
+               retryable: false,
+             };
+-          // The renewal's own error says what failed. Only a call that may write reports it, so
+-          // its recovery is the one for such a call, never repeating it.
+-          if (renewalFailure !== undefined)
++          case "forbidden":
+             return {
+-              title: renewalFailure.title,
+-              description: `${service} rejected the credentials${target}${context}.${reported} Renewing the account’s access failed: ${renewalFailure.description}`,
+-              ...renewalRecovery(renewalFailure),
++              title: "Permission required",
++              description: `${service} reported insufficient permission${target}${context}.${reported}`,
++              recovery: {
++                action: "Check the account’s permissions and the service’s access requirements.",
++                instructions: `The provider explicitly reported insufficient permission. Do not invent required scopes or organization approval requirements. ${instructions}`,
++              },
+               retryable: false,
+             };
+-          return {
+-            title: "Authentication failed",
+-            description: `${service} rejected the credentials${target}${context}.${reported}`,
+-            recovery: {
+-              action:
+-                "Check how the request authenticates. Update credentials or reconnect only if the evidence requires it.",
+-              instructions: `The provider rejected authentication. This does not establish whether credentials are expired, revoked, missing, or sent incorrectly. ${instructions}`,
+-            },
+-            retryable: false,
+-          };
+-        case "forbidden":
+-          return {
+-            title: "Permission required",
+-            description: `${service} reported insufficient permission${target}${context}.${reported}`,
+-            recovery: {
+-              action: "Check the account’s permissions and the service’s access requirements.",
+-              instructions: `The provider explicitly reported insufficient permission. Do not invent required scopes or organization approval requirements. ${instructions}`,
+-            },
+-            retryable: false,
+-          };
+-        case "rate_limited":
+-          return {
+-            title: "Service rate limit reached",
+-            description: `${service} is limiting requests${target}${context}.${reported}`,
+-            recovery: {
+-              action: "Wait for the service’s rate limit to reset before trying again.",
+-              instructions: `The service reported a rate limit. Wait for its documented retry time before another read attempt. Avoid immediate repeated calls. ${instructions}`,
+-            },
+-            retryable: true,
+-          };
+-        case "rejected":
+-          return {
+-            title: "Service rejected the request",
+-            description: `${service} refused the request${target}${context}.${reported === "" ? " We could not identify the cause from the available error details." : reported}`,
+-            recovery: {
+-              action: "Check the service’s access requirements and rate limits.",
+-              instructions: `A forbidden HTTP response alone does not prove invalid credentials, insufficient scopes, SSO restrictions, or a rate limit. ${instructions}`,
+-            },
+-            retryable: false,
+-          };
+-      }
+-    },
+-  ),
+-}))();
++          case "rate_limited":
++            return {
++              title: "Service rate limit reached",
++              description: `${service} is limiting requests${target}${context}.${reported}`,
++              recovery: {
++                action: "Wait for the service’s rate limit to reset before trying again.",
++                instructions: `The service reported a rate limit. Wait for its documented retry time before another read attempt. Avoid immediate repeated calls. ${instructions}`,
++              },
++              retryable: true,
++            };
++          case "rejected":
++            return {
++              title: "Service rejected the request",
++              description: `${service} refused the request${target}${context}.${reported === "" ? " We could not identify the cause from the available error details." : reported}`,
++              recovery: {
++                action: "Check the service’s access requirements and rate limits.",
++                instructions: `A forbidden HTTP response alone does not prove invalid credentials, insufficient scopes, SSO restrictions, or a rate limit. ${instructions}`,
++              },
++              retryable: false,
++            };
++        }
++      },
++    ),
++  }))();
+ /** Safe, decoded provider failure with product recovery guidance. */
+ export type AppProviderFailed = typeof AppProviderFailed.Type;
+ 
+@@ -1577,13 +1601,14 @@ const toolNotFound = ({ tool }: { readonly tool: ToolName }): RefusalCopy => {
+  * This evaluated app does not expose the named tool. With `mayHaveWritten`, the app's reply to a
+  * call that may write said so after the app's code received the call, as for every refusal below.
+  */
+-export const ToolNotFound = /* @__PURE__ */ (() => ApiError.define({
+-  tag: "ToolNotFound",
+-  status: 404,
+-  fields: { app: AppId, version: VersionId, tool: ToolName, mayHaveWritten: MayHaveWritten },
+-  message: refusalMessage(toolNotFound),
+-  recorded: () => "The app does not expose the requested tool",
+-}))();
++export const ToolNotFound = /* @__PURE__ */ (() =>
++  ApiError.define({
++    tag: "ToolNotFound",
++    status: 404,
++    fields: { app: AppId, version: VersionId, tool: ToolName, mayHaveWritten: MayHaveWritten },
++    message: refusalMessage(toolNotFound),
++    recorded: () => "The app does not expose the requested tool",
++  }))();
+ export type ToolNotFound = typeof ToolNotFound.Type;
+ 
+ /** Whether a tool reads or writes; callers name it so storage is opened in the right mode. */
+@@ -1611,21 +1636,27 @@ const toolKindMismatch = ({
+  * framework reports this after evaluating the app, so the copy does not claim that nothing ran,
+  * and a call that may have written is not told to call again.
+  */
+-export const ToolKindMismatch = /* @__PURE__ */ (() => ApiError.define({
+-  tag: "ToolKindMismatch",
+-  status: 409,
+-  fields: {
+-    app: AppId,
+-    version: VersionId,
+-    tool: ToolName,
+-    requested: ToolKind,
+-    actual: ToolKind,
+-    mayHaveWritten: MayHaveWritten,
+-  },
+-  message: refusalMessage(toolKindMismatch),
+-  recorded: ({ requested, actual }: { readonly requested: ToolKind; readonly actual: ToolKind }) =>
+-    `The tool is a ${actual}, but it was called as a ${requested}`,
+-}))();
++export const ToolKindMismatch = /* @__PURE__ */ (() =>
++  ApiError.define({
++    tag: "ToolKindMismatch",
++    status: 409,
++    fields: {
++      app: AppId,
++      version: VersionId,
++      tool: ToolName,
++      requested: ToolKind,
++      actual: ToolKind,
++      mayHaveWritten: MayHaveWritten,
++    },
++    message: refusalMessage(toolKindMismatch),
++    recorded: ({
++      requested,
++      actual,
++    }: {
++      readonly requested: ToolKind;
++      readonly actual: ToolKind;
++    }) => `The tool is a ${actual}, but it was called as a ${requested}`,
++  }))();
+ export type ToolKindMismatch = typeof ToolKindMismatch.Type;
+ 
+ /** How input problems read; supplied values are never included. */
+@@ -1647,19 +1678,20 @@ const inputInvalid = ({ problems }: { readonly problems: ReadonlyArray<string> }
+  * The tool input did not match its declared schema. The app states its problems, which name the
+  * caller's keys and paths and the schema's keys, values and patterns; only the caller reads them.
+  */
+-export const InputInvalid = /* @__PURE__ */ (() => ApiError.define({
+-  tag: "InputInvalid",
+-  status: 422,
+-  fields: {
+-    app: AppId,
+-    version: VersionId,
+-    tool: ToolName,
+-    problems: Schema.Array(Schema.String),
+-    mayHaveWritten: MayHaveWritten,
+-  },
+-  message: (fields) => refusalMessage(inputInvalid)(fields).slice(0, 4096),
+-  recorded: () => "The tool's input did not match its schema; the problems are not recorded",
+-}))();
++export const InputInvalid = /* @__PURE__ */ (() =>
++  ApiError.define({
++    tag: "InputInvalid",
++    status: 422,
++    fields: {
++      app: AppId,
++      version: VersionId,
++      tool: ToolName,
++      problems: Schema.Array(Schema.String),
++      mayHaveWritten: MayHaveWritten,
++    },
++    message: (fields) => refusalMessage(inputInvalid)(fields).slice(0, 4096),
++    recorded: () => "The tool's input did not match its schema; the problems are not recorded",
++  }))();
+ export type InputInvalid = typeof InputInvalid.Type;
+ 
+ /**
+@@ -1703,131 +1735,133 @@ const workersRpcLimit = "32 MiB";
+  * A tool call failed once it reached the app, or its result was lost; its external effects may
+  * already have occurred. Without `mayHaveWritten`, the call was a query, which only reads.
+  */
+-export const ToolCallFailed = /* @__PURE__ */ (() => UserFacingError.define({
+-  tag: "ToolCallFailed",
+-  status: 502,
+-  fields: {
+-    app: AppId,
+-    version: VersionId,
+-    tool: ToolName,
+-    /**
+-     * Only the app's own bounded error message, or its MCP server's bounded JSON-RPC error, with
+-     * account secrets replaced.
+-     */
+-    reason: Schema.String,
+-    /** The error the app's API declared and returned, with its own status and recovery. */
+-    response: Schema.optional(ApiErrorResponse),
+-    /** The app's own error, or the app data failure, that stopped the operation. */
+-    failure: Schema.optional(AppFailure),
+-    /** The app's MCP server refused or failed the tool call, such as with a JSON-RPC error. */
+-    mcp: Schema.optional(McpFailure),
+-    /**
+-     * The failure's text matched the runtime's message for its limit on one value crossing Workers
+-     * RPC between the app's Worker and Executor. The text reaches the host through the app's
+-     * Worker, which can produce it, so the match is a likely cause, never a confirmed one.
+-     */
+-    rpcLimitMatched: Schema.optional(Schema.Literal(true)),
+-    mayHaveWritten: MayHaveWritten,
+-  },
+-  recorded: ({ failure, mcp, response, rpcLimitMatched }) =>
+-    rpcLimitMatched === true
+-      ? "The tool's failure matched the Workers RPC size limit's message"
+-      : mcp !== undefined
+-        ? `The tool failed: ${recordedMcp(mcp)}`
+-        : failure !== undefined
+-          ? `The tool failed: ${recordedApp(failure)}`
+-          : response !== undefined
+-            ? "The tool failed after starting"
+-            : "The tool failed without further detail",
+-  presentation: callPresentation(({ reason, response, failure, mcp, rpcLimitMatched }) => {
+-    if (mcp !== undefined) return mcpFailurePresentation(mcp);
+-    // App code can produce the runtime's text, so the match names a likely cause and keeps a read's
+-    // bounded retry. Executor sets no size limit of its own on a result.
+-    if (rpcLimitMatched === true)
+-      return {
+-        title: "Tool result may have been too large to transfer",
+-        description: `${reason} The failure looks like the runtime’s ${workersRpcLimit} limit on one value carried between the app’s Worker and Executor, which the tool’s result or arguments may have exceeded. The error reached Executor through the app’s Worker, so this is not confirmed.`,
+-        recovery: {
+-          action:
+-            "If the result could be that large, ask the tool for less, such as one page, fewer fields or a filter. Otherwise try once more.",
+-          instructions: `The failure matched the runtime’s message for its ${workersRpcLimit} limit on one value crossing Workers RPC; Executor sets no result limit of its own. App code can produce the same message, so the match is not confirmed. If the result or the arguments could exceed ${workersRpcLimit}, request a smaller result, for example by paging or selecting fields if the tool supports that, or split large arguments into several calls. Otherwise, for a read, one further attempt may help; if it fails the same way, ask for less.`,
+-        },
+-        retryable: true,
+-      };
+-    // The API's own recovery, when it stated one, is shown as the API wrote it.
+-    if (response !== undefined)
+-      return {
+-        title: "The app’s API returned an error",
+-        description: response.message,
+-        ...(response.recovery === undefined
+-          ? {
+-              recovery: {
+-                action: "Read the API’s error to determine the next step.",
+-                instructions: `An API the app calls returned an error its OpenAPI document declares (${response.code}, HTTP ${response.status}). Read its message to decide whether the input, the account's access or the API is at fault.${temporaryStatus(response.status) ? ` HTTP ${response.status} can be temporary: for a read, one later attempt may help.` : ""}`,
+-              },
+-            }
+-          : { recovery: response.recovery, declared: true as const }),
+-        retryable: temporaryStatus(response.status),
+-      };
+-    if (failure === undefined)
+-      return {
+-        title: "Tool failed",
+-        description: `${reason.endsWith(".") ? reason : `${reason}.`} No further failure detail is available.`,
+-        recovery: {
+-          action:
+-            "Try once more. If it fails again, inspect the available diagnostics or report the failure.",
+-          instructions:
+-            "No further failure detail is available, and this error does not establish whether the tool completed. For a read, one further attempt may help. If it fails again, inspect the available diagnostics or report the failure.",
+-        },
+-        retryable: true,
+-      };
+-    switch (failure.source) {
+-      case "service":
++export const ToolCallFailed = /* @__PURE__ */ (() =>
++  UserFacingError.define({
++    tag: "ToolCallFailed",
++    status: 502,
++    fields: {
++      app: AppId,
++      version: VersionId,
++      tool: ToolName,
++      /**
++       * Only the app's own bounded error message, or its MCP server's bounded JSON-RPC error, with
++       * account secrets replaced.
++       */
++      reason: Schema.String,
++      /** The error the app's API declared and returned, with its own status and recovery. */
++      response: Schema.optional(ApiErrorResponse),
++      /** The app's own error, or the app data failure, that stopped the operation. */
++      failure: Schema.optional(AppFailure),
++      /** The app's MCP server refused or failed the tool call, such as with a JSON-RPC error. */
++      mcp: Schema.optional(McpFailure),
++      /**
++       * The failure's text matched the runtime's message for its limit on one value crossing Workers
++       * RPC between the app's Worker and Executor. The text reaches the host through the app's
++       * Worker, which can produce it, so the match is a likely cause, never a confirmed one.
++       */
++      rpcLimitMatched: Schema.optional(Schema.Literal(true)),
++      mayHaveWritten: MayHaveWritten,
++    },
++    recorded: ({ failure, mcp, response, rpcLimitMatched }) =>
++      rpcLimitMatched === true
++        ? "The tool's failure matched the Workers RPC size limit's message"
++        : mcp !== undefined
++          ? `The tool failed: ${recordedMcp(mcp)}`
++          : failure !== undefined
++            ? `The tool failed: ${recordedApp(failure)}`
++            : response !== undefined
++              ? "The tool failed after starting"
++              : "The tool failed without further detail",
++    presentation: callPresentation(({ reason, response, failure, mcp, rpcLimitMatched }) => {
++      if (mcp !== undefined) return mcpFailurePresentation(mcp);
++      // App code can produce the runtime's text, so the match names a likely cause and keeps a read's
++      // bounded retry. Executor sets no size limit of its own on a result.
++      if (rpcLimitMatched === true)
+         return {
+-          title: "The app’s service integration failed",
+-          description: reason,
++          title: "Tool result may have been too large to transfer",
++          description: `${reason} The failure looks like the runtime’s ${workersRpcLimit} limit on one value carried between the app’s Worker and Executor, which the tool’s result or arguments may have exceeded. The error reached Executor through the app’s Worker, so this is not confirmed.`,
+           recovery: {
+-            action: "Read the reported error and check the corresponding request or configuration.",
+-            instructions: `The app’s service integration failed (${failureName(failure)}). The reported details do not establish whether the cause is the request, the service or this instance.${failure.errorName !== "OpenapiError" ? "" : failure.code === "invalid_definition" ? " The API's OpenAPI document describes this operation in a way that cannot be used. Check the operation's definition in that document." : " The message names the API operation when it is known and, when a response arrived, its status, media type and length; the response body is not shown. Check the operation's parameters, the API's status, and whether its OpenAPI document declares this error."}${failure.errorName === "GraphqlError" ? graphqlServiceDetail : ""}`,
++            action:
++              "If the result could be that large, ask the tool for less, such as one page, fewer fields or a filter. Otherwise try once more.",
++            instructions: `The failure matched the runtime’s message for its ${workersRpcLimit} limit on one value crossing Workers RPC; Executor sets no result limit of its own. App code can produce the same message, so the match is not confirmed. If the result or the arguments could exceed ${workersRpcLimit}, request a smaller result, for example by paging or selecting fields if the tool supports that, or split large arguments into several calls. Otherwise, for a read, one further attempt may help; if it fails the same way, ask for less.`,
+           },
+-          retryable: false,
++          retryable: true,
+         };
+-      case "storage":
+-        return temporaryStorage(failure)
+-          ? {
+-              title: "App storage did not complete the operation",
+-              description: reason,
+-              recovery: {
+-                action:
+-                  "Retry once after a short wait. If it fails again, report that the app’s storage is failing.",
+-                instructions: `The app's storage did not complete this operation (${failureName(failure)}), such as on a timeout, a temporary failure or a cache that was unavailable for it. For a read, a bounded retry may help. If the same failure repeats, the host may not provide the storage the app uses.`,
+-              },
+-              retryable: true,
+-            }
+-          : {
+-              title: "App storage rejected the operation",
+-              description: reason,
+-              recovery: {
+-                action: "Change the operation to stay within the storage rule or limit it names.",
+-                instructions: `The app's storage refused this operation (${failureName(failure)}): it breaks a schema or limit rule, so the same operation is expected to fail again. Correct the operation, such as the app's query, mutation or cache use, before another attempt.`,
+-              },
+-              retryable: false,
+-            };
+-      case "app":
++      // The API's own recovery, when it stated one, is shown as the API wrote it.
++      if (response !== undefined)
+         return {
+-          title: "The app’s tool failed",
+-          description: reason,
++          title: "The app’s API returned an error",
++          description: response.message,
++          ...(response.recovery === undefined
++            ? {
++                recovery: {
++                  action: "Read the API’s error to determine the next step.",
++                  instructions: `An API the app calls returned an error its OpenAPI document declares (${response.code}, HTTP ${response.status}). Read its message to decide whether the input, the account's access or the API is at fault.${temporaryStatus(response.status) ? ` HTTP ${response.status} can be temporary: for a read, one later attempt may help.` : ""}`,
++                },
++              }
++            : { recovery: response.recovery, declared: true as const }),
++          retryable: temporaryStatus(response.status),
++        };
++      if (failure === undefined)
++        return {
++          title: "Tool failed",
++          description: `${reason.endsWith(".") ? reason : `${reason}.`} No further failure detail is available.`,
+           recovery: {
+             action:
+-              "Read the error to determine whether input, app code, configuration or this instance needs attention.",
++              "Try once more. If it fails again, inspect the available diagnostics or report the failure.",
+             instructions:
+-              "This error arose while running the app’s tool. Corrected input is a new call. For a read with an uncertain temporary cause, one further attempt may help.",
++              "No further failure detail is available, and this error does not establish whether the tool completed. For a read, one further attempt may help. If it fails again, inspect the available diagnostics or report the failure.",
+           },
+           retryable: true,
+         };
+-    }
+-  }),
+-}))();
++      switch (failure.source) {
++        case "service":
++          return {
++            title: "The app’s service integration failed",
++            description: reason,
++            recovery: {
++              action:
++                "Read the reported error and check the corresponding request or configuration.",
++              instructions: `The app’s service integration failed (${failureName(failure)}). The reported details do not establish whether the cause is the request, the service or this instance.${failure.errorName !== "OpenapiError" ? "" : failure.code === "invalid_definition" ? " The API's OpenAPI document describes this operation in a way that cannot be used. Check the operation's definition in that document." : " The message names the API operation when it is known and, when a response arrived, its status, media type and length; the response body is not shown. Check the operation's parameters, the API's status, and whether its OpenAPI document declares this error."}${failure.errorName === "GraphqlError" ? graphqlServiceDetail : ""}`,
++            },
++            retryable: false,
++          };
++        case "storage":
++          return temporaryStorage(failure)
++            ? {
++                title: "App storage did not complete the operation",
++                description: reason,
++                recovery: {
++                  action:
++                    "Retry once after a short wait. If it fails again, report that the app’s storage is failing.",
++                  instructions: `The app's storage did not complete this operation (${failureName(failure)}), such as on a timeout, a temporary failure or a cache that was unavailable for it. For a read, a bounded retry may help. If the same failure repeats, the host may not provide the storage the app uses.`,
++                },
++                retryable: true,
++              }
++            : {
++                title: "App storage rejected the operation",
++                description: reason,
++                recovery: {
++                  action: "Change the operation to stay within the storage rule or limit it names.",
++                  instructions: `The app's storage refused this operation (${failureName(failure)}): it breaks a schema or limit rule, so the same operation is expected to fail again. Correct the operation, such as the app's query, mutation or cache use, before another attempt.`,
++                },
++                retryable: false,
++              };
++        case "app":
++          return {
++            title: "The app’s tool failed",
++            description: reason,
++            recovery: {
++              action:
++                "Read the error to determine whether input, app code, configuration or this instance needs attention.",
++              instructions:
++                "This error arose while running the app’s tool. Corrected input is a new call. For a read with an uncertain temporary cause, one further attempt may help.",
++            },
++            retryable: true,
++          };
++      }
++    }),
++  }))();
+ export type ToolCallFailed = typeof ToolCallFailed.Type;
+ 
+ /**
+@@ -1850,21 +1884,22 @@ export const operationMcpFailure = (
+  * The tool's approval policy denied the call. The decision and the report of it come from the
+  * app's code, so the copy says whose decision it was without claiming what the app did.
+  */
+-export const ToolBlocked = /* @__PURE__ */ (() => UserFacingError.define({
+-  tag: "ToolBlocked",
+-  status: 403,
+-  fields: { app: AppId, version: VersionId, tool: ToolName, mayHaveWritten: MayHaveWritten },
+-  presentation: callPresentation(({ tool }) => ({
+-    title: "Blocked by the app’s approval policy",
+-    description: `The approval policy in the app’s code denied this call to “${tool}”.`,
+-    recovery: {
+-      action:
+-        "Check what the app’s approval policy requires for this tool. If the call should be allowed, meet those requirements or, with the user’s agreement, change the policy and deploy it. Otherwise use a different tool.",
+-      instructions: `The approval policy that “${tool}” declares in the app’s code returned \`denied\` for this call. Do not retry the call unchanged. Tell the user which tool was blocked. Read the policy to see what it checks: its input, the app’s configuration, or the user’s access. If the call should be allowed and a requirement is unmet, meet it (for example, ask the user to enable the setting or grant the access) and call the tool again. Change the app’s source only when the policy itself is wrong and the user agrees: find the tool’s \`approval\` option, or the \`withApprovals\` policy over its router, return \`user-approval\` to ask the user or \`approved\` to run it, then deploy. Otherwise reach the goal with a different tool.`,
+-    },
+-  })),
+-  recorded: () => "The tool's approval policy blocked this call.",
+-}))();
++export const ToolBlocked = /* @__PURE__ */ (() =>
++  UserFacingError.define({
++    tag: "ToolBlocked",
++    status: 403,
++    fields: { app: AppId, version: VersionId, tool: ToolName, mayHaveWritten: MayHaveWritten },
++    presentation: callPresentation(({ tool }) => ({
++      title: "Blocked by the app’s approval policy",
++      description: `The approval policy in the app’s code denied this call to “${tool}”.`,
++      recovery: {
++        action:
++          "Check what the app’s approval policy requires for this tool. If the call should be allowed, meet those requirements or, with the user’s agreement, change the policy and deploy it. Otherwise use a different tool.",
++        instructions: `The approval policy that “${tool}” declares in the app’s code returned \`denied\` for this call. Do not retry the call unchanged. Tell the user which tool was blocked. Read the policy to see what it checks: its input, the app’s configuration, or the user’s access. If the call should be allowed and a requirement is unmet, meet it (for example, ask the user to enable the setting or grant the access) and call the tool again. Change the app’s source only when the policy itself is wrong and the user agrees: find the tool’s \`approval\` option, or the \`withApprovals\` policy over its router, return \`user-approval\` to ask the user or \`approved\` to run it, then deploy. Otherwise reach the goal with a different tool.`,
++      },
++    })),
++    recorded: () => "The tool's approval policy blocked this call.",
++  }))();
+ export type ToolBlocked = typeof ToolBlocked.Type;
+ 
+ const toolApprovalRequired = ({ tool }: { readonly tool: ToolName }): RefusalCopy => ({
+@@ -1877,13 +1912,14 @@ const toolApprovalRequired = ({ tool }: { readonly tool: ToolName }): RefusalCop
+  * (`approvalRequired`). The app's code asked for the approval, so for a call that may write the
+  * copy does not claim that the tool has not run.
+  */
+-export const ToolApprovalRequired = /* @__PURE__ */ (() => ApiError.define({
+-  tag: "ToolApprovalRequired",
+-  status: 409,
+-  fields: { app: AppId, version: VersionId, tool: ToolName, mayHaveWritten: MayHaveWritten },
+-  message: refusalMessage(toolApprovalRequired),
+-  recorded: () => "The tool needs approval, and this request cannot present an approval prompt.",
+-}))();
++export const ToolApprovalRequired = /* @__PURE__ */ (() =>
++  ApiError.define({
++    tag: "ToolApprovalRequired",
++    status: 409,
++    fields: { app: AppId, version: VersionId, tool: ToolName, mayHaveWritten: MayHaveWritten },
++    message: refusalMessage(toolApprovalRequired),
++    recorded: () => "The tool needs approval, and this request cannot present an approval prompt.",
++  }))();
+ export type ToolApprovalRequired = typeof ToolApprovalRequired.Type;
+ 
+ const toolPolicyFailed = ({ tool }: { readonly tool: ToolName }): RefusalCopy => {
+@@ -1894,13 +1930,14 @@ const toolPolicyFailed = ({ tool }: { readonly tool: ToolName }): RefusalCopy =>
+  * The tool's approval policy could not decide. The policy is the app's code, so the copy does not
+  * claim what ran; author failure details remain private.
+  */
+-export const ToolPolicyFailed = /* @__PURE__ */ (() => ApiError.define({
+-  tag: "ToolPolicyFailed",
+-  status: 500,
+-  fields: { app: AppId, version: VersionId, tool: ToolName, mayHaveWritten: MayHaveWritten },
+-  message: refusalMessage(toolPolicyFailed),
+-  recorded: () => "The tool's approval policy failed before deciding.",
+-}))();
++export const ToolPolicyFailed = /* @__PURE__ */ (() =>
++  ApiError.define({
++    tag: "ToolPolicyFailed",
++    status: 500,
++    fields: { app: AppId, version: VersionId, tool: ToolName, mayHaveWritten: MayHaveWritten },
++    message: refusalMessage(toolPolicyFailed),
++    recorded: () => "The tool's approval policy failed before deciding.",
++  }))();
+ export type ToolPolicyFailed = typeof ToolPolicyFailed.Type;
+ 
+ /**
+@@ -1908,20 +1945,21 @@ export type ToolPolicyFailed = typeof ToolPolicyFailed.Type;
+  * including a failure of Executor's own storage after it. Each records `mayHaveWritten` for a call
+  * that may have written, and presents it through `callPresentation`.
+  */
+-export const CallFailure = /* @__PURE__ */ (() => Schema.Union([
+-  ToolCallFailed,
+-  AppProviderFailed,
+-  AppEvaluationFailed,
+-  ToolElicitationFailed,
+-  ToolNotFound,
+-  ToolKindMismatch,
+-  InputInvalid,
+-  ToolBlocked,
+-  ToolApprovalRequired,
+-  ToolPolicyFailed,
+-  StorageError,
+-  CredentialsError,
+-]))();
++export const CallFailure = /* @__PURE__ */ (() =>
++  Schema.Union([
++    ToolCallFailed,
++    AppProviderFailed,
++    AppEvaluationFailed,
++    ToolElicitationFailed,
++    ToolNotFound,
++    ToolKindMismatch,
++    InputInvalid,
++    ToolBlocked,
++    ToolApprovalRequired,
++    ToolPolicyFailed,
++    StorageError,
++    CredentialsError,
++  ]))();
+ export type CallFailure = typeof CallFailure.Type;
+ 
+ /** A product error's own presentation. */
+@@ -1966,58 +2004,63 @@ export const mayHaveWrittenFailure = (error: unknown): ErrorPresentation | undef
+     : undefined;
+ 
+ /** A saved account identity; credentials are always resolved again on resume. */
+-export const InvocationAccount = /* @__PURE__ */ (() => Schema.Struct({
+-  id: AccountId,
+-  owner: OwnerId,
+-  provider: ProviderId,
+-  method: Schema.String,
+-}))();
++export const InvocationAccount = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    id: AccountId,
++    owner: OwnerId,
++    provider: ProviderId,
++    method: Schema.String,
++  }))();
+ /** One scope's account identities by requirement. */
+-const InvocationSlots = /* @__PURE__ */ (() => Schema.Record(
+-  Schema.String,
+-  Schema.Union([InvocationAccount, Schema.Array(InvocationAccount)]),
+-))();
++const InvocationSlots = /* @__PURE__ */ (() =>
++  Schema.Record(
++    Schema.String,
++    Schema.Union([InvocationAccount, Schema.Array(InvocationAccount)]),
++  ))();
+ /** Reviewed call with decoded arguments, exact code version and account identities. */
+-export const ToolInvocationFields = /* @__PURE__ */ (() => Schema.Struct({
+-  audience: Schema.optionalKey(Schema.Literal("app")),
+-  app: AppId,
+-  owner: OwnerId,
+-  version: VersionId,
+-  tool: ToolName,
+-  /**
+-   * The caller's kind. Without one (a call that named none, or saved before calls named one),
+-   * resumption dispatches with the catalog's kind and treats the call as one that may write.
+-   */
+-  kind: Schema.optionalKey(ToolKind),
+-  input: Json,
+-  /**
+-   * The accounts by scope. `user` is absent for a call without a caller, which ran with the app's
+-   * accounts only.
+-   */
+-  accounts: Schema.Struct({
+-    app: InvocationSlots,
+-    user: Schema.optionalKey(InvocationSlots),
+-  }),
+-}))();
++export const ToolInvocationFields = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    audience: Schema.optionalKey(Schema.Literal("app")),
++    app: AppId,
++    owner: OwnerId,
++    version: VersionId,
++    tool: ToolName,
++    /**
++     * The caller's kind. Without one (a call that named none, or saved before calls named one),
++     * resumption dispatches with the catalog's kind and treats the call as one that may write.
++     */
++    kind: Schema.optionalKey(ToolKind),
++    input: Json,
++    /**
++     * The accounts by scope. `user` is absent for a call without a caller, which ran with the app's
++     * accounts only.
++     */
++    accounts: Schema.Struct({
++      app: InvocationSlots,
++      user: Schema.optionalKey(InvocationSlots),
++    }),
++  }))();
+ export const ToolInvocation = ToolInvocationFields.pipe(withLegacyKeys({ version: "deployment" }));
+ export type ToolInvocation = typeof ToolInvocation.Type;
+ /** Completed transport; toolError marks a framework-recognized semantic error. Value is unchanged. */
+-export const ToolCompleted = /* @__PURE__ */ (() => Schema.Struct({
+-  status: Schema.Literal("completed"),
+-  value: Json,
+-  toolError: Schema.optionalKey(Schema.Literal(true)),
+-}))();
++export const ToolCompleted = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    status: Schema.Literal("completed"),
++    value: Json,
++    toolError: Schema.optionalKey(Schema.Literal(true)),
++  }))();
+ /**
+  * Pending call plus the MCP confirmation form the SDK builds from it, which shortens long arguments.
+  * The SDK does not collect the response.
+  */
+-export const ToolPending = /* @__PURE__ */ (() => Schema.Struct({
+-  status: Schema.Literal("approval-required"),
+-  requestId: ApprovalRequestId,
+-  invocation: ToolInvocation,
+-  elicitation: ApprovalElicitation,
+-  expiresAt: Schema.Number,
+-}))();
++export const ToolPending = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    status: Schema.Literal("approval-required"),
++    requestId: ApprovalRequestId,
++    invocation: ToolInvocation,
++    elicitation: ApprovalElicitation,
++    expiresAt: Schema.Number,
++  }))();
+ /** Public outcome of an initial call. */
+ export const ToolCallResult = /* @__PURE__ */ (() => Schema.Union([ToolCompleted, ToolPending]))();
+ export type ToolCallResult = typeof ToolCallResult.Type;
+@@ -2068,35 +2111,36 @@ const toolCallErrors = [
+ export const ToolResumeFailure = /* @__PURE__ */ (() => Schema.Union(toolCallErrors))();
+ export type ToolResumeFailure = typeof ToolResumeFailure.Type;
+ /** Only the consuming caller receives an execution result. Duplicates do not replay it. */
+-export const ToolResumeResult = /* @__PURE__ */ (() => Schema.Union([
+-  ToolCompleted,
+-  Schema.Struct({ status: Schema.Literal("denied"), requestId: ApprovalRequestId }),
+-  Schema.Struct({ status: Schema.Literal("cancelled"), requestId: ApprovalRequestId }),
+-  /**
+-   * Executor did not resume the saved call: the request expired, or Executor read the app,
+-   * version or accounts and they differ from the reviewed call.
+-   */
+-  Schema.Struct({
+-    status: Schema.Literal("failed"),
+-    requestId: ApprovalRequestId,
+-    reason: Schema.Literals(["expired", "context-changed"]),
+-  }),
+-  /** Resuming the approved call failed with the error a live call reports. */
+-  Schema.Struct({
+-    status: Schema.Literal("failed"),
+-    requestId: ApprovalRequestId,
+-    reason: Schema.Literal("execution-failed"),
+-    error: ToolResumeFailure,
++export const ToolResumeResult = /* @__PURE__ */ (() =>
++  Schema.Union([
++    ToolCompleted,
++    Schema.Struct({ status: Schema.Literal("denied"), requestId: ApprovalRequestId }),
++    Schema.Struct({ status: Schema.Literal("cancelled"), requestId: ApprovalRequestId }),
+     /**
+-     * `unconfirmed`: Executor's own storage failed, with `error`, while it read the current app,
+-     * version or accounts to compare with the reviewed call, so it did not resume the
+-     * call. Nothing shows that they changed. It is a field, not a reason: clients that predate it,
+-     * such as dashboards still open during a deploy, reject an unknown reason but ignore a field.
++     * Executor did not resume the saved call: the request expired, or Executor read the app,
++     * version or accounts and they differ from the reviewed call.
+      */
+-    context: Schema.optionalKey(Schema.Literal("unconfirmed")),
+-  }),
+-  Schema.Struct({ status: Schema.Literal("already-consumed"), requestId: ApprovalRequestId }),
+-]))();
++    Schema.Struct({
++      status: Schema.Literal("failed"),
++      requestId: ApprovalRequestId,
++      reason: Schema.Literals(["expired", "context-changed"]),
++    }),
++    /** Resuming the approved call failed with the error a live call reports. */
++    Schema.Struct({
++      status: Schema.Literal("failed"),
++      requestId: ApprovalRequestId,
++      reason: Schema.Literal("execution-failed"),
++      error: ToolResumeFailure,
++      /**
++       * `unconfirmed`: Executor's own storage failed, with `error`, while it read the current app,
++       * version or accounts to compare with the reviewed call, so it did not resume the
++       * call. Nothing shows that they changed. It is a field, not a reason: clients that predate it,
++       * such as dashboards still open during a deploy, reject an unknown reason but ignore a field.
++       */
++      context: Schema.optionalKey(Schema.Literal("unconfirmed")),
++    }),
++    Schema.Struct({ status: Schema.Literal("already-consumed"), requestId: ApprovalRequestId }),
++  ]))();
+ export type ToolResumeResult = typeof ToolResumeResult.Type;
+ /**
+  * A resume result as a client receives it. Servers always send a `ToolResumeResult`, but servers
+@@ -2120,11 +2164,12 @@ export type ToolResumeResultReceived = typeof ToolResumeResultReceived.Type;
+  * A pending request a host reads to show the person the call it would resume. The arguments are the
+  * saved invocation's. The issuer is the host's own record; the host refuses requests it did not issue.
+  */
+-export const ToolApproval = /* @__PURE__ */ (() => Schema.Struct({
+-  invocation: ToolInvocation,
+-  expiresAt: Schema.Number,
+-  issuer: Schema.optional(ToolApprovalIssuer),
+-}))();
++export const ToolApproval = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    invocation: ToolInvocation,
++    expiresAt: Schema.Number,
++    issuer: Schema.optional(ToolApprovalIssuer),
++  }))();
+ export type ToolApproval = typeof ToolApproval.Type;
+ /** Unknown request, a request outside an optional owner filter, or one issued to another flow. */
+ export class ToolApprovalNotFound extends Schema.TaggedError<ToolApprovalNotFound>()(
 diff --git a/packages/sdk/src/contracts/worker-build.ts b/packages/sdk/src/contracts/worker-build.ts
 index 8a03ec9..3b33bdf 100644
 --- a/packages/sdk/src/contracts/worker-build.ts
@@ -1106,7 +2487,7 @@ index 8a03ec9..3b33bdf 100644
    }))();
  export type LoadedWorkerBuild = typeof LoadedWorkerBuild.Type;
 diff --git a/packages/sdk/src/contracts/workerd-host.ts b/packages/sdk/src/contracts/workerd-host.ts
-index 49df064..790cdfd 100644
+index 49df064..8d87317 100644
 --- a/packages/sdk/src/contracts/workerd-host.ts
 +++ b/packages/sdk/src/contracts/workerd-host.ts
 @@ -22,6 +22,7 @@ import {
@@ -1117,14 +2498,152 @@ index 49df064..790cdfd 100644
  } from "./runtime.ts";
  import type { RpcTarget } from "capnweb";
  
-@@ -89,6 +90,7 @@ export const CompileWorkerResult = /* @__PURE__ */ (() => Schema.Union([
-     error: Schema.Union([
-       RuntimeBuildFailed,
-       RuntimeProtocolUnsupported,
-+      FrameworkProvenanceRefused,
-       RuntimeAppsDependencyMissing,
-     ]),
-   }),
+@@ -29,26 +30,27 @@ import type { RpcTarget } from "capnweb";
+  * The serving product authorizes and binds these values before invoking app code. Code is not
+  * part of an invocation: the runner asks the invocation's callbacks for it on a cold start.
+  */
+-export const WorkerInvocation = /* @__PURE__ */ (() => Schema.Struct({
+-  app: Schema.NonEmptyString,
+-  build: Schema.NonEmptyString,
+-  /** The host API revision the app's cache belongs to, for an app that reads it; see `HostApiCheck`. */
+-  hostApi: Schema.optionalKey(HostApiCheck),
+-  database: Schema.Boolean,
+-  command: HostRequest,
+-  accounts: HostAccounts,
+-  caller: Schema.optionalKey(Schema.NonEmptyString),
+-  approval: Schema.optionalKey(TrustedToolApproval),
+-  replay: Schema.optionalKey(WorkflowReplay),
+-  deadline: Schema.optionalKey(InvocationDeadline),
+-  /** The scheduled run the invocation serves, for telemetry; see `InvocationRun`. */
+-  run: Schema.optionalKey(Schema.String),
+-  headers: Schema.Record(Schema.String, Schema.String),
+-  /** Whether the invocation may ask for input or manage workflows through its callbacks. */
+-  elicitation: Schema.Boolean,
+-  workflowControls: Schema.Boolean,
+-  models: Schema.optionalKey(Schema.Boolean),
+-}))();
++export const WorkerInvocation = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    app: Schema.NonEmptyString,
++    build: Schema.NonEmptyString,
++    /** The host API revision the app's cache belongs to, for an app that reads it; see `HostApiCheck`. */
++    hostApi: Schema.optionalKey(HostApiCheck),
++    database: Schema.Boolean,
++    command: HostRequest,
++    accounts: HostAccounts,
++    caller: Schema.optionalKey(Schema.NonEmptyString),
++    approval: Schema.optionalKey(TrustedToolApproval),
++    replay: Schema.optionalKey(WorkflowReplay),
++    deadline: Schema.optionalKey(InvocationDeadline),
++    /** The scheduled run the invocation serves, for telemetry; see `InvocationRun`. */
++    run: Schema.optionalKey(Schema.String),
++    headers: Schema.Record(Schema.String, Schema.String),
++    /** Whether the invocation may ask for input or manage workflows through its callbacks. */
++    elicitation: Schema.Boolean,
++    workflowControls: Schema.Boolean,
++    models: Schema.optionalKey(Schema.Boolean),
++  }))();
+ export type WorkerInvocation = typeof WorkerInvocation.Type;
+ /** Only these capabilities cross from a live app invocation back to the product. */
+ export interface AppHostCallbacks extends RpcTarget {
+@@ -59,40 +61,44 @@ export interface AppHostCallbacks extends RpcTarget {
+   load(): Promise<string>;
+ }
+ /** Sources declare the `apps` release they use in `dependencies.apps`; the host has none. */
+-export const CompileWorkerApp = /* @__PURE__ */ (() => Schema.Struct({
+-  files: CodeFiles,
+-  /** Public file paths relative to `ui/public/`, served beside the build and never compiled. */
+-  public: Schema.optional(Schema.Array(Schema.String)),
+-}))();
++export const CompileWorkerApp = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    files: CodeFiles,
++    /** Public file paths relative to `ui/public/`, served beside the build and never compiled. */
++    public: Schema.optional(Schema.Array(Schema.String)),
++  }))();
+ /** Compiler output is validated before it is retained by the host, which stores the framework once. */
+-export const CompiledWorkerApp = /* @__PURE__ */ (() => Schema.Struct({
+-  bundle: WorkerBundle,
+-  framework: WorkerFramework,
+-  protocol: RetainedWorkerBuild.fields.protocol,
+-  requirements: Schema.Json,
+-  ui: Schema.optionalKey(
+-    Schema.Array(
+-      Schema.Struct({
+-        path: Schema.String,
+-        contentType: Schema.String,
+-        body: Schema.Uint8ArrayFromBase64,
+-      }),
++export const CompiledWorkerApp = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    bundle: WorkerBundle,
++    framework: WorkerFramework,
++    protocol: RetainedWorkerBuild.fields.protocol,
++    requirements: Schema.Json,
++    ui: Schema.optionalKey(
++      Schema.Array(
++        Schema.Struct({
++          path: Schema.String,
++          contentType: Schema.String,
++          body: Schema.Uint8ArrayFromBase64,
++        }),
++      ),
+     ),
+-  ),
+-}))();
++  }))();
+ export type CompiledWorkerApp = typeof CompiledWorkerApp.Type;
+ /** Expected build failures cross the RPC boundary typed, so the deploy can explain them. */
+-export const CompileWorkerResult = /* @__PURE__ */ (() => Schema.Union([
+-  Schema.Struct({ ok: Schema.Literal(true), value: CompiledWorkerApp }),
+-  Schema.Struct({
+-    ok: Schema.Literal(false),
+-    error: Schema.Union([
+-      RuntimeBuildFailed,
+-      RuntimeProtocolUnsupported,
+-      RuntimeAppsDependencyMissing,
+-    ]),
+-  }),
+-]))();
++export const CompileWorkerResult = /* @__PURE__ */ (() =>
++  Schema.Union([
++    Schema.Struct({ ok: Schema.Literal(true), value: CompiledWorkerApp }),
++    Schema.Struct({
++      ok: Schema.Literal(false),
++      error: Schema.Union([
++        RuntimeBuildFailed,
++        RuntimeProtocolUnsupported,
++        FrameworkProvenanceRefused,
++        RuntimeAppsDependencyMissing,
++      ]),
++    }),
++  ]))();
+ /** RPC surface hosted by a trusted Worker; authored modules receive no host bindings. */
+ export interface WorkerdAppApi {
+   cancel(): Promise<void>;
+@@ -161,12 +167,13 @@ export const WorkflowHostCommand = /* @__PURE__ */ (() =>
+   ]))();
+ export type WorkflowHostCommand = typeof WorkflowHostCommand.Type;
+ /** A completed run can return immediately even if the engine lost its final checkpoint. */
+-export const PreparedWorkflow = /* @__PURE__ */ (() => Schema.Union([
+-  Schema.Struct({ state: Schema.Literal("complete"), output: WorkflowValue }),
+-  Schema.Struct({
+-    state: Schema.Literal("execute"),
+-    seed: WorkflowSeed,
+-    accounts: HostAccounts,
+-    caller: Schema.optionalKey(Schema.NonEmptyString),
+-  }),
+-]))();
++export const PreparedWorkflow = /* @__PURE__ */ (() =>
++  Schema.Union([
++    Schema.Struct({ state: Schema.Literal("complete"), output: WorkflowValue }),
++    Schema.Struct({
++      state: Schema.Literal("execute"),
++      seed: WorkflowSeed,
++      accounts: HostAccounts,
++      caller: Schema.optionalKey(Schema.NonEmptyString),
++    }),
++  ]))();
 diff --git a/packages/sdk/src/implementation/app-protocol-accounts.ts b/packages/sdk/src/implementation/app-protocol-accounts.ts
 new file mode 100644
 index 0000000..97e5df1
@@ -1187,7 +2706,7 @@ index 0000000..97e5df1
 +  return prepared.pipe(Effect.map(protocol.accounts));
 +};
 diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
-index 7292b20..b6c1cd9 100644
+index 7292b20..62f10e9 100644
 --- a/packages/sdk/src/implementation/app-protocols.ts
 +++ b/packages/sdk/src/implementation/app-protocols.ts
 @@ -13,14 +13,13 @@ import {
@@ -1332,24 +2851,29 @@ index 7292b20..b6c1cd9 100644
    ].map((protocol) => [
      protocol.version,
      protocol.version >= 36
-@@ -627,6 +613,12 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
+@@ -627,6 +613,17 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
  /** Protocols this host builds and runs. */
  export const supportedProtocols: readonly number[] = [...protocols.keys()];
  
-+export const credentialHostProtocolAdaptations = [{
-+  message: "accounts",
-+  protocols: supportedProtocols.filter((version) => version >= 6 && version < credentialHostsProtocol),
-+  adapter: "retainedCredentialHosts runs after credential sealing in every retained Basalt invocation and Workflow account context",
-+}];
++export const credentialHostProtocolAdaptations = [
++  {
++    message: "accounts",
++    protocols: supportedProtocols.filter(
++      (version) => version >= 6 && version < credentialHostsProtocol,
++    ),
++    adapter:
++      "retainedCredentialHosts runs after credential sealing in every retained Basalt invocation and Workflow account context",
++  },
++];
 +
  export const mcpEndpointProtocolAdaptations = [
    {
      message: "accounts",
 diff --git a/packages/sdk/src/implementation/app-runner.ts b/packages/sdk/src/implementation/app-runner.ts
-index 6117ea6..dfede84 100644
+index 6117ea6..9e4722b 100644
 --- a/packages/sdk/src/implementation/app-runner.ts
 +++ b/packages/sdk/src/implementation/app-runner.ts
-@@ -48,16 +48,19 @@ import { invocationTelemetry, invocationStatus } from "./app-telemetry.ts";
+@@ -48,16 +48,24 @@ import { invocationTelemetry, invocationStatus } from "./app-telemetry.ts";
  import {
    describeBuildCause,
    RuntimeProtocolFailed,
@@ -1360,7 +2884,12 @@ index 6117ea6..dfede84 100644
  import type { LoadedWorkerBuild, WorkerBundle } from "../contracts/worker-build.ts";
  import type { StartedPart } from "../contracts/runtime.ts";
 +import type { FrameworkProvenance } from "../contracts/framework-provenance.ts";
-+import { FrameworkProvenanceRegistry, admitLoadedFramework, selectFrameworkProtocol, sameFrameworkProvenance } from "./framework-provenance.ts";
++import {
++  FrameworkProvenanceRegistry,
++  admitLoadedFramework,
++  selectFrameworkProtocol,
++  sameFrameworkProvenance,
++} from "./framework-provenance.ts";
  import { appCacheNamespace, type HostApiCheck } from "../contracts/host-api.ts";
  import { appProtocol, type AppProtocol } from "./app-protocols.ts";
  import { appFacetBridge, appNetworkModuleName, appRpcBridge } from "./worker-bridge.ts";
@@ -1370,7 +2899,7 @@ index 6117ea6..dfede84 100644
  import { AppRpcEntrypoint, AppRpcInvocation } from "./worker-elicitation.ts";
  import { invocationWorkflow } from "./worker-workflow-rpc.ts";
  import { type AppWorkerResidency, namedWorker } from "./app-worker-residency.ts";
-@@ -260,13 +263,18 @@ const failed = (reason: RuntimeFailure, cause?: unknown, explain = false) =>
+@@ -260,13 +268,19 @@ const failed = (reason: RuntimeFailure, cause?: unknown, explain = false) =>
      ),
    );
  export const failedFrom = (explain: boolean) => (cause: unknown) =>
@@ -1380,19 +2909,22 @@ index 6117ea6..dfede84 100644
 +    return yield* failed(classify(cause), cause, explain);
 +  });
  /** Reading a build is the host's own work; its failure is Executor's text and recorded as it is. */
--const failedBuild = (cause: unknown) =>
+ const failedBuild = (cause: unknown) =>
 -  Effect.annotateCurrentSpan({
-+const failedBuild = (cause: unknown) => Effect.gen(function* () {
-+  if (Schema.is(FrameworkProvenanceRefused)(cause)) return yield* cause;
-+  return yield* Effect.annotateCurrentSpan({
-     "executor.runtime.failure": "build",
-     "executor.runtime.cause": describeBuildCause(cause),
-   }).pipe(Effect.andThen(Effect.fail(new RuntimeProtocolFailed({ reason: "build" }))));
-+});
+-    "executor.runtime.failure": "build",
+-    "executor.runtime.cause": describeBuildCause(cause),
+-  }).pipe(Effect.andThen(Effect.fail(new RuntimeProtocolFailed({ reason: "build" }))));
++  Effect.gen(function* () {
++    if (Schema.is(FrameworkProvenanceRefused)(cause)) return yield* cause;
++    return yield* Effect.annotateCurrentSpan({
++      "executor.runtime.failure": "build",
++      "executor.runtime.cause": describeBuildCause(cause),
++    }).pipe(Effect.andThen(Effect.fail(new RuntimeProtocolFailed({ reason: "build" }))));
++  });
  /**
   * A data supervisor failure. Its own typed failures are Executor's text and recorded as they are;
   * anything else is classified like an app Worker's failure.
-@@ -290,7 +298,7 @@ const attempt = <A>(work: () => Promise<A>, explain = false) =>
+@@ -290,7 +304,7 @@ const attempt = <A>(work: () => Promise<A>, explain = false) =>
   * one before calling it. A Cloud isolate can reach a Worker that another isolate started; it reads
   * that build once to learn its protocol.
   */
@@ -1401,7 +2933,7 @@ index 6117ea6..dfede84 100644
  const protocolLimit = 4096;
  /**
   * First reads of builds whose protocol is not known yet, by build, with the read build once it
-@@ -312,17 +320,20 @@ const readCheck = "10 millis";
+@@ -312,17 +326,25 @@ const readCheck = "10 millis";
   */
  const readWait = 10_000;
  
@@ -1412,11 +2944,16 @@ index 6117ea6..dfede84 100644
 -    Effect.catch(() => failed("unsupported")),
 -    Effect.map((protocol) => {
 -      protocols.set(build, protocol);
-+  admitLoadedFramework(loaded, { build, ...(protocols.has(build) ? { previous: protocols.get(build)!.framework } : {}) }).pipe(
-+    Effect.flatMap((framework) => appProtocol(framework.protocol).pipe(
-+      Effect.catchTag("RuntimeProtocolUnsupported", () => failed("unsupported")),
-+      Effect.map((protocol) => ({ protocol, framework })),
-+    )),
++  admitLoadedFramework(loaded, {
++    build,
++    ...(protocols.has(build) ? { previous: protocols.get(build)!.framework } : {}),
++  }).pipe(
++    Effect.flatMap((framework) =>
++      appProtocol(framework.protocol).pipe(
++        Effect.catchTag("RuntimeProtocolUnsupported", () => failed("unsupported")),
++        Effect.map((protocol) => ({ protocol, framework })),
++      ),
++    ),
 +    Effect.map((admitted) => {
 +      protocols.set(build, admitted);
        if (protocols.size > protocolLimit) {
@@ -1428,7 +2965,7 @@ index 6117ea6..dfede84 100644
      }),
    );
  
-@@ -340,14 +351,24 @@ const protocolOf = (
+@@ -340,14 +362,32 @@ const protocolOf = (
  ) =>
    Effect.gen(function* () {
      const started = yield* Clock.currentTimeMillis;
@@ -1437,25 +2974,33 @@ index 6117ea6..dfede84 100644
        const known = protocols.get(build);
        const shared = reads.get(build);
 -      if (known !== undefined) {
-+      if (known !== undefined && registry.some((release) => sameFrameworkProvenance(release, known.framework))) {
++      if (
++        known !== undefined &&
++        registry.some((release) => sameFrameworkProvenance(release, known.framework))
++      ) {
          protocols.delete(build);
          protocols.set(build, known);
          const loaded = shared?.loaded;
 -        return { protocol: known, load: loaded === undefined ? load : async () => loaded };
 +        return {
 +          protocol: known.protocol,
-+          load: loaded === undefined ? async () => {
-+            const next = await load();
-+            await Effect.runPromise(selectFrameworkProtocol(next, { build, previous: known.framework }).pipe(
-+              Effect.provideService(FrameworkProvenanceRegistry, registry),
-+            ));
-+            return next;
-+          } : async () => loaded,
++          load:
++            loaded === undefined
++              ? async () => {
++                  const next = await load();
++                  await Effect.runPromise(
++                    selectFrameworkProtocol(next, { build, previous: known.framework }).pipe(
++                      Effect.provideService(FrameworkProvenanceRegistry, registry),
++                    ),
++                  );
++                  return next;
++                }
++              : async () => loaded,
 +        };
        }
        // Another call's read failed or was cancelled, or has not finished in time: read it here.
        if (shared === undefined || (yield* Clock.currentTimeMillis) - started >= readWait) break;
-@@ -413,31 +434,13 @@ export const appWorker = (
+@@ -413,31 +453,15 @@ export const appWorker = (
  export const runsInFacet = (invocation: Pick<AppInvocation, "database" | "command">) =>
    invocation.database && dataOperations.has(invocation.command.operation);
  
@@ -1484,20 +3029,34 @@ index 6117ea6..dfede84 100644
  const boundWorkflow = (
    execution: WorkflowExecution,
 -  accounts: (resolved: HostAccounts) => Effect.Effect<ResolvedAccounts, RuntimeProtocolFailed>,
-+  accounts: (resolved: HostAccounts) => Effect.Effect<ResolvedAccounts, RuntimeProtocolFailed | FrameworkProvenanceRefused>,
++  accounts: (
++    resolved: HostAccounts,
++  ) => Effect.Effect<ResolvedAccounts, RuntimeProtocolFailed | FrameworkProvenanceRefused>,
  ): WorkflowExecution => ({
    ...execution,
    resolve: () =>
-@@ -659,7 +662,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
+@@ -659,10 +683,16 @@ export const makeAppRunner = (host: AppRunnerHost) => {
                ),
              catch: (cause) => cause,
            }).pipe(
 -            Effect.catch((cause): Effect.Effect<never, RuntimeProtocolFailed | ColdStartFailed> =>
-+            Effect.catch((cause): Effect.Effect<never, RuntimeProtocolFailed | FrameworkProvenanceRefused | ColdStartFailed> =>
-               name !== null && failedColdStart(cause)
-                 ? Effect.fail(new ColdStartFailed())
-                 : failedFrom(options.explain)(cause),
-@@ -743,7 +746,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
+-              name !== null && failedColdStart(cause)
+-                ? Effect.fail(new ColdStartFailed())
+-                : failedFrom(options.explain)(cause),
++            Effect.catch(
++              (
++                cause,
++              ): Effect.Effect<
++                never,
++                RuntimeProtocolFailed | FrameworkProvenanceRefused | ColdStartFailed
++              > =>
++                name !== null && failedColdStart(cause)
++                  ? Effect.fail(new ColdStartFailed())
++                  : failedFrom(options.explain)(cause),
+             ),
+             Effect.flatMap((value) =>
+               Schema.decodeUnknownEffect(AppRpcInvocation)(value).pipe(
+@@ -743,7 +773,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
     */
    const start = (
      ...args: Parameters<typeof startOnce>
@@ -1506,19 +3065,21 @@ index 6117ea6..dfede84 100644
      startOnce(...args).pipe(
        Effect.catchTag("ColdStartFailed", () =>
          startOnce(...args).pipe(
-@@ -759,8 +762,8 @@ export const makeAppRunner = (host: AppRunnerHost) => {
+@@ -759,8 +789,10 @@ export const makeAppRunner = (host: AppRunnerHost) => {
      explain: boolean,
    ) =>
      Effect.gen(function* () {
 -      const protocol = yield* appProtocol(bundle.protocol).pipe(
 -        Effect.catch((cause) => failed("unsupported", cause, explain)),
 +      const protocol = yield* selectFrameworkProtocol(bundle).pipe(
-+        Effect.catchTag("RuntimeProtocolUnsupported", (cause) => failed("unsupported", cause, explain)),
++        Effect.catchTag("RuntimeProtocolUnsupported", (cause) =>
++          failed("unsupported", cause, explain),
++        ),
        );
        const command = { operation: "requirements" } as const;
        const reply = yield* start(null, async () => bundle, {
 diff --git a/packages/sdk/src/implementation/app-runtime.ts b/packages/sdk/src/implementation/app-runtime.ts
-index 3054311..402ee53 100644
+index 3054311..90d2faf 100644
 --- a/packages/sdk/src/implementation/app-runtime.ts
 +++ b/packages/sdk/src/implementation/app-runtime.ts
 @@ -44,6 +44,7 @@ import {
@@ -1538,7 +3099,7 @@ index 3054311..402ee53 100644
  import { invocationElicitation } from "./worker-elicitation.ts";
  import { invocationModels } from "./worker-model-rpc.ts";
  import { invocationWorkflowControls } from "./worker-workflow-rpc.ts";
-@@ -83,13 +84,13 @@ export const buildLoadSpan = "runtime.app.build.load";
+@@ -83,13 +84,17 @@ export const buildLoadSpan = "runtime.app.build.load";
   */
  export const invocationBuildLoader = <R>(
    invocation: Pick<AppInvocation, "app" | "build" | "database" | "command" | "accounts" | "run">,
@@ -1550,11 +3111,15 @@ index 3054311..402ee53 100644
      readonly refused: <A, E, R2>(
        invoked: Effect.Effect<A, E | RuntimeProtocolFailed, R2>,
 -    ) => Effect.Effect<A, E | RuntimeProtocolFailed | RuntimeProtocolUnsupported, R2>;
-+    ) => Effect.Effect<A, E | RuntimeProtocolFailed | RuntimeProtocolUnsupported | FrameworkProvenanceRefused, R2>;
++    ) => Effect.Effect<
++      A,
++      E | RuntimeProtocolFailed | RuntimeProtocolUnsupported | FrameworkProvenanceRefused,
++      R2
++    >;
    },
    RuntimeProtocolFailed,
    R | Scope.Scope
-@@ -103,20 +104,25 @@ export const invocationBuildLoader = <R>(
+@@ -103,20 +108,25 @@ export const invocationBuildLoader = <R>(
      const worker = yield* appWorker(invocation).pipe(
        Effect.mapError(() => new RuntimeProtocolFailed()),
      );
@@ -1583,7 +3148,7 @@ index 3054311..402ee53 100644
              Effect.withSpan(buildLoadSpan, {
                attributes: {
                  "executor.app.id": invocation.app,
-@@ -131,7 +137,7 @@ export const invocationBuildLoader = <R>(
+@@ -131,7 +141,7 @@ export const invocationBuildLoader = <R>(
          ),
        refused: (invoked) =>
          invoked.pipe(
@@ -1592,23 +3157,30 @@ index 3054311..402ee53 100644
          ),
      };
    });
-@@ -148,12 +154,12 @@ export interface AppRuntimeHost {
+@@ -148,12 +158,19 @@ export interface AppRuntimeHost {
    /** Read one retained build, with the protocol its framework speaks, from this host's store. */
    readonly loadBuild: (
      build: BuildId,
 -  ) => Effect.Effect<LoadedWorkerBuild, RuntimeBuildUnavailable, BlobStore>;
-+  ) => Effect.Effect<LoadedWorkerBuild, RuntimeBuildUnavailable | FrameworkProvenanceRefused, BlobStore>;
++  ) => Effect.Effect<
++    LoadedWorkerBuild,
++    RuntimeBuildUnavailable | FrameworkProvenanceRefused,
++    BlobStore
++  >;
    /** Deliver one invocation to the runner, wherever it runs. */
    readonly invoke: (
      invocation: AppInvocation,
      capabilities: AppCapabilities,
 -  ) => Effect.Effect<unknown, RuntimeProtocolFailed | RuntimeProtocolUnsupported>;
-+  ) => Effect.Effect<unknown, RuntimeProtocolFailed | RuntimeProtocolUnsupported | FrameworkProvenanceRefused>;
++  ) => Effect.Effect<
++    unknown,
++    RuntimeProtocolFailed | RuntimeProtocolUnsupported | FrameworkProvenanceRefused
++  >;
    readonly build: Runtime<BlobStore>["build"];
    readonly asset: NonNullable<Runtime<BlobStore>["asset"]>;
    readonly changes: (app: string) => Stream.Stream<number, RuntimeProtocolFailed>;
 diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
-index 74ecf27..28ff7a9 100644
+index 74ecf27..b4f44e2 100644
 --- a/packages/sdk/src/implementation/apps.ts
 +++ b/packages/sdk/src/implementation/apps.ts
 @@ -35,6 +35,7 @@ import {
@@ -1619,48 +3191,67 @@ index 74ecf27..28ff7a9 100644
    type Runtime,
  } from "../contracts/runtime.ts";
  import { AppCodeId, AppId, VersionId, OwnerId, StorageError } from "../contracts/shared.ts";
-@@ -356,6 +357,8 @@ export const makeApps = (
+@@ -356,14 +357,21 @@ export const makeApps = (
                        reason: `${error.message} Declare a supported apps version.`,
                        message: `${error.message} Declare a supported apps version.`,
                      })
+-                  : Schema.is(RuntimeAppsDependencyMissing)(error)
 +                  : Schema.is(FrameworkProvenanceRefused)(error)
-+                    ? new VersionBuildFailed({ owner, name, reason: error.message, message: error.message })
-                   : Schema.is(RuntimeAppsDependencyMissing)(error)
                      ? new VersionBuildFailed({
                          owner,
+                         name,
+                         reason: error.message,
+                         message: error.message,
+                       })
+-                    : versionBuildFailed(owner, name, error),
++                    : Schema.is(RuntimeAppsDependencyMissing)(error)
++                      ? new VersionBuildFailed({
++                          owner,
++                          name,
++                          reason: error.message,
++                          message: error.message,
++                        })
++                      : versionBuildFailed(owner, name, error),
+           ),
+         );
+       // Each requirement records its scope; a name is used in one scope only.
 diff --git a/packages/sdk/src/implementation/basalt-framework-releases.ts b/packages/sdk/src/implementation/basalt-framework-releases.ts
 new file mode 100644
-index 0000000..7fe47a0
+index 0000000..1405070
 --- /dev/null
 +++ b/packages/sdk/src/implementation/basalt-framework-releases.ts
-@@ -0,0 +1,27 @@
+@@ -0,0 +1,31 @@
 +/** Exact reviewed publication bytes. New builds must match; they never grant themselves admission. */
 +import type { FrameworkProvenance } from "../contracts/framework-provenance.ts";
 +const releases: readonly FrameworkProvenance[] = [
 +  {
-+    "version": "0.0.1-beta.104-basalt.13",
-+    "sha256": "4820bfe41e955ad2f684e82fc56083899603ad7e71125b05bf2a01e3959638b4",
-+    "protocol": 39,
-+    "browserSha256": "bcac44f049ab9b8ce6f7ce5cdec89b637c0226fb1d176c6b080d9cde56dbe126",
-+    "source": {
-+      "origin": "basalt",
-+      "revision": "92dacc187d657426a121441241189cc9734ea1f8",
-+      "sha256": "5fc439a9ad05bd999e5df2e4ed4fe6f6cb05288920e8d6a646651c5d684c55f0"
-+    }
++    version: "0.0.1-beta.104-basalt.13",
++    sha256: "4820bfe41e955ad2f684e82fc56083899603ad7e71125b05bf2a01e3959638b4",
++    protocol: 39,
++    browserSha256: "bcac44f049ab9b8ce6f7ce5cdec89b637c0226fb1d176c6b080d9cde56dbe126",
++    source: {
++      origin: "basalt",
++      revision: "92dacc187d657426a121441241189cc9734ea1f8",
++      sha256: "5fc439a9ad05bd999e5df2e4ed4fe6f6cb05288920e8d6a646651c5d684c55f0",
++    },
 +  },
 +  {
-+    "version": "0.0.1-beta.104-basalt.16",
-+    "sha256": "8620f39052102d1f58e9041e808efd9aadb139fda19a6e8693f5fba7713841ce",
-+    "protocol": 42,
-+    "browserSha256": "e1e0f8c54a07acf946053720ab96fe317f2edad34aa3e84018c55e1e2162d777",
-+    "source": {
-+      "origin": "basalt",
-+      "revision": "source-sha256:8e7758e84e7e6191704c04ecad2ac4085fddf965864d1681fac9e68ad3fb83cc",
-+      "sha256": "260e8e20fb86937127deb3efcd3301c49c9e1f2bd6a303966f83c2990d111134"
-+    }
-+  }
++    version: "0.0.1-beta.104-basalt.16",
++    sha256: "8620f39052102d1f58e9041e808efd9aadb139fda19a6e8693f5fba7713841ce",
++    protocol: 42,
++    browserSha256: "e1e0f8c54a07acf946053720ab96fe317f2edad34aa3e84018c55e1e2162d777",
++    source: {
++      origin: "basalt",
++      revision: "source-sha256:8e7758e84e7e6191704c04ecad2ac4085fddf965864d1681fac9e68ad3fb83cc",
++      sha256: "260e8e20fb86937127deb3efcd3301c49c9e1f2bd6a303966f83c2990d111134",
++    },
++  },
 +];
-+export const approvedFrameworkReleases = Object.freeze(releases.map((release) => Object.freeze({ ...release, source: Object.freeze({ ...release.source }) })));
++export const approvedFrameworkReleases = Object.freeze(
++  releases.map((release) =>
++    Object.freeze({ ...release, source: Object.freeze({ ...release.source }) }),
++  ),
++);
 diff --git a/packages/sdk/src/implementation/framework-identity.ts b/packages/sdk/src/implementation/framework-identity.ts
 new file mode 100644
 index 0000000..13a2e3b
@@ -1687,10 +3278,10 @@ index 0000000..13a2e3b
 +  });
 diff --git a/packages/sdk/src/implementation/framework-provenance.ts b/packages/sdk/src/implementation/framework-provenance.ts
 new file mode 100644
-index 0000000..8bf27d1
+index 0000000..3c13abb
 --- /dev/null
 +++ b/packages/sdk/src/implementation/framework-provenance.ts
-@@ -0,0 +1,199 @@
+@@ -0,0 +1,232 @@
 +/** Source-bound Basalt admission shared by compilation, retained loading and runners. */
 +import { Context, Effect, Schema } from "effect";
 +import {
@@ -1766,18 +3357,30 @@ index 0000000..8bf27d1
 +          `Build version ${input.identity.version} differs from framework version ${computed.version}.`,
 +        );
 +      if (input.identity.sha256 !== computed.sha256)
-+        return yield* refuse("content-mismatch", "The stored server hash differs from its module bytes.");
++        return yield* refuse(
++          "content-mismatch",
++          "The stored server hash differs from its module bytes.",
++        );
 +    }
 +    const registry = yield* FrameworkProvenanceRegistry;
 +    const releases = registry.filter((release) => release.version === computed.version);
 +    if (releases.length === 0)
-+      return yield* refuse("unknown-identity", "No approved source-bound release has this version and server hash.");
++      return yield* refuse(
++        "unknown-identity",
++        "No approved source-bound release has this version and server hash.",
++      );
 +    const release = releases[0]!;
 +    if (
 +      !Schema.is(FrameworkProvenance)(release) ||
-+      releases.some((other) => !Schema.is(FrameworkProvenance)(other) || !sameFrameworkProvenance(release, other))
++      releases.some(
++        (other) =>
++          !Schema.is(FrameworkProvenance)(other) || !sameFrameworkProvenance(release, other),
++      )
 +    )
-+      return yield* refuse("conflicting-lineage", "The host registry has conflicting release evidence for this version.");
++      return yield* refuse(
++        "conflicting-lineage",
++        "The host registry has conflicting release evidence for this version.",
++      );
 +    if (release.sha256 !== computed.sha256)
 +      return yield* refuse(
 +        "content-mismatch",
@@ -1788,10 +3391,20 @@ index 0000000..8bf27d1
 +        "protocol-mismatch",
 +        `Approved protocol ${release.protocol} differs from recorded protocol ${input.protocol}.`,
 +      );
-+    if (input.claimed !== undefined && (!Schema.is(FrameworkProvenance)(input.claimed) || !sameFrameworkProvenance(release, input.claimed)))
-+      return yield* refuse("conflicting-lineage", "The supplied release tuple or source origin differs from the host registry.");
++    if (
++      input.claimed !== undefined &&
++      (!Schema.is(FrameworkProvenance)(input.claimed) ||
++        !sameFrameworkProvenance(release, input.claimed))
++    )
++      return yield* refuse(
++        "conflicting-lineage",
++        "The supplied release tuple or source origin differs from the host registry.",
++      );
 +    if (input.browser !== undefined) {
-+      const browser = yield* frameworkIdentity({ version: computed.version, modules: input.browser });
++      const browser = yield* frameworkIdentity({
++        version: computed.version,
++        modules: input.browser,
++      });
 +      if (browser.sha256 !== release.browserSha256)
 +        return yield* refuse(
 +          "content-mismatch",
@@ -1835,13 +3448,21 @@ index 0000000..8bf27d1
 +    const registry = yield* FrameworkProvenanceRegistry;
 +    const releases = registry.filter((release) => release.sha256 === computed.sha256);
 +    const release = releases[0];
-+    if (release === undefined || !Schema.is(FrameworkProvenance)(release) || releases.some((other) => !Schema.is(FrameworkProvenance)(other) || !sameFrameworkProvenance(release, other)))
++    if (
++      release === undefined ||
++      !Schema.is(FrameworkProvenance)(release) ||
++      releases.some(
++        (other) =>
++          !Schema.is(FrameworkProvenance)(other) || !sameFrameworkProvenance(release, other),
++      )
++    )
 +      return yield* new FrameworkProvenanceRefused({
 +        reason: release === undefined ? "unknown-identity" : "conflicting-lineage",
 +        protocol,
 +        computedHash: computed.sha256,
 +        ...(build === undefined ? {} : { build }),
-+        comparison: "The exact inlined framework has no unambiguous approved Basalt release or inventory evidence.",
++        comparison:
++          "The exact inlined framework has no unambiguous approved Basalt release or inventory evidence.",
 +      });
 +    return yield* admitFramework({
 +      framework: { ...framework, version: release.version },
@@ -1889,9 +3510,12 @@ index 0000000..8bf27d1
 +export const selectFrameworkProtocol = (
 +  loaded: LoadedWorkerBuild,
 +  options: { readonly build?: string; readonly previous?: Provenance } = {},
-+) => admitLoadedFramework(loaded, options).pipe(Effect.flatMap((release) => appProtocol(release.protocol)));
++) =>
++  admitLoadedFramework(loaded, options).pipe(
++    Effect.flatMap((release) => appProtocol(release.protocol)),
++  );
 diff --git a/packages/sdk/src/implementation/remote-app-runner.ts b/packages/sdk/src/implementation/remote-app-runner.ts
-index 24297a4..1a36c06 100644
+index 24297a4..da715b5 100644
 --- a/packages/sdk/src/implementation/remote-app-runner.ts
 +++ b/packages/sdk/src/implementation/remote-app-runner.ts
 @@ -25,6 +25,7 @@ import {
@@ -1918,27 +3542,57 @@ index 24297a4..1a36c06 100644
      }),
    ]),
  );
-@@ -380,7 +383,9 @@ const localCapabilities = (remote: RemoteCapabilities, load: () => Promise<Loade
+@@ -380,15 +383,17 @@ const localCapabilities = (remote: RemoteCapabilities, load: () => Promise<Loade
   * where its text is: past the boundary the caller would see only that the call failed.
   */
  const refused = (error: unknown) =>
 -  Schema.is(RuntimeProtocolUnsupported)(error)
+-    ? { ok: false as const, unsupported: error }
+-    : Schema.is(RuntimeProtocolFailed)(error)
+-      ? {
+-          ok: false as const,
+-          ...(error.reason === undefined ? {} : { reason: error.reason }),
+-          ...(error.message ? { message: error.message } : {}),
+-        }
+-      : { ok: false as const, reason: classify(error) };
 +  Schema.is(FrameworkProvenanceRefused)(error)
 +    ? { ok: false as const, provenance: error }
 +    : Schema.is(RuntimeProtocolUnsupported)(error)
-     ? { ok: false as const, unsupported: error }
-     : Schema.is(RuntimeProtocolFailed)(error)
-       ? {
-@@ -417,7 +422,7 @@ export const runnerReply = (
++      ? { ok: false as const, unsupported: error }
++      : Schema.is(RuntimeProtocolFailed)(error)
++        ? {
++            ok: false as const,
++            ...(error.reason === undefined ? {} : { reason: error.reason }),
++            ...(error.message ? { message: error.message } : {}),
++          }
++        : { ok: false as const, reason: classify(error) };
+ const encodeResult = Schema.encodeUnknownEffect(RemoteResult);
+ 
+ /**
+@@ -417,7 +422,9 @@ export const runnerReply = (
   */
  export const serveAppRunner = (
    runner: AppRunner,
 -  read: (build: BuildId) => Effect.Effect<LoadedWorkerBuild, RuntimeBuildUnavailable>,
-+  read: (build: BuildId) => Effect.Effect<LoadedWorkerBuild, RuntimeBuildUnavailable | FrameworkProvenanceRefused>,
++  read: (
++    build: BuildId,
++  ) => Effect.Effect<LoadedWorkerBuild, RuntimeBuildUnavailable | FrameworkProvenanceRefused>,
  ): RemoteAppRunner<Effect.Effect<string>> => ({
    invoke: (invocation, capabilities) =>
      runnerReply(
-@@ -454,6 +459,7 @@ export const serveAppRunner = (
+@@ -433,7 +440,10 @@ export const serveAppRunner = (
+           const build = yield* Schema.decodeUnknownEffect(BuildId)(decoded.build);
+           // The caller's trace context travels in the invocation's headers; the runner's spans join it.
+           return yield* Effect.gen(function* () {
+-            const loader = yield* invocationBuildLoader(decoded, runnerPhase("build-read", read(build)));
++            const loader = yield* invocationBuildLoader(
++              decoded,
++              runnerPhase("build-read", read(build)),
++            );
+             const value = yield* loader.refused(
+               runner.invoke(decoded, yield* localCapabilities(capabilities, loader.load)),
+             );
+@@ -454,6 +464,7 @@ export const serveAppRunner = (
    declare: (bundle, headers) =>
      runnerReply(
        Schema.decodeUnknownEffect(encodedBuild)(bundle).pipe(
@@ -1946,25 +3600,44 @@ index 24297a4..1a36c06 100644
          Effect.flatMap((bundle) => runner.declare(bundle, headers)),
          Effect.map((value) => ({ value })),
        ),
-@@ -476,12 +482,14 @@ export const runnerResult = <E>(effect: Effect.Effect<string, E>, hostApi?: stri
+@@ -476,19 +487,26 @@ export const runnerResult = <E>(effect: Effect.Effect<string, E>, hostApi?: stri
        ),
      ),
      Effect.flatMap(
 -      (reply): Effect.Effect<unknown, RuntimeProtocolFailed | RuntimeProtocolUnsupported> =>
-+      (reply): Effect.Effect<unknown, RuntimeProtocolFailed | RuntimeProtocolUnsupported | FrameworkProvenanceRefused> =>
++      (
++        reply,
++      ): Effect.Effect<
++        unknown,
++        RuntimeProtocolFailed | RuntimeProtocolUnsupported | FrameworkProvenanceRefused
++      > =>
          reply.ok
            ? hostApi === undefined || reply.hostApi === hostApi
              ? Effect.succeed(reply.value)
              : Effect.fail(new RuntimeProtocolFailed({ reason: "unsupported" }))
 -          : reply.unsupported !== undefined
+-            ? Effect.fail(reply.unsupported)
+-            : Effect.fail(
+-                new RuntimeProtocolFailed({
+-                  ...(reply.reason === undefined ? {} : { reason: reply.reason }),
+-                  ...(reply.message === undefined ? {} : { message: reply.message }),
+-                }),
+-              ),
 +          : reply.provenance !== undefined
 +            ? Effect.fail(reply.provenance)
 +            : reply.unsupported !== undefined
-             ? Effect.fail(reply.unsupported)
-             : Effect.fail(
-                 new RuntimeProtocolFailed({
++              ? Effect.fail(reply.unsupported)
++              : Effect.fail(
++                  new RuntimeProtocolFailed({
++                    ...(reply.reason === undefined ? {} : { reason: reply.reason }),
++                    ...(reply.message === undefined ? {} : { message: reply.message }),
++                  }),
++                ),
+     ),
+   );
+ 
 diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
-index de81b5d..9c54b2b 100644
+index de81b5d..533fe01 100644
 --- a/packages/sdk/src/implementation/tools.ts
 +++ b/packages/sdk/src/implementation/tools.ts
 @@ -791,6 +791,7 @@ const runtimeFailure = (identity: { app: AppId; version: VersionId; tool: ToolNa
@@ -1983,8 +3656,22 @@ index de81b5d..9c54b2b 100644
      HostRequestInvalid: () => "runtime",
      HostAccountsInvalid: () => "other",
      ElicitationFailed: () => "other",
+@@ -974,9 +976,10 @@ export const makeTools = (
+     state: InvocationSnapshot,
+     error: Effect.Error<ReturnType<typeof runtime.index>>,
+     renewal?: Renewal,
+-  ) => observeFailure(failureSource(error)).pipe(
+-    Effect.andThen(catalogFailure(state, error, renewal)),
+-  );
++  ) =>
++    observeFailure(failureSource(error)).pipe(
++      Effect.andThen(catalogFailure(state, error, renewal)),
++    );
+   /**
+    * Run a tool, live or approved, and renew an account the service refuses. A 401 means the
+    * service did not perform the refused request, but an earlier request in the same call may
 diff --git a/packages/sdk/src/implementation/worker-build-migration.ts b/packages/sdk/src/implementation/worker-build-migration.ts
-index a576a8f..650099f 100644
+index a576a8f..88642e1 100644
 --- a/packages/sdk/src/implementation/worker-build-migration.ts
 +++ b/packages/sdk/src/implementation/worker-build-migration.ts
 @@ -7,10 +7,9 @@
@@ -2141,7 +3828,7 @@ index a576a8f..650099f 100644
      }
      if (inlined === undefined) return { outcome: "missing" } satisfies BuildSplit;
      if (Option.isNone(inlined))
-@@ -266,9 +188,9 @@ export const splitInlinedWorkerBuild = (
+@@ -266,9 +188,13 @@ export const splitInlinedWorkerBuild = (
        version: "unlabelled",
        modules: frameworkModules,
      });
@@ -2150,11 +3837,15 @@ index a576a8f..650099f 100644
 -    const framework: RetainedFramework = { ...identity, modules: frameworkModules };
 +    const admitted = yield* admitInlinedFramework(source, source.protocol, build);
 +    const identity: FrameworkIdentity = { version: admitted.version, sha256 };
-+    const framework: RetainedFramework = { ...identity, modules: frameworkModules, provenance: admitted };
++    const framework: RetainedFramework = {
++      ...identity,
++      modules: frameworkModules,
++      provenance: admitted,
++    };
      const record: RetainedWorkerBuild = {
        format: 2,
        mainModule: source.mainModule,
-@@ -283,7 +205,7 @@ export const splitInlinedWorkerBuild = (
+@@ -283,7 +209,7 @@ export const splitInlinedWorkerBuild = (
      const frameworkLocation = yield* frameworkKey(identity);
      const frameworkStored = yield* blobs.exists(frameworkLocation);
      const result = {
@@ -2163,7 +3854,7 @@ index a576a8f..650099f 100644
        frameworkStored,
        ...sizes,
        recordBytes: recordBody.byteLength,
-@@ -306,7 +228,7 @@ export const splitInlinedWorkerBuild = (
+@@ -306,7 +232,7 @@ export const splitInlinedWorkerBuild = (
      }
  
      if (mode === "report") {
@@ -2172,7 +3863,7 @@ index a576a8f..650099f 100644
        const reason = verify(source, linked, record);
        return (
          reason === undefined
-@@ -332,10 +254,12 @@ export const splitInlinedWorkerBuild = (
+@@ -332,10 +258,12 @@ export const splitInlinedWorkerBuild = (
      ) satisfies BuildSplit;
    }).pipe(
      // Storage failures leave the item to retry; the next pass reads everything again.
@@ -2188,15 +3879,19 @@ index a576a8f..650099f 100644
      ),
      Effect.map((split): BuildSplit => split),
 diff --git a/packages/sdk/src/implementation/worker-build-storage.ts b/packages/sdk/src/implementation/worker-build-storage.ts
-index 108ff81..8a93b9e 100644
+index 108ff81..1fae7ab 100644
 --- a/packages/sdk/src/implementation/worker-build-storage.ts
 +++ b/packages/sdk/src/implementation/worker-build-storage.ts
-@@ -3,13 +3,16 @@
+@@ -3,13 +3,24 @@
   * and the identity of the framework it links; loading a build reads both and links them.
   */
  import { BlobKey, BlobStore } from "../contracts/blobs.ts";
 -import { RuntimeBuildFailed, RuntimeBuildUnavailable } from "../contracts/runtime.ts";
-+import { FrameworkProvenanceRefused, RuntimeBuildFailed, RuntimeBuildUnavailable } from "../contracts/runtime.ts";
++import {
++  FrameworkProvenanceRefused,
++  RuntimeBuildFailed,
++  RuntimeBuildUnavailable,
++} from "../contracts/runtime.ts";
  import type { BuildId } from "../contracts/shared.ts";
  import type { UiBuildFile } from "../contracts/ui-build.ts";
  import type { RuntimeAsset } from "../contracts/runtime.ts";
@@ -2204,12 +3899,16 @@ index 108ff81..8a93b9e 100644
  import { publicFileAsset, readPublicManifest } from "./public-files.ts";
  import { Effect, Option, Schema } from "effect";
 +import { frameworkIdentity } from "./framework-identity.ts";
-+import { admitFramework, admitInlinedFramework, admitLoadedFramework } from "./framework-provenance.ts";
++import {
++  admitFramework,
++  admitInlinedFramework,
++  admitLoadedFramework,
++} from "./framework-provenance.ts";
 +export { frameworkIdentity } from "./framework-identity.ts";
  import {
    type FrameworkIdentity,
    InlinedWorkerBuild,
-@@ -38,28 +41,14 @@ export const encodeJson = <S extends Schema.Codec<unknown, unknown>>(schema: S,
+@@ -38,28 +49,14 @@ export const encodeJson = <S extends Schema.Codec<unknown, unknown>>(schema: S,
  export const decodeJson = <S extends Schema.Codec<unknown, unknown>>(schema: S, body: Uint8Array) =>
    Schema.decodeUnknownEffect(Schema.fromJsonString(schema))(new TextDecoder().decode(body));
  
@@ -2241,7 +3940,7 @@ index 108ff81..8a93b9e 100644
  });
  
  /**
-@@ -76,8 +65,13 @@ const retainFramework = (framework: WorkerFramework) =>
+@@ -76,8 +73,13 @@ const retainFramework = (framework: WorkerFramework) =>
        "executor.build.framework": `${identity.version}-${identity.sha256}`,
        "executor.build.framework_stored": stored,
      });
@@ -2257,7 +3956,7 @@ index 108ff81..8a93b9e 100644
      return retained;
    });
  
-@@ -94,7 +88,13 @@ export const retainWorkerBuild = (
+@@ -94,7 +96,13 @@ export const retainWorkerBuild = (
  ) =>
    Effect.gen(function* () {
      const blobs = yield* BlobStore;
@@ -2272,17 +3971,20 @@ index 108ff81..8a93b9e 100644
      const identity: FrameworkIdentity = { version: retained.version, sha256: retained.sha256 };
      if (ui !== undefined)
        yield* Effect.forEach(
-@@ -123,7 +123,8 @@ export const retainWorkerBuild = (
+@@ -123,7 +131,11 @@ export const retainWorkerBuild = (
      yield* blobs.put(yield* buildKey(build), body);
      return { record, framework: retained };
    }).pipe(
 -    Effect.mapError(() => new RuntimeBuildFailed({ stage: "retain" })),
-+    Effect.mapError((error) => Schema.is(FrameworkProvenanceRefused)(error)
-+      ? error : new RuntimeBuildFailed({ stage: "retain" })),
++    Effect.mapError((error) =>
++      Schema.is(FrameworkProvenanceRefused)(error)
++        ? error
++        : new RuntimeBuildFailed({ stage: "retain" }),
++    ),
      Effect.withSpan("runtime.cloud.retain"),
    );
  
-@@ -147,16 +148,46 @@ export const loadStoredWorkerBuild = (build: BuildId) =>
+@@ -147,16 +159,51 @@ export const loadStoredWorkerBuild = (build: BuildId) =>
    );
  
  /** One stored framework. A record names only frameworks written before it, so absence is a fault. */
@@ -2299,17 +4001,21 @@ index 108ff81..8a93b9e 100644
 +      declaredHash: identity.sha256,
 +      ...(build === undefined ? {} : { build }),
 +    };
-+    if (Option.isNone(found)) return yield* new FrameworkProvenanceRefused({
-+      ...fields,
-+      reason: "missing-identity",
-+      comparison: "The build's referenced framework object is missing.",
-+    });
-+    const framework = yield* decodeJson(RetainedFramework, found.value).pipe(
-+      Effect.mapError(() => new FrameworkProvenanceRefused({
++    if (Option.isNone(found))
++      return yield* new FrameworkProvenanceRefused({
 +        ...fields,
-+        reason: "content-mismatch",
-+        comparison: "The referenced framework object does not decode.",
-+      })),
++        reason: "missing-identity",
++        comparison: "The build's referenced framework object is missing.",
++      });
++    const framework = yield* decodeJson(RetainedFramework, found.value).pipe(
++      Effect.mapError(
++        () =>
++          new FrameworkProvenanceRefused({
++            ...fields,
++            reason: "content-mismatch",
++            comparison: "The referenced framework object does not decode.",
++          }),
++      ),
 +    );
 +    const computed = yield* frameworkIdentity(framework);
 +    if (framework.version !== identity.version || framework.sha256 !== identity.sha256)
@@ -2329,12 +4035,13 @@ index 108ff81..8a93b9e 100644
      return framework;
    }).pipe(
 -    Effect.mapError(() => new RuntimeBuildUnavailable()),
-+    Effect.mapError((error) => Schema.is(FrameworkProvenanceRefused)(error)
-+      ? error : new RuntimeBuildUnavailable()),
++    Effect.mapError((error) =>
++      Schema.is(FrameworkProvenanceRefused)(error) ? error : new RuntimeBuildUnavailable(),
++    ),
      Effect.withSpan("runtime.build.framework", {
        attributes: { "executor.build.framework": `${identity.version}-${identity.sha256}` },
      }),
-@@ -166,24 +197,48 @@ export const loadWorkerFramework = (identity: FrameworkIdentity) =>
+@@ -166,24 +213,50 @@ export const loadWorkerFramework = (identity: FrameworkIdentity) =>
  export const linkWorkerBuild = <E, R>(
    stored: StoredWorkerBuild,
    framework: (identity: FrameworkIdentity) => Effect.Effect<RetainedFramework, E, R>,
@@ -2390,12 +4097,14 @@ index 108ff81..8a93b9e 100644
  export const loadWorkerBuild = (build: BuildId) =>
    loadStoredWorkerBuild(build).pipe(
 -    Effect.flatMap((stored) => linkWorkerBuild(stored, loadWorkerFramework)),
-+    Effect.flatMap((stored) => linkWorkerBuild(stored, (identity) => loadWorkerFramework(identity, build), build)),
++    Effect.flatMap((stored) =>
++      linkWorkerBuild(stored, (identity) => loadWorkerFramework(identity, build), build),
++    ),
    );
  
  /** The product authenticates access; this capability serves only assets listed in the immutable build. */
 diff --git a/packages/sdk/src/implementation/worker-build.ts b/packages/sdk/src/implementation/worker-build.ts
-index 68fc0ac..7881885 100644
+index 68fc0ac..994f027 100644
 --- a/packages/sdk/src/implementation/worker-build.ts
 +++ b/packages/sdk/src/implementation/worker-build.ts
 @@ -5,6 +5,7 @@ import {
@@ -2414,7 +4123,7 @@ index 68fc0ac..7881885 100644
  import { binaryFilePaths } from "./worker-binary-files.ts";
  import { browserBuild } from "./worker-browser-build.ts";
  import { sourceImports } from "./worker-source-imports.ts";
-@@ -131,14 +133,22 @@ const selectedFramework = (filesystem: InMemoryFileSystem) =>
+@@ -131,14 +133,23 @@ const selectedFramework = (filesystem: InMemoryFileSystem) =>
              name.split("/").includes(".."),
          )
        )
@@ -2423,7 +4132,8 @@ index 68fc0ac..7881885 100644
 +          reason: "content-mismatch",
 +          version: selected.version,
 +          protocol: selected.protocol,
-+          comparison: "The selected framework contains a module outside its published JavaScript paths.",
++          comparison:
++            "The selected framework contains a module outside its published JavaScript paths.",
 +        });
      }
      return selected;
@@ -2440,7 +4150,7 @@ index 68fc0ac..7881885 100644
      ),
    );
  
-@@ -170,6 +180,12 @@ export const prepareWorkerApp = (files: CodeFiles, host: WorkerHost, resolveAll
+@@ -170,6 +181,12 @@ export const prepareWorkerApp = (files: CodeFiles, host: WorkerHost, resolveAll
      );
      if (!(yield* dependencies.framework))
        return yield* new RuntimeAppsDependencyMissing({ version: apps.version });
@@ -2453,7 +4163,7 @@ index 68fc0ac..7881885 100644
      if (resolveAll) yield* dependencies.prepare;
      return { filesystem, dependencies };
    });
-@@ -184,7 +200,12 @@ export const compileWorkerApp = (
+@@ -184,7 +201,12 @@ export const compileWorkerApp = (
    Effect.gen(function* () {
      const { filesystem, dependencies } = prepared ?? (yield* prepareWorkerApp(files, host, false));
      const selected = yield* selectedFramework(filesystem);
@@ -2467,7 +4177,7 @@ index 68fc0ac..7881885 100644
      const entry = "__executor_worker.ts";
      filesystem.write(entry, protocol.workerEntry);
      const plan = yield* prepareUiBuild(files, publicPaths);
-@@ -252,7 +273,7 @@ export const compileWorkerApp = (
+@@ -252,7 +274,7 @@ export const compileWorkerApp = (
      const ui = browser === undefined ? undefined : yield* browser.finish();
      return {
        bundle,
@@ -2477,19 +4187,24 @@ index 68fc0ac..7881885 100644
        protocol: selected.protocol,
        // Locates this build's declaration failures; never retained with it.
 diff --git a/packages/sdk/src/implementation/worker-source-map.ts b/packages/sdk/src/implementation/worker-source-map.ts
-index 711a2ec..f2ec4c6 100644
+index 711a2ec..affe55d 100644
 --- a/packages/sdk/src/implementation/worker-source-map.ts
 +++ b/packages/sdk/src/implementation/worker-source-map.ts
-@@ -7,7 +7,7 @@ import type { Plugin } from "esbuild";
+@@ -7,7 +7,12 @@ import type { Plugin } from "esbuild";
  import { Schema } from "effect";
  import { DatabaseFieldReserved } from "apps/contracts";
  import type { SourceFiles, SourceLocation } from "../contracts/version.ts";
 -import { boundBuildMessage, describeBuildCause, RuntimeBuildFailed } from "../contracts/runtime.ts";
-+import { boundBuildMessage, describeBuildCause, RuntimeBuildFailed, FrameworkProvenanceRefused } from "../contracts/runtime.ts";
++import {
++  boundBuildMessage,
++  describeBuildCause,
++  RuntimeBuildFailed,
++  FrameworkProvenanceRefused,
++} from "../contracts/runtime.ts";
  
  /** The bundler reads source from its `virtual:` namespace; report the authored path. */
  const sourcePath = (file: string) => file.replace(/^virtual:/, "");
-@@ -81,6 +81,7 @@ export const declarationFailed = (
+@@ -81,6 +86,7 @@ export const declarationFailed = (
    cause: unknown,
    build: { readonly mainModule: string; readonly sourceMap: string; readonly files: SourceFiles },
  ) => {
@@ -2498,19 +4213,23 @@ index 711a2ec..f2ec4c6 100644
    let map: TraceMap | undefined;
    let location: SourceLocation | undefined;
 diff --git a/packages/sdk/src/implementation/workerd-apps.ts b/packages/sdk/src/implementation/workerd-apps.ts
-index d7753f1..c8a4f6f 100644
+index d7753f1..fbcac02 100644
 --- a/packages/sdk/src/implementation/workerd-apps.ts
 +++ b/packages/sdk/src/implementation/workerd-apps.ts
-@@ -43,7 +43,7 @@ import {
+@@ -43,7 +43,11 @@ import {
    type EvaluatedCommand,
  } from "@executor-js/app-data/evaluated";
  
 -import { RuntimeBuildFailed, RuntimeProtocolFailed } from "../contracts/runtime.ts";
-+import { RuntimeBuildFailed, RuntimeProtocolFailed, FrameworkProvenanceRefused } from "../contracts/runtime.ts";
++import {
++  RuntimeBuildFailed,
++  RuntimeProtocolFailed,
++  FrameworkProvenanceRefused,
++} from "../contracts/runtime.ts";
  import type { Executor } from "../contracts/executor.ts";
  import type { DurableDeclarations } from "../contracts/declarations.ts";
  import { runtimeAdapter } from "./runtime.ts";
-@@ -172,7 +172,7 @@ export const workerdApps = (options: {
+@@ -172,7 +176,7 @@ export const workerdApps = (options: {
      readonly workflows: WorkflowRuntime;
      readonly declarations: DurableDeclarations;
    },
@@ -2519,12 +4238,14 @@ index d7753f1..c8a4f6f 100644
    Scope.Scope
  > =>
    Effect.gen(function* () {
-@@ -387,7 +387,7 @@ export const workerdApps = (options: {
+@@ -387,7 +391,9 @@ export const workerdApps = (options: {
        const error = Cause.squash(cause);
        if (Cause.hasInterrupts(cause)) return Effect.interrupt;
        return Effect.fail(
 -        Schema.is(WorkerdMigrationRequired)(error) || Schema.is(RuntimeBuildFailed)(error)
-+        Schema.is(WorkerdMigrationRequired)(error) || Schema.is(RuntimeBuildFailed)(error) || Schema.is(FrameworkProvenanceRefused)(error)
++        Schema.is(WorkerdMigrationRequired)(error) ||
++          Schema.is(RuntimeBuildFailed)(error) ||
++          Schema.is(FrameworkProvenanceRefused)(error)
            ? error
            : engineFailure(),
        );
@@ -2579,14 +4300,20 @@ index 14d88ee..876089c 100644
                  ? error
                  : buildFailed("compile", error),
 diff --git a/packages/sdk/src/workerd.ts b/packages/sdk/src/workerd.ts
-index 24a2177..30a352f 100644
+index e73b8c5..c645f41 100644
 --- a/packages/sdk/src/workerd.ts
 +++ b/packages/sdk/src/workerd.ts
-@@ -1,5 +1,7 @@
+@@ -1,5 +1,13 @@
  /** Portable workerd app compilation, protocol adapters, and immutable build storage. */
  export * from "./contracts/worker-build.ts";
 +export * from "./contracts/framework-provenance.ts";
-+export { FrameworkProvenanceRegistry, frameworkProvenanceRegistry, admitFramework, admitLoadedFramework, selectFrameworkProtocol } from "./implementation/framework-provenance.ts";
++export {
++  FrameworkProvenanceRegistry,
++  frameworkProvenanceRegistry,
++  admitFramework,
++  admitLoadedFramework,
++  selectFrameworkProtocol,
++} from "./implementation/framework-provenance.ts";
  export {
    assembleWorkerBundle,
    frameworkIdentity,

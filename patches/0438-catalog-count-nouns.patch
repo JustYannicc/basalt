@@ -64,10 +64,24 @@ index 67f5632..b64c7d9 100644
            page.getByPlaceholder("Search apps…").fill("synthetic"),
          );
 diff --git a/packages/ui/src/implementation/dashboard/catalog.tsx b/packages/ui/src/implementation/dashboard/catalog.tsx
-index e315fde..b5f3fc7 100644
+index e315fde..f144f4d 100644
 --- a/packages/ui/src/implementation/dashboard/catalog.tsx
 +++ b/packages/ui/src/implementation/dashboard/catalog.tsx
-@@ -194,7 +194,7 @@ export function CatalogPage<E, IE>({
+@@ -189,12 +189,20 @@ export function CatalogPage<E, IE>({
+       action={action}
+       toolbar={
+         <>
+-          <SearchInput autoFocus value={search} onChange={(value) => { setOnly(undefined); setSearch(value); }} placeholder="Search apps…" />
++          <SearchInput
++            autoFocus
++            value={search}
++            onChange={(value) => {
++              setOnly(undefined);
++              setSearch(value);
++            }}
++            placeholder="Search apps…"
++          />
+           {AsyncResult.isInitial(result) && !entries.length ? (
              <CatalogCountSkeleton />
            ) : (
              <span className="muted min-w-20 text-muted-foreground tabular-nums">

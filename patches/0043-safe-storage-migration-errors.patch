@@ -1,16 +1,17 @@
 diff --git a/apps/hosted/cloud/src/implementation/migration-guard.ts b/apps/hosted/cloud/src/implementation/migration-guard.ts
-index 4b8ac9c..295a245 100644
+index 4b8ac9c..78027ae 100644
 --- a/apps/hosted/cloud/src/implementation/migration-guard.ts
 +++ b/apps/hosted/cloud/src/implementation/migration-guard.ts
-@@ -127,8 +127,11 @@ const failureTags = (cause: unknown) => {
+@@ -127,8 +127,12 @@ const failureTags = (cause: unknown) => {
  
  const describe = (cause: unknown) => {
    const state = sqlStateOf(cause);
 -  if (state === "55P03") return "lock timeout (55P03)";
 -  if (state === "57014") return "statement timeout or cancel (57014)";
-+  const version = cause instanceof HostedMigrationFailed && cause.migrationVersion !== undefined
-+    ? ` at executor version ${cause.migrationVersion}`
-+    : "";
++  const version =
++    cause instanceof HostedMigrationFailed && cause.migrationVersion !== undefined
++      ? ` at executor version ${cause.migrationVersion}`
++      : "";
 +  if (state === "55P03") return `lock timeout (55P03)${version}`;
 +  if (state === "57014") return `statement timeout or cancel (57014)${version}`;
    // Its message holds only cause tags and a SQLSTATE.

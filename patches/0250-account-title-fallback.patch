@@ -291,7 +291,7 @@ index 3dc592b..35dad58 100644
        accounts: [account.id],
        provider: account.provider,
 diff --git a/packages/ui/src/implementation/dashboard/scoped-connections.tsx b/packages/ui/src/implementation/dashboard/scoped-connections.tsx
-index 8064335..634fba3 100644
+index 8064335..0e70ce4 100644
 --- a/packages/ui/src/implementation/dashboard/scoped-connections.tsx
 +++ b/packages/ui/src/implementation/dashboard/scoped-connections.tsx
 @@ -70,7 +70,8 @@ import {
@@ -304,7 +304,19 @@ index 8064335..634fba3 100644
  
  /** Each host supplies its existing authorized catalog read of the app's tools. */
  export interface ConnectionToolPickerProps {
-@@ -934,7 +935,7 @@ function AssignAccount({
+@@ -333,7 +334,10 @@ function ConnectionCard({
+ 
+ const choicesFor = (inventory: Inventory): ReadonlyMap<AppId, AppChoices> =>
+   new Map(
+-    inventory.apps.map((app) => [app.id, appChoices(app, inventory.links, inventory.accounts, inventory.hostManagedLinks)]),
++    inventory.apps.map((app) => [
++      app.id,
++      appChoices(app, inventory.links, inventory.accounts, inventory.hostManagedLinks),
++    ]),
+   );
+ 
+ /** A stored connection as an editable draft, keeping removed apps and accounts visible. */
+@@ -934,7 +938,7 @@ function AssignAccount({
        const existing = options.get(account.id);
        if (existing === undefined)
          options.set(account.id, {

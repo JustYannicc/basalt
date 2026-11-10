@@ -157,7 +157,7 @@ index 83f4d33..c500ce3 100644
      "react-markdown": "10.1.0",
      "remark-gfm": "4.0.1",
 diff --git a/packages/ui/src/contracts/http.ts b/packages/ui/src/contracts/http.ts
-index 99e4539..ee2a83b 100644
+index 99e4539..3432fef 100644
 --- a/packages/ui/src/contracts/http.ts
 +++ b/packages/ui/src/contracts/http.ts
 @@ -19,6 +19,13 @@ const stateRevision = HttpClient.mapRequest(
@@ -174,16 +174,20 @@ index 99e4539..ee2a83b 100644
  /**
   * Effect's Fetch client with the runtime's `Fetch`: the browser's, or on the server the
   * document's in-process fetch supplied by the dashboard atom runtime.
-@@ -28,7 +35,11 @@ export const dashboardHttpClient: Layer.Layer<HttpClient.HttpClient> = Layer.eff
+@@ -28,7 +35,15 @@ export const dashboardHttpClient: Layer.Layer<HttpClient.HttpClient> = Layer.eff
    Effect.map(HttpClient.HttpClient, (client) =>
      stateRevision(typeof window === "undefined" ? addressHost(client) : client),
    ),
 -).pipe(Layer.provide(FetchHttpClient.layer));
-+).pipe(Layer.provide(
-+  typeof window === "undefined"
-+    ? FetchHttpClient.layer
-+    : FetchHttpClient.layer.pipe(Layer.provide(Layer.succeed(FetchHttpClient.Fetch, currentFetch))),
-+));
++).pipe(
++  Layer.provide(
++    typeof window === "undefined"
++      ? FetchHttpClient.layer
++      : FetchHttpClient.layer.pipe(
++          Layer.provide(Layer.succeed(FetchHttpClient.Fetch, currentFetch)),
++        ),
++  ),
++);
  
  /** A deterministic key for a request, independent of property order. */
  export const requestKey = (value: unknown): string => {

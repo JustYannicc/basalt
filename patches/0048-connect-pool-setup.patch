@@ -456,19 +456,22 @@ index 0000000..c318096
 +  );
 +}
 diff --git a/apps/hosted/web/src/implementation/pages/connect.tsx b/apps/hosted/web/src/implementation/pages/connect.tsx
-index a657f16..3097fa7 100644
+index a657f16..b1b96de 100644
 --- a/apps/hosted/web/src/implementation/pages/connect.tsx
 +++ b/apps/hosted/web/src/implementation/pages/connect.tsx
-@@ -1,7 +1,7 @@
+@@ -1,7 +1,10 @@
  import { Link, useNavigate } from "@tanstack/react-router";
  import { Button } from "@executor-js/ui/components/button";
  import { Code } from "@executor-js/ui/dashboard/code";
 -import { McpInstallInstructions } from "@executor-js/ui/dashboard/connect";
-+import { AssistantGuideExtensionsProvider, McpInstallInstructions } from "@executor-js/ui/dashboard/connect";
++import {
++  AssistantGuideExtensionsProvider,
++  McpInstallInstructions,
++} from "@executor-js/ui/dashboard/connect";
  import {
    ScopedConnectionPage,
    ScopedConnectionsPage,
-@@ -10,6 +10,8 @@ import {
+@@ -10,6 +13,8 @@ import {
  } from "@executor-js/ui/dashboard/scoped-connections";
  import { ConnectedAgents } from "@executor-js/ui/dashboard/connected-agents";
  import { ConnectionToolPicker } from "@executor-js/ui/dashboard/connection-tool-picker";
@@ -477,7 +480,7 @@ index a657f16..3097fa7 100644
  import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
  import { HostedFailure } from "../components/dashboard-bindings.tsx";
  import { resourceInventoryAtom } from "../../contracts/resource-access.ts";
-@@ -23,6 +25,13 @@ import {
+@@ -23,6 +28,13 @@ import {
  } from "../../contracts/mcp-connections.ts";
  import { useDocumentationUrl } from "../documentation.ts";
  import { useResourceOrigins } from "../resource-origin.ts";
@@ -491,7 +494,7 @@ index a657f16..3097fa7 100644
  
  /** The inventory and the member's connections, keyed by the URL. */
  export const connectionPageReads: OrganizationPageReads = (organization) => [
-@@ -45,10 +54,11 @@ function PersonalTokenSetup({
+@@ -45,10 +57,11 @@ function PersonalTokenSetup({
    readonly mcpOrigin: string;
  }) {
    const { organization, slug, id } = useOrganizationRoute();
@@ -504,13 +507,17 @@ index a657f16..3097fa7 100644
            type: "http",
            url: `${mcpOrigin}/org/${encodeURIComponent(slug)}/mcp`,
            headers: { Authorization: "Bearer <YOUR_PAT>" },
-@@ -99,6 +109,72 @@ function ConnectionLink({ connection, className, children }: ConnectionLinkProps
+@@ -99,6 +112,76 @@ function ConnectionLink({ connection, className, children }: ConnectionLinkProps
    );
  }
  
-+
 +/** Pool setup extends only the person's full-access guide. */
-+function FullAccessInstallation({ endpoint, docs, apiOrigin, mcpOrigin }: {
++function FullAccessInstallation({
++  endpoint,
++  docs,
++  apiOrigin,
++  mcpOrigin,
++}: {
 +  readonly endpoint: string;
 +  readonly docs: string | null;
 +  readonly apiOrigin: string;
@@ -577,7 +584,7 @@ index a657f16..3097fa7 100644
  /** The bindings both connection pages share in this organization. */
  function useConnectionBindings() {
    const origins = useResourceOrigins();
-@@ -113,10 +189,11 @@ function useConnectionBindings() {
+@@ -113,10 +196,11 @@ function useConnectionBindings() {
      ConnectionLink,
      renderInstallation: (target: ConnectTarget) =>
        target.apps === undefined ? (
@@ -591,7 +598,7 @@ index a657f16..3097fa7 100644
          />
        ) : (
          <McpInstallInstructions
-@@ -133,6 +210,7 @@ export function ConnectPage() {
+@@ -133,6 +217,7 @@ export function ConnectPage() {
    const bindings = useConnectionBindings();
    const { organization } = useOrganizationRoute();
    const origins = useResourceOrigins();
@@ -599,7 +606,7 @@ index a657f16..3097fa7 100644
    return (
      <ScopedConnectionsPage
        key={organization}
-@@ -143,7 +221,9 @@ export function ConnectPage() {
+@@ -143,7 +228,9 @@ export function ConnectPage() {
            query={mcpAgentsAtom(organization)}
            revoke={revokeMcpAgentAtom(organization)}
            Failure={HostedFailure}

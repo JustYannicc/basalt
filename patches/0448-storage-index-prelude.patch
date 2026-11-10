@@ -232,12 +232,3 @@ index 0eb6357..43b02e0 100644
  /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */
  export const trailingStorageIndexVersions = trailingIndexVersions(storageSchemas);
  
-diff --git a/packages/sdk/src/implementation/storage-schema.ts b/packages/sdk/src/implementation/storage-schema.ts
-index aee1872..4cf8b7a 100644
---- a/packages/sdk/src/implementation/storage-schema.ts
-+++ b/packages/sdk/src/implementation/storage-schema.ts
-@@ -1012,3 +1012,4 @@ export const accountIdentityIndexes = [
- ] as const;
- 
- export const version4025Tables = { ...version4024Tables, accountAcquisitions };
-+

@@ -1,7 +1,7 @@
 {
   "identity": "basalt-storage-index-prelude",
   "file": "0448-storage-index-prelude.patch",
-  "content_sha256": "0a6d561b8e855380d60cf93ee6ccd92c828e9b79f4b557505dc8f8c4ebb473dc",
+  "content_sha256": "9851121287364798c048674344673760f5e905883be749fbef8e74976a06c950",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

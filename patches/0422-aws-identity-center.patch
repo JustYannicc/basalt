@@ -49,17 +49,160 @@ index 9766a37..052ad95 100644
  });
  /** Keep only the checks of apps the caller can see. */
 diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
-index b3efc26..da8e59e 100644
+index b3efc26..d1f973c 100644
 --- a/apps/hosted/server/src/implementation/app-ui.ts
 +++ b/apps/hosted/server/src/implementation/app-ui.ts
-@@ -764,6 +764,7 @@ export const hostedAppUi = <R = never>(
-       // The page names the caller's own accounts; the app's are not theirs to see.
-       accountIds: accounts?.user,
-       accounts: notice,
-+      accountsHref: fix.href,
-       parentOrigin: addresses.embedded ? addresses.dashboardOrigin : undefined,
-       version: version.id,
-       asset: (path) => (path === "index.html" ? index : assets(version, path)),
+@@ -695,7 +695,10 @@ export const hostedAppUi = <R = never>(
+     // The page runs with the app's linked accounts and the caller's linked accounts; a plain
+     // requirement with none shows what to link.
+     const accountReads = Effect.gen(function* () {
+-      const resolution = yield* appUiPhase("document-caller-accounts", callerAccounts(current.app)).pipe(
++      const resolution = yield* appUiPhase(
++        "document-caller-accounts",
++        callerAccounts(current.app),
++      ).pipe(
+         asCaller,
+         Effect.map((accounts) => ({ kind: "resolved" as const, accounts })),
+         Effect.catchTag("AccountRequired", (error) =>
+@@ -705,54 +708,60 @@ export const hostedAppUi = <R = never>(
+           Schema.is(OrganizationForbidden)(error) ? new UiForbidden() : unavailable(),
+         ),
+       );
+-      return yield* appUiPhase("document-account-notice", Effect.gen(function* () {
+-      if (resolution.kind === "missing") {
+-        const requirement = current.app.requirements.accounts[resolution.slot];
+-        if (requirement === undefined) return yield* unavailable();
+-        return {
+-          accounts: undefined,
+-          notice: {
+-            app: current.app.name,
+-            problems: [{ provider: requirement.definition.name, reason: "missing" as const }],
+-            fix: fix.href,
+-          },
+-        };
+-      }
+-      const used = accountIds(resolution.accounts);
+-      if (used.length === 0) return { accounts: resolution.accounts, notice: undefined };
+-      const found = yield* Effect.forEach(used, (account) =>
+-        Effect.all({
+-          account: executor.accounts.get({ owner: current.access.owner, account }),
+-          health: executor.accounts
+-            .health({
+-              owner: current.access.owner,
+-              account,
+-              apps: [current.app.id],
+-            })
+-            .pipe(
+-              Effect.flatMap(visibleObservationHealth),
+-              Effect.provideService(CurrentUserId, current.access.userId),
+-              Effect.provideService(CurrentOrganization, current.access),
++      return yield* appUiPhase(
++        "document-account-notice",
++        Effect.gen(function* () {
++          if (resolution.kind === "missing") {
++            const requirement = current.app.requirements.accounts[resolution.slot];
++            if (requirement === undefined) return yield* unavailable();
++            return {
++              accounts: undefined,
++              notice: {
++                app: current.app.name,
++                problems: [{ provider: requirement.definition.name, reason: "missing" as const }],
++                fix: fix.href,
++              },
++            };
++          }
++          const used = accountIds(resolution.accounts);
++          if (used.length === 0) return { accounts: resolution.accounts, notice: undefined };
++          const found = yield* Effect.forEach(used, (account) =>
++            Effect.all({
++              account: executor.accounts.get({ owner: current.access.owner, account }),
++              health: executor.accounts
++                .health({
++                  owner: current.access.owner,
++                  account,
++                  apps: [current.app.id],
++                })
++                .pipe(
++                  Effect.flatMap(visibleObservationHealth),
++                  Effect.provideService(CurrentUserId, current.access.userId),
++                  Effect.provideService(CurrentOrganization, current.access),
++                ),
++            }).pipe(
++              Effect.map((entry) => [[account, entry] as const]),
++              Effect.catchTag("AccountNotFound", () => Effect.succeed([])),
++              Effect.mapError(unavailable),
+             ),
+-        }).pipe(
+-          Effect.map((entry) => [[account, entry] as const]),
+-          Effect.catchTag("AccountNotFound", () => Effect.succeed([])),
+-          Effect.mapError(unavailable),
+-        ),
+-      );
+-      const statuses = yield* visibleAccountStatuses(found.flat().map(([, entry]) => entry)).pipe(
+-        asCaller,
+-      );
+-      const problems = accountProblems(
+-        current.app,
+-        resolution.accounts,
+-        new Map(statuses.map((entry) => [entry.account.id, entry])),
++          );
++          const statuses = yield* visibleAccountStatuses(
++            found.flat().map(([, entry]) => entry),
++          ).pipe(asCaller);
++          const problems = accountProblems(
++            current.app,
++            resolution.accounts,
++            new Map(statuses.map((entry) => [entry.account.id, entry])),
++          );
++          return {
++            accounts: resolution.accounts,
++            notice:
++              problems.length === 0
++                ? undefined
++                : { app: current.app.name, problems, fix: fix.href },
++          };
++        }),
+       );
+-      return {
+-        accounts: resolution.accounts,
+-        notice: problems.length === 0 ? undefined : { app: current.app.name, problems, fix: fix.href },
+-      };
+-      }));
+     });
+     // The document's read needs only the version and no SQL, so it runs beside the account
+     // reads. Its failure counts only where the document reads it, as before.
+@@ -760,15 +769,22 @@ export const hostedAppUi = <R = never>(
+       [accountReads, Effect.exit(assets(version, "index.html"))],
+       { concurrency: 2 },
+     );
+-    const document = yield* appUiPhase("document-asset", appDocument({
+-      // The page names the caller's own accounts; the app's are not theirs to see.
+-      accountIds: accounts?.user,
+-      accounts: notice,
+-      parentOrigin: addresses.embedded ? addresses.dashboardOrigin : undefined,
+-      version: version.id,
+-      asset: (path) => (path === "index.html" ? index : assets(version, path)),
+-    }));
+-    yield* appUiPhase("document-usage", recordUsage("app_viewed", { app_id: current.app.id, version_id: version.id })).pipe(
++    const document = yield* appUiPhase(
++      "document-asset",
++      appDocument({
++        // The page names the caller's own accounts; the app's are not theirs to see.
++        accountIds: accounts?.user,
++        accounts: notice,
++        accountsHref: fix.href,
++        parentOrigin: addresses.embedded ? addresses.dashboardOrigin : undefined,
++        version: version.id,
++        asset: (path) => (path === "index.html" ? index : assets(version, path)),
++      }),
++    );
++    yield* appUiPhase(
++      "document-usage",
++      recordUsage("app_viewed", { app_id: current.app.id, version_id: version.id }),
++    ).pipe(
+       Effect.provideService(CurrentUserId, current.access.userId),
+       Effect.provideService(CurrentOrganization, current.access),
+       Effect.provideService(CurrentUsage, { source: "app_ui" }),
 diff --git a/apps/local/server/src/implementation/app-ui.ts b/apps/local/server/src/implementation/app-ui.ts
 index 347ec73..fbe0f22 100644
 --- a/apps/local/server/src/implementation/app-ui.ts

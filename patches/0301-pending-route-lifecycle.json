@@ -1,7 +1,7 @@
 {
   "identity": "basalt-pending-route-lifecycle",
   "file": "0301-pending-route-lifecycle.patch",
-  "content_sha256": "a97b6b5c386487102b29d48e32f2d24290f5dfb1b2013af00903d6404747c362",
+  "content_sha256": "0895ec92e76aa33895ba438e6bdacb976a92c0d7ac674022d24c7f14e76fc3f7",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

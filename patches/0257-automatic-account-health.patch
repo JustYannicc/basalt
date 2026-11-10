@@ -613,10 +613,24 @@ index a2593f7..65776c7 100644
            if (owned.length === 0) return new Set<AccountId>();
            // The SDK resolved each account with its owner; only the product's policy is checked here.
 diff --git a/apps/hosted/server/src/index.ts b/apps/hosted/server/src/index.ts
-index 994f62b..cbe2b58 100644
+index 994f62b..0a0f278 100644
 --- a/apps/hosted/server/src/index.ts
 +++ b/apps/hosted/server/src/index.ts
-@@ -134,3 +134,5 @@ export { resolveOrganizationReference } from "./implementation/organization-refe
+@@ -42,7 +42,12 @@ export {
+   type SecurityAuditOutcome,
+ } from "./contracts/security-audit.ts";
+ export { audited, recordSecurityAudit } from "./implementation/security-audit.ts";
+-export { authOptions, mcpAuthOptions, authSettings, sessionPrincipal } from "./implementation/auth.ts";
++export {
++  authOptions,
++  mcpAuthOptions,
++  authSettings,
++  sessionPrincipal,
++} from "./implementation/auth.ts";
+ export * from "./contracts/organization.ts";
+ export { organizationRoleHooks } from "./implementation/organization-roles.ts";
+ export {
+@@ -134,3 +139,5 @@ export { resolveOrganizationReference } from "./implementation/organization-refe
  
  export * from "./contracts/schedules.ts";
  export { makeScheduledAuthority } from "./implementation/schedules.ts";

@@ -1,16 +1,18 @@
 diff --git a/apps/hosted/cloud/scripts/worker-sizes.ts b/apps/hosted/cloud/scripts/worker-sizes.ts
-index 9ae869d..ec86e9f 100644
+index 9ae869d..8cf5e01 100644
 --- a/apps/hosted/cloud/scripts/worker-sizes.ts
 +++ b/apps/hosted/cloud/scripts/worker-sizes.ts
-@@ -342,7 +342,7 @@ const buildWorkers = (target: Target) =>
+@@ -341,9 +341,7 @@ const buildWorkers = (target: Target) =>
+             }),
            );
            if (Exit.isFailure(exit)) {
-             failures.push(
+-            failures.push(
 -              `${target.stage} ${resource.LogicalId}: ${Cause.pretty(exit.cause).split("\n")[0]}`,
-+              `${target.stage} ${resource.LogicalId}: ${Cause.pretty(exit.cause)}`,
-             );
+-            );
++            failures.push(`${target.stage} ${resource.LogicalId}: ${Cause.pretty(exit.cause)}`);
              continue;
            }
+           for (const file of exit.value.files) {
 diff --git a/apps/hosted/cloud/src/infrastructure/mcp-auth.ts b/apps/hosted/cloud/src/infrastructure/mcp-auth.ts
 index b70ee89..cbd64d5 100644
 --- a/apps/hosted/cloud/src/infrastructure/mcp-auth.ts

@@ -79,10 +79,10 @@ index 4f5e3f3..12aa378 100644
              createTransport(options, async (request) => {
                const response = await fetch(options.url, {
 diff --git a/apps/hosted/cloud/src/infrastructure/sentry.ts b/apps/hosted/cloud/src/infrastructure/sentry.ts
-index ee5a60c..c6b141b 100644
+index ee5a60c..f6db430 100644
 --- a/apps/hosted/cloud/src/infrastructure/sentry.ts
 +++ b/apps/hosted/cloud/src/infrastructure/sentry.ts
-@@ -3,11 +3,73 @@ import { AlchemyContext } from "alchemy/AlchemyContext";
+@@ -3,11 +3,88 @@ import { AlchemyContext } from "alchemy/AlchemyContext";
  import * as Output from "alchemy/Output";
  import * as Command from "alchemy/Command";
  import { Stage } from "alchemy/Stage";
@@ -109,16 +109,25 @@ index ee5a60c..c6b141b 100644
 +/** The operator DSN must be HTTPS on one Sentry EU ingest host and one numeric project. */
 +export function parseDirectSentryDsn(value: unknown): DirectSentryDsn | undefined {
 +  if (typeof value !== "string" || value === "" || value.trim() === "") return undefined;
-+  const match = /^https:\/\/([A-Za-z0-9_-]+)@([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.ingest\.de\.sentry\.io)\/(\d+)$/i.exec(value);
++  const match =
++    /^https:\/\/([A-Za-z0-9_-]+)@([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.ingest\.de\.sentry\.io)\/(\d+)$/i.exec(
++      value,
++    );
 +  if (!match) return undefined;
 +  try {
 +    const url = new URL(value);
 +    const [, publicKey, host, projectId] = match;
 +    if (
-+      url.protocol !== "https:" || url.username !== publicKey || url.password !== "" ||
-+      url.port !== "" || url.search !== "" || url.hash !== "" ||
-+      url.hostname.toLowerCase() !== host!.toLowerCase() || url.pathname !== `/${projectId}`
-+    ) return undefined;
++      url.protocol !== "https:" ||
++      url.username !== publicKey ||
++      url.password !== "" ||
++      url.port !== "" ||
++      url.search !== "" ||
++      url.hash !== "" ||
++      url.hostname.toLowerCase() !== host!.toLowerCase() ||
++      url.pathname !== `/${projectId}`
++    )
++      return undefined;
 +    return { dsn: value, publicKey: publicKey!, host: host!.toLowerCase(), projectId: projectId! };
 +  } catch {
 +    return undefined;
@@ -139,9 +148,15 @@ index ee5a60c..c6b141b 100644
 +  try {
 +    const url = new URL(value);
 +    if (
-+      url.protocol !== "https:" || url.username !== "" || url.password !== "" || url.port !== "" ||
-+      url.search !== "" || url.hash !== "" || url.hostname.toLowerCase() !== dsn.host
-+    ) return undefined;
++      url.protocol !== "https:" ||
++      url.username !== "" ||
++      url.password !== "" ||
++      url.port !== "" ||
++      url.search !== "" ||
++      url.hash !== "" ||
++      url.hostname.toLowerCase() !== dsn.host
++    )
++      return undefined;
 +    return { url: url.href, authHeader: `sentry sentry_key=${dsn.publicKey}` };
 +  } catch {
 +    return undefined;
@@ -157,7 +172,7 @@ index ee5a60c..c6b141b 100644
  /** Disabled stages do not read Sentry state or require management credentials. */
  export const sentryBindings = Effect.gen(function* () {
    const dev = (yield* AlchemyContext).dev;
-@@ -38,13 +100,23 @@ export const sentryBindings = Effect.gen(function* () {
+@@ -38,13 +115,28 @@ export const sentryBindings = Effect.gen(function* () {
        errorTunnel: Output.asOutput<string | null>("/api/fedcba9876543210/submit"),
      };
    }
@@ -172,7 +187,12 @@ index ee5a60c..c6b141b 100644
      return {
 -      env: { EXECUTOR_SENTRY: Output.asOutput(null) },
 +      env: {
-+        EXECUTOR_SENTRY: Output.asOutput({ dsn: parsed.dsn, environment, release, strictPrivacy: true }),
++        EXECUTOR_SENTRY: Output.asOutput({
++          dsn: parsed.dsn,
++          environment,
++          release,
++          strictPrivacy: true,
++        }),
 +      },
 +      // The direct public key is server-only here. Browser reporting requires the managed tunnel.
        build: {},
@@ -184,7 +204,7 @@ index ee5a60c..c6b141b 100644
    const environment = yield* Stage;
    const release = yield* Config.NonEmptyString("EXECUTOR_BUILD_VERSION");
    const output = yield* Output.stackRef<SentryOutput>("executor-next-sentry");
-@@ -102,11 +174,10 @@ export const uploadCloudSourceMaps = (
+@@ -102,11 +194,10 @@ export const uploadCloudSourceMaps = (
    bundle: Output.Output<unknown>,
  ) =>
    Effect.gen(function* () {

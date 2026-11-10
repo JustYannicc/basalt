@@ -1073,7 +1073,7 @@ index 9a3d370..50175d7 100644
          );
        const hook = catalog.find((hook) => hook.name === parsed.name);
 diff --git a/packages/sdk/src/implementation/workflows.ts b/packages/sdk/src/implementation/workflows.ts
-index c0f2296..fc6ce44 100644
+index c0f2296..7d6b339 100644
 --- a/packages/sdk/src/implementation/workflows.ts
 +++ b/packages/sdk/src/implementation/workflows.ts
 @@ -48,7 +48,7 @@ import { invocationScope, scopedSelection } from "./selection.ts";
@@ -1093,7 +1093,7 @@ index c0f2296..fc6ce44 100644
    backend?: WorkflowRuntime,
    reviewUrl?: import("../contracts/executor.ts").ExecutorInputs["workflowInputUrl"],
    standingPolicy?: ToolPolicyHook,
-@@ -788,11 +789,10 @@ export const makeWorkflowRuns = (
+@@ -788,10 +789,13 @@ export const makeWorkflowRuns = (
                command: { operation: "workflows" },
              })
              .pipe(
@@ -1101,14 +1101,16 @@ index c0f2296..fc6ce44 100644
 -                Schema.is(ProviderError)(error)
 -                  ? appProviderFailure(state, error)
 -                  : evaluationFailure(identity, error, "Workflow evaluation failed"),
--              ),
-+              Effect.catch((error) => Effect.gen(function* () {
-+                if (Schema.is(ProviderError)(error)) return yield* providerFailure(state, error);
-+                return yield* Effect.fail(evaluationFailure(identity, error, "Workflow evaluation failed"));
-+              })),
++              Effect.catch((error) =>
++                Effect.gen(function* () {
++                  if (Schema.is(ProviderError)(error)) return yield* providerFailure(state, error);
++                  return yield* Effect.fail(
++                    evaluationFailure(identity, error, "Workflow evaluation failed"),
++                  );
++                }),
+               ),
              ),
          );
-         return yield* Schema.decodeUnknownEffect(Schema.Array(HostedWorkflow))(value).pipe(
 diff --git a/packages/ui/src/contracts/account-identities.ts b/packages/ui/src/contracts/account-identities.ts
 index 5844e33..295f331 100644
 --- a/packages/ui/src/contracts/account-identities.ts

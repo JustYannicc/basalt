@@ -1,7 +1,7 @@
 {
   "identity": "basalt-provider-error-account-title",
   "file": "0350-provider-error-account-title.patch",
-  "content_sha256": "70b904f9e52bd0e898c30528f092804f80ca024f215681374e6c86cabd84d674",
+  "content_sha256": "6fbd7c96d84231f90da04e705ecdf0fcebb91d1bf066f4b6d48dff6c85e98eca",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

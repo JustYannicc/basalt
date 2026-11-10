@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/testing/database-pool-fixture.ts b/apps/hosted/testing/database-pool-fixture.ts
-index 481761b..3d6c89a 100644
+index 481761b..0cbf985 100644
 --- a/apps/hosted/testing/database-pool-fixture.ts
 +++ b/apps/hosted/testing/database-pool-fixture.ts
 @@ -53,12 +53,14 @@ import { LocalDatabaseUrl } from "../cloud/src/contracts/database.ts";
@@ -117,7 +117,7 @@ index 481761b..3d6c89a 100644
                // One group: a callback inserts, then reads after its sibling on the same connection
                // has given up on a lock wait. The read is refused unsent; the insert was sent. Each
                // sibling starts once its callback has the group's connection, so its lock wait goes
-@@ -538,9 +591,15 @@ const command = Command.make("database-pool-fixture", {
+@@ -538,9 +591,16 @@ const command = Command.make("database-pool-fixture", {
                  },
                };
              }
@@ -127,7 +127,8 @@ index 481761b..3d6c89a 100644
                yield* holdLock(lockKey);
 -              const { pool: shared } = yield* pool({ maxConnections: 4, cancels: "dropped" });
 +              const { pool: shared } = yield* pool({
-+                maxConnections: 4, cancels: "dropped",
++                maxConnections: 4,
++                cancels: "dropped",
 +                readyDelay: args.case === "sibling-delayed" ? 30 : 0,
 +              });
 +              // Finish connection startup before exercising the queued lock race.

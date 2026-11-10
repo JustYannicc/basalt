@@ -287,7 +287,7 @@ index 71ab243..e618878 100644
    icons: Schema.Array(CatalogIcon),
    /** Optional operator notes; they do not change the installed app or its provider. */
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index 2c69c20..c0dda60 100644
+index 2c69c20..6f91fdf 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
 @@ -93,9 +93,10 @@ import { requirementTitles } from "./requirement-titles.ts";
@@ -344,6 +344,131 @@ index 2c69c20..c0dda60 100644
    readonly Failure: ComponentType<FailureProps<E>>;
  }
  
+@@ -872,66 +879,66 @@ function LinkScope<E>({
+     .every(([, requirement]) => editingFor(data, requirement) === undefined);
+   return (
+     <Checking.Provider value={checking}>
+-    <RowSection.Provider value={title}>
+-      <section aria-label={title} data-read-only={readOnly} className="space-y-3">
+-        <div>
+-          <h2 className="text-sm font-medium">{title}</h2>
+-          <p className="text-xs text-muted-foreground">
+-            {readOnly
+-              ? `Accounts this app uses ${audience}`
+-              : `Pick which accounts this app uses ${audience}`}
+-          </p>
+-        </div>
+-        {readOnly && data.readOnly !== undefined && (
+-          <p className="text-xs text-muted-foreground">{data.readOnly}</p>
+-        )}
+-        <div className="space-y-5">
+-          {groups.map((group) => {
+-            if (group.length > 1)
++      <RowSection.Provider value={title}>
++        <section aria-label={title} data-read-only={readOnly} className="space-y-3">
++          <div>
++            <h2 className="text-sm font-medium">{title}</h2>
++            <p className="text-xs text-muted-foreground">
++              {readOnly
++                ? `Accounts this app uses ${audience}`
++                : `Pick which accounts this app uses ${audience}`}
++            </p>
++          </div>
++          {readOnly && data.readOnly !== undefined && (
++            <p className="text-xs text-muted-foreground">{data.readOnly}</p>
++          )}
++          <div className="space-y-5">
++            {groups.map((group) => {
++              if (group.length > 1)
++                return (
++                  <ServiceView
++                    key={group.map(([slot]) => slot).join(" ")}
++                    {...props}
++                    group={group}
++                    title={serviceTitle(group)}
++                    titles={titles}
++                    readOnlyNote={readOnly ? undefined : data.readOnly}
++                  />
++                );
++              const [slot, requirement] = group[0]!;
++              const shared = sharedServiceTitle(requirement, titles.get(slot));
++              // The same account can be listed under each requirement of a shared service, so its
++              // row ⋯ names the requirement too, such as "in Your accounts · Mail · Sign in".
+               return (
+-                <ServiceView
+-                  key={group.map(([slot]) => slot).join(" ")}
+-                  {...props}
+-                  group={group}
+-                  title={serviceTitle(group)}
+-                  titles={titles}
+-                  readOnlyNote={readOnly ? undefined : data.readOnly}
+-                />
++                <RowSection.Provider
++                  key={slot}
++                  value={shared === undefined ? title : `${title} · ${shared}`}
++                >
++                  <RequirementView
++                    {...props}
++                    slot={slot}
++                    requirement={requirement}
++                    title={titles.get(slot)}
++                    shared={shared}
++                    linked={data.links.flatMap((link) =>
++                      link.requirement === slot ? [link.account] : [],
++                    )}
++                    readOnlyNote={readOnly ? undefined : data.readOnly}
++                  />
++                </RowSection.Provider>
+               );
+-            const [slot, requirement] = group[0]!;
+-            const shared = sharedServiceTitle(requirement, titles.get(slot));
+-            // The same account can be listed under each requirement of a shared service, so its
+-            // row ⋯ names the requirement too, such as "in Your accounts · Mail · Sign in".
+-            return (
+-              <RowSection.Provider
+-                key={slot}
+-                value={shared === undefined ? title : `${title} · ${shared}`}
+-              >
+-                <RequirementView
+-                  {...props}
+-                  slot={slot}
+-                  requirement={requirement}
+-                  title={titles.get(slot)}
+-                  shared={shared}
+-                  linked={data.links.flatMap((link) =>
+-                    link.requirement === slot ? [link.account] : [],
+-                  )}
+-                  readOnlyNote={readOnly ? undefined : data.readOnly}
+-                />
+-              </RowSection.Provider>
+-            );
+-          })}
+-          {unavailable.length > 0 && (
+-            <UnavailableRequirements
+-              app={props.app}
+-              requirements={unavailable}
+-              titles={titles}
+-              methods={methods}
+-            />
+-          )}
+-        </div>
+-      </section>
+-    </RowSection.Provider>
++            })}
++            {unavailable.length > 0 && (
++              <UnavailableRequirements
++                app={props.app}
++                requirements={unavailable}
++                titles={titles}
++                methods={methods}
++              />
++            )}
++          </div>
++        </section>
++      </RowSection.Provider>
+     </Checking.Provider>
+   );
+ }
 @@ -1187,9 +1194,10 @@ function ServiceView<E>({
      group.flatMap(([slot, requirement]) => methodStates(props.methods, slot, requirement)),
    );
@@ -408,6 +533,41 @@ index 2c69c20..c0dda60 100644
 +      </span>
      </DropdownMenuItem>
    );
+ }
+@@ -2192,10 +2218,15 @@ function AccountStatus({
+   const checking = rechecks.running.has(account.id);
+   const retry = rechecks.failed.has(account.id) ? () => rechecks.retry(account.id) : undefined;
+   if (
+-    health.kind !== "needs-sign-in" && health.kind !== "unavailable" &&
+-    own.check?.checkable === true && own.check.check?.current !== true &&
++    health.kind !== "needs-sign-in" &&
++    health.kind !== "unavailable" &&
++    own.check?.checkable === true &&
++    own.check.check?.current !== true &&
+     (checking || retry !== undefined)
+-  ) return <AccountCheckResult health={own.check} part="header" checking={checking} retry={retry} />;
++  )
++    return (
++      <AccountCheckResult health={own.check} part="header" checking={checking} retry={retry} />
++    );
+   return (
+     <AccountHealthCell
+       health={health}
+@@ -2252,7 +2283,12 @@ function AccountStatusNotes({
+   if (accountNeedsSignIn(account) || account.signIn?.state === "unavailable") return null;
+   const health = account.health?.apps.find((entry) => entry.app === app.id);
+   if (health === undefined || (!health.checkable && health.check === null)) return null;
+-  return <AccountCheckResult health={health} part="notes"
+-    checking={rechecks.running.has(account.id)}
+-    retry={rechecks.failed.has(account.id) ? () => rechecks.retry(account.id) : undefined} />;
++  return (
++    <AccountCheckResult
++      health={health}
++      part="notes"
++      checking={rechecks.running.has(account.id)}
++      retry={rechecks.failed.has(account.id) ? () => rechecks.retry(account.id) : undefined}
++    />
++  );
  }
 diff --git a/packages/ui/src/implementation/dashboard/service-groups.ts b/packages/ui/src/implementation/dashboard/service-groups.ts
 index 8b324f8..777cf89 100644

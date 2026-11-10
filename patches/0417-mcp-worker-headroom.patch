@@ -53,73 +53,124 @@ index fac526b..03ffa62 100644
 +    domain: Schema.String.check(Schema.isPattern(/^[a-z0-9]+(?:[.-][a-z0-9]+)*$/u)),
 +  }))();
 diff --git a/apps/hosted/cloud/src/contracts/autumn.ts b/apps/hosted/cloud/src/contracts/autumn.ts
-index 61f4c12..4647b5a 100644
+index 61f4c12..23247ec 100644
 --- a/apps/hosted/cloud/src/contracts/autumn.ts
 +++ b/apps/hosted/cloud/src/contracts/autumn.ts
-@@ -15,7 +15,7 @@ export const autumnTimeout = "10 seconds";
+@@ -15,52 +15,57 @@ export const autumnTimeout = "10 seconds";
   * a fragment. Which endpoint an operator may point it at is a key-safety question, answered
   * where the key is read.
   */
 -export const AutumnServerUrl = Schema.String.check(
-+export const AutumnServerUrl = /* @__PURE__ */ (() => Schema.String.check(
-   Schema.makeFilter(
-     (value) => {
-       const url = URL.parse(value);
-@@ -30,27 +30,27 @@ export const AutumnServerUrl = Schema.String.check(
-     },
-     { message: "Use an HTTPS Autumn endpoint with no credentials, query or fragment" },
-   ),
+-  Schema.makeFilter(
+-    (value) => {
+-      const url = URL.parse(value);
+-      return (
+-        url !== null &&
+-        url.protocol === "https:" &&
+-        !url.username &&
+-        !url.password &&
+-        !url.search &&
+-        !url.hash
+-      );
+-    },
+-    { message: "Use an HTTPS Autumn endpoint with no credentials, query or fragment" },
+-  ),
 -);
-+))();
++export const AutumnServerUrl = /* @__PURE__ */ (() =>
++  Schema.String.check(
++    Schema.makeFilter(
++      (value) => {
++        const url = URL.parse(value);
++        return (
++          url !== null &&
++          url.protocol === "https:" &&
++          !url.username &&
++          !url.password &&
++          !url.search &&
++          !url.hash
++        );
++      },
++      { message: "Use an HTTPS Autumn endpoint with no credentials, query or fragment" },
++    ),
++  ))();
  
  const customer = { customerId: Schema.String };
  const customerKeys = { customerId: "customer_id" } as const;
  const featureKeys = { ...customerKeys, featureId: "feature_id" } as const;
 -const balance = Schema.Struct({
-+const balance = /* @__PURE__ */ (() => Schema.Struct({
-   featureId: Schema.String,
-   usage: Schema.Number,
-   remaining: Schema.Number,
-   unlimited: Schema.Boolean,
+-  featureId: Schema.String,
+-  usage: Schema.Number,
+-  remaining: Schema.Number,
+-  unlimited: Schema.Boolean,
 -}).pipe(Schema.encodeKeys({ featureId: "feature_id" }));
 -const price = Schema.Struct({ amount: Schema.Number, interval: Schema.String });
 -const item = Schema.Struct({
-+}).pipe(Schema.encodeKeys({ featureId: "feature_id" })))();
-+const price = /* @__PURE__ */ (() => Schema.Struct({ amount: Schema.Number, interval: Schema.String }))();
-+const item = /* @__PURE__ */ (() => Schema.Struct({
-   featureId: Schema.String,
-   included: Schema.Number,
-   unlimited: Schema.Boolean,
-   price: Schema.NullOr(
-     Schema.Struct({ amount: Schema.optionalKey(Schema.Number), interval: Schema.String }),
-   ),
+-  featureId: Schema.String,
+-  included: Schema.Number,
+-  unlimited: Schema.Boolean,
+-  price: Schema.NullOr(
+-    Schema.Struct({ amount: Schema.optionalKey(Schema.Number), interval: Schema.String }),
+-  ),
 -}).pipe(Schema.encodeKeys({ featureId: "feature_id" }));
 -const trial = Schema.Struct({
-+}).pipe(Schema.encodeKeys({ featureId: "feature_id" })))();
-+const trial = /* @__PURE__ */ (() => Schema.Struct({
-   durationLength: Schema.Number,
-   durationType: Schema.String,
-   cardRequired: Schema.Boolean,
-@@ -60,7 +60,7 @@ const trial = Schema.Struct({
-     durationType: "duration_type",
-     cardRequired: "card_required",
-   }),
+-  durationLength: Schema.Number,
+-  durationType: Schema.String,
+-  cardRequired: Schema.Boolean,
+-}).pipe(
+-  Schema.encodeKeys({
+-    durationLength: "duration_length",
+-    durationType: "duration_type",
+-    cardRequired: "card_required",
+-  }),
 -);
-+))();
++const balance = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    featureId: Schema.String,
++    usage: Schema.Number,
++    remaining: Schema.Number,
++    unlimited: Schema.Boolean,
++  }).pipe(Schema.encodeKeys({ featureId: "feature_id" })))();
++const price = /* @__PURE__ */ (() =>
++  Schema.Struct({ amount: Schema.Number, interval: Schema.String }))();
++const item = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    featureId: Schema.String,
++    included: Schema.Number,
++    unlimited: Schema.Boolean,
++    price: Schema.NullOr(
++      Schema.Struct({ amount: Schema.optionalKey(Schema.Number), interval: Schema.String }),
++    ),
++  }).pipe(Schema.encodeKeys({ featureId: "feature_id" })))();
++const trial = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    durationLength: Schema.Number,
++    durationType: Schema.String,
++    cardRequired: Schema.Boolean,
++  }).pipe(
++    Schema.encodeKeys({
++      durationLength: "duration_length",
++      durationType: "duration_type",
++      cardRequired: "card_required",
++    }),
++  ))();
  
  /**
   * The version of a plan a subscription bills, as `customers.get` expands it: its base price and
-@@ -192,11 +192,11 @@ export const AutumnRequests = {
+@@ -192,11 +197,12 @@ export const AutumnRequests = {
    verifyBilling: Schema.Struct(customer).pipe(Schema.encodeKeys(customerKeys)),
  };
  
 -const subscriptions = Schema.Array(
-+const subscriptions = /* @__PURE__ */ (() => Schema.Array(
-   Schema.Struct({ planId: Schema.String, status: Schema.String }).pipe(
-     Schema.encodeKeys({ planId: "plan_id" }),
-   ),
+-  Schema.Struct({ planId: Schema.String, status: Schema.String }).pipe(
+-    Schema.encodeKeys({ planId: "plan_id" }),
+-  ),
 -);
-+))();
++const subscriptions = /* @__PURE__ */ (() =>
++  Schema.Array(
++    Schema.Struct({ planId: Schema.String, status: Schema.String }).pipe(
++      Schema.encodeKeys({ planId: "plan_id" }),
++    ),
++  ))();
  const planIds = Schema.Array(
    Schema.Struct({ planId: Schema.String }).pipe(Schema.encodeKeys({ planId: "plan_id" })),
  );
@@ -646,39 +697,76 @@ index 4211c4a..2a95f7c 100644
 +  ]))();
  export type CloudEntry = typeof CloudEntry.Type;
 diff --git a/apps/hosted/cloud/src/contracts/invocation-telemetry.ts b/apps/hosted/cloud/src/contracts/invocation-telemetry.ts
-index d91ee4a..497dab4 100644
+index d91ee4a..80e2c97 100644
 --- a/apps/hosted/cloud/src/contracts/invocation-telemetry.ts
 +++ b/apps/hosted/cloud/src/contracts/invocation-telemetry.ts
-@@ -4,8 +4,8 @@
+@@ -4,51 +4,55 @@
   */
  import { Schema } from "effect";
  
 -const milliseconds = Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0));
 -export const CloudInvocation = Schema.Struct({
-+const milliseconds = /* @__PURE__ */ (() => Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0)))();
-+export const CloudInvocation = /* @__PURE__ */ (() => Schema.Struct({
-   scriptName: Schema.NullOr(Schema.String),
-   scriptVersion: Schema.optional(Schema.Struct({ id: Schema.String })),
-   /** The exported class or entrypoint, such as a Durable Object class; absent for the default. */
-@@ -19,10 +19,10 @@ export const CloudInvocation = Schema.Struct({
-   truncated: Schema.Boolean,
-   logs: Schema.Array(Schema.Struct({ message: Schema.Array(Schema.Unknown) })),
-   exceptions: Schema.optional(Schema.Array(Schema.Struct({ message: Schema.String }))),
+-  scriptName: Schema.NullOr(Schema.String),
+-  scriptVersion: Schema.optional(Schema.Struct({ id: Schema.String })),
+-  /** The exported class or entrypoint, such as a Durable Object class; absent for the default. */
+-  entrypoint: Schema.optional(Schema.NullOr(Schema.String)),
+-  executionModel: Schema.optional(Schema.NullOr(Schema.String)),
+-  eventTimestamp: Schema.NullOr(milliseconds),
+-  cpuTime: milliseconds,
+-  wallTime: milliseconds,
+-  outcome: Schema.String,
+-  event: Schema.Unknown,
+-  truncated: Schema.Boolean,
+-  logs: Schema.Array(Schema.Struct({ message: Schema.Array(Schema.Unknown) })),
+-  exceptions: Schema.optional(Schema.Array(Schema.Struct({ message: Schema.String }))),
 -});
-+}))();
++const milliseconds = /* @__PURE__ */ (() =>
++  Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0)))();
++export const CloudInvocation = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    scriptName: Schema.NullOr(Schema.String),
++    scriptVersion: Schema.optional(Schema.Struct({ id: Schema.String })),
++    /** The exported class or entrypoint, such as a Durable Object class; absent for the default. */
++    entrypoint: Schema.optional(Schema.NullOr(Schema.String)),
++    executionModel: Schema.optional(Schema.NullOr(Schema.String)),
++    eventTimestamp: Schema.NullOr(milliseconds),
++    cpuTime: milliseconds,
++    wallTime: milliseconds,
++    outcome: Schema.String,
++    event: Schema.Unknown,
++    truncated: Schema.Boolean,
++    logs: Schema.Array(Schema.Struct({ message: Schema.Array(Schema.Unknown) })),
++    exceptions: Schema.optional(Schema.Array(Schema.Struct({ message: Schema.String }))),
++  }))();
  
  /** Fixed bridge phases have no product data and remain distinct from platform CPU measurements. */
 -export const InvocationPhase = Schema.Struct({
-+export const InvocationPhase = /* @__PURE__ */ (() => Schema.Struct({
-   type: Schema.Literal("alchemy.phase"),
-   name: Schema.Literals([
-     "alchemy.runtime.initialize",
-@@ -34,13 +34,13 @@ export const InvocationPhase = Schema.Struct({
-     "alchemy.do.response",
-   ]),
-   durationMs: milliseconds,
+-  type: Schema.Literal("alchemy.phase"),
+-  name: Schema.Literals([
+-    "alchemy.runtime.initialize",
+-    "alchemy.runtime.wait",
+-    "alchemy.response",
+-    "alchemy.cleanup",
+-    "alchemy.do.initialize",
+-    "alchemy.do.wait",
+-    "alchemy.do.response",
+-  ]),
+-  durationMs: milliseconds,
 -});
-+}))();
++export const InvocationPhase = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    type: Schema.Literal("alchemy.phase"),
++    name: Schema.Literals([
++      "alchemy.runtime.initialize",
++      "alchemy.runtime.wait",
++      "alchemy.response",
++      "alchemy.cleanup",
++      "alchemy.do.initialize",
++      "alchemy.do.wait",
++      "alchemy.do.response",
++    ]),
++    durationMs: milliseconds,
++  }))();
  
  /** A Worker or Durable Object RPC names only the called method. */
 -export const InvocationRpc = Schema.Struct({ rpcMethod: Schema.String });
@@ -686,22 +774,35 @@ index d91ee4a..497dab4 100644
  
  /** HTTP is optional: scheduled and RPC invocations still contribute native timings. */
 -export const InvocationHttp = Schema.Struct({
-+export const InvocationHttp = /* @__PURE__ */ (() => Schema.Struct({
-   request: Schema.Struct({
-     method: Schema.String,
-     url: Schema.optional(Schema.String),
-@@ -51,4 +51,4 @@ export const InvocationHttp = Schema.Struct({
+-  request: Schema.Struct({
+-    method: Schema.String,
+-    url: Schema.optional(Schema.String),
+-    headers: Schema.Struct({
+-      "cf-ray": Schema.optional(Schema.String),
+-      traceparent: Schema.optional(Schema.String),
+-      "user-agent": Schema.optional(Schema.String),
++export const InvocationHttp = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    request: Schema.Struct({
++      method: Schema.String,
++      url: Schema.optional(Schema.String),
++      headers: Schema.Struct({
++        "cf-ray": Schema.optional(Schema.String),
++        traceparent: Schema.optional(Schema.String),
++        "user-agent": Schema.optional(Schema.String),
++      }),
      }),
-   }),
-   response: Schema.optional(Schema.Struct({ status: Schema.Int })),
+-  }),
+-  response: Schema.optional(Schema.Struct({ status: Schema.Int })),
 -});
-+}))();
++    response: Schema.optional(Schema.Struct({ status: Schema.Int })),
++  }))();
 diff --git a/apps/hosted/cloud/src/contracts/mcp-grant-rpc.ts b/apps/hosted/cloud/src/contracts/mcp-grant-rpc.ts
 new file mode 100644
-index 0000000..6df8ea6
+index 0000000..5b6aed9
 --- /dev/null
 +++ b/apps/hosted/cloud/src/contracts/mcp-grant-rpc.ts
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,70 @@
 +/** Private grant operations return codecs so Worker RPC preserves their typed refusals. */
 +import {
 +  AuthenticationUnavailable,
@@ -742,10 +843,7 @@ index 0000000..6df8ea6
 +  update: reply(Connection, Schema.Union([ConnectionNotFound, AuthenticationUnavailable])),
 +  revoke: reply(ConnectionId, Schema.Union([ConnectionNotFound, AuthenticationUnavailable])),
 +  agents: reply(Schema.Array(ConnectedAgent), AuthenticationUnavailable),
-+  revokeAgent: reply(
-+    GrantId,
-+    Schema.Union([ConnectedAgentNotFound, AuthenticationUnavailable]),
-+  ),
++  revokeAgent: reply(GrantId, Schema.Union([ConnectedAgentNotFound, AuthenticationUnavailable])),
 +};
 +type Identity = Context.Service.Shape<typeof McpAuthentication>;
 +type Store = Identity["connections"];
@@ -776,188 +874,302 @@ index 0000000..6df8ea6
 +  ) => Reply<typeof grantReplies.revokeAgent>;
 +};
 diff --git a/apps/hosted/cloud/src/contracts/onboarding.ts b/apps/hosted/cloud/src/contracts/onboarding.ts
-index af7e637..1ea3077 100644
+index af7e637..95c9a41 100644
 --- a/apps/hosted/cloud/src/contracts/onboarding.ts
 +++ b/apps/hosted/cloud/src/contracts/onboarding.ts
-@@ -20,29 +20,29 @@ import {
+@@ -20,85 +20,88 @@ import {
  import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
  
  /** Safe uploader identity for the existing first-team icon namespace. */
 -export const TeamIconOwner = Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9_-]{1,255}$/u));
-+export const TeamIconOwner = /* @__PURE__ */ (() => Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9_-]{1,255}$/u)))();
++export const TeamIconOwner = /* @__PURE__ */ (() =>
++  Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9_-]{1,255}$/u)))();
  
  /** Public company information, cached by verified email domain. */
 -export const CompanyProfile = Schema.Struct({
-+export const CompanyProfile = /* @__PURE__ */ (() => Schema.Struct({
-   name: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(120)),
-   website: Schema.String,
-   description: Schema.NullOr(Schema.String),
-   logo: OrganizationLogo,
-   colors: Schema.Array(Schema.String),
+-  name: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(120)),
+-  website: Schema.String,
+-  description: Schema.NullOr(Schema.String),
+-  logo: OrganizationLogo,
+-  colors: Schema.Array(Schema.String),
 -});
-+}))();
++export const CompanyProfile = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    name: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(120)),
++    website: Schema.String,
++    description: Schema.NullOr(Schema.String),
++    logo: OrganizationLogo,
++    colors: Schema.Array(Schema.String),
++  }))();
  export type CompanyProfile = typeof CompanyProfile.Type;
  
  /** The user confirms the display name; the server derives the URL separately. */
 -export const TeamName = Schema.String.check(
-+export const TeamName = /* @__PURE__ */ (() => Schema.String.check(
-   Schema.isMinLength(1),
-   Schema.isMaxLength(120),
-   Schema.isPattern(/\S/u),
+-  Schema.isMinLength(1),
+-  Schema.isMaxLength(120),
+-  Schema.isPattern(/\S/u),
 -);
-+))();
++export const TeamName = /* @__PURE__ */ (() =>
++  Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(120), Schema.isPattern(/\S/u)))();
  /** Editable values shown before creating the first organization. */
 -export const TeamDetails = Schema.Struct({ name: TeamName, logo: OrganizationLogo });
-+export const TeamDetails = /* @__PURE__ */ (() => Schema.Struct({ name: TeamName, logo: OrganizationLogo }))();
++export const TeamDetails = /* @__PURE__ */ (() =>
++  Schema.Struct({ name: TeamName, logo: OrganizationLogo }))();
  export type TeamDetails = typeof TeamDetails.Type;
  /** Confirm a suggested URL, no icon, or a selected file; files are stored only on Continue. */
 -export const CreateTeam = Schema.Struct({
-+export const CreateTeam = /* @__PURE__ */ (() => Schema.Struct({
-   ...TeamDetails.fields,
-   logo: Schema.Union([OrganizationLogo, UploadedOrganizationIcon]),
-   /**
-@@ -51,25 +51,25 @@ export const CreateTeam = Schema.Struct({
-    * on the way to their client and omit it.
-    */
-   next: Schema.optionalKey(Schema.Literal("setup")),
+-  ...TeamDetails.fields,
+-  logo: Schema.Union([OrganizationLogo, UploadedOrganizationIcon]),
+-  /**
+-   * `setup` when the team setup page confirms, which opens the team's setup steps next. Only
+-   * those teams join the onboarding experiment; MCP consent and device approval create a team
+-   * on the way to their client and omit it.
+-   */
+-  next: Schema.optionalKey(Schema.Literal("setup")),
 -});
-+}))();
++export const CreateTeam = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    ...TeamDetails.fields,
++    logo: Schema.Union([OrganizationLogo, UploadedOrganizationIcon]),
++    /**
++     * `setup` when the team setup page confirms, which opens the team's setup steps next. Only
++     * those teams join the onboarding experiment; MCP consent and device approval create a team
++     * on the way to their client and omit it.
++     */
++    next: Schema.optionalKey(Schema.Literal("setup")),
++  }))();
  export type CreateTeam = typeof CreateTeam.Type;
  /** Invalid or oversized creation payloads are rejected before storage or provisioning. */
 -export const TeamDetailsInvalid = ApiError.define({
-+export const TeamDetailsInvalid = /* @__PURE__ */ (() => ApiError.define({
-   tag: "TeamDetailsInvalid",
-   status: 400,
-   message: "The team details are invalid or too large.",
+-  tag: "TeamDetailsInvalid",
+-  status: 400,
+-  message: "The team details are invalid or too large.",
 -});
-+}))();
++export const TeamDetailsInvalid = /* @__PURE__ */ (() =>
++  ApiError.define({
++    tag: "TeamDetailsInvalid",
++    status: 400,
++    message: "The team details are invalid or too large.",
++  }))();
  export type TeamDetailsInvalid = typeof TeamDetailsInvalid.Type;
  /** Missing and inaccessible uploaded icons have the same response. */
 -export const TeamIconNotFound = ApiError.define({
-+export const TeamIconNotFound = /* @__PURE__ */ (() => ApiError.define({
-   tag: "TeamIconNotFound",
-   status: 404,
-   message: "The uploaded team icon does not exist.",
+-  tag: "TeamIconNotFound",
+-  status: 404,
+-  message: "The uploaded team icon does not exist.",
 -});
-+}))();
++export const TeamIconNotFound = /* @__PURE__ */ (() =>
++  ApiError.define({
++    tag: "TeamIconNotFound",
++    status: 404,
++    message: "The uploaded team icon does not exist.",
++  }))();
  export type TeamIconNotFound = typeof TeamIconNotFound.Type;
  
  /** Existing or newly confirmed memberships reconcile the browser's organization list. */
 -export const OnboardingReady = Schema.Struct({
-+export const OnboardingReady = /* @__PURE__ */ (() => Schema.Struct({
-   status: Schema.Literal("ready"),
-   organizations: Schema.Array(
-     Schema.Struct({
-@@ -79,26 +79,26 @@ export const OnboardingReady = Schema.Struct({
-       logo: Schema.NullOr(Schema.String),
-     }),
-   ),
+-  status: Schema.Literal("ready"),
+-  organizations: Schema.Array(
+-    Schema.Struct({
+-      id: OrganizationId,
+-      name: Schema.String,
+-      slug: Schema.NonEmptyString,
+-      logo: Schema.NullOr(Schema.String),
+-    }),
+-  ),
 -});
-+}))();
++export const OnboardingReady = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    status: Schema.Literal("ready"),
++    organizations: Schema.Array(
++      Schema.Struct({
++        id: OrganizationId,
++        name: Schema.String,
++        slug: Schema.NonEmptyString,
++        logo: Schema.NullOr(Schema.String),
++      }),
++    ),
++  }))();
  /** Invitations take priority over first-team creation. */
 -export const OnboardingInvitation = Schema.Struct({
-+export const OnboardingInvitation = /* @__PURE__ */ (() => Schema.Struct({
-   status: Schema.Literal("invitation"),
-   invitation: Schema.String,
+-  status: Schema.Literal("invitation"),
+-  invitation: Schema.String,
 -});
-+}))();
++export const OnboardingInvitation = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    status: Schema.Literal("invitation"),
++    invitation: Schema.String,
++  }))();
  /** Preparing suggestions never creates an organization. */
 -export const OnboardingDraft = Schema.Struct({
-+export const OnboardingDraft = /* @__PURE__ */ (() => Schema.Struct({
-   status: Schema.Literal("draft"),
-   suggestion: TeamDetails,
+-  status: Schema.Literal("draft"),
+-  suggestion: TeamDetails,
 -});
-+}))();
++export const OnboardingDraft = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    status: Schema.Literal("draft"),
++    suggestion: TeamDetails,
++  }))();
  /** A new account whose email belongs to an Executor v1 organization stays on v1; no team is created. */
 -export const OnboardingV1Workspace = Schema.Struct({ status: Schema.Literal("v1") });
-+export const OnboardingV1Workspace = /* @__PURE__ */ (() => Schema.Struct({ status: Schema.Literal("v1") }))();
++export const OnboardingV1Workspace = /* @__PURE__ */ (() =>
++  Schema.Struct({ status: Schema.Literal("v1") }))();
  /** Entry either has a destination or needs explicit team confirmation. */
 -export const OnboardingEntry = Schema.Union([
-+export const OnboardingEntry = /* @__PURE__ */ (() => Schema.Union([
-   OnboardingReady,
-   OnboardingInvitation,
-   OnboardingDraft,
-   OnboardingV1Workspace,
+-  OnboardingReady,
+-  OnboardingInvitation,
+-  OnboardingDraft,
+-  OnboardingV1Workspace,
 -]);
-+]))();
++export const OnboardingEntry = /* @__PURE__ */ (() =>
++  Schema.Union([OnboardingReady, OnboardingInvitation, OnboardingDraft, OnboardingV1Workspace]))();
  
  /**
   * The onboarding experiment: a native PostHog multivariate flag whose variants are the setup
-@@ -131,11 +131,11 @@ export type SetupSkipAssignment = typeof SetupSkipAssignment.Type;
+@@ -131,11 +134,12 @@ export type SetupSkipAssignment = typeof SetupSkipAssignment.Type;
   * skipped. Each `enrolled` marks the member in that experiment; every other member, including one
   * whose evaluation failed, sees that experiment's control untracked.
   */
 -export const SetupSequence = Schema.Struct({
-+export const SetupSequence = /* @__PURE__ */ (() => Schema.Struct({
-   order: SetupOrder,
-   enrolled: Schema.Boolean,
-   skip: SetupSkipAssignment,
+-  order: SetupOrder,
+-  enrolled: Schema.Boolean,
+-  skip: SetupSkipAssignment,
 -});
-+}))();
++export const SetupSequence = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    order: SetupOrder,
++    enrolled: Schema.Boolean,
++    skip: SetupSkipAssignment,
++  }))();
  export type SetupSequence = typeof SetupSequence.Type;
  
  /**
-@@ -158,23 +158,23 @@ export type SetupGate = typeof SetupGate.Type;
+@@ -158,23 +162,22 @@ export type SetupGate = typeof SetupGate.Type;
   * A team created for its setup carries its setup order, so its first step opens without reading
   * the order again. The order is left out when it could not be read; setup then reads it.
   */
 -export const OnboardingTeamCreated = Schema.Struct({
-+export const OnboardingTeamCreated = /* @__PURE__ */ (() => Schema.Struct({
-   ...OnboardingReady.fields,
-   setup: Schema.optionalKey(SetupSequence),
+-  ...OnboardingReady.fields,
+-  setup: Schema.optionalKey(SetupSequence),
 -});
-+}))();
++export const OnboardingTeamCreated = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    ...OnboardingReady.fields,
++    setup: Schema.optionalKey(SetupSequence),
++  }))();
  /** A confirmation can also discover membership, an invitation or a v1 organization. */
 -export const OnboardingCreated = Schema.Union([
-+export const OnboardingCreated = /* @__PURE__ */ (() => Schema.Union([
-   OnboardingTeamCreated,
-   OnboardingInvitation,
-   OnboardingV1Workspace,
+-  OnboardingTeamCreated,
+-  OnboardingInvitation,
+-  OnboardingV1Workspace,
 -]);
-+]))();
++export const OnboardingCreated = /* @__PURE__ */ (() =>
++  Schema.Union([OnboardingTeamCreated, OnboardingInvitation, OnboardingV1Workspace]))();
  
  /** Setup failed before a confirmed result; retrying cannot create another organization. */
 -export const OnboardingUnavailable = ApiError.define({
-+export const OnboardingUnavailable = /* @__PURE__ */ (() => ApiError.define({
-   tag: "OnboardingUnavailable",
-   status: 503,
-   message: "Onboarding could not be completed. Try again.",
+-  tag: "OnboardingUnavailable",
+-  status: 503,
+-  message: "Onboarding could not be completed. Try again.",
 -});
-+}))();
++export const OnboardingUnavailable = /* @__PURE__ */ (() =>
++  ApiError.define({
++    tag: "OnboardingUnavailable",
++    status: 503,
++    message: "Onboarding could not be completed. Try again.",
++  }))();
  export type OnboardingUnavailable = typeof OnboardingUnavailable.Type;
  /** A company suggestion is optional; a failed lookup never prevents confirmation. */
  export class CompanyLookupFailed extends Schema.TaggedError<CompanyLookupFailed>()(
-@@ -261,7 +261,7 @@ export class Onboarding extends Context.Service<
+@@ -261,47 +264,49 @@ export class Onboarding extends Context.Service<
  >()("cloud/Onboarding") {}
  
  /** Cookie authentication and origin checks apply to suggestion and confirmation requests. */
 -export const onboardingGroup = HttpApiGroup.make("onboarding")
-+export const onboardingGroup = /* @__PURE__ */ (() => HttpApiGroup.make("onboarding")
-   .add(
-     HttpApiEndpoint.post("prepare", "/api/onboarding/prepare", {
-       success: OnboardingEntry,
-@@ -282,13 +282,13 @@ export const onboardingGroup = HttpApiGroup.make("onboarding")
-       error: [OnboardingUnavailable, TeamIconNotFound],
-     }),
-   )
+-  .add(
+-    HttpApiEndpoint.post("prepare", "/api/onboarding/prepare", {
+-      success: OnboardingEntry,
+-      error: OnboardingUnavailable,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("create", "/api/onboarding/create", {
+-      payload: CreateTeam,
+-      success: OnboardingCreated,
+-      error: [OnboardingUnavailable, TeamDetailsInvalid],
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("icon", "/api/onboarding/icons/:owner/:key", {
+-      params: { owner: TeamIconOwner, key: OrganizationIconKey },
+-      success: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
+-      error: [OnboardingUnavailable, TeamIconNotFound],
+-    }),
+-  )
 -  .middleware(RequireUser);
-+  .middleware(RequireUser))();
++export const onboardingGroup = /* @__PURE__ */ (() =>
++  HttpApiGroup.make("onboarding")
++    .add(
++      HttpApiEndpoint.post("prepare", "/api/onboarding/prepare", {
++        success: OnboardingEntry,
++        error: OnboardingUnavailable,
++      }),
++    )
++    .add(
++      HttpApiEndpoint.post("create", "/api/onboarding/create", {
++        payload: CreateTeam,
++        success: OnboardingCreated,
++        error: [OnboardingUnavailable, TeamDetailsInvalid],
++      }),
++    )
++    .add(
++      HttpApiEndpoint.get("icon", "/api/onboarding/icons/:owner/:key", {
++        params: { owner: TeamIconOwner, key: OrganizationIconKey },
++        success: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
++        error: [OnboardingUnavailable, TeamIconNotFound],
++      }),
++    )
++    .middleware(RequireUser))();
  
  /**
   * A new team's setup steps read their order with the page, and dashboard pages whether setup still
   * holds them; membership is checked first.
   */
 -export const setupGroup = HttpApiGroup.make("setup")
-+export const setupGroup = /* @__PURE__ */ (() => HttpApiGroup.make("setup")
-   .add(
-     HttpApiEndpoint.get("sequence", "/api/organizations/:organization/setup", {
-       params: { organization: OrganizationReference },
-@@ -304,4 +304,4 @@ export const setupGroup = HttpApiGroup.make("setup")
-     }),
-   )
-   .middleware(RequireOrganization)
+-  .add(
+-    HttpApiEndpoint.get("sequence", "/api/organizations/:organization/setup", {
+-      params: { organization: OrganizationReference },
+-      success: SetupSequence,
+-      error: OnboardingUnavailable,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("gate", "/api/organizations/:organization/setup/gate", {
+-      params: { organization: OrganizationReference },
+-      success: SetupGate,
+-      error: OnboardingUnavailable,
+-    }),
+-  )
+-  .middleware(RequireOrganization)
 -  .middleware(RequireUser);
-+  .middleware(RequireUser))();
++export const setupGroup = /* @__PURE__ */ (() =>
++  HttpApiGroup.make("setup")
++    .add(
++      HttpApiEndpoint.get("sequence", "/api/organizations/:organization/setup", {
++        params: { organization: OrganizationReference },
++        success: SetupSequence,
++        error: OnboardingUnavailable,
++      }),
++    )
++    .add(
++      HttpApiEndpoint.get("gate", "/api/organizations/:organization/setup/gate", {
++        params: { organization: OrganizationReference },
++        success: SetupGate,
++        error: OnboardingUnavailable,
++      }),
++    )
++    .middleware(RequireOrganization)
++    .middleware(RequireUser))();
 diff --git a/apps/hosted/cloud/src/contracts/pr-preview.ts b/apps/hosted/cloud/src/contracts/pr-preview.ts
 index 0d2ff09..1c73e85 100644
 --- a/apps/hosted/cloud/src/contracts/pr-preview.ts
@@ -1046,10 +1258,10 @@ index de28d27..9278e89 100644
  export type TestStageLease = typeof TestStageLease.Type;
  /** The time when a preview must begin disposal. */
 diff --git a/apps/hosted/cloud/src/contracts/v1-import-run.ts b/apps/hosted/cloud/src/contracts/v1-import-run.ts
-index cdb810d..460e781 100644
+index cdb810d..6dc2998 100644
 --- a/apps/hosted/cloud/src/contracts/v1-import-run.ts
 +++ b/apps/hosted/cloud/src/contracts/v1-import-run.ts
-@@ -7,18 +7,18 @@ import { Schema } from "effect";
+@@ -7,18 +7,20 @@ import { Schema } from "effect";
  import { V1OrganizationId } from "./v1-import.ts";
  
  /** `dry-run` writes nothing but its report; `import` writes v2 too. */
@@ -1059,25 +1271,31 @@ index cdb810d..460e781 100644
  
  /** Names one pass over the organizations, such as `dry-1`. Reports are kept per run. */
 -export const V1ImportRunId = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,23}$/u));
-+export const V1ImportRunId = /* @__PURE__ */ (() => Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,23}$/u)))();
++export const V1ImportRunId = /* @__PURE__ */ (() =>
++  Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,23}$/u)))();
  export type V1ImportRunId = typeof V1ImportRunId.Type;
  
 -export const V1ImportParams = Schema.Struct({
-+export const V1ImportParams = /* @__PURE__ */ (() => Schema.Struct({
-   v1OrgId: V1OrganizationId,
-   mode: V1ImportMode,
-   runId: V1ImportRunId,
+-  v1OrgId: V1OrganizationId,
+-  mode: V1ImportMode,
+-  runId: V1ImportRunId,
 -});
-+}))();
++export const V1ImportParams = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    v1OrgId: V1OrganizationId,
++    mode: V1ImportMode,
++    runId: V1ImportRunId,
++  }))();
  export type V1ImportParams = typeof V1ImportParams.Type;
  
  /**
-@@ -46,26 +46,26 @@ export const v1ImportInFlightPrefix = "v1-import/in-flight/";
+@@ -46,26 +48,22 @@ export const v1ImportInFlightPrefix = "v1-import/in-flight/";
  export const v1ImportInFlightKey = (runId: string, organization: string) =>
    `${v1ImportInFlightPrefix}${runId}/${organization}`;
  /** What an in-flight entry holds: when its organization's instance was started. */
 -export const V1ImportInFlight = Schema.Struct({ startedAt: Schema.Number });
-+export const V1ImportInFlight = /* @__PURE__ */ (() => Schema.Struct({ startedAt: Schema.Number }))();
++export const V1ImportInFlight = /* @__PURE__ */ (() =>
++  Schema.Struct({ startedAt: Schema.Number }))();
  export const v1ImportAggregateKey = (runId: string) => `v1-import/runs/${runId}/aggregate.json`;
  /** An aggregation's partial result between its pages. */
  export const v1ImportAggregatingKey = (runId: string, aggregation: string) =>
@@ -1085,282 +1303,700 @@ index cdb810d..460e781 100644
  
  /** Where an organization ended: moved, held back by design, or not convertible yet. */
 -export const V1OrgOutcome = Schema.Literals([
-+export const V1OrgOutcome = /* @__PURE__ */ (() => Schema.Literals([
-   "started",
-   "planned",
-   "blocked",
-   "held_back",
-   "imported",
-   "failed",
+-  "started",
+-  "planned",
+-  "blocked",
+-  "held_back",
+-  "imported",
+-  "failed",
 -]);
-+]))();
++export const V1OrgOutcome = /* @__PURE__ */ (() =>
++  Schema.Literals(["started", "planned", "blocked", "held_back", "imported", "failed"]))();
  export type V1OrgOutcome = typeof V1OrgOutcome.Type;
  
 -export const V1RunMarker = Schema.Struct({ status: V1OrgOutcome, mode: V1ImportMode });
-+export const V1RunMarker = /* @__PURE__ */ (() => Schema.Struct({ status: V1OrgOutcome, mode: V1ImportMode }))();
++export const V1RunMarker = /* @__PURE__ */ (() =>
++  Schema.Struct({ status: V1OrgOutcome, mode: V1ImportMode }))();
  
 -const Count = Schema.Number;
 +const Count = /* @__PURE__ */ (() => Schema.Number)();
  
  /**
   * Why an item v1 itself can no longer run is skipped rather than blocking its organization
-@@ -87,7 +87,7 @@ const Count = Schema.Number;
+@@ -87,19 +85,20 @@ const Count = Schema.Number;
   * - `unmatched_rule`: a tool policy that matches no tool v1 lists. It still moves, for tools the
   *   server may list again, and is reported in `unmatchedRules`.
   */
 -export const V1StaleCategory = Schema.Literals([
-+export const V1StaleCategory = /* @__PURE__ */ (() => Schema.Literals([
-   "local_server",
-   "no_base_url",
-   "not_http",
-@@ -99,7 +99,7 @@ export const V1StaleCategory = Schema.Literals([
-   "incomplete_credential",
-   "missing_credential",
-   "unmatched_rule",
+-  "local_server",
+-  "no_base_url",
+-  "not_http",
+-  "undefined_server_variable",
+-  "unreadable_spec",
+-  "removed_tool",
+-  "missing_client",
+-  "undeclared_method",
+-  "incomplete_credential",
+-  "missing_credential",
+-  "unmatched_rule",
 -]);
-+]))();
++export const V1StaleCategory = /* @__PURE__ */ (() =>
++  Schema.Literals([
++    "local_server",
++    "no_base_url",
++    "not_http",
++    "undefined_server_variable",
++    "unreadable_spec",
++    "removed_tool",
++    "missing_client",
++    "undeclared_method",
++    "incomplete_credential",
++    "missing_credential",
++    "unmatched_rule",
++  ]))();
  export type V1StaleCategory = typeof V1StaleCategory.Type;
  
  /**
-@@ -110,15 +110,15 @@ export type V1StaleCategory = typeof V1StaleCategory.Type;
+@@ -110,111 +109,125 @@ export type V1StaleCategory = typeof V1StaleCategory.Type;
  export const V1IntoMode = Schema.Literals(["nothing_to_copy", "leave_v1_data", "copy_into_empty"]);
  export type V1IntoMode = typeof V1IntoMode.Type;
  
 -const EmailMatch = Schema.Struct({
-+const EmailMatch = /* @__PURE__ */ (() => Schema.Struct({
-   email: Schema.String,
-   match: Schema.Literals(["merge", "conflict"]),
+-  email: Schema.String,
+-  match: Schema.Literals(["merge", "conflict"]),
 -});
 -const SkippedMember = Schema.Struct({
-+}))();
-+const SkippedMember = /* @__PURE__ */ (() => Schema.Struct({
-   user: Schema.String,
-   reason: Schema.Literals(["unverified_email", "pending", "inactive"]),
+-  user: Schema.String,
+-  reason: Schema.Literals(["unverified_email", "pending", "inactive"]),
 -});
 -const Slug = Schema.Struct({
-+}))();
-+const Slug = /* @__PURE__ */ (() => Schema.Struct({
-   v1: Schema.String,
-   v2: Schema.NullOr(Schema.String),
-   changed: Schema.Boolean,
-@@ -133,40 +133,40 @@ const Slug = Schema.Struct({
-       reason: Schema.optionalKey(Schema.String),
-     }),
-   ),
+-  v1: Schema.String,
+-  v2: Schema.NullOr(Schema.String),
+-  changed: Schema.Boolean,
+-  /**
+-   * The v2 organization the operator listed to give up the slug (`notes/v1-import.md`, "Slug
+-   * displacement"), and its new slug; null, with why, when the displacement does not apply.
+-   */
+-  displaced: Schema.optionalKey(
+-    Schema.Struct({
+-      organization: Schema.String,
+-      slug: Schema.NullOr(Schema.String),
+-      reason: Schema.optionalKey(Schema.String),
+-    }),
+-  ),
 -});
 -const IntegrationFailure = Schema.Struct({
-+}))();
-+const IntegrationFailure = /* @__PURE__ */ (() => Schema.Struct({
-   id: Schema.String,
-   label: Schema.String,
-   error: Schema.String,
+-  id: Schema.String,
+-  label: Schema.String,
+-  error: Schema.String,
 -});
 -const DroppedTraceTools = Schema.Struct({
-+}))();
-+const DroppedTraceTools = /* @__PURE__ */ (() => Schema.Struct({
-   integration: Schema.String,
-   tools: Schema.Array(Schema.String),
+-  integration: Schema.String,
+-  tools: Schema.Array(Schema.String),
 -});
 -const ConnectionFailure = Schema.Struct({
-+}))();
-+const ConnectionFailure = /* @__PURE__ */ (() => Schema.Struct({
-   reason: Schema.String,
-   /** The connections move without their account, for their owners to connect again in v2. */
-   reconnect: Schema.optional(Schema.Literal(true)),
-   connections: Schema.Array(
-     Schema.Struct({ id: Schema.String, label: Schema.String, integration: Schema.String }),
-   ),
+-  reason: Schema.String,
+-  /** The connections move without their account, for their owners to connect again in v2. */
+-  reconnect: Schema.optional(Schema.Literal(true)),
+-  connections: Schema.Array(
+-    Schema.Struct({ id: Schema.String, label: Schema.String, integration: Schema.String }),
+-  ),
 -});
 -const FirstPartyMismatch = Schema.Struct({
-+}))();
-+const FirstPartyMismatch = /* @__PURE__ */ (() => Schema.Struct({
-   client: Schema.String,
-   reason: Schema.Literals(["unavailable", "different_client", "v1_unknown"]),
-   connections: Count,
+-  client: Schema.String,
+-  reason: Schema.Literals(["unavailable", "different_client", "v1_unknown"]),
+-  connections: Count,
 -});
 -const UnmatchedRule = Schema.Struct({
-+}))();
-+const UnmatchedRule = /* @__PURE__ */ (() => Schema.Struct({
-   id: Schema.String,
-   pattern: Schema.String,
-   action: Schema.String,
+-  id: Schema.String,
+-  pattern: Schema.String,
+-  action: Schema.String,
 -});
-+}))();
++const EmailMatch = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    email: Schema.String,
++    match: Schema.Literals(["merge", "conflict"]),
++  }))();
++const SkippedMember = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    user: Schema.String,
++    reason: Schema.Literals(["unverified_email", "pending", "inactive"]),
++  }))();
++const Slug = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    v1: Schema.String,
++    v2: Schema.NullOr(Schema.String),
++    changed: Schema.Boolean,
++    /**
++     * The v2 organization the operator listed to give up the slug (`notes/v1-import.md`, "Slug
++     * displacement"), and its new slug; null, with why, when the displacement does not apply.
++     */
++    displaced: Schema.optionalKey(
++      Schema.Struct({
++        organization: Schema.String,
++        slug: Schema.NullOr(Schema.String),
++        reason: Schema.optionalKey(Schema.String),
++      }),
++    ),
++  }))();
++const IntegrationFailure = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    id: Schema.String,
++    label: Schema.String,
++    error: Schema.String,
++  }))();
++const DroppedTraceTools = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    integration: Schema.String,
++    tools: Schema.Array(Schema.String),
++  }))();
++const ConnectionFailure = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    reason: Schema.String,
++    /** The connections move without their account, for their owners to connect again in v2. */
++    reconnect: Schema.optional(Schema.Literal(true)),
++    connections: Schema.Array(
++      Schema.Struct({ id: Schema.String, label: Schema.String, integration: Schema.String }),
++    ),
++  }))();
++const FirstPartyMismatch = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    client: Schema.String,
++    reason: Schema.Literals(["unavailable", "different_client", "v1_unknown"]),
++    connections: Count,
++  }))();
++const UnmatchedRule = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    id: Schema.String,
++    pattern: Schema.String,
++    action: Schema.String,
++  }))();
  /**
   * An item skipped because v1 cannot run it either. A connection or rule of a skipped integration
   * takes its integration's category, with `integration` naming it. A tool is one v1 name an
   * imported app leaves out, by its integration.
   */
 -const StaleItem = Schema.Struct({
-+const StaleItem = /* @__PURE__ */ (() => Schema.Struct({
-   kind: Schema.Literals(["integration", "connection", "tool_policy", "tool"]),
-   id: Schema.String,
-   label: Schema.String,
-@@ -174,47 +174,47 @@ const StaleItem = Schema.Struct({
-   integration: Schema.NullOr(Schema.String),
-   category: V1StaleCategory,
-   reason: Schema.String,
+-  kind: Schema.Literals(["integration", "connection", "tool_policy", "tool"]),
+-  id: Schema.String,
+-  label: Schema.String,
+-  /** The integration a connection, rule or tool belongs to, by label. */
+-  integration: Schema.NullOr(Schema.String),
+-  category: V1StaleCategory,
+-  reason: Schema.String,
 -});
-+}))();
++const StaleItem = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    kind: Schema.Literals(["integration", "connection", "tool_policy", "tool"]),
++    id: Schema.String,
++    label: Schema.String,
++    /** The integration a connection, rule or tool belongs to, by label. */
++    integration: Schema.NullOr(Schema.String),
++    category: V1StaleCategory,
++    reason: Schema.String,
++  }))();
  /**
   * Fixed credentials an integration sent that its app leaves out (decision 22): a value that is its
   * OAuth connections' own client ID or client secret, which their sign-in already sends.
   */
 -const DroppedCredential = Schema.Struct({
-+const DroppedCredential = /* @__PURE__ */ (() => Schema.Struct({
-   integration: Schema.String,
-   carrier: Schema.Literals(["header", "query"]),
-   name: Schema.String,
-   reason: Schema.Literals(["oauth_client_id", "oauth_client_secret"]),
+-  integration: Schema.String,
+-  carrier: Schema.Literals(["header", "query"]),
+-  name: Schema.String,
+-  reason: Schema.Literals(["oauth_client_id", "oauth_client_secret"]),
 -});
-+}))();
++const DroppedCredential = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    integration: Schema.String,
++    carrier: Schema.Literals(["header", "query"]),
++    name: Schema.String,
++    reason: Schema.Literals(["oauth_client_id", "oauth_client_secret"]),
++  }))();
  /**
   * An org connection whose user-scoped secret several members hold with different values. The first
   * member's moves (decision 23); the values are compared in memory and never reported.
   */
 -const MemberSecretMismatch = Schema.Struct({
-+const MemberSecretMismatch = /* @__PURE__ */ (() => Schema.Struct({
-   id: Schema.String,
-   label: Schema.String,
-   integration: Schema.String,
-   /** Members holding the item, and how many distinct values they hold. */
-   members: Count,
-   values: Count,
+-  id: Schema.String,
+-  label: Schema.String,
+-  integration: Schema.String,
+-  /** Members holding the item, and how many distinct values they hold. */
+-  members: Count,
+-  values: Count,
 -});
 -const ApiKeys = Schema.Struct({
-+}))();
-+const ApiKeys = /* @__PURE__ */ (() => Schema.Struct({
-   read: Schema.Literal(true),
-   keys: Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.NullOr(Schema.String) })),
-   actsAs: Schema.NullOr(Schema.String),
+-  read: Schema.Literal(true),
+-  keys: Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.NullOr(Schema.String) })),
+-  actsAs: Schema.NullOr(Schema.String),
 -});
 -const Artifact = Schema.Struct({
-+}))();
-+const Artifact = /* @__PURE__ */ (() => Schema.Struct({
-   id: Schema.String,
-   title: Schema.String,
-   unmappedRoles: Schema.Array(Schema.Struct({ role: Schema.String, problem: Schema.String })),
-   /** Why it fails, or would: absent when it moves. */
-   error: Schema.optionalKey(Schema.String),
+-  id: Schema.String,
+-  title: Schema.String,
+-  unmappedRoles: Schema.Array(Schema.Struct({ role: Schema.String, problem: Schema.String })),
+-  /** Why it fails, or would: absent when it moves. */
+-  error: Schema.optionalKey(Schema.String),
 -});
 -const VaultFailure = Schema.Struct({
-+}))();
-+const VaultFailure = /* @__PURE__ */ (() => Schema.Struct({
-   id: Schema.String,
-   label: Schema.String,
-   integration: Schema.String,
-   reason: Schema.Literals(["missing", "unavailable"]),
+-  id: Schema.String,
+-  label: Schema.String,
+-  integration: Schema.String,
+-  reason: Schema.Literals(["missing", "unavailable"]),
 -});
-+}))();
++const MemberSecretMismatch = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    id: Schema.String,
++    label: Schema.String,
++    integration: Schema.String,
++    /** Members holding the item, and how many distinct values they hold. */
++    members: Count,
++    values: Count,
++  }))();
++const ApiKeys = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    read: Schema.Literal(true),
++    keys: Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.NullOr(Schema.String) })),
++    actsAs: Schema.NullOr(Schema.String),
++  }))();
++const Artifact = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    id: Schema.String,
++    title: Schema.String,
++    unmappedRoles: Schema.Array(Schema.Struct({ role: Schema.String, problem: Schema.String })),
++    /** Why it fails, or would: absent when it moves. */
++    error: Schema.optionalKey(Schema.String),
++  }))();
++const VaultFailure = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    id: Schema.String,
++    label: Schema.String,
++    integration: Schema.String,
++    reason: Schema.Literals(["missing", "unavailable"]),
++  }))();
  /**
   * An integration whose connections' v1 rules differ, which moves as an app per connection
   * (decision 33): each connection's app, by the connection's row id and name, with what it did or
-@@ -251,13 +251,13 @@ const SplitIntegration = Schema.Struct({
+@@ -251,13 +264,14 @@ const SplitIntegration = Schema.Struct({
   * (its seats), every imported account's credentials decrypt with v2's key, and every imported
   * integration's app has an active version. The organization cuts over only when it `passed`.
   */
 -export const V1ImportVerification = Schema.Struct({
-+export const V1ImportVerification = /* @__PURE__ */ (() => Schema.Struct({
-   items: Schema.Struct({ planned: Count, withResult: Count, failed: Count }),
-   members: Schema.Struct({ planned: Count, inV2: Count }),
-   accounts: Schema.Struct({ checked: Count, unreadable: Count }),
-   apps: Schema.Struct({ checked: Count, withoutVersion: Count }),
-   passed: Schema.Boolean,
+-  items: Schema.Struct({ planned: Count, withResult: Count, failed: Count }),
+-  members: Schema.Struct({ planned: Count, inV2: Count }),
+-  accounts: Schema.Struct({ checked: Count, unreadable: Count }),
+-  apps: Schema.Struct({ checked: Count, withoutVersion: Count }),
+-  passed: Schema.Boolean,
 -});
-+}))();
++export const V1ImportVerification = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    items: Schema.Struct({ planned: Count, withResult: Count, failed: Count }),
++    members: Schema.Struct({ planned: Count, inV2: Count }),
++    accounts: Schema.Struct({ checked: Count, unreadable: Count }),
++    apps: Schema.Struct({ checked: Count, withoutVersion: Count }),
++    passed: Schema.Boolean,
++  }))();
  export type V1ImportVerification = typeof V1ImportVerification.Type;
  
  /** How a v1 Team subscription charges, and how its carried-over v2 subscription does. */
-@@ -288,7 +288,7 @@ export type V1BillingCarryOver = typeof V1BillingCarryOver.Type;
+@@ -288,90 +302,91 @@ export type V1BillingCarryOver = typeof V1BillingCarryOver.Type;
   * One organization's report. Its fields are the ones `notes/v1-import.md` lists under "Dry run";
   * an import adds each item's result (`items`).
   */
 -export const V1OrgReport = Schema.Struct({
-+export const V1OrgReport = /* @__PURE__ */ (() => Schema.Struct({
-   organization: Schema.String,
-   runId: Schema.String,
-   mode: V1ImportMode,
-@@ -371,7 +371,7 @@ export const V1OrgReport = Schema.Struct({
+-  organization: Schema.String,
+-  runId: Schema.String,
+-  mode: V1ImportMode,
+-  status: V1OrgOutcome,
+-  /** Why the organization is held back or failed. */
+-  reason: Schema.NullOr(Schema.String),
+-  /** Counts of each v1 kind, and of the v2 resources they plan or became. */
+-  counts: Schema.Struct({
+-    v1: Schema.Record(Schema.String, Count),
+-    v2: Schema.Record(Schema.String, Count),
+-  }),
+-  /** Members whose email matches an existing v2 user, and the organization's slug. */
+-  emailMatches: Schema.Array(EmailMatch),
+-  /** v1 members who do not move, by WorkOS user id: unverified, pending or inactive. */
+-  skippedMembers: Schema.Array(SkippedMember),
+-  /** The v2 slug the organization would take; null when every candidate is taken. */
+-  slug: Schema.NullOr(Slug),
+-  /**
+-   * The existing v2 organization the operator listed for it to move into instead of a new one, and
+-   * how (`notes/v1-import.md`, decision 32), with why it does not when it may not. Absent when none
+-   * is listed.
+-   */
+-  into: Schema.optionalKey(
+-    Schema.Struct({
+-      organization: Schema.String,
+-      /** The listed mode, null when the allow table names one the import does not know. */
+-      mode: Schema.NullOr(V1IntoMode),
+-      refused: Schema.optionalKey(Schema.String),
++export const V1OrgReport = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    organization: Schema.String,
++    runId: Schema.String,
++    mode: V1ImportMode,
++    status: V1OrgOutcome,
++    /** Why the organization is held back or failed. */
++    reason: Schema.NullOr(Schema.String),
++    /** Counts of each v1 kind, and of the v2 resources they plan or became. */
++    counts: Schema.Struct({
++      v1: Schema.Record(Schema.String, Count),
++      v2: Schema.Record(Schema.String, Count),
+     }),
+-  ),
+-  integrationFailures: Schema.Array(IntegrationFailure),
+-  /** v1 TRACE operations' tools, which are dropped and not failures (decision 16). */
+-  droppedTraceTools: Schema.Array(DroppedTraceTools),
+-  connectionFailures: Schema.Array(ConnectionFailure),
+-  /**
+-   * First-party clients the org's connections signed in with that v2 does not offer as v1's: not
+-   * offered, with a client ID other than v1's, or with v1's client ID unknown to this deployment.
+-   */
+-  firstPartyMismatches: Schema.Array(FirstPartyMismatch),
+-  /** Tool policies that match no tool v1 lists: imported, reported, not blocking. */
+-  unmatchedRules: Schema.Array(UnmatchedRule),
+-  /** Items skipped because v1 cannot run them either; they do not block the organization. */
+-  staleItems: Schema.Array(StaleItem),
+-  droppedCredentials: Schema.Array(DroppedCredential),
+-  memberSecretMismatches: Schema.Array(MemberSecretMismatch),
+-  /** The organization's own API keys, and the owner each acts as (decision 12). */
+-  orgApiKeys: Schema.Union([ApiKeys, Schema.Struct({ read: Schema.Literal(false) })]),
+-  artifacts: Schema.Array(Artifact),
+-  flags: Schema.Struct({
+-    sso: Schema.NullOr(Schema.Boolean),
+-    overFreeMemberLimit: Schema.Boolean,
+-    paidPlans: Schema.Array(Schema.String),
+-  }),
+-  /** Connections whose secret v1's Vault did not return: missing, or unavailable after retries. */
+-  vaultFailures: Schema.Array(VaultFailure),
+-  /** Integrations that move as an app per connection; absent from reports written before. */
+-  splitIntegrations: Schema.optionalKey(Schema.Array(SplitIntegration)),
+-  /** A paid organization's subscription carry-over. */
+-  billing: Schema.optionalKey(V1BillingCarryOver),
+-  /** The organization an import moved into. */
+-  v2Organization: Schema.optionalKey(Schema.Struct({ id: Schema.String, slug: Schema.String })),
+-  /** An import's cutover check, once it got that far. */
+-  verification: Schema.optionalKey(V1ImportVerification),
+-  /** Whether an import marked the organization moved in v1, which forwards it to v2. */
+-  cutover: Schema.optionalKey(Schema.Boolean),
+-  /** An import's result for every item. */
+-  items: Schema.optionalKey(
+-    Schema.Array(
++    /** Members whose email matches an existing v2 user, and the organization's slug. */
++    emailMatches: Schema.Array(EmailMatch),
++    /** v1 members who do not move, by WorkOS user id: unverified, pending or inactive. */
++    skippedMembers: Schema.Array(SkippedMember),
++    /** The v2 slug the organization would take; null when every candidate is taken. */
++    slug: Schema.NullOr(Slug),
++    /**
++     * The existing v2 organization the operator listed for it to move into instead of a new one, and
++     * how (`notes/v1-import.md`, decision 32), with why it does not when it may not. Absent when none
++     * is listed.
++     */
++    into: Schema.optionalKey(
+       Schema.Struct({
+-        kind: Schema.String,
+-        id: Schema.String,
+-        label: Schema.String,
+-        /** The integration a connection belongs to, or a policy's action. */
+-        context: Schema.NullOr(Schema.String),
+-        status: Schema.Literals(["imported", "failed", "skipped"]),
+-        v2Id: Schema.optionalKey(Schema.String),
+-        reason: Schema.optionalKey(Schema.String),
+-        note: Schema.optionalKey(Schema.String),
+-        needsRepair: Schema.optionalKey(Schema.Literal(true)),
++        organization: Schema.String,
++        /** The listed mode, null when the allow table names one the import does not know. */
++        mode: Schema.NullOr(V1IntoMode),
++        refused: Schema.optionalKey(Schema.String),
        }),
      ),
-   ),
+-  ),
 -});
-+}))();
++    integrationFailures: Schema.Array(IntegrationFailure),
++    /** v1 TRACE operations' tools, which are dropped and not failures (decision 16). */
++    droppedTraceTools: Schema.Array(DroppedTraceTools),
++    connectionFailures: Schema.Array(ConnectionFailure),
++    /**
++     * First-party clients the org's connections signed in with that v2 does not offer as v1's: not
++     * offered, with a client ID other than v1's, or with v1's client ID unknown to this deployment.
++     */
++    firstPartyMismatches: Schema.Array(FirstPartyMismatch),
++    /** Tool policies that match no tool v1 lists: imported, reported, not blocking. */
++    unmatchedRules: Schema.Array(UnmatchedRule),
++    /** Items skipped because v1 cannot run them either; they do not block the organization. */
++    staleItems: Schema.Array(StaleItem),
++    droppedCredentials: Schema.Array(DroppedCredential),
++    memberSecretMismatches: Schema.Array(MemberSecretMismatch),
++    /** The organization's own API keys, and the owner each acts as (decision 12). */
++    orgApiKeys: Schema.Union([ApiKeys, Schema.Struct({ read: Schema.Literal(false) })]),
++    artifacts: Schema.Array(Artifact),
++    flags: Schema.Struct({
++      sso: Schema.NullOr(Schema.Boolean),
++      overFreeMemberLimit: Schema.Boolean,
++      paidPlans: Schema.Array(Schema.String),
++    }),
++    /** Connections whose secret v1's Vault did not return: missing, or unavailable after retries. */
++    vaultFailures: Schema.Array(VaultFailure),
++    /** Integrations that move as an app per connection; absent from reports written before. */
++    splitIntegrations: Schema.optionalKey(Schema.Array(SplitIntegration)),
++    /** A paid organization's subscription carry-over. */
++    billing: Schema.optionalKey(V1BillingCarryOver),
++    /** The organization an import moved into. */
++    v2Organization: Schema.optionalKey(Schema.Struct({ id: Schema.String, slug: Schema.String })),
++    /** An import's cutover check, once it got that far. */
++    verification: Schema.optionalKey(V1ImportVerification),
++    /** Whether an import marked the organization moved in v1, which forwards it to v2. */
++    cutover: Schema.optionalKey(Schema.Boolean),
++    /** An import's result for every item. */
++    items: Schema.optionalKey(
++      Schema.Array(
++        Schema.Struct({
++          kind: Schema.String,
++          id: Schema.String,
++          label: Schema.String,
++          /** The integration a connection belongs to, or a policy's action. */
++          context: Schema.NullOr(Schema.String),
++          status: Schema.Literals(["imported", "failed", "skipped"]),
++          v2Id: Schema.optionalKey(Schema.String),
++          reason: Schema.optionalKey(Schema.String),
++          note: Schema.optionalKey(Schema.String),
++          needsRepair: Schema.optionalKey(Schema.Literal(true)),
++        }),
++      ),
++    ),
++  }))();
  export type V1OrgReport = typeof V1OrgReport.Type;
  
  /**
-@@ -379,24 +379,24 @@ export type V1OrgReport = typeof V1OrgReport.Type;
+@@ -379,112 +394,119 @@ export type V1OrgReport = typeof V1OrgReport.Type;
   * most `maxInFlight` organizations run at once across every run of the deployment: a start takes
   * only as many as are free.
   */
 -export const V1ImportStart = Schema.Struct({
-+export const V1ImportStart = /* @__PURE__ */ (() => Schema.Struct({
-   mode: V1ImportMode,
-   runId: V1ImportRunId,
-   organizations: Schema.optionalKey(Schema.Array(V1OrganizationId).check(Schema.isMaxLength(100))),
-   after: Schema.optionalKey(Schema.String),
-   limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 }))),
-   maxInFlight: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 })),
+-  mode: V1ImportMode,
+-  runId: V1ImportRunId,
+-  organizations: Schema.optionalKey(Schema.Array(V1OrganizationId).check(Schema.isMaxLength(100))),
+-  after: Schema.optionalKey(Schema.String),
+-  limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 }))),
+-  maxInFlight: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 })),
 -});
-+}))();
++export const V1ImportStart = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    mode: V1ImportMode,
++    runId: V1ImportRunId,
++    organizations: Schema.optionalKey(
++      Schema.Array(V1OrganizationId).check(Schema.isMaxLength(100)),
++    ),
++    after: Schema.optionalKey(Schema.String),
++    limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 }))),
++    maxInFlight: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 })),
++  }))();
  export type V1ImportStart = typeof V1ImportStart.Type;
  
  /** A started organization whose instance stopped without writing its report. */
 -export const V1ImportErrored = Schema.Struct({
-+export const V1ImportErrored = /* @__PURE__ */ (() => Schema.Struct({
-   organization: Schema.String,
-   instance: Schema.String,
-   status: Schema.String,
+-  organization: Schema.String,
+-  instance: Schema.String,
+-  status: Schema.String,
 -});
-+}))();
++export const V1ImportErrored = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    organization: Schema.String,
++    instance: Schema.String,
++    status: Schema.String,
++  }))();
  
 -export const V1ImportStarted = Schema.Struct({
-+export const V1ImportStarted = /* @__PURE__ */ (() => Schema.Struct({
-   started: Schema.Array(Schema.Struct({ organization: Schema.String, instance: Schema.String })),
-   /** Listed organizations this start left for later, because there was no room for them. */
-   deferred: Schema.Array(Schema.String),
-@@ -420,18 +420,18 @@ export const V1ImportStarted = Schema.Struct({
-    * as running.
-    */
-   errored: Schema.Array(V1ImportErrored),
+-  started: Schema.Array(Schema.Struct({ organization: Schema.String, instance: Schema.String })),
+-  /** Listed organizations this start left for later, because there was no room for them. */
+-  deferred: Schema.Array(Schema.String),
+-  /**
+-   * Organizations this start passed over: an id that is not a v1 organization id, or one this run
+-   * already has running. The walk still moves past them.
+-   */
+-  skipped: Schema.Array(
+-    Schema.Struct({
+-      organization: Schema.String,
+-      reason: Schema.Literals(["invalid_id", "running"]),
+-    }),
+-  ),
+-  /** Pass as `after` for the next batch; null once every organization has an instance. */
+-  next: Schema.NullOr(Schema.String),
+-  /** Organizations still running across every run after this start, the new ones included. */
+-  inFlight: Schema.Number,
+-  /**
+-   * This run's organizations whose instance stopped without a report (`errored`, `terminated`),
+-   * or whose state could not be read for long after it started (`unknown`). They no longer count
+-   * as running.
+-   */
+-  errored: Schema.Array(V1ImportErrored),
 -});
-+}))();
++export const V1ImportStarted = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    started: Schema.Array(Schema.Struct({ organization: Schema.String, instance: Schema.String })),
++    /** Listed organizations this start left for later, because there was no room for them. */
++    deferred: Schema.Array(Schema.String),
++    /**
++     * Organizations this start passed over: an id that is not a v1 organization id, or one this run
++     * already has running. The walk still moves past them.
++     */
++    skipped: Schema.Array(
++      Schema.Struct({
++        organization: Schema.String,
++        reason: Schema.Literals(["invalid_id", "running"]),
++      }),
++    ),
++    /** Pass as `after` for the next batch; null once every organization has an instance. */
++    next: Schema.NullOr(Schema.String),
++    /** Organizations still running across every run after this start, the new ones included. */
++    inFlight: Schema.Number,
++    /**
++     * This run's organizations whose instance stopped without a report (`errored`, `terminated`),
++     * or whose state could not be read for long after it started (`unknown`). They no longer count
++     * as running.
++     */
++    errored: Schema.Array(V1ImportErrored),
++  }))();
  
  /** Entries of a list in the per-organization reports, each with its organization. */
  const Listed = <S extends Schema.Top>(entry: S) =>
    Schema.Array(Schema.Struct({ organization: Schema.String, entry }));
 -const OrganizationReason = Schema.Struct({
-+const OrganizationReason = /* @__PURE__ */ (() => Schema.Struct({
-   organization: Schema.String,
-   reason: Schema.NullOr(Schema.String),
+-  organization: Schema.String,
+-  reason: Schema.NullOr(Schema.String),
 -});
-+}))();
++const OrganizationReason = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    organization: Schema.String,
++    reason: Schema.NullOr(Schema.String),
++  }))();
  
  /** A run's reports combined: their fields summed or listed with their organization. */
 -export const V1ImportAggregate = Schema.Struct({
-+export const V1ImportAggregate = /* @__PURE__ */ (() => Schema.Struct({
-   runId: Schema.String,
-   /** Every started organization has a report. */
-   complete: Schema.Boolean,
-@@ -484,7 +484,7 @@ export const V1ImportAggregate = Schema.Struct({
-   vaultFailures: Listed(VaultFailure),
-   /** Absent from aggregates combined before integrations moved as an app per connection. */
-   splitIntegrations: Schema.optionalKey(Listed(SplitIntegration)),
+-  runId: Schema.String,
+-  /** Every started organization has a report. */
+-  complete: Schema.Boolean,
+-  organizations: Count,
+-  /** Started organizations without a report whose instance is still running. */
+-  pending: Schema.Array(Schema.String),
+-  /** Started organizations whose instance stopped without a report and needs a person. */
+-  errored: Schema.Array(V1ImportErrored),
+-  statuses: Schema.Record(Schema.String, Count),
+-  counts: Schema.Struct({
+-    v1: Schema.Record(Schema.String, Count),
+-    v2: Schema.Record(Schema.String, Count),
+-  }),
+-  heldBack: Schema.Array(OrganizationReason),
+-  failed: Schema.Array(OrganizationReason),
+-  blocked: Schema.Array(Schema.String),
+-  emailMatches: Listed(EmailMatch),
+-  skippedMembers: Listed(SkippedMember),
+-  slugChanges: Schema.Array(Schema.Struct({ organization: Schema.String, ...Slug.fields })),
+-  integrationFailures: Listed(IntegrationFailure),
+-  droppedTraceTools: Listed(DroppedTraceTools),
+-  connectionFailures: Schema.Struct({
+-    byReason: Schema.Record(Schema.String, Count),
+-    connections: Listed(ConnectionFailure),
+-  }),
+-  firstPartyMismatches: Listed(FirstPartyMismatch),
+-  unmatchedRules: Listed(UnmatchedRule),
+-  staleItems: Schema.Struct({
+-    /** Skipped items by `<kind> <category>`, such as `connection missing_credential`. */
+-    byCategory: Schema.Record(Schema.String, Count),
+-    items: Listed(StaleItem),
+-  }),
+-  droppedCredentials: Listed(DroppedCredential),
+-  memberSecretMismatches: Listed(MemberSecretMismatch),
+-  orgApiKeys: Schema.Array(
+-    Schema.Union([
+-      Schema.Struct({ organization: Schema.String, ...ApiKeys.fields }),
+-      Schema.Struct({ organization: Schema.String, read: Schema.Literal(false) }),
+-    ]),
+-  ),
+-  artifacts: Listed(Artifact),
+-  flags: Schema.Struct({
+-    sso: Schema.Array(Schema.String),
+-    ssoUnread: Schema.Array(Schema.String),
+-    overFreeMemberLimit: Schema.Array(Schema.String),
+-    paid: Schema.Array(
+-      Schema.Struct({ organization: Schema.String, plans: Schema.Array(Schema.String) }),
++export const V1ImportAggregate = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    runId: Schema.String,
++    /** Every started organization has a report. */
++    complete: Schema.Boolean,
++    organizations: Count,
++    /** Started organizations without a report whose instance is still running. */
++    pending: Schema.Array(Schema.String),
++    /** Started organizations whose instance stopped without a report and needs a person. */
++    errored: Schema.Array(V1ImportErrored),
++    statuses: Schema.Record(Schema.String, Count),
++    counts: Schema.Struct({
++      v1: Schema.Record(Schema.String, Count),
++      v2: Schema.Record(Schema.String, Count),
++    }),
++    heldBack: Schema.Array(OrganizationReason),
++    failed: Schema.Array(OrganizationReason),
++    blocked: Schema.Array(Schema.String),
++    emailMatches: Listed(EmailMatch),
++    skippedMembers: Listed(SkippedMember),
++    slugChanges: Schema.Array(Schema.Struct({ organization: Schema.String, ...Slug.fields })),
++    integrationFailures: Listed(IntegrationFailure),
++    droppedTraceTools: Listed(DroppedTraceTools),
++    connectionFailures: Schema.Struct({
++      byReason: Schema.Record(Schema.String, Count),
++      connections: Listed(ConnectionFailure),
++    }),
++    firstPartyMismatches: Listed(FirstPartyMismatch),
++    unmatchedRules: Listed(UnmatchedRule),
++    staleItems: Schema.Struct({
++      /** Skipped items by `<kind> <category>`, such as `connection missing_credential`. */
++      byCategory: Schema.Record(Schema.String, Count),
++      items: Listed(StaleItem),
++    }),
++    droppedCredentials: Listed(DroppedCredential),
++    memberSecretMismatches: Listed(MemberSecretMismatch),
++    orgApiKeys: Schema.Array(
++      Schema.Union([
++        Schema.Struct({ organization: Schema.String, ...ApiKeys.fields }),
++        Schema.Struct({ organization: Schema.String, read: Schema.Literal(false) }),
++      ]),
+     ),
+-  }),
+-  vaultFailures: Listed(VaultFailure),
+-  /** Absent from aggregates combined before integrations moved as an app per connection. */
+-  splitIntegrations: Schema.optionalKey(Listed(SplitIntegration)),
 -});
-+}))();
++    artifacts: Listed(Artifact),
++    flags: Schema.Struct({
++      sso: Schema.Array(Schema.String),
++      ssoUnread: Schema.Array(Schema.String),
++      overFreeMemberLimit: Schema.Array(Schema.String),
++      paid: Schema.Array(
++        Schema.Struct({ organization: Schema.String, plans: Schema.Array(Schema.String) }),
++      ),
++    }),
++    vaultFailures: Listed(VaultFailure),
++    /** Absent from aggregates combined before integrations moved as an app per connection. */
++    splitIntegrations: Schema.optionalKey(Listed(SplitIntegration)),
++  }))();
  export type V1ImportAggregate = typeof V1ImportAggregate.Type;
  
  /**
-@@ -492,8 +492,8 @@ export type V1ImportAggregate = typeof V1ImportAggregate.Type;
+@@ -492,8 +514,9 @@ export type V1ImportAggregate = typeof V1ImportAggregate.Type;
   * organizations it has combined; the last page's cursor is null and it carries the aggregate,
   * which it has also written to `aggregate.json`.
   */
 -export const V1ImportAggregatePage = Schema.Union([
-+export const V1ImportAggregatePage = /* @__PURE__ */ (() => Schema.Union([
-   Schema.Struct({ cursor: Schema.String, organizations: Count }),
-   Schema.Struct({ cursor: Schema.Null, aggregate: V1ImportAggregate }),
+-  Schema.Struct({ cursor: Schema.String, organizations: Count }),
+-  Schema.Struct({ cursor: Schema.Null, aggregate: V1ImportAggregate }),
 -]);
-+]))();
++export const V1ImportAggregatePage = /* @__PURE__ */ (() =>
++  Schema.Union([
++    Schema.Struct({ cursor: Schema.String, organizations: Count }),
++    Schema.Struct({ cursor: Schema.Null, aggregate: V1ImportAggregate }),
++  ]))();
  export type V1ImportAggregatePage = typeof V1ImportAggregatePage.Type;
 diff --git a/apps/hosted/cloud/src/contracts/v1-import.ts b/apps/hosted/cloud/src/contracts/v1-import.ts
 index c80c16e..01df088 100644
@@ -3067,7 +3703,7 @@ index fc42f8a..214f901 100644
 +    total: Schema.Number,
 +  }))();
 diff --git a/apps/hosted/server/src/contracts/api.ts b/apps/hosted/server/src/contracts/api.ts
-index 3f4e8a0..6cf3154 100644
+index 3f4e8a0..1650583 100644
 --- a/apps/hosted/server/src/contracts/api.ts
 +++ b/apps/hosted/server/src/contracts/api.ts
 @@ -49,7 +49,7 @@ import { HostedSkills } from "./skills.ts";
@@ -3079,6 +3715,14 @@ index 3f4e8a0..6cf3154 100644
  
  /** The Effect snapshot's OpenAPI types omit OAuth2; hosted documents retain that standard scheme explicitly. */
  export interface HostedApiDocument extends Omit<OpenApi.OpenAPISpec, "components"> {
+@@ -248,7 +248,6 @@ export const HostedApi = HttpApi.make("executor-hosted")
+   .addHttpApi(HostedFrameworkApi)
+   .middleware(RequestRejection);
+ 
+-
+ /**
+  * The document under the deployment's own name. People read its title and agents read its prose,
+  * so under another brand the title names the product and descriptions and summaries say its name
 diff --git a/apps/hosted/server/src/contracts/app-accounts.ts b/apps/hosted/server/src/contracts/app-accounts.ts
 index 0f1ab4d..ca75186 100644
 --- a/apps/hosted/server/src/contracts/app-accounts.ts
@@ -4262,66 +4906,112 @@ index 1afaf29..82eccc5 100644
 +    )
 +    .middleware(RequireOrganization))();
 diff --git a/apps/hosted/server/src/contracts/auth.ts b/apps/hosted/server/src/contracts/auth.ts
-index 1a8de7c..120e642 100644
+index 1a8de7c..aa5dbb3 100644
 --- a/apps/hosted/server/src/contracts/auth.ts
 +++ b/apps/hosted/server/src/contracts/auth.ts
-@@ -20,15 +20,15 @@ export type Viewer = typeof Viewer.Type;
+@@ -20,40 +20,43 @@ export type Viewer = typeof Viewer.Type;
   * A hosted login identity, separate from SDK provider accounts and owners. `impersonatedBy` is
   * internal: request spans record it, and `/api/viewer` returns only the `Viewer` fields.
   */
 -export const Principal = Schema.Struct({
-+export const Principal = /* @__PURE__ */ (() => Schema.Struct({
-   ...Viewer.fields,
-   /** The admin whose impersonation created this session, as Better Auth stored it on the row. */
-   impersonatedBy: Schema.optionalKey(Viewer.fields.userId),
+-  ...Viewer.fields,
+-  /** The admin whose impersonation created this session, as Better Auth stored it on the row. */
+-  impersonatedBy: Schema.optionalKey(Viewer.fields.userId),
 -});
-+}))();
++export const Principal = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    ...Viewer.fields,
++    /** The admin whose impersonation created this session, as Better Auth stored it on the row. */
++    impersonatedBy: Schema.optionalKey(Viewer.fields.userId),
++  }))();
  export type Principal = typeof Principal.Type;
  
  /** No valid hosted session was supplied. */
 -export const Unauthorized = UserFacingError.define({
-+export const Unauthorized = /* @__PURE__ */ (() => UserFacingError.define({
-   tag: "Unauthorized",
-   status: 401,
-   title: "Sign-in required",
-@@ -38,11 +38,11 @@ export const Unauthorized = UserFacingError.define({
-     instructions:
-       "Restore the user’s session through the normal sign-in flow and retry the failed operation. If the session expires repeatedly, investigate session handling. Do not change the integration’s OAuth configuration to work around a login failure.",
-   },
+-  tag: "Unauthorized",
+-  status: 401,
+-  title: "Sign-in required",
+-  description: "A valid sign-in session is needed to complete this action.",
+-  recovery: {
+-    action: "Sign in again, then try the action again.",
+-    instructions:
+-      "Restore the user’s session through the normal sign-in flow and retry the failed operation. If the session expires repeatedly, investigate session handling. Do not change the integration’s OAuth configuration to work around a login failure.",
+-  },
 -});
-+}))();
++export const Unauthorized = /* @__PURE__ */ (() =>
++  UserFacingError.define({
++    tag: "Unauthorized",
++    status: 401,
++    title: "Sign-in required",
++    description: "A valid sign-in session is needed to complete this action.",
++    recovery: {
++      action: "Sign in again, then try the action again.",
++      instructions:
++        "Restore the user’s session through the normal sign-in flow and retry the failed operation. If the session expires repeatedly, investigate session handling. Do not change the integration’s OAuth configuration to work around a login failure.",
++    },
++  }))();
  /** Parsed Unauthorized failure. */
  export type Unauthorized = typeof Unauthorized.Type;
  /** Cookie-authenticated writes must come from this deployment's browser origin. */
 -export const Forbidden = UserFacingError.define({
-+export const Forbidden = /* @__PURE__ */ (() => UserFacingError.define({
-   tag: "Forbidden",
-   status: 403,
-   title: "Request not allowed",
-@@ -53,7 +53,7 @@ export const Forbidden = UserFacingError.define({
-     instructions:
-       "Check the request’s browser origin and the access requirements for the failed operation. Correct a wrong origin or context through the supported configuration. Preserve server authorization and origin validation.",
-   },
+-  tag: "Forbidden",
+-  status: 403,
+-  title: "Request not allowed",
+-  description: "This request did not meet the access checks.",
+-  recovery: {
+-    action:
+-      "Open this site directly in your browser and try again. If it still fails, copy the fix prompt into your agent to investigate.",
+-    instructions:
+-      "Check the request’s browser origin and the access requirements for the failed operation. Correct a wrong origin or context through the supported configuration. Preserve server authorization and origin validation.",
+-  },
 -});
-+}))();
++export const Forbidden = /* @__PURE__ */ (() =>
++  UserFacingError.define({
++    tag: "Forbidden",
++    status: 403,
++    title: "Request not allowed",
++    description: "This request did not meet the access checks.",
++    recovery: {
++      action:
++        "Open this site directly in your browser and try again. If it still fails, copy the fix prompt into your agent to investigate.",
++      instructions:
++        "Check the request’s browser origin and the access requirements for the failed operation. Correct a wrong origin or context through the supported configuration. Preserve server authorization and origin validation.",
++    },
++  }))();
  /** Parsed Forbidden failure. */
  export type Forbidden = typeof Forbidden.Type;
  /**
-@@ -64,7 +64,7 @@ export const BrowserSessionOnly = Context.Reference<boolean>("hosted/BrowserSess
+@@ -64,19 +67,20 @@ export const BrowserSessionOnly = Context.Reference<boolean>("hosted/BrowserSess
    defaultValue: () => false,
  });
  /** The session store is unavailable; this must not be treated as signed out. */
 -export const AuthenticationUnavailable = UserFacingError.define({
-+export const AuthenticationUnavailable = /* @__PURE__ */ (() => UserFacingError.define({
-   tag: "AuthenticationUnavailable",
-   status: 503,
-   title: "Session check unavailable",
-@@ -76,7 +76,7 @@ export const AuthenticationUnavailable = UserFacingError.define({
-       "Check the availability of the session verification service and its dependencies. Distinguish a service failure from an expired user session. Restore the failing dependency or identify the required instance action; do not treat unavailable verification as valid authorization.",
-   },
-   retryable: true,
+-  tag: "AuthenticationUnavailable",
+-  status: 503,
+-  title: "Session check unavailable",
+-  description: "Your sign-in session could not be verified.",
+-  recovery: {
+-    action:
+-      "Try again. If this continues, copy the fix prompt into your agent to investigate the session check.",
+-    instructions:
+-      "Check the availability of the session verification service and its dependencies. Distinguish a service failure from an expired user session. Restore the failing dependency or identify the required instance action; do not treat unavailable verification as valid authorization.",
+-  },
+-  retryable: true,
 -});
-+}))();
++export const AuthenticationUnavailable = /* @__PURE__ */ (() =>
++  UserFacingError.define({
++    tag: "AuthenticationUnavailable",
++    status: 503,
++    title: "Session check unavailable",
++    description: "Your sign-in session could not be verified.",
++    recovery: {
++      action:
++        "Try again. If this continues, copy the fix prompt into your agent to investigate the session check.",
++      instructions:
++        "Check the availability of the session verification service and its dependencies. Distinguish a service failure from an expired user session. Restore the failing dependency or identify the required instance action; do not treat unavailable verification as valid authorization.",
++    },
++    retryable: true,
++  }))();
  /** Parsed AuthenticationUnavailable failure. */
  export type AuthenticationUnavailable = typeof AuthenticationUnavailable.Type;
  
@@ -8379,24 +9069,102 @@ index 0aceabc..44d2b86 100644
  export class ObserveWorkflowStatus extends HttpApiMiddleware.Service<ObserveWorkflowStatus>()(
    "hosted/ObserveWorkflowStatus",
 diff --git a/apps/hosted/server/src/contracts/workflows.ts b/apps/hosted/server/src/contracts/workflows.ts
-index a3b4aa7..f0a9e57 100644
+index a3b4aa7..8330f8c 100644
 --- a/apps/hosted/server/src/contracts/workflows.ts
 +++ b/apps/hosted/server/src/contracts/workflows.ts
-@@ -29,7 +29,7 @@ const path = "/api/organizations/:organization/apps/:app";
+@@ -29,50 +29,51 @@ const path = "/api/organizations/:organization/apps/:app";
   * Members who can use the app read definitions and start runs with their accounts. Runs belong to
   * the actor that started them; terminating someone else's run needs app management.
   */
 -const workflowRoutes = HttpApiGroup.make("workflows")
-+const workflowRoutes = /* @__PURE__ */ (() => HttpApiGroup.make("workflows")
-   .add(
-     HttpApiEndpoint.get("definitions", `${path}/workflows`, {
-       params: app,
-@@ -72,7 +72,7 @@ const workflowRoutes = HttpApiGroup.make("workflows")
-       error: errors,
-     }),
-   )
+-  .add(
+-    HttpApiEndpoint.get("definitions", `${path}/workflows`, {
+-      params: app,
+-      query: Schema.Struct({ version: Schema.optional(VersionId) }).pipe(
+-        withLegacyKeys({ version: "deployment" }),
+-      ),
+-      success: Schema.Array(HostedWorkflow),
+-      error: definitionErrors,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("start", `${path}/workflow-runs`, {
+-      params: app,
+-      payload: StartWorkflowFields.mapFields(
+-        ({ app: _app, accounts: _accounts, ...fields }) => fields,
+-      ).pipe(withLegacyKeys({ version: "deployment" })),
+-      success: WorkflowRun,
+-      error: errors,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("get", `${path}/workflow-runs/:run`, {
+-      params: run,
+-      success: WorkflowRun,
+-      error: errors,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("list", `${path}/workflow-runs`, {
+-      params: app,
+-      query: ListWorkflowRuns.mapFields(({ app: _app, ...fields }) => fields),
+-      success: WorkflowRunPage,
+-      error: errors,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("terminate", `${path}/workflow-runs/:run/terminate`, {
+-      params: run,
+-      success: WorkflowRun,
+-      error: errors,
+-    }),
+-  )
 -  .middleware(RequireOrganization);
-+  .middleware(RequireOrganization))();
++const workflowRoutes = /* @__PURE__ */ (() =>
++  HttpApiGroup.make("workflows")
++    .add(
++      HttpApiEndpoint.get("definitions", `${path}/workflows`, {
++        params: app,
++        query: Schema.Struct({ version: Schema.optional(VersionId) }).pipe(
++          withLegacyKeys({ version: "deployment" }),
++        ),
++        success: Schema.Array(HostedWorkflow),
++        error: definitionErrors,
++      }),
++    )
++    .add(
++      HttpApiEndpoint.post("start", `${path}/workflow-runs`, {
++        params: app,
++        payload: StartWorkflowFields.mapFields(
++          ({ app: _app, accounts: _accounts, ...fields }) => fields,
++        ).pipe(withLegacyKeys({ version: "deployment" })),
++        success: WorkflowRun,
++        error: errors,
++      }),
++    )
++    .add(
++      HttpApiEndpoint.get("get", `${path}/workflow-runs/:run`, {
++        params: run,
++        success: WorkflowRun,
++        error: errors,
++      }),
++    )
++    .add(
++      HttpApiEndpoint.get("list", `${path}/workflow-runs`, {
++        params: app,
++        query: ListWorkflowRuns.mapFields(({ app: _app, ...fields }) => fields),
++        success: WorkflowRunPage,
++        error: errors,
++      }),
++    )
++    .add(
++      HttpApiEndpoint.post("terminate", `${path}/workflow-runs/:run/terminate`, {
++        params: run,
++        success: WorkflowRun,
++        error: errors,
++      }),
++    )
++    .middleware(RequireOrganization))();
  
  // Add the observer after organization middleware so it also sees authorization dependency failures.
  export const HostedWorkflows = workflowRoutes.add(
@@ -9458,104 +10226,216 @@ index 0a419c7..7104e46 100644
  /** Trusted products authorize both the saved account and the device on every operation. */
  export interface MachineAccounts {
 diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
-index adcccad..4c43210 100644
+index adcccad..e11af04 100644
 --- a/packages/sdk/src/contracts/account.ts
 +++ b/packages/sdk/src/contracts/account.ts
-@@ -25,7 +25,7 @@ import { AccountIdentity } from "./account-identity.ts";
+@@ -25,24 +25,25 @@ import { AccountIdentity } from "./account-identity.ts";
   * apps can use this same ID. Metadata never includes tokens, submitted
   * fields, OAuth client secrets, or refresh material.
   */
 -export const Account = Schema.Struct({
-+export const Account = /* @__PURE__ */ (() => Schema.Struct({
-   id: AccountId,
-   execution: Schema.optionalKey(AccountExecution),
-   provider: ProviderId,
-@@ -42,7 +42,7 @@ export const Account = Schema.Struct({
-   site: Schema.optionalKey(SiteOrigin),
-   /** Present only for a verified upstream subject at this binding's current placement. */
-   identity: Schema.optionalKey(AccountIdentity),
+-  id: AccountId,
+-  execution: Schema.optionalKey(AccountExecution),
+-  provider: ProviderId,
+-  method: AuthMethodName,
+-  label: Schema.String,
+-  /**
+-   * Free text for agents choosing between accounts, such as "reads only; use the sandbox account
+-   * for writes". Agents read it with the label. Null when the account has none.
+-   */
+-  description: Schema.NullOr(Schema.String),
+-  owner: OwnerId,
+-  createdAt: Schema.Date,
+-  /** Canonical, nonsecret site bound to this account, when its provider declares one. */
+-  site: Schema.optionalKey(SiteOrigin),
+-  /** Present only for a verified upstream subject at this binding's current placement. */
+-  identity: Schema.optionalKey(AccountIdentity),
 -});
-+}))();
++export const Account = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    id: AccountId,
++    execution: Schema.optionalKey(AccountExecution),
++    provider: ProviderId,
++    method: AuthMethodName,
++    label: Schema.String,
++    /**
++     * Free text for agents choosing between accounts, such as "reads only; use the sandbox account
++     * for writes". Agents read it with the label. Null when the account has none.
++     */
++    description: Schema.NullOr(Schema.String),
++    owner: OwnerId,
++    createdAt: Schema.Date,
++    /** Canonical, nonsecret site bound to this account, when its provider declares one. */
++    site: Schema.optionalKey(SiteOrigin),
++    /** Present only for a verified upstream subject at this binding's current placement. */
++    identity: Schema.optionalKey(AccountIdentity),
++  }))();
  
  export type Account = typeof Account.Type;
  
-@@ -52,18 +52,18 @@ export type Account = typeof Account.Type;
+@@ -52,39 +53,41 @@ export type Account = typeof Account.Type;
   * timeout or a failure in the app's check. `tools_unavailable` means the credentials passed but the
   * app's tools did not load for this account, at the check or at agents' last tool discovery.
   */
 -export const AccountCheckStatus = Schema.Literals([
-+export const AccountCheckStatus = /* @__PURE__ */ (() => Schema.Literals([
-   "healthy",
-   "credentials_rejected",
-   "forbidden",
-   "upstream_unavailable",
-   "check_failed",
-   "tools_unavailable",
+-  "healthy",
+-  "credentials_rejected",
+-  "forbidden",
+-  "upstream_unavailable",
+-  "check_failed",
+-  "tools_unavailable",
 -]);
-+]))();
++export const AccountCheckStatus = /* @__PURE__ */ (() =>
++  Schema.Literals([
++    "healthy",
++    "credentials_rejected",
++    "forbidden",
++    "upstream_unavailable",
++    "check_failed",
++    "tools_unavailable",
++  ]))();
  export type AccountCheckStatus = typeof AccountCheckStatus.Type;
  
  /** One app that uses the account, and its latest check. */
 -export const AccountAppHealth = Schema.Struct({
-+export const AccountAppHealth = /* @__PURE__ */ (() => Schema.Struct({
-   app: AppId,
-   /** The app's active version defines a check for this account's provider. */
-   checkable: Schema.Boolean,
-@@ -84,7 +84,7 @@ export const AccountAppHealth = Schema.Struct({
-       message: Schema.optionalKey(Schema.String),
-     }),
-   ),
+-  app: AppId,
+-  /** The app's active version defines a check for this account's provider. */
+-  checkable: Schema.Boolean,
+-  /**
+-   * The app's latest check. It is not `current` once the account's credentials or the app's
+-   * active version changed after it ran; recheck before relying on it.
+-   */
+-  check: Schema.NullOr(
+-    Schema.Struct({
+-      status: AccountCheckStatus,
+-      reason: Schema.optionalKey(ProviderError.fields.reason),
+-      failure: Schema.optionalKey(AccountCheckFailure),
+-      checkedAt: Schema.Date,
+-      /** Public display data from this check only; outdated results remain marked outdated. */
+-      displayStatus: Schema.optionalKey(AccountStatus),
+-      current: Schema.Boolean,
+-      /** Why the check failed, as the app or host explained it. Absent when it gave no reason. */
+-      message: Schema.optionalKey(Schema.String),
+-    }),
+-  ),
 -});
-+}))();
++export const AccountAppHealth = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    app: AppId,
++    /** The app's active version defines a check for this account's provider. */
++    checkable: Schema.Boolean,
++    /**
++     * The app's latest check. It is not `current` once the account's credentials or the app's
++     * active version changed after it ran; recheck before relying on it.
++     */
++    check: Schema.NullOr(
++      Schema.Struct({
++        status: AccountCheckStatus,
++        reason: Schema.optionalKey(ProviderError.fields.reason),
++        failure: Schema.optionalKey(AccountCheckFailure),
++        checkedAt: Schema.Date,
++        /** Public display data from this check only; outdated results remain marked outdated. */
++        displayStatus: Schema.optionalKey(AccountStatus),
++        current: Schema.Boolean,
++        /** Why the check failed, as the app or host explained it. Absent when it gave no reason. */
++        message: Schema.optionalKey(Schema.String),
++      }),
++    ),
++  }))();
  export type AccountAppHealth = typeof AccountAppHealth.Type;
  
  /**
-@@ -93,7 +93,7 @@ export type AccountAppHealth = typeof AccountAppHealth.Type;
+@@ -93,36 +96,38 @@ export type AccountAppHealth = typeof AccountAppHealth.Type;
   * `info` is the upstream identity from the most recent passing check that reported one; it is
   * kept when later checks fail. It never replaces the account's own label.
   */
 -export const AccountDriverHealth = Schema.Struct({
-+export const AccountDriverHealth = /* @__PURE__ */ (() => Schema.Struct({
-   source: Schema.Struct({
-     kind: Schema.Literal("driver"),
-     id: Schema.NonEmptyString,
-@@ -111,10 +111,10 @@ export const AccountDriverHealth = Schema.Struct({
-       message: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(500))),
+-  source: Schema.Struct({
+-    kind: Schema.Literal("driver"),
+-    id: Schema.NonEmptyString,
+-    version: Schema.NonEmptyString,
+-  }),
+-  /** The retained driver for this binding currently implements a credential check. */
+-  checkable: Schema.Boolean,
+-  check: Schema.NullOr(
+-    Schema.Struct({
+-      status: AccountCheckStatus,
+-      reason: Schema.optionalKey(ProviderError.fields.reason),
+-      failure: Schema.optionalKey(AccountCheckFailure),
+-      checkedAt: Schema.Date,
+-      current: Schema.Boolean,
+-      message: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(500))),
++export const AccountDriverHealth = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    source: Schema.Struct({
++      kind: Schema.Literal("driver"),
++      id: Schema.NonEmptyString,
++      version: Schema.NonEmptyString,
      }),
-   ),
+-  ),
 -});
-+}))();
++    /** The retained driver for this binding currently implements a credential check. */
++    checkable: Schema.Boolean,
++    check: Schema.NullOr(
++      Schema.Struct({
++        status: AccountCheckStatus,
++        reason: Schema.optionalKey(ProviderError.fields.reason),
++        failure: Schema.optionalKey(AccountCheckFailure),
++        checkedAt: Schema.Date,
++        current: Schema.Boolean,
++        message: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(500))),
++      }),
++    ),
++  }))();
  export type AccountDriverHealth = typeof AccountDriverHealth.Type;
  
 -export const AccountHealth = Schema.Struct({
-+export const AccountHealth = /* @__PURE__ */ (() => Schema.Struct({
-   account: AccountId,
-   info: Schema.NullOr(AccountInfo),
-   infoCheckedAt: Schema.NullOr(Schema.Date),
-@@ -122,7 +122,7 @@ export const AccountHealth = Schema.Struct({
-   personalDataStatus: Schema.optionalKey(Schema.Literal("account_closed")),
-   apps: Schema.Array(AccountAppHealth),
-   driver: Schema.optionalKey(AccountDriverHealth),
+-  account: AccountId,
+-  info: Schema.NullOr(AccountInfo),
+-  infoCheckedAt: Schema.NullOr(Schema.Date),
+-  /** A host removed this account's credentials after its service reported the account closed. */
+-  personalDataStatus: Schema.optionalKey(Schema.Literal("account_closed")),
+-  apps: Schema.Array(AccountAppHealth),
+-  driver: Schema.optionalKey(AccountDriverHealth),
 -});
-+}))();
++export const AccountHealth = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    account: AccountId,
++    info: Schema.NullOr(AccountInfo),
++    infoCheckedAt: Schema.NullOr(Schema.Date),
++    /** A host removed this account's credentials after its service reported the account closed. */
++    personalDataStatus: Schema.optionalKey(Schema.Literal("account_closed")),
++    apps: Schema.Array(AccountAppHealth),
++    driver: Schema.optionalKey(AccountDriverHealth),
++  }))();
  export type AccountHealth = typeof AccountHealth.Type;
  
  /** The app's current check found the account's credentials rejected; outdated checks make no claim. */
-@@ -175,7 +175,7 @@ export const accountProblems = (
+@@ -175,46 +180,49 @@ export const accountProblems = (
    });
  
  /** A check of credentials before they are saved; nothing is recorded. */
 -export const CredentialCheck = Schema.Struct({
-+export const CredentialCheck = /* @__PURE__ */ (() => Schema.Struct({
-   status: AccountCheckStatus,
-   failure: Schema.optionalKey(AccountCheckFailure),
-   info: Schema.NullOr(AccountInfo),
-@@ -184,14 +184,14 @@ export const CredentialCheck = Schema.Struct({
-    * replaced. Present only when a failing check threw one.
-    */
-   message: Schema.optionalKey(Schema.String),
+-  status: AccountCheckStatus,
+-  failure: Schema.optionalKey(AccountCheckFailure),
+-  info: Schema.NullOr(AccountInfo),
+-  /**
+-   * The message of an error the app's check threw, bounded and with the checked credentials
+-   * replaced. Present only when a failing check threw one.
+-   */
+-  message: Schema.optionalKey(Schema.String),
 -});
-+}))();
++export const CredentialCheck = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    status: AccountCheckStatus,
++    failure: Schema.optionalKey(AccountCheckFailure),
++    info: Schema.NullOr(AccountInfo),
++    /**
++     * The message of an error the app's check threw, bounded and with the checked credentials
++     * replaced. Present only when a failing check threw one.
++     */
++    message: Schema.optionalKey(Schema.String),
++  }))();
  export type CredentialCheck = typeof CredentialCheck.Type;
  
  /** Plain fields in public SDK calls; redacted immediately at the host boundary. */
@@ -9563,71 +10443,161 @@ index adcccad..4c43210 100644
  
  /** No account matched the ID and any supplied owner constraint. */
 -export const AccountNotFound = UserFacingError.define({
-+export const AccountNotFound = /* @__PURE__ */ (() => UserFacingError.define({
-   tag: "AccountNotFound",
-   status: 404,
-   fields: { account: AccountId },
-@@ -202,19 +202,19 @@ export const AccountNotFound = UserFacingError.define({
-     instructions:
-       "Inspect the current app’s account selection and check whether the intended account still exists and is accessible. Guide selection of an available account or creation of a new connection. Do not silently substitute a different account.",
-   },
+-  tag: "AccountNotFound",
+-  status: 404,
+-  fields: { account: AccountId },
+-  title: "Account no longer available",
+-  description: "The requested account could not be found.",
+-  recovery: {
+-    action: "Close this form and select an available account, or start a new connection.",
+-    instructions:
+-      "Inspect the current app’s account selection and check whether the intended account still exists and is accessible. Guide selection of an available account or creation of a new connection. Do not silently substitute a different account.",
+-  },
 -});
-+}))();
++export const AccountNotFound = /* @__PURE__ */ (() =>
++  UserFacingError.define({
++    tag: "AccountNotFound",
++    status: 404,
++    fields: { account: AccountId },
++    title: "Account no longer available",
++    description: "The requested account could not be found.",
++    recovery: {
++      action: "Close this form and select an available account, or start a new connection.",
++      instructions:
++        "Inspect the current app’s account selection and check whether the intended account still exists and is accessible. Guide selection of an available account or creation of a new connection. Do not silently substitute a different account.",
++    },
++  }))();
  /** Parsed AccountNotFound failure. */
  export type AccountNotFound = typeof AccountNotFound.Type;
  
  /** Submitted fields failed the declared method schema; values never enter this error. */
 -export const AccountFieldsInvalid = ApiError.define({
-+export const AccountFieldsInvalid = /* @__PURE__ */ (() => ApiError.define({
-   tag: "AccountFieldsInvalid",
-   status: 422,
-   fields: { provider: ProviderId, method: AuthMethodName },
-   message: ({ method }) =>
-     `The submitted account fields do not match the “${method}” method's declared fields.`,
-   recorded: () => "The submitted account fields do not match the method's declared fields",
+-  tag: "AccountFieldsInvalid",
+-  status: 422,
+-  fields: { provider: ProviderId, method: AuthMethodName },
+-  message: ({ method }) =>
+-    `The submitted account fields do not match the “${method}” method's declared fields.`,
+-  recorded: () => "The submitted account fields do not match the method's declared fields",
 -});
-+}))();
++export const AccountFieldsInvalid = /* @__PURE__ */ (() =>
++  ApiError.define({
++    tag: "AccountFieldsInvalid",
++    status: 422,
++    fields: { provider: ProviderId, method: AuthMethodName },
++    message: ({ method }) =>
++      `The submitted account fields do not match the “${method}” method's declared fields.`,
++    recorded: () => "The submitted account fields do not match the method's declared fields",
++  }))();
  export type AccountFieldsInvalid = typeof AccountFieldsInvalid.Type;
  
  /**
-@@ -312,9 +312,9 @@ const accountParams = { account: AccountInputs.get.fields.account };
+@@ -312,9 +320,10 @@ const accountParams = { account: AccountInputs.get.fields.account };
   * offers no revocation Executor can use, or the account has no OAuth grant, so access ends only
   * when the person removes it at the service.
   */
 -export const AccountRevocation = Schema.Struct({
-+export const AccountRevocation = /* @__PURE__ */ (() => Schema.Struct({
-   revocation: Schema.Literals(["automatic", "manual"]),
+-  revocation: Schema.Literals(["automatic", "manual"]),
 -});
-+}))();
++export const AccountRevocation = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    revocation: Schema.Literals(["automatic", "manual"]),
++  }))();
  export type AccountRevocation = typeof AccountRevocation.Type;
  const ownerQuery = { owner: AccountInputs.get.fields.owner };
  
-@@ -361,7 +361,7 @@ const accountWebhooksActive = "Remove this account's webhook subscriptions befor
+@@ -361,66 +370,69 @@ const accountWebhooksActive = "Remove this account's webhook subscriptions befor
   * Keep the provider credentials while a subscription still uses them: its source account, and
   * while it is live, every account its registration ran with, which removing it needs.
   */
 -export const AccountWebhooksActive = ApiError.define({
-+export const AccountWebhooksActive = /* @__PURE__ */ (() => ApiError.define({
-   tag: "AccountWebhooksActive",
-   status: 409,
-   fields: { account: AccountId, dependents: DependentsField },
-@@ -396,23 +396,23 @@ export const AccountWebhooksActive = ApiError.define({
-     return [...parts, "Then delete the account again."].join(" ");
-   },
-   recorded: () => accountWebhooksActive,
+-  tag: "AccountWebhooksActive",
+-  status: 409,
+-  fields: { account: AccountId, dependents: DependentsField },
+-  message: ({ dependents }) => {
+-    if (dependents === undefined) return accountWebhooksActive;
+-    const { visible, hidden } = dependents;
+-    const named = visible
+-      .slice(0, maxNamedWebhookDependents)
+-      .map((item) => `${item.app}/${item.subscription} (${item.status})`)
+-      .join(", ");
+-    const more = visible.length - maxNamedWebhookDependents;
+-    const unseen = `${hidden} webhook ${hidden === 1 ? "subscription" : "subscriptions"} you can't see`;
+-    // Removal needs its actor or an app manager, who for a member's subscription must use its source.
+-    const removers =
+-      hidden === 1
+-        ? "Ask the person it runs as, or a manager of its app who can use its source account, to remove it."
+-        : "Ask the person each runs as, or a manager of its app who can use its source account, to remove them.";
+-    const parts =
+-      visible.length === 0
+-        ? [
+-            `${unseen} ${hidden === 1 ? "uses" : "use"} this account, so it can't be deleted.`,
+-            removers,
+-          ]
+-        : [
+-            `Webhook subscriptions still use this account, so it can't be deleted: ${named}${more > 0 ? ` and ${more} more` : ""}.`,
+-            "A subscription uses its source account and every account its registration ran with, so its source may be another account.",
+-            "Remove each live one with webhooks.remove, or unlink its source account from the app. For a disabled one, remove its webhook at the provider, then confirm with webhooks.confirmRemoval.",
+-            ...(hidden === 0
+-              ? []
+-              : [`${unseen} also ${hidden === 1 ? "uses" : "use"} it.`, removers]),
+-          ];
+-    return [...parts, "Then delete the account again."].join(" ");
+-  },
+-  recorded: () => accountWebhooksActive,
 -});
-+}))();
++export const AccountWebhooksActive = /* @__PURE__ */ (() =>
++  ApiError.define({
++    tag: "AccountWebhooksActive",
++    status: 409,
++    fields: { account: AccountId, dependents: DependentsField },
++    message: ({ dependents }) => {
++      if (dependents === undefined) return accountWebhooksActive;
++      const { visible, hidden } = dependents;
++      const named = visible
++        .slice(0, maxNamedWebhookDependents)
++        .map((item) => `${item.app}/${item.subscription} (${item.status})`)
++        .join(", ");
++      const more = visible.length - maxNamedWebhookDependents;
++      const unseen = `${hidden} webhook ${hidden === 1 ? "subscription" : "subscriptions"} you can't see`;
++      // Removal needs its actor or an app manager, who for a member's subscription must use its source.
++      const removers =
++        hidden === 1
++          ? "Ask the person it runs as, or a manager of its app who can use its source account, to remove it."
++          : "Ask the person each runs as, or a manager of its app who can use its source account, to remove them.";
++      const parts =
++        visible.length === 0
++          ? [
++              `${unseen} ${hidden === 1 ? "uses" : "use"} this account, so it can't be deleted.`,
++              removers,
++            ]
++          : [
++              `Webhook subscriptions still use this account, so it can't be deleted: ${named}${more > 0 ? ` and ${more} more` : ""}.`,
++              "A subscription uses its source account and every account its registration ran with, so its source may be another account.",
++              "Remove each live one with webhooks.remove, or unlink its source account from the app. For a disabled one, remove its webhook at the provider, then confirm with webhooks.confirmRemoval.",
++              ...(hidden === 0
++                ? []
++                : [`${unseen} also ${hidden === 1 ? "uses" : "use"} it.`, removers]),
++            ];
++      return [...parts, "Then delete the account again."].join(" ");
++    },
++    recorded: () => accountWebhooksActive,
++  }))();
  export type AccountWebhooksActive = typeof AccountWebhooksActive.Type;
  
  /** Active workflows retain their selected account identities until completion or termination. */
 -export const AccountWorkflowsActive = ApiError.define({
-+export const AccountWorkflowsActive = /* @__PURE__ */ (() => ApiError.define({
-   tag: "AccountWorkflowsActive",
-   status: 409,
-   fields: { account: AccountId },
-   message: "Terminate this account's active workflow runs before deleting it.",
+-  tag: "AccountWorkflowsActive",
+-  status: 409,
+-  fields: { account: AccountId },
+-  message: "Terminate this account's active workflow runs before deleting it.",
 -});
-+}))();
++export const AccountWorkflowsActive = /* @__PURE__ */ (() =>
++  ApiError.define({
++    tag: "AccountWorkflowsActive",
++    status: 409,
++    fields: { account: AccountId },
++    message: "Terminate this account's active workflow runs before deleting it.",
++  }))();
  export type AccountWorkflowsActive = typeof AccountWorkflowsActive.Type;
  
  /**
@@ -9635,16 +10605,24 @@ index adcccad..4c43210 100644
   * moment a non-renewable grant expires. The fingerprint changes whenever stored credentials do.
   */
 -export const AccountSignIn = Schema.Union([
-+export const AccountSignIn = /* @__PURE__ */ (() => Schema.Union([
-   Schema.Struct({
-     state: Schema.Literal("saved"),
-     reconnectAt: Schema.NullOr(Schema.Date),
-@@ -420,7 +420,7 @@ export const AccountSignIn = Schema.Union([
-   }),
-   Schema.Struct({ state: Schema.Literal("reconnect"), credentialsFingerprint: Schema.String }),
-   Schema.Struct({ state: Schema.Literal("unavailable"), credentialsFingerprint: Schema.String }),
+-  Schema.Struct({
+-    state: Schema.Literal("saved"),
+-    reconnectAt: Schema.NullOr(Schema.Date),
+-    credentialsFingerprint: Schema.String,
+-  }),
+-  Schema.Struct({ state: Schema.Literal("reconnect"), credentialsFingerprint: Schema.String }),
+-  Schema.Struct({ state: Schema.Literal("unavailable"), credentialsFingerprint: Schema.String }),
 -]);
-+]))();
++export const AccountSignIn = /* @__PURE__ */ (() =>
++  Schema.Union([
++    Schema.Struct({
++      state: Schema.Literal("saved"),
++      reconnectAt: Schema.NullOr(Schema.Date),
++      credentialsFingerprint: Schema.String,
++    }),
++    Schema.Struct({ state: Schema.Literal("reconnect"), credentialsFingerprint: Schema.String }),
++    Schema.Struct({ state: Schema.Literal("unavailable"), credentialsFingerprint: Schema.String }),
++  ]))();
  export type AccountSignIn = typeof AccountSignIn.Type;
  
  export const AccountsGroup = /* @__PURE__ */ (() =>
@@ -12481,7 +13459,7 @@ index 4def79e..68def9f 100644
  
  const app = {
 diff --git a/packages/sdk/src/contracts/shared.ts b/packages/sdk/src/contracts/shared.ts
-index 0d3e093..9209553 100644
+index 0d3e093..7ca2655 100644
 --- a/packages/sdk/src/contracts/shared.ts
 +++ b/packages/sdk/src/contracts/shared.ts
 @@ -14,7 +14,7 @@ export const Json = Schema.Json;
@@ -12493,48 +13471,94 @@ index 0d3e093..9209553 100644
  
  export type JsonObject = typeof JsonObject.Type;
  
-@@ -90,9 +90,9 @@ export const Cursor = Schema.NonEmptyString.pipe(Schema.brand("Cursor"));
+@@ -90,9 +90,10 @@ export const Cursor = Schema.NonEmptyString.pipe(Schema.brand("Cursor"));
  export type Cursor = typeof Cursor.Type;
  
  /** Page size for list endpoints: an integer between 1 and 2,000, string-encoded in query params. */
 -export const PageLimit = Schema.NumberFromString.pipe(
-+export const PageLimit = /* @__PURE__ */ (() => Schema.NumberFromString.pipe(
-   Schema.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 2_000 })),
+-  Schema.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 2_000 })),
 -);
-+))();
++export const PageLimit = /* @__PURE__ */ (() =>
++  Schema.NumberFromString.pipe(
++    Schema.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 2_000 })),
++  ))();
  
  export type PageLimit = typeof PageLimit.Type;
  
-@@ -110,7 +110,7 @@ export class NotImplemented extends Schema.TaggedError<NotImplemented>()(
+@@ -110,65 +111,68 @@ export class NotImplemented extends Schema.TaggedError<NotImplemented>()(
   * A database operation failed; driver details never cross the SDK boundary. With
   * `mayHaveWritten`, it failed after a tool call that may write reached the app's code.
   */
 -export const StorageError = UserFacingError.define({
-+export const StorageError = /* @__PURE__ */ (() => UserFacingError.define({
-   tag: "StorageError",
-   status: 500,
-   fields: { mayHaveWritten: MayHaveWritten },
-@@ -126,12 +126,12 @@ export const StorageError = UserFacingError.define({
-     },
-     retryable: true,
-   })),
+-  tag: "StorageError",
+-  status: 500,
+-  fields: { mayHaveWritten: MayHaveWritten },
+-  recorded: () => "Could not read or write saved data.",
+-  presentation: callPresentation(() => ({
+-    title: "Storage unavailable",
+-    description: "Could not read or write saved data.",
+-    recovery: {
+-      action:
+-        "Try again. If this continues, copy the fix prompt into your agent to check this instance’s storage.",
+-      instructions:
+-        "Check this instance’s storage availability and safe diagnostics for the failed operation. Restore the failing storage dependency or identify the required instance action. Do not change the integration’s authentication to work around a storage failure on this instance. Do not delete stored data.",
+-    },
+-    retryable: true,
+-  })),
 -});
-+}))();
++export const StorageError = /* @__PURE__ */ (() =>
++  UserFacingError.define({
++    tag: "StorageError",
++    status: 500,
++    fields: { mayHaveWritten: MayHaveWritten },
++    recorded: () => "Could not read or write saved data.",
++    presentation: callPresentation(() => ({
++      title: "Storage unavailable",
++      description: "Could not read or write saved data.",
++      recovery: {
++        action:
++          "Try again. If this continues, copy the fix prompt into your agent to check this instance’s storage.",
++        instructions:
++          "Check this instance’s storage availability and safe diagnostics for the failed operation. Restore the failing storage dependency or identify the required instance action. Do not change the integration’s authentication to work around a storage failure on this instance. Do not delete stored data.",
++      },
++      retryable: true,
++    })),
++  }))();
  /** Parsed StorageError failure. */
  export type StorageError = typeof StorageError.Type;
  
  /** A host access dependency must acknowledge before the resource transaction commits. */
 -export const AccessDependencyUnavailable = UserFacingError.define({
-+export const AccessDependencyUnavailable = /* @__PURE__ */ (() => UserFacingError.define({
-   tag: "AccessDependencyUnavailable",
-   status: 503,
-   fields: { dependency: Schema.NonEmptyString },
-@@ -145,14 +145,14 @@ export const AccessDependencyUnavailable = UserFacingError.define({
-     },
-     retryable: true,
-   }),
+-  tag: "AccessDependencyUnavailable",
+-  status: 503,
+-  fields: { dependency: Schema.NonEmptyString },
+-  recorded: () => "An access synchronization dependency is unavailable.",
+-  presentation: ({ dependency }) => ({
+-    title: "Access synchronization unavailable",
+-    description: `The ${dependency} could not acknowledge the access change.`,
+-    recovery: {
+-      action: `Restore the ${dependency}, then retry the operation.`,
+-      instructions: `Check the ${dependency}'s availability and signing configuration. Restore the receiver, then retry the original operation. Do not change account authentication, delete saved data, or bypass access synchronization.`,
+-    },
+-    retryable: true,
+-  }),
 -});
-+}))();
++export const AccessDependencyUnavailable = /* @__PURE__ */ (() =>
++  UserFacingError.define({
++    tag: "AccessDependencyUnavailable",
++    status: 503,
++    fields: { dependency: Schema.NonEmptyString },
++    recorded: () => "An access synchronization dependency is unavailable.",
++    presentation: ({ dependency }) => ({
++      title: "Access synchronization unavailable",
++      description: `The ${dependency} could not acknowledge the access change.`,
++      recovery: {
++        action: `Restore the ${dependency}, then retry the operation.`,
++        instructions: `Check the ${dependency}'s availability and signing configuration. Restore the receiver, then retry the original operation. Do not change account authentication, delete saved data, or bypass access synchronization.`,
++      },
++      retryable: true,
++    }),
++  }))();
  export type AccessDependencyUnavailable = typeof AccessDependencyUnavailable.Type;
  
  /**
@@ -12542,34 +13566,99 @@ index 0d3e093..9209553 100644
   * `mayHaveWritten`, it failed after a tool call that may write reached the app's code.
   */
 -export const CredentialsError = UserFacingError.define({
-+export const CredentialsError = /* @__PURE__ */ (() => UserFacingError.define({
-   tag: "CredentialsError",
-   status: 500,
-   fields: { mayHaveWritten: MayHaveWritten },
-@@ -168,7 +168,7 @@ export const CredentialsError = UserFacingError.define({
-     },
-     retryable: true,
-   })),
+-  tag: "CredentialsError",
+-  status: 500,
+-  fields: { mayHaveWritten: MayHaveWritten },
+-  recorded: () => "Could not securely read or write the saved credentials.",
+-  presentation: callPresentation(() => ({
+-    title: "Saved credentials unavailable",
+-    description: "Could not securely read or write the saved credentials.",
+-    recovery: {
+-      action:
+-        "Try again. If this continues, copy the fix prompt into your agent to check this instance’s credential storage.",
+-      instructions:
+-        "Check this instance’s credential storage and encryption-key availability without exposing secret values. Restore access through the supported configuration. Do not overwrite credentials, rotate keys as a guess, or change integration code to mask a storage failure on this instance.",
+-    },
+-    retryable: true,
+-  })),
 -});
-+}))();
++export const CredentialsError = /* @__PURE__ */ (() =>
++  UserFacingError.define({
++    tag: "CredentialsError",
++    status: 500,
++    fields: { mayHaveWritten: MayHaveWritten },
++    recorded: () => "Could not securely read or write the saved credentials.",
++    presentation: callPresentation(() => ({
++      title: "Saved credentials unavailable",
++      description: "Could not securely read or write the saved credentials.",
++      recovery: {
++        action:
++          "Try again. If this continues, copy the fix prompt into your agent to check this instance’s credential storage.",
++        instructions:
++          "Check this instance’s credential storage and encryption-key availability without exposing secret values. Restore access through the supported configuration. Do not overwrite credentials, rotate keys as a guess, or change integration code to mask a storage failure on this instance.",
++      },
++      retryable: true,
++    })),
++  }))();
  /** Parsed CredentialsError failure. */
  export type CredentialsError = typeof CredentialsError.Type;
  
-@@ -191,7 +191,7 @@ const requestInvalidDescription =
+@@ -191,32 +195,33 @@ const requestInvalidDescription =
   * Invalid SDK input; submitted fields are never included in the error. A request its operation's
   * schema rejected names the part and each place that did not match.
   */
 -export const RequestInvalid = UserFacingError.define({
-+export const RequestInvalid = /* @__PURE__ */ (() => UserFacingError.define({
-   tag: "RequestInvalid",
-   status: 400,
-   fields: {
-@@ -216,7 +216,7 @@ export const RequestInvalid = UserFacingError.define({
-         "Read each listed path and what the operation's schema expects there, correct those values, and send the corrected request. Read the operation's input schema for the full shape. Sending the same input again fails the same way.",
+-  tag: "RequestInvalid",
+-  status: 400,
+-  fields: {
+-    part: Schema.optionalKey(RequestPart),
+-    issues: Schema.optionalKey(Schema.Array(RequestIssue)),
+-  },
+-  recorded: ({ part }) =>
+-    part === undefined
+-      ? requestInvalidDescription
+-      : `Rejected this request's ${part} because it does not match the operation's schema.`,
+-  presentation: ({ part, issues }) => ({
+-    title: "Request input not accepted",
+-    description:
+-      part === undefined || issues === undefined || issues.length === 0
+-        ? requestInvalidDescription
+-        : `Rejected this request's ${part} because it does not match the operation's schema: ${issues
+-            .map((issue) => `${issue.path}: ${issue.expected}`)
+-            .join("; ")}.`,
+-    recovery: {
+-      action: "Correct the input and send the request again.",
+-      instructions:
+-        "Read each listed path and what the operation's schema expects there, correct those values, and send the corrected request. Read the operation's input schema for the full shape. Sending the same input again fails the same way.",
++export const RequestInvalid = /* @__PURE__ */ (() =>
++  UserFacingError.define({
++    tag: "RequestInvalid",
++    status: 400,
++    fields: {
++      part: Schema.optionalKey(RequestPart),
++      issues: Schema.optionalKey(Schema.Array(RequestIssue)),
      },
-   }),
+-  }),
 -});
-+}))();
++    recorded: ({ part }) =>
++      part === undefined
++        ? requestInvalidDescription
++        : `Rejected this request's ${part} because it does not match the operation's schema.`,
++    presentation: ({ part, issues }) => ({
++      title: "Request input not accepted",
++      description:
++        part === undefined || issues === undefined || issues.length === 0
++          ? requestInvalidDescription
++          : `Rejected this request's ${part} because it does not match the operation's schema: ${issues
++              .map((issue) => `${issue.path}: ${issue.expected}`)
++              .join("; ")}.`,
++      recovery: {
++        action: "Correct the input and send the request again.",
++        instructions:
++          "Read each listed path and what the operation's schema expects there, correct those values, and send the corrected request. Read the operation's input schema for the full shape. Sending the same input again fails the same way.",
++      },
++    }),
++  }))();
  export type RequestInvalid = typeof RequestInvalid.Type;
  
  /**
@@ -13866,38 +14955,76 @@ index ec16ecb..fdeea21 100644
  export const WebhookSetupApi = HttpApi.make("webhook-setup").add(
    HttpApiGroup.make("webhookSetup")
 diff --git a/packages/sdk/src/contracts/webhooks.ts b/packages/sdk/src/contracts/webhooks.ts
-index 6b5635d..f7fb9f8 100644
+index 6b5635d..7cda950 100644
 --- a/packages/sdk/src/contracts/webhooks.ts
 +++ b/packages/sdk/src/contracts/webhooks.ts
-@@ -31,11 +31,11 @@ import { VersionNotFound } from "./version.ts";
+@@ -31,11 +31,12 @@ import { VersionNotFound } from "./version.ts";
  import { OAuthReconnectRequired, OAuthRenewalFailed } from "./oauth.ts";
  
  /** SDK deadlines and coordination lease for webhook work; durations are milliseconds. */
 -export const WebhookLifecycleLimits = Schema.Struct({
-+export const WebhookLifecycleLimits = /* @__PURE__ */ (() => Schema.Struct({
-   lifecycleTimeoutMs: Schema.Int.check(Schema.isGreaterThan(0)),
-   deliveryTimeoutMs: Schema.Int.check(Schema.isGreaterThan(0)),
-   leaseMs: Schema.Int.check(Schema.isGreaterThan(0)),
+-  lifecycleTimeoutMs: Schema.Int.check(Schema.isGreaterThan(0)),
+-  deliveryTimeoutMs: Schema.Int.check(Schema.isGreaterThan(0)),
+-  leaseMs: Schema.Int.check(Schema.isGreaterThan(0)),
 -});
-+}))();
++export const WebhookLifecycleLimits = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    lifecycleTimeoutMs: Schema.Int.check(Schema.isGreaterThan(0)),
++    deliveryTimeoutMs: Schema.Int.check(Schema.isGreaterThan(0)),
++    leaseMs: Schema.Int.check(Schema.isGreaterThan(0)),
++  }))();
  export type WebhookLifecycleLimits = typeof WebhookLifecycleLimits.Type;
  /** The lease outlasts a registration/cleanup attempt so concurrent reconciliation stays excluded. */
  export const defaultWebhookLifecycleLimits = WebhookLifecycleLimits.make({
-@@ -50,7 +50,7 @@ export const defaultWebhookLifecycleLimits = WebhookLifecycleLimits.make({
+@@ -50,47 +51,50 @@ export const defaultWebhookLifecycleLimits = WebhookLifecycleLimits.make({
   * app links, user requirements from the actor's user links. An app-account webhook has no
   * actor: its deliveries run without a caller, with the app's accounts only.
   */
 -export const WebhookSubscriptionFields = Schema.Struct({
-+export const WebhookSubscriptionFields = /* @__PURE__ */ (() => Schema.Struct({
-   id: WebhookId,
-   app: AppId,
-   owner: OwnerId,
-@@ -71,26 +71,26 @@ export const WebhookSubscriptionFields = Schema.Struct({
-   ]),
-   failure: Schema.NullOr(Schema.Literals(["register", "unregister"])),
-   createdAt: Schema.Date,
+-  id: WebhookId,
+-  app: AppId,
+-  owner: OwnerId,
+-  /** The subject whose access each callback is checked against; null for an app-account webhook. */
+-  actor: Schema.NullOr(Schema.NonEmptyString),
+-  key: Schema.NonEmptyString,
+-  version: VersionId,
+-  name: Schema.NonEmptyString,
+-  sourceAccount: AccountId,
+-  callbackUrl: HttpUrl,
+-  status: Schema.Literals([
+-    "pending",
+-    "setup-required",
+-    "active",
+-    "stopping",
+-    "disabled",
+-    "stopped",
+-  ]),
+-  failure: Schema.NullOr(Schema.Literals(["register", "unregister"])),
+-  createdAt: Schema.Date,
 -});
-+}))();
++export const WebhookSubscriptionFields = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    id: WebhookId,
++    app: AppId,
++    owner: OwnerId,
++    /** The subject whose access each callback is checked against; null for an app-account webhook. */
++    actor: Schema.NullOr(Schema.NonEmptyString),
++    key: Schema.NonEmptyString,
++    version: VersionId,
++    name: Schema.NonEmptyString,
++    sourceAccount: AccountId,
++    callbackUrl: HttpUrl,
++    status: Schema.Literals([
++      "pending",
++      "setup-required",
++      "active",
++      "stopping",
++      "disabled",
++      "stopped",
++    ]),
++    failure: Schema.NullOr(Schema.Literals(["register", "unregister"])),
++    createdAt: Schema.Date,
++  }))();
  export const WebhookSubscription = WebhookSubscriptionFields.pipe(
    withLegacyKeys({ version: "deployment" }),
  );
@@ -13905,159 +15032,235 @@ index 6b5635d..f7fb9f8 100644
  export type WebhookSubscription = typeof WebhookSubscription.Type;
  /** A subscription does not exist within the requested app. */
 -export const WebhookNotFound = ApiError.define({
-+export const WebhookNotFound = /* @__PURE__ */ (() => ApiError.define({
-   tag: "WebhookNotFound",
-   status: 404,
-   message: "No webhook subscription with this key exists for this app.",
+-  tag: "WebhookNotFound",
+-  status: 404,
+-  message: "No webhook subscription with this key exists for this app.",
 -});
-+}))();
++export const WebhookNotFound = /* @__PURE__ */ (() =>
++  ApiError.define({
++    tag: "WebhookNotFound",
++    status: 404,
++    message: "No webhook subscription with this key exists for this app.",
++  }))();
  export type WebhookNotFound = typeof WebhookNotFound.Type;
  /** Existing work must finish, or the stable key was reused for different configuration. */
 -export const WebhookConflict = ApiError.define({
-+export const WebhookConflict = /* @__PURE__ */ (() => ApiError.define({
-   tag: "WebhookConflict",
-   status: 409,
-   message:
-     "The webhook subscription is busy or changed since it was read. Read it again, then retry; a reused key must keep its configuration.",
+-  tag: "WebhookConflict",
+-  status: 409,
+-  message:
+-    "The webhook subscription is busy or changed since it was read. Read it again, then retry; a reused key must keep its configuration.",
 -});
-+}))();
++export const WebhookConflict = /* @__PURE__ */ (() =>
++  ApiError.define({
++    tag: "WebhookConflict",
++    status: 409,
++    message:
++      "The webhook subscription is busy or changed since it was read. Read it again, then retry; a reused key must keep its configuration.",
++  }))();
  export type WebhookConflict = typeof WebhookConflict.Type;
  const webhookFailures = {
    unavailable:
-@@ -133,7 +133,7 @@ const webhookFailure = (failure: {
+@@ -133,16 +137,17 @@ const webhookFailure = (failure: {
      ? webhookMismatches[failure.mismatch]
      : webhookFailures[failure.reason];
  /** The host cannot run this webhook. Internal provider failures and payloads remain private. */
 -export const WebhookFailed = ApiError.define({
-+export const WebhookFailed = /* @__PURE__ */ (() => ApiError.define({
-   tag: "WebhookFailed",
-   status: 422,
-   fields: {
-@@ -142,7 +142,7 @@ export const WebhookFailed = ApiError.define({
-   },
-   message: webhookFailure,
-   recorded: webhookFailure,
+-  tag: "WebhookFailed",
+-  status: 422,
+-  fields: {
+-    reason: Schema.Literals(["unavailable", "definition", "input", "delivery", "inactive"]),
+-    mismatch: WebhookMismatchField,
+-  },
+-  message: webhookFailure,
+-  recorded: webhookFailure,
 -});
-+}))();
++export const WebhookFailed = /* @__PURE__ */ (() =>
++  ApiError.define({
++    tag: "WebhookFailed",
++    status: 422,
++    fields: {
++      reason: Schema.Literals(["unavailable", "definition", "input", "delivery", "inactive"]),
++      mismatch: WebhookMismatchField,
++    },
++    message: webhookFailure,
++    recorded: webhookFailure,
++  }))();
  export type WebhookFailed = typeof WebhookFailed.Type;
  /** Shared operation failures, retained as concrete schema variants at HTTP boundaries. */
  export const WebhookErrors = [
-@@ -169,27 +169,27 @@ const subscription = { ...app, subscription: WebhookId };
+@@ -169,27 +174,31 @@ const subscription = { ...app, subscription: WebhookId };
   * Stable caller keys make creation retry-safe within the app and actor. The app's other
   * requirements resolve from the actor's linked accounts at each callback.
   */
 -export const CreateWebhook = Schema.Struct({
-+export const CreateWebhook = /* @__PURE__ */ (() => Schema.Struct({
-   ...app,
-   actor: Schema.NonEmptyString,
-   key: Schema.NonEmptyString.check(Schema.isMaxLength(128)),
-   name: Schema.NonEmptyString,
-   sourceAccount: AccountId,
-   config: Json,
+-  ...app,
+-  actor: Schema.NonEmptyString,
+-  key: Schema.NonEmptyString.check(Schema.isMaxLength(128)),
+-  name: Schema.NonEmptyString,
+-  sourceAccount: AccountId,
+-  config: Json,
 -});
-+}))();
++export const CreateWebhook = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    ...app,
++    actor: Schema.NonEmptyString,
++    key: Schema.NonEmptyString.check(Schema.isMaxLength(128)),
++    name: Schema.NonEmptyString,
++    sourceAccount: AccountId,
++    config: Json,
++  }))();
  /** A subscription is always addressed within its configured app. */
 -export const WebhookTarget = Schema.Struct(subscription);
 +export const WebhookTarget = /* @__PURE__ */ (() => Schema.Struct(subscription))();
  /** Public callback routes use globally unique immutable IDs, never app slugs or session-selected owners. */
 -export const WebhookCallbackParams = Schema.Struct({ appId: AppId, subscriptionId: WebhookId });
-+export const WebhookCallbackParams = /* @__PURE__ */ (() => Schema.Struct({ appId: AppId, subscriptionId: WebhookId }))();
++export const WebhookCallbackParams = /* @__PURE__ */ (() =>
++  Schema.Struct({ appId: AppId, subscriptionId: WebhookId }))();
  /** The app whose subscriptions are requested. */
 -export const WebhookApp = Schema.Struct(app);
 +export const WebhookApp = /* @__PURE__ */ (() => Schema.Struct(app))();
  /** Definitions are evaluated with the named accounts. */
 -export const WebhookDefinitionsInput = Schema.Struct({
-+export const WebhookDefinitionsInput = /* @__PURE__ */ (() => Schema.Struct({
-   ...app,
-   accounts: Schema.optional(AppAccounts),
+-  ...app,
+-  accounts: Schema.optional(AppAccounts),
 -});
-+}))();
++export const WebhookDefinitionsInput = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    ...app,
++    accounts: Schema.optional(AppAccounts),
++  }))();
  /** Per-definition configuration for an account's managed subscriptions. */
 -export const WebhookSourceConfig = Schema.Record(Schema.NonEmptyString, Schema.Json);
-+export const WebhookSourceConfig = /* @__PURE__ */ (() => Schema.Record(Schema.NonEmptyString, Schema.Json))();
++export const WebhookSourceConfig = /* @__PURE__ */ (() =>
++  Schema.Record(Schema.NonEmptyString, Schema.Json))();
  /**
   * One account linked to an app as a webhook source. Executor keeps one managed subscription per
   * definition of the source's scope that the account's provider can serve, on the app's active
-@@ -200,7 +200,7 @@ export const WebhookSourceConfig = Schema.Record(Schema.NonEmptyString, Schema.J
+@@ -200,53 +209,58 @@ export const WebhookSourceConfig = Schema.Record(Schema.NonEmptyString, Schema.J
   * webhooks, whose deliveries run without a caller. An account linked in both scopes is one source,
   * serving as its app link.
   */
 -export const WebhookSourceFields = Schema.Struct({
-+export const WebhookSourceFields = /* @__PURE__ */ (() => Schema.Struct({
-   /** Identifies this source; linking the account again after its removal creates another. */
-   id: Schema.NonEmptyString,
-   /** Increases with each saved change of its actor, configuration or link. */
-@@ -216,37 +216,37 @@ export const WebhookSourceFields = Schema.Struct({
-   ),
-   reconciledVersion: Schema.NullOr(VersionId),
-   createdAt: Schema.Date,
+-  /** Identifies this source; linking the account again after its removal creates another. */
+-  id: Schema.NonEmptyString,
+-  /** Increases with each saved change of its actor, configuration or link. */
+-  revision: Schema.Int,
+-  app: AppId,
+-  owner: OwnerId,
+-  account: AccountId,
+-  actor: Schema.NullOr(Schema.NonEmptyString),
+-  config: WebhookSourceConfig,
+-  status: Schema.Literals(["pending", "ready", "needs-setup", "failed", "removing"]),
+-  failure: Schema.NullOr(
+-    Schema.Literals(["accounts", "configuration", "registration", "cleanup", "deployment"]),
+-  ),
+-  reconciledVersion: Schema.NullOr(VersionId),
+-  createdAt: Schema.Date,
 -});
-+}))();
++export const WebhookSourceFields = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    /** Identifies this source; linking the account again after its removal creates another. */
++    id: Schema.NonEmptyString,
++    /** Increases with each saved change of its actor, configuration or link. */
++    revision: Schema.Int,
++    app: AppId,
++    owner: OwnerId,
++    account: AccountId,
++    actor: Schema.NullOr(Schema.NonEmptyString),
++    config: WebhookSourceConfig,
++    status: Schema.Literals(["pending", "ready", "needs-setup", "failed", "removing"]),
++    failure: Schema.NullOr(
++      Schema.Literals(["accounts", "configuration", "registration", "cleanup", "deployment"]),
++    ),
++    reconciledVersion: Schema.NullOr(VersionId),
++    createdAt: Schema.Date,
++  }))();
  export const WebhookSource = WebhookSourceFields.pipe(
    withLegacyKeys({ reconciledVersion: "reconciledDeployment" }),
  );
  export type WebhookSource = typeof WebhookSource.Type;
  /** A listed webhook source, with its account's label so views can name it. */
 -export const WebhookSourceSummary = Schema.Struct({
-+export const WebhookSourceSummary = /* @__PURE__ */ (() => Schema.Struct({
-   ...WebhookSourceFields.fields,
-   label: Schema.String,
+-  ...WebhookSourceFields.fields,
+-  label: Schema.String,
 -}).pipe(withLegacyKeys({ reconciledVersion: "reconciledDeployment" }));
-+}).pipe(withLegacyKeys({ reconciledVersion: "reconciledDeployment" })))();
++export const WebhookSourceSummary = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    ...WebhookSourceFields.fields,
++    label: Schema.String,
++  }).pipe(withLegacyKeys({ reconciledVersion: "reconciledDeployment" })))();
  export type WebhookSourceSummary = typeof WebhookSourceSummary.Type;
  /** Change a webhook source's configuration. */
 -export const ConfigureWebhookSource = Schema.Struct({
-+export const ConfigureWebhookSource = /* @__PURE__ */ (() => Schema.Struct({
-   config: WebhookSourceConfig,
+-  config: WebhookSourceConfig,
 -});
-+}))();
++export const ConfigureWebhookSource = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    config: WebhookSourceConfig,
++  }))();
  /** The webhook source a caller read and authorized: its identity, actor and revision. */
 -export const WebhookSourceRevision = Schema.Struct({
-+export const WebhookSourceRevision = /* @__PURE__ */ (() => Schema.Struct({
-   id: Schema.NonEmptyString,
-   actor: Schema.NullOr(Schema.NonEmptyString),
-   revision: Schema.Int,
+-  id: Schema.NonEmptyString,
+-  actor: Schema.NullOr(Schema.NonEmptyString),
+-  revision: Schema.Int,
 -});
-+}))();
++export const WebhookSourceRevision = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    id: Schema.NonEmptyString,
++    actor: Schema.NullOr(Schema.NonEmptyString),
++    revision: Schema.Int,
++  }))();
  /**
   * Change the configuration of the source the caller authorized, keeping its actor. Fails with `WebhookConflict` when the source changed since, is being removed, or was
   * replaced.
   */
 -export const UpdateWebhookSource = Schema.Struct({
-+export const UpdateWebhookSource = /* @__PURE__ */ (() => Schema.Struct({
-   ...app,
-   account: AccountId,
-   expected: WebhookSourceRevision,
-   ...ConfigureWebhookSource.fields,
+-  ...app,
+-  account: AccountId,
+-  expected: WebhookSourceRevision,
+-  ...ConfigureWebhookSource.fields,
 -});
-+}))();
++export const UpdateWebhookSource = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    ...app,
++    account: AccountId,
++    expected: WebhookSourceRevision,
++    ...ConfigureWebhookSource.fields,
++  }))();
  /**
   * Save that an account is a webhook source for the app. Only writes intent; runs in the caller's
   * transaction. Without an actor the account is an app link and serves the app-account webhooks;
-@@ -254,14 +254,14 @@ export const UpdateWebhookSource = Schema.Struct({
+@@ -254,14 +268,16 @@ export const UpdateWebhookSource = Schema.Struct({
   * without an actor moves the source to that scope; reconciliation then removes the other scope's
   * subscriptions as the actor they registered as.
   */
 -export const LinkWebhookSource = Schema.Struct({
-+export const LinkWebhookSource = /* @__PURE__ */ (() => Schema.Struct({
-   ...app,
-   account: AccountId,
-   actor: Schema.optional(Schema.NonEmptyString),
-   config: Schema.optional(WebhookSourceConfig),
+-  ...app,
+-  account: AccountId,
+-  actor: Schema.optional(Schema.NonEmptyString),
+-  config: Schema.optional(WebhookSourceConfig),
 -});
-+}))();
++export const LinkWebhookSource = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    ...app,
++    account: AccountId,
++    actor: Schema.optional(Schema.NonEmptyString),
++    config: Schema.optional(WebhookSourceConfig),
++  }))();
  /** Stop an account's managed subscriptions; the source is deleted once they are stopped. */
 -export const UnlinkWebhookSource = Schema.Struct({ ...app, account: AccountId });
-+export const UnlinkWebhookSource = /* @__PURE__ */ (() => Schema.Struct({ ...app, account: AccountId }))();
++export const UnlinkWebhookSource = /* @__PURE__ */ (() =>
++  Schema.Struct({ ...app, account: AccountId }))();
  
  /** Host-owned wake for managed webhook registration; never an app-authored capability. */
  export const WebhookSourceHost = Symbol.for("executor/WebhookSourceHost");
-@@ -274,7 +274,7 @@ export interface WebhookSourceDispatcher {
+@@ -274,7 +290,8 @@ export interface WebhookSourceDispatcher {
    readonly tick: (limit: number) => Effect.Effect<boolean, StorageError>;
  }
  /** Host-created delivery envelope; public callback senders supply only the enclosed request. */
 -export const DeliverWebhook = Schema.Struct({ ...subscription, request: WebhookRequestData });
-+export const DeliverWebhook = /* @__PURE__ */ (() => Schema.Struct({ ...subscription, request: WebhookRequestData }))();
++export const DeliverWebhook = /* @__PURE__ */ (() =>
++  Schema.Struct({ ...subscription, request: WebhookRequestData }))();
  /** Programmatic management surfaces are shared with the normal Executor management app. */
  export const WebhooksGroup = /* @__PURE__ */ (() =>
    HttpApiGroup.make("webhooks")
@@ -14350,42 +15553,72 @@ index b8da75d..9451136 100644
  export const WorkflowInputsGroup = /* @__PURE__ */ (() =>
    HttpApiGroup.make("workflowInputs")
 diff --git a/packages/sdk/src/contracts/workflow-runtime.ts b/packages/sdk/src/contracts/workflow-runtime.ts
-index 52b1e50..81a7278 100644
+index 52b1e50..c765179 100644
 --- a/packages/sdk/src/contracts/workflow-runtime.ts
 +++ b/packages/sdk/src/contracts/workflow-runtime.ts
-@@ -14,7 +14,7 @@ import { AppId, BuildId, VersionId } from "./shared.ts";
+@@ -14,21 +14,22 @@ import { AppId, BuildId, VersionId } from "./shared.ts";
  import { HostApiCheck } from "./host-api.ts";
  
  /** Backend inspection is parsed before it affects a retained run. */
 -export const WorkflowBackendState = Schema.Union([
-+export const WorkflowBackendState = /* @__PURE__ */ (() => Schema.Union([
-   Schema.Struct({
-     status: Schema.Literals([
-       "queued",
-@@ -28,7 +28,7 @@ export const WorkflowBackendState = Schema.Union([
-   }),
-   Schema.Struct({ status: Schema.Literal("complete"), output: WorkflowValue }),
-   Schema.Struct({ status: Schema.Literal("errored") }),
+-  Schema.Struct({
+-    status: Schema.Literals([
+-      "queued",
+-      "running",
+-      "waiting",
+-      "paused",
+-      "waitingForPause",
+-      "terminated",
+-      "missing",
+-    ]),
+-  }),
+-  Schema.Struct({ status: Schema.Literal("complete"), output: WorkflowValue }),
+-  Schema.Struct({ status: Schema.Literal("errored") }),
 -]);
-+]))();
++export const WorkflowBackendState = /* @__PURE__ */ (() =>
++  Schema.Union([
++    Schema.Struct({
++      status: Schema.Literals([
++        "queued",
++        "running",
++        "waiting",
++        "paused",
++        "waitingForPause",
++        "terminated",
++        "missing",
++      ]),
++    }),
++    Schema.Struct({ status: Schema.Literal("complete"), output: WorkflowValue }),
++    Schema.Struct({ status: Schema.Literal("errored") }),
++  ]))();
  export type WorkflowBackendState = typeof WorkflowBackendState.Type;
  /** All methods are idempotent for a run ID. Backends persist timers and checkpoints. */
  export interface WorkflowRuntime {
-@@ -39,7 +39,7 @@ export interface WorkflowRuntime {
+@@ -39,16 +40,17 @@ export interface WorkflowRuntime {
    readonly signalInput?: (run: WorkflowRunId, id: string) => Effect.Effect<void, WorkflowFailure>;
  }
  /** Source metadata is private to the host; no credential values enter engine parameters. */
 -const WorkflowSeedFields = Schema.Struct({
-+const WorkflowSeedFields = /* @__PURE__ */ (() => Schema.Struct({
-   runId: WorkflowRunId,
-   app: AppId,
-   build: BuildId,
-@@ -48,7 +48,7 @@ const WorkflowSeedFields = Schema.Struct({
-   version: VersionId,
-   name: Schema.NonEmptyString,
-   input: WorkflowValue,
+-  runId: WorkflowRunId,
+-  app: AppId,
+-  build: BuildId,
+-  /** The host API revision the app's cache belongs to, for an app that reads it; see `HostApiCheck`. */
+-  hostApi: Schema.optionalKey(HostApiCheck),
+-  version: VersionId,
+-  name: Schema.NonEmptyString,
+-  input: WorkflowValue,
 -});
-+}))();
++const WorkflowSeedFields = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    runId: WorkflowRunId,
++    app: AppId,
++    build: BuildId,
++    /** The host API revision the app's cache belongs to, for an app that reads it; see `HostApiCheck`. */
++    hostApi: Schema.optionalKey(HostApiCheck),
++    version: VersionId,
++    name: Schema.NonEmptyString,
++    input: WorkflowValue,
++  }))();
  export const WorkflowSeed = WorkflowSeedFields.pipe(withLegacyKeys({ version: "deployment" }));
  export type WorkflowSeed = typeof WorkflowSeed.Type;
  /** Background execution uses host-only capabilities, outside the public HTTP/Promise facade. */

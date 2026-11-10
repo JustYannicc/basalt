@@ -211,7 +211,7 @@ index cd4fbba..a397db5 100644
    hostedWebhookSetupHandlers,
    hostedWebhookHandlers,
 diff --git a/apps/hosted/server/src/implementation/authorization.ts b/apps/hosted/server/src/implementation/authorization.ts
-index 2542a02..2d651c7 100644
+index 2542a02..7d47f65 100644
 --- a/apps/hosted/server/src/implementation/authorization.ts
 +++ b/apps/hosted/server/src/implementation/authorization.ts
 @@ -1,3 +1,9 @@
@@ -224,13 +224,11 @@ index 2542a02..2d651c7 100644
  import {
    permitsApp,
    permitsTool,
-@@ -69,9 +75,17 @@ export const authorizeTool = (
+@@ -69,7 +75,16 @@ export const authorizeTool = (
        tool: { name: input.tool },
        accounts: userAccountIds(input.accounts),
      };
 -    if (!requiresToolMetadata(policy.tools, input.app)) {
--      if (!permitsTool(policy, request))
--        return yield* refuse("insufficient_scope", new OrganizationForbidden());
 +    if (
 +      !permitsApp(policy, input.app) ||
 +      (!requiresToolMetadata(policy.tools, input.app) && !permitsTool(policy, request))
@@ -241,29 +239,24 @@ index 2542a02..2d651c7 100644
 +    if (!needsMetadata && !toolEnabled(availability, { name: input.tool }))
 +      return yield* new ToolSwitchedOff();
 +    if (!needsMetadata && !requiresToolMetadata(policy.tools, input.app)) {
-+      if (!permitsTool(policy, request)) return yield* refuse("insufficient_scope", new OrganizationForbidden());
+       if (!permitsTool(policy, request))
+         return yield* refuse("insufficient_scope", new OrganizationForbidden());
        return { tool: undefined, kind: input.kind } satisfies ToolAuthorization;
-     }
-     const executor = yield* Effect.flatten(HostedExecutor);
-@@ -80,12 +94,13 @@ export const authorizeTool = (
+@@ -80,10 +95,13 @@ export const authorizeTool = (
        (yield* executor.tools
          .get(input)
          .pipe(Effect.catchTag("ToolNotFound", () => Effect.fail(new OrganizationForbidden()))));
 +    if (!toolEnabled(availability, tool)) return yield* new ToolSwitchedOff();
 +    if (needsMetadata && input.kind === "mutation") return yield* new ToolSwitchedOff();
      const permission = runPermission(policy, { ...request, tool });
--    if (permission === undefined)
--      return yield* refuse("insufficient_scope", new OrganizationForbidden());
+     if (permission === undefined)
+       return yield* refuse("insufficient_scope", new OrganizationForbidden());
 -    if (permission === "any") return { tool, kind: input.kind } satisfies ToolAuthorization;
--    if (input.kind === "mutation")
--      return yield* refuse("insufficient_scope", new OrganizationForbidden());
-+    if (permission === undefined) return yield* refuse("insufficient_scope", new OrganizationForbidden());
 +    if (permission === "any")
 +      return { tool, kind: needsMetadata ? "query" : input.kind } satisfies ToolAuthorization;
-+    if (input.kind === "mutation") return yield* refuse("insufficient_scope", new OrganizationForbidden());
+     if (input.kind === "mutation")
+       return yield* refuse("insufficient_scope", new OrganizationForbidden());
      return { tool, kind: "query" } satisfies ToolAuthorization;
-   });
- /**
 diff --git a/apps/hosted/server/src/implementation/executor-app.ts b/apps/hosted/server/src/implementation/executor-app.ts
 index 2040914..b110555 100644
 --- a/apps/hosted/server/src/implementation/executor-app.ts

@@ -123,7 +123,7 @@ index b90e68c..241b818 100644
        start={(input) =>
          account !== undefined ||
 diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
-index 45fd8ce..81649be 100644
+index 45fd8ce..92b17ad 100644
 --- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
 +++ b/apps/hosted/web/src/implementation/pages/connect-account.tsx
 @@ -271,8 +271,11 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
@@ -138,7 +138,22 @@ index 45fd8ce..81649be 100644
    readonly mcpEndpoint?:
      | {
          readonly configuredMethod?: string | undefined;
-@@ -353,6 +356,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -313,7 +316,13 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+   >;
+   readonly onSaved: (account: Account) => void;
+   /** "navigating" keeps the action busy while the browser leaves; "done" keeps this page. */
+-  readonly onAuthorized: (value: A & { readonly manualClient: boolean; readonly method: string; readonly registeredClient?: OAuthClientId }) => "navigating" | "done";
++  readonly onAuthorized: (
++    value: A & {
++      readonly manualClient: boolean;
++      readonly method: string;
++      readonly registeredClient?: OAuthClientId;
++    },
++  ) => "navigating" | "done";
+   readonly onPendingChange?: (pending: boolean) => void;
+ }) {
+   const { organization } = useOrganizationRoute();
+@@ -353,6 +362,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
      readonly clientId: string;
      readonly id: OAuthClientId;
    }>(undefined);
@@ -146,7 +161,7 @@ index 45fd8ce..81649be 100644
    // Reconnects keep their name; a new account is named once saved.
    const saved = (value: Account) => {
      if (!account)
-@@ -419,7 +423,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -419,7 +429,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
            (entry) => entry.requirement === requirement && entry.method === method,
          )
        }
@@ -155,21 +170,118 @@ index 45fd8ce..81649be 100644
        {...(account ? { account } : {})}
        initialMethod={initialMethod}
        onMethodChange={onMethodChange}
-@@ -433,7 +437,13 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -433,7 +443,13 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
              check: {
                app,
                run: (input: AccountSubmission) =>
 -                checkCredentials({ organization, app, provider: provider.id, ...input }),
-+              checkCredentials({
-+                organization,
-+                app,
-+                provider: provider.id,
-+                ...input,
-+                ...(selectedSite === undefined ? {} : { site: selectedSite }),
-+              }),
++                checkCredentials({
++                  organization,
++                  app,
++                  provider: provider.id,
++                  ...input,
++                  ...(selectedSite === undefined ? {} : { site: selectedSite }),
++                }),
              },
            })}
        onSaved={saved}
+@@ -492,50 +508,52 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+                       Match.tag("OAuthSetupFailed", (error) =>
+                         oauthClientEntryReasons.has(error.reason),
+                       ),
+-                    Match.orElse(() => false),
+-                  ),
+-                );
+-                if (required) refresh();
+-                return required;
+-              }}
+-              start={(input: OAuthSubmission) => inOrder(async () => {
+-                const saved = await savedClient(
+-                  input,
+-                  setup !== "unresolved" && setup.grant === "authorization_code"
+-                    ? setup.issuer
+-                    : undefined,
+-                );
+-                if (Exit.isFailure(saved)) return Exit.failCause(saved.cause);
+-                const registeredClient = saved.value;
+-                if (registeredClient !== undefined) refresh();
+-                const exit = await start({
+-                  method,
+-                  ...(registeredClient !== undefined
+-                    ? { client: { id: registeredClient } }
+-                    : input.client !== undefined
+-                      ? { client: input.client }
+-                      : {}),
+-                });
+-                return Exit.map(exit, (value) => ({
+-                  ...value,
+-                  method,
+-                  // Entered details reopen after a failed return; chosen clients do not.
+-                  manualClient:
+-                    registeredClient === undefined &&
+-                    input.client !== undefined &&
+-                    Schema.is(OAuthClientInput)(input.client),
+-                  ...(registeredClient !== undefined ? { registeredClient } : {}),
+-                }));
+-              })}
+-              onAuthorized={(value) => {
+-                refresh();
+-                if (value.status !== "completed") return onAuthorized(value);
+-                saved(value.account);
+-                return "done";
+-              }}
+-            />
+-          )}
+-        </OAuthSetup>
++                      Match.orElse(() => false),
++                    ),
++                  );
++                  if (required) refresh();
++                  return required;
++                }}
++                start={(input: OAuthSubmission) =>
++                  inOrder(async () => {
++                    const saved = await savedClient(
++                      input,
++                      setup !== "unresolved" && setup.grant === "authorization_code"
++                        ? setup.issuer
++                        : undefined,
++                    );
++                    if (Exit.isFailure(saved)) return Exit.failCause(saved.cause);
++                    const registeredClient = saved.value;
++                    if (registeredClient !== undefined) refresh();
++                    const exit = await start({
++                      method,
++                      ...(registeredClient !== undefined
++                        ? { client: { id: registeredClient } }
++                        : input.client !== undefined
++                          ? { client: input.client }
++                          : {}),
++                    });
++                    return Exit.map(exit, (value) => ({
++                      ...value,
++                      method,
++                      // Entered details reopen after a failed return; chosen clients do not.
++                      manualClient:
++                        registeredClient === undefined &&
++                        input.client !== undefined &&
++                        Schema.is(OAuthClientInput)(input.client),
++                      ...(registeredClient !== undefined ? { registeredClient } : {}),
++                    }));
++                  })
++                }
++                onAuthorized={(value) => {
++                  refresh();
++                  if (value.status !== "completed") return onAuthorized(value);
++                  saved(value.account);
++                  return "done";
++                }}
++              />
++            )}
++          </OAuthSetup>
+         );
+         if (auth?.type !== "oauth2" || !("mcpEndpoint" in auth)) return fields;
+         if (mcpEndpoint === undefined)
 diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
 index c4fbd72..49fbc14 100644
 --- a/apps/local/server/src/contracts/dashboard.ts
@@ -206,7 +318,7 @@ index e5ad178..72db321 100644
      ),
  );
 diff --git a/apps/local/web/src/implementation/pages/account-form.tsx b/apps/local/web/src/implementation/pages/account-form.tsx
-index ab9ffe0..05ed66f 100644
+index ab9ffe0..b9d6719 100644
 --- a/apps/local/web/src/implementation/pages/account-form.tsx
 +++ b/apps/local/web/src/implementation/pages/account-form.tsx
 @@ -48,14 +48,18 @@ type AppAccountFormProps = {
@@ -301,12 +413,12 @@ index ab9ffe0..05ed66f 100644
                app,
                run: (input: AccountSubmission) =>
 -                checkCredentials({ app, provider: provider.id, ...input }),
-+              checkCredentials({
-+                app,
-+                provider: provider.id,
-+                ...input,
-+                ...(selectedSite === undefined ? {} : { site: selectedSite }),
-+              }),
++                checkCredentials({
++                  app,
++                  provider: provider.id,
++                  ...input,
++                  ...(selectedSite === undefined ? {} : { site: selectedSite }),
++                }),
              },
            }
          : {})}

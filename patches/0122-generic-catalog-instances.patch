@@ -2250,10 +2250,10 @@ index 0000000..81f1596
 +}
 diff --git a/packages/ui/src/implementation/dashboard/catalog-row-actions.tsx b/packages/ui/src/implementation/dashboard/catalog-row-actions.tsx
 new file mode 100644
-index 0000000..f53d9b7
+index 0000000..d38784a
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/catalog-row-actions.tsx
-@@ -0,0 +1,242 @@
+@@ -0,0 +1,250 @@
 +import { useRef, useState, type ReactElement, type ReactNode } from "react";
 +import { HugeiconsIcon } from "@hugeicons/react";
 +import { Add01Icon, ArrowDown01Icon, MoreHorizontalIcon } from "@hugeicons/core-free-icons";
@@ -2310,7 +2310,8 @@ index 0000000..f53d9b7
 +        <Button
 +          type="button"
 +          variant="outline"
-+          size="sm" className="min-w-21"
++          size="sm"
++          className="min-w-21"
 +          aria-label={`Add ${label}`}
 +          disabled={adding}
 +          onClick={onAdd}
@@ -2322,7 +2323,13 @@ index 0000000..f53d9b7
 +  return (
 +    <div className={actionsClass}>
 +      {instances.length === 1 ? (
-+        <Button variant="outline" size="sm" className="min-w-21" asChild title={`Open ${only.name}`}>
++        <Button
++          variant="outline"
++          size="sm"
++          className="min-w-21"
++          asChild
++          title={`Open ${only.name}`}
++        >
 +          {open(only, "Open")}
 +        </Button>
 +      ) : (
@@ -2332,7 +2339,8 @@ index 0000000..f53d9b7
 +            <Button
 +              type="button"
 +              variant="outline"
-+              size="sm" className="min-w-21"
++              size="sm"
++              className="min-w-21"
 +              aria-label={`Open ${label}: choose one of ${instances.length}`}
 +            >
 +              Open

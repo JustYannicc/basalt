@@ -1,9 +1,9 @@
 diff --git a/apps/hosted/cloud/src/infrastructure/batch-execution.ts b/apps/hosted/cloud/src/infrastructure/batch-execution.ts
 new file mode 100644
-index 0000000..663d9b5
+index 0000000..ece613d
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/batch-execution.ts
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,32 @@
 +import { dashboardBatchPath } from "@executor-js/dashboard-start/batch";
 +import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 +import { Context, Effect, Option, Scope } from "effect";
@@ -32,7 +32,9 @@ index 0000000..663d9b5
 +/** Execution memos normally follow the caller's scope; batched reads share their resource scope. */
 +export const makeBatchExecutionMemo = <A, E, R>(build: Effect.Effect<A, E, R | Scope.Scope>) =>
 +  Effect.map(makeExecutionMemo(build), (memo) =>
-+    Effect.flatMap(BatchScope, (scope) => (scope === undefined ? memo : Scope.provide(memo, scope))),
++    Effect.flatMap(BatchScope, (scope) =>
++      scope === undefined ? memo : Scope.provide(memo, scope),
++    ),
 +  );
 diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
 index 1247968..2b9a628 100644
@@ -134,10 +136,10 @@ index 3102aec..904ec1d 100644
      file: "cloud-database-placement.spec.ts",
 diff --git a/e2e/tests/cloud-dashboard-batch-resources.spec.ts b/e2e/tests/cloud-dashboard-batch-resources.spec.ts
 new file mode 100644
-index 0000000..1dc06bc
+index 0000000..fe30b57
 --- /dev/null
 +++ b/e2e/tests/cloud-dashboard-batch-resources.spec.ts
-@@ -0,0 +1,127 @@
+@@ -0,0 +1,131 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Redacted, Schedule, Schema } from "effect";
 +import { HttpClient, HttpClientRequest } from "effect/http";
@@ -245,8 +247,12 @@ index 0000000..1dc06bc
 +            Effect.flatMap((result) =>
 +              result.data.filter(({ span }) => span.operationName === "dashboard.batch.read")
 +                .length === reads.length &&
-+              result.data.some(({ span }) => span.operationName === "runtime.cloud.database.initialize") &&
-+              result.data.some(({ span }) => span.operationName === "runtime.cloud.executor.initialize")
++              result.data.some(
++                ({ span }) => span.operationName === "runtime.cloud.database.initialize",
++              ) &&
++              result.data.some(
++                ({ span }) => span.operationName === "runtime.cloud.executor.initialize",
++              )
 +                ? Effect.succeed(result.data)
 +                : Effect.fail(new Error("The completed batch trace has not reached Motel")),
 +            ),

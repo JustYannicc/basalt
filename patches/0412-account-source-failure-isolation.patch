@@ -416,10 +416,10 @@ index 5ed4694..bcd3cd4 100644
    /** One tool's full metadata without listing. Omitted sources search list(). */
 diff --git a/packages/apps/src/implementation/account-router-dynamic.ts b/packages/apps/src/implementation/account-router-dynamic.ts
 new file mode 100644
-index 0000000..0fd56d5
+index 0000000..4f4eb96
 --- /dev/null
 +++ b/packages/apps/src/implementation/account-router-dynamic.ts
-@@ -0,0 +1,143 @@
+@@ -0,0 +1,152 @@
 +import { Cause, Effect, Option, Result, Schema } from "effect";
 +import type { HostedTool, HostedToolSummary } from "../contracts/host.ts";
 +import type { AppOperation } from "../contracts/operations.ts";
@@ -439,16 +439,20 @@ index 0000000..0fd56d5
 +  Effect.gen(function* () {
 +    const values = new Map<string, A>();
 +    const failures: SourceFailure[] = [];
-+    const results = yield* Effect.forEach(sources, ([accountId, source]) =>
-+      Effect.suspend(() => read(source)).pipe(
-+        Effect.catchCause((cause) =>
-+          Cause.hasInterrupts(cause)
-+            ? Effect.interrupt
-+            : Effect.fail(accountProviderError(Cause.squash(cause), accountId)),
++    const results = yield* Effect.forEach(
++      sources,
++      ([accountId, source]) =>
++        Effect.suspend(() => read(source)).pipe(
++          Effect.catchCause((cause) =>
++            Cause.hasInterrupts(cause)
++              ? Effect.interrupt
++              : Effect.fail(accountProviderError(Cause.squash(cause), accountId)),
++          ),
++          Effect.result,
++          Effect.map((result) => [accountId, result] as const),
 +        ),
-+        Effect.result,
-+        Effect.map((result) => [accountId, result] as const),
-+      ), { concurrency: 8 });
++      { concurrency: 8 },
++    );
 +    for (const [accountId, result] of results) {
 +      if (Result.isSuccess(result)) values.set(accountId, result.success);
 +      else if (sources.size === 1) return yield* Effect.fail(result.failure);
@@ -559,7 +563,12 @@ index 0000000..0fd56d5
 +          if (operation !== undefined) operations.set(id, operation);
 +        if (operations.size === 0 && failures[0] !== undefined && Option.isNone(selected))
 +          return yield* Effect.fail(failures[0].error);
-+        return operations.size === 0 ? undefined : combineOperation(operations, new Map(failures.map(({ accountId, error }) => [accountId, error])));
++        return operations.size === 0
++          ? undefined
++          : combineOperation(
++              operations,
++              new Map(failures.map(({ accountId, error }) => [accountId, error])),
++            );
 +      }),
 +  };
 +};
@@ -622,10 +631,10 @@ index 0000000..4c28bfb
 +    : {};
 diff --git a/packages/apps/src/implementation/account-router-operations.ts b/packages/apps/src/implementation/account-router-operations.ts
 new file mode 100644
-index 0000000..4563ca6
+index 0000000..2ebd65e
 --- /dev/null
 +++ b/packages/apps/src/implementation/account-router-operations.ts
-@@ -0,0 +1,229 @@
+@@ -0,0 +1,230 @@
 +import { Effect, Schema } from "effect";
 +import { HostedTool, HostedToolSummary, ToolAccountObservation } from "../contracts/host.ts";
 +import type { AppOperation } from "../contracts/operations.ts";
@@ -766,7 +775,9 @@ index 0000000..4563ca6
 +    run: (context, input: Selection) =>
 +      Effect.gen(function* () {
 +        if (failed.has(input.accountId))
-+          return yield* Effect.fail(accountProviderError(failed.get(input.accountId), input.accountId));
++          return yield* Effect.fail(
++            accountProviderError(failed.get(input.accountId), input.accountId),
++          );
 +        const operation = select(input);
 +        (yield* ToolAccountObservation).used([input.accountId]);
 +        return yield* operation.run(context, input.input).pipe(
@@ -854,7 +865,6 @@ index 0000000..4563ca6
 +      : {}),
 +    ...sameAcross("_meta", variants),
 +  });
-+
 diff --git a/packages/apps/src/implementation/account-router.ts b/packages/apps/src/implementation/account-router.ts
 index 837c3b4..505ea3c 100644
 --- a/packages/apps/src/implementation/account-router.ts

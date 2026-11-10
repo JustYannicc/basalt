@@ -172,7 +172,7 @@ index 2baa7a3..89c6e2a 100644
        }),
      ],
 diff --git a/apps/hosted/server/src/implementation/bearer-access.ts b/apps/hosted/server/src/implementation/bearer-access.ts
-index 14ed300..19a80bc 100644
+index 14ed300..ee0a82a 100644
 --- a/apps/hosted/server/src/implementation/bearer-access.ts
 +++ b/apps/hosted/server/src/implementation/bearer-access.ts
 @@ -15,17 +15,19 @@
@@ -237,7 +237,7 @@ index 14ed300..19a80bc 100644
  ) =>
    Effect.gen(function* () {
      const header = request.headers.get("x-executor-organization");
-@@ -369,6 +378,80 @@ const oauthAccess = (
+@@ -369,6 +378,84 @@ const oauthAccess = (
        return yield* unauthorized("wrong_resource");
      // The consent's one resource, at any of this deployment's origins, is the token's audience.
      const consented = row.consentResources === null ? [] : (strings(row.consentResources) ?? []);
@@ -301,7 +301,11 @@ index 14ed300..19a80bc 100644
 +          clientId: row.tokenClient,
 +          policy: native,
 +        }),
-+      ).pipe(Effect.mapError((error) => (error.statusCode === 503 ? unavailable : unauthorized("revoked"))));
++      ).pipe(
++        Effect.mapError((error) =>
++          error.statusCode === 503 ? unavailable : unauthorized("revoked"),
++        ),
++      );
 +      return {
 +        userId: row.subject,
 +        clientId: row.tokenClient,
@@ -318,7 +322,7 @@ index 14ed300..19a80bc 100644
      const target: GrantTarget | undefined = grantTarget(resourceOrigins, consented);
      if (target === undefined) return yield* unauthorized("wrong_resource");
      if (audiences.length !== 1 || audiences[0] !== consented[0] || target.kind !== kind)
-@@ -415,6 +498,7 @@ const oauthAccess = (
+@@ -415,6 +502,7 @@ const oauthAccess = (
        userId: row.subject,
        clientId: row.tokenClient,
        grant: { id: grantId, policy, target },
@@ -326,7 +330,7 @@ index 14ed300..19a80bc 100644
        access: { organization, owner: organizationOwner(organization), role },
        organizationSlug: row.organizationSlug,
      };
-@@ -610,7 +694,7 @@ export const mcpBearerAccess = (
+@@ -610,7 +698,7 @@ export const mcpBearerAccess = (
          userId: grant.userId,
          clientId: grant.clientId,
          grant: grant.grant,
@@ -335,7 +339,7 @@ index 14ed300..19a80bc 100644
          access: grant.access,
        });
      }
-@@ -660,7 +744,7 @@ export const apiBearerAccess = (origins: HostedOAuthOrigins, request: BearerRequ
+@@ -660,7 +748,7 @@ export const apiBearerAccess = (origins: HostedOAuthOrigins, request: BearerRequ
            Effect.map((grant) => ({
              userId: grant.userId,
              access: grant.access,

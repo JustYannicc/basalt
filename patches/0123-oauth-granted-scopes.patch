@@ -110,7 +110,7 @@ index 9c8d14f..8880943 100644
                const metrics = yield* issuer.metrics;
                expect(metrics.tokenExchanges).toBe(2);
 diff --git a/e2e/tests/credential-placement.spec.ts b/e2e/tests/credential-placement.spec.ts
-index 2753091..91874db 100644
+index 2753091..90d1334 100644
 --- a/e2e/tests/credential-placement.spec.ts
 +++ b/e2e/tests/credential-placement.spec.ts
 @@ -11,6 +11,7 @@ import { FetchHttpClient, HttpClient } from "effect/http";
@@ -196,7 +196,7 @@ index 2753091..91874db 100644
          expect(stopped).not.toMatch(claimsRevoked);
          expect((yield* issuer.metrics).refreshes).toBeGreaterThan(0);
          expect(yield* revoked(3)).toEqual([refreshRevoked, refreshRevoked, refreshRevoked]);
-@@ -1761,6 +1787,37 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
+@@ -1761,6 +1787,41 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
          expect((yield* issuer.metrics).revokedRefreshTokens).toEqual([...before, "refresh"]);
          const resourceAuthorizations = (yield* issuer.metrics).resourceAuthorizations;
          expect(resourceAuthorizations.filter((value) => value?.includes("refreshed"))).toEqual([]);
@@ -217,9 +217,13 @@ index 2753091..91874db 100644
 +        yield* browser.login(actors.owner);
 +        const copy = yield* browser.use(
 +          "Finish a sign-in with unrequested broader access",
-+          (page) => page.goto(`${callback.pathname}${callback.search}`)
-+            .then(() => page.getByRole("heading", { name: "Account not connected", exact: true }).waitFor())
-+            .then(() => page.getByRole("alert").innerText()),
++          (page) =>
++            page
++              .goto(`${callback.pathname}${callback.search}`)
++              .then(() =>
++                page.getByRole("heading", { name: "Account not connected", exact: true }).waitFor(),
++              )
++              .then(() => page.getByRole("alert").innerText()),
 +        );
 +        yield* browser.checkpoint("OAuth-scope-refusal");
 +        expect(copy).toContain("nothing was saved");

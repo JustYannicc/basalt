@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Schema } from "effect";
 
-const Commit = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/));
+const Commit = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/u));
 const Receipt = Schema.Struct({
   schemaVersion: Schema.Literal(1),
   transition: Schema.Struct({
@@ -14,7 +14,7 @@ const Receipt = Schema.Struct({
   attempt: Schema.String,
   marker: Schema.Literal("public.private_executor_settings.key=version"),
   expected: Schema.Literal("4.0.29"),
-  observed: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9]+\.[0-9]+\.[0-9]+$/))),
+  observed: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9]+\.[0-9]+\.[0-9]+$/u))),
   outcome: Schema.Literals(["accepted", "refused", "read_failed"]),
   reason: Schema.optionalKey(
     Schema.Literals([

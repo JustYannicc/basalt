@@ -309,17 +309,20 @@ index 0000000..23725c0
 +}).pipe(Effect.mapError(migrationFailed("product")));
 diff --git a/apps/hosted/cloud/src/implementation/executor-version-gate.ts b/apps/hosted/cloud/src/implementation/executor-version-gate.ts
 new file mode 100644
-index 0000000..9cd66e6
+index 0000000..df3409a
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/executor-version-gate.ts
-@@ -0,0 +1,155 @@
+@@ -0,0 +1,164 @@
 +import { chmod, mkdir, rename, writeFile } from "node:fs/promises";
 +import { resolve } from "node:path";
 +import { PgClient } from "@effect/sql-pg";
 +import { Console, Duration, Effect, Redacted } from "effect";
 +import { SqlClient } from "effect/sql";
 +
-+import { executorVersionPolicy, type ExecutorMarkerPrecondition } from "./executor-version-policy.ts";
++import {
++  executorVersionPolicy,
++  type ExecutorMarkerPrecondition,
++} from "./executor-version-policy.ts";
 +
 +export type ExecutorMarkerReceipt = {
 +  readonly schemaVersion: 1;
@@ -329,7 +332,12 @@ index 0000000..9cd66e6
 +  readonly expected: ExecutorMarkerPrecondition["expected"];
 +  readonly observed: string | null;
 +  readonly outcome: "accepted" | "refused" | "read_failed";
-+  readonly reason?: "missing" | "multiple_rows" | "invalid_value" | "version_mismatch" | "query_failed";
++  readonly reason?:
++    | "missing"
++    | "multiple_rows"
++    | "invalid_value"
++    | "version_mismatch"
++    | "query_failed";
 +};
 +
 +const safeVersion = (value: unknown): value is string =>
@@ -452,28 +460,29 @@ index 0000000..9cd66e6
 +  });
 +};
 +
-+
 +/** The command supplies the policy selected from the freshly verified production ledger. */
 +export const productionExecutorVersionPreflight = (url: Redacted.Redacted<string>) =>
 +  Effect.gen(function* () {
 +    const policy = yield* Effect.try({
-+      try: () => executorVersionPolicy({
-+        attempt: process.env.BASALT_RELEASE_ATTEMPT,
-+        candidate: process.env.BASALT_RELEASE_CANDIDATE,
-+        policy: process.env.BASALT_EXECUTOR_MARKER_POLICY,
-+        directory: process.env.BASALT_RELEASE_EVIDENCE_DIRECTORY,
-+      }),
-+      catch: () => new Error("Executor migration marker policy is missing or invalid; migration not started"),
++      try: () =>
++        executorVersionPolicy({
++          attempt: process.env.BASALT_RELEASE_ATTEMPT,
++          candidate: process.env.BASALT_RELEASE_CANDIDATE,
++          policy: process.env.BASALT_EXECUTOR_MARKER_POLICY,
++          directory: process.env.BASALT_RELEASE_EVIDENCE_DIRECTORY,
++        }),
++      catch: () =>
++        new Error("Executor migration marker policy is missing or invalid; migration not started"),
 +    });
 +    if (policy?.precondition)
 +      yield* preflightExecutorVersion({ url, ...policy, precondition: policy.precondition });
 +  });
 diff --git a/apps/hosted/cloud/src/implementation/executor-version-policy.ts b/apps/hosted/cloud/src/implementation/executor-version-policy.ts
 new file mode 100644
-index 0000000..6e7f4b6
+index 0000000..13ec5d7
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/executor-version-policy.ts
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,49 @@
 +import { Schema } from "effect";
 +
 +const Commit = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/));
@@ -518,7 +527,9 @@ index 0000000..6e7f4b6
 +      precondition: policy.precondition,
 +    };
 +  } catch {
-+    throw new Error("Executor migration marker policy is missing or invalid; migration not started");
++    throw new Error(
++      "Executor migration marker policy is missing or invalid; migration not started",
++    );
 +  }
 +};
 diff --git a/apps/hosted/cloud/src/implementation/migrations.ts b/apps/hosted/cloud/src/implementation/migrations.ts
@@ -706,15 +717,19 @@ index d41828a..d14d012 100644
    yield* Effect.log("Hosted Postgres schemas are current");
  });
 diff --git a/apps/hosted/cloud/src/infrastructure/database.ts b/apps/hosted/cloud/src/infrastructure/database.ts
-index a295e7e..89f8e58 100644
+index a295e7e..2bb5dca 100644
 --- a/apps/hosted/cloud/src/infrastructure/database.ts
 +++ b/apps/hosted/cloud/src/infrastructure/database.ts
-@@ -210,6 +210,16 @@ export const productionDatabaseMigration = Effect.gen(function* () {
+@@ -210,6 +210,20 @@ export const productionDatabaseMigration = Effect.gen(function* () {
      cwd: fileURLToPath(new URL("../../", import.meta.url)),
      env: {
        BASALT_RELEASE_ATTEMPT: yield* requiredReleaseCommandAttempt,
 +      ...(yield* Effect.sync(() => {
-+        const names = ["BASALT_RELEASE_CANDIDATE", "BASALT_EXECUTOR_MARKER_POLICY", "BASALT_RELEASE_EVIDENCE_DIRECTORY"] as const;
++        const names = [
++          "BASALT_RELEASE_CANDIDATE",
++          "BASALT_EXECUTOR_MARKER_POLICY",
++          "BASALT_RELEASE_EVIDENCE_DIRECTORY",
++        ] as const;
 +        const environment: Record<string, string> = {};
 +        for (const name of names) {
 +          const value = process.env[name];

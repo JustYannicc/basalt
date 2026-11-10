@@ -399,7 +399,7 @@ index b9c2f8a..97139da 100644
      readonly liveDefinitions: ReturnType<typeof makeWebhooks>["liveDefinitions"];
      readonly retarget: ReturnType<typeof makeWebhooks>["retarget"];
 diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/implementation/webhooks.ts
-index 50175d7..c8284c0 100644
+index 50175d7..9ef8029 100644
 --- a/packages/sdk/src/implementation/webhooks.ts
 +++ b/packages/sdk/src/implementation/webhooks.ts
 @@ -87,6 +87,10 @@ const ManagedWebhook = Schema.Struct({
@@ -421,7 +421,7 @@ index 50175d7..c8284c0 100644
  });
  type Json = typeof Schema.Json.Type;
  const isList = (value: Json): value is ReadonlyArray<Json> => Array.isArray(value);
-@@ -551,9 +556,10 @@ export const makeWebhooks = (
+@@ -551,9 +556,14 @@ export const makeWebhooks = (
        }
        if (carried === undefined) return { carried, replaced };
        // The saved setup follows the version's, whose instructions may have changed.
@@ -429,20 +429,29 @@ index 50175d7..c8284c0 100644
        const encrypted = yield* credentials.encrypt(
          carried.row.id,
 -        Redacted.make({ ...carried.saved, setup: input.setup }),
-+        Redacted.make({ ...saved, ...(removalFailures === undefined ? {} : { removalFailures }), setup: input.setup }),
++        Redacted.make({
++          ...saved,
++          ...(removalFailures === undefined ? {} : { removalFailures }),
++          setup: input.setup,
++        }),
        );
        return { carried: { row: carried.row, encrypted }, replaced };
      });
-@@ -564,7 +570,7 @@ export const makeWebhooks = (
+@@ -564,7 +574,12 @@ export const makeWebhooks = (
     * Register or remove a subscription. `activation` binds a source's cleanup to the activation its
     * reconciliation claimed (see `create`): once another supersedes it, nothing is removed.
     */
 -  const reconcile = (input: typeof WebhookTarget.Type, remove = false, activation?: number) =>
-+  const reconcile = (input: typeof WebhookTarget.Type, remove = false, retryDisabled = true, activation?: number) =>
++  const reconcile = (
++    input: typeof WebhookTarget.Type,
++    remove = false,
++    retryDisabled = true,
++    activation?: number,
++  ) =>
      Effect.gen(function* () {
        yield* outsideTransaction;
        const parsed = yield* Schema.decodeUnknownEffect(WebhookTarget)(input).pipe(
-@@ -583,12 +589,20 @@ export const makeWebhooks = (
+@@ -583,12 +598,20 @@ export const makeWebhooks = (
              const row = yield* read(parsed);
              if (
                row.status === "stopped" ||
@@ -465,7 +474,7 @@ index 50175d7..c8284c0 100644
              const now = yield* Clock.currentTimeMillis;
              if (row.leaseUntil.getTime() > now) return yield* new WebhookConflict();
              yield* query(() =>
-@@ -597,7 +611,9 @@ export const makeWebhooks = (
+@@ -597,7 +620,9 @@ export const makeWebhooks = (
                  set: {
                    revision: claim,
                    leaseUntil: new Date(manual ? 0 : now + defaultWebhookLifecycleLimits.leaseMs),
@@ -476,7 +485,7 @@ index 50175d7..c8284c0 100644
                  },
                }),
              );
-@@ -610,11 +626,11 @@ export const makeWebhooks = (
+@@ -610,11 +635,11 @@ export const makeWebhooks = (
            Effect.gen(function* () {
              if (row.revision !== claim || row.status === "disabled") return yield* metadata(row);
              const stopping = row.status === "stopping";
@@ -489,7 +498,7 @@ index 50175d7..c8284c0 100644
                const common = {
                  name: row.name,
                  config: saved.config,
-@@ -665,6 +681,22 @@ export const makeWebhooks = (
+@@ -665,6 +690,22 @@ export const makeWebhooks = (
                Effect.result,
              );
              const result = yield* work;
@@ -512,7 +521,7 @@ index 50175d7..c8284c0 100644
              yield* transaction(db, () =>
                Effect.gen(function* () {
                  yield* query(() =>
-@@ -677,6 +709,12 @@ export const makeWebhooks = (
+@@ -677,6 +718,12 @@ export const makeWebhooks = (
                            ? "unregister"
                            : "register"
                          : null,
@@ -525,7 +534,7 @@ index 50175d7..c8284c0 100644
                        ...(Result.isSuccess(result)
                          ? refused
                            ? { status: "disabled", failure: null }
-@@ -951,7 +989,7 @@ export const makeWebhooks = (
+@@ -951,7 +998,7 @@ export const makeWebhooks = (
            return id;
          }),
        );
@@ -534,7 +543,7 @@ index 50175d7..c8284c0 100644
      }).pipe(Effect.withSpan("sdk.webhooks.create"));
    const webhooks = {
      get: (input: typeof WebhookTarget.Type) => read(input).pipe(Effect.flatMap(metadata)),
-@@ -965,7 +1003,7 @@ export const makeWebhooks = (
+@@ -965,7 +1012,7 @@ export const makeWebhooks = (
            yield* query(() =>
              db.updateMany("webhooks", {
                where: (b) => b.and(b("id", "=", row.id), b("revision", "=", row.revision)),
@@ -543,7 +552,7 @@ index 50175d7..c8284c0 100644
              }),
            );
            const current = yield* read(input);
-@@ -993,7 +1031,7 @@ export const makeWebhooks = (
+@@ -993,7 +1040,7 @@ export const makeWebhooks = (
        }),
      create: (input: typeof CreateWebhook.Type) => create(input),
      reconcile: (input: typeof WebhookTarget.Type) => reconcile(input),
@@ -552,7 +561,7 @@ index 50175d7..c8284c0 100644
      deliver: (input: typeof DeliverWebhook.Type) =>
        Effect.gen(function* () {
          yield* outsideTransaction;
-@@ -1028,6 +1066,12 @@ export const makeWebhooks = (
+@@ -1028,6 +1075,12 @@ export const makeWebhooks = (
    };
    return {
      webhooks,
@@ -565,7 +574,7 @@ index 50175d7..c8284c0 100644
      /** Reconciliation creates and removes upstream registrations from the current definitions. */
      liveDefinitions: (state: InvocationSnapshot) => definitions(state, true),
      /** Create a source's managed subscription for the activation it claimed; see `create`. */
-@@ -1035,7 +1079,7 @@ export const makeWebhooks = (
+@@ -1035,7 +1088,7 @@ export const makeWebhooks = (
        create(input, activation),
      /** Remove a source's managed subscription while the activation it claimed is current. */
      removeManaged: (input: typeof WebhookTarget.Type, activation: number) =>
@@ -574,7 +583,7 @@ index 50175d7..c8284c0 100644
      /**
       * Point a subscription at its source's current actor. Callbacks resolve accounts at each
       * delivery, so the upstream registration is unchanged.
-@@ -1082,7 +1126,11 @@ export const makeWebhooks = (
+@@ -1082,7 +1135,11 @@ export const makeWebhooks = (
              return yield* new WebhookFailed({ reason: "input" });
            return yield* Schema.decodeUnknownEffect(Schema.toType(WebhookSetupView))(
              saved.setup === undefined

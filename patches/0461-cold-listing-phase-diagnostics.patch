@@ -280,7 +280,7 @@ index 48d8586..9a5f555 100644
            leases,
            ([key, lease]) =>
 diff --git a/packages/app-cache/src/sqlite.ts b/packages/app-cache/src/sqlite.ts
-index b1e5acb..a562b5a 100644
+index b1e5acb..8a1dabb 100644
 --- a/packages/app-cache/src/sqlite.ts
 +++ b/packages/app-cache/src/sqlite.ts
 @@ -12,7 +12,7 @@ export interface CacheSqlStorage {
@@ -300,7 +300,7 @@ index b1e5acb..a562b5a 100644
  
  /**
   * Totals are kept by triggers, so bounding a write reads one row instead of every entry.
-@@ -71,207 +72,256 @@ export interface SqliteCacheResult {
+@@ -71,207 +72,261 @@ export interface SqliteCacheResult {
  export const sqliteCache = (storage: CacheSqlStorage) => {
    let initialized = false;
    return (namespace: string, input: unknown) =>
@@ -580,7 +580,9 @@ index b1e5acb..a562b5a 100644
 +            };
 +            const bound = () => {
 +              const totals = Schema.decodeUnknownSync(Usage)(
-+                storage.sql.exec("SELECT bytes, count FROM executor_cache_usage WHERE id = 0").one(),
++                storage.sql
++                  .exec("SELECT bytes, count FROM executor_cache_usage WHERE id = 0")
++                  .one(),
                );
 -              return true;
 -            }
@@ -635,10 +637,13 @@ index b1e5acb..a562b5a 100644
 +                const row = read(command.key);
 +                const current = entry(row);
 +                const wanted =
-+                  (command.version === undefined || (current?.version ?? null) === command.version) &&
++                  (command.version === undefined ||
++                    (current?.version ?? null) === command.version) &&
 +                  (command.refresh || current === null || now >= current.freshUntil);
 +                const lease =
-+                  wanted && (row === undefined || row.lease_until <= now) ? claim(command.key) : null;
++                  wanted && (row === undefined || row.lease_until <= now)
++                    ? claim(command.key)
++                    : null;
 +                if (command.reads === undefined || command.reads.length > cacheLimits.batchEntries)
 +                  return { entry: current, lease };
 +                // The same reads a `read` makes, in this transaction. Past the batch's byte bound the

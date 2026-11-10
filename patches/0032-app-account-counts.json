@@ -1,7 +1,7 @@
 {
   "identity": "executor-app-account-counts",
   "file": "0032-app-account-counts.patch",
-  "content_sha256": "5403ac57f2e1c5b2e042ce3c7a8265384530543adc75784cf801f964e25180cb",
+  "content_sha256": "23d23e4e88caef060f3a36b13256dedd2dc7eb317cf78ba824c4f046dbaeb9b2",
   "kind": "upstream",
   "upstream_pull_request": 2438,
   "database_sensitive": false,

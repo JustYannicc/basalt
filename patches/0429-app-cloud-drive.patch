@@ -9934,10 +9934,47 @@ index 5fa8779..a8ab766 100644
                  }),
                  Effect.ensuring(Effect.sync(() => progress.callFibers.delete(fiber))),
 diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/apps.ts
-index 993053a..2a083f9 100644
+index 993053a..820b1ac 100644
 --- a/packages/sdk/src/contracts/apps.ts
 +++ b/packages/sdk/src/contracts/apps.ts
-@@ -69,19 +69,21 @@ export const AccountRequirement = /* @__PURE__ */ (() => Schema.Struct({
+@@ -49,39 +49,42 @@ export type AccountScope = typeof AccountScope.Type;
+  * A host-resolved account requirement. Available before accounts are selected
+  * and before the dynamic factory runs. Provider metadata is data, not JS code.
+  */
+-export const AccountRequirement = /* @__PURE__ */ (() => Schema.Struct({
+-  /** Recorded at deploy. Versions saved before scopes declared only user requirements. */
+-  scope: AccountScope.pipe(Schema.withDecodingDefaultKey(Effect.succeed("user" as const))),
+-  provider: ProviderId,
+-  definition: ProviderDefinition,
+-  cardinality: Schema.Literals(["one", "many"]),
+-  /** Host capabilities needed by this consumer, independently of the saved provider. */
+-  capabilities: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
+-  /** Only app-scope collections may opt in to member contributions. */
+-  contributed: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+-  /** This version's provider defines an account check for the slot. */
+-  health: Schema.optionalKey(Schema.Literal(true)),
+-  /** This slot can check app-acquired references through connect.check. */
+-  interactiveHealth: Schema.optionalKey(Schema.Literal(true)),
+-  hostAcquisition: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
+-}))();
++export const AccountRequirement = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    /** Recorded at deploy. Versions saved before scopes declared only user requirements. */
++    scope: AccountScope.pipe(Schema.withDecodingDefaultKey(Effect.succeed("user" as const))),
++    provider: ProviderId,
++    definition: ProviderDefinition,
++    cardinality: Schema.Literals(["one", "many"]),
++    /** Host capabilities needed by this consumer, independently of the saved provider. */
++    capabilities: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++    /** Only app-scope collections may opt in to member contributions. */
++    contributed: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
++    /** This version's provider defines an account check for the slot. */
++    health: Schema.optionalKey(Schema.Literal(true)),
++    /** This slot can check app-acquired references through connect.check. */
++    interactiveHealth: Schema.optionalKey(Schema.Literal(true)),
++    hostAcquisition: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++  }))();
+ 
  export type AccountRequirement = typeof AccountRequirement.Type;
  
  /** App-wide requirements, extracted from the deployed app's declaration. */
@@ -9972,6 +10009,642 @@ index 993053a..2a083f9 100644
  
  export type AppRequirements = typeof AppRequirements.Type;
  
+@@ -90,25 +93,25 @@ export const ownsDatabase = (requirements: Pick<AppRequirements, "database" | "s
+   requirements.sql === true || requirements.database !== undefined;
+ 
+ /** A retained version's build metadata and the requirements its code declares. */
+-export const RetainedVersion = /* @__PURE__ */ (() => Schema.Struct({
+-  ...VersionMetadata.fields,
+-  requirements: AppRequirements,
+-}))();
++export const RetainedVersion = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    ...VersionMetadata.fields,
++    requirements: AppRequirements,
++  }))();
+ export type RetainedVersion = typeof RetainedVersion.Type;
+ 
+ /**
+  * Requirement name -> one account ID for a plain requirement, or account IDs for many(). The
+  * shape that captured background work stores, matching the requirement's cardinality.
+  */
+-export const SelectedAccounts = /* @__PURE__ */ (() => Schema.Record(
+-  Schema.NonEmptyString,
+-  Schema.Union([AccountId, Schema.Array(AccountId)]),
+-))();
++export const SelectedAccounts = /* @__PURE__ */ (() =>
++  Schema.Record(Schema.NonEmptyString, Schema.Union([AccountId, Schema.Array(AccountId)])))();
+ 
+ export type SelectedAccounts = typeof SelectedAccounts.Type;
+ 
+ /** One scope's accounts: requirement name -> account IDs. */
+-export const ScopeAccounts = /* @__PURE__ */ (() => Schema.Record(Schema.NonEmptyString, Schema.Array(AccountId)))();
++export const ScopeAccounts = /* @__PURE__ */ (() =>
++  Schema.Record(Schema.NonEmptyString, Schema.Array(AccountId)))();
+ export type ScopeAccounts = typeof ScopeAccounts.Type;
+ 
+ /**
+@@ -119,10 +122,11 @@ export type ScopeAccounts = typeof ScopeAccounts.Type;
+  * schedules and app-account webhooks do: with the app's accounts only, and a context without
+  * `user`.
+  */
+-export const AppAccounts = /* @__PURE__ */ (() => Schema.Struct({
+-  app: ScopeAccounts,
+-  user: Schema.optionalKey(ScopeAccounts),
+-}))();
++export const AppAccounts = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    app: ScopeAccounts,
++    user: Schema.optionalKey(ScopeAccounts),
++  }))();
+ 
+ export type AppAccounts = typeof AppAccounts.Type;
+ 
+@@ -158,7 +162,8 @@ export const sameAccounts = (left: AppAccounts, right: AppAccounts) => {
+   );
+ };
+ /** AppAccounts in a GET query: JSON text, so an empty requirement survives as []. */
+-export const AppAccountsQuery = /* @__PURE__ */ (() => Schema.optional(Schema.fromJsonString(AppAccounts)))();
++export const AppAccountsQuery = /* @__PURE__ */ (() =>
++  Schema.optional(Schema.fromJsonString(AppAccounts)))();
+ 
+ // The API document publishes the pattern; Effect publishes only `u`-flag patterns, which JSON
+ // Schema reads with Unicode semantics. It uses code-unit ranges rather than `\p{…}` classes, so it
+@@ -182,39 +187,43 @@ const oneVisibleLine = new RegExp(
+  * of invisible characters would list as blank. Names already stored are read with `NonEmptyString`,
+  * so this only narrows what new writes accept.
+  */
+-export const AppName = /* @__PURE__ */ (() => Schema.String.check(
+-  Schema.isMinLength(1),
+-  Schema.isMaxLength(120),
+-  Schema.isPattern(oneVisibleLine),
+-))();
++export const AppName = /* @__PURE__ */ (() =>
++  Schema.String.check(
++    Schema.isMinLength(1),
++    Schema.isMaxLength(120),
++    Schema.isPattern(oneVisibleLine),
++  ))();
+ 
+ /** Informational origin captured when a copy is made. It never grants access or drives updates. */
+-export const AppCopyOrigin = /* @__PURE__ */ (() => Schema.Struct({
+-  reference: Schema.NonEmptyString,
+-  name: Schema.NonEmptyString,
+-  commit: Schema.NullOr(SourceCommit),
+-}))();
++export const AppCopyOrigin = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    reference: Schema.NonEmptyString,
++    name: Schema.NonEmptyString,
++    commit: Schema.NullOr(SourceCommit),
++  }))();
+ export type AppCopyOrigin = typeof AppCopyOrigin.Type;
+ /** A host-resolved snapshot. Hosts authorize its origin before invoking the SDK. */
+-export const AppCopySnapshot = /* @__PURE__ */ (() => Schema.Struct({
+-  files: SourceFiles,
+-  origin: AppCopyOrigin,
+-  activation: Schema.Literals(["deploy", "save"]),
+-}))();
++export const AppCopySnapshot = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    files: SourceFiles,
++    origin: AppCopyOrigin,
++    activation: Schema.Literals(["deploy", "save"]),
++  }))();
+ export type AppCopySnapshot = typeof AppCopySnapshot.Type;
+ /** The fields of an app, before its wire encoding. */
+-export const AppFields = /* @__PURE__ */ (() => Schema.Struct({
+-  id: AppId,
+-  slug: AppSlug,
+-  code: AppCodeId,
+-  repository: Schema.NullOr(AppCodeId),
+-  owner: OwnerId,
+-  name: Schema.NonEmptyString,
+-  activeVersion: Schema.NullOr(VersionId),
+-  copiedFrom: Schema.NullOr(AppCopyOrigin),
+-  requirements: AppRequirements,
+-  createdAt: Schema.Date,
+-}))();
++export const AppFields = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    id: AppId,
++    slug: AppSlug,
++    code: AppCodeId,
++    repository: Schema.NullOr(AppCodeId),
++    owner: OwnerId,
++    name: Schema.NonEmptyString,
++    activeVersion: Schema.NullOr(VersionId),
++    copiedFrom: Schema.NullOr(AppCopyOrigin),
++    requirements: AppRequirements,
++    createdAt: Schema.Date,
++  }))();
+ /**
+  * One independent app, its source repository and optional active version. Callers written before
+  * versions were named read `activeDeployment`.
+@@ -239,175 +248,182 @@ export type DeployedApp = typeof DeployedApp.Type;
+  */
+ const ExpectedVersion = /* @__PURE__ */ (() => Schema.optional(Schema.NullOr(VersionId)))();
+ /** Deploy complete files or read an existing commit; deploying never edits Git. */
+-export const DeployAppInput = /* @__PURE__ */ (() => Schema.Union([
+-  Schema.Struct({
+-    owner: OwnerId,
+-    name: AppName,
+-    files: SourceFiles,
+-    app: Schema.optional(Schema.Never),
+-    commit: Schema.optional(Schema.Never),
+-    expectedVersion: Schema.optional(Schema.Never),
+-  }),
+-  Schema.Struct({
+-    owner: OwnerId,
+-    app: AppId,
+-    files: SourceFiles,
+-    commit: Schema.optional(Schema.Never),
+-    name: Schema.optional(Schema.Never),
+-    expectedVersion: ExpectedVersion,
+-  }),
+-  Schema.Struct({
+-    owner: OwnerId,
+-    app: AppId,
+-    commit: SourceCommit,
+-    files: Schema.optional(Schema.Never),
+-    name: Schema.optional(Schema.Never),
+-    expectedVersion: ExpectedVersion,
+-  }),
+-]))();
++export const DeployAppInput = /* @__PURE__ */ (() =>
++  Schema.Union([
++    Schema.Struct({
++      owner: OwnerId,
++      name: AppName,
++      files: SourceFiles,
++      app: Schema.optional(Schema.Never),
++      commit: Schema.optional(Schema.Never),
++      expectedVersion: Schema.optional(Schema.Never),
++    }),
++    Schema.Struct({
++      owner: OwnerId,
++      app: AppId,
++      files: SourceFiles,
++      commit: Schema.optional(Schema.Never),
++      name: Schema.optional(Schema.Never),
++      expectedVersion: ExpectedVersion,
++    }),
++    Schema.Struct({
++      owner: OwnerId,
++      app: AppId,
++      commit: SourceCommit,
++      files: Schema.optional(Schema.Never),
++      name: Schema.optional(Schema.Never),
++      expectedVersion: ExpectedVersion,
++    }),
++  ]))();
+ 
+ export type DeployAppInput = typeof DeployAppInput.Type;
+ 
+ /** No app matched the ID and any supplied owner constraint. */
+-export const AppNotFound = /* @__PURE__ */ (() => UserFacingError.define({
+-  tag: "AppNotFound",
+-  status: 404,
+-  fields: { app: AppId },
+-  title: "App no longer available",
+-  description: "Could not find the requested app.",
+-  recovery: {
+-    action: "Return to Apps and open an available app.",
+-    instructions:
+-      "Check whether the app was removed or is unavailable in the current organization. Find the intended accessible app and reopen its account setup. Do not redirect the connection to a different app without the user’s choice.",
+-  },
+-}))();
++export const AppNotFound = /* @__PURE__ */ (() =>
++  UserFacingError.define({
++    tag: "AppNotFound",
++    status: 404,
++    fields: { app: AppId },
++    title: "App no longer available",
++    description: "Could not find the requested app.",
++    recovery: {
++      action: "Return to Apps and open an available app.",
++      instructions:
++        "Check whether the app was removed or is unavailable in the current organization. Find the intended accessible app and reopen its account setup. Do not redirect the connection to a different app without the user’s choice.",
++    },
++  }))();
+ /** Parsed AppNotFound failure. */
+ export type AppNotFound = typeof AppNotFound.Type;
+ 
+ /** An undeployed app has source but no active executable version. */
+-export const AppNotDeployed = /* @__PURE__ */ (() => UserFacingError.define({
+-  tag: "AppNotDeployed",
+-  status: 409,
+-  fields: { app: AppId },
+-  title: "This app is not deployed",
+-  description: "The app has no active version to load.",
+-  recovery: {
+-    action: "Open Source and deploy the app before using its tools or accounts.",
+-    instructions:
+-      "Check the current app’s source and active version. Resolve any build errors and deploy the intended source through the supported app flow. Verify tool discovery after deploying.",
+-  },
+-}))();
++export const AppNotDeployed = /* @__PURE__ */ (() =>
++  UserFacingError.define({
++    tag: "AppNotDeployed",
++    status: 409,
++    fields: { app: AppId },
++    title: "This app is not deployed",
++    description: "The app has no active version to load.",
++    recovery: {
++      action: "Open Source and deploy the app before using its tools or accounts.",
++      instructions:
++        "Check the current app’s source and active version. Resolve any build errors and deploy the intended source through the supported app flow. Verify tool discovery after deploying.",
++    },
++  }))();
+ /** Parsed undeployed-app failure. */
+ export type AppNotDeployed = typeof AppNotDeployed.Type;
+ 
+ /** Adding a configured copy must not overwrite an existing app with that name. */
+-export const AppNameTaken = /* @__PURE__ */ (() => ApiError.define({
+-  tag: "AppNameTaken",
+-  status: 409,
+-  fields: { owner: OwnerId, name: Schema.String },
+-  message:
+-    "An app with this name already exists. Choose another name, or deploy to the existing app by its ID.",
+-}))();
++export const AppNameTaken = /* @__PURE__ */ (() =>
++  ApiError.define({
++    tag: "AppNameTaken",
++    status: 409,
++    fields: { owner: OwnerId, name: Schema.String },
++    message:
++      "An app with this name already exists. Choose another name, or deploy to the existing app by its ID.",
++  }))();
+ export type AppNameTaken = typeof AppNameTaken.Type;
+ 
+ /** Another configured app already owns this readable address for this owner. */
+-export const AppSlugTaken = /* @__PURE__ */ (() => ApiError.define({
+-  tag: "AppSlugTaken",
+-  status: 409,
+-  fields: {
+-    owner: OwnerId,
+-    slug: AppSlug,
+-    /** The app holding the address, when the caller may see it. Products decide visibility. */
+-    existing: Schema.optionalKey(Schema.Struct({ app: AppId, name: Schema.String })),
+-  },
+-  message: ({ slug, existing }) =>
+-    existing === undefined
+-      ? `Another app already uses the address “${slug}”, which this name also produces. Choose a different name.`
+-      : `The app “${existing.name}” (${existing.app}) already uses the address “${slug}”, which this name also produces. Choose a different name, or deploy to that app by its ID.`,
+-  recorded: () => "Another app already uses the address this name produces",
+-}))();
++export const AppSlugTaken = /* @__PURE__ */ (() =>
++  ApiError.define({
++    tag: "AppSlugTaken",
++    status: 409,
++    fields: {
++      owner: OwnerId,
++      slug: AppSlug,
++      /** The app holding the address, when the caller may see it. Products decide visibility. */
++      existing: Schema.optionalKey(Schema.Struct({ app: AppId, name: Schema.String })),
++    },
++    message: ({ slug, existing }) =>
++      existing === undefined
++        ? `Another app already uses the address “${slug}”, which this name also produces. Choose a different name.`
++        : `The app “${existing.name}” (${existing.app}) already uses the address “${slug}”, which this name also produces. Choose a different name, or deploy to that app by its ID.`,
++    recorded: () => "Another app already uses the address this name produces",
++  }))();
+ export type AppSlugTaken = typeof AppSlugTaken.Type;
+ 
+ /** A selection does not match the app's declared provider or cardinality. Each reason has its own recovery. */
+-export const AccountSelectionInvalid = /* @__PURE__ */ (() => UserFacingError.define({
+-  tag: "AccountSelectionInvalid",
+-  status: 422,
+-  fields: {
+-    app: AppId,
+-    slot: Schema.String,
+-    reason: Schema.Literals([
+-      "unknown_slot",
+-      "expected_one",
+-      "expected_many",
+-      "provider_mismatch",
+-      "app_bound",
+-      "duplicate_account",
+-    ]),
+-  },
+-  recorded: ({ reason }) => `Account selection does not match the app's requirements: ${reason}`,
+-  // Every reason except unknown_slot names a slot the app's current version declares, so the
+-  // slot is the app's own requirement name, not a value the caller chose.
+-  presentation: ({ slot, reason }) =>
+-    (
+-      ({
+-        unknown_slot: {
+-          title: "Account requirement not found",
+-          description:
+-            "The app’s current version doesn’t declare the account requirement that was selected.",
+-          recovery: {
+-            action: "Open Accounts and choose accounts for the requirements this app declares now.",
+-            instructions:
+-              "Read the app’s current account requirements; a redeploy may have renamed or removed one. Use a requirement name the app declares now, and drop saved choices for requirements it no longer declares. Never move an account to another requirement without the user’s choice. Verify tool discovery with the corrected selection.",
++export const AccountSelectionInvalid = /* @__PURE__ */ (() =>
++  UserFacingError.define({
++    tag: "AccountSelectionInvalid",
++    status: 422,
++    fields: {
++      app: AppId,
++      slot: Schema.String,
++      reason: Schema.Literals([
++        "unknown_slot",
++        "expected_one",
++        "expected_many",
++        "provider_mismatch",
++        "app_bound",
++        "duplicate_account",
++      ]),
++    },
++    recorded: ({ reason }) => `Account selection does not match the app's requirements: ${reason}`,
++    // Every reason except unknown_slot names a slot the app's current version declares, so the
++    // slot is the app's own requirement name, not a value the caller chose.
++    presentation: ({ slot, reason }) =>
++      (
++        ({
++          unknown_slot: {
++            title: "Account requirement not found",
++            description:
++              "The app’s current version doesn’t declare the account requirement that was selected.",
++            recovery: {
++              action:
++                "Open Accounts and choose accounts for the requirements this app declares now.",
++              instructions:
++                "Read the app’s current account requirements; a redeploy may have renamed or removed one. Use a requirement name the app declares now, and drop saved choices for requirements it no longer declares. Never move an account to another requirement without the user’s choice. Verify tool discovery with the corrected selection.",
++            },
+           },
+-        },
+-        expected_one: {
+-          title: "Choose one account",
+-          description: `The “${slot}” requirement takes one account, but a list was selected.`,
+-          recovery: {
+-            action: "Open Accounts and choose one account for this requirement.",
+-            instructions:
+-              "The app declares this requirement with one account. Select a single account ID, not a list. Ask the user which account to keep when it is unclear; never pick one automatically. Verify tool discovery with the corrected selection.",
++          expected_one: {
++            title: "Choose one account",
++            description: `The “${slot}” requirement takes one account, but a list was selected.`,
++            recovery: {
++              action: "Open Accounts and choose one account for this requirement.",
++              instructions:
++                "The app declares this requirement with one account. Select a single account ID, not a list. Ask the user which account to keep when it is unclear; never pick one automatically. Verify tool discovery with the corrected selection.",
++            },
+           },
+-        },
+-        expected_many: {
+-          title: "Choose a list of accounts",
+-          description: `The “${slot}” requirement takes a list of accounts, but a single account was selected.`,
+-          recovery: {
+-            action: "Open Accounts and review the accounts selected for this requirement.",
+-            instructions:
+-              "The app declares this requirement with several accounts. Select the account IDs as a list, even when there is one. Keep the user’s existing choices. Verify tool discovery with the corrected selection.",
++          expected_many: {
++            title: "Choose a list of accounts",
++            description: `The “${slot}” requirement takes a list of accounts, but a single account was selected.`,
++            recovery: {
++              action: "Open Accounts and review the accounts selected for this requirement.",
++              instructions:
++                "The app declares this requirement with several accounts. Select the account IDs as a list, even when there is one. Keep the user’s existing choices. Verify tool discovery with the corrected selection.",
++            },
+           },
+-        },
+-        provider_mismatch: {
+-          title: "Account belongs to another provider",
+-          description: `The account was connected for a different provider definition than the one this app now declares for “${slot}”. Changing a provider’s name, methods, fields or OAuth scopes makes it a new provider, and accounts connected for the old one don’t fit it. Changing only a secrets method’s label, or its fields’ titles and descriptions, doesn’t.`,
+-          recovery: {
+-            action: "Open Accounts and connect a new account for this requirement.",
+-            instructions:
+-              "This account can’t be selected or reconnected for this requirement. Start a new connection for it without `account` (with the Executor app, appAccounts.userConnect or appAccounts.appConnect for the requirement, without `account`), and give the user the returned URL. If the provider change was unintended, restore the previous definition and redeploy instead. Keep the old account; never substitute another identity automatically. Verify tool discovery once the new account is selected.",
++          provider_mismatch: {
++            title: "Account belongs to another provider",
++            description: `The account was connected for a different provider definition than the one this app now declares for “${slot}”. Changing a provider’s name, methods, fields or OAuth scopes makes it a new provider, and accounts connected for the old one don’t fit it. Changing only a secrets method’s label, or its fields’ titles and descriptions, doesn’t.`,
++            recovery: {
++              action: "Open Accounts and connect a new account for this requirement.",
++              instructions:
++                "This account can’t be selected or reconnected for this requirement. Start a new connection for it without `account` (with the Executor app, appAccounts.userConnect or appAccounts.appConnect for the requirement, without `account`), and give the user the returned URL. If the provider change was unintended, restore the previous definition and redeploy instead. Keep the old account; never substitute another identity automatically. Verify tool discovery once the new account is selected.",
++            },
+           },
+-        },
+-        app_bound: {
+-          title: "Account belongs to another app",
+-          description: "Only the app that acquired this account can use its reference.",
+-          recovery: {
+-            action: "Connect a new account from this app.",
+-            instructions:
+-              "Interactive accounts are bound to the acquiring app. Start a connection for this app instead of linking another app's account.",
++          app_bound: {
++            title: "Account belongs to another app",
++            description: "Only the app that acquired this account can use its reference.",
++            recovery: {
++              action: "Connect a new account from this app.",
++              instructions:
++                "Interactive accounts are bound to the acquiring app. Start a connection for this app instead of linking another app's account.",
++            },
+           },
+-        },
+-        duplicate_account: {
+-          title: "Account selected twice",
+-          description: `The same account is selected more than once for “${slot}”.`,
+-          recovery: {
+-            action: "Open Accounts and remove the repeated account.",
+-            instructions:
+-              "Select each account ID once in this requirement’s list. Keep the user’s other choices. Verify tool discovery with the corrected selection.",
++          duplicate_account: {
++            title: "Account selected twice",
++            description: `The same account is selected more than once for “${slot}”.`,
++            recovery: {
++              action: "Open Accounts and remove the repeated account.",
++              instructions:
++                "Select each account ID once in this requirement’s list. Keep the user’s other choices. Verify tool discovery with the corrected selection.",
++            },
+           },
+-        },
+-      }) satisfies Record<typeof reason, ErrorPresentation>
+-    )[reason],
+-}))();
++        }) satisfies Record<typeof reason, ErrorPresentation>
++      )[reason],
++  }))();
+ /** Parsed invalid account selection. */
+ export type AccountSelectionInvalid = typeof AccountSelectionInvalid.Type;
+ 
+@@ -416,84 +432,91 @@ export type AccountSelectionInvalid = typeof AccountSelectionInvalid.Type;
+  * requirement no app link. A new app can be set up before it can run. Only people who can edit the
+  * app link an app requirement's account, so the recovery names who can fix it.
+  */
+-export const AccountRequired = /* @__PURE__ */ (() => UserFacingError.define({
+-  tag: "AccountRequired",
+-  status: 409,
+-  fields: { app: AppId, version: VersionId, slot: Schema.String, scope: AccountScope },
+-  presentation: ({ slot, scope }) =>
+-    scope === "app"
+-      ? {
+-          title: "Someone who can edit this app needs to link an account",
+-          description: `This app needs its own “${slot}” account, which someone who can edit the app links for everyone who uses it. None is linked yet.`,
+-          recovery: {
+-            action: "Ask someone who can edit this app to link an account on its Accounts tab.",
+-            instructions:
+-              "This is an app account requirement: it is linked for everyone, and only people who can edit the app link it. If the user can edit the app, guide them to link an account they can use for this requirement, or connect a new one for it (with the Executor app, appAccounts.appGet lists the accounts they could link, then appAccounts.appLink or appAccounts.appConnect). Otherwise tell the user that someone who can edit the app must link it. Verify tool discovery once it is linked.",
++export const AccountRequired = /* @__PURE__ */ (() =>
++  UserFacingError.define({
++    tag: "AccountRequired",
++    status: 409,
++    fields: { app: AppId, version: VersionId, slot: Schema.String, scope: AccountScope },
++    presentation: ({ slot, scope }) =>
++      scope === "app"
++        ? {
++            title: "Someone who can edit this app needs to link an account",
++            description: `This app needs its own “${slot}” account, which someone who can edit the app links for everyone who uses it. None is linked yet.`,
++            recovery: {
++              action: "Ask someone who can edit this app to link an account on its Accounts tab.",
++              instructions:
++                "This is an app account requirement: it is linked for everyone, and only people who can edit the app link it. If the user can edit the app, guide them to link an account they can use for this requirement, or connect a new one for it (with the Executor app, appAccounts.appGet lists the accounts they could link, then appAccounts.appLink or appAccounts.appConnect). Otherwise tell the user that someone who can edit the app must link it. Verify tool discovery once it is linked.",
++            },
++          }
++        : {
++            title: "Link an account to continue",
++            description: "This app needs an account that is not linked to it yet.",
++            recovery: {
++              action:
++                "Open the app's Accounts tab and connect or link an account for each requirement.",
++              instructions:
++                "Read the current app’s account requirements and the accounts linked to it (with the Executor app, appAccounts.userGet lists the accounts the user could link for a requirement). Guide the user to connect or link the intended account for each missing requirement (appAccounts.userLink or appAccounts.userConnect). Keep the accounts already linked and verify tool discovery when every requirement has an account.",
++            },
+           },
+-        }
+-      : {
+-          title: "Link an account to continue",
+-          description: "This app needs an account that is not linked to it yet.",
+-          recovery: {
+-            action:
+-              "Open the app's Accounts tab and connect or link an account for each requirement.",
+-            instructions:
+-              "Read the current app’s account requirements and the accounts linked to it (with the Executor app, appAccounts.userGet lists the accounts the user could link for a requirement). Guide the user to connect or link the intended account for each missing requirement (appAccounts.userLink or appAccounts.userConnect). Keep the accounts already linked and verify tool discovery when every requirement has an account.",
+-          },
+-        },
+-}))();
++  }))();
+ /** A plain requirement with no linked account. */
+ export type AccountRequired = typeof AccountRequired.Type;
+ 
+ /** A linked account, named by its saved label. */
+-export const AccountChoice = /* @__PURE__ */ (() => Schema.Struct({ id: AccountId, label: Schema.String }))();
++export const AccountChoice = /* @__PURE__ */ (() =>
++  Schema.Struct({ id: AccountId, label: Schema.String }))();
+ export type AccountChoice = typeof AccountChoice.Type;
+ 
+ /**
+  * A caller named accounts for one call, such as `$accounts` on an MCP tool input. Calls no longer
+  * choose accounts: each runs with the accounts the caller linked to the app.
+  */
+-export const AccountChoiceUnsupported = /* @__PURE__ */ (() => UserFacingError.define({
+-  tag: "AccountChoiceUnsupported",
+-  status: 400,
+-  fields: { app: AppId },
+-  title: "Accounts are not chosen per call",
+-  description:
+-    "Accounts are not chosen per call. Each app uses the accounts you linked to it: one for each plain requirement, and every linked account for a many() requirement.",
+-  recovery: {
+-    action: "Call again without choosing accounts. Change the app's accounts in its Accounts tab.",
+-    instructions:
+-      "Remove the account choice from the call and call again. To use a different account, ask the user to link it in the app's Accounts tab; linking another account for a plain requirement replaces the one linked before.",
+-  },
+-}))();
++export const AccountChoiceUnsupported = /* @__PURE__ */ (() =>
++  UserFacingError.define({
++    tag: "AccountChoiceUnsupported",
++    status: 400,
++    fields: { app: AppId },
++    title: "Accounts are not chosen per call",
++    description:
++      "Accounts are not chosen per call. Each app uses the accounts you linked to it: one for each plain requirement, and every linked account for a many() requirement.",
++    recovery: {
++      action:
++        "Call again without choosing accounts. Change the app's accounts in its Accounts tab.",
++      instructions:
++        "Remove the account choice from the call and call again. To use a different account, ask the user to link it in the app's Accounts tab; linking another account for a plain requirement replaces the one linked before.",
++    },
++  }))();
+ /** A call that tried to choose its accounts. */
+ export type AccountChoiceUnsupported = typeof AccountChoiceUnsupported.Type;
+ 
+ /** Stop and clean up webhook subscriptions before deleting their configured app. */
+-export const AppWebhooksActive = /* @__PURE__ */ (() => ApiError.define({
+-  tag: "AppWebhooksActive",
+-  status: 409,
+-  fields: { app: AppId },
+-  message: "Remove the app's webhook subscriptions before deleting it.",
+-}))();
++export const AppWebhooksActive = /* @__PURE__ */ (() =>
++  ApiError.define({
++    tag: "AppWebhooksActive",
++    status: 409,
++    fields: { app: AppId },
++    message: "Remove the app's webhook subscriptions before deleting it.",
++  }))();
+ export type AppWebhooksActive = typeof AppWebhooksActive.Type;
+ 
+ /** A configured app owns active runs and cannot disappear while they execute. */
+-export const AppWorkflowsActive = /* @__PURE__ */ (() => ApiError.define({
+-  tag: "AppWorkflowsActive",
+-  status: 409,
+-  fields: { app: AppId },
+-  message: "Terminate the app's active workflow runs before deleting it.",
+-}))();
++export const AppWorkflowsActive = /* @__PURE__ */ (() =>
++  ApiError.define({
++    tag: "AppWorkflowsActive",
++    status: 409,
++    fields: { app: AppId },
++    message: "Terminate the app's active workflow runs before deleting it.",
++  }))();
+ export type AppWorkflowsActive = typeof AppWorkflowsActive.Type;
+ 
+ /** External revocation must acknowledge before the app's removal can commit. */
+-export const AppRemovalUnavailable = /* @__PURE__ */ (() => ApiError.define({
+-  tag: "AppRemovalUnavailable",
+-  status: 503,
+-  fields: { app: AppId },
+-  message: "App access could not be revoked. The app was not deleted. Try again.",
+-}))();
++export const AppRemovalUnavailable = /* @__PURE__ */ (() =>
++  ApiError.define({
++    tag: "AppRemovalUnavailable",
++    status: 503,
++    fields: { app: AppId },
++    message: "App access could not be revoked. The app was not deleted. Try again.",
++  }))();
+ export type AppRemovalUnavailable = typeof AppRemovalUnavailable.Type;
+ 
+ /** Canonical operation inputs; Promise and HTTP callers use the same validators. */
+@@ -561,15 +584,17 @@ const appParams = { app: AppInputs.get.fields.app };
+ const ownerQuery = { owner: AppInputs.get.fields.owner };
+ // Versions were called deployments. Requests may still use those field names and responses repeat
+ // them, so callers written before the rename keep working.
+-const versionQuery = /* @__PURE__ */ (() => Schema.Struct({
+-  owner: AppInputs.source.fields.owner,
+-  versionOwner: AppInputs.source.fields.versionOwner,
+-  version: AppInputs.source.fields.version,
+-}).pipe(withLegacyKeys({ versionOwner: "deploymentOwner", version: "deployment" })))();
+-const versionsQuery = /* @__PURE__ */ (() => Schema.Struct({
+-  owner: AppInputs.versions.fields.owner,
+-  versionOwner: AppInputs.versions.fields.versionOwner,
+-}).pipe(withLegacyKeys({ versionOwner: "deploymentOwner" })))();
++const versionQuery = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    owner: AppInputs.source.fields.owner,
++    versionOwner: AppInputs.source.fields.versionOwner,
++    version: AppInputs.source.fields.version,
++  }).pipe(withLegacyKeys({ versionOwner: "deploymentOwner", version: "deployment" })))();
++const versionsQuery = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    owner: AppInputs.versions.fields.owner,
++    versionOwner: AppInputs.versions.fields.versionOwner,
++  }).pipe(withLegacyKeys({ versionOwner: "deploymentOwner" })))();
+ const versionsOptions = {
+   params: appParams,
+   query: versionsQuery,
 diff --git a/packages/sdk/src/contracts/drive.ts b/packages/sdk/src/contracts/drive.ts
 new file mode 100644
 index 0000000..af47c9d

@@ -866,10 +866,10 @@ index 09d1668..84f3cc3 100644
  export type WebhookSources = Pick<Executor["webhooks"], "link" | "unlink" | "sources">;
 diff --git a/apps/hosted/server/src/implementation/hosted-routes-accounts.ts b/apps/hosted/server/src/implementation/hosted-routes-accounts.ts
 new file mode 100644
-index 0000000..0c8b8ad
+index 0000000..db28a9e
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/hosted-routes-accounts.ts
-@@ -0,0 +1,305 @@
+@@ -0,0 +1,310 @@
 +import { isLoopbackHostname } from "@executor-js/utils/url-policy";
 +/** Provision and authorize the host-owned Maps Routes account. */
 +import {
@@ -1058,14 +1058,19 @@ index 0000000..0c8b8ad
 +          // A live personal link is the authority to repair a host-owned credential after key
 +          // rotation. Keep the same account so selections and explicit relinks survive.
 +          const token = yield* Effect.tryPromise({
-+            try: () => signHostedRoutesToken(tokenKey, {
-+              app: app.id, organization, user, nonce: current.nonce,
-+              origin: configuration.origin,
-+            }),
++            try: () =>
++              signHostedRoutesToken(tokenKey, {
++                app: app.id,
++                organization,
++                user,
++                nonce: current.nonce,
++                origin: configuration.origin,
++              }),
 +            catch: () => new StorageError(),
 +          });
 +          yield* executor.managedAccounts.replaceCredentials({
-+            owner, account: current.account,
++            owner,
++            account: current.account,
 +            fields: Redacted.make({ origin: configuration.origin, token }),
 +          });
 +          yield* sql`update basalt_hosted_routes_accounts set state = 'linked'

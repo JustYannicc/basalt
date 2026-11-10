@@ -1,7 +1,7 @@
 {
   "identity": "basalt-oauth-granted-scopes",
   "file": "0123-oauth-granted-scopes.patch",
-  "content_sha256": "db91c278b2003fc96a6da2efcbf77a428cee2393b6a4d1c45ce56b237886ac6d",
+  "content_sha256": "c92601de28d7a190062780409d741a6aa55c703fb579f907e35c8c23e97e319a",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

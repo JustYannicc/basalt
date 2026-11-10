@@ -335,7 +335,7 @@ index ff3e271..6ebf64f 100644
          // and checks it again in the background, without any action.
          const again = yield* api.request(actors.owner, "POST", `${identityPath}/deploy`, {
 diff --git a/e2e/tests/local-server-rendered-dashboard.spec.ts b/e2e/tests/local-server-rendered-dashboard.spec.ts
-index 206e700..74ad422 100644
+index 206e700..88961ad 100644
 --- a/e2e/tests/local-server-rendered-dashboard.spec.ts
 +++ b/e2e/tests/local-server-rendered-dashboard.spec.ts
 @@ -15,6 +15,7 @@ const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
@@ -392,16 +392,16 @@ index 206e700..74ad422 100644
            expect(failures, `${label} hydrates to the server's markup`).toEqual([]);
          }
 +        yield* browser.use("Open the local apps list with shared accounts", (page) =>
-+          page.goto("/apps").then(() =>
-+            page
-+              .getByRole("link", { name: `Open ${sharedApp.app.name}`, exact: true })
-+              .waitFor({ state: "visible" }),
-+          ),
++          page
++            .goto("/apps")
++            .then(() =>
++              page
++                .getByRole("link", { name: `Open ${sharedApp.app.name}`, exact: true })
++                .waitFor({ state: "visible" }),
++            ),
 +        );
 +        const sharedCard = yield* browser.use("Read the local shared app card", (page) =>
-+          page
-+            .getByRole("link", { name: `Open ${sharedApp.app.name}`, exact: true })
-+            .innerText(),
++          page.getByRole("link", { name: `Open ${sharedApp.app.name}`, exact: true }).innerText(),
 +        );
 +        expect(sharedCard).toContain("2 accounts · for everyone");
          yield* browser.checkpoint("Local pages hydrate to their server-rendered markup");

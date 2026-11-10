@@ -9614,7 +9614,7 @@ index bcd3cd4..b5d2591 100644
  
  /**
 diff --git a/packages/apps/src/implementation/account-router.ts b/packages/apps/src/implementation/account-router.ts
-index 505ea3c..394a92b 100644
+index 505ea3c..9383173 100644
 --- a/packages/apps/src/implementation/account-router.ts
 +++ b/packages/apps/src/implementation/account-router.ts
 @@ -1,4 +1,4 @@
@@ -9623,7 +9623,15 @@ index 505ea3c..394a92b 100644
  import type { AppOperation } from "../contracts/operations.ts";
  import type { AppNode, AppRouter, DynamicRouter } from "../contracts/router.ts";
  import { nativeRouter, routerDeclaration, type RouterDeclaration } from "./router.ts";
-@@ -43,6 +43,7 @@ const combineNode = (variants: ReadonlyMap<string, AppNode>): AppNode => {
+@@ -17,7 +17,6 @@ export class PartialListing extends Schema.TaggedError<PartialListing>()("Partia
+   error: Schema.Unknown,
+ }) {}
+ 
+-
+ /** Merge the same node from each account. Every account's router must have the same shape. */
+ const combineNode = (variants: ReadonlyMap<string, AppNode>): AppNode => {
+   const nodes = [...variants.values()];
+@@ -43,6 +42,7 @@ const combineNode = (variants: ReadonlyMap<string, AppNode>): AppNode => {
          kind: "router",
          ...accountMcpApps(routers),
          ...(first.meta === undefined ? {} : { meta: first.meta }),
@@ -9631,7 +9639,7 @@ index 505ea3c..394a92b 100644
          children: Object.fromEntries(
            [...keys].map((key) => {
              const children = new Map<string, AppNode>();
-@@ -93,23 +94,55 @@ export const accountRouter = <
+@@ -93,23 +93,55 @@ export const accountRouter = <
    Effect.runPromise(
      Effect.gen(function* () {
        const routers = new Map<string, AppNode>();
@@ -9785,7 +9793,7 @@ index e2c9c9e..6687a02 100644
          if (typeof value === "string" && /^exsec2?_[a-f0-9]+_$/u.test(value))
            handles.set(
 diff --git a/packages/apps/src/implementation/router-catalog.ts b/packages/apps/src/implementation/router-catalog.ts
-index 3fdaf1f..e956511 100644
+index 3fdaf1f..fa35ff0 100644
 --- a/packages/apps/src/implementation/router-catalog.ts
 +++ b/packages/apps/src/implementation/router-catalog.ts
 @@ -2,6 +2,7 @@
@@ -9804,19 +9812,104 @@ index 3fdaf1f..e956511 100644
    const provider = parseProviderError(error);
    if (Option.isSome(provider)) return leavingProviderError(provider.value, secrets, "discover");
    const skills = parseSkillLoadFailed(error);
-@@ -406,6 +408,11 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
+@@ -299,28 +301,34 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
+                   }),
+                 secrets,
+               );
+-        const [meta, { tools: listed, error }] = partial === undefined ? yield* Effect.all(
+-          [
+-            routerMeta(source, secrets),
+-            options.summary && source.summaries !== undefined
+-              ? listing(source.summaries)
+-              : relative !== undefined && describe !== undefined
+-                ? sourced(
+-                    () =>
+-                      Effect.forEach(relative, (name) => describe(name), {
+-                        concurrency: "unbounded",
+-                      }),
+-                    secrets,
+-                  ).pipe(
+-                    Effect.map((tools) => ({
+-                      tools: tools.filter((tool) => tool !== undefined),
+-                      error: undefined,
+-                    })),
+-                  )
+-                : listing(source.list),
+-          ],
+-          { concurrency: "unbounded" },
+-        ) : [mergeMeta(partial.meta, source.overrides), { tools: partial.tools, error: undefined }];
++        const [meta, { tools: listed, error }] =
++          partial === undefined
++            ? yield* Effect.all(
++                [
++                  routerMeta(source, secrets),
++                  options.summary && source.summaries !== undefined
++                    ? listing(source.summaries)
++                    : relative !== undefined && describe !== undefined
++                      ? sourced(
++                          () =>
++                            Effect.forEach(relative, (name) => describe(name), {
++                              concurrency: "unbounded",
++                            }),
++                          secrets,
++                        ).pipe(
++                          Effect.map((tools) => ({
++                            tools: tools.filter((tool) => tool !== undefined),
++                            error: undefined,
++                          })),
++                        )
++                      : listing(source.list),
++                ],
++                { concurrency: "unbounded" },
++              )
++            : [
++                mergeMeta(partial.meta, source.overrides),
++                { tools: partial.tools, error: undefined },
++              ];
+         const parsed: ReadonlyArray<HostedTool | HostedToolSummary> = yield* (
+           options.summary
+             ? Schema.decodeUnknownEffect(Schema.Array(HostedToolSummary))(listed)
+@@ -342,9 +350,11 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
+           });
+         }
+         const failures = yield* Effect.forEach(partial?.failures ?? [], (failure, index) =>
+-          entry(joinPath(path, `__account_source_${index}`),
++          entry(
++            joinPath(path, `__account_source_${index}`),
+             { title: "Unavailable account source", description: `Account ${failure.accountId}` },
+-            safeFailure(failure.error, secrets)),
++            safeFailure(failure.error, secrets),
++          ),
+         );
+         return { meta, found, error, failures };
+       });
+@@ -392,7 +402,10 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
+             const relative = wanted === undefined ? undefined : within(wanted, name);
+             if (relative !== undefined && relative.length === 0) return none;
+             const read = yield* include(node, name, relative);
+-            return { tools: read.found, routers: [...read.failures, yield* entry(name, read.meta, read.error)] };
++            return {
++              tools: read.found,
++              routers: [...read.failures, yield* entry(name, read.meta, read.error)],
++            };
+           }
+         }
+       });
+@@ -406,6 +419,13 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
            path !== "" || (wanted === undefined && node.meta !== undefined)
              ? [yield* entry(path, node.meta)]
              : [];
 +        const failures = yield* Effect.forEach(node.failures ?? [], (failure, index) =>
-+          entry(joinPath(path, `__account_source_${index}`),
++          entry(
++            joinPath(path, `__account_source_${index}`),
 +            { title: "Unavailable account source", description: `Account ${failure.accountId}` },
-+            safeFailure(failure.error, secrets)),
++            safeFailure(failure.error, secrets),
++          ),
 +        );
          const children = yield* Effect.forEach(
            Object.entries(node.children),
            ([key, value]) => child(value, joinPath(path, key), path),
-@@ -413,7 +420,7 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
+@@ -413,7 +433,7 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
          );
          return {
            tools: children.flatMap((read) => read.tools),
@@ -9825,6 +9918,21 @@ index 3fdaf1f..e956511 100644
          };
        });
      if (root?.kind === "router") return yield* visit(root, "");
+@@ -421,10 +441,12 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
+       const read = yield* include(root, "", wanted === undefined ? undefined : [...wanted]);
+       return {
+         tools: read.found,
+-        routers: [...read.failures,
++        routers: [
++          ...read.failures,
+           ...(wanted === undefined && (read.meta !== undefined || read.error !== undefined)
+             ? [yield* entry("", read.meta, read.error)]
+-            : [])],
++            : []),
++        ],
+       };
+     }
+     return none;
 diff --git a/packages/apps/src/implementation/unavailable-account.ts b/packages/apps/src/implementation/unavailable-account.ts
 new file mode 100644
 index 0000000..ccf1593
@@ -10186,7 +10294,7 @@ index 0000000..d8816eb
 +  }),
 +});
 diff --git a/packages/sdk/src/implementation/listings.ts b/packages/sdk/src/implementation/listings.ts
-index dcea1c1..76a7588 100644
+index dcea1c1..2ad3afe 100644
 --- a/packages/sdk/src/implementation/listings.ts
 +++ b/packages/sdk/src/implementation/listings.ts
 @@ -186,6 +186,7 @@ export const makeListings = (options: {
@@ -10197,12 +10305,16 @@ index dcea1c1..76a7588 100644
    readonly policy?: ToolListingPolicy;
    /** Keeps evaluated listings as search rows. */
    readonly search: ToolSearch;
-@@ -210,6 +211,18 @@ export const makeListings = (options: {
+@@ -210,6 +211,22 @@ export const makeListings = (options: {
      search
        .write(state, ToolSearchListing.make(id), listing, at)
        .pipe(Effect.catchCause(() => Effect.logWarning("Tool search rows were not saved")));
 +  const partial = (routers: readonly ToolRouter[]) =>
-+    routers.some((router) => router.error?._tag === "AccountUnavailable" || (router.path === "" && router.error !== undefined));
++    routers.some(
++      (router) =>
++        router.error?._tag === "AccountUnavailable" ||
++        (router.path === "" && router.error !== undefined),
++    );
 +  const evaluateCurrent = (state: InvocationSnapshot, evaluate: Evaluate, read: ListingRead) =>
 +    (read.resolved === undefined
 +      ? resolve(
@@ -10216,7 +10328,7 @@ index dcea1c1..76a7588 100644
    /** Keep a renewal of `id`'s rows, stamped with its start, so an app cache change since forgets it. */
    const renewal = (
      id: string,
-@@ -236,11 +249,7 @@ export const makeListings = (options: {
+@@ -236,11 +253,7 @@ export const makeListings = (options: {
    ) =>
      Effect.gen(function* () {
        const identity = { app: state.app.id, version: state.version.id };
@@ -10229,7 +10341,7 @@ index dcea1c1..76a7588 100644
        const now = yield* Clock.currentTimeMillis;
        if (policy.maxStaleMillis <= 0) return { listing: yield* evaluated, at: now };
        const id = yield* options.declarations.key("tools.list", state);
-@@ -469,7 +478,11 @@ export const makeListings = (options: {
+@@ -469,7 +482,11 @@ export const makeListings = (options: {
        // the check this starts, if one is due, reads when that was.
        if (read.followChanges !== false) yield* options.declarations.followChanges(state.app.id);
        const early = yield* keptListing;
@@ -10242,7 +10354,7 @@ index dcea1c1..76a7588 100644
          return yield* serve(early.at, early.value, "memory");
        // What runs before this read looks beyond this process and in memory again, or, as
        // `earlier`, before its caller read search rows. An evaluation that ends keeps its listing
-@@ -488,7 +501,7 @@ export const makeListings = (options: {
+@@ -488,7 +505,7 @@ export const makeListings = (options: {
                )
                  return undefined;
                const decoded = yield* decodeListing(recalled.json).pipe(Effect.option);
@@ -10251,7 +10363,7 @@ index dcea1c1..76a7588 100644
                const listed = new Listed(decoded.value);
                yield* cache.set(id, {
                  kind: "value",
-@@ -527,7 +540,11 @@ export const makeListings = (options: {
+@@ -527,7 +544,11 @@ export const makeListings = (options: {
              );
        // The durable read yielded, and an evaluation may have ended meanwhile.
        const kept = yield* keptListing;
@@ -10264,13 +10376,18 @@ index dcea1c1..76a7588 100644
          return yield* serve(kept.at, kept.value, "memory");
        // A remembered failure spares a reader with a wait bound, such as MCP discovery, from
        // waiting on the evaluation again. A reader prepared to wait, such as the dashboard,
-@@ -655,11 +672,24 @@ export const makeListings = (options: {
+@@ -655,11 +676,29 @@ export const makeListings = (options: {
        );
        if (!(yield* background(work))) cache.renewed();
      });
 +  // A kept healthy listing can outlive a revoked grant. Re-evaluate discovery with its
 +  // credential-free binding, after the normal resolver rechecks the complete authority set.
-+  const current = (state: InvocationSnapshot, evaluate: Evaluate, read: ListingRead, earlier?: PendingLoad) =>
++  const current = (
++    state: InvocationSnapshot,
++    evaluate: Evaluate,
++    read: ListingRead,
++    earlier?: PendingLoad,
++  ) =>
 +    readAt(state, evaluate, read, earlier).pipe(
 +      Effect.catchTag("OAuthReconnectRequired", (error) =>
 +        state.version.requirements.capabilities?.unavailableAccounts === true
@@ -10290,7 +10407,7 @@ index dcea1c1..76a7588 100644
      /**
       * The listing a reader that does not refresh would be served without evaluating, in two steps:
       * the one kept in this process is read now, and the returned lookup answers with it, or, only
-@@ -772,10 +802,17 @@ export const makeListings = (options: {
+@@ -772,10 +811,17 @@ export const makeListings = (options: {
            // Written only for the search that evaluated them; see `partial`.
            !partial(kept.routers)
          ) {
@@ -10310,7 +10427,7 @@ index dcea1c1..76a7588 100644
              const aged = now - kept.at >= policy.renewMillis;
              const last = yield* cache.get(renewalKey(id));
              // The latest renewal started since these rows were evaluated.
-@@ -808,7 +845,7 @@ export const makeListings = (options: {
+@@ -808,7 +854,7 @@ export const makeListings = (options: {
                  ? "partial"
                  : "stale",
          );
