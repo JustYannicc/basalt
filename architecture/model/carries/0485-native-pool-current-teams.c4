@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Only a native display check sends the person's current teams, read from their memberships, capped in count, name length and encoded size, inside the signed check so the pool Worker can drop pools from teams they left and label the rest with team names. When the memberships can't be read in full or would not fit, it sends no teams, and the pool Worker filters nothing."
+    }
+  }
+}

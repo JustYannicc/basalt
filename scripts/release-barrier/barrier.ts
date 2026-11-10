@@ -1,3 +1,5 @@
+import { uploadFailure } from "./upload-failure.ts";
+import type { ResourceDelta } from "./prop-diff.ts";
 import {
   BarrierRefusal,
   canonical,
@@ -57,7 +59,7 @@ export interface BarrierReceipt {
     version?: number;
     rolloutId?: string;
   };
-  failure?: { reason: string; worker?: string };
+  failure?: { reason: string; worker?: string; delta?: ResourceDelta };
 }
 
 export interface BarrierOptions {
@@ -106,8 +108,8 @@ export async function releaseWorkers(
       let uploaded;
       try {
         uploaded = await options.provider.upload(worker);
-      } catch {
-        throw new BarrierRefusal("upload-rejected-or-unconfirmed", worker.id);
+      } catch (error) {
+        throw uploadFailure(error, worker.id);
       }
       receipt.pendingUpload = {
         worker: worker.id,
@@ -250,7 +252,11 @@ export async function releaseWorkers(
   } catch (error) {
     receipt.failure =
       error instanceof BarrierRefusal
-        ? { reason: error.reason, ...(error.worker ? { worker: error.worker } : {}) }
+        ? {
+            reason: error.reason,
+            ...(error.worker ? { worker: error.worker } : {}),
+            ...(error.delta ? { delta: error.delta } : {}),
+          }
         : {
             reason:
               receipt.phase === "activation" || receipt.phase === "container-activation"

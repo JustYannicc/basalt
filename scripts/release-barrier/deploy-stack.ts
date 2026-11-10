@@ -15,7 +15,8 @@ import { operationFailure } from "./operation-failure.ts";
 import * as Apply from "alchemy/Apply";
 import type { CompiledStack } from "alchemy/Stack";
 import type { Worker } from "alchemy/Cloudflare";
-import { Effect } from "effect";
+import { Cause, Effect, Exit } from "effect";
+import { uploadFailure } from "./upload-failure.ts";
 import { verificationAdmissions, type VerificationAdmission } from "./plan-admission.ts";
 import { finishPlan } from "./alchemy-plan.ts";
 import { planStack } from "./plan-stack.ts";
@@ -54,6 +55,7 @@ import { declaredMismatch } from "./declared-refusal.ts";
 import { preserveDeclarationHistory } from "./declared-history.ts";
 import { preserveClassHistory } from "./class-history.ts";
 import { prepareDeclaredRelease } from "./prepare-declared.ts";
+import type { NamespaceRead } from "./namespace-read.ts";
 import {
   readDeclaredClass,
   readClassContent,
@@ -84,6 +86,7 @@ export interface DeployStackOptions {
   manifest(value: ReleaseManifest): Promise<void>;
   publication?(container: FrozenContainer, normalization?: BaselineNormalization): Promise<void>;
   admission?(verifications: readonly VerificationAdmission[]): Promise<void>;
+  namespaceRead?(read: NamespaceRead): Promise<void>;
   serving?(container: ServingContainer): Promise<void>;
   io?: {
     buckets?: BucketProvider;
@@ -291,7 +294,11 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
           },
           beforeActivate: () => run(database),
           provider: {
-            upload: (worker) => run(io.upload(worker)),
+            async upload(worker) {
+              const exit = await run(Effect.exit(io.upload(worker)));
+              if (Exit.isFailure(exit)) throw uploadFailure(Cause.squash(exit.cause), worker.id);
+              return exit.value;
+            },
             baseline: (worker) => run(io.baseline(worker)),
             async activate(worker, versionId) {
               const upload = prepared.captured.get(worker.id);

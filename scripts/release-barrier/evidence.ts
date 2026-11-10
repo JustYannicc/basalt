@@ -20,6 +20,7 @@ import type { VerificationAdmission } from "./plan-admission.ts";
 import { sealRecovery } from "./recovery-envelope.ts";
 import { declaredEvidence } from "./declared-evidence.ts";
 import { classEvidence } from "./class-evidence.ts";
+import type { NamespaceRead } from "./namespace-read.ts";
 
 const write = async (directory: string, name: string, value: unknown) => {
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -33,6 +34,7 @@ const write = async (directory: string, name: string, value: unknown) => {
 export function releaseEvidence(directory: string, candidate: string, encryptionKey?: string) {
   let fingerprint: string | undefined;
   let latest: BarrierReceipt | undefined;
+  const namespaceReads: NamespaceRead[] = [];
   const declared = declaredEvidence(
     (name, value) => write(directory, name, value),
     candidate,
@@ -62,6 +64,40 @@ export function releaseEvidence(directory: string, candidate: string, encryption
     },
     async admission(verifications: readonly VerificationAdmission[]) {
       await write(directory, "admission.json", { candidate, verifications });
+    },
+    async namespaceRead(read: NamespaceRead) {
+      const safe = Schema.decodeUnknownSync(
+        Schema.Struct({
+          phase: Schema.Literals(["preparation", "pre-activation"]),
+          namespace: Schema.Literals(["apps", "vaults"]),
+          page: Schema.Number.check(
+            Schema.isInt(),
+            Schema.isBetween({ minimum: 1, maximum: 1000 }),
+          ),
+          attempt: Schema.Literals([1, 2, 3]),
+          at: Schema.String.check(
+            Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u),
+          ),
+          status: Schema.NullOr(
+            Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 100, maximum: 599 })),
+          ),
+          codes: Schema.Array(
+            Schema.Number.check(
+              Schema.isInt(),
+              Schema.isBetween({ minimum: 1, maximum: 99_999_999 }),
+            ),
+          ).check(Schema.isMaxLength(10)),
+          ray: Schema.optional(
+            Schema.String.check(Schema.isPattern(/^[a-fA-F0-9]{16}(?:-[a-zA-Z]{3})?$/u)),
+          ),
+        }),
+      )(read);
+      namespaceReads.push(safe);
+      await write(directory, "namespace-reads.json", {
+        schemaVersion: 1,
+        candidate,
+        reads: namespaceReads,
+      });
     },
     async serving(value: ServingContainer) {
       await write(directory, "serving.json", value);
@@ -117,7 +153,10 @@ export function releaseEvidence(directory: string, candidate: string, encryption
       });
     },
     async record(receipt: BarrierReceipt) {
-      await write(directory, "receipt.json", receipt);
+      await write(directory, "receipt.json", {
+        ...receipt,
+        ...(namespaceReads.length ? { namespaceReads } : {}),
+      });
       latest = structuredClone(receipt);
     },
     async recovery(value: unknown) {
@@ -135,6 +174,7 @@ export function releaseEvidence(directory: string, candidate: string, encryption
         ceilingMs: 750,
         manifest: fingerprint ?? null,
         activated: latest?.activated ?? [],
+        ...(namespaceReads.length ? { namespaceReads } : {}),
         ...(latest?.pending ? { pending: latest.pending } : {}),
         ...(latest?.pendingUpload ? { pendingUpload: latest.pendingUpload } : {}),
         ...(latest?.containers ? { containers: latest.containers } : {}),
