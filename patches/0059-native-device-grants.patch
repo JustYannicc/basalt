@@ -172,7 +172,7 @@ index 2baa7a3..89c6e2a 100644
        }),
      ],
 diff --git a/apps/hosted/server/src/implementation/bearer-access.ts b/apps/hosted/server/src/implementation/bearer-access.ts
-index bec6f12..bef142d 100644
+index 14ed300..0a66bd1 100644
 --- a/apps/hosted/server/src/implementation/bearer-access.ts
 +++ b/apps/hosted/server/src/implementation/bearer-access.ts
 @@ -15,17 +15,19 @@
@@ -261,19 +261,19 @@ index bec6f12..bef142d 100644
 +        ) ||
 +        consentScopes.some((scope) => scope !== "native" && scope !== "offline_access")
 +      )
-+        return yield* unauthorized;
++        return yield* unauthorized("wrong_resource");
 +      const native = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(NativeGrantPolicy))(
 +        row.grantPolicy,
-+      ).pipe(Effect.mapError(() => unauthorized));
++      ).pipe(Effect.mapError(() => unauthorized("wrong_resource")));
 +      const organization = yield* Schema.decodeUnknownEffect(OrganizationId)(
 +        native.toolsOrganization,
-+      ).pipe(Effect.mapError(() => forbidden("membership")));
++      ).pipe(Effect.mapError(() => forbidden("membership", "malformed")));
 +      const memberships = yield* Schema.decodeUnknownEffect(Memberships)(
 +        jsonText(row.memberships),
 +      ).pipe(Effect.mapError(() => unavailable));
 +      const member = memberships.find((member) => member.organization === organization);
 +      const role = yield* Schema.decodeUnknownEffect(OrganizationRole)(member?.role).pipe(
-+        Effect.mapError(() => forbidden("membership")),
++        Effect.mapError(() => forbidden("membership", "not_member")),
 +      );
 +      const requested = yield* requestedOrganization(
 +        request,
@@ -282,12 +282,12 @@ index bec6f12..bef142d 100644
 +        row.headerOrganizations,
 +      );
 +      if (requested !== undefined && requested !== organization)
-+        return yield* forbidden("organization_mismatch");
++        return yield* forbidden("organization_mismatch", "organization_mismatch");
 +      const key = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(
 +        Config.option,
 +        Effect.mapError(() => unavailable),
 +      );
-+      if (Option.isNone(key)) return yield* unauthorized;
++      if (Option.isNone(key)) return yield* unauthorized("unknown");
 +      const poolOrigin = yield* Config.String("BASALT_POOL_ORIGIN").pipe(
 +        Config.withDefault(origin),
 +        Effect.mapError(() => unavailable),

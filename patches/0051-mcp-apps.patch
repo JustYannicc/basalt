@@ -12098,7 +12098,7 @@ index 0000000..abe1e10
 +</style></head><body><script type="module">${renderer.replaceAll("</script", "<\\/script")}</script></body></html>`;
 diff --git a/packages/mcp/src/implementation/app-tools.ts b/packages/mcp/src/implementation/app-tools.ts
 new file mode 100644
-index 0000000..6190c06
+index 0000000..d1f0b46
 --- /dev/null
 +++ b/packages/mcp/src/implementation/app-tools.ts
 @@ -0,0 +1,303 @@
@@ -12129,7 +12129,7 @@ index 0000000..6190c06
 +        : "unavailable";
 +  const text =
 +    action && error instanceof Error && reason === "action-failed"
-+      ? diagnosticSummary(error)
++      ? diagnosticSummary(error, { operation: "call", reference: undefined })
 +      : reason === "expired"
 +        ? "This app view has expired. The original text result remains available."
 +        : reason === "denied"

@@ -209,7 +209,7 @@ index fb72a5d..b74d7ae 100644
      };
    });
 diff --git a/apps/hosted/server/src/implementation/bearer-access.ts b/apps/hosted/server/src/implementation/bearer-access.ts
-index 8978c68..bec6f12 100644
+index 8978c68..14ed300 100644
 --- a/apps/hosted/server/src/implementation/bearer-access.ts
 +++ b/apps/hosted/server/src/implementation/bearer-access.ts
 @@ -15,7 +15,7 @@
@@ -234,7 +234,7 @@ index 8978c68..bec6f12 100644
      const metadata = yield* Schema.decodeUnknownEffect(KeyMetadata)(jsonText(row.metadata)).pipe(
        Effect.mapError(() => unauthorized("unknown")),
      );
-+    if (!apiKeyScopeMatches(token, metadata?.scope)) return yield* unauthorized;
++    if (!apiKeyScopeMatches(token, metadata?.scope)) return yield* unauthorized("wrong_resource");
      const pinned = metadata?.organization;
      // A pinned key's organization is its own while its user is still a member there, so a refusal
      // from here on names that one and the key's user, never another organization the request

@@ -145,7 +145,7 @@ test(
       compatibilityFlags: ["nodejs_compat"],
       workerLoaders: { LOADER: {} },
       serviceBindings: {
-        MARKER: async (request) => {
+        MARKER: async (request: Request) => {
           writes.push(await request.text());
           return new Response("recorded");
         },

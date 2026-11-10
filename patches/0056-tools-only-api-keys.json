@@ -1,7 +1,7 @@
 {
   "identity": "executor-tools-only-api-keys",
   "file": "0056-tools-only-api-keys.patch",
-  "content_sha256": "53f1c31383eb4e5c3bbd2b758038eefa25268b5d2faf17b28c7d4edb5ac40a55",
+  "content_sha256": "0a0a0b03a2bbd1abdd2b68d0fb847b1c736d7cf742008b374650f9e21e181ba8",
   "kind": "upstream",
   "upstream_pull_request": 2469,
   "database_sensitive": false,
