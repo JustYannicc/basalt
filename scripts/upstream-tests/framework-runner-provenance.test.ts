@@ -13,6 +13,7 @@ import {
   serverFilesSource,
 } from "../../.upstream/packages/sdk/src/implementation/worker-bridge.ts";
 import { remoteAppRunner } from "../../.upstream/packages/sdk/src/implementation/remote-app-runner.ts";
+import { compileFrameworkFixture } from "./framework-public-compiler-fixture.ts";
 
 const upstream = resolve(".upstream");
 const require = createRequire(
@@ -60,6 +61,7 @@ export default defineApp({}, { tools: router({
 }) });`;
 
 async function appBundle(): Promise<LoadedWorkerBuild> {
+  if (process.env.BASALT_FRAMEWORK_FIXTURE === undefined) return compileFrameworkFixture(authored);
   const runtime = JSON.parse(
     readFileSync(
       process.env.BASALT_FRAMEWORK_FIXTURE ?? resolve(upstream, "packages/apps/dist/runtime.json"),
