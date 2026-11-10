@@ -1,0 +1,9 @@
+{
+  "identity": "aws-identity-portal-device-page",
+  "file": "0472-aws-identity-portal-device-page.patch",
+  "content_sha256": "bba555425090faafd37e2416a00276cf7b3d03f2f1f3462bac372fcaad655d3e",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
