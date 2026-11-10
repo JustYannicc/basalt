@@ -118,7 +118,7 @@ export function vaultObject(input: {
     const vaultRepository: VaultRepository = {
       refs: () => remote.refs(),
       push: (request) => remote.push(request),
-      fetch: (request) => remote.fetch(request),
+      fetchObjects: (request) => remote.fetchObjects(request),
       async readBlob(oid) {
         const repo = await input.artifacts.get(name);
         try {

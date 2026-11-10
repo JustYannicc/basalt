@@ -170,7 +170,7 @@ test("fetch real CLI history byte-for-byte with OFS_DELTA and REF_DELTA packs", 
   const wants = [commits.at(-1)!, git(bare, "rev-parse", "fixture").toString().trim()];
   for (const kind of ["ofs_delta", "ref_delta"]) {
     control.omitted = kind === "ref_delta" ? ["ofs-delta"] : [];
-    const fetched = await remote.fetch({ wants });
+    const fetched = await remote.fetchObjects({ wants });
     assert.equal(
       fetched.length,
       Number(git(bare, "rev-list", "--objects", "--all").toString().trim().split("\n").length),
@@ -211,7 +211,7 @@ test("thin REF_DELTA resolves external bases and verifies supplied base ids", as
     const type = git(bare, "cat-file", "-t", id).toString().trim() as GitObject["type"];
     return { oid: id, type, content: new Uint8Array(git(bare, "cat-file", type, id)) };
   };
-  const fetched = await remote.fetch({ wants: [want], haves: [have], base });
+  const fetched = await remote.fetchObjects({ wants: [want], haves: [have], base });
   assert.match(control.uploadRequests.at(-1)!.toString(), /thin-pack/);
   assert.equal(fetched.length, 3);
   assert.ok(deltaKinds(responsePack(control.uploadReplies.at(-1)!)).has("ref_delta"));
@@ -219,7 +219,7 @@ test("thin REF_DELTA resolves external bases and verifies supplied base ids", as
   assert.ok(fetched.some((object) => object.oid === want));
   assert.ok(lookedUp.length > 0, "real thin pack references a base outside the pack");
   await assert.rejects(
-    remote.fetch({
+    remote.fetchObjects({
       wants: [want],
       haves: [have],
       base: async (id) => ({
@@ -231,7 +231,7 @@ test("thin REF_DELTA resolves external bases and verifies supplied base ids", as
     /External delta base does not match/,
   );
   await assert.rejects(
-    remote.fetch({ wants: [want], haves: [have], base: async () => null }),
+    remote.fetchObjects({ wants: [want], haves: [have], base: async () => null }),
     /Missing or cyclic delta base/,
   );
 });
@@ -294,7 +294,7 @@ test("non-atomic server refuses multiple updates before POST; single update work
       .applied,
     true,
   );
-  assert.equal((await remote.fetch({ wants: [first.oid] })).length, 3);
+  assert.equal((await remote.fetchObjects({ wants: [first.oid] })).length, 3);
 });
 
 test("object count, command bytes, file size, and whole push size fail before any HTTP request", async (t) => {
@@ -407,5 +407,5 @@ test("fatal side band, unpack failure, missing statuses, and corrupt fetch packs
     }
     return body;
   };
-  await assert.rejects(remote.fetch({ wants: [first.oid] }), /Pack checksum mismatch/);
+  await assert.rejects(remote.fetchObjects({ wants: [first.oid] }), /Pack checksum mismatch/);
 });

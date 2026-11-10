@@ -18,7 +18,7 @@ export interface VaultRepository {
     updates: ReadonlyArray<{ ref: string; old: string | null; next: string }>;
     objects: ReadonlyArray<GitObject>;
   }): Promise<{ applied: boolean; results: Record<string, string> }>;
-  fetch(input: { wants: string[]; haves?: string[] }): Promise<GitObject[]>;
+  fetchObjects(input: { wants: string[]; haves?: string[] }): Promise<GitObject[]>;
   /** The binding's readBlob: exact bytes or null. */
   readBlob(oid: string): Promise<Bytes | null>;
 }
@@ -103,7 +103,7 @@ export function createArtifactsStores(input: {
     const haves = [...sql.exec("SELECT oid FROM vault_objects WHERE type = 'commit'")]
       .map((entry) => String(entry.oid))
       .slice(0, 256);
-    save(await verified(await repository.fetch({ wants: [head], haves })), false);
+    save(await verified(await repository.fetchObjects({ wants: [head], haves })), false);
     evict();
   };
 

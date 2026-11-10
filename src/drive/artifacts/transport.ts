@@ -359,7 +359,7 @@ export function createGitRemote(options: RemoteOptions) {
         results: { ...results },
       };
     },
-    async fetch(input: {
+    async fetchObjects(input: {
       wants: string[];
       haves?: string[];
       depth?: never;

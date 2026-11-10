@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway.cloudDrive {
     metadata {
-      constraint "Every executor routes an app's drive commands to the object named vault:<app> of the existing SQLite token coordinator class on ArtifactsCredentials, so no class migration ships; that object refuses commands for any other name and is the vault fork's only writer. A land is one push whose ref update names the main it merged onto; any refusal in any wording, or an unreadable reply, is settled by the remote ref and treated as a lost race, never forced, and the work stays on its writer or kept conflict branch. The fork write token lives only in the object's memory and is never stored or returned. Production binds the retained VaultAttachments bucket; a test stage owns a disposable one."
+      constraint "Every tools gateway routes an app's drive commands to the object named vault:<app> of the existing SQLite token coordinator class on ArtifactsCredentials, so no class migration ships; that object refuses commands for any other name and is the vault fork's only writer. A land is one push whose ref update names the main it merged onto; any refusal in any wording, or an unreadable reply, is settled by the remote ref and treated as a lost race, never forced, and the work stays on its writer or kept conflict branch. The fork write token lives only in the object's memory and is never stored or returned. Production binds the retained VaultAttachments bucket; a test stage owns a disposable one."
     }
   }
 }
