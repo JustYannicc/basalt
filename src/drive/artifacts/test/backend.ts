@@ -161,6 +161,11 @@ export async function backend() {
       response.writeHead(status, headers);
       response.end(data);
     });
+    // git may finish and close its input before reading all of it, after a refusal or a completed
+    // negotiation. That is an ordinary end of the exchange; its reply is what the test judges.
+    child.stdin.on("error", (error: NodeJS.ErrnoException) => {
+      if (error.code !== "EPIPE" && error.code !== "ECONNRESET") throw error;
+    });
     child.stdin.end(body);
   });
   server.listen(0, "127.0.0.1");
