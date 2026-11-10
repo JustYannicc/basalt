@@ -60,6 +60,10 @@ export function createArtifactsStores(input: {
     "CREATE TABLE IF NOT EXISTS vault_repository (id INTEGER PRIMARY KEY CHECK(id = 1), pushed_bytes INTEGER NOT NULL)",
   );
   sql.exec("INSERT OR IGNORE INTO vault_repository(id, pushed_bytes) VALUES (1, 0)");
+  // Set when main first arrives into empty storage; cleared only once its bytes are booked.
+  sql.exec(
+    "CREATE TABLE IF NOT EXISTS vault_baseline (id INTEGER PRIMARY KEY CHECK(id = 1), needed INTEGER NOT NULL)",
+  );
   const local = createSqliteRefStore(storage);
 
   const load = (oid: string, pendingOnly = false): GitObject | undefined => {
@@ -326,12 +330,16 @@ export function createArtifactsStores(input: {
     /**
      * Settle an interrupted push, mirror the remote main and restore kept conflict branches as
      * writer branches. Call once when the object wakes. Reports whether main arrived from the
-     * repository into empty storage, so the caller can rebuild what it derives from main.
+     * repository into empty storage and its bytes are not yet booked.
      */
     async recover() {
       await settle();
       const remote = await repository.refs();
-      const empty = (await local.get(main)) === null;
+      // Marked before main is adopted, so a recovery interrupted later still books its baseline.
+      if ((await local.get(main)) === null && remote[main])
+        storage.transactionSync(() =>
+          sql.exec("INSERT OR REPLACE INTO vault_baseline(id, needed) VALUES (1, 1)"),
+        );
       if (remote[main] && remote[main] !== (await local.get(main))) await adoptRemoteMain();
       for (const [ref, head] of Object.entries(remote)) {
         if (!ref.startsWith(conflictPrefix)) continue;
@@ -340,7 +348,12 @@ export function createArtifactsStores(input: {
         await fetchHead(head);
         setLocal(writer, head);
       }
-      return { adopted: empty && remote[main] !== undefined };
+      const marker = [...sql.exec("SELECT needed FROM vault_baseline WHERE id = 1")][0];
+      return { baselineNeeded: Number(marker?.needed ?? 0) === 1 };
+    },
+    /** The caller booked main's bytes; stop asking. */
+    baselineBooked() {
+      storage.transactionSync(() => sql.exec("DELETE FROM vault_baseline WHERE id = 1"));
     },
     status: () => {
       const state = [...sql.exec("SELECT pushed_bytes FROM vault_repository WHERE id = 1")][0];

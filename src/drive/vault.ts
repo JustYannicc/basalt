@@ -60,14 +60,18 @@ export async function openVault(input: {
       usage = treeUsage(input.storage, cache.objects, attachments);
     for (const pending of quota.pending(input.prefix))
       quota.finish(pending.id, (await stores.refs.receipt(pending.operation))?.state === "landed");
-    // Storage that just received an existing repository starts its ledger at that repository's main.
-    const head = recovered?.adopted ? await stores.refs.get("refs/heads/main") : null;
-    if (head && quota.status().currentBytes === 0 && quota.status().files === 0) {
-      const baseline = await usage.at(head);
-      quota.finish(
-        quota.reserve(input.prefix, `recovered:${head}`, head, baseline.bytes, baseline.files),
-        true,
-      );
+    // Storage that received an existing repository starts its ledger at that repository's main.
+    // The booking is idempotent by its reservation id, so a retry after a crash never counts twice.
+    const head = recovered?.baselineNeeded ? await stores.refs.get("refs/heads/main") : null;
+    if (head) {
+      if (quota.status().currentBytes === 0 && quota.status().files === 0) {
+        const baseline = await usage.at(head);
+        quota.finish(
+          quota.reserve(input.prefix, `recovered:${head}`, head, baseline.bytes, baseline.files),
+          true,
+        );
+      }
+      artifacts?.baselineBooked();
     }
     const refs: RefStore = {
       ...stores.refs,

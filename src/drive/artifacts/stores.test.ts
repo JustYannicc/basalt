@@ -353,3 +353,47 @@ test("objects above SQLite's row limit are stored in parts", async () => {
     await server.close();
   }
 });
+
+test("a recovery interrupted after main arrives still books main's bytes on the next open", async () => {
+  const server = await backend();
+  const writer = await device(server);
+  const data = storageFixture(),
+    account = storageFixture();
+  const open = (repo: VaultRepository) =>
+    openVault({ ...data, accountStorage: account.storage, prefix: "vault/", repository: repo });
+  try {
+    await writer.service.apply({
+      base: writer.root,
+      operation: "one",
+      edits: [{ path: "note.md", content: "hello" }],
+    });
+    const conflict = await writer.service.apply({
+      base: writer.root,
+      operation: "conflicting",
+      edits: [{ path: "note.md", content: "other" }],
+    });
+    assert.equal(conflict.state, "conflict");
+    const healthy = repository(server);
+    let fetches = 0;
+    // Main arrives, then fetching the kept conflict fails and the open aborts.
+    const flaky: VaultRepository = {
+      ...healthy,
+      async fetchObjects(request) {
+        if (++fetches === 2) throw new Error("fetch interrupted");
+        return healthy.fetchObjects(request);
+      },
+    };
+    await assert.rejects(open(flaky), /fetch interrupted/);
+    const reopened = await open(healthy);
+    assert.equal((await reopened.status()).currentBytes, 5);
+    const main = git(server.bare, "rev-parse", "main").toString().trim();
+    const removed = await reopened.service.remove({ base: main, path: "note.md", operation: "rm" });
+    assert.equal(removed.state, "landed");
+    assert.equal((await reopened.status()).currentBytes, 0);
+  } finally {
+    writer.close();
+    data.close();
+    account.close();
+    await server.close();
+  }
+});
