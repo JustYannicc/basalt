@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Device decisions return a typed, nonempty service-unavailable response with a bounded stage and failure category. Native control failures distinguish signing, transport, timeout, HTTP status and invalid responses without retaining request headers, setup intents, credentials, response bodies or raw exceptions. A failed decision remains uncertain and is never replayed automatically; transport diagnostics do not grant access or change pool selection."
+    }
+  }
+}
