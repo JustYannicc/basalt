@@ -2,7 +2,7 @@ diff --git a/apps/hosted/web/src/contracts/obsidian-plugin.ts b/apps/hosted/web/
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/web/src/contracts/obsidian-plugin.ts
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,87 @@
 +import { Data, Effect } from "effect";
 +import { HttpClient, HttpClientRequest } from "effect/http";
 +import { Atom } from "effect/reactivity";
@@ -58,30 +58,35 @@ new file mode 100644
 +  return basaltSyncFiles.every((file) => names.has(file)) ? "available" : "unavailable";
 +}
 +
-+/** Read in the browser once per repository; the dialog refreshes it on "Check again". */
-+export const basaltSyncReleaseAtom = Atom.family((repository: string) =>
++/**
++ * Read in the browser once per repository; the dialog refreshes it on "Check again". A
++ * deployment without a public GitHub source has nothing to install from.
++ */
++export const basaltSyncReleaseAtom = Atom.family((repository: string | null) =>
 +  browserOnly(
 +    Atom.make(
-+      Effect.gen(function* () {
-+        const client = yield* HttpClient.HttpClient;
-+        const response = yield* client
-+          .execute(
-+            HttpClientRequest.get(
-+              `https://api.github.com/repos/${repository}/releases/tags/${basaltSyncTag}`,
-+            ).pipe(HttpClientRequest.acceptJson),
-+          )
-+          .pipe(Effect.mapError(() => new BasaltSyncReleaseUnreachable({ status: null })));
-+        const body: unknown =
-+          response.status === 200
-+            ? yield* response.json.pipe(
-+                Effect.mapError(
-+                  () => new BasaltSyncReleaseUnreachable({ status: response.status }),
-+                ),
++      repository === null
++        ? Effect.succeed("unavailable" as const)
++        : Effect.gen(function* () {
++            const client = yield* HttpClient.HttpClient;
++            const response = yield* client
++              .execute(
++                HttpClientRequest.get(
++                  `https://api.github.com/repos/${repository}/releases/tags/${basaltSyncTag}`,
++                ).pipe(HttpClientRequest.acceptJson),
 +              )
-+            : null;
-+        const status = basaltSyncReleaseStatus(response.status, body);
-+        return typeof status === "string" ? status : yield* status;
-+      }).pipe(Effect.provide(dashboardHttpClient)),
++              .pipe(Effect.mapError(() => new BasaltSyncReleaseUnreachable({ status: null })));
++            const body: unknown =
++              response.status === 200
++                ? yield* response.json.pipe(
++                    Effect.mapError(
++                      () => new BasaltSyncReleaseUnreachable({ status: response.status }),
++                    ),
++                  )
++                : null;
++            const status = basaltSyncReleaseStatus(response.status, body);
++            return typeof status === "string" ? status : yield* status;
++          }).pipe(Effect.provide(dashboardHttpClient)),
 +    ),
 +  ),
 +);
@@ -109,11 +114,9 @@ diff --git a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx b/app
  import { useOrganizationRoute } from "../components/organization.tsx";
  
  /**
-@@ -78,9 +84,11 @@
-   const [open, setOpen] = useState(false);
+@@ -79,8 +85,9 @@
    const [step, setStep] = useState<Step>({ kind: "idle" });
    const name = appDisplayName(app, brand);
-+  const repository = basaltSyncRepository(brand.source);
  
 -  const start = async () => {
 -    setOpen(true);
@@ -123,7 +126,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx b/app
      setStep({ kind: "preparing" });
      const result = await prepare({ app: app.id, connection });
      if (Exit.isFailure(result))
-@@ -91,12 +99,7 @@
+@@ -91,12 +98,7 @@
  
    return (
      <>
@@ -137,7 +140,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx b/app
          Connect Obsidian
        </Button>
        <Dialog
-@@ -105,7 +108,7 @@
+@@ -105,7 +107,7 @@
            if (step.kind !== "preparing") setOpen(next);
          }}
        >
@@ -146,7 +149,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx b/app
            <DialogTitle>Connect Obsidian</DialogTitle>
            <DialogDescription>
              Sync a vault with {name}. Basalt keeps the authoritative copy, so your agents can read,
-@@ -128,32 +131,46 @@
+@@ -128,32 +130,12 @@
                When you and an agent change the same note, both versions are kept and you choose.
              </li>
            </ul>
@@ -173,107 +176,157 @@ diff --git a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx b/app
 -            {step.kind === "failed" && (
 -              <p role="alert" className="text-destructive">
 -                {step.message}
-+          <ol className="space-y-4 rounded-md bg-muted/50 p-3 text-[13px] leading-5">
-+            <li className="space-y-2">
-+              <p className="font-medium text-foreground">1. Install Basalt Sync in Obsidian</p>
-+              {open && repository !== null ? (
-+                <InstallBasaltSync repository={repository} />
-+              ) : (
-+                <p className="text-muted-foreground">Basalt Sync isn't available to install yet.</p>
-+              )}
-+            </li>
-+            <li className="space-y-2">
-+              <p className="font-medium text-foreground">2. Connect your vault</p>
-+              <p className="text-muted-foreground">
-+                Already installed? Connect. Obsidian shows this vault and server, then you approve
-+                in the browser tab it opens.
-               </p>
+-              </p>
 -            )}
 -          </div>
-+              <div role="status" className="space-y-2">
-+                {step.kind === "preparing" && (
-+                  <p className="text-muted-foreground">Preparing a connection for this device…</p>
-+                )}
-+                {step.kind === "opened" && (
-+                  <p className="text-muted-foreground">
-+                    Obsidian said "Unrecognized URI action"? Basalt Sync isn't installed or enabled
-+                    in that vault yet. Do step 1, then Connect again. Obsidian didn't open?{" "}
-+                    <a
-+                      className="font-medium text-foreground underline underline-offset-2"
-+                      href={step.link}
-+                    >
-+                      Open Obsidian
-+                    </a>
-+                    .
-+                  </p>
-+                )}
-+                {step.kind === "failed" && (
-+                  <p role="alert" className="text-destructive">
-+                    {step.message}
-+                  </p>
-+                )}
-+              </div>
-+            </li>
-+          </ol>
++          {/* Mounted only while open, so the release is checked when someone is connecting. */}
++          <ConnectSteps
++            repository={basaltSyncRepository(brand.source)}
++            step={step}
++            onConnect={() => void connect()}
++          />
            <DialogFooter className="items-center sm:justify-between">
              <Link
                className="text-[13px] text-muted-foreground underline underline-offset-2"
-@@ -170,7 +187,13 @@
-               >
-                 Close
-               </Button>
+@@ -162,19 +144,132 @@
+             >
+               Manage or revoke in Connections
+             </Link>
+-            <div className="flex gap-2">
+-              <Button
+-                variant="outline"
+-                disabled={step.kind === "preparing"}
+-                onClick={() => setOpen(false)}
+-              >
+-                Close
+-              </Button>
 -              {step.kind === "failed" && <Button onClick={() => void start()}>Try again</Button>}
-+              <Button loading={step.kind === "preparing"} onClick={() => void connect()}>
-+                {step.kind === "idle"
-+                  ? "Connect"
-+                  : step.kind === "failed"
-+                    ? "Try again"
-+                    : "Connect again"}
-+              </Button>
-             </div>
+-            </div>
++            <Button
++              variant="outline"
++              disabled={step.kind === "preparing"}
++              onClick={() => setOpen(false)}
++            >
++              Close
++            </Button>
            </DialogFooter>
          </DialogContent>
-@@ -178,3 +201,44 @@
+       </Dialog>
      </>
    );
  }
 +
-+/** Links BRAT only once the release exists with every file Obsidian installs. */
-+function InstallBasaltSync({ repository }: { readonly repository: string }) {
++/**
++ * Install first, then connect. BRAT is linked only once the release exists with every file
++ * Obsidian installs; Connect stays available for vaults that already have the plugin.
++ */
++function ConnectSteps({
++  repository,
++  step,
++  onConnect,
++}: {
++  readonly repository: string | null;
++  readonly step: Step;
++  readonly onConnect: () => void;
++}) {
 +  const release = useAtomValue(basaltSyncReleaseAtom(repository));
 +  const refresh = useAtomRefresh(basaltSyncReleaseAtom(repository));
-+  if (AsyncResult.isFailure(release))
-+    return (
-+      <div className="flex flex-wrap items-center gap-2">
-+        <p role="alert" className="text-destructive">
-+          Couldn't check whether Basalt Sync can be installed.
-+        </p>
-+        <Button variant="outline" size="sm" onClick={refresh}>
-+          Check again
-+        </Button>
-+      </div>
-+    );
-+  if (!AsyncResult.isSuccess(release))
-+    return <p className="text-muted-foreground">Checking for Basalt Sync…</p>;
-+  if (release.value === "unavailable")
-+    return <p className="text-muted-foreground">Basalt Sync isn't available to install yet.</p>;
++  const [added, setAdded] = useState(false);
++  const installable = AsyncResult.isSuccess(release) && release.value === "available";
++  // Before the install link is used, it is the primary action; afterwards Connect is.
++  const connectFirst = !installable || added || step.kind !== "idle";
++
 +  return (
-+    <ol className="space-y-2">
-+      <li className="flex items-center justify-between gap-3">
-+        <span className="text-muted-foreground">
-+          Get BRAT from Obsidian's community plugins. Choose Install, then Enable.
-+        </span>
-+        <Button variant="outline" size="sm" asChild>
-+          <a href={bratStoreLink}>Get BRAT</a>
-+        </Button>
++    <ol className="space-y-4 rounded-md bg-muted/50 p-3 text-[13px] leading-5">
++      <li className="space-y-2">
++        <div>
++          <p className="font-medium text-foreground">1. Install Basalt Sync in Obsidian</p>
++          <p className="text-muted-foreground">Once in each vault, on each device.</p>
++        </div>
++        {AsyncResult.isFailure(release) ? (
++          <div className="flex flex-wrap items-center gap-2">
++            <p role="alert" className="text-destructive">
++              Couldn't check whether Basalt Sync can be installed.
++            </p>
++            <Button variant="outline" size="sm" onClick={refresh}>
++              Check again
++            </Button>
++          </div>
++        ) : !AsyncResult.isSuccess(release) ? (
++          <p className="text-muted-foreground">Checking for Basalt Sync…</p>
++        ) : !installable || repository === null ? (
++          <p className="text-muted-foreground">Basalt Sync isn't available to install yet.</p>
++        ) : (
++          <ol className="space-y-2">
++            <li className="flex items-center justify-between gap-3">
++              <span className="text-muted-foreground">
++                Get BRAT from Obsidian's community plugins. Turn them on if Obsidian asks, then
++                Install and Enable BRAT.
++              </span>
++              <Button variant="outline" size="sm" asChild>
++                <a href={bratStoreLink}>Get BRAT</a>
++              </Button>
++            </li>
++            <li className="flex items-center justify-between gap-3">
++              <span className="text-muted-foreground">
++                Add Basalt Sync. Confirm in BRAT, which installs and enables it.
++              </span>
++              <Button variant={added ? "outline" : "default"} size="sm" asChild>
++                <a href={bratInstallLink(repository)} onClick={() => setAdded(true)}>
++                  Add Basalt Sync
++                </a>
++              </Button>
++            </li>
++          </ol>
++        )}
 +      </li>
-+      <li className="flex items-center justify-between gap-3">
-+        <span className="text-muted-foreground">
-+          Add Basalt Sync. Confirm in BRAT, which installs and enables it.
-+        </span>
-+        <Button variant="outline" size="sm" asChild>
-+          <a href={bratInstallLink(repository)}>Add Basalt Sync</a>
-+        </Button>
++      <li className="space-y-2">
++        <p className="font-medium text-foreground">2. Connect your vault</p>
++        <div className="flex items-center justify-between gap-3">
++          <span className="text-muted-foreground">
++            Already installed? Connect. Obsidian shows this vault and server, then you approve in
++            the browser tab it opens.
++          </span>
++          <Button
++            variant={connectFirst ? "default" : "outline"}
++            size="sm"
++            loading={step.kind === "preparing"}
++            onClick={onConnect}
++          >
++            {step.kind === "idle"
++              ? "Connect"
++              : step.kind === "failed"
++                ? "Try again"
++                : "Connect again"}
++          </Button>
++        </div>
++        <div role="status" className="space-y-2">
++          {step.kind === "preparing" && (
++            <p className="text-muted-foreground">Preparing a connection for this device…</p>
++          )}
++          {step.kind === "opened" && (
++            <p className="text-muted-foreground">
++              Obsidian said "Unrecognized URI action"? Basalt Sync isn't installed or enabled in
++              that vault yet.{" "}
++              {installable
++                ? "Do step 1, then Connect again."
++                : "It can be connected once Basalt Sync is available to install."}{" "}
++              Obsidian didn't open?{" "}
++              <a
++                className="font-medium text-foreground underline underline-offset-2"
++                href={step.link}
++              >
++                Open Obsidian
++              </a>
++              .
++            </p>
++          )}
++          {step.kind === "failed" && (
++            <p role="alert" className="text-destructive">
++              {step.message}
++            </p>
++          )}
++        </div>
 +      </li>
 +    </ol>
 +  );

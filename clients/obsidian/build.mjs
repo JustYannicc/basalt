@@ -2,7 +2,7 @@
 // The output is exactly what Obsidian's installers download: main.js, manifest.json, styles.css.
 // Usage: node build.mjs [--esbuild <path>] [--outdir <dir>]
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -20,8 +20,10 @@ if (!existsSync(esbuild)) {
   console.error(`esbuild not found at ${esbuild}. Run the repo prepare step or pass --esbuild.`);
   process.exit(1);
 }
-rmSync(outdir, { recursive: true, force: true });
 mkdirSync(outdir, { recursive: true });
+// Only the plugin's own files are replaced: an outdir inside a vault also holds its sync state.
+const shipped = ["main.js", "manifest.json", "styles.css"];
+for (const file of [...shipped, "desktop-reader.cjs"]) rmSync(join(outdir, file), { force: true });
 // The desktop reader is bundled behind its lazy require; only these built-ins stay external.
 const desktopBuiltins = ["node:fs/promises", "node:path"];
 
@@ -78,11 +80,9 @@ if (typeof mobile.exports.default !== "function") {
 }
 for (const file of ["manifest.json", "styles.css"])
   copyFileSync(join(here, file), join(outdir, file));
-const shipped = readdirSync(outdir).sort().join(", ");
-if (shipped !== "main.js, manifest.json, styles.css") {
-  console.error(
-    `The plugin must ship as main.js, manifest.json and styles.css only; found ${shipped}`,
-  );
+const missing = shipped.filter((file) => !existsSync(join(outdir, file)));
+if (missing.length) {
+  console.error(`The plugin must ship as ${shipped.join(", ")}; missing ${missing.join(", ")}`);
   process.exit(1);
 }
 console.log(
