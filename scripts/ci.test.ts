@@ -450,7 +450,7 @@ test("connection control changes select their retained-data browser guard", () =
     ".upstream/e2e/tests/cached-account-controls.spec.ts",
     ".upstream/e2e/tests/cached-provider-policy.spec.ts",
   ])
-    assert.ok(selectPaths([path]).jobs.includes("human-in-the-loop"), path);
+    assert.ok(selectPaths([path]).jobs.includes("human-in-the-loop-navigation"), path);
 });
 
 test("first-entry view and route changes select their browser guards", () => {
@@ -465,7 +465,7 @@ test("first-entry view and route changes select their browser guards", () => {
     ".upstream/e2e/tests/first-entry-behavior.spec.ts",
     ".upstream/e2e/support/first-entry-reveal-probe.ts",
   ])
-    assert.ok(selectPaths([path]).jobs.includes("human-in-the-loop"), path);
+    assert.ok(selectPaths([path]).jobs.includes("human-in-the-loop-navigation"), path);
 });
 
 test("hidden section reads select their browser guards", () => {

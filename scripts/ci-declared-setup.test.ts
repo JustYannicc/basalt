@@ -42,7 +42,12 @@ test("HITL partitions retain every target scenario exactly once behind required 
   const counts = new Map<string, number>();
   for (const [id, group] of Object.entries(declarations.groups)) {
     if (!id.startsWith("human-in-the-loop:")) continue;
-    const expectedJob = group.target === "cloud" ? "human-in-the-loop-cloud" : "human-in-the-loop";
+    const expectedJob =
+      id === "human-in-the-loop:navigation-and-retained-accounts"
+        ? "human-in-the-loop-navigation"
+        : group.target === "cloud"
+          ? "human-in-the-loop-cloud"
+          : "human-in-the-loop";
     assert.equal(group.job, expectedJob, id);
     const job = workflow.jobs[group.job];
     assert.equal(job["timeout-minutes"], 15, group.job);
@@ -95,6 +100,18 @@ test("HITL partitions retain every target scenario exactly once behind required 
   ])
     assert.ok(selectPaths([path]).jobs.includes("human-in-the-loop-cloud"), path);
   const needs = Object.fromEntries(heavyJobs.map((id) => [id, { result: "success" }]));
+  for (const id of [
+    "human-in-the-loop",
+    "human-in-the-loop-navigation",
+    "human-in-the-loop-cloud",
+  ]) {
+    assert.ok(selectPaths([".upstream/packages/sdk/src/workflows.ts"]).jobs.includes(id), id);
+    const failed = { ...needs, [id]: { result: "failure" } };
+    assert.ok(
+      gateErrors(failed, heavyJobs, [], true).some((error) => error.startsWith(id + ":")),
+      id,
+    );
+  }
   needs["human-in-the-loop-cloud"] = { result: "failure" };
   assert.ok(
     gateErrors(needs, heavyJobs, [], true).some((error) =>

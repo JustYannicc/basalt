@@ -100,11 +100,11 @@
   },
   "runs": {
     "hostedAppAccountsFirstEntryDesktop": [
-      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab",
+      "human-in-the-loop:navigation-and-retained-accounts",
       "human-in-the-loop:the-human-in-the-loop-route-while-cloud-code-and-data-load"
     ],
     "hostedAppAccountsFirstEntryPhone": [
-      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab",
+      "human-in-the-loop:navigation-and-retained-accounts",
       "human-in-the-loop:the-human-in-the-loop-route-while-cloud-code-and-data-load"
     ],
     "hostedAppAccountReconnectBrowser": [

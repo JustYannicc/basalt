@@ -69,19 +69,15 @@
   },
   "runs": {
     "firstEntryOverlapDesktop": [
-      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab",
+      "human-in-the-loop:navigation-and-retained-accounts",
       "human-in-the-loop:the-human-in-the-loop-route-while-cloud-code-and-data-load"
     ],
     "firstEntryOverlapPhone": [
-      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab",
+      "human-in-the-loop:navigation-and-retained-accounts",
       "human-in-the-loop:the-human-in-the-loop-route-while-cloud-code-and-data-load"
     ],
-    "firstEntryDesktop": [
-      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
-    ],
-    "firstEntryPhone": [
-      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
-    ]
+    "firstEntryDesktop": ["human-in-the-loop:navigation-and-retained-accounts"],
+    "firstEntryPhone": ["human-in-the-loop:navigation-and-retained-accounts"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx",

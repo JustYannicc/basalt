@@ -36,12 +36,8 @@
     }
   },
   "runs": {
-    "firstEntryBehaviorDesktop": [
-      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
-    ],
-    "firstEntryBehaviorPhone": [
-      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
-    ]
+    "firstEntryBehaviorDesktop": ["human-in-the-loop:navigation-and-retained-accounts"],
+    "firstEntryBehaviorPhone": ["human-in-the-loop:navigation-and-retained-accounts"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx",

@@ -1364,6 +1364,41 @@ jobs:
           name: human-in-the-loop-e2e
           path: ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
+  human-in-the-loop-navigation:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.jobs), 'human-in-the-loop-navigation')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build the isolated test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the browser engine
+        uses: ./.github/actions/setup-browser
+      - name: Verify navigation and retained account controls
+        working-directory: .upstream
+        run: >-
+          bun run e2e:self-host --test-name
+          "$(node ../scripts/ci/e2e-pattern.ts human-in-the-loop:navigation-and-retained-accounts)"
+          --workers 1
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          include-hidden-files: true
+          name: human-in-the-loop-navigation-e2e
+          path: ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
+          if-no-files-found: warn
   human-in-the-loop-cloud:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'human-in-the-loop-cloud')
@@ -2389,6 +2424,7 @@ jobs:
         production-ops-identity,
         compiler-diagnostics,
         human-in-the-loop,
+        human-in-the-loop-navigation,
         human-in-the-loop-cloud,
         access-editor-reads,
         contributed-accounts,
