@@ -1,7 +1,7 @@
 {
   "identity": "basalt-account-failure-reasons",
   "file": "0460-account-failure-reasons.patch",
-  "content_sha256": "85f946a45e636897306666bcedfd83e0f9abd13f6f9bf78657d8b938bd32fd0c",
+  "content_sha256": "9355f3b7b3d33a3e76eec962c890b59099a424b76fbd629770284ffefff50e6c",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
