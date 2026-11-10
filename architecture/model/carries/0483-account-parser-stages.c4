@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Invalid provider responses retain only an optional closed parser stage derived from exact known collector messages: monthly decode, weekly decode, missing amount, profile entitlement or unknown. Unknown messages never leave the host. Account details render fixed stage labels without changing decoder behavior, saved readings, health labels or recovery actions. Older failure records remain valid without a stage. Raw responses, messages and field values stay private."
+    }
+  }
+}

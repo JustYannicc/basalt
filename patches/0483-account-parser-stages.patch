@@ -1,0 +1,127 @@
+diff --git a/e2e/tests/account-failure-observations.spec.ts b/e2e/tests/account-failure-observations.spec.ts
+--- a/e2e/tests/account-failure-observations.spec.ts
++++ b/e2e/tests/account-failure-observations.spec.ts
+@@ -58,6 +58,47 @@
+           (yield* body(ObservationView, yield* f.refresh())).reports[0]?.lastAttempt?.outcome,
+         ).toBe("success");
+         expect((yield* f.read()).reports[0]?.lastAttempt).not.toHaveProperty("failure");
++      }),
++    ),
++  );
++  it.effect(scenarios.accountFailureParserStages.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* failureObservationsFixture;
++        for (const [parserStage, label] of [
++          ["monthly_decode", "monthly billing response"],
++          ["weekly_decode", "weekly quota response"],
++          ["missing_amount", "missing quota amount"],
++          ["profile_entitlement", "subscription entitlement"],
++          ["unknown", "unknown"],
++        ] as const) {
++          if (parserStage !== "monthly_decode") yield* f.advance(2);
++          const diagnostic = {
++            source: "provider",
++            reason: "invalid_response",
++            parserStage,
++            occurredAt: new Date().toISOString(),
++          };
++          yield* f.backend.driverObservation(
++            {
++              _test_source_failure: {
++                ...diagnostic,
++                message: "PRIVATE_DIAGNOSTIC",
++                body: "PRIVATE_BODY",
++              },
++            },
++            502,
++          );
++          const view = yield* body(ObservationView, yield* f.refresh());
++          expect(view.reports[0]).toMatchObject({
++            result: null,
++            lastAttempt: { failure: { tag: "AccountSourceFailure", detail: diagnostic } },
++          });
++          expect(JSON.stringify(view)).not.toMatch(/PRIVATE_|opaque-1/);
++          if (parserStage === "monthly_decode") yield* f.capture("parser-stage");
++          yield* f.copy(`Stage: ${label}.`);
++        }
+       }),
+     ),
+   );
+diff --git a/packages/sdk/src/contracts/account-check-failure.ts b/packages/sdk/src/contracts/account-check-failure.ts
+--- a/packages/sdk/src/contracts/account-check-failure.ts
++++ b/packages/sdk/src/contracts/account-check-failure.ts
+@@ -34,9 +34,23 @@
+   source: Schema.Literals(["provider", "home", "transport"]),
+   reason: detailReason,
+   status: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 599 }))),
++  parserStage: Schema.optionalKey(
++    Schema.Literals([
++      "monthly_decode",
++      "weekly_decode",
++      "missing_amount",
++      "profile_entitlement",
++      "unknown",
++    ]),
++  ),
+   occurredAt: AccountObservationInstant,
+ }).check(
+   Schema.makeFilter((detail) => detail.source === "provider" || detail.status === undefined),
++  Schema.makeFilter(
++    (detail) =>
++      detail.parserStage === undefined ||
++      (detail.source === "provider" && detail.reason === "invalid_response"),
++  ),
+ );
+ export type AccountFailureDetail = typeof AccountFailureDetail.Type;
+ 
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-details.tsx b/packages/ui/src/implementation/dashboard/account-observation-details.tsx
+--- a/packages/ui/src/implementation/dashboard/account-observation-details.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observation-details.tsx
+@@ -1,11 +1,11 @@
+-import type { AccountObservationRecord, App } from "@executor-js/sdk";
++import type { AccountFailureDetail, AccountObservationRecord, App } from "@executor-js/sdk";
+ import type { ReactNode } from "react";
+ import type { AccountSummary } from "../../contracts/dashboard.ts";
+ import type { DisplayFormat } from "../../contracts/display.ts";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import type { AccountSignIn } from "./account-sign-in-checks.tsx";
+-import { checkExplanation } from "../../contracts/account-check-recovery.ts";
++import { checkExplanation, failureDetail } from "../../contracts/account-check-recovery.ts";
+ import { describeCheckResult } from "./account-health.tsx";
+ import {
+   age,
+@@ -61,6 +61,15 @@
+   );
+ }
+ 
++/** Where reading an unusable provider response stopped, in host words, never the response. */
++const parserStages = {
++  monthly_decode: "monthly billing response",
++  weekly_decode: "weekly quota response",
++  missing_amount: "missing quota amount",
++  profile_entitlement: "subscription entitlement",
++  unknown: "unknown",
++} satisfies Record<NonNullable<AccountFailureDetail["parserStage"]>, string>;
++
+ const lastRefresh = (
+   attempt: NonNullable<AccountObservationRecord["lastAttempt"]>,
+   now: number,
+@@ -75,7 +84,14 @@
+       ? undefined
+       : `failure at ${moment(reason.occurredAt, now, format)}`,
+   ].filter((part) => part !== undefined);
+-  return `failed ${at}: ${reason.text}${evidence.length === 0 ? "" : ` (${evidence.join(", ")})`}.`;
++  const detail = failureDetail(attempt.failure);
++  const stage =
++    detail?.source === "provider" &&
++    detail.reason === "invalid_response" &&
++    detail.parserStage !== undefined
++      ? ` Stage: ${parserStages[detail.parserStage]}.`
++      : "";
++  return `failed ${at}: ${reason.text}${evidence.length === 0 ? "" : ` (${evidence.join(", ")})`}.${stage}`;
+ };
+ 
+ /**

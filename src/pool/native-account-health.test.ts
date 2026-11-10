@@ -16,6 +16,7 @@ function fixture(
   options: {
     unnamed?: boolean;
     error?: string;
+    errorMessage?: string;
     upstreamStatus?: unknown;
     errorAt?: string;
     homeStatus?: number;
@@ -86,7 +87,7 @@ function fixture(
                   upstream_status_code: options.upstreamStatus,
                   occurred_at: options.errorAt,
                   request_id: "PRIVATE_VENDOR_REQUEST_ID",
-                  message: "PRIVATE_DIAGNOSTIC",
+                  message: options.errorMessage ?? "PRIVATE_DIAGNOSTIC",
                 },
               }
             : {}),
@@ -424,4 +425,37 @@ test("failure times normalize vendor precision and reject invalid calendar dates
     }).check({ action: "observe" }))!.json();
     assert.equal(body.diagnostic.occurredAt, expected);
   }
+});
+
+test("native checks project only closed parser stages from collection failures", async () => {
+  for (const [errorMessage, parserStage] of [
+    ["xAI monthly billing response could not be parsed.", "monthly_decode"],
+    ["xAI weekly quota response could not be parsed.", "weekly_decode"],
+    ["xAI monthly remaining quota is unavailable.", "missing_amount"],
+    ["xAI weekly remaining quota is unavailable.", "missing_amount"],
+    ["xAI billing response did not contain usable quota.", "missing_amount"],
+    ["xAI subscription eligibility could not be confirmed.", "profile_entitlement"],
+    ["PRIVATE_DIAGNOSTIC", "unknown"],
+    ["xAI monthly billing response could not be parsed. PRIVATE_DIAGNOSTIC", "unknown"],
+    ["", "unknown"],
+  ]) {
+    for (const action of ["check", "observe"]) {
+      const body = await (await fixture({
+        error: "UPSTREAM_RESPONSE_INVALID",
+        errorMessage,
+      }).check({ action }))!.json();
+      assert.deepEqual(body.diagnostic, {
+        source: "provider",
+        reason: "invalid_response",
+        parserStage,
+        occurredAt: new Date(now).toISOString(),
+      });
+      assert.equal(/PRIVATE_|xAI|bound-id/.test(JSON.stringify(body)), false);
+    }
+  }
+  const body = await (await fixture({
+    error: "UPSTREAM_UNAVAILABLE",
+    errorMessage: "xAI monthly billing response could not be parsed.",
+  }).check())!.json();
+  assert.equal(Object.hasOwn(body.diagnostic, "parserStage"), false);
 });
