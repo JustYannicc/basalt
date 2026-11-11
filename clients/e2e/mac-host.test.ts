@@ -110,8 +110,8 @@ function startHost(home: string, config: string) {
 
 /**
  * A host answers status while it starts, and its connection answers before writing its local
- * address, so "connected" alone can be seen before the address exists. Ready means initialize
- * finished, which waits for that address.
+ * address, so "connected" alone can be seen before the address exists. Ready follows startup or
+ * sign-in, both of which wait for the connection to start; the address is checked directly too.
  */
 const usable = (reply: DesktopReply) =>
   reply.snapshot.phase === "ready" &&
