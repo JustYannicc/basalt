@@ -554,8 +554,8 @@ new file mode 100644
 +				t.Fatal("claim fixture failed", err)
 +			}
 +			if phase == "claim_failed" {
-+				if err := db.Exec("DROP TABLE quota_snapshot").Error; err != nil {
-+					t.Fatal(err)
++				if errDrop := db.Exec("DROP TABLE quota_snapshot").Error; errDrop != nil {
++					t.Fatal(errDrop)
 +				}
 +			}
 +			var calls atomic.Int32
@@ -571,8 +571,8 @@ new file mode 100644
 +				t.Fatal("claim refusal called the vendor")
 +			}
 +			if phase == "claim_failed" {
-+				if err := db.AutoMigrate(&cluster.QuotaSnapshotRecord{}); err != nil {
-+					t.Fatal(err)
++				if errMigrate := db.AutoMigrate(&cluster.QuotaSnapshotRecord{}); errMigrate != nil {
++					t.Fatal(errMigrate)
 +				}
 +			}
 +			item, err := repo.GetQuotaCredential(t.Context(), id, at)

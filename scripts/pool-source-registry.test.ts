@@ -104,6 +104,30 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /unchanged credential, permission, rate-limit and outage classification/,
         );
+      } else if (patch.identity === "cliproxy-home-xai-collection-diagnostic") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0490-home-xai-collection-diagnostic.patch");
+        assert.match(
+          patch.retirement.requires,
+          /monthly and weekly source-field flags tied to collector invocation time/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /forced claim refusal and vendor completion persistence/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /field-shape, privacy, real-collector, lease-loss, write-failure and management-detail regressions/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /pool-owned persistence through the existing authenticated view/,
+        );
+        assert.match(patch.retirement.requires, /without response bodies, amounts or credentials/);
+        assert.match(
+          patch.retirement.requires,
+          /without changing Home database models or versions/,
+        );
       } else if (patch.identity === "cliproxy-home-xai-subscription-quota") {
         assert.equal(name, "home");
         assert.equal(patch.file, "0469-home-xai-subscription-quota.patch");
