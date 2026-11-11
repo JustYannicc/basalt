@@ -13,14 +13,18 @@ const workflow = parse(
 );
 
 test("native Boat jobs fit the included start burst and retain individual job gates", () => {
-  assert.equal(boatJobs.length, 11);
+  assert.equal(boatJobs.length, 12);
   assert.equal(new Set(boatJobs).size, boatJobs.length);
   for (const id of boatJobs) {
     assert.ok(heavyJobs.includes(id), id);
     const job = workflow.jobs[id];
     assert.equal(job.strategy?.matrix, undefined, id);
     assert.equal(job.if, `contains(fromJSON(needs.select.outputs.jobs), '${id}')`);
-    const fallback = ["host-managed-accounts-local", "host-managed-accounts-cloud"].includes(id)
+    const fallback = [
+      "host-managed-accounts-local",
+      "host-managed-accounts-cloud",
+      "host-managed-accounts-cloud-actions",
+    ].includes(id)
       ? "vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest'"
       : "'ubuntu-latest'";
     assert.equal(
