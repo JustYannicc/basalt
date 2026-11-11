@@ -1,7 +1,7 @@
 model {
   extend basalt.poolRuntime {
     metadata {
-      constraint "Home dispatch authentication, selection, admission and reply-write timings contain only a closed stage, bounded milliseconds and a closed outcome. Reply timing ends before fingerprint fencing. Supervisor projection rejects unknown fields and preserves these records from both child streams. Diagnostics do not change dispatch results, accounting, fencing, deadlines or retry behavior."
+      constraint "Home dispatch authentication, selection, admission and reply-write timings contain only a closed stage, bounded milliseconds and a closed outcome. Reply timing ends before fingerprint fencing, and emission follows fencing and local close. Supervisor projection rejects unknown fields and preserves these records from both child streams. Diagnostics do not change dispatch results, accounting, fencing, deadlines or retry behavior."
     }
   }
 }

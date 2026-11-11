@@ -1,9 +1,9 @@
 diff --git a/internal/dispatchtiming/timing.go b/internal/dispatchtiming/timing.go
 new file mode 100644
-index 0000000..c57e7ca
+index 0000000..c825f90
 --- /dev/null
 +++ b/internal/dispatchtiming/timing.go
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,55 @@
 +package dispatchtiming
 +
 +import (
@@ -12,6 +12,7 @@ index 0000000..c57e7ca
 +	"net"
 +	"time"
 +
++	"github.com/MoeForge/moego/ojson"
 +	log "github.com/sirupsen/logrus"
 +)
 +
@@ -46,26 +47,37 @@ index 0000000..c57e7ca
 +	if elapsed > 86400000 {
 +		elapsed = 86400000
 +	}
-+	log.Infof(`POOL_NODE_DISPATCH_TIMING {"stage":"%s","duration_ms":%d,"outcome":"%s"}`, stage, elapsed, outcome)
++	record := ojson.NewDocString("{}")
++	if errStage := record.Set("stage", string(stage)); errStage != nil {
++		return
++	}
++	if errDuration := record.Set("duration_ms", elapsed); errDuration != nil {
++		return
++	}
++	if errOutcome := record.Set("outcome", outcome); errOutcome != nil {
++		return
++	}
++	log.Info("POOL_NODE_DISPATCH_TIMING " + record.String())
 +}
 diff --git a/internal/dispatchtiming/timing_test.go b/internal/dispatchtiming/timing_test.go
 new file mode 100644
-index 0000000..0b5a27d
+index 0000000..47bc2e7
 --- /dev/null
 +++ b/internal/dispatchtiming/timing_test.go
-@@ -0,0 +1,46 @@
+@@ -0,0 +1,47 @@
 +package dispatchtiming
 +
 +import (
 +	"context"
 +	"errors"
 +	"fmt"
-+	log "github.com/sirupsen/logrus"
-+	logtest "github.com/sirupsen/logrus/hooks/test"
 +	"io"
 +	"strings"
 +	"testing"
 +	"time"
++
++	log "github.com/sirupsen/logrus"
++	logtest "github.com/sirupsen/logrus/hooks/test"
 +)
 +
 +func TestBasaltNodeDispatchTimingClosedOutcomesAndBounds(t *testing.T) {
@@ -102,7 +114,7 @@ index 0000000..0b5a27d
 +}
 diff --git a/internal/home/basalt_dispatch_timing_test.go b/internal/home/basalt_dispatch_timing_test.go
 new file mode 100644
-index 0000000..cea5c04
+index 0000000..a13743e
 --- /dev/null
 +++ b/internal/home/basalt_dispatch_timing_test.go
 @@ -0,0 +1,76 @@
@@ -110,11 +122,11 @@ index 0000000..cea5c04
 +
 +import (
 +	"context"
-+	"github.com/MoeForge/moego/ojson"
 +	"io"
 +	"strings"
 +	"testing"
 +
++	"github.com/MoeForge/moego/ojson"
 +	log "github.com/sirupsen/logrus"
 +	logtest "github.com/sirupsen/logrus/hooks/test"
 +)
