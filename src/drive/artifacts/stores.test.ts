@@ -437,16 +437,17 @@ test("writing new notes asks the repository for no blob, and known blobs still r
   } finally {
     writer.close();
   }
-  // A fresh store holds the trees. Once its blob cache drops a note, as eviction does, a read of
-  // that note goes to the repository; an oid no tree names still costs nothing.
+  // A fresh store holds the trees; once its blob cache has dropped a note, a read of that note goes
+  // to the repository, and an oid no tree names still costs nothing.
   const data = storageFixture();
   try {
-    const stores = createArtifactsStores({ storage: data.storage, repository: counted() });
+    // No blob cache: recovery keeps the trees and drops every blob, as real eviction does.
+    const stores = createArtifactsStores({
+      storage: data.storage,
+      repository: counted(),
+      blobCacheBytes: 0,
+    });
     await stores.recover();
-    data.storage.sql.exec(
-      "DELETE FROM vault_git_parts WHERE oid IN (SELECT oid FROM vault_git_objects WHERE type = 'blob')",
-    );
-    data.storage.sql.exec("DELETE FROM vault_git_objects WHERE type = 'blob'");
     const blob = git(server.bare, "rev-parse", "main:notes/42.md").toString().trim();
     const object = await stores.objects.get(blob);
     assert.equal(new TextDecoder().decode(object?.content), "note 42");
