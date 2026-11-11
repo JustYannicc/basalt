@@ -1,0 +1,63 @@
+{
+  "scenarios": {
+    "accountUsageCredits": {
+      "fixtures": "actors",
+      "title": "usage credits read as the provider reported them beside usage, Claude extra usage stays apart from any balance, and Details keep banked resets separate",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses loopback allowance services."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises hosted account rows."
+        }
+      }
+    },
+    "poolUsageCreditPolicy": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "a pool owner chooses Allow as last resort or Never use credits on the pool's Accounts tab, rows say what the pool does with each account, and a failed save keeps the pool's policy",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses loopback allowance and pool services."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises hosted pool rows."
+        }
+      }
+    }
+  },
+  "runs": {
+    "accountUsageCredits": [
+      "declared:self-host"
+    ],
+    "poolUsageCreditPolicy": [
+      "declared:self-host"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/contracts/pool-usage.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-credit-routing.ts",
+    ".upstream/apps/hosted/web/src/contracts/pool-credit-routing.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/account-observations-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/pool-credit-policy.tsx",
+    ".upstream/e2e/support/pool-usage-backend.ts",
+    ".upstream/packages/apps/src/contracts/account-observation.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/account-observation-readings.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-observations.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-usage-credits-view.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-usage-credits.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/radio-choice.ts"
+  ]
+}

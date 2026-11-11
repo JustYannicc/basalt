@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Account rows show subscription usage credits exactly as the provider reported them, beside the usage cells and in Details: a finite balance in its own unit and never converted to money, unlimited as reported but never as free, and an unread or unknown balance as unavailable, never zero. A model provider's extra usage on or off, its monthly cap and its spend stay apart from any credit balance, and banked quota resets stay a separate Details entry. Only a pool's own Accounts tab states what that pool does with an account and shows its Subscription credits policy, read and saved through the pool's own pool-scoped routing read; the shared account observation never carries a pool policy. Rows and Details apply on desktop and touch layouts."
+    }
+  }
+}
