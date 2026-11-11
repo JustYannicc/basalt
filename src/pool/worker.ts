@@ -63,6 +63,7 @@ import {
   historySchemaCatalogPath,
 } from "./model-history/operator.ts";
 import { handleUsageImport, modelImportPath } from "./model-history/import-http.ts";
+import { importAccountTargets } from "./model-history/import-account-targets.ts";
 import { handleSelfUsageImport, selfModelImportPath } from "./model-history/self-import-http.ts";
 import type { SentryEnv } from "../telemetry/sentry-target.ts";
 import { NativeMemberships } from "./membership.ts";
@@ -596,6 +597,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
         connectionString: this.env.POOL_AUTH_DATABASE?.connectionString,
         permissions: (pool, caller) => this.computers.permissions(pool, caller),
+        importAccounts: (pool) => importAccountTargets(this.mirrorHome, pool),
       });
     if (pathname === selfModelImportPath)
       return handleSelfUsageImport(request, {

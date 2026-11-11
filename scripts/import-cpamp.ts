@@ -1,10 +1,11 @@
 import { DatabaseSync } from "node:sqlite";
 import { parseArgs } from "node:util";
 import { createHash } from "node:crypto";
-import { open } from "node:fs/promises";
+import { open, readFile, stat } from "node:fs/promises";
 import { metadataLines, metadataInput, fileDigest } from "./usage-import-stream.ts";
 import { privateCredential, serviceOrigin } from "./usage-import-source.ts";
 import { historyObject } from "../src/pool/model-history/record.ts";
+import { importAccountMappings } from "../src/pool/model-history/import-account-mapping.ts";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const { values } = parseArgs({
@@ -18,6 +19,7 @@ const { values } = parseArgs({
     "apply-report": { type: "string" },
     approve: { type: "string" },
     receipts: { type: "string" },
+    "account-map-file": { type: "string" },
   },
 });
 
@@ -45,6 +47,15 @@ async function main() {
   const token = await privateCredential(values["pool-token-file"]);
   const source = await metadataInput(values.file);
   const sourceHash = await source.digest();
+  const mapFile = values["account-map-file"];
+  if (mapFile) {
+    const info = await stat(mapFile);
+    if (!info.isFile() || info.size > 1_048_576 || (info.mode & 0o077) !== 0)
+      throw new Error("Account map must be private and bounded");
+  }
+  const mapData = mapFile ? await readFile(mapFile, "utf8") : undefined;
+  const accountMappings =
+    mapData === undefined ? undefined : importAccountMappings(JSON.parse(mapData));
   const header = {
     version: 1,
     target: target.origin,
@@ -52,6 +63,7 @@ async function main() {
     source: values.source,
     sourceHash,
     format: "cpamp-v1-jsonl",
+    ...(mapData === undefined ? {} : { accountMapHash: hash(mapData), accountMappings }),
   };
   const approved = applying
     ? metadataLines(values["apply-report"]!)[Symbol.asyncIterator]()
@@ -111,14 +123,26 @@ async function main() {
       await response.body?.cancel();
       throw new Error("Import refused");
     }
-    return historyObject(await response.json());
+    const result = historyObject(await response.json());
+    if (
+      accountMappings !== undefined &&
+      result.accountMappingDigest !== hash(JSON.stringify(accountMappings))
+    )
+      throw new Error("Server did not acknowledge the approved account map");
+    return result;
   }
   let pages = 0,
     inserted = 0;
   try {
     await append(header);
     for await (const data of source.pages()) {
-      const input = { source: values.source, format: "cpamp-v1-jsonl", data, offset: 0 };
+      const input = {
+        source: values.source,
+        format: "cpamp-v1-jsonl",
+        data,
+        offset: 0,
+        ...(accountMappings === undefined ? {} : { accountMappings }),
+      };
       const inputHash = hash(JSON.stringify(input));
       const next = applying ? await approved!.next() : undefined;
       const expected = next && !next.done ? historyObject(JSON.parse(next.value)) : undefined;
@@ -168,6 +192,8 @@ async function main() {
     }
     if ((await source.digest()) !== sourceHash)
       throw new Error("Source file changed during import");
+    if (mapFile && (await fileDigest(mapFile)) !== hash(mapData!))
+      throw new Error("Account map changed during import");
     await append({ complete: true, pages });
   } finally {
     await output.close();
