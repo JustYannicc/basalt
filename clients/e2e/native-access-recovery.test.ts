@@ -47,6 +47,17 @@ test(
               : { model: "synthetic-model" },
           ),
         });
+      const invalidate = async () => {
+        remote.refuseNextUpgrade();
+        const refused = await request("/mcp");
+        assert.equal(
+          refused.status,
+          503,
+          "A rejected handshake invalidates the cached grant before dispatch.",
+        );
+        await refused.body?.cancel();
+      };
+      await invalidate();
       const before = remote.counts();
       remote.unavailableAccess(2);
       const recovered = await request("/mcp");
@@ -63,6 +74,7 @@ test(
         "Only authorization reads are retried.",
       );
 
+      await invalidate();
       remote.unavailableAccess(6);
       const prior = remote.counts();
       for (const path of ["/v1/responses", "/mcp"]) {
@@ -118,6 +130,7 @@ test(
       assert.equal(remote.counts().writes, beforeInterrupted.writes + 1);
       remote.dropTool(false);
 
+      await invalidate();
       remote.denyAccess(true);
       const deniedBefore = remote.counts();
       const denied = await request("/mcp");

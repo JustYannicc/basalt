@@ -14,7 +14,7 @@ import type { TunnelEnvironment } from "./access.ts";
 import { TunnelInput, TunnelOutput } from "./flow.ts";
 import { upgradedSocket } from "./platform.ts";
 import { TunnelWebSocket } from "./websocket.ts";
-import { recordTunnelFailure } from "./failure.ts";
+import { recordTunnelFailure, tunnelFailure } from "./failure.ts";
 
 export class TunnelOperation {
   readonly output = new TunnelOutput();
@@ -155,7 +155,8 @@ export class TunnelOperation {
       }
       if (!this.stopped) this.send({ v: 1, type: "end", id: this.open.id });
       this.stop();
-    } catch {
+    } catch (error) {
+      if (!this.stopped) recordTunnelFailure(this.open.id, tunnelFailure(error, "http", "error"));
       this.error("unavailable");
     }
   }

@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { getMigrations } from "better-auth/db/migration";
+import type { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import { Effect, Option, Redacted } from "effect";
 
@@ -12,6 +14,7 @@ const verifier = "v".repeat(43);
 export async function fixture(
   control?: (request: Request) => Promise<Response>,
   signingKey = "ab".repeat(32),
+  database?: DatabaseSync,
 ) {
   const key = Option.some(Redacted.make(signingKey));
   const db: Record<string, Record<string, unknown>[]> = {
@@ -31,7 +34,7 @@ export async function fixture(
     mcpGrant: [],
     mcpConnection: [],
   };
-  const auth = betterAuth({
+  const settings = {
     ...authOptions(
       {
         url: origin,
@@ -43,11 +46,13 @@ export async function fixture(
       [],
     ),
     secret: "synthetic-native-approval-auth-secret",
-    database: memoryAdapter(db),
-    rateLimit: { enabled: false },
+    database: database ?? memoryAdapter(db),
+    ...(database ? {} : { rateLimit: { enabled: false } }),
     emailAndPassword: { enabled: true },
     logger: { disabled: true },
-  });
+  };
+  if (database) await (await getMigrations(settings)).runMigrations();
+  const auth = betterAuth(settings);
   await Effect.runPromise(
     provisionHostedOAuthResources(
       { origin, issuer: `${origin}/api/auth`, resourceOrigins: { api: [origin], mcp: [origin] } },
@@ -64,7 +69,8 @@ export async function fixture(
     },
   });
   assert.equal(signup.status, 200);
-  db.user[0]!.emailVerified = true;
+  const signupUser = (await signup.json()).user;
+  await (await auth.$context).internalAdapter.updateUser(signupUser.id, { emailVerified: true });
   const signedIn = await auth.api.signInEmail({
     asResponse: true,
     body: { email: "device-owner@example.invalid", password: "synthetic-device-password" },
@@ -116,6 +122,7 @@ export async function fixture(
   if (control) globalThis.fetch = async (input, init) => control(new Request(input, init));
   return {
     request,
+    userId: signupUser.id as string,
     raw: (path: string, init: RequestInit) =>
       auth.handler(new Request(`${origin}/api/auth${path}`, init)),
     user_code,

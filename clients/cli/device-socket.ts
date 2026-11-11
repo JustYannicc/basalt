@@ -20,16 +20,23 @@ export const deviceSocket: SocketFactory = (url, token) => {
     listen: (listener) => {
       const message = (data: import("ws").RawData, binary: boolean) =>
         listener({ type: "message", data: binary ? data : data.toString() });
-      const close = () => listener({ type: "close" });
+      const close = (code: number) => listener({ type: "close", code });
       const error = () => listener({ type: "error" });
+      const refused = (_request: unknown, response: import("node:http").IncomingMessage) => {
+        listener({ type: "error", status: response.statusCode });
+        response.resume();
+        socket.terminate();
+      };
       socket.on("message", message);
       socket.on("close", close);
       socket.on("error", error);
+      socket.on("unexpected-response", refused);
       return () => {
         socket.off("message", message);
         socket.off("close", close);
         // terminate during CONNECTING can emit an asynchronous error after cleanup.
         socket.off("error", error);
+        socket.off("unexpected-response", refused);
         socket.on("error", () => undefined);
       };
     },
