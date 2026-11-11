@@ -109,23 +109,27 @@ diff --git a/e2e/tests/account-usage-cells.spec.ts b/e2e/tests/account-usage-cel
                ["New reporter", "new-reporter"],
              ] as const) {
                yield* browser.use(`Show the whole ${label} row`, (page) =>
-@@ -221,6 +248,26 @@
+@@ -221,6 +248,30 @@
              }
            }
  
 +        const optionalReading = yield* browser.use(
 +          "Read unreported weekly and measured monthly usage",
-+          async (page) => {
++          (page) => {
 +            const weekly = cell(page, "Optional usage", "xai-weekly-usage");
-+            return {
-+              value: await weekly.locator("[data-reading-value]").innerText(),
-+              state: await weekly.getAttribute("data-meter-state"),
-+              meterValue: await weekly.getByRole("meter").getAttribute("aria-valuenow"),
-+              monthly: await cell(page, "Optional usage", "xai-monthly-spend").innerText(),
-+              onDemand: await block(page, "Optional usage")
-+                .locator('[data-reading="xai-on-demand"]')
-+                .count(),
-+            };
++            return Promise.all([
++              weekly.locator("[data-reading-value]").innerText(),
++              weekly.getAttribute("data-meter-state"),
++              weekly.getByRole("meter").getAttribute("aria-valuenow"),
++              cell(page, "Optional usage", "xai-monthly-spend").innerText(),
++              block(page, "Optional usage").locator('[data-reading="xai-on-demand"]').count(),
++            ]).then(([value, state, meterValue, monthly, onDemand]) => ({
++              value,
++              state,
++              meterValue,
++              monthly,
++              onDemand,
++            }));
 +          },
 +        );
 +        expect(optionalReading.value).toBe("No weekly reading");
