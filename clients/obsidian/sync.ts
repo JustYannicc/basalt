@@ -10,6 +10,7 @@ import {
   type Receipt,
   type Edit,
   type SyncStatus,
+  type ChangeCursor,
 } from "./types.ts";
 import { pull } from "./pull.ts";
 import { isTextPath, maximumTextBytes } from "../../src/drive/text-files.ts";
@@ -77,6 +78,37 @@ export async function createSync(input: {
     head: state.head,
     importId: state.importId,
   });
+  /**
+   * What each sent path holds in the landed commit, without reading files one by one (two round
+   * trips each, minutes on a first import). Landing straight on its base, a commit holds exactly
+   * what was sent. A merged landing, which may also have merged text, is listed in one paged
+   * changes read against the main it landed on. A path missing from both falls back to a read.
+   */
+  const landedBlobs = async (pending: Pending, receipt: Receipt & { state: "landed" }) => {
+    const blobs = new Map<string, string | null>();
+    if (receipt.previous === pending.request.base) {
+      for (const edit of pending.request.edits)
+        blobs.set(edit.path, pending.sent[edit.path] ?? null);
+      return blobs;
+    }
+    if (!remote.changes) return blobs;
+    const wanted = new Set(pending.request.edits.map((edit) => edit.path));
+    let cursor: ChangeCursor | null = null;
+    do {
+      const page = await remote.changes({
+        from: receipt.previous,
+        to: receipt.oid,
+        ...(cursor ? { cursor } : {}),
+        limit: 100,
+      });
+      for (const entry of page.entries)
+        if (wanted.has(entry.path)) blobs.set(entry.path, entry.after);
+      if (page.next && JSON.stringify(page.next) === JSON.stringify(cursor))
+        throw new Error("Cloud change cursor did not advance");
+      cursor = page.next;
+    } while (cursor && blobs.size < wanted.size);
+    return blobs;
+  };
   const finish = async (pending: Pending, receipt: Receipt) => {
     importing.acknowledge(pending.request.edits.map((edit) => edit.path));
     input.progress?.();
@@ -84,17 +116,24 @@ export async function createSync(input: {
       state.conflicts = state.conflicts.filter((conflict) => conflict.ref !== receipt.ref);
       state.conflicts.push(receipt);
     } else {
+      const landed = await landedBlobs(pending, receipt);
       for (const edit of pending.request.edits) {
         const sent = pending.sent[edit.path] ?? null;
         if (pending.kind === "resolve" && pending.before)
           await local.replace(edit.path, pending.before[edit.path] ?? null, edit.content, {
             at: receipt.oid,
           });
-        // A landed commit holds exactly what was sent: a path that clashes comes back as a
-        // conflict receipt instead. Reading each path back cost two round trips per file, minutes
-        // on a first import; the next pull still brings down anything the cloud changed later.
-        await local.accept?.(edit.path, receipt.oid, sent);
-        state.files[edit.path] = { at: receipt.oid, local: sent, cloud: sent };
+        const cloud = landed.has(edit.path)
+          ? landed.get(edit.path)!
+          : ((await remote.read({ path: edit.path, at: receipt.oid, maxBytes: 4 }))?.blob ?? null);
+        await local.accept?.(edit.path, receipt.oid, cloud);
+        state.files[edit.path] = {
+          // A merged result differs from what was sent; keeping the old base makes the next
+          // checkpoint merge again instead of overwriting the cloud's half.
+          at: cloud === sent ? receipt.oid : pending.request.base,
+          local: sent,
+          cloud,
+        };
       }
       if (pending.kind === "resolve")
         state.conflicts = state.conflicts.filter(

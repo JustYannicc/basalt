@@ -27,8 +27,8 @@ const queries = new Set([
 
 /**
  * The real Obsidian app and vault behind the plugin's MCP transport. `calls` records every tool
- * call (`tool` or `importRequest:<drive method>`); `afterCall` runs once the server has handled a
- * call, so a test can lose its reply.
+ * call (`tool` or `importRequest:<drive method>`). `beforeCall` runs before the server handles a
+ * call, so a test can move the cloud first; `afterCall` runs after it, so a test can lose its reply.
  */
 async function importFixture(files: Map<string, string>) {
   const data = storageFixture(),
@@ -64,7 +64,10 @@ async function importFixture(files: Map<string, string>) {
       workflowControls: isolatedWorkflowControls(callback),
     };
   const calls: string[] = [];
-  const hooks: { afterCall?: (tool: string, input: unknown) => void } = {};
+  const hooks: {
+    beforeCall?: (tool: string, input: unknown) => Promise<void>;
+    afterCall?: (tool: string, input: unknown) => void;
+  } = {};
   const http: Http = async (_url, request) => {
     if (request.method === "DELETE") return { status: 204, headers: {}, body: "" };
     const rpc = object(JSON.parse(request.body ?? "{}")),
@@ -86,6 +89,7 @@ async function importFixture(files: Map<string, string>) {
       tool = path.split(".").at(-1)!;
     const drive = tool === "importRequest" ? object(object(call.input).request).method : null;
     calls.push(drive ? `${tool}:${String(drive)}` : tool);
+    await hooks.beforeCall?.(tool, call.input);
     const response = await handler(
       new Request("https://fixture.invalid/dispatch", {
         method: "POST",
@@ -240,6 +244,43 @@ test("a first import lands without reading every file back and reports progress 
     assert.equal(
       (await fixture.vault.service.read({ path: "notes/132.md" }))?.content,
       files.get("notes/132.md"),
+    );
+  } finally {
+    fixture.close();
+  }
+});
+
+test("a checkpoint that lands as a text merge keeps the cloud's half when the device edits again", async () => {
+  const files = new Map([["note.md", "a\nb\nc\nd\ne\n"]]);
+  const fixture = await importFixture(files);
+  try {
+    const sync = await fixture.start();
+    await sync.run();
+    files.set("note.md", "A\nb\nc\nd\ne\n");
+    let moved = false;
+    fixture.hooks.beforeCall = async (tool) => {
+      if (tool !== "applyNotes" || moved) return;
+      moved = true;
+      // An agent edits another line first, so the device's upload lands as a merge; the user
+      // keeps typing while that upload is in flight.
+      const head = (await fixture.vault.service.list({})).at;
+      await fixture.vault.service.apply({
+        base: head,
+        operation: "agent-edit",
+        edits: [{ path: "note.md", content: "a\nb\nc\nd\nE\n" }],
+      });
+      files.set("note.md", "A\nb\nC\nd\ne\n");
+    };
+    await sync.run();
+    assert.equal(
+      (await fixture.vault.service.read({ path: "note.md" }))?.content,
+      "A\nb\nc\nd\nE\n",
+    );
+    await sync.run();
+    assert.equal(
+      (await fixture.vault.service.read({ path: "note.md" }))?.content,
+      "A\nb\nC\nd\nE\n",
+      "the agent's line must survive the device's next checkpoint",
     );
   } finally {
     fixture.close();
