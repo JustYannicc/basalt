@@ -1,3 +1,69 @@
+diff --git a/cmd/home/main.go b/cmd/home/main.go
+index 3e93ab0..3b02be4 100644
+--- a/cmd/home/main.go
++++ b/cmd/home/main.go
+@@ -424,6 +424,7 @@ func run() int {
+ 	})
+ 	// Keep the Antigravity quota User-Agent aligned with the CPA request User-Agent.
+ 	cpasdkauth.StartAntigravityVersionUpdater(runCtx)
++	rt.SetUsageCreditCollector(quotaCollector)
+ 	quotaCollector.Start(runCtx)
+ 
+ 	respSrv = respserver.New(addr, rt)
+diff --git a/docs/management/api.md b/docs/management/api.md
+index 25e0140..466acdf 100644
+--- a/docs/management/api.md
++++ b/docs/management/api.md
+@@ -183,6 +183,7 @@ The following v8 routes are derived from `internal/managementhttp/routes_v8.go`
+ | `POST` | `/channel-groups` |
+ | `DELETE` | `/channel-groups/:id` |
+ | `GET` | `/channel-groups/:id` |
++| `GET` | `/channel-groups/:id/usage-credit-routing` |
+ | `PATCH` | `/channel-groups/:id` |
+ | `PUT` | `/channel-groups/:id` |
+ | `GET` | `/config` |
+@@ -3776,6 +3777,14 @@ Updates a channel group. The request fields are the same as `POST /channel-group
+ 
+ Response: `{ "channel_group": ... }`.
+ 
++### GET `/channel-groups/:id/usage-credit-routing`
++
++Returns `{usageCreditPolicy, accounts}` for this group. Optional `model` selects model-specific quota windows. Account entries contain `use` (`plan`, `credits`, `unknown`, `exhausted`, `blocked`), `eligible`, `reason` and `policy`. Under `never`, credit-only and unknown accounts keep their funding `use` and return `eligible: false`, `reason: "credit_policy_never"`.
++
++v8 channel-group create/update and read responses accept/expose `usage_credit_policy`: `last_resort` (default) or `never`. The strictest applicable server-owned group policy governs an authenticated client key. Known plan quota precedes credits, then unknown funding, before session affinity. `never` admits only fresh proven plan quota. A funding refusal requests a bounded, coalesced normal quota collection. A spending guarantee still requires disabling extra usage at the vendor because observations can change between collection and a request.
++
++v8 quota detail responses include nullable `usage_credits`: `state`, optional decimal-string `balance`, source `observed_at`/`expires_at`, Codex `allowed`/`limit_reached`/`has_credits`/`unlimited`, and optional Claude `extra_usage` with `enabled`, `monthly_cap` (`limited`, `unlimited`, `unknown`) and `used_ratio`. `credit_blocked` preserves explicit zero, disabled or exhausted evidence. Claude caps are not wallets; currency and scale are unproven, so no money amount is published. `reset_credits` remains separate. Older rows without these facts are unknown until collection.
++
+ ### DELETE `/channel-groups/:id`
+ 
+ Soft-deletes the group and its details, and atomically removes its ID from API key `channels` and model group detail `channels`, including soft-deleted records. Other bindings, key identity, and user ownership are preserved. Removing the last API key channel binding makes credential selection unrestricted by that key; removing the last model-detail channel binding restores inheritance from the key. A config event is published when bindings change, and the local runtime config is refreshed. Disabled groups are not removed.
+diff --git a/docs/management/api_CN.md b/docs/management/api_CN.md
+index d9b2a07..c272ab3 100644
+--- a/docs/management/api_CN.md
++++ b/docs/management/api_CN.md
+@@ -178,6 +178,7 @@ DB-backed handler 通常同时返回机器可读 `error` 和可读 `message`：
+ | `POST` | `/channel-groups` |
+ | `DELETE` | `/channel-groups/:id` |
+ | `GET` | `/channel-groups/:id` |
++| `GET` | `/channel-groups/:id/usage-credit-routing` |
+ | `PATCH` | `/channel-groups/:id` |
+ | `PUT` | `/channel-groups/:id` |
+ | `GET` | `/config` |
+@@ -3763,6 +3764,14 @@ Channel groups 限制某个客户端 API key 可以使用哪些 auth records。
+ 
+ 输出：`{ "channel_group": ... }`。
+ 
++### GET `/channel-groups/:id/usage-credit-routing`
++
++返回当前组的 `{usageCreditPolicy, accounts}`。可选参数 `model` 用于选择模型专属配额窗口。 Account entries contain `use` (`plan`, `credits`, `unknown`, `exhausted`, `blocked`), `eligible`, `reason` and `policy`. Under `never`, credit-only and unknown accounts keep their funding `use` and return `eligible: false`, `reason: "credit_policy_never"`.
++
++v8 channel-group create/update and read responses accept/expose `usage_credit_policy`: `last_resort` (default) or `never`. The strictest applicable server-owned group policy governs an authenticated client key. Known plan quota precedes credits, then unknown funding, before session affinity. `never` admits only fresh proven plan quota. A funding refusal requests a bounded, coalesced normal quota collection. A spending guarantee still requires disabling extra usage at the vendor because observations can change between collection and a request.
++
++v8 quota detail responses include nullable `usage_credits`: `state`, optional decimal-string `balance`, source `observed_at`/`expires_at`, Codex `allowed`/`limit_reached`/`has_credits`/`unlimited`, and optional Claude `extra_usage` with `enabled`, `monthly_cap` (`limited`, `unlimited`, `unknown`) and `used_ratio`. `credit_blocked` preserves explicit zero, disabled or exhausted evidence. Claude caps are not wallets; currency and scale are unproven, so no money amount is published. `reset_credits` remains separate. Older rows without these facts are unknown until collection.
++
+ ### DELETE `/channel-groups/:id`
+ 
+ 软删除 group 及其 details，并在同一事务中从 API key 的 `channels` 和 model group detail 的 `channels` 中移除该 ID，包括软删除记录中的引用。保留其他绑定、密钥身份及用户归属。移除 API key 的最后一个凭证范围后，该 key 不再额外限制凭证；移除模型明细的最后一个凭证范围后，恢复继承 key 的凭证范围。绑定发生变化时发布配置事件，并刷新本地运行时配置。禁用但未删除的范围不会被移除。
 diff --git a/internal/cliproxy/auth/manager.go b/internal/cliproxy/auth/manager.go
 index 5dacc35..5d15695 100644
 --- a/internal/cliproxy/auth/manager.go
@@ -204,16 +270,17 @@ index 079ab15..d2e9934 100644
  			"diagnostic":  item.CollectionDiagnostic,
 diff --git a/internal/cluster/management/usage_credits.go b/internal/cluster/management/usage_credits.go
 new file mode 100644
-index 0000000..cfe79ef
+index 0000000..76d6763
 --- /dev/null
 +++ b/internal/cluster/management/usage_credits.go
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,32 @@
 +package management
 +
 +import (
-+	"github.com/gin-gonic/gin"
 +	"net/http"
 +	"time"
++
++	"github.com/gin-gonic/gin"
 +)
 +
 +func (h *Handler) GetChannelGroupCreditRouting(c *gin.Context) {
@@ -794,10 +861,21 @@ index 0000000..ed36d87
 +	}
 +}
 diff --git a/internal/home/runtime.go b/internal/home/runtime.go
-index 1ba013b..ec9ffdb 100644
+index 1ba013b..cecc0d9 100644
 --- a/internal/home/runtime.go
 +++ b/internal/home/runtime.go
-@@ -150,6 +150,7 @@ type DispatchResponsePreparer func(*DispatchResult) (unaccounted []byte, account
+@@ -60,6 +60,10 @@ type Runtime struct {
+ 	clusterRefresh          func(context.Context, string, string) ([]byte, error)
+ 	originalStore           coreauth.Store
+ 
++	usageCreditCollector usageCreditCollector
++	usageCreditRefreshMu sync.Mutex
++	usageCreditRefreshAt map[string]time.Time
++
+ 	clusterUsageQueueMu sync.Mutex
+ 	clusterUsageQueue   *usagePayloadQueue
+ 
+@@ -150,6 +154,7 @@ type DispatchResponsePreparer func(*DispatchResult) (unaccounted []byte, account
  
  // DispatchConcurrencyContext carries the RESP connection identity required for admission.
  type DispatchConcurrencyContext struct {
@@ -805,7 +883,7 @@ index 1ba013b..ec9ffdb 100644
  	Fingerprint     string
  	ConnectedAt     time.Time
  	Controlled      bool
-@@ -875,7 +876,7 @@ func (r *Runtime) dispatchForAPIKey(ctx context.Context, reqModel string, header
+@@ -875,7 +880,7 @@ func (r *Runtime) dispatchForAPIKey(ctx context.Context, reqModel string, header
  		return nil, errAllowed
  	}
  	pinnedAuthID = strings.TrimSpace(pinnedAuthID)
@@ -814,7 +892,7 @@ index 1ba013b..ec9ffdb 100644
  		pinnedAllowed := allowedAuthIDs == nil
  		for _, allowedAuthID := range allowedAuthIDs {
  			if strings.TrimSpace(allowedAuthID) == pinnedAuthID {
-@@ -888,6 +889,9 @@ func (r *Runtime) dispatchForAPIKey(ctx context.Context, reqModel string, header
+@@ -888,6 +893,9 @@ func (r *Runtime) dispatchForAPIKey(ctx context.Context, reqModel string, header
  			allowedAuthIDs = append(allowedAuthIDs, pinnedAuthID)
  		}
  	}
@@ -824,7 +902,7 @@ index 1ba013b..ec9ffdb 100644
  	metadata := make(map[string]any)
  	if allowedAuthIDs != nil {
  		metadata[coreauth.AllowedAuthIDsMetadataKey] = allowedAuthIDs
-@@ -907,6 +911,9 @@ func (r *Runtime) dispatchForAPIKey(ctx context.Context, reqModel string, header
+@@ -907,6 +915,9 @@ func (r *Runtime) dispatchForAPIKey(ctx context.Context, reqModel string, header
  	if len(metadata) > 0 {
  		opts.Metadata = metadata
  	}
@@ -834,7 +912,7 @@ index 1ba013b..ec9ffdb 100644
  	return r.dispatchWithOptions(ctx, reqModel, opts, concurrencyCtx)
  }
  
-@@ -945,7 +952,7 @@ func (r *Runtime) dispatchWithOptions(ctx context.Context, reqModel string, opts
+@@ -945,7 +956,7 @@ func (r *Runtime) dispatchWithOptions(ctx context.Context, reqModel string, opts
  	// Database-backed admissions commit the binding and the concurrency counter
  	// in one transaction. Standalone dispatch without a limiter can CAS directly.
  	// Legacy custom admitters without a shared store retain selector-side commits.
@@ -843,7 +921,7 @@ index 1ba013b..ec9ffdb 100644
  		opts.SessionAffinity = &coreauth.SessionAffinitySelection{}
  	}
  	var lastCandidateError error
-@@ -967,6 +974,9 @@ func (r *Runtime) dispatchWithOptions(ctx context.Context, reqModel string, opts
+@@ -967,6 +978,9 @@ func (r *Runtime) dispatchWithOptions(ctx context.Context, reqModel string, opts
  			return nil, fmt.Errorf("home runtime: dispatch returned nil auth")
  		}
  
@@ -855,20 +933,69 @@ index 1ba013b..ec9ffdb 100644
  		if upstreamModel == "" {
 diff --git a/internal/home/usage_credits.go b/internal/home/usage_credits.go
 new file mode 100644
-index 0000000..5e5bc8d
+index 0000000..b90c342
 --- /dev/null
 +++ b/internal/home/usage_credits.go
-@@ -0,0 +1,51 @@
+@@ -0,0 +1,105 @@
 +package home
 +
 +import (
 +	"context"
-+	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++	"errors"
 +	"strings"
++	"time"
++
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
 +)
 +
 +type usageCreditStore interface {
 +	UsageCreditTiersForAPIKey(context.Context, string, string, map[string]string) (map[string]int, error)
++}
++
++type usageCreditCollector interface {
++	TriggerCollection(context.Context, map[string]struct{}, map[string]struct{}) (int, error)
++}
++
++// SetUsageCreditCollector connects funding refusals to the existing bounded collector.
++func (r *Runtime) SetUsageCreditCollector(collector usageCreditCollector) {
++	r.cfgMu.Lock()
++	defer r.cfgMu.Unlock()
++	r.usageCreditCollector = collector
++}
++
++func (r *Runtime) requestUsageCreditRefresh(ctx context.Context, ids []string) error {
++	r.cfgMu.RLock()
++	collector := r.usageCreditCollector
++	r.cfgMu.RUnlock()
++	if collector == nil {
++		return errors.New("quota collector is unavailable")
++	}
++	now := time.Now()
++	selected := make(map[string]struct{})
++	r.usageCreditRefreshMu.Lock()
++	if r.usageCreditRefreshAt == nil {
++		r.usageCreditRefreshAt = make(map[string]time.Time)
++	}
++	for id, at := range r.usageCreditRefreshAt {
++		if now.Sub(at) >= 30*time.Second {
++			delete(r.usageCreditRefreshAt, id)
++		}
++	}
++	for _, id := range ids {
++		if len(selected) >= 500 {
++			break
++		}
++		if _, queued := r.usageCreditRefreshAt[id]; !queued {
++			selected[id] = struct{}{}
++			r.usageCreditRefreshAt[id] = now
++		}
++	}
++	r.usageCreditRefreshMu.Unlock()
++	if len(selected) > 0 {
++		_, errTrigger := collector.TriggerCollection(ctx, selected, nil)
++		return errTrigger
++	}
++	return nil
 +}
 +
 +func (r *Runtime) installUsageCreditFilter(ctx context.Context, apiKey, model, pinned string, opts *coreauth.Options) bool {
@@ -892,6 +1019,11 @@ index 0000000..5e5bc8d
 +				best = tier
 +			}
 +		}
++		if best >= 3 {
++			if errRefresh := r.requestUsageCreditRefresh(ctx, ids); errRefresh != nil {
++				return nil, &coreauth.Error{Code: "usage_credit_policy_unavailable", Message: "A fresh pool funding reading could not be queued.", HTTPStatus: 503, Retryable: true}
++			}
++		}
 +		eligible := make([]*coreauth.Auth, 0, len(candidates))
 +		for _, auth := range candidates {
 +			if tier, exists := tiers[auth.ID]; exists && tier == best && tier < 3 {
@@ -912,10 +1044,10 @@ index 0000000..5e5bc8d
 +}
 diff --git a/internal/home/usage_credits_test.go b/internal/home/usage_credits_test.go
 new file mode 100644
-index 0000000..9401ea9
+index 0000000..ab8c086
 --- /dev/null
 +++ b/internal/home/usage_credits_test.go
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,113 @@
 +package home
 +
 +import (
@@ -997,6 +1129,38 @@ index 0000000..9401ea9
 +		t.Fatal("funding check failed", errCheck)
 +	}
 +}
++
++type creditRefreshCollector struct {
++	calls int
++	ids   map[string]struct{}
++}
++
++func (c *creditRefreshCollector) TriggerCollection(_ context.Context, ids, _ map[string]struct{}) (int, error) {
++	c.calls++
++	c.ids = ids
++	return len(ids), nil
++}
++func TestUsageCreditRefusalQueuesOneBoundedRefresh(t *testing.T) {
++	runtime := &Runtime{clusterAdapter: &creditTierStore{tiers: map[string]int{"unknown": 3}}}
++	collector := &creditRefreshCollector{}
++	runtime.SetUsageCreditCollector(collector)
++	var opts coreauth.Options
++	if !runtime.installUsageCreditFilter(t.Context(), "pool-key", "gpt", "", &opts) {
++		t.Fatal("filter unavailable")
++	}
++	for range 2 {
++		selected, errFilter := opts.CandidateFilter([]*coreauth.Auth{{ID: "unknown"}}, map[string]string{"unknown": "gpt"})
++		if errFilter != nil || len(selected) != 0 {
++			t.Fatal("refusal changed", errFilter)
++		}
++	}
++	if collector.calls != 1 {
++		t.Fatalf("collector calls %d, want one coalesced refresh", collector.calls)
++	}
++	if _, ok := collector.ids["unknown"]; !ok {
++		t.Fatal("refused account was not queued")
++	}
++}
 diff --git a/internal/managementhttp/server.go b/internal/managementhttp/server.go
 index 993c59a..adb9b16 100644
 --- a/internal/managementhttp/server.go
@@ -1056,16 +1220,17 @@ index 84c5fd3..49f358e 100644
  		result.partial = true
 diff --git a/internal/quota/usage_credits.go b/internal/quota/usage_credits.go
 new file mode 100644
-index 0000000..9692da1
+index 0000000..177ef38
 --- /dev/null
 +++ b/internal/quota/usage_credits.go
-@@ -0,0 +1,113 @@
+@@ -0,0 +1,123 @@
 +package quota
 +
 +import (
 +	"bytes"
 +	"encoding/json"
 +	"math"
++	"math/big"
 +	"regexp"
 +	"time"
 +
@@ -1101,6 +1266,14 @@ index 0000000..9692da1
 +		}
 +	}
 +	return false
++}
++func creditAtLeast(value, limit *string) bool {
++	if value == nil || limit == nil {
++		return false
++	}
++	amount, amountOK := new(big.Rat).SetString(*value)
++	cap, capOK := new(big.Rat).SetString(*limit)
++	return amountOK && capOK && amount.Cmp(cap) >= 0
 +}
 +func creditRatio(value json.RawMessage) *float64 {
 +	var parsed float64
@@ -1162,10 +1335,11 @@ index 0000000..9692da1
 +	if enabled != nil && !*enabled {
 +		value.State = "disabled"
 +		value.CreditBlocked = true
++		return value
 +	}
 +	if extra.MonthlyCap == "limited" {
 +		cap := creditDecimal(limit)
-+		if extra.UsedRatio != nil && *extra.UsedRatio >= 1 || cap != nil && !creditPositive(*cap) {
++		if extra.UsedRatio != nil && *extra.UsedRatio >= 1 || cap != nil && !creditPositive(*cap) || creditAtLeast(creditDecimal(payload.Extra["used_credits"]), cap) {
 +			value.CreditBlocked = true
 +			value.State = "none"
 +		}
@@ -1175,10 +1349,10 @@ index 0000000..9692da1
 +}
 diff --git a/internal/quota/usage_credits_test.go b/internal/quota/usage_credits_test.go
 new file mode 100644
-index 0000000..69c8b48
+index 0000000..f9977d1
 --- /dev/null
 +++ b/internal/quota/usage_credits_test.go
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,57 @@
 +package quota
 +
 +import (
@@ -1225,6 +1399,10 @@ index 0000000..69c8b48
 +		{`{"extra_usage":{"is_enabled":true}}`, "unknown", "unknown", false},
 +		{`{"extra_usage":{"is_enabled":false,"monthly_limit":100,"used_credits":42}}`, "disabled", "limited", true},
 +		{`{"extra_usage":{"is_enabled":true,"monthly_limit":100,"utilization":100}}`, "none", "limited", true},
++		{`{"extra_usage":{"is_enabled":true,"monthly_limit":100,"used_credits":100}}`, "none", "limited", true},
++		{`{"extra_usage":{"is_enabled":true,"monthly_limit":"100.01","used_credits":"100.010"}}`, "none", "limited", true},
++		{`{"extra_usage":{"is_enabled":true,"monthly_limit":100,"used_credits":99}}`, "unknown", "limited", false},
++		{`{"extra_usage":{"is_enabled":false,"monthly_limit":0,"utilization":100,"used_credits":100}}`, "disabled", "limited", true},
 +	} {
 +		value := parseClaudeUsageCredits([]byte(test.body), time.Unix(100, 0))
 +		if value.State != test.state || value.ExtraUsage.MonthlyCap != test.cap || value.CreditBlocked != test.blocked || value.Balance != nil {
@@ -1280,15 +1458,16 @@ index e24b93b..2f193ba 100644
  		out := "{}"
 diff --git a/internal/respserver/pop/dynamic/usage_credits.go b/internal/respserver/pop/dynamic/usage_credits.go
 new file mode 100644
-index 0000000..74216cc
+index 0000000..3db9db3
 --- /dev/null
 +++ b/internal/respserver/pop/dynamic/usage_credits.go
-@@ -0,0 +1,26 @@
+@@ -0,0 +1,27 @@
 +package dynamic
 +
 +import (
 +	"context"
 +	"encoding/json"
++
 +	"github.com/router-for-me/CLIProxyAPIHome/internal/respserver/dispatch"
 +)
 +
@@ -1309,4 +1488,45 @@ index 0000000..74216cc
 +		return dispatch.Err("funding validation unavailable")
 +	}
 +	return dispatch.BulkString(payload)
++}
+diff --git a/internal/respserver/pop/dynamic/usage_credits_test.go b/internal/respserver/pop/dynamic/usage_credits_test.go
+new file mode 100644
+index 0000000..c7e56a4
+--- /dev/null
++++ b/internal/respserver/pop/dynamic/usage_credits_test.go
+@@ -0,0 +1,35 @@
++package dynamic
++
++import (
++	"context"
++	"strings"
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/respserver/dispatch"
++)
++
++func TestUsageCreditOldHomeRegistryRejectsBeforeDispatch(t *testing.T) {
++	registry := dispatch.NewRegistry()
++	dispatched := 0
++	legacyDispatch := func(context.Context, dispatch.Env, []string) dispatch.Reply {
++		dispatched++
++		return dispatch.BulkString([]byte(`{"auth_id":"paid"}`))
++	}
++	if errRegister := registry.RegisterDynamic("RPOP", "auth", legacyDispatch); errRegister != nil {
++		t.Fatal(errRegister)
++	}
++	if errDefault := registry.SetDynamicDefault("RPOP", legacyDispatch); errDefault != nil {
++		t.Fatal(errDefault)
++	}
++	env := dispatch.Env{ConnectionLifetime: cluster.ConnectionLifetime{Controlled: true}}
++	payload := `{"type":"usage-credit-check","model":"gpt","pinned_auth_id":"paid"}`
++	reply := registry.Execute(t.Context(), env, []string{"RPOP", payload})
++	if reply.Kind != dispatch.ReplyKindRedisError || !strings.Contains(reply.RedisError, "unsupported type") || dispatched != 0 {
++		t.Fatal("unknown funding check entered old Home dispatch")
++	}
++	registry.Execute(t.Context(), env, []string{"RPOP", `{"type":"auth","model":"gpt"}`})
++	if dispatched != 1 {
++		t.Fatal("legacy auth fixture did not dispatch")
++	}
 +}

@@ -53,6 +53,8 @@ export function publicQuotaObservation(value: QuotaObservation): PoolAccountObse
   const observedAt = instant(value.observedAt);
   if (observedAt === undefined) return null;
   const windows = value.windows
+    // Claude extra usage is a spending cap, not a wallet with known currency units.
+    .filter((window) => window.id !== "claude-extra-usage")
     .flatMap<PoolAccountObservation["observation"]["windows"][number]>((window) => {
       const id = bounded(window.id),
         unit = bounded(window.currency ?? window.unit),

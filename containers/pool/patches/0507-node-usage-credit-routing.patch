@@ -1,6 +1,6 @@
 diff --git a/internal/home/usage_credits.go b/internal/home/usage_credits.go
 new file mode 100644
-index 0000000..6e6f0b2
+index 0000000..1ead41b
 --- /dev/null
 +++ b/internal/home/usage_credits.go
 @@ -0,0 +1,43 @@
@@ -16,7 +16,7 @@ index 0000000..6e6f0b2
 +)
 +
 +// ValidateUsageCreditTurn reads policy without acquiring another concurrency admission.
-+// Older Home rejects this request type; it must never fall back to an auth dispatch.
++// Older Home rejects unknown types before calling its auth dispatch handler.
 +func (c *Client) ValidateUsageCreditTurn(ctx context.Context, model string, headers http.Header, authID string) error {
 +	if c == nil || strings.TrimSpace(authID) == "" {
 +		return errors.New("retained funding validation unavailable")
@@ -49,7 +49,7 @@ index 0000000..6e6f0b2
 +}
 diff --git a/internal/home/usage_credits_test.go b/internal/home/usage_credits_test.go
 new file mode 100644
-index 0000000..743c03c
+index 0000000..4289afa
 --- /dev/null
 +++ b/internal/home/usage_credits_test.go
 @@ -0,0 +1,32 @@
@@ -80,7 +80,7 @@ index 0000000..743c03c
 +			t.Fatal("invalid check acknowledged")
 +		}
 +		last := commands.Last()
-+		if len(last) != 2 || ojson.Get(last[1], "type").String() != "usage-credit-check" || ojson.Get(last[1], "pinned_auth_id").String() != "account" {
++		if len(last) != 2 || last[0] != "RPOP" || ojson.Get(last[1], "type").String() != "usage-credit-check" || ojson.Get(last[1], "pinned_auth_id").String() != "account" {
 +			t.Fatal("check used a dispatch request")
 +		}
 +	}
@@ -126,10 +126,10 @@ index 125f204..6fdabe7 100644
  			pinnedAuthAttempted = pinnedAuthAttempted || (pinnedAuthID != "" && authID == pinnedAuthID)
 diff --git a/sdk/api/handlers/openai/usage_credits_test.go b/sdk/api/handlers/openai/usage_credits_test.go
 new file mode 100644
-index 0000000..c1ca947
+index 0000000..2060490
 --- /dev/null
 +++ b/sdk/api/handlers/openai/usage_credits_test.go
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,84 @@
 +package openai
 +
 +import (
@@ -185,7 +185,11 @@ index 0000000..c1ca947
 +	if errDial != nil {
 +		t.Fatal(errDial)
 +	}
-+	defer conn.Close()
++	defer func() {
++		if errClose := conn.Close(); errClose != nil {
++			t.Logf("close websocket: %v", errClose)
++		}
++	}()
 +	send := func(payload string) []byte {
 +		t.Helper()
 +		if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(payload)); errWrite != nil {

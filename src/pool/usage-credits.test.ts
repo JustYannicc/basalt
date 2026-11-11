@@ -47,7 +47,16 @@ test("credit facts retain units, enablement and independent source freshness", (
 test("publishing credits preserves the fact object and never adds them to banked resets", () => {
   const detail = {
     credential: { observed_at: "2026-11-01T10:00:00Z", expires_at: "2026-11-01T10:30:00Z" },
-    windows: [],
+    windows: [
+      {
+        id: "claude-extra-usage",
+        unit: "credits",
+        used: 40,
+        remaining: 60,
+        limit: 100,
+        observed_at: "2026-11-01T10:00:00Z",
+      },
+    ],
     usage_credits: {
       state: "unlimited",
       balance: null,
@@ -58,5 +67,10 @@ test("publishing credits preserves the fact object and never adds them to banked
   const value = publicQuotaObservation(quotaObservation(detail));
   assert.equal(value?.observation.usageCredits?.state, "unlimited");
   assert.deepEqual(value?.observation.balances, []);
+  assert.deepEqual(
+    value?.observation.windows,
+    [],
+    "A cap-minus-spend amount must not be published as a credit wallet",
+  );
   assert.equal(value?.observation.usageCredits?.balance, null);
 });
