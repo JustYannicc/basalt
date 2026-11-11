@@ -6,7 +6,7 @@ import { backend, git } from "./test/backend.ts";
 import { device, remoteMain, repository, type Backend } from "./test/vault.ts";
 import { storageFixture } from "../fixture.ts";
 import { openVault } from "../vault.ts";
-import type { VaultRepository } from "./stores.ts";
+import { createArtifactsStores, type VaultRepository } from "./stores.ts";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -394,6 +394,67 @@ test("a recovery interrupted after main arrives still books main's bytes on the 
     writer.close();
     data.close();
     account.close();
+    await server.close();
+  }
+});
+
+test("writing new notes asks the repository for no blob, and known blobs still read from it", async () => {
+  // Production's binding answers each readBlob in about a quarter second. The Git engine checks
+  // every object it is about to write, so each new note used to cost one remote read.
+  const server = await backend();
+  const reads: string[] = [];
+  const counted = (): VaultRepository => {
+    const inner = repository(server);
+    return { ...inner, readBlob: (oid) => (reads.push(oid), inner.readBlob(oid)) };
+  };
+  const open = async () => {
+    const data = storageFixture(),
+      account = storageFixture();
+    const vault = await openVault({
+      ...data,
+      accountStorage: account.storage,
+      prefix: "vault/",
+      repository: counted(),
+    });
+    return Object.assign(vault, {
+      storage: data.storage,
+      close: () => (data.close(), account.close()),
+    });
+  };
+  const writer = await open();
+  try {
+    const edits = Array.from({ length: 100 }, (_, i) => ({
+      path: `notes/${i}.md`,
+      content: `note ${i}`,
+    }));
+    const landed = await writer.service.apply({ base: writer.root, operation: "batch", edits });
+    assert.equal(landed.state, "landed");
+    assert.deepEqual(
+      reads,
+      [],
+      "a new note is named by no stored tree, so it needs no remote read",
+    );
+  } finally {
+    writer.close();
+  }
+  // A fresh store holds the trees. Once its blob cache drops a note, as eviction does, a read of
+  // that note goes to the repository; an oid no tree names still costs nothing.
+  const data = storageFixture();
+  try {
+    const stores = createArtifactsStores({ storage: data.storage, repository: counted() });
+    await stores.recover();
+    data.storage.sql.exec(
+      "DELETE FROM vault_git_parts WHERE oid IN (SELECT oid FROM vault_git_objects WHERE type = 'blob')",
+    );
+    data.storage.sql.exec("DELETE FROM vault_git_objects WHERE type = 'blob'");
+    const blob = git(server.bare, "rev-parse", "main:notes/42.md").toString().trim();
+    const object = await stores.objects.get(blob);
+    assert.equal(new TextDecoder().decode(object?.content), "note 42");
+    assert.deepEqual(reads, [blob]);
+    assert.equal(await stores.objects.get("0".repeat(40)), null);
+    assert.deepEqual(reads, [blob]);
+  } finally {
+    data.close();
     await server.close();
   }
 });
