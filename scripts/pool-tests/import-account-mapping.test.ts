@@ -6,6 +6,7 @@ import { parseUsageImport } from "../../src/pool/model-history/import.ts";
 import { handleUsageImport } from "../../src/pool/model-history/import-http.ts";
 import { poolUsageSeries } from "../../src/pool/model-history/series.ts";
 import { lastSuccessAt } from "../../src/pool/model-history/last-success.ts";
+import { importAccountReference } from "../../src/pool/model-history/import-account-reference.ts";
 import { accountAuthority, full, input, pool, seriesFixture } from "./series-fixture.ts";
 
 const owner = "fixture-owner";
@@ -33,7 +34,9 @@ test("optional account mapping preserves unmapped records and immutable event id
   assert.equal(Object.hasOwn(plain, "accountMappings"), false);
   const native = await accountAuthority();
   const mapped = await parseUsageImport({ ...payload, accountMappings: [mapping] }, context);
-  assert.deepEqual(mapped.records, [{ ...plain.records[0]!, account: native.visible }]);
+  assert.deepEqual(mapped.records, [
+    { ...plain.records[0]!, account: importAccountReference(native.visible) },
+  ]);
   assert.notEqual(mapped.digest, plain.digest);
   const unrelated = await parseUsageImport(
     { ...payload, accountMappings: [{ ...mapping, sourceAccountRef: "c".repeat(64) }] },
@@ -126,7 +129,13 @@ test("mapped imports feed account counts, ticks, success, window tokens and last
       "omitting the map cannot replace mapped content",
     );
     const native = await accountAuthority();
-    await insert({ account: native.visible, failed: false, attribution: "unknown" });
+    await insert({
+      account: native.visible,
+      failed: false,
+      attribution: "unknown",
+      provider: "foreign-provider",
+      model: "foreign-model",
+    });
     const selected = {
       ...input,
       from: "2025-12-26T00:00:00Z",
@@ -180,7 +189,7 @@ test("mapped imports feed account counts, ticks, success, window tokens and last
     );
 
     await insert({
-      account: native.hidden,
+      account: importAccountReference(native.hidden),
       attribution: "import-owner",
       provider: "private-provider-sentinel",
       totalTokens: "999999",
@@ -194,5 +203,36 @@ test("mapped imports feed account counts, ticks, success, window tokens and last
     assert.equal(other.buckets[0]!.requests, 1);
     assert.equal(Object.hasOwn(other.buckets[0]!, "tokens"), false);
     assert.doesNotMatch(JSON.stringify(privateSeries), /private-provider-sentinel|999999/);
+    for (const unavailable of [
+      { ...native.authority, mappingProven: false },
+      { ...native.authority, accounts: [] },
+      { ...native.authority, accounts: [{ account: "saved-visible", history: ["e".repeat(64)] }] },
+    ]) {
+      const fallback = await poolUsageSeries(
+        db,
+        { ...input, by: ["account", "provider", "model"] },
+        unavailable,
+      );
+      const redacted = fallback.groups.filter(
+        (group) => group.key.account === "unmapped" && !Object.hasOwn(group.buckets[0]!, "tokens"),
+      );
+      assert.equal(
+        redacted.flatMap((group) => group.buckets).reduce((n, bucket) => n + bucket.requests, 0),
+        3,
+      );
+      assert.doesNotMatch(JSON.stringify(fallback), /private-provider-sentinel|999999/);
+      assert.ok(
+        fallback.groups
+          .filter((group) => group.key.model === "fixture-model")
+          .every((group) => group.buckets.every((bucket) => bucket.requests === 1)),
+        "ordinary foreign import details remain unchanged",
+      );
+      const latest = await lastSuccessAt(
+        db,
+        { pool, accounts: ["saved-visible"] },
+        { ...unavailable, accounts: [{ account: "saved-visible", history: ["e".repeat(64)] }] },
+      );
+      assert.equal(latest.accounts[0]!.lastSuccessAt, null);
+    }
   });
 });

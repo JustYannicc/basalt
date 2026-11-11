@@ -1,4 +1,5 @@
 import { digest } from "../backend-users.ts";
+import { importAccountReference } from "./import-account-reference.ts";
 import {
   historyObject,
   identifier,
@@ -67,7 +68,9 @@ export async function mapImportAccounts(
           [
             await reference(source, "account", mapping.sourceAccountRef),
             {
-              account: await reference(home, "account", mapping.targetAccountId),
+              account: importAccountReference(
+                (await reference(home, "account", mapping.targetAccountId))!,
+              ),
               provider: mapping.provider,
             },
           ] as const,
