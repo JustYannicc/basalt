@@ -167,6 +167,22 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /metadata-only collection regressions pass on the new pin/,
         );
+      } else if (
+        patch.identity === "cliproxy-home-dispatch-timing" ||
+        patch.identity === "cliproxy-node-dispatch-timing"
+      ) {
+        const home = patch.identity === "cliproxy-home-dispatch-timing";
+        assert.equal(name, home ? "home" : "node");
+        assert.equal(
+          patch.file,
+          home ? "0509-home-dispatch-timing.patch" : "0512-node-dispatch-timing.patch",
+        );
+        assert.match(patch.retirement.requires, /same closed stage timings/);
+        assert.match(
+          patch.retirement.requires,
+          /success, failure, privacy, duration-bound and real-child projection regressions/,
+        );
+        assert.match(patch.retirement.requires, /without changing dispatch behavior/);
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&
