@@ -93,17 +93,25 @@ diff --git a/e2e/tests/native-grants.spec.ts b/e2e/tests/native-grants.spec.ts
  import { deployMcpApp } from "../support/mcp-app.ts";
  import { appsManifest } from "../support/apps-release.ts";
 -import { App } from "../support/contracts.ts";
-+import { App, Resource } from "../support/contracts.ts";
++import { App, Inventory, Resource } from "../support/contracts.ts";
 +import { keyProvider } from "../support/app-links.ts";
  import { McpClient } from "../support/mcp-client.ts";
  import {
    approveNative,
-@@ -17,6 +18,83 @@
+@@ -17,6 +18,91 @@
  import { serverControl } from "../support/server-control.ts";
  import { scenarios } from "../test-plan.ts";
  
++/** What a device's inventory read returns; the leak checks scan the raw JSON, not this. */
++const DeviceInventory = Schema.Struct({
++  ...Inventory.fields,
++  accounts: Schema.Array(Schema.Unknown),
++  appLinks: Schema.Array(Schema.Unknown),
++  accountCounts: Schema.Array(Schema.Struct({ app: Schema.String, count: Schema.Number })),
++});
++
 +/**
-+ * Apps a device may and may not discover: the device owner's private app with his own account, a
++ * Apps a device may and may not discover: the device owner's private app with their own account, a
 + * member's private app whose account carries synthetic secret markers, and a member's app shared
 + * with everyone.
 + */
@@ -182,7 +190,7 @@ diff --git a/e2e/tests/native-grants.spec.ts b/e2e/tests/native-grants.spec.ts
  layer(HostedLive, { excludeTestServices: true })("Native grants", (it) => {
    it.effect(scenarios.nativeGrantLifecycle.title, (context) =>
      withHostedCase(
-@@ -75,15 +153,77 @@
+@@ -75,15 +161,81 @@
          expect(access.policy.toolsOrganization).toBe(actors.organization.id);
          expect(access.id.startsWith("native:")).toBe(true);
          const prefix = `/api/organizations/${actors.organization.id}`;
@@ -196,7 +204,7 @@ diff --git a/e2e/tests/native-grants.spec.ts b/e2e/tests/native-grants.spec.ts
 +          p.headers(tokens.access_token),
 +        );
 +        expect(inventory.status, JSON.stringify(inventory.body)).toBe(200);
-+        expect((inventory.body as { readonly accounts: readonly unknown[] }).accounts).toEqual([]);
++        expect((yield* body(DeviceInventory, inventory)).accounts).toEqual([]);
          expect(
            (yield* p.api.request(
              p.anonymous,
@@ -218,28 +226,24 @@ diff --git a/e2e/tests/native-grants.spec.ts b/e2e/tests/native-grants.spec.ts
 +          undefined,
 +          p.headers(tokens.access_token),
 +        );
-+        expect(deviceInventory.status).toBe(200);
-+        const seen = deviceInventory.body as {
-+          readonly apps: readonly { readonly id: string }[];
-+          readonly accounts: readonly unknown[];
-+          readonly links: readonly { readonly app: string; readonly account: string }[];
-+          readonly appLinks: readonly unknown[];
-+          readonly accountCounts: readonly { readonly app: string; readonly count: number }[];
-+        };
++        expect(deviceInventory.status, JSON.stringify(deviceInventory.body)).toBe(200);
++        const seen = yield* body(DeviceInventory, deviceInventory);
 +        const deviceApps = seen.apps.map((app) => app.id).sort();
 +        expect(deviceApps).toContain(fixture.ownerPrivate);
 +        expect(deviceApps).toContain(fixture.memberShared);
 +        expect(deviceApps).not.toContain(fixture.memberPrivate);
-+        const web = (yield* p.api.request(actors.owner, "GET", `${prefix}/inventory`)).body as {
-+          readonly apps: readonly { readonly id: string }[];
-+          readonly links: readonly { readonly app: string; readonly account: string }[];
-+        };
++        const web = yield* body(
++          Inventory,
++          yield* p.api.request(actors.owner, "GET", `${prefix}/inventory`),
++        );
 +        expect(deviceApps).toEqual(web.apps.map((app) => app.id).sort());
 +        expect(seen.accounts).toEqual([]);
 +        expect(seen.appLinks).toEqual([]);
 +        // Links are exactly the person's own, as their web inventory lists them.
 +        const sortLinks = (links: readonly { readonly app: string; readonly account: string }[]) =>
-+          [...links].sort((a, b) => `${a.app}${a.account}`.localeCompare(`${b.app}${b.account}`));
++          [...links].sort((a, b) =>
++            `${a.app}\u0000${a.account}`.localeCompare(`${b.app}\u0000${b.account}`),
++          );
 +        expect(sortLinks(seen.links)).toEqual(sortLinks(web.links));
 +        expect(seen.links).toContainEqual({
 +          app: fixture.ownerPrivate,
@@ -247,9 +251,17 @@ diff --git a/e2e/tests/native-grants.spec.ts b/e2e/tests/native-grants.spec.ts
 +        });
 +        expect(seen.links.some((link) => link.app === fixture.memberPrivate)).toBe(false);
 +        expect(seen.accountCounts).toContainEqual({ app: fixture.ownerPrivate, count: 1 });
-+        const raw = JSON.stringify(seen);
-+        for (const marker of [...Object.values(fixture.markers), fixture.memberAccount])
++        expect(seen.accountCounts).toContainEqual({ app: fixture.memberShared, count: 0 });
++        // The raw response, so a leak in a field the schema doesn't know still fails.
++        const raw = JSON.stringify(deviceInventory.body);
++        for (const marker of [
++          ...Object.values(fixture.markers),
++          fixture.memberAccount,
++          fixture.memberPrivate,
++        ])
 +          expect(raw).not.toContain(marker);
++        // Self-host serves one organization, so this names one the grant doesn't. Cloud's binding
++        // to the grant's own organization is the native branch's organization-mismatch refusal.
 +        expect(
 +          (yield* p.api.request(
 +            p.anonymous,
@@ -262,7 +274,7 @@ diff --git a/e2e/tests/native-grants.spec.ts b/e2e/tests/native-grants.spec.ts
          expect(
            (yield* p.api.request(
              p.anonymous,
-@@ -187,6 +327,15 @@
+@@ -187,6 +339,15 @@
          ).toBe(400);
          yield* serverControl("restart");
          expect((yield* body(NativeAccess, yield* p.access(renewed))).policy).toEqual(access.policy);
@@ -278,7 +290,7 @@ diff --git a/e2e/tests/native-grants.spec.ts b/e2e/tests/native-grants.spec.ts
          expect(yield* p.upstream.created).toBe(2);
          expect(
            (yield* p.api.request(
-@@ -197,8 +346,27 @@
+@@ -197,6 +358,16 @@
              p.headers(renewed.access_token),
            )).status,
          ).toBe(200);
@@ -294,19 +306,8 @@ diff --git a/e2e/tests/native-grants.spec.ts b/e2e/tests/native-grants.spec.ts
 +        ).toBe(401);
          expect((yield* p.access(renewed)).status).toBe(401);
          expect((yield* p.refresh(renewed)).status).toBe(400);
-+        expect(
-+          (yield* p.api.request(
-+            p.anonymous,
-+            "GET",
-+            `${prefix}/inventory`,
-+            undefined,
-+            p.headers(renewed.access_token),
-+          )).status,
-+        ).toBe(401);
          expect(
-           (yield* p.api.request(
-             p.anonymous,
-@@ -270,6 +438,16 @@
+@@ -270,6 +441,16 @@
              p.headers(tokens.access_token),
            )).status,
          ).toBe(403);
