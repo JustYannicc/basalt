@@ -1,0 +1,7 @@
+model {
+  extend basalt.clientMobile {
+    metadata {
+      constraint "The foreground phone owns one reconnect attempt at a time across startup, resume, manual reconnect, network events and health checks. Failed native access validation retries with equal jitter and exponential delays capped at thirty seconds. An online transition or restored server health starts validation immediately when idle; automatic recovery waits for active application work to finish and never aborts or replays it. Backgrounding, explicit disconnect and sign-out cancel recovery. Authoritative authentication refusal stops automatic retries; the existing uncertain rotating-refresh guard still requires a fresh sign-in. A reconnect never replays a model request, tool call or approval. Electron supervises a separate headless client and does not use the phone lifecycle controller."
+    }
+  }
+}

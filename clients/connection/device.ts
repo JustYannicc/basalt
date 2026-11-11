@@ -230,14 +230,19 @@ export function deviceConnection(
       await validation?.catch(() => undefined);
       await pending?.catch(() => undefined);
     },
-    reconnect: async () => {
+    reconnect: async (signal = new AbortController().signal) => {
       clearAccess();
       await validation?.catch(() => undefined);
       await pending?.catch(() => undefined);
       const raw = await store.read();
       saved = raw === undefined ? undefined : readDeviceCredentials(JSON.parse(raw));
       state = "connected";
-      await authorize(new AbortController().signal);
+      signal.throwIfAborted();
+      // Reconnect owns this validation, so backgrounding can cancel its network reads.
+      validation = readAccess(AbortSignal.any([signal, validationAbort.signal])).finally(() => {
+        validation = undefined;
+      });
+      await validation;
     },
     signOut: async () => {
       epoch++;

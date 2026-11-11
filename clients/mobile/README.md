@@ -4,7 +4,7 @@ Use your Signalbox model pool and connected tools from an iPhone or Android phon
 
 Try a model streams a reply from your pool. Find a tool searches connected apps, shows a tool's input type and accepts its JSON input. Calls that need approval or more input pause for your answer. An interrupted call is never repeated automatically. Check its app before starting it again.
 
-Backgrounding stops active work. Returning checks the saved grant. Disconnect keeps sign-in saved; Sign out removes it locally. Revoke this phone removes its server access. These actions cannot undo a tool write that already happened.
+Backgrounding stops active work. Returning checks the saved grant and retries automatically while the app is open if the connection is interrupted. Reconnect checks it immediately. Disconnect keeps sign-in saved; Sign out removes it locally. Revoke this phone removes its server access. These actions cannot undo a tool write that already happened.
 
 ## Development
 
