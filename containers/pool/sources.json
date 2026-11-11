@@ -126,7 +126,7 @@
         {
           "identity": "cliproxy-home-usage-credits",
           "file": "0506-home-usage-credits.patch",
-          "sha256": "d9bc916aa21c55b720453c03cab11c4dde55fa8610e90accecf239b60d12ceac",
+          "sha256": "4c1f8849134581300164946f50da7281736fde851229803d19808983bf3554c6",
           "retirement": {
             "mode": "manual",
             "requires": "Retire only after the pinned source preserves credit observations, pool-owned policy and plan-before-affinity selection, passes the never-policy and retained WebSocket turn proofs, and preserves existing schema rows through additive upgrades."

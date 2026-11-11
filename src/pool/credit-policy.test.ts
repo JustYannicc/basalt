@@ -23,6 +23,12 @@ function fixture() {
       return Response.json({
         usageCreditPolicy: groups[0]!.usage_credit_policy,
         accounts: {
+          "unknown-home-id": {
+            use: "unknown",
+            eligible: true,
+            reason: "usage_unknown",
+            policy: groups[0]!.usage_credit_policy,
+          },
           "private-home-id": {
             use: "credits",
             eligible: true,
@@ -44,7 +50,20 @@ function fixture() {
 test("policy save requires exact Home readback and stays per pool", async () => {
   const f = fixture();
   await setPoolCreditPolicy(f.home, "pool", "never");
-  assert.equal((await poolCreditRouting(f.home, "pool")).usageCreditPolicy, "never");
+  const routing = await poolCreditRouting(f.home, "pool");
+  assert.equal(routing.usageCreditPolicy, "never");
+  assert.deepEqual(routing.accounts["private-home-id"], {
+    use: "credits",
+    eligible: false,
+    reason: "credit_policy_never",
+    policy: "never",
+  });
+  assert.deepEqual(routing.accounts["unknown-home-id"], {
+    use: "unknown",
+    eligible: false,
+    reason: "credit_policy_never",
+    policy: "never",
+  });
   assert.equal((await poolCreditRouting(f.home, "other")).usageCreditPolicy, "last_resort");
   f.refuse();
   await assert.rejects(setPoolCreditPolicy(f.home, "pool", "last_resort"));

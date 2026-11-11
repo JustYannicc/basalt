@@ -62,7 +62,7 @@ export async function poolCreditRouting(client: HomeClient, pool: string) {
         ...value,
         policy,
         ...(value.use === "credits" || value.use === "unknown"
-          ? { use: "blocked", eligible: false, reason: "credit_policy_never" }
+          ? { eligible: false, reason: "credit_policy_never" }
           : {}),
       };
     }

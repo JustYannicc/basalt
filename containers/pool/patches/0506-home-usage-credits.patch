@@ -329,10 +329,10 @@ index 67493a9..9580131 100644
  		if errResetCredits != nil {
 diff --git a/internal/cluster/usage_credits.go b/internal/cluster/usage_credits.go
 new file mode 100644
-index 0000000..e0123b8
+index 0000000..2137a0d
 --- /dev/null
 +++ b/internal/cluster/usage_credits.go
-@@ -0,0 +1,257 @@
+@@ -0,0 +1,256 @@
 +package cluster
 +
 +import (
@@ -582,7 +582,6 @@ index 0000000..e0123b8
 +			}
 +		}
 +		if policy == "never" && tier > 0 && tier < 3 {
-+			value.Use = "blocked"
 +			value.Eligible = false
 +			value.Reason = "credit_policy_never"
 +		}
@@ -681,10 +680,10 @@ index 0000000..9296ff2
 +}
 diff --git a/internal/cluster/usage_credits_test.go b/internal/cluster/usage_credits_test.go
 new file mode 100644
-index 0000000..ebe262e
+index 0000000..ed36d87
 --- /dev/null
 +++ b/internal/cluster/usage_credits_test.go
-@@ -0,0 +1,34 @@
+@@ -0,0 +1,109 @@
 +package cluster
 +
 +import (
@@ -717,6 +716,81 @@ index 0000000..ebe262e
 +	plan.CredentialType = "provider_api_key"
 +	if usageCreditFundingTier(plan, "gpt-5.5", now) != 0 {
 +		t.Fatal("subscription credit policy changed API-key billing")
++	}
++}
++
++func TestUsageCreditPoolPolicyIsolationAndModelGroups(t *testing.T) {
++	repo := newCredentialFoundationTestRepository(t)
++	ctx := t.Context()
++	allow, errAllow := repo.CreateChannelGroup(ctx, "allow", false)
++	if errAllow != nil {
++		t.Fatal(errAllow)
++	}
++	deny, errDeny := repo.CreateChannelGroup(ctx, "deny", false)
++	if errDeny != nil {
++		t.Fatal(errDeny)
++	}
++	never := "never"
++	if _, errUpdate := repo.UpdateChannelGroup(ctx, deny.ID, ChannelGroupUpdate{UsageCreditPolicy: &never}); errUpdate != nil {
++		t.Fatal(errUpdate)
++	}
++	for name, channels := range map[string][]uint{"allow-key": {allow.ID}, "deny-key": {deny.ID}, "mixed-key": {allow.ID, deny.ID}} {
++		if _, errKey := repo.CreateAPIKey(ctx, APIKeyEntryUpdate{APIKey: name, Channels: &channels}); errKey != nil {
++			t.Fatal(errKey)
++		}
++	}
++	for key, want := range map[string]string{"allow-key": "last_resort", "deny-key": "never", "mixed-key": "never"} {
++		got, errPolicy := repo.usageCreditPolicyForAPIKey(ctx, key, "gpt")
++		if errPolicy != nil || got != want {
++			t.Fatalf("%s policy=(%s,%v), want %s", key, got, errPolicy, want)
++		}
++	}
++	models, errModels := repo.CreateModelGroup(ctx, "restricted-models", false)
++	if errModels != nil {
++		t.Fatal(errModels)
++	}
++	if _, errDetail := repo.CreateModelGroupDetail(ctx, models.ID, "gpt", []uint{deny.ID}); errDetail != nil {
++		t.Fatal(errDetail)
++	}
++	groups, channels := []uint{models.ID}, []uint{allow.ID}
++	if _, errKey := repo.CreateAPIKey(ctx, APIKeyEntryUpdate{APIKey: "model-key", Channels: &channels, ModelGroups: &groups}); errKey != nil {
++		t.Fatal(errKey)
++	}
++	for model, want := range map[string]string{"gpt": "never", "other": "last_resort"} {
++		got, errPolicy := repo.usageCreditPolicyForAPIKey(ctx, "model-key", model)
++		if errPolicy != nil || got != want {
++			t.Fatalf("%s policy=(%s,%v), want %s", model, got, errPolicy, want)
++		}
++	}
++}
++
++func TestUsageCreditFundingUsesApplicableFreshWindows(t *testing.T) {
++	now := time.Unix(200, 0).UTC()
++	before, after := now.Add(-time.Minute), now.Add(time.Minute)
++	positive, zero := .5, 0.0
++	sonnet, opus, spark := "sonnet", "opus", "codex_spark"
++	item := QuotaCredentialSnapshot{Provider: "claude", CredentialType: "oauth", CredentialStatus: "enabled", Freshness: "fresh", ObservedAt: &before, Windows: []QuotaWindow{
++		{ID: "claude-five-hour", Scope: "account", RemainingRatio: &positive, ObservedAt: before, ExpiresAt: &after},
++		{ID: "claude-seven-day-sonnet", Scope: "model", ScopeID: &sonnet, RemainingRatio: &zero, ObservedAt: before, ExpiresAt: &after},
++		{ID: "claude-seven-day-opus", Scope: "model", ScopeID: &opus, RemainingRatio: &positive, ObservedAt: before, ExpiresAt: &after},
++	}}
++	if got := usageCreditFundingTier(item, "claude-sonnet-4-6", now); got != 2 {
++		t.Fatalf("Sonnet exhausted plan classified %d", got)
++	}
++	if got := usageCreditFundingTier(item, "claude-opus-4-7", now); got != 0 {
++		t.Fatalf("Sonnet exhaustion affected Opus: %d", got)
++	}
++	item.Windows[2].ExpiresAt = &before
++	if got := usageCreditFundingTier(item, "claude-opus-4-7", now); got != 2 {
++		t.Fatalf("stale Opus window proved plan: %d", got)
++	}
++	item.Provider = "codex"
++	item.Windows = []QuotaWindow{{ID: "codex-5-hour", Scope: "account", RemainingRatio: &positive, ObservedAt: before, ExpiresAt: &after}, {ID: "codex-spark-weekly", Scope: "model", ScopeID: &spark, RemainingRatio: &zero, ObservedAt: before, ExpiresAt: &after}}
++	if got := usageCreditFundingTier(item, "gpt-5.5-spark", now); got != 2 {
++		t.Fatalf("Spark exhaustion ignored: %d", got)
++	}
++	if got := usageCreditFundingTier(item, "gpt-5.5", now); got != 0 {
++		t.Fatalf("Spark exhaustion affected ordinary model: %d", got)
 +	}
 +}
 diff --git a/internal/home/runtime.go b/internal/home/runtime.go

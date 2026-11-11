@@ -571,7 +571,7 @@ index 98e8a94..ffa30e0 100644
      AccountLinkRequired: () => "Save the account, then link it to this pool to finish connecting.",
      ProviderAppConnectionRequired: () =>
 diff --git a/e2e/support/pool-usage-backend.ts b/e2e/support/pool-usage-backend.ts
-index 3235f2d..02adf18 100644
+index 3235f2d..c8bab2a 100644
 --- a/e2e/support/pool-usage-backend.ts
 +++ b/e2e/support/pool-usage-backend.ts
 @@ -5,7 +5,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
@@ -633,7 +633,7 @@ index 3235f2d..02adf18 100644
 +              ...account,
 +              policy,
 +              ...(policy === "never" && (account.use === "credits" || account.use === "unknown")
-+                ? { use: "blocked", eligible: false, reason: "credit_policy_never" }
++                ? { eligible: false, reason: "credit_policy_never" }
 +                : {}),
 +            },
 +          ]),
