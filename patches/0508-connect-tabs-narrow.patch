@@ -59,7 +59,7 @@ diff --git a/packages/ui/src/implementation/dashboard/connect.tsx b/packages/ui/
 diff --git a/e2e/tests/pool-setup-connect.spec.ts b/e2e/tests/pool-setup-connect.spec.ts
 --- a/e2e/tests/pool-setup-connect.spec.ts
 +++ b/e2e/tests/pool-setup-connect.spec.ts
-@@ -613,6 +613,84 @@
+@@ -613,6 +613,86 @@
      ),
    );
  
@@ -132,8 +132,10 @@ diff --git a/e2e/tests/pool-setup-connect.spec.ts b/e2e/tests/pool-setup-connect
 +            // Wider than its column, the strip must scroll for touch and mouse, not just clip.
 +            if (measured.stripScroll > measured.stripClient)
 +              expect(["auto", "scroll"], detail).toContain(measured.stripOverflow);
-+            if (width === 1280)
-+              expect(measured.stripScroll, detail).toBeLessThanOrEqual(measured.stripClient);
++            // At 390 the methods do not fit, so the in-strip checks above really exercise scrolling.
++            if (width === 390)
++              expect(measured.stripScroll, detail).toBeGreaterThan(measured.stripClient);
++            else expect(measured.stripScroll, detail).toBeLessThanOrEqual(measured.stripClient);
 +          }
 +          yield* browser.checkpoint(`Connect at ${width} px`);
 +        }
