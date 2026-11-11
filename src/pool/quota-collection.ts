@@ -2,6 +2,8 @@ import { quotaProviderIds } from "./provider-accounts/capabilities.ts";
 import type { HomeClient } from "./control.ts";
 import { digest } from "./backend-users.ts";
 import { ControlFailure, object, post, unavailable, type Json } from "./json.ts";
+import { traceCollectionRequest } from "./quota-collection-request.ts";
+import type { CollectionRequest } from "../../apps/pool/collection-diagnostic-contract.ts";
 
 interface Storage {
   get<T>(key: string): Promise<T | undefined>;
@@ -144,6 +146,9 @@ export class QuotaCollection {
     timeout: AbortSignal,
   ): Promise<Json | null> {
     const signal = callerSignal ? AbortSignal.any([callerSignal, timeout]) : timeout;
+    const requestedAt = this.now();
+    let trace: ReturnType<typeof traceCollectionRequest>;
+    let submissionUnconfirmed = false;
     let value: Json | null = null,
       retained: Json | null = null,
       storageFailed = false;
@@ -156,10 +161,22 @@ export class QuotaCollection {
         throw error;
       }
     };
+    const record = (
+      result: Json | null,
+      disposition: CollectionRequest["disposition"],
+      nextAllowed?: number,
+    ) => {
+      const current = trace;
+      return current
+        ? stored(() => current.record(result, disposition, nextAllowed))
+        : Promise.resolve(result);
+    };
     try {
       value = await this.snapshot(id, signal);
       retained = value;
-      if (!force && (!value || !needsQuotaCollection(value, this.now()))) return value;
+      trace = traceCollectionRequest(value, id, this.storage, requestedAt);
+      if (!force && (!value || !needsQuotaCollection(value, this.now())))
+        return record(value, "cached_fresh");
       const collection = value ? collectionOf(value) : {};
       const credential = value && object(value.credential) ? value.credential : value;
       const windows = value?.windows ?? credential?.primary_windows;
@@ -169,9 +186,10 @@ export class QuotaCollection {
         windows.length > 0 &&
         windows.every((window) => object(window) && window.is_unlimited === true)
       )
-        return value;
+        return record(value, "unlimited");
       const retryAt = instant(collection.next_probe_at);
-      if (Number.isFinite(retryAt) && retryAt > this.now()) return value;
+      if (Number.isFinite(retryAt) && retryAt > this.now())
+        return record(value, "home_backoff", retryAt);
       const previous = instant(collection.last_attempt_at);
       const key = `quota-collect-v1:${await digest(id)}`;
       const requested = await stored(() => this.storage.get<number>(key));
@@ -186,10 +204,13 @@ export class QuotaCollection {
             requested !== undefined &&
             this.now() - requested < checkBudget &&
             (!Number.isFinite(previous) || requested > previous);
-          if (!awaitCompletion || !justRequested) return value;
+          if (!awaitCompletion || !justRequested)
+            return record(value, "pool_cap", last + quotaCollectInterval);
         } else {
           // Persist before sending: a transport failure can leave an accepted job behind.
           await stored(() => this.storage.put(key, this.now()));
+          await record(value, "submission_unconfirmed");
+          submissionUnconfirmed = true;
           const result = await this.client.data("/quota/collect", {
             ...post({ credential_ids: [id] }),
             signal,
@@ -200,6 +221,9 @@ export class QuotaCollection {
             !Number.isInteger(result.accepted)
           )
             return unavailable();
+          submissionUnconfirmed = false;
+          trace?.accepted(result.accepted > 0);
+          value = await record(value, result.accepted > 0 ? "submitted" : "home_already_queued");
           this.client.dropQuotaDetail(id);
           if (!awaitCompletion) return value;
         }
@@ -220,7 +244,8 @@ export class QuotaCollection {
           statusOf(current),
           current.error,
         ]);
-        if (after !== before && statusOf(current) !== "collecting") return value;
+        if (after !== before && statusOf(current) !== "collecting")
+          return record(value, "home_completed");
         if (!awaitCompletion) return value;
         await this.wait(500, signal);
       }
@@ -230,7 +255,12 @@ export class QuotaCollection {
       // previous reading. A caller that went away, or a storage error, still throws.
       const disconnected = callerSignal?.aborted === true && !deadline(callerSignal);
       if (!storageFailed && !disconnected && (timeout.aborted || deadline(callerSignal)))
-        return stillCollecting(retained);
+        return record(
+          stillCollecting(retained),
+          submissionUnconfirmed ? "submission_unconfirmed" : "home_pending",
+        );
+      if (!storageFailed)
+        await record(value, submissionUnconfirmed ? "submission_unconfirmed" : "read_failed");
       throw error;
     }
   }

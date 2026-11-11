@@ -1,0 +1,706 @@
+diff --git a/docs/management/api.md b/docs/management/api.md
+--- a/docs/management/api.md
++++ b/docs/management/api.md
+@@ -3065,7 +3065,9 @@
+ 
+ Usage activity is attributed to the active DB credential resolved from `auth_index`, so a delegated executor's reported provider does not suppress scheduled collection; provider-specific passive observations still require the reported provider to match the credential provider. When a scheduled scan finds an expired `collecting` lease without a recoverable recent-activity watermark, it clears the lease and returns the collection to `idle` without issuing another upstream request.
+ 
+-`collection.diagnostic` is an optional read-only diagnostic for the latest local Claude or Codex collection attempt. It contains `attempted_at` (UTC timestamp), `provider`, `response_received` and `json_valid`. Claude includes `five_hour`; Codex includes `primary_window` and `secondary_window`. Each field object contains only booleans: `present`, `null`, `quantity_null`, `quantity_valid` and `five_hour` (the field represents a five-hour window; for Codex its reported duration is 18000 seconds). Explicit zero is valid without a reset; absent or null quantities remain unknown. No response bodies, quantities, reset values or credentials are included.
++`collection.diagnostic` is an optional read-only diagnostic for the latest local Claude, Codex or xAI collector invocation. It contains `attempted_at` (UTC timestamp), `provider`, `response_received` and `json_valid`. Claude includes `five_hour`; Codex includes `primary_window` and `secondary_window`. Each field object contains only booleans: `present`, `null`, `quantity_null`, `quantity_valid` and `five_hour` (the field represents a five-hour window; for Codex its reported duration is 18000 seconds). Explicit zero is valid without a reset; absent or null quantities remain unknown. No response bodies, quantities, reset values or credentials are included.
++
++For xAI, `xai.monthly.fields` and `xai.weekly.fields` contain only fixed schema paths and `present`, `null` and `numeric` flags. Numeric means a finite representation accepted by the quota parser, including numeric strings and one `val` wrapper. Wildcard product paths report any presence/null and require every product value to be numeric. `xai.phase`, `vendor_call_started`, `probe_finished`, `snapshot_write_attempted` and `snapshot_persisted` distinguish a forced claim refusal, an HTTP client attempt and a saved or refused completion. `attempted_at` is the Home collector invocation time, never the SDK request or a retained failure time. Scheduled claim refusals do not replace a completed probe diagnostic.
+ 
+ The diagnostic is available before stdout logging completes and retains one latest attempt per live credential. It is process-local and omitted until a supported collection attempt, after a Home restart, or for other providers. `attempted_at` identifies the diagnostic attempt independently of the saved quota snapshot; it does not assert that the snapshot write succeeded. This field is detail-only and does not initiate a collection.
+ 
+diff --git a/docs/management/api_CN.md b/docs/management/api_CN.md
+--- a/docs/management/api_CN.md
++++ b/docs/management/api_CN.md
+@@ -3057,7 +3057,9 @@
+ 
+ usage 活动归属于通过 `auth_index` 解析出的当前 DB 凭证，因此委托 executor 上报的 Provider 不会阻止定时采集；Provider 专用的被动观测仍要求上报 Provider 与凭证 Provider 一致。定时扫描发现已过期的 `collecting` lease 且没有可恢复的近期活动水位时，会清除 lease 并把采集状态恢复为 `idle`，不会再次请求上游。
+ 
+-`collection.diagnostic` 是可选的只读诊断，记录本进程最近一次 Claude 或 Codex 采集尝试。它包含 `attempted_at`（UTC 时间）、`provider`、`response_received` 和 `json_valid`。Claude 包含 `five_hour`；Codex 包含 `primary_window` 和 `secondary_window`。每个窗口对象仅包含布尔值：`present`、`null`、`quantity_null`、`quantity_valid`、`five_hour`（该字段表示五小时窗口；Codex 报告的时长为 18000 秒）。显式零值无需重置时间也有效；缺失或 null 数量仍表示未知。不包含响应正文、数量、重置值或凭据。
++`collection.diagnostic` 是可选的只读诊断，记录本进程最近一次 Claude、Codex 或 xAI 采集调用。它包含 `attempted_at`（UTC 时间）、`provider`、`response_received` 和 `json_valid`。Claude 包含 `five_hour`；Codex 包含 `primary_window` 和 `secondary_window`。每个窗口对象仅包含布尔值：`present`、`null`、`quantity_null`、`quantity_valid`、`five_hour`（该字段表示五小时窗口；Codex 报告的时长为 18000 秒）。显式零值无需重置时间也有效；缺失或 null 数量仍表示未知。不包含响应正文、数量、重置值或凭据。
++
++xAI 的 `xai.monthly.fields` 和 `xai.weekly.fields` 仅包含固定字段路径及 `present`、`null`、`numeric` 布尔标记。`numeric` 表示额度解析器接受的有限数值形式，包括数字字符串和一层 `val` 包装；产品通配路径记录任意存在或 null，并要求每个产品字段均为数值。`xai.phase`、`vendor_call_started`、`probe_finished`、`snapshot_write_attempted` 和 `snapshot_persisted` 区分强制认领失败、HTTP 客户端调用及保存完成或保存失败。`attempted_at` 是 Home 采集调用时间，不是 SDK 请求时间或旧错误时间。计划扫描未认领时不会替换已完成采集的诊断。
+ 
+ 诊断在 stdout 日志写入完成前即可读取，每个现存凭据保留最近一次尝试。它仅保存在本进程内存中，在首次支持的采集前、Home 重启后或其他 Provider 上省略。`attempted_at` 独立标识诊断尝试，不代表额度快照已成功写入。该字段仅在详情响应中提供，不会触发采集。
+ 
+diff --git a/internal/cluster/basalt_collection_diagnostic.go b/internal/cluster/basalt_collection_diagnostic.go
+--- a/internal/cluster/basalt_collection_diagnostic.go
++++ b/internal/cluster/basalt_collection_diagnostic.go
+@@ -15,19 +15,23 @@
+ 
+ // A closed projection of the source shape, independent of quota quantities and stdout.
+ type QuotaCollectionDiagnostic struct {
+-	AttemptedAt      time.Time           `json:"attempted_at"`
+-	Provider         string              `json:"provider"`
+-	ResponseReceived bool                `json:"response_received"`
+-	JSONValid        bool                `json:"json_valid"`
+-	FiveHour         *QuotaFieldPresence `json:"five_hour,omitempty"`
+-	PrimaryWindow    *QuotaFieldPresence `json:"primary_window,omitempty"`
+-	SecondaryWindow  *QuotaFieldPresence `json:"secondary_window,omitempty"`
++	AttemptedAt      time.Time                `json:"attempted_at"`
++	Provider         string                   `json:"provider"`
++	ResponseReceived bool                     `json:"response_received"`
++	JSONValid        bool                     `json:"json_valid"`
++	FiveHour         *QuotaFieldPresence      `json:"five_hour,omitempty"`
++	PrimaryWindow    *QuotaFieldPresence      `json:"primary_window,omitempty"`
++	SecondaryWindow  *QuotaFieldPresence      `json:"secondary_window,omitempty"`
++	XAI              *XAICollectionDiagnostic `json:"xai,omitempty"`
+ }
+ 
+ // The pool owns durable storage; Home only hands off its latest bounded result.
+ func (r *Repository) RememberQuotaCollectionDiagnostic(id string, diagnostic QuotaCollectionDiagnostic) error {
+-	if diagnostic.AttemptedAt.IsZero() || (diagnostic.Provider != "claude" && diagnostic.Provider != "codex") {
++	if diagnostic.AttemptedAt.IsZero() || (diagnostic.Provider != "claude" && diagnostic.Provider != "codex" && diagnostic.Provider != "xai") {
+ 		return fmt.Errorf("invalid collection diagnostic")
++	}
++	if diagnostic.Provider == "xai" && (diagnostic.XAI == nil || !validXAIPhase(diagnostic.XAI.Phase)) {
++		return fmt.Errorf("invalid xai collection diagnostic")
+ 	}
+ 	r.quotaDiagnosticMu.Lock()
+ 	defer r.quotaDiagnosticMu.Unlock()
+@@ -53,6 +57,7 @@
+ 	return &result
+ }
+ func copyCollectionDiagnostic(value QuotaCollectionDiagnostic) QuotaCollectionDiagnostic {
++	value.XAI = copyXAIDiagnostic(value.XAI)
+ 	if value.FiveHour != nil {
+ 		field := *value.FiveHour
+ 		value.FiveHour = &field
+diff --git a/internal/cluster/basalt_xai_diagnostic.go b/internal/cluster/basalt_xai_diagnostic.go
+new file mode 100644
+--- /dev/null
++++ b/internal/cluster/basalt_xai_diagnostic.go
+@@ -0,0 +1,74 @@
++package cluster
++
++type XAIFieldPresence struct {
++	Present bool `json:"present"`
++	Null    bool `json:"null"`
++	Numeric bool `json:"numeric"`
++}
++
++type XAIResponseDiagnostic struct {
++	ResponseReceived bool                        `json:"response_received"`
++	HTTPOK           bool                        `json:"http_ok"`
++	JSONValid        bool                        `json:"json_valid"`
++	Fields           map[string]XAIFieldPresence `json:"fields"`
++}
++
++type XAICollectionDiagnostic struct {
++	Phase                  string                `json:"phase"`
++	VendorCallStarted      bool                  `json:"vendor_call_started"`
++	ProbeFinished          bool                  `json:"probe_finished"`
++	SnapshotWriteAttempted bool                  `json:"snapshot_write_attempted"`
++	SnapshotPersisted      bool                  `json:"snapshot_persisted"`
++	Monthly                XAIResponseDiagnostic `json:"monthly"`
++	Weekly                 XAIResponseDiagnostic `json:"weekly"`
++}
++
++func validXAIPhase(phase string) bool {
++	switch phase {
++	case "claimed", "claim_failed", "claim_not_acquired", "failure_persisted", "snapshot_persisted", "snapshot_write_failed", "lease_lost":
++		return true
++	default:
++		return false
++	}
++}
++
++var xaiMonthlyFields = []string{
++	"config", "config.monthlyLimit", "config.monthly_limit", "config.used",
++	"config.onDemandCap", "config.on_demand_cap", "config.onDemandUsed", "config.on_demand_used",
++}
++var xaiWeeklyFields = []string{
++	"config", "config.creditUsagePercent", "config.credit_usage_percent",
++	"config.currentPeriod", "config.current_period", "config.productUsage", "config.product_usage",
++	"config.productUsage[].usagePercent", "config.productUsage[].usage_percent",
++	"config.product_usage[].usagePercent", "config.product_usage[].usage_percent",
++}
++
++func NewXAIMonthlyDiagnostic() XAIResponseDiagnostic { return xaiResponseFields(xaiMonthlyFields) }
++func NewXAIWeeklyDiagnostic() XAIResponseDiagnostic  { return xaiResponseFields(xaiWeeklyFields) }
++
++func xaiResponseFields(paths []string) XAIResponseDiagnostic {
++	fields := make(map[string]XAIFieldPresence, len(paths))
++	for _, path := range paths {
++		fields[path] = XAIFieldPresence{}
++	}
++	return XAIResponseDiagnostic{Fields: fields}
++}
++
++func copyXAIDiagnostic(value *XAICollectionDiagnostic) *XAICollectionDiagnostic {
++	if value == nil {
++		return nil
++	}
++	copy := *value
++	copy.Monthly = copyXAIResponse(value.Monthly, xaiMonthlyFields)
++	copy.Weekly = copyXAIResponse(value.Weekly, xaiWeeklyFields)
++	return &copy
++}
++
++func copyXAIResponse(value XAIResponseDiagnostic, paths []string) XAIResponseDiagnostic {
++	copy := value
++	copy.Fields = make(map[string]XAIFieldPresence, len(paths))
++	for _, path := range paths {
++		copy.Fields[path] = value.Fields[path]
++	}
++	return copy
++}
+diff --git a/internal/cluster/basalt_xai_diagnostic_test.go b/internal/cluster/basalt_xai_diagnostic_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/cluster/basalt_xai_diagnostic_test.go
+@@ -0,0 +1,29 @@
++package cluster
++
++import (
++	"encoding/json"
++	"strings"
++	"testing"
++)
++
++func TestXAIDiagnosticCopiesOnlyFixedFieldFlags(t *testing.T) {
++	original := &XAICollectionDiagnostic{Phase: "claimed", Monthly: NewXAIMonthlyDiagnostic(), Weekly: NewXAIWeeklyDiagnostic()}
++	original.Monthly.Fields["private-secret"] = XAIFieldPresence{Present: true}
++	original.Monthly.Fields["config.used"] = XAIFieldPresence{Present: true, Numeric: true}
++	copy := copyXAIDiagnostic(original)
++	original.Monthly.Fields["config.used"] = XAIFieldPresence{}
++	if !copy.Monthly.Fields["config.used"].Numeric {
++		t.Fatal("writer mutation changed the retained flags")
++	}
++	copy.Weekly.Fields["config.creditUsagePercent"] = XAIFieldPresence{Present: true}
++	if original.Weekly.Fields["config.creditUsagePercent"].Present {
++		t.Fatal("reader mutation changed the source flags")
++	}
++	raw, _ := json.Marshal(copy)
++	if strings.Contains(string(raw), "private-secret") {
++		t.Fatal("unknown field name escaped the fixed projection")
++	}
++	if validXAIPhase("private-secret") || !validXAIPhase("snapshot_write_failed") {
++		t.Fatal("phase projection is not closed")
++	}
++}
+diff --git a/internal/cluster/management/basalt_xai_diagnostic_test.go b/internal/cluster/management/basalt_xai_diagnostic_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/cluster/management/basalt_xai_diagnostic_test.go
+@@ -0,0 +1,57 @@
++package management
++
++import (
++	"context"
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/gin-gonic/gin"
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++)
++
++func TestXAIDiagnosticDetailHTTP(t *testing.T) {
++	h, closeRepo := newUsageObservabilityTestHandler(t)
++	defer closeRepo()
++	at := time.Date(2026, 11, 10, 13, 0, 0, 0, time.UTC)
++	auth := &coreauth.Auth{ID: "field-fixture", Index: "field-fixture", Provider: "xai", Status: coreauth.StatusActive, Metadata: map[string]any{"type": "xai", "access_token": "private-token"}, CreatedAt: at, UpdatedAt: at}
++	if _, err := h.repo.UpsertAuth(context.Background(), auth, "test"); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := h.repo.UpsertQuotaSnapshot(t.Context(), cluster.QuotaSnapshotWrite{CredentialID: auth.ID, QuotaStatus: "unknown", CollectionStatus: "failed", Source: "active_probe", ObservedAt: &at}); err != nil {
++		t.Fatal(err)
++	}
++	expected := cluster.QuotaCollectionDiagnostic{AttemptedAt: at, Provider: "xai", XAI: &cluster.XAICollectionDiagnostic{Phase: "snapshot_write_failed", VendorCallStarted: true, ProbeFinished: true, SnapshotWriteAttempted: true, Monthly: cluster.NewXAIMonthlyDiagnostic(), Weekly: cluster.NewXAIWeeklyDiagnostic()}}
++	expected.XAI.Monthly.ResponseReceived = true
++	expected.XAI.Monthly.HTTPOK = true
++	expected.XAI.Monthly.JSONValid = true
++	expected.XAI.Monthly.Fields["config.used"] = cluster.XAIFieldPresence{Present: true, Null: true}
++	if err := h.repo.RememberQuotaCollectionDiagnostic(auth.ID, expected); err != nil {
++		t.Fatal(err)
++	}
++	gin.SetMode(gin.TestMode)
++	engine := gin.New()
++	engine.GET("/quota/credentials/:credential_id", h.GetQuotaCredential)
++	response := httptest.NewRecorder()
++	engine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/quota/credentials/field-fixture", nil))
++	if response.Code != 200 {
++		t.Fatalf("HTTP %d", response.Code)
++	}
++	var body struct {
++		Collection struct {
++			Diagnostic *cluster.QuotaCollectionDiagnostic `json:"diagnostic"`
++		} `json:"collection"`
++	}
++	if json.Unmarshal(response.Body.Bytes(), &body) != nil || body.Collection.Diagnostic == nil || body.Collection.Diagnostic.XAI == nil || body.Collection.Diagnostic.XAI.Monthly.Fields["config.used"] != expected.XAI.Monthly.Fields["config.used"] {
++		t.Fatal("stored field flags not readable in detail HTTP")
++	}
++	if strings.Contains(response.Body.String(), "private-token") {
++		t.Fatal("credential leaked")
++	}
++	raw, _ := json.Marshal(body.Collection.Diagnostic)
++	t.Log("XAI_DIAGNOSTIC_HTTP " + string(raw))
++}
+diff --git a/internal/quota/basalt_field_diagnostic.go b/internal/quota/basalt_field_diagnostic.go
+--- a/internal/quota/basalt_field_diagnostic.go
++++ b/internal/quota/basalt_field_diagnostic.go
+@@ -17,6 +17,8 @@
+ 	switch provider {
+ 	case "claude":
+ 		d.FiveHour = &cluster.QuotaFieldPresence{}
++	case "xai":
++		d.XAI = &cluster.XAICollectionDiagnostic{Phase: "claimed", Monthly: cluster.NewXAIMonthlyDiagnostic(), Weekly: cluster.NewXAIWeeklyDiagnostic()}
+ 	case "codex":
+ 		d.PrimaryWindow = &cluster.QuotaFieldPresence{}
+ 		d.SecondaryWindow = &cluster.QuotaFieldPresence{}
+diff --git a/internal/quota/basalt_xai_diagnostic.go b/internal/quota/basalt_xai_diagnostic.go
+new file mode 100644
+--- /dev/null
++++ b/internal/quota/basalt_xai_diagnostic.go
+@@ -0,0 +1,112 @@
++package quota
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"math"
++	"strings"
++	"time"
++
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++)
++
++type xaiRequestMarkerKey struct{}
++type xaiRequestMarker struct{ started, received bool }
++
++func (c *Collector) rememberXAIClaim(auth *coreauth.Auth, at time.Time, force bool, phase string) {
++	// Scheduled scans that find a fresh snapshot must not erase a completed probe's fields.
++	if !force || normalizedQuotaProvider(auth.Provider) != "xai" {
++		return
++	}
++	d := newFieldDiagnostic("xai", at)
++	d.XAI.Phase = phase
++	_ = c.repo.RememberQuotaCollectionDiagnostic(auth.ID, *d)
++}
++
++func xaiDiagnostic(ctx context.Context) *cluster.QuotaCollectionDiagnostic {
++	d, _ := ctx.Value(fieldDiagnosticKey{}).(*cluster.QuotaCollectionDiagnostic)
++	if d == nil || d.XAI == nil {
++		return nil
++	}
++	return d
++}
++
++func recordXAIPersistence(ctx context.Context, phase string, persisted bool) {
++	if d := xaiDiagnostic(ctx); d != nil {
++		d.XAI.Phase = phase
++		d.XAI.SnapshotWriteAttempted = true
++		d.XAI.SnapshotPersisted = persisted
++	}
++}
++
++func recordXAIResponse(ctx context.Context, index int, marker xaiRequestMarker, ok bool, body []byte) {
++	d := xaiDiagnostic(ctx)
++	if d == nil {
++		return
++	}
++	d.XAI.VendorCallStarted = d.XAI.VendorCallStarted || marker.started
++	d.ResponseReceived = d.ResponseReceived || marker.received
++	if index > 1 {
++		return
++	}
++	r := &d.XAI.Monthly
++	if index == 1 {
++		r = &d.XAI.Weekly
++	}
++	r.ResponseReceived, r.HTTPOK = marker.received, ok
++	if !ok {
++		return
++	}
++	var root map[string]json.RawMessage
++	r.JSONValid = json.Unmarshal(body, &root) == nil && root != nil
++	if r.JSONValid {
++		for path := range r.Fields {
++			r.Fields[path] = xaiFieldPresence(root, path)
++		}
++	}
++	d.JSONValid = d.XAI.Monthly.JSONValid && d.XAI.Weekly.JSONValid
++}
++
++func xaiFieldPresence(root map[string]json.RawMessage, path string) cluster.XAIFieldPresence {
++	parent, leaf, wildcard := strings.Cut(path, "[].")
++	values := []json.RawMessage{xaiField(root, path)}
++	if wildcard {
++		var products []map[string]json.RawMessage
++		if json.Unmarshal(xaiField(root, parent), &products) != nil {
++			return cluster.XAIFieldPresence{}
++		}
++		values = nil
++		for _, product := range products {
++			values = append(values, product[leaf])
++		}
++	}
++	f := cluster.XAIFieldPresence{Numeric: len(values) > 0}
++	for _, raw := range values {
++		f.Present = f.Present || len(raw) > 0
++		f.Null = f.Null || bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
++		var number flexFloat
++		if len(raw) == 0 || json.Unmarshal(raw, &number) != nil {
++			f.Numeric = false
++			continue
++		}
++		value := flexFloatValue(number)
++		if value == nil || math.IsNaN(*value) || math.IsInf(*value, 0) {
++			f.Numeric = false
++		}
++	}
++	return f
++}
++
++func xaiField(root map[string]json.RawMessage, path string) json.RawMessage {
++	parts := strings.Split(path, ".")
++	for _, part := range parts[:len(parts)-1] {
++		var next map[string]json.RawMessage
++		if json.Unmarshal(root[part], &next) != nil || next == nil {
++			return nil
++		}
++		root = next
++	}
++	return root[parts[len(parts)-1]]
++}
+diff --git a/internal/quota/basalt_xai_diagnostic_test.go b/internal/quota/basalt_xai_diagnostic_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/quota/basalt_xai_diagnostic_test.go
+@@ -0,0 +1,208 @@
++package quota
++
++import (
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++)
++
++func TestXAIDiagnosticNamesFieldsOnRealCollection(t *testing.T) {
++	repo := newCollectorTestRepository(t)
++	seedCollectorProviderAuth(t, repo, "xai-fields", "xai", map[string]any{"type": "xai", "access_token": "private-token"})
++	at := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
++	var calls atomic.Int32
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		calls.Add(1)
++		body := `{"config":{"monthlyLimit":15000,"used":null,"private-token":"never-copy"}}`
++		if r.URL.Path == "/v1/user" {
++			body = `{"subscriptionTier":"SuperGrokPlus"}`
++		} else if r.URL.Query().Get("format") == "credits" {
++			body = `{"config":{"creditUsagePercent":12,"currentPeriod":{"type":"weekly","end":"2030-01-08T00:00:00Z"}}}`
++		}
++		_, _ = w.Write([]byte(body))
++	}))
++	defer server.Close()
++	c := NewCollector(repo, Options{Owner: "xai-fields", Now: func() time.Time { return at }, XAIBillingURL: server.URL + "/v1/billing", XAIProfileURL: server.URL + "/v1/user"})
++	auth, _, err := repo.GetAuth(t.Context(), "xai-fields")
++	if err != nil {
++		t.Fatal(err)
++	}
++	c.collectCredential(t.Context(), auth, true)
++	item, err := repo.GetQuotaCredential(t.Context(), auth.ID, at)
++	if err != nil {
++		t.Fatal(err)
++	}
++	raw, _ := json.Marshal(item.CollectionDiagnostic)
++	var d struct {
++		AttemptedAt time.Time `json:"attempted_at"`
++		XAI         *struct {
++			Phase             string `json:"phase"`
++			VendorCallStarted bool   `json:"vendor_call_started"`
++			SnapshotPersisted bool   `json:"snapshot_persisted"`
++			Monthly           struct {
++				Fields map[string]struct{ Present, Null, Numeric bool } `json:"fields"`
++			} `json:"monthly"`
++		} `json:"xai"`
++	}
++	if json.Unmarshal(raw, &d) != nil || d.XAI == nil {
++		t.Fatal("xAI collection has no field-presence handoff")
++	}
++	used := d.XAI.Monthly.Fields["config.used"]
++	if !d.AttemptedAt.Equal(at) || !used.Present || !used.Null || used.Numeric {
++		t.Fatalf("missing or null amount lost its exact field and attempt: %s", raw)
++	}
++	if calls.Load() != 3 || !d.XAI.VendorCallStarted || !d.XAI.SnapshotPersisted {
++		t.Fatalf("vendor/persistence outcome is hidden: %s", raw)
++	}
++	if strings.Contains(string(raw), "private-token") || strings.Contains(string(raw), "never-copy") || strings.Contains(string(raw), "15000") {
++		t.Fatal("response data escaped the closed diagnostic")
++	}
++}
++
++func TestXAIFieldPresenceDistinguishesAbsentNullAndNumeric(t *testing.T) {
++	for _, tc := range []struct {
++		name, body, path       string
++		present, null, numeric bool
++	}{
++		{"absent", `{"config":{}}`, "config.used", false, false, false},
++		{"null", `{"config":{"used":null}}`, "config.used", true, true, false},
++		{"zero", `{"config":{"used":0}}`, "config.used", true, false, true},
++		{"numeric string", `{"config":{"used":"0"}}`, "config.used", true, false, true},
++		{"wrapped number", `{"config":{"used":{"val":12}}}`, "config.used", true, false, true},
++		{"nested wrapper", `{"config":{"used":{"val":{"val":12}}}}`, "config.used", true, false, false},
++		{"invalid", `{"config":{"used":"private-token"}}`, "config.used", true, false, false},
++		{"snake percentage", `{"config":{"credit_usage_percent":"0"}}`, "config.credit_usage_percent", true, false, true},
++		{"null config", `{"config":null}`, "config", true, true, false},
++		{"product numeric", `{"config":{"productUsage":[{"usagePercent":0}]}}`, "config.productUsage[].usagePercent", true, false, true},
++		{"product missing", `{"config":{"productUsage":[{"usagePercent":0},{}]}}`, "config.productUsage[].usagePercent", true, false, false},
++		{"product null", `{"config":{"productUsage":[{"usagePercent":0},{"usagePercent":null}]}}`, "config.productUsage[].usagePercent", true, true, false},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			var root map[string]json.RawMessage
++			if err := json.Unmarshal([]byte(tc.body), &root); err != nil {
++				t.Fatal(err)
++			}
++			f := xaiFieldPresence(root, tc.path)
++			if f.Present != tc.present || f.Null != tc.null || f.Numeric != tc.numeric {
++				t.Fatalf("wrong field flags: %+v", f)
++			}
++		})
++	}
++}
++
++func TestXAICompletedProbeDiagnosticSurvivesFailureWriteAndLeaseLoss(t *testing.T) {
++	for _, phase := range []string{"failure_persisted", "snapshot_write_failed", "lease_lost"} {
++		t.Run(phase, func(t *testing.T) {
++			repo, db := newCollectorTestRepositoryAndDB(t)
++			id := "xai-persistence"
++			seedCollectorProviderAuth(t, repo, id, "xai", map[string]any{"type": "xai", "access_token": "private-token"})
++			old := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
++			at := old.Add(time.Hour)
++			if _, err := repo.UpsertQuotaSnapshot(t.Context(), cluster.QuotaSnapshotWrite{
++				CredentialID: id, CollectionStatus: "failed", QuotaStatus: "error", Source: "active_probe", LastAttemptAt: &old,
++				Error: &cluster.QuotaCollectionError{Code: "UPSTREAM_RESPONSE_INVALID", Message: "Old safe failure.", OccurredAt: &old},
++			}); err != nil {
++				t.Fatal(err)
++			}
++			if phase == "snapshot_write_failed" {
++				if err := db.Exec(`CREATE TRIGGER fail_xai_completion BEFORE UPDATE ON quota_snapshot WHEN NEW.collection_status = 'failed' BEGIN SELECT RAISE(ABORT, 'synthetic completion failure'); END`).Error; err != nil {
++					t.Fatal(err)
++				}
++			}
++			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				if phase == "lease_lost" && r.URL.Path == "/v1/billing" && r.URL.Query().Get("format") == "" {
++					if err := db.Exec("UPDATE quota_snapshot SET probe_lease_owner = ? WHERE credential_id = ?", "other", id).Error; err != nil {
++						t.Error(err)
++					}
++				}
++				body := `{"config":{"monthlyLimit":15000}}`
++				if r.URL.Path == "/v1/user" {
++					body = `{"subscriptionTier":"SuperGrokPlus"}`
++				}
++				if r.URL.Query().Get("format") == "credits" {
++					body = `{"config":{}}`
++				}
++				_, _ = w.Write([]byte(body))
++			}))
++			defer server.Close()
++			c := NewCollector(repo, Options{Owner: "diagnostic", Now: func() time.Time { return at }, XAIBillingURL: server.URL + "/v1/billing", XAIProfileURL: server.URL + "/v1/user"})
++			auth, _, err := repo.GetAuth(t.Context(), id)
++			if err != nil {
++				t.Fatal(err)
++			}
++			c.collectCredential(t.Context(), auth, true)
++			item, err := repo.GetQuotaCredential(t.Context(), id, at)
++			if err != nil {
++				t.Fatal(err)
++			}
++			d := item.CollectionDiagnostic
++			if d == nil || d.XAI == nil || d.XAI.Phase != phase || !d.AttemptedAt.Equal(at) || !d.XAI.VendorCallStarted || !d.XAI.ProbeFinished || !d.XAI.SnapshotWriteAttempted || d.XAI.SnapshotPersisted != (phase == "failure_persisted") {
++				t.Fatalf("completion visibility lost: %+v", d)
++			}
++			if item.Error == nil || item.Error.OccurredAt == nil {
++				t.Fatal("failure fixture missing")
++			}
++			expected := old
++			if phase == "failure_persisted" {
++				expected = at
++			}
++			if !item.Error.OccurredAt.Equal(expected) {
++				t.Fatalf("wrong saved failure time: %+v", item.Error)
++			}
++			if d.XAI.Monthly.Fields["config.used"].Present {
++				t.Fatal("missing monthly amount became present")
++			}
++		})
++	}
++}
++
++func TestXAIForcedClaimRefusalNamesNoVendorCall(t *testing.T) {
++	for _, phase := range []string{"claim_not_acquired", "claim_failed"} {
++		t.Run(phase, func(t *testing.T) {
++			repo, db := newCollectorTestRepositoryAndDB(t)
++			id := "xai-claim"
++			seedCollectorProviderAuth(t, repo, id, "xai", map[string]any{"type": "xai", "access_token": "private-token"})
++			at := time.Date(2030, 1, 1, 1, 0, 0, 0, time.UTC)
++			claimed, err := repo.ForceClaimEligibleQuotaProbe(t.Context(), id, "other", at, time.Minute)
++			if err != nil || !claimed {
++				t.Fatal("claim fixture failed", err)
++			}
++			if phase == "claim_failed" {
++				if err := db.Exec("DROP TABLE quota_snapshot").Error; err != nil {
++					t.Fatal(err)
++				}
++			}
++			var calls atomic.Int32
++			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { calls.Add(1) }))
++			defer server.Close()
++			c := NewCollector(repo, Options{Owner: "diagnostic", Now: func() time.Time { return at }, XAIBillingURL: server.URL})
++			auth, _, err := repo.GetAuth(t.Context(), id)
++			if err != nil {
++				t.Fatal(err)
++			}
++			c.collectCredential(t.Context(), auth, true)
++			if calls.Load() != 0 {
++				t.Fatal("claim refusal called the vendor")
++			}
++			if phase == "claim_failed" {
++				if err := db.AutoMigrate(&cluster.QuotaSnapshotRecord{}); err != nil {
++					t.Fatal(err)
++				}
++			}
++			item, err := repo.GetQuotaCredential(t.Context(), id, at)
++			if err != nil {
++				t.Fatal(err)
++			}
++			d := item.CollectionDiagnostic
++			if d == nil || d.XAI == nil || d.XAI.Phase != phase || d.XAI.VendorCallStarted || d.XAI.ProbeFinished || d.XAI.SnapshotWriteAttempted {
++				t.Fatalf("claim refusal hidden: %+v", d)
++			}
++		})
++	}
++}
+diff --git a/internal/quota/collector.go b/internal/quota/collector.go
+--- a/internal/quota/collector.go
++++ b/internal/quota/collector.go
+@@ -325,15 +325,20 @@
+ 		claimed, errClaim = c.repo.ClaimEligibleQuotaProbe(ctx, auth.ID, c.options.Owner, now, c.options.LeaseDuration)
+ 	}
+ 	if errClaim != nil {
++		c.rememberXAIClaim(auth, now, force, "claim_failed")
+ 		log.WithError(errClaim).WithField("credential_id", auth.ID).Warn("quota collector: claim failed")
+ 		return
+ 	}
+ 	if !claimed {
++		c.rememberXAIClaim(auth, now, force, "claim_not_acquired")
+ 		return
+ 	}
+ 	diagnostic := newFieldDiagnostic(normalizedQuotaProvider(auth.Provider), now)
+ 	if diagnostic != nil {
+ 		ctx = context.WithValue(ctx, fieldDiagnosticKey{}, diagnostic)
++		if diagnostic.XAI != nil {
++			_ = c.repo.RememberQuotaCollectionDiagnostic(auth.ID, *diagnostic)
++		}
+ 	}
+ 	signal := newCollectionSignal(auth.ID, normalizedQuotaProvider(auth.Provider))
+ 	ctx = context.WithValue(ctx, collectionSignalKey{}, signal)
+@@ -351,6 +356,9 @@
+ 	}
+ 	auth = resolved
+ 	result, errProbe := c.probeCredential(ctx, auth)
++	if diagnostic != nil && diagnostic.XAI != nil {
++		diagnostic.XAI.ProbeFinished = true
++	}
+ 	if errProbe != nil {
+ 		c.failProbe(ctx, auth.ID, errProbe)
+ 		return
+@@ -401,6 +409,7 @@
+ 	if strings.TrimSpace(c.options.HomeID) != "" {
+ 		input.Runtime = &cluster.QuotaRuntime{HomeID: c.options.HomeID, HomeLabel: c.options.HomeID}
+ 	}
++	recordXAIPersistence(ctx, "snapshot_write_failed", false)
+ 	updated, errUpsert := c.repo.UpsertQuotaSnapshot(ctx, input)
+ 	if errUpsert != nil {
+ 		log.WithError(errUpsert).WithField("credential_id", auth.ID).Warn("quota collector: persist snapshot failed")
+@@ -408,10 +417,12 @@
+ 		return
+ 	}
+ 	if !updated {
++		recordXAIPersistence(ctx, "lease_lost", false)
+ 		log.WithField("credential_id", auth.ID).Debug("quota collector: probe completion ignored after lease loss")
+ 		return
+ 	}
+ 	if updated {
++		recordXAIPersistence(ctx, "snapshot_persisted", true)
+ 		log.WithFields(log.Fields{
+ 			"credential_id": auth.ID,
+ 			"provider":      normalizedQuotaProvider(auth.Provider),
+@@ -578,7 +589,14 @@
+ 	// A client factory may share its client across concurrent probes.
+ 	requestClient := *client
+ 	requestClient.CheckRedirect = proxyutil.SameOriginRedirectPolicy(client.CheckRedirect)
++	marker, _ := ctx.Value(xaiRequestMarkerKey{}).(*xaiRequestMarker)
++	if marker != nil {
++		marker.started = true
++	}
+ 	resp, errDo := requestClient.Do(req)
++	if marker != nil {
++		marker.received = resp != nil
++	}
+ 	if errDo != nil {
+ 		return nil, nil, &probeError{code: "UPSTREAM_UNAVAILABLE", message: "Upstream quota endpoint is unavailable.", retryable: true}
+ 	}
+@@ -631,14 +649,17 @@
+ 	if failure.requestID != "" {
+ 		collectionError.RequestID = &failure.requestID
+ 	}
++	recordXAIPersistence(ctx, "snapshot_write_failed", false)
+ 	if errFail := c.repo.FailQuotaProbeAt(ctx, credentialID, c.options.Owner, collectionError, nextProbeAt, now); errFail != nil {
+ 		if errors.Is(errFail, cluster.ErrQuotaProbeLeaseLost) {
++			recordXAIPersistence(ctx, "lease_lost", false)
+ 			log.WithField("credential_id", credentialID).Debug("quota collector: failure ignored after lease loss")
+ 			return
+ 		}
+ 		log.WithError(errFail).WithField("credential_id", credentialID).Warn("quota collector: persist failure failed")
+ 		return
+ 	}
++	recordXAIPersistence(ctx, "failure_persisted", true)
+ 	log.WithFields(log.Fields{
+ 		"credential_id": credentialID,
+ 		"error_code":    failure.code,
+diff --git a/internal/quota/xai.go b/internal/quota/xai.go
+--- a/internal/quota/xai.go
++++ b/internal/quota/xai.go
+@@ -263,18 +263,23 @@
+ 	}
+ 	targets := []string{c.options.XAIBillingURL, xaiWeeklyBillingURL(c.options.XAIBillingURL), xaiSubscriptionURL(c.options.XAIProfileURL)}
+ 	responses := make([]struct {
+-		body []byte
+-		err  *probeError
++		body   []byte
++		err    *probeError
++		marker xaiRequestMarker
+ 	}, len(targets))
+ 	var requests sync.WaitGroup
+ 	for index, target := range targets {
+ 		requests.Add(1)
+ 		go func() {
+ 			defer requests.Done()
+-			responses[index].body, _, responses[index].err = c.probeRequest(ctx, auth, http.MethodGet, target, nil, headers)
++			requestCtx := context.WithValue(ctx, xaiRequestMarkerKey{}, &responses[index].marker)
++			responses[index].body, _, responses[index].err = c.probeRequest(requestCtx, auth, http.MethodGet, target, nil, headers)
+ 		}()
+ 	}
+ 	requests.Wait()
++	for index, response := range responses {
++		recordXAIResponse(ctx, index, response.marker, response.err == nil, response.body)
++	}
+ 	if responses[0].err == nil {
+ 		recordReturnedWindows(ctx, "xai-monthly", responses[0].body)
+ 	}
