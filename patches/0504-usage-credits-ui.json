@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-usage-credits-ui",
+  "file": "0504-usage-credits-ui.patch",
+  "content_sha256": "b6561f169c2a336325c429ee0383674aa9a5740b43d51ea324fa29914f2c6c46",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

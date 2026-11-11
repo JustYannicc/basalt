@@ -1,0 +1,1542 @@
+diff --git a/apps/hosted/web/src/contracts/pool-credit-routing.ts b/apps/hosted/web/src/contracts/pool-credit-routing.ts
+new file mode 100644
+index 0000000..7c33d8a
+--- /dev/null
++++ b/apps/hosted/web/src/contracts/pool-credit-routing.ts
+@@ -0,0 +1,63 @@
++/** A pool's Subscription credits policy and what it does with each account, read through the host. */
++import { hydrated } from "@executor-js/ui/contracts/http";
++import { revalidated } from "@executor-js/ui/contracts/refresh";
++import { pollingQuery } from "@executor-js/ui/contracts/polling";
++import { Data, Effect, Option } from "effect";
++import { AsyncResult, Atom } from "effect/reactivity";
++import type { AppId } from "@executor-js/sdk";
++import type { OrganizationReference } from "@executor-js/hosted-server/organization";
++import type { UsageCreditPolicy } from "apps/contracts";
++import { HostedClient } from "./api.ts";
++import { protectedQuery } from "./protected-query.ts";
++
++class PoolKey extends Data.Class<{
++  readonly organization: OrganizationReference;
++  readonly app: AppId;
++}> {}
++
++const source = Atom.family((key: PoolKey) =>
++  HostedClient.query(
++    "poolUsage",
++    "accountRouting",
++    hydrated({ params: { organization: key.organization, app: key.app } }),
++  ).pipe(revalidated, protectedQuery),
++);
++const polled = Atom.family((key: PoolKey) => pollingQuery(source(key)));
++const routing = Atom.family((key: PoolKey) =>
++  Atom.readable(
++    (get) => {
++      const result = get(source(key));
++      // Routing follows fresh readings, so a pool keeps polling while visible; any other app's
++      // null answer is read once.
++      const current = AsyncResult.value(result);
++      if (Option.isSome(current) && current.value !== null) get(polled(key));
++      return result;
++    },
++    (refresh) => refresh(source(key)),
++  ),
++);
++/** The pool's policy, whether the caller may change it, and each account's routing; null off pools. */
++export const poolAccountRoutingAtom = (key: {
++  readonly organization: OrganizationReference;
++  readonly app: AppId;
++}) => routing(new PoolKey(key));
++
++const setPolicy = Atom.family((key: PoolKey) =>
++  HostedClient.runtime.fn((policy: UsageCreditPolicy, get) =>
++    Effect.flatMap(HostedClient, (client) =>
++      client.poolUsage.setCreditPolicy({
++        params: { organization: key.organization, app: key.app },
++        payload: { usageCreditPolicy: policy },
++      }),
++    ).pipe(
++      // The host acknowledges only after the pool reads the policy back, and every account's
++      // routing can change with it, so the routing is read again either way.
++      Effect.ensuring(Effect.sync(() => get.refresh(source(key)))),
++    ),
++  ),
++);
++/** Save the pool's policy; acknowledged only once the pool applies it. */
++export const setPoolCreditPolicyAtom = (key: {
++  readonly organization: OrganizationReference;
++  readonly app: AppId;
++}) => setPolicy(new PoolKey(key));
+diff --git a/apps/hosted/web/src/implementation/pages/account-observations-client.tsx b/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
+index ef17a10..335b911 100644
+--- a/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
+@@ -56,6 +56,7 @@ export function HostedAccountObservations({
+   app,
+   canReconnect,
+   windowTokens,
++  routing,
+ }: {
+   readonly account: AccountSummary;
+   readonly apps?: readonly App[];
+@@ -64,6 +65,8 @@ export function HostedAccountObservations({
+   readonly canReconnect?: (app: App) => boolean;
+   /** Footer counts for the account's usage windows, such as its pool's tokens. */
+   readonly windowTokens?: ComponentProps<typeof AccountObservations>["windowTokens"];
++  /** What the pool whose tab shows the row does with the account. */
++  readonly routing?: ComponentProps<typeof AccountObservations>["routing"];
+ }) {
+   const { organization } = useOrganizationRoute();
+   const inventory = useQuery(resourceInventoryAtom(organization));
+@@ -87,6 +90,7 @@ export function HostedAccountObservations({
+       query={accountObservationsAtom(key)}
+       refresh={() => refresh()}
+       windowTokens={windowTokens}
++      routing={routing}
+       {...(group !== undefined
+         ? { group }
+         : app === undefined
+diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+index 82495f6..a2d2bd9 100644
+--- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+@@ -78,6 +78,7 @@ import type { HostedError } from "../../contracts/errors.ts";
+ import { HostedAccountDialog } from "./account-actions.tsx";
+ import { HostedAccountObservations, HostedAccountPlan } from "./account-observations.tsx";
+ import { useAccountTraffic } from "./account-traffic.tsx";
++import { PoolCreditPolicy, usePoolAccountRouting } from "./pool-credit-policy.tsx";
+ import { catalogAtom } from "../../contracts/api.ts";
+ 
+ /**
+@@ -113,6 +114,7 @@ export function AppAccounts({
+   const { data } = useQuery(appAccessAtom({ organization, app: app.id }));
+   const catalog = useQuery(catalogAtom);
+   const canUse = Option.isSome(data) && data.value.canUse;
++  const routingOf = usePoolAccountRouting(app);
+   const methodQuery = useQuery(appMethodsAtom({ organization, app: app.id }));
+   // Rows read the organization's saved-account list; choices and links stay on the app's reads.
+   const savedRows = useQuery(savedAccountRowsAtom({ organization }));
+@@ -324,6 +326,7 @@ export function AppAccounts({
+                 account={account}
+                 app={app}
+                 windowTokens={traffic.windowTokens(account)}
++                routing={routingOf(account.id)}
+               />
+             ),
+           accountPlan: (account) => usable(account) && <HostedAccountPlan account={account} />,
+@@ -460,6 +463,7 @@ export function AppAccounts({
+                 </div>,
+               ];
+         })}
++      <PoolCreditPolicy app={app} />
+       <SharedAccounts
+         app={app}
+         accounts={accounts}
+diff --git a/apps/hosted/web/src/implementation/pages/pool-credit-policy.tsx b/apps/hosted/web/src/implementation/pages/pool-credit-policy.tsx
+new file mode 100644
+index 0000000..8a59588
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/pool-credit-policy.tsx
+@@ -0,0 +1,98 @@
++import { useAtomSet } from "@effect/atom-react";
++import { Cause, Exit, Option } from "effect";
++import { AsyncResult } from "effect/reactivity";
++import { useState } from "react";
++import type { AccountId, App } from "@executor-js/sdk";
++import { useQuery } from "@executor-js/ui/dashboard/context";
++import type { UsageCreditPolicy } from "apps/contracts";
++import { UsageCreditPolicySetting } from "@executor-js/ui/dashboard/account-usage-credits-view";
++import { useOrganizationRoute } from "../components/organization.tsx";
++import { HostedFailure } from "../components/dashboard-bindings.tsx";
++import {
++  poolAccountRoutingAtom,
++  setPoolCreditPolicyAtom,
++} from "../../contracts/pool-credit-routing.ts";
++import type { HostedError } from "../../contracts/errors.ts";
++
++/** Each account's routing in this pool; undefined off pools and before the first read. */
++export function usePoolAccountRouting(app: App) {
++  const { organization } = useOrganizationRoute();
++  const { data } = useQuery(poolAccountRoutingAtom({ organization, app: app.id }));
++  const routing = Option.getOrNull(data);
++  return (account: AccountId) => routing?.accounts[account];
++}
++
++/**
++ * The pool's Subscription credits setting above its accounts. Other apps read null and show
++ * nothing; people who use the pool but can't edit it see the policy that applies to them.
++ */
++export function PoolCreditPolicy({ app }: { readonly app: App }) {
++  const { organization } = useOrganizationRoute();
++  const key = { organization, app: app.id };
++  const { data, result, refresh } = useQuery(poolAccountRoutingAtom(key));
++  const save = useAtomSet(setPoolCreditPolicyAtom(key), { mode: "promiseExit" });
++  // A save in flight, with the policy the pool reported when it started.
++  const [pending, setPending] = useState<{
++    readonly policy: UsageCreditPolicy;
++    readonly from: UsageCreditPolicy;
++  }>();
++  const [error, setError] = useState<{
++    readonly policy: UsageCreditPolicy;
++    readonly cause: Cause.Cause<HostedError>;
++  }>();
++  const routing = Option.getOrNull(data);
++  // The chosen policy shows until the pool reports a different one than when the save began, so it
++  // never flickers back before the reread, and any later change from elsewhere still shows.
++  const saving =
++    pending !== undefined && routing !== null && routing.usageCreditPolicy === pending.from
++      ? pending.policy
++      : undefined;
++  // A pool that can't be reached says so; any other app, or a caller without access, shows nothing.
++  const unreachable =
++    AsyncResult.isFailure(result) &&
++    Option.exists(
++      Cause.findErrorOption(result.cause),
++      (error) => error._tag === "PoolCreditPolicyUnavailable",
++    );
++  if (routing === null)
++    return unreachable && AsyncResult.isFailure(result) ? (
++      <div className="mb-6">
++        <HostedFailure
++          cause={result.cause}
++          retry={refresh}
++          retrying={result.waiting}
++          layout="compact"
++        />
++      </div>
++    ) : null;
++  const change = async (policy: UsageCreditPolicy) => {
++    setPending({ policy, from: routing.usageCreditPolicy });
++    setError(undefined);
++    const exit = await save(policy);
++    if (Exit.isFailure(exit)) {
++      setPending(undefined);
++      setError({ policy, cause: exit.cause });
++    }
++  };
++  return (
++    <div className="mb-6">
++      <UsageCreditPolicySetting
++        policy={saving ?? routing.usageCreditPolicy}
++        pending={saving !== undefined}
++        {...(routing.canEdit
++          ? { onChange: (policy: UsageCreditPolicy) => void change(policy) }
++          : { disabledReason: "Only the pool's owner can change this." })}
++        failure={
++          error === undefined ? undefined : (
++            <HostedFailure
++              cause={error.cause}
++              retry={() => void change(error.policy)}
++              retrying={saving !== undefined}
++              layout="compact"
++            />
++          )
++        }
++      />
++    </div>
++  );
++}
+diff --git a/e2e/tests/account-usage-credits.spec.ts b/e2e/tests/account-usage-credits.spec.ts
+new file mode 100644
+index 0000000..221b7db
+--- /dev/null
++++ b/e2e/tests/account-usage-credits.spec.ts
+@@ -0,0 +1,618 @@
++/** Subscription credits read as the provider reported them, beside usage, and never as money or zero. */
++import { expect, layer } from "@effect/vitest";
++import { Clock, Effect, Schema } from "effect";
++import type { Locator, Page } from "playwright";
++import { Browser } from "../support/browser.ts";
++import { Evidence } from "../support/evidence.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { observationBackend, observationFixture } from "../support/account-observation-fixture.ts";
++import { accountRow, openRowDetails, usageGroupName } from "../support/account-rows.ts";
++import { type AccountsTabSection, rowMenuName } from "../support/account-choices.ts";
++import { day, hour, trafficPool } from "../support/account-traffic.ts";
++import { poolFixtureSigningKey } from "../support/cloud-pool-gateway.ts";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { poolUsageBackend } from "../support/pool-usage-backend.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++const iso = (at: number) => new Date(at).toISOString();
++const limitWindow = (
++  id: string,
++  label: string,
++  seconds: number,
++  remaining: number,
++  at: number,
++) => ({
++  id,
++  label,
++  observedAt: iso(at),
++  measure: { unit: "%", used: 100 - remaining, remainingRatio: remaining / 100 },
++  period: { mode: "fixed", seconds },
++  resetsAt: iso(at + Math.min(seconds, 4 * day)),
++});
++const banked = (index: number, at: number) => ({
++  id: `resets-${index}`,
++  label: "Banked resets",
++  unit: "resets",
++  available: 1,
++  observedAt: iso(at),
++  expiresAt: iso(at + 27 * day),
++});
++const credits = <const F>(at: number, fields: F) => ({
++  balance: null,
++  observedAt: iso(at),
++  staleAt: iso(at + hour),
++  freshness: "fresh",
++  extraUsage: null,
++  ...fields,
++});
++/** A subscription reading; `fiveHour` adds the short window two-window plans report. */
++const subscription = <const C, const B = readonly []>(
++  at: number,
++  remaining: number,
++  usageCredits: C,
++  balances?: B,
++  fiveHour?: number,
++) => ({
++  observedAt: iso(at),
++  observation: {
++    offering: "subscription",
++    windows: [
++      limitWindow("seven_day", "Weekly", 7 * day, remaining, at),
++      ...(fiveHour === undefined
++        ? []
++        : [limitWindow("five_hour", "5-hour", 5 * hour, fiveHour, at)]),
++    ],
++    balances: balances ?? [],
++    usageCredits,
++  },
++});
++
++/** Each Details row of `row`'s credits, by name. */
++const creditDetailRows = (row: Locator) =>
++  row
++    .locator("[data-credit-detail]")
++    .evaluateAll((rows) =>
++      Object.fromEntries(
++        rows.map((element) => [
++          element.getAttribute("data-credit-detail") ?? "",
++          element.querySelector("dd")?.textContent ?? "",
++        ]),
++      ),
++    );
++
++/** The pool tab's row for the account saved as `label`, found by its ⋯ menu. */
++const tabRow = (page: Page, section: AccountsTabSection, label: string) =>
++  page
++    .getByRole("region", { name: section, exact: true })
++    .locator("li")
++    .filter({ has: page.getByRole("button", { name: rowMenuName(label, section), exact: true }) });
++
++layer(HostedLive, { excludeTestServices: true })("Account usage credits", (it) => {
++  it.effect(scenarios.accountUsageCredits.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const browser = yield* Browser;
++        const evidence = yield* Evidence;
++        const now = yield* Clock.currentTimeMillis;
++        const cases = [
++          {
++            label: "Wallet",
++            body: subscription(
++              now,
++              0,
++              credits(now, {
++                state: "available",
++                balance: { value: "1250", unit: "credits" },
++              }),
++              [banked(0, now), banked(1, now)],
++            ),
++            line: "1,250 credits",
++          },
++          {
++            label: "Unlimited",
++            body: subscription(now, 0, credits(now, { state: "unlimited" })),
++            line: "Unlimited credits",
++          },
++          {
++            label: "Plan only",
++            body: subscription(now, 68, credits(now, { state: "none" }), [], 81),
++            line: "No credits",
++          },
++          {
++            label: "Unread",
++            body: subscription(
++              now,
++              40,
++              credits(now, {
++                state: "unknown",
++                observedAt: null,
++                staleAt: null,
++                freshness: "unknown",
++              }),
++            ),
++            line: "Credits unavailable",
++          },
++          {
++            label: "Extra on",
++            body: subscription(
++              now,
++              0,
++              credits(now, {
++                state: "unknown",
++                extraUsage: {
++                  enabled: true,
++                  monthlyCap: "limited",
++                  usedRatio: 0.35,
++                  spent: null,
++                  cap: null,
++                },
++              }),
++              [],
++              0,
++            ),
++            line: "Extra usage on",
++          },
++          {
++            label: "Extra off",
++            body: subscription(
++              now,
++              0,
++              credits(now, {
++                state: "disabled",
++                extraUsage: {
++                  enabled: false,
++                  monthlyCap: "unknown",
++                  usedRatio: null,
++                  spent: null,
++                  cap: null,
++                },
++              }),
++              [],
++              0,
++            ),
++            line: "Extra usage off",
++          },
++        ] as const;
++        const fixtures = [];
++        for (const entry of cases) {
++          const fixture = yield* observationFixture({
++            name: `${entry.label} fixture`,
++            observe: true,
++            health: true,
++          });
++          yield* fixture.backend.answer({ status: 200, body: entry.body });
++          expect(
++            (yield* fixture.api.request(fixture.actors.owner, "PATCH", fixture.accountPath, {
++              label: entry.label,
++            })).status,
++          ).toBe(200);
++          expect((yield* fixture.refresh()).status).toBe(200);
++          fixtures.push(fixture);
++        }
++        const { actors } = fixtures[0]!;
++        yield* browser.login(actors.owner);
++        const accounts = `/org/${actors.organization.slug}/accounts`;
++        const line = (page: Page, label: string) =>
++          page.getByRole("group", usageGroupName(label)).locator("[data-usage-credits]");
++        const ready = (page: Page) =>
++          Promise.all(cases.map((entry) => line(page, entry.label).waitFor()));
++
++        for (const width of [1280, 390])
++          for (const scheme of ["light", "dark"] as const) {
++            yield* browser.use(`Open Accounts at ${width}px in ${scheme} mode`, (page) =>
++              page
++                .setViewportSize({ width, height: 900 })
++                .then(() => page.emulateMedia({ colorScheme: scheme }))
++                .then(() => page.goto(accounts))
++                .then(() => ready(page)),
++            );
++            yield* evidence.attach(
++              `after-usage-credits-${width}-${scheme}.png`,
++              "image/png",
++              yield* browser.use("Capture the account list", (page) =>
++                page.screenshot({ fullPage: true }),
++              ),
++            );
++            const overflow = yield* browser.use("Measure horizontal overflow", (page) =>
++              page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth),
++            );
++            expect(overflow, `no horizontal scroll at ${width}px`).toBeLessThanOrEqual(0);
++          }
++
++        const lines = yield* browser.use("Read every credit line", (page) =>
++          page
++            .setViewportSize({ width: 1280, height: 900 })
++            .then(() => page.goto(accounts))
++            .then(() => ready(page))
++            .then(() =>
++              Promise.all(
++                cases.map((entry) =>
++                  line(page, entry.label)
++                    .locator("[data-usage-credits-line]")
++                    .innerText()
++                    .then((text) => [entry.label, text] as const),
++                ),
++              ),
++            ),
++        );
++        expect(Object.fromEntries(lines)).toEqual(
++          Object.fromEntries(cases.map((entry) => [entry.label, entry.line])),
++        );
++        const layout = yield* browser.use("Measure the two-window Claude row", (page) => {
++          const group = page.getByRole("group", usageGroupName("Extra on"));
++          return Promise.all([
++            group.locator('[data-reading="seven_day"]').boundingBox(),
++            group.locator("[data-usage-credits]").boundingBox(),
++            group.locator("[data-usage-credits]").innerText(),
++          ]);
++        });
++        const [cell, creditLine, extraText] = layout;
++        // At desktop width the credit line sits beside both windows, not under them.
++        expect(creditLine!.y).toBeLessThan(cell!.y + cell!.height);
++        expect(creditLine!.x).toBeGreaterThan(cell!.x + cell!.width);
++        expect(extraText).toContain("balance unavailable");
++        // No pool is showing these rows, so nothing claims what a pool does with them.
++        const statuses = yield* browser.use("Count routing statuses", (page) =>
++          page.locator("[data-usage-credit-status]").count(),
++        );
++        expect(statuses).toBe(0);
++
++        const wallet = yield* browser.use("Open the wallet's Details", (page) => {
++          const row = accountRow(page, "Wallet");
++          return openRowDetails(page, row, "Wallet").then(() => creditDetailRows(row));
++        });
++        expect(wallet).toMatchObject({
++          "Credit balance": "1,250 credits",
++          "Balance unit": "Usage credits",
++          "Credit reading": expect.stringMatching(/^Read /),
++          "Banked quota resets": "2 · separate from usage credits",
++        });
++        for (const width of [1280, 390]) {
++          yield* browser.use(`Show the wallet's Details at ${width}px`, (page) =>
++            page
++              .setViewportSize({ width, height: 900 })
++              .then(() =>
++                accountRow(page, "Wallet")
++                  .locator("[data-usage-credit-details]")
++                  .scrollIntoViewIfNeeded(),
++              ),
++          );
++          yield* evidence.attach(
++            `after-usage-credits-details-${width}.png`,
++            "image/png",
++            yield* browser.use("Capture the wallet's Details", (page) => page.screenshot()),
++          );
++        }
++
++        const claude = yield* browser.use("Open extra usage Details", (page) => {
++          const row = accountRow(page, "Extra on");
++          return page
++            .setViewportSize({ width: 1280, height: 900 })
++            .then(() => openRowDetails(page, row, "Extra on"))
++            .then(() => creditDetailRows(row));
++        });
++        const unlimited = yield* browser.use("Open the unlimited account's Details", (page) => {
++          const row = accountRow(page, "Unlimited");
++          return openRowDetails(page, row, "Unlimited").then(() => creditDetailRows(row));
++        });
++        expect(unlimited).toMatchObject({
++          "Credit balance": "Unlimited, reported by provider",
++          "Balance unit": "Usage credits",
++        });
++        // A cap is not a wallet: the balance stays unavailable while extra usage is on.
++        expect(claude).toMatchObject({
++          "Credit balance": "Unavailable",
++          "Extra usage": "On",
++          "Monthly spend cap": "Limited · 35% used",
++          "Extra usage spent": "Amount unavailable",
++        });
++      }),
++    ),
++  );
++
++  it.effect(scenarios.poolUsageCreditPolicy.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          browser = yield* Browser,
++          evidence = yield* Evidence,
++          observed = yield* observationBackend,
++          pool = yield* poolUsageBackend;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const {
++          app,
++          accounts: [wallet, unread, plan],
++        } = yield* trafficPool({
++          name: "Credit pool",
++          origin: observed.origin,
++          labels: ["Pool wallet", "Pool unread", "Pool plan"],
++        });
++        if (wallet === undefined || unread === undefined || plan === undefined)
++          return yield* Effect.die("The pool saved fewer accounts than asked");
++        const now = yield* Clock.currentTimeMillis;
++        // Each account reads what the mock shows beside its pool status.
++        const readings = [
++          [
++            wallet,
++            subscription(
++              now,
++              0,
++              credits(now, { state: "available", balance: { value: "1250", unit: "credits" } }),
++            ),
++          ],
++          [
++            unread,
++            subscription(
++              now,
++              0,
++              credits(now, {
++                state: "unknown",
++                extraUsage: {
++                  enabled: true,
++                  monthlyCap: "limited",
++                  usedRatio: 0.35,
++                  spent: null,
++                  cap: null,
++                },
++              }),
++              [],
++              0,
++            ),
++          ],
++          [plan, subscription(now, 68, credits(now, { state: "none" }), [], 81)],
++        ] as const;
++        for (const [account, reading] of readings) {
++          yield* observed.answer({ status: 200, body: reading });
++          expect(
++            (yield* api.request(
++              actors.owner,
++              "POST",
++              `${prefix}/accounts/${account}/observations/refresh`,
++            )).status,
++          ).toBe(200);
++        }
++        // The pool's own decisions: one account it would pay with credits, one with unknown
++        // funding and one on plan quota.
++        yield* pool.creditAccounts({
++          [wallet]: { use: "credits", eligible: true, reason: "credits_only" },
++          [unread]: { use: "unknown", eligible: true, reason: "usage_unknown" },
++          [plan]: { use: "plan", eligible: true, reason: "plan_available" },
++        });
++        const viewer = yield* body(
++          Schema.Struct({ userId: Schema.String }),
++          yield* api.request(actors.owner, "GET", "/api/viewer"),
++        );
++        const pools = (value: object) => ({
++          sql: `update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{basaltPools}', $1::jsonb)::text where id=$2`,
++          params: [JSON.stringify(value), actors.organization.id],
++        });
++        yield* serverControl("stop");
++        yield* legacyStorage([
++          pools({
++            [viewer.userId]: {
++              app,
++              version: "retained-version",
++              authorization: "executor-app-v1",
++              membership: "executor-links-v1",
++            },
++          }),
++        ]);
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* serverControl("stop");
++            yield* legacyStorage([pools({})]);
++            yield* serverControl("start");
++          }).pipe(Effect.orDie),
++        );
++        yield* serverControl("environment", 200, {
++          POOL_APP_SIGNING_KEY: poolFixtureSigningKey,
++          BASALT_POOL_ORIGIN: pool.origin,
++        });
++        yield* serverControl("start");
++
++        const poolTab = `/org/${actors.organization.slug}/apps/${app}?view=accounts`;
++        const setting = (page: Page) =>
++          page.getByRole("region", { name: "Subscription credits", exact: true });
++        const status = (page: Page, label: string) =>
++          tabRow(page, "App accounts", label).locator(
++            "[data-usage-credits] [data-usage-credit-status]",
++          );
++        const statuses = (page: Page) =>
++          Promise.all(
++            ["Pool wallet", "Pool unread", "Pool plan"].map((label) =>
++              status(page, label).innerText(),
++            ),
++          );
++        yield* browser.login(actors.owner);
++        const before = yield* browser.use("Open the pool's Accounts tab", (page) =>
++          page
++            .setViewportSize({ width: 1280, height: 900 })
++            .then(() => page.goto(poolTab))
++            .then(() => status(page, "Pool plan").waitFor())
++            .then(() =>
++              Promise.all([
++                setting(page)
++                  .getByRole("radio", { name: "Allow as last resort", exact: true })
++                  .getAttribute("aria-checked"),
++                setting(page).locator("[data-usage-credit-policy-note]").innerText(),
++                statuses(page),
++              ]),
++            ),
++        );
++        expect(before).toEqual([
++          "true",
++          "Credits are used only when no account has plan quota.",
++          ["· Usable on credits", "· Usage unknown · last resort", "· Using plan quota"],
++        ]);
++        const beside = yield* browser.use("Measure a two-window pool row", (page) => {
++          const row = tabRow(page, "App accounts", "Pool unread");
++          return Promise.all([
++            row.locator('[data-reading="five_hour"]').boundingBox(),
++            row.locator("[data-usage-credits]").boundingBox(),
++          ]);
++        });
++        // The credit line sits beside both windows in the pool's own tab too.
++        expect(beside[1]!.x).toBeGreaterThan(beside[0]!.x + beside[0]!.width);
++        expect(beside[1]!.y).toBeLessThan(beside[0]!.y + beside[0]!.height);
++        const tones = yield* browser.use("Read which statuses pay with credits", (page) =>
++          Promise.all(
++            ["Pool wallet", "Pool unread", "Pool plan"].map((label) =>
++              status(page, label).evaluate((element) => element.hasAttribute("data-credit-use")),
++            ),
++          ),
++        );
++        expect(tones, "only paying with credits is highlighted").toEqual([true, false, false]);
++        for (const width of [1280, 390]) {
++          yield* browser.use(`Show the setting at ${width}px`, (page) =>
++            page
++              .setViewportSize({ width, height: 900 })
++              .then(() => setting(page).scrollIntoViewIfNeeded()),
++          );
++          if (width === 390) {
++            const choices = yield* browser.use("Measure the choices on a phone", (page) =>
++              Promise.all(
++                ["Allow as last resort", "Never use credits"].map((name) =>
++                  setting(page).getByRole("radio", { name, exact: true }).boundingBox(),
++                ),
++              ),
++            );
++            expect(choices[1]!.y, "the choices stack on a phone").toBeGreaterThan(
++              choices[0]!.y + choices[0]!.height,
++            );
++          }
++          yield* evidence.attach(
++            `after-pool-credits-last-resort-${width}.png`,
++            "image/png",
++            yield* browser.use("Capture the pool tab", (page) =>
++              page.screenshot({ fullPage: true }),
++            ),
++          );
++        }
++
++        const after = yield* browser.use("Choose Never use credits", (page) =>
++          page
++            .setViewportSize({ width: 1280, height: 900 })
++            .then(() =>
++              setting(page).getByRole("radio", { name: "Never use credits", exact: true }).click(),
++            )
++            .then(() =>
++              setting(page)
++                .locator("[data-usage-credit-policy-note]", {
++                  hasText: "Accounts with unknown usage are skipped.",
++                })
++                .waitFor(),
++            )
++            .then(() =>
++              status(page, "Pool wallet").filter({ hasText: "Credits blocked by pool" }).waitFor(),
++            )
++            .then(() => statuses(page)),
++        );
++        // Blocked credits keep their amount; unknown funding says it is skipped, not blocked.
++        expect(after).toEqual([
++          "· Credits blocked by pool",
++          "· Skipped · usage unknown",
++          "· Using plan quota",
++        ]);
++        const firstSaves = (yield* pool.calls).filter((call) => call.action === "setCreditPolicy");
++        expect(firstSaves.map((call) => call.usageCreditPolicy)).toEqual(["never"]);
++
++        const details = yield* browser.use("Open the wallet's Details in the pool", (page) => {
++          const row = tabRow(page, "App accounts", "Pool wallet");
++          return row
++            .getByRole("button", { name: rowMenuName("Pool wallet", "App accounts"), exact: true })
++            .click()
++            .then(() => page.getByRole("menuitem", { name: "Details", exact: true }).click())
++            .then(() => row.locator("[data-usage-credit-details]").waitFor())
++            .then(() => creditDetailRows(row));
++        });
++        expect(details).toMatchObject({
++          "Included plan": "Exhausted",
++          "Credit balance": "1,250 credits",
++          "Credit policy": "Never use credits",
++        });
++        for (const width of [1280, 390]) {
++          yield* browser.use(`Show the pool Details at ${width}px`, (page) =>
++            page
++              .setViewportSize({ width, height: 900 })
++              .then(() =>
++                tabRow(page, "App accounts", "Pool wallet")
++                  .locator("[data-usage-credit-details]")
++                  .scrollIntoViewIfNeeded(),
++              ),
++          );
++          yield* evidence.attach(
++            `after-pool-credits-never-details-${width}.png`,
++            "image/png",
++            yield* browser.use("Capture the never policy", (page) => page.screenshot()),
++          );
++          const columns = yield* browser.use("Measure the Details columns", (page) =>
++            tabRow(page, "App accounts", "Pool wallet")
++              .locator("[data-usage-credit-details] dl")
++              .evaluateAll((lists) => lists.map((list) => list.getBoundingClientRect().left)),
++          );
++          // Two columns side by side on a desktop, one under the other on a phone.
++          if (width === 390) expect(columns[0]).toBe(columns[1]);
++          else expect(columns[1]).toBeGreaterThan(columns[0]!);
++          const overflow = yield* browser.use("Measure horizontal overflow", (page) =>
++            page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth),
++          );
++          expect(overflow, `no horizontal scroll at ${width}px`).toBeLessThanOrEqual(0);
++        }
++
++        // A failed save names the failure and keeps the pool's policy.
++        yield* pool.unavailable(true);
++        const failed = yield* browser.use(
++          "Choose Allow as last resort while the pool is down",
++          (page) =>
++            page
++              .setViewportSize({ width: 1280, height: 900 })
++              .then(() =>
++                setting(page)
++                  .getByRole("radio", { name: "Allow as last resort", exact: true })
++                  .click(),
++              )
++              .then(() =>
++                setting(page)
++                  .getByText("Pool credit policy could not be confirmed", { exact: false })
++                  .waitFor(),
++              )
++              .then(() =>
++                setting(page)
++                  .getByRole("radio", { name: "Never use credits", exact: true })
++                  .getAttribute("aria-checked"),
++              ),
++        );
++        expect(failed).toBe("true");
++        yield* pool.unavailable(false);
++
++        // The way back: Allow as last resort restores the last-resort statuses.
++        const restored = yield* browser.use("Choose Allow as last resort again", (page) =>
++          setting(page)
++            .getByRole("radio", { name: "Allow as last resort", exact: true })
++            .click()
++            .then(() =>
++              status(page, "Pool wallet").filter({ hasText: "Usable on credits" }).waitFor(),
++            )
++            .then(() => statuses(page)),
++        );
++        expect(restored).toEqual([
++          "· Usable on credits",
++          "· Usage unknown · last resort",
++          "· Using plan quota",
++        ]);
++        const saved = (yield* pool.calls).filter((call) => call.action === "setCreditPolicy");
++        expect(saved.map((call) => call.usageCreditPolicy)).toEqual([
++          "never",
++          "last_resort",
++          "last_resort",
++        ]);
++      }),
++    ),
++  );
++});
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
+index 220d99c..72a8fc4 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
+@@ -4,6 +4,7 @@ import type { DisplayFormat } from "../../contracts/display.ts";
+ import { bankedResets, resetWindow } from "./account-observation-format.ts";
+ import { useResetControl, type AccountResetActions } from "./account-reset-control.tsx";
+ import { UsageCell } from "./account-usage-cell.tsx";
++import { cn } from "../lib/utils.ts";
+ 
+ type Window = NonNullable<AccountObservationRecord["result"]>["observation"]["windows"][number];
+ 
+@@ -11,7 +12,8 @@ type Window = NonNullable<AccountObservationRecord["result"]>["observation"]["wi
+  * One usage cell per limited window the source reported, and nothing else. Unlimited windows are
+  * not limits, so they get no cell; balances and their expiry live in the account's details. With
+  * `resetActions`, the banked reset count becomes the control and its state shows under the cells.
+- * `tokens` gives a window's footer count, where a gateway counted one.
++ * `tokens` gives a window's footer count, where a gateway counted one. `credit` is the account's
++ * credit line, which sits after the cells and stays even when no window is limited.
+  */
+ export function ObservationReadings({
+   record,
+@@ -22,6 +24,7 @@ export function ObservationReadings({
+   format,
+   tokens,
+   brand,
++  credit,
+ }: {
+   readonly record: AccountObservationRecord;
+   readonly source?: string;
+@@ -32,11 +35,14 @@ export function ObservationReadings({
+   readonly tokens?: ((entry: Window) => ReactNode) | undefined;
+   /** The account's lab colour for its healthy bars. */
+   readonly brand?: string | undefined;
++  readonly credit?: ReactNode;
+ }) {
+   const result = record.result;
+   const observation = result?.observation;
+   const windows = observation?.windows.filter((entry) => entry.measure.unlimited !== true) ?? [];
+-  if (result === null || observation === undefined || windows.length === 0) return null;
++  if (result === null || observation === undefined) return null;
++  const hasCredit = credit !== undefined && credit !== null;
++  if (windows.length === 0 && !hasCredit) return null;
+   const stale = record.freshness !== "fresh";
+   const resets = bankedResets(observation, now);
+   const target = resets === undefined ? undefined : resetWindow(windows);
+@@ -45,7 +51,12 @@ export function ObservationReadings({
+       {...(source === undefined ? {} : { "aria-label": `Usage from ${source}`, role: "group" })}
+       data-observation-source={record.source.id}
+       data-freshness={record.freshness}
+-      className="grid max-w-[760px] grid-cols-[repeat(auto-fill,_minmax(250px,_1fr))] gap-x-7 gap-y-2.5 max-[740px]:grid-cols-[minmax(0,_1fr)]"
++      className={cn(
++        "grid max-w-[760px] grid-cols-[repeat(auto-fill,_minmax(250px,_1fr))] gap-x-7 gap-y-2.5 max-[740px]:grid-cols-[minmax(0,_1fr)]",
++        // A credit line takes a track of its own; narrower tracks, as in the approved credits
++        // design, keep it beside two windows even in a pool's narrower Accounts tab.
++        hasCredit && "max-w-[1040px] grid-cols-[repeat(auto-fill,_minmax(190px,_1fr))] gap-x-6",
++      )}
+     >
+       {windows.map((entry) => (
+         <UsageCell
+@@ -65,6 +76,7 @@ export function ObservationReadings({
+           brand={brand}
+         />
+       ))}
++      {credit}
+     </div>
+   );
+   return resets === undefined || resetActions === undefined ? (
+diff --git a/packages/ui/src/implementation/dashboard/account-observations.tsx b/packages/ui/src/implementation/dashboard/account-observations.tsx
+index e6b0c65..56a65a6 100644
+--- a/packages/ui/src/implementation/dashboard/account-observations.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observations.tsx
+@@ -42,6 +42,8 @@ import {
+   type AccountGroupCheck,
+ } from "./account-sign-in-checks.tsx";
+ import { brandFill, brandLab } from "../lib/provider-brand.ts";
++import type { AccountUsageRouting } from "apps/contracts";
++import { UsageCreditLine, UsageCreditReports } from "./account-usage-credits-view.tsx";
+ 
+ /** What a product lets the caller see of an account's reported usage. */
+ export interface AccountObservationsView {
+@@ -73,6 +75,7 @@ export function AccountObservations<E>({
+   group,
+   windowTokens,
+   resets,
++  routing,
+   Failure,
+ }: {
+   readonly account: AccountSummary;
+@@ -93,6 +96,8 @@ export function AccountObservations<E>({
+   readonly windowTokens?: ComponentProps<typeof ObservationReadings>["tokens"];
+   /** Only for a caller who may spend this account's banked resets; each spend asks first. */
+   readonly resets?: AccountResetActions | undefined;
++  /** What the pool showing this row does with the account, from that pool's own read. */
++  readonly routing?: AccountUsageRouting | undefined;
+   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
+ }) {
+   const { result, refresh: reload } = useQuery(query);
+@@ -170,8 +175,11 @@ export function AccountObservations<E>({
+   const queued =
+     inspected?.reports.filter((report) => report.result === null && report.lastAttempt === null) ??
+     [];
+-  const cells = inspected?.reports.some((report) =>
+-    report.result?.observation.windows.some((entry) => entry.measure.unlimited !== true),
++  const cells = inspected?.reports.some(
++    (report) =>
++      report.result !== null &&
++      (report.result.observation.usageCredits !== undefined ||
++        report.result.observation.windows.some((entry) => entry.measure.unlimited !== true)),
+   );
+   // A collapsed compact band with nothing to show leaves no gap under the row.
+   if (
+@@ -196,22 +204,28 @@ export function AccountObservations<E>({
+       data-account-observations
+       className="@container grid min-w-0 grid-cols-[minmax(0,_1fr)] gap-2.5 text-[11px] text-foreground/80"
+     >
+-      {inspected?.reports.map(
+-        (report) =>
+-          report.result !== null && (
+-            <ObservationReadings
+-              key={report.source.id}
+-              record={report}
+-              {...(inspected.reports.length > 1 ? { source: report.source.label } : {})}
+-              label={label}
+-              resetActions={resets}
+-              now={now}
+-              format={format}
+-              tokens={windowTokens}
+-              brand={brandFill(brandLab({ providers: [account.providerName] }))}
+-            />
+-          ),
+-      )}
++      {inspected?.reports.map((report) => {
++        if (report.result === null) return null;
++        const credits = report.result.observation.usageCredits;
++        return (
++          <ObservationReadings
++            key={report.source.id}
++            record={report}
++            {...(inspected.reports.length > 1 ? { source: report.source.label } : {})}
++            label={label}
++            resetActions={resets}
++            now={now}
++            format={format}
++            tokens={windowTokens}
++            brand={brandFill(brandLab({ providers: [account.providerName] }))}
++            credit={
++              credits === undefined ? undefined : (
++                <UsageCreditLine credits={credits} routing={routing} format={format} />
++              )
++            }
++          />
++        );
++      })}
+       {compact ? (
+         <>
+           {!open && unread && (
+@@ -290,6 +304,14 @@ export function AccountObservations<E>({
+           {compact && checks !== undefined && <SignInChecks state={checks} Failure={Failure} />}
+           {compact && fact(false)}
+           {fact(true)}
++          <UsageCreditReports
++            title={label}
++            subtitle={subscriptionName(account)}
++            reports={inspected?.reports ?? []}
++            routing={routing}
++            now={now}
++            format={format}
++          />
+           <ObservationDetails
+             id={`${details}-readings`}
+             reports={inspected?.reports ?? []}
+@@ -315,6 +337,10 @@ export function AccountObservations<E>({
+   );
+ }
+ 
++/** "ChatGPT subscription": the provider whose subscription the credits belong to. */
++const subscriptionName = (account: AccountSummary) =>
++  account.providerName === undefined ? undefined : `${account.providerName} subscription`;
++
+ /** The plan or offering a source reported, for the account's metadata line. */
+ export function AccountObservationPlan<E>({
+   query,
+diff --git a/packages/ui/src/implementation/dashboard/account-usage-credits-view.tsx b/packages/ui/src/implementation/dashboard/account-usage-credits-view.tsx
+new file mode 100644
+index 0000000..0fc2c0c
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/account-usage-credits-view.tsx
+@@ -0,0 +1,237 @@
++import type { AccountObservationRecord } from "@executor-js/sdk";
++import { RadioGroup } from "radix-ui";
++import { useId, type ReactNode } from "react";
++import type { DisplayFormat } from "../../contracts/display.ts";
++import { cn } from "../lib/utils.ts";
++import { radioClass, radioDot } from "./radio-choice.ts";
++import { UsageCreditPolicy } from "apps/contracts";
++import type { AccountUsageRouting, UsageCredits } from "apps/contracts";
++import { Schema } from "effect";
++import {
++  creditDetails,
++  creditLine,
++  policyLabels,
++  policyNotes,
++  routingStatus,
++  type CreditDetail,
++} from "./account-usage-credits.ts";
++
++type Observation = NonNullable<AccountObservationRecord["result"]>["observation"];
++
++const creditTone = "text-sign-in-warning";
++
++/**
++ * The account's credits beside its usage cells: the provider's fact, then what the pool does with
++ * it. Paying with credits is amber, so it never reads as ordinary plan use.
++ */
++export function UsageCreditLine({
++  credits,
++  routing,
++  format,
++}: {
++  readonly credits: UsageCredits;
++  readonly routing?: AccountUsageRouting | undefined;
++  readonly format: DisplayFormat;
++}) {
++  const line = creditLine(credits, format);
++  const status = routing === undefined ? undefined : routingStatus(routing);
++  return (
++    <p
++      className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 self-center text-xs"
++      data-usage-credits={credits.state}
++      {...(routing === undefined ? {} : { "data-usage-routing": routing.use })}
++    >
++      <strong className="font-semibold text-foreground" data-usage-credits-line>
++        {line.text}
++      </strong>
++      {line.detail !== undefined && <span className="text-muted-foreground">· {line.detail}</span>}
++      {status !== undefined && (
++        <span
++          className={cn("text-[11px]", status.credit ? creditTone : "text-muted-foreground")}
++          data-usage-credit-status
++          {...(status.credit ? { "data-credit-use": "" } : {})}
++        >
++          · {status.text}
++        </span>
++      )}
++    </p>
++  );
++}
++
++function Rows({ rows }: { readonly rows: readonly CreditDetail[] }) {
++  return (
++    <dl className="m-0 min-w-0">
++      {rows.map((row) => (
++        <div
++          key={row.name}
++          className="flex justify-between gap-4 border-b border-border py-2 max-[640px]:gap-2.5"
++          data-credit-detail={row.name}
++        >
++          <dt className="text-muted-foreground">{row.name}</dt>
++          <dd
++            className={cn(
++              "m-0 max-w-[65%] text-right tabular-nums wrap-anywhere",
++              row.stale === true ? "text-sign-in-warning" : "text-foreground",
++            )}
++          >
++            {row.value}
++          </dd>
++        </div>
++      ))}
++    </dl>
++  );
++}
++
++/** Credits in the account's Details: plan, balance and policy, kept apart from banked resets. */
++export function UsageCreditDetails({
++  title,
++  subtitle,
++  credits,
++  routing,
++  observation,
++  now,
++  format,
++}: {
++  readonly title: string;
++  readonly subtitle?: string | undefined;
++  readonly credits: UsageCredits;
++  readonly routing?: AccountUsageRouting | undefined;
++  readonly observation: Observation;
++  readonly now: number;
++  readonly format: DisplayFormat;
++}) {
++  const heading = useId();
++  const details = creditDetails(credits, routing, observation, now, format);
++  const status = routing === undefined ? undefined : routingStatus(routing);
++  return (
++    <section
++      aria-labelledby={heading}
++      data-usage-credit-details
++      className="grid max-w-[900px] gap-4 rounded-lg border bg-card p-4 text-[12px] max-[640px]:gap-3 max-[640px]:p-3.5"
++    >
++      <div className="flex items-start justify-between gap-3 max-[640px]:flex-col max-[640px]:gap-1">
++        <div className="min-w-0">
++          <h3 id={heading} className="text-[13px] font-semibold text-foreground wrap-anywhere">
++            Details · {title}
++          </h3>
++          {subtitle !== undefined && <p className="text-muted-foreground">{subtitle}</p>}
++        </div>
++        {status !== undefined && (
++          <span className={creditTone} data-usage-credit-status>
++            {status.text}
++          </span>
++        )}
++      </div>
++      <div className="grid grid-cols-2 gap-x-9 max-[640px]:grid-cols-1">
++        <Rows rows={details.left} />
++        <Rows rows={details.right} />
++      </div>
++      <p className="max-w-[75ch] text-muted-foreground" data-usage-credit-note>
++        {details.note}
++      </p>
++    </section>
++  );
++}
++
++/** Each source's credits in the account's Details; sources without credits add nothing. */
++export function UsageCreditReports({
++  reports,
++  ...props
++}: Omit<Parameters<typeof UsageCreditDetails>[0], "credits" | "observation"> & {
++  readonly reports: readonly AccountObservationRecord[];
++}) {
++  return reports.map((report) => {
++    const observation = report.result?.observation;
++    const credits = observation?.usageCredits;
++    return observation === undefined || credits === undefined ? null : (
++      <UsageCreditDetails
++        key={report.source.id}
++        {...props}
++        credits={credits}
++        observation={observation}
++      />
++    );
++  });
++}
++
++/**
++ * The pool's Subscription credits policy. It steers routing in this pool only; the provider's own
++ * setting is the only absolute guarantee, which the disclosure says.
++ */
++export function UsageCreditPolicySetting({
++  policy,
++  onChange,
++  pending = false,
++  disabledReason,
++  failure,
++}: {
++  readonly policy: UsageCreditPolicy;
++  /** Absent for a caller who may not change the pool's policy. */
++  readonly onChange?: ((policy: UsageCreditPolicy) => void) | undefined;
++  readonly pending?: boolean;
++  /** Why the caller can't change it, shown under the choices. */
++  readonly disabledReason?: string | undefined;
++  /** A save that failed, with its retry, in the host's failure layout. */
++  readonly failure?: ReactNode;
++}) {
++  const heading = useId();
++  const note = useId();
++  return (
++    <section
++      aria-labelledby={heading}
++      aria-busy={pending}
++      data-usage-credit-policy={policy}
++      className="grid grid-cols-[minmax(240px,_1fr)_minmax(300px,_1fr)] gap-x-7 gap-y-2.5 rounded-lg border bg-card p-4 max-[850px]:grid-cols-1 max-[640px]:p-3.5"
++    >
++      <div className="min-w-0">
++        <h2 id={heading} className="text-[15px] font-semibold">
++          Subscription credits
++        </h2>
++        <p className="mt-0.5 text-xs text-muted-foreground">
++          Accounts with plan quota are always used first.
++        </p>
++      </div>
++      <div className="grid min-w-0 gap-1.5">
++        <RadioGroup.Root
++          value={policy}
++          aria-labelledby={heading}
++          aria-describedby={note}
++          disabled={onChange === undefined || pending}
++          onValueChange={(value) => {
++            if (Schema.is(UsageCreditPolicy)(value)) onChange?.(value);
++          }}
++          className="flex min-h-7 flex-wrap items-center gap-x-5 gap-y-2.5 max-[640px]:flex-col max-[640px]:items-start"
++        >
++          {UsageCreditPolicy.literals.map((choice) => (
++            <label
++              key={choice}
++              className="flex min-h-7 cursor-pointer items-center gap-2 text-[13px] has-disabled:cursor-default"
++            >
++              <RadioGroup.Item value={choice} className={radioClass}>
++                <RadioGroup.Indicator className={radioDot} />
++              </RadioGroup.Item>
++              {policyLabels[choice]}
++            </label>
++          ))}
++        </RadioGroup.Root>
++        <p id={note} className="text-xs text-muted-foreground" data-usage-credit-policy-note>
++          {pending ? "Saving…" : policyNotes[policy]}
++        </p>
++        {disabledReason !== undefined && (
++          <p className="text-xs text-muted-foreground">{disabledReason}</p>
++        )}
++        {failure}
++      </div>
++      <details className="col-span-full text-xs text-muted-foreground">
++        <summary className="w-fit cursor-pointer underline underline-offset-3">
++          About this limit
++        </summary>
++        <p className="max-w-[75ch] pt-1.5">
++          This controls routing in this pool. A request can cross the provider's quota limit while
++          it runs. For an absolute no-charge guarantee, turn off extra usage or credits in the
++          provider's settings.
++        </p>
++      </details>
++    </section>
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/account-usage-credits.ts b/packages/ui/src/implementation/dashboard/account-usage-credits.ts
+new file mode 100644
+index 0000000..e926969
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/account-usage-credits.ts
+@@ -0,0 +1,215 @@
++import type { AccountObservationRecord } from "@executor-js/sdk";
++import type { AccountUsageRouting, UsageCreditPolicy, UsageCredits } from "apps/contracts";
++import type { DisplayFormat } from "../../contracts/display.ts";
++import { age, bankedResets, countedUnit } from "./account-observation-format.ts";
++
++type Observation = NonNullable<AccountObservationRecord["result"]>["observation"];
++
++export const policyLabels = {
++  last_resort: "Allow as last resort",
++  never: "Never use credits",
++} satisfies Record<UsageCreditPolicy, string>;
++
++export const policyNotes = {
++  last_resort: "Credits are used only when no account has plan quota.",
++  never: "Accounts with unknown usage are skipped.",
++} satisfies Record<UsageCreditPolicy, string>;
++
++// Decimal strings stay exact: Intl formats them without a float round trip or rounding.
++const decimal = (value: string, format: DisplayFormat) =>
++  new Intl.NumberFormat(format.locale, { maximumFractionDigits: 20 }).format(
++    value as Intl.StringNumericLiteral,
++  );
++const money = (value: string, currency: string, format: DisplayFormat) =>
++  new Intl.NumberFormat(format.locale, { style: "currency", currency }).format(
++    value as Intl.StringNumericLiteral,
++  );
++
++/** The finite balance in its own unit; usage credits are never shown as money. */
++const balanceText = (balance: NonNullable<UsageCredits["balance"]>, format: DisplayFormat) =>
++  balance.unit === "currency" && balance.currency !== undefined
++    ? money(balance.value, balance.currency, format)
++    : `${decimal(balance.value, format)} ${countedUnit(Number(balance.value), "credits")}`;
++
++/** The row's credit fact: what the provider reported, and for Claude whether extra usage is on. */
++export function creditLine(credits: UsageCredits, format: DisplayFormat) {
++  const extra = credits.extraUsage;
++  if (extra !== null && (credits.state === "disabled" || extra.enabled === false))
++    return { text: "Extra usage off" };
++  if (extra?.enabled === true && credits.balance === null)
++    return { text: "Extra usage on", detail: "balance unavailable" };
++  switch (credits.state) {
++    case "available":
++      // "Available" with no amount, or with zero, is not a spendable balance to show.
++      return credits.balance === null
++        ? { text: "Credits unavailable" }
++        : /^0(?:\.0+)?$/u.test(credits.balance.value)
++          ? { text: "No credits" }
++          : { text: balanceText(credits.balance, format) };
++    case "unlimited":
++      return { text: "Unlimited credits" };
++    case "none":
++      return { text: "No credits" };
++    case "disabled":
++      return { text: "Credits off" };
++    case "unknown":
++      return { text: "Credits unavailable" };
++  }
++}
++
++/**
++ * What the pool does with the account now. The pool's own reason wins where it explains a refusal:
++ * a never policy blocks credits even while the account could otherwise spend them.
++ */
++export function routingStatus(routing: AccountUsageRouting) {
++  if (routing.reason === "credit_policy_never" && routing.use === "credits")
++    return { text: "Credits blocked by pool", credit: true };
++  switch (routing.use) {
++    case "plan":
++      return { text: "Using plan quota", credit: false };
++    case "credits":
++      return { text: "Usable on credits", credit: true };
++    case "exhausted":
++      return { text: "Plan exhausted", credit: false };
++    case "unknown":
++      return routing.policy === "never"
++        ? { text: "Skipped · usage unknown", credit: false }
++        : { text: "Usage unknown · last resort", credit: false };
++    case "blocked":
++      return routing.reason === "continuity_requires_reconnect"
++        ? { text: "Not used · reconnect needed", credit: false }
++        : routing.reason === "credential_unavailable"
++          ? { text: "Not used · sign-in unavailable", credit: false }
++          : { text: "Not used", credit: false };
++  }
++}
++
++const planState = (routing: AccountUsageRouting | undefined) =>
++  routing === undefined
++    ? undefined
++    : routing.use === "plan"
++      ? "Available"
++      : routing.use === "credits" || routing.use === "exhausted"
++        ? "Exhausted"
++        : "Unknown";
++
++const balanceDetail = (credits: UsageCredits, format: DisplayFormat) =>
++  credits.state === "unlimited"
++    ? "Unlimited, reported by provider"
++    : credits.state === "none"
++      ? "None"
++      : credits.balance === null
++        ? "Unavailable"
++        : balanceText(credits.balance, format);
++
++const reading = (credits: UsageCredits, now: number) =>
++  credits.observedAt === null || credits.freshness === "unknown"
++    ? "Unavailable"
++    : credits.freshness === "stale"
++      ? `Stale · last read ${age(credits.observedAt, now)}`
++      : `Read ${age(credits.observedAt, now)}`;
++
++const capDetail = (extra: NonNullable<UsageCredits["extraUsage"]>, format: DisplayFormat) => {
++  if (extra.monthlyCap === "unlimited") return "No monthly cap";
++  if (extra.monthlyCap === "unknown") return "No monthly cap reported";
++  const used = extra.usedRatio === null ? undefined : `${Math.round(extra.usedRatio * 100)}% used`;
++  const cap = extra.cap === null ? undefined : money(extra.cap.value, extra.cap.currency, format);
++  return ["Limited", cap, used].filter((part) => part !== undefined).join(" · ");
++};
++
++/**
++ * Plain words for the state, so nobody reads a cap, a flag or a missing reading as a wallet. Claims
++ * about the plan appear only where the pool's routing proves them.
++ */
++function creditNote(credits: UsageCredits, routing: AccountUsageRouting | undefined) {
++  const extra = credits.extraUsage;
++  const exhausted = routing?.use === "exhausted" || routing?.use === "credits";
++  if (extra !== null && (credits.state === "disabled" || extra.enabled === false))
++    return `Extra usage is off.${exhausted ? " The included plan is currently exhausted." : ""} A retained historical spend amount would not enable extra usage or prove a spendable balance.`;
++  if (extra?.enabled === true && credits.balance === null)
++    return "Extra usage is enabled. The monthly spending cap is not a credit balance. The provider has not supplied a verified wallet balance or currency scale. This account is a final fallback only when credits are allowed; its funding remains unknown.";
++  switch (credits.state) {
++    case "available":
++      return `The provider reports a credit balance. ${credits.balance?.unit === "currency" ? "Its currency and scale are verified." : "These are usage credits, not US dollars."} The pool uses accounts with plan quota before this account. Banked quota resets are separate and are never spent automatically.`;
++    case "unlimited":
++      return "The provider reports unlimited credits. This does not mean usage is free. Accounts with plan quota still come first.";
++    case "none":
++      return routing?.use === "plan"
++        ? "This account has included plan quota and no additional usage credits. It is preferred over every account that would need credits, including accounts with an existing session binding."
++        : "The provider reports no additional usage credits for this account.";
++    case "disabled":
++      return "Credits are off for this account.";
++    case "unknown":
++      return `There is no current credit${routing?.use === "unknown" ? " or plan-quota" : ""} reading. Missing data does not mean zero. Never use credits skips this account until included quota is confirmed. Allow as last resort keeps unknown funding behind known plan and credit accounts.`;
++  }
++}
++
++export interface CreditDetail {
++  readonly name: string;
++  readonly value: string;
++  readonly stale?: boolean;
++}
++
++/** Details' two columns: the plan, balance and policy, then the reading or Claude's extra usage. */
++export function creditDetails(
++  credits: UsageCredits,
++  routing: AccountUsageRouting | undefined,
++  observation: Observation,
++  now: number,
++  format: DisplayFormat,
++) {
++  const plan = planState(routing);
++  const left: CreditDetail[] = [
++    ...(plan === undefined ? [] : [{ name: "Included plan", value: plan }]),
++    { name: "Credit balance", value: balanceDetail(credits, format) },
++    ...(routing === undefined
++      ? []
++      : [{ name: "Credit policy", value: policyLabels[routing.policy] }]),
++  ];
++  const extra = credits.extraUsage;
++  const resets = bankedResets(observation, now);
++  const right: CreditDetail[] =
++    extra !== null
++      ? [
++          {
++            name: "Extra usage",
++            value: extra.enabled === null ? "Unknown" : extra.enabled ? "On" : "Off",
++          },
++          { name: "Monthly spend cap", value: capDetail(extra, format) },
++          {
++            name: "Extra usage spent",
++            value:
++              extra.spent === null
++                ? "Amount unavailable"
++                : money(extra.spent.value, extra.spent.currency, format),
++          },
++        ]
++      : [
++          {
++            name: "Credit reading",
++            value: reading(credits, now),
++            stale: credits.freshness === "stale",
++          },
++          {
++            name: "Balance unit",
++            value:
++              credits.balance === null
++                ? credits.state === "unlimited"
++                  ? "Usage credits"
++                  : credits.state === "none"
++                    ? "Credits"
++                    : "Unavailable"
++                : credits.balance.unit === "currency"
++                  ? (credits.balance.currency ?? "Unavailable")
++                  : "Usage credits",
++          },
++          {
++            name: "Banked quota resets",
++            value:
++              resets === undefined
++                ? "None reported"
++                : `${resets.count} · separate from usage credits`,
++          },
++        ];
++  return { left, right, note: creditNote(credits, routing) };
++}
+diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+index 0b9d356..a770b6f 100644
+--- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -87,6 +87,7 @@ import {
+   DialogTitle,
+ } from "../components/dialog.tsx";
+ import { cn } from "../lib/utils.ts";
++import { radioClass, radioDot } from "./radio-choice.ts";
+ import { methodLabels } from "./method-labels.ts";
+ import { requirementTitles } from "./requirement-titles.ts";
+ import {
+@@ -1356,10 +1357,6 @@ const rowClass = "group/account min-w-0 px-3.5 py-1.5 transition-colors";
+ const lineClass = (requests: boolean) => cn(accountRowGrid(true, requests), "min-h-9 gap-y-1.5");
+ const bandClass = "col-start-3 col-end-[-1] min-w-0 empty:hidden";
+ const usageClass = "min-w-0 pt-2 pl-16 empty:hidden";
+-// An unselected radio is how people link an account, so its ring contrasts with the row.
+-const radioClass =
+-  "grid size-4 shrink-0 place-items-center rounded-full border border-muted-foreground shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary";
+-const radioDot = "size-2 rounded-full bg-primary";
+ 
+ /** The row's logo and two-line name; clicking either picks the row's choice. */
+ function AccountRowIdentity({
+diff --git a/packages/ui/src/implementation/dashboard/radio-choice.ts b/packages/ui/src/implementation/dashboard/radio-choice.ts
+new file mode 100644
+index 0000000..3ab916c
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/radio-choice.ts
+@@ -0,0 +1,4 @@
++/** One look for the dashboard's radio choices; an unselected ring contrasts with its row. */
++export const radioClass =
++  "grid size-4 shrink-0 place-items-center rounded-full border border-muted-foreground shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary";
++export const radioDot = "size-2 rounded-full bg-primary";
