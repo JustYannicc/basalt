@@ -124,14 +124,15 @@ diff --git a/internal/quota/xai_subscription.go b/internal/quota/xai_subscriptio
 new file mode 100644
 --- /dev/null
 +++ b/internal/quota/xai_subscription.go
-@@ -0,0 +1,74 @@
+@@ -0,0 +1,75 @@
 +package quota
 +
 +import (
 +	"bytes"
 +	"encoding/json"
-+	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
 +	"strings"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
 +)
 +
 +type xaiWeeklyEntitlement uint8
