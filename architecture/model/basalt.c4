@@ -217,7 +217,7 @@ model {
 
     clientDesktop = module "Desktop client" {
       #basalt #deep
-      description "Electron window and tray supervise the same headless connection process. Browser approval stores remote credentials in the OS store. Selected agents receive separate local credentials only after a reviewed configuration change. Closing the window keeps the connection running; quitting stops only the process this app started. The Mac app is ad-hoc signed so an unnotarized download opens through Privacy & Security instead of reporting itself damaged."
+      description "Electron window and tray supervise the same headless connection process. Browser approval stores remote credentials in the OS store. Selected agents receive separate local credentials only after a reviewed configuration change. Closing the window keeps the connection running; quitting stops only the process this app started. Attaching to a connection another process started waits up to ten seconds for its local address before reporting it, and a connection without its address reads as still starting; a new connection removes any address a killed process left behind. The Mac app is ad-hoc signed so an unnotarized download opens through Privacy & Security instead of reporting itself damaged."
       metadata {
         code "clients/desktop"
         libraries "electron|esbuild|react|react-dom"
