@@ -1,0 +1,231 @@
+diff --git a/apps/hosted/web/src/implementation/pages/computer-quick-setup.tsx b/apps/hosted/web/src/implementation/pages/computer-quick-setup.tsx
+--- a/apps/hosted/web/src/implementation/pages/computer-quick-setup.tsx
++++ b/apps/hosted/web/src/implementation/pages/computer-quick-setup.tsx
+@@ -18,7 +18,16 @@ export function PoolSelect({
+   readonly disabled?: boolean;
+ }) {
+   const pools = setup.view?.pools ?? [];
+-  // Nothing to choose between: say which pool, without a control that offers no choice.
++  // No list to choose from: say why in the pool text's own spot, never with a stand-in pool name.
++  const note = !setup.view
++    ? setup.unavailable
++      ? "Pool unavailable"
++      : "Loading pool…"
++    : pools.length === 0
++      ? "No pool yet"
++      : undefined;
++  if (note) return <span className="max-w-60 truncate text-xs text-muted-foreground">{note}</span>;
++  // One pool: say which, without a control that offers no choice.
+   if (pools.length === 1)
+     return (
+       <span className="max-w-60 truncate text-xs font-medium" title={poolLabel(pools[0])}>
+@@ -26,13 +35,9 @@ export function PoolSelect({
+       </span>
+     );
+   return (
+-    <Select
+-      value={setup.pool ?? ""}
+-      onValueChange={setup.setPool}
+-      disabled={disabled || !pools.length}
+-    >
++    <Select value={setup.pool ?? ""} onValueChange={setup.setPool} disabled={disabled}>
+       <SelectTrigger size="sm" aria-label="Pool for models" className="w-56 max-w-full text-xs">
+-        <SelectValue placeholder="Your pool" />
++        <SelectValue placeholder="Choose a pool" />
+       </SelectTrigger>
+       <SelectContent>
+         {pools.map((pool) => (
+diff --git a/apps/hosted/web/src/implementation/pages/pool-setup.tsx b/apps/hosted/web/src/implementation/pages/pool-setup.tsx
+--- a/apps/hosted/web/src/implementation/pages/pool-setup.tsx
++++ b/apps/hosted/web/src/implementation/pages/pool-setup.tsx
+@@ -165,6 +165,11 @@ export function usePoolSetup() {
+   const [problem, setProblem] = useState<string>();
+   /** Why the last read of the list failed; the next successful read clears it. */
+   const [readFailure, setReadFailure] = useState<string>();
++  /**
++   * The last read of the list failed or was refused, so no list is coming. Only a successful read
++   * or a new scope clears it; an action clearing its own message must not bring back "loading".
++   */
++  const [listFailed, setListFailed] = useState(false);
+   const minting = useRef(false);
+   const cleared = useRef(new Set<string>());
+   /** The scope this page last loaded for. */
+@@ -235,10 +240,14 @@ export function usePoolSetup() {
+         readAt: started,
+       });
+       setReadFailure(undefined);
++      setListFailed(false);
+       return next;
+     } catch (error) {
+       if (reader.current !== own) return undefined;
+-      if (refused(error)) forget();
++      if (refused(error)) {
++        forget();
++        setListFailed(true);
++      }
+       throw error;
+     } finally {
+       own.inFlight -= 1;
+@@ -268,6 +277,8 @@ export function usePoolSetup() {
+       setProblem(undefined);
+       // oxlint-disable-next-line react/set-state-in-effect -- the previous scope's setup ends here
+       setReadFailure(undefined);
++      // oxlint-disable-next-line react/set-state-in-effect -- the previous scope's setup ends here
++      setListFailed(false);
+     }
+     const stored = registry.get(retainedSetupAtom);
+     const kept = stored && scope && sameScope(stored.scope, scope) ? stored : undefined;
+@@ -279,7 +290,10 @@ export function usePoolSetup() {
+     };
+     if (!scope) return fence;
+     // A retained list stays on screen while it is read again; a failed read keeps it there too.
+-    const failed = (error: unknown) => setReadFailure(failure(error));
++    const failed = (error: unknown) => {
++      setReadFailure(failure(error));
++      setListFailed(true);
++    };
+     // Like the dashboard's other reads: again on every return to the tab, and every 30 seconds
+     // while visible. One at a time; a read already under way answers for both.
+     const reconcile = () => {
+@@ -467,8 +481,19 @@ export function usePoolSetup() {
+   // Stable while nothing changed, so a quiet poll re-renders nothing.
+   const shown = problem ?? readFailure;
+   return useMemo(
+-    () => ({ view, pool, setPool, pending, problem: shown, copyPrompt, issueKey, act, failure }),
+-    [view, pool, setPool, pending, shown, copyPrompt, issueKey, act],
++    () => ({
++      view,
++      pool,
++      setPool,
++      pending,
++      problem: shown,
++      unavailable: listFailed,
++      copyPrompt,
++      issueKey,
++      act,
++      failure,
++    }),
++    [view, pool, setPool, pending, shown, listFailed, copyPrompt, issueKey, act],
+   );
+ }
+ export type PoolSetup = ReturnType<typeof usePoolSetup>;
+diff --git a/e2e/tests/pool-setup-connect.spec.ts b/e2e/tests/pool-setup-connect.spec.ts
+--- a/e2e/tests/pool-setup-connect.spec.ts
++++ b/e2e/tests/pool-setup-connect.spec.ts
+@@ -65,6 +65,8 @@ function setupService() {
+     { id: "team", name: "Team pool", mine: false },
+   ];
+   let minted = 0;
++  /** While set, the computer list waits, so the page shows its loading state. */
++  let listGate: Promise<void> | undefined;
+   const reply = (route: Route, body: unknown, status = 200) =>
+     route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+   const handle = (route: Route) => {
+@@ -74,11 +76,13 @@ function setupService() {
+     calls.push({ method: request.method(), path, body });
+     if (path === "context") return reply(route, { intent: "signed-intent" });
+     if (path === "computers")
+-      return reply(route, {
+-        computers,
+-        pools,
+-        undoPrompt: "Undo the setup on this computer.",
+-      });
++      return (listGate ?? Promise.resolve()).then(() =>
++        reply(route, {
++          computers,
++          pools,
++          undoPrompt: "Undo the setup on this computer.",
++        }),
++      );
+     if (path === "links") {
+       minted += 1;
+       const computer: FakeComputer = {
+@@ -144,7 +148,18 @@ function setupService() {
+   const listPools = (next: readonly Record<string, unknown>[]) => {
+     pools = next;
+   };
+-  return { handle, claim, capture, arrive, renameElsewhere, listPools, calls };
++  /** Holds the computer list until the returned release runs. */
++  const holdList = () => {
++    let release = () => {};
++    listGate = new Promise<void>((resolve) => {
++      release = () => {
++        listGate = undefined;
++        resolve();
++      };
++    });
++    return release;
++  };
++  return { handle, claim, capture, arrive, renameElsewhere, listPools, holdList, calls };
+ }
+ 
+ /** Resolves once the element's own transitions end, so a checkpoint shows it at rest. */
+@@ -546,11 +561,37 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+         yield* browser.checkpoint("Pool endpoint: key and example");
+         expect(service.calls.filter((call) => call.path === "links")).toHaveLength(4);
+ 
++        service.listPools([]);
++        yield* browser.use("Reload Connect with no pool", (page) => page.reload());
++        yield* browser.use("Open the pool endpoint with no pool", (page) =>
++          page.getByRole("tab", { name: "Pool endpoint" }).click(),
++        );
++        yield* browser.use("No pool says so", (page) =>
++          page.getByRole("tabpanel").getByText("No pool yet", { exact: true }).waitFor(),
++        );
++        expect(
++          yield* browser.use("No pool offers no picker", (page) =>
++            page.getByRole("tabpanel").getByRole("combobox", { name: "Pool for models" }).count(),
++          ),
++        ).toBe(0);
+         service.listPools([{ id: "own", name: "Own pool", mine: true, label: "Own pool · Team" }]);
++        const release = service.holdList();
+         yield* browser.use("Reload Connect with one pool", (page) => page.reload());
+         yield* browser.use("Open the pool endpoint again", (page) =>
+           page.getByRole("tab", { name: "Pool endpoint" }).click(),
+         );
++        yield* browser.use("Until the list arrives, the pool says it is loading", (page) =>
++          page.getByRole("tabpanel").getByText("Loading pool…", { exact: true }).waitFor(),
++        );
++        const stand = yield* browser.use("No stand-in pool name while loading", (page) =>
++          Promise.all([
++            page.getByRole("tabpanel").getByText("Your pool", { exact: true }).count(),
++            page.getByRole("tabpanel").getByRole("combobox", { name: "Pool for models" }).count(),
++          ]),
++        );
++        expect(stand).toEqual([0, 0]);
++        yield* browser.checkpoint("Pool endpoint: loading");
++        release();
+         yield* browser.use("The one pool shows as its label", (page) =>
+           page.getByRole("tabpanel").getByText("Own pool · Team", { exact: true }).waitFor(),
+         );
+@@ -830,7 +871,13 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+             yield* browser.use("The refused read clears the computer list", (page) =>
+               rows(page).filter({ hasText: "Leaving laptop" }).waitFor({ state: "detached" }),
+             );
+-            expect((yield* chosenPool("Refused read")).enabled).toBe(false);
++            // A refused read offers no pool at all: no picker, and no stand-in pool name.
++            yield* browser.use("Refused read: the pool says it is unavailable", (page) =>
++              guide(page, "Claude Code").getByText("Pool unavailable", { exact: true }).waitFor(),
++            );
++            expect(
++              yield* browser.use("Refused read: no pool picker", (page) => picker(page).count()),
++            ).toBe(0);
+             const late = yield* browser.use("Observe the earlier successful response", (page) =>
+               Promise.resolve({
+                 response: page.waitForResponse(
+@@ -852,7 +899,14 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+                   ),
+                 ),
+             );
+-            expect((yield* chosenPool("Late response after refusal")).enabled).toBe(false);
++            yield* browser.use("Late response after refusal: still unavailable", (page) =>
++              guide(page, "Claude Code").getByText("Pool unavailable", { exact: true }).waitFor(),
++            );
++            expect(
++              yield* browser.use("Late response after refusal: no pool picker", (page) =>
++                picker(page).count(),
++              ),
++            ).toBe(0);
+             expect(yield* computerRows("Late response after refusal", "Denied laptop")).toBe(0);
+             yield* browser.checkpoint("A late response cannot restore refused setup data");
+           }),

@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Until the setup host's pool list arrives, every Models from picker says Loading pool… in the pool text's own spot; after a failed or refused list read it says Pool unavailable until a list read succeeds or the scope changes, and an empty list says No pool yet. No stand-in pool name or disabled picker stands in for a missing list. The Connect e2e holds the list to prove the loading text and covers the empty and refused states."
+    }
+  }
+}
