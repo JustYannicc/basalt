@@ -1,0 +1,9 @@
+{
+  "identity": "aws-signin-platform-authorize-fixture",
+  "file": "0493-aws-signin-platform-authorize-fixture.patch",
+  "content_sha256": "4560b5f09ca5cb466e7e6a66688d07271850f285a51880e9c235a7899a666a48",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

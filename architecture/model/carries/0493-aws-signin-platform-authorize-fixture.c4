@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The synthetic Identity Center wire returns the sign-in platform page for device authorization, with the code only in its own field, so acquisition proof fails when the app refuses that page or the dialog stops showing the code."
+    }
+  }
+}
