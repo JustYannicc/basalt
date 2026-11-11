@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { Effect, Option, Redacted } from "effect";
 
 import { betterAuth } from "better-auth";
@@ -6,6 +7,7 @@ import { memoryAdapter } from "better-auth/adapters/memory";
 import { authOptions } from "../../.upstream/apps/hosted/server/src/implementation/auth.ts";
 import { provisionHostedOAuthResources } from "../../.upstream/apps/hosted/server/src/implementation/mcp-oauth.ts";
 const origin = "http://localhost:3000";
+const verifier = "v".repeat(43);
 
 export async function fixture(
   control?: (request: Request) => Promise<Response>,
@@ -103,18 +105,23 @@ export async function fixture(
         client_id,
         scope: "native offline_access",
         resource: `${origin}/native`,
-        code_challenge: "x".repeat(43),
+        code_challenge: createHash("sha256").update(verifier).digest("base64url"),
         code_challenge_method: "S256",
       }),
     }),
   );
   assert.equal(started.status, 200, await started.clone().text());
-  const { user_code } = await started.json();
+  const { user_code, device_code } = await started.json();
   const oldFetch = globalThis.fetch;
   if (control) globalThis.fetch = async (input, init) => control(new Request(input, init));
   return {
     request,
+    raw: (path: string, init: RequestInit) =>
+      auth.handler(new Request(`${origin}/api/auth${path}`, init)),
     user_code,
+    device_code,
+    client_id,
+    verifier,
     db,
     [Symbol.dispose]() {
       if (control) globalThis.fetch = oldFetch;

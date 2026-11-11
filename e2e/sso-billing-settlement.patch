@@ -1,0 +1,57 @@
+diff --git a/e2e/support/sso-billing.ts b/e2e/support/sso-billing.ts
+--- a/e2e/support/sso-billing.ts
++++ b/e2e/support/sso-billing.ts
+@@ -1,9 +1,10 @@
+ /** Billing policy has its own proof; protocol setup only enables the required entitlement. */
+ import { expect } from "@effect/vitest";
+-import { Effect, Schema } from "effect";
++import { Effect, Schedule, Schema } from "effect";
+ import { Actors } from "./actors.ts";
+ import { Api, body } from "./api.ts";
+ import { Browser } from "./browser.ts";
++import { cloudLocks } from "./cloud-locks.ts";
+ import { Emulators } from "./emulators.ts";
+ import { holdQuery, installBrowserClock, advanceToReconciliation } from "./query-transition.ts";
+ 
+@@ -44,6 +45,25 @@
+       yield* installBrowserClock;
+       const free = overview.plans.find((plan) => plan.name === "Free");
+       if (!free) return yield* Effect.die("Missing Free from the provisioned catalog");
++      const database = yield* cloudLocks;
++      // A membership response commits its job; older jobs may still be repairing a stale write.
++      const settleSeats = () =>
++        database
++          .run({
++            sql: "select status from hosted_provisioning where organization_id = $1 and kind = 'billing'",
++            params: [team.id],
++          })
++          .pipe(
++            Effect.flatMap((jobs) =>
++              jobs.some((job) => job.status === "failed")
++                ? Effect.die("The team's billing job failed before seat synchronization settled")
++                : Effect.succeed(
++                    jobs.length > 0 && jobs.every((job) => job.status === "succeeded"),
++                  ),
++            ),
++            Effect.repeat({ schedule: Schedule.spaced("20 millis"), until: (settled) => settled }),
++          );
++      yield* settleSeats();
+       const customer = () =>
+         emulators.billingCustomer({ organizationId: team.id, freePlanId: free.id });
+       const membersFeature = `${free.id.slice(0, -"-free".length)}-members`;
+@@ -107,6 +127,7 @@
+               invitationId: id,
+             })).status,
+           ).toBe(200);
++          yield* settleSeats();
+           expect(
+             (yield* api.request(actors.owner, "POST", `${billingPath}/checkout`, {
+               plan: enterprise.id,
+@@ -121,6 +142,7 @@
+               memberIdOrEmail: invited.user.email,
+             })).status,
+           ).toBe(200);
++          yield* settleSeats();
+           expect(
+             (yield* api.request(actors.owner, "POST", `${billingPath}/checkout`, {
+               plan: enterprise.id,

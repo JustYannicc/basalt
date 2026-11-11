@@ -12,9 +12,12 @@ export async function handleTunnel(
   const url = new URL(request.url);
   if (request.method !== "GET" || request.headers.get("upgrade")?.toLowerCase() !== "websocket")
     return new Response(null, { status: 426 });
+  // Native clients send no Origin (Node) or this server's own (React Native adds it and an app
+  // can't remove it). Any other Origin, including "null", is a browser page elsewhere.
+  const origin = request.headers.get("origin");
   if (
     url.search ||
-    request.headers.has("origin") ||
+    (origin !== null && origin !== url.origin) ||
     request.headers.get("sec-websocket-protocol") !== tunnelProtocol
   )
     return new Response(null, { status: 400 });

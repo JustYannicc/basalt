@@ -1,0 +1,53 @@
+diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/src/implementation/oauth.ts
+--- a/packages/mcp-auth/src/implementation/oauth.ts
++++ b/packages/mcp-auth/src/implementation/oauth.ts
+@@ -22,6 +22,7 @@
+ import { authCall, parse, runAuth } from "./auth-call.ts";
+ import { deviceAuthorizationPlugin, devicePollsPerRequest } from "./device-authorization.ts";
+ import { deviceDecisionStep } from "./device-decision-step.ts";
++import { normalizeNativeRevokeBody } from "./native-revoke-body.ts";
+ import { isNativeGrant, nativeGrants, type NativeGrantHost } from "./native-grants.ts";
+ import { deviceVerificationPath } from "../contracts/device.ts";
+ export { NativeGrantAccess, NativeGrantPolicy, type NativeGrantHost } from "./native-grants.ts";
+@@ -1094,6 +1095,8 @@
+   });
+   const plugin = {
+     id: "executor-grants",
++    onRequest: (request, ctx) =>
++      native === undefined ? Promise.resolve() : normalizeNativeRevokeBody(request, ctx.baseURL),
+     init: (ctx) => {
+       if (native !== undefined) extendOAuthProvider(ctx, native.extension);
+     },
+diff --git a/packages/mcp-auth/src/implementation/native-revoke-body.ts b/packages/mcp-auth/src/implementation/native-revoke-body.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/mcp-auth/src/implementation/native-revoke-body.ts
+@@ -0,0 +1,28 @@
++/** Transport adapters may represent a bodyless POST as an empty stream. */
++export async function normalizeNativeRevokeBody(request: Request, baseURL: string) {
++  if (
++    request.method !== "POST" ||
++    request.headers.has("content-type") ||
++    new URL(request.url).pathname !==
++      new URL("native/revoke", `${baseURL.replace(/\/$/, "")}/`).pathname
++  )
++    return;
++  if (request.body !== null) {
++    const reader = request.clone().body!.getReader();
++    try {
++      for (;;) {
++        const { done, value } = await reader.read();
++        if (done) break;
++        if (value.byteLength > 0) return;
++      }
++    } finally {
++      // A cloned body's cancellation waits for the original branch, which the router still owns.
++      void reader.cancel().catch(() => undefined);
++      reader.releaseLock();
++    }
++  }
++  const headers = new Headers(request.headers);
++  headers.set("content-type", "application/json");
++  headers.delete("content-length");
++  return { request: new Request(request, { method: "POST", headers, body: "{}" }) };
++}

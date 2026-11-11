@@ -1,0 +1,7 @@
+model {
+  extend basalt.setupHost {
+    metadata {
+      constraint "Native revoke accepts a POST without a content type only when its body is empty, including an empty transport stream. It normalizes that request to an empty JSON object before the existing parser and unchanged native bearer authorization. Nonempty untyped bodies, unsupported media types and malformed JSON keep their existing refusals; other auth routes remain unchanged."
+    }
+  }
+}
