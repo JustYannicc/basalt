@@ -104,6 +104,15 @@
             "mode": "manual",
             "requires": "Retire after pinned Home exposes bounded per-collection field-presence, null and quantity-validity handoffs independently of logs, and the authenticated pool view preserves them in pool-owned storage without response bodies, amounts or credentials. Home database models and versions must remain unchanged."
           }
+        },
+        {
+          "identity": "cliproxy-home-xai-collection-diagnostic",
+          "file": "0490-home-xai-collection-diagnostic.patch",
+          "sha256": "78c59a7752ad30f01621157f10f9ee6e34c21e2f703f69267e61ff79aa5b7ef2",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after pinned Home exposes bounded xAI monthly and weekly source-field flags tied to collector invocation time, distinguishes forced claim refusal and vendor completion persistence, and passes field-shape, privacy, real-collector, lease-loss, write-failure and management-detail regressions, preserves same-attempt completion ordering and pool-owned persistence through the existing authenticated view without response bodies, amounts or credentials, and does so without changing Home database models or versions."
+          }
         }
       ]
     },

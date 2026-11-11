@@ -25,10 +25,10 @@ export function parseConnectLink(params: Readonly<Record<string, string>>): Conn
     appId = field(params, "appId"),
     appSlug = field(params, "appSlug");
   if (!connection || !appId || !appSlug)
-    throw new Error("This Basalt link is incomplete. Open Connect Obsidian in Basalt again.");
+    throw new Error("This Signalbox link is incomplete. Open Connect Obsidian in Signalbox again.");
   if (!identity.test(appId) || !identity.test(appSlug))
     throw new Error(
-      "This Basalt link names an invalid app. Open Connect Obsidian in Basalt again.",
+      "This Signalbox link names an invalid app. Open Connect Obsidian in Signalbox again.",
     );
   // connectionUrl enforces HTTPS, the /mcp path and exactly one scoped connection id.
   const scoped = connectionUrl(connection);
@@ -48,7 +48,7 @@ export function parseConnectLink(params: Readonly<Record<string, string>>): Conn
 export function buildConnectLink(input: DeviceConfig & { vaultName?: string }): string {
   const scoped = connectionUrl(input.connection);
   if (!identity.test(input.appId) || !identity.test(input.appSlug))
-    throw new Error("Invalid Basalt app identity");
+    throw new Error("Invalid Signalbox app identity");
   const query = new URLSearchParams();
   if (input.vaultName) query.set("vault", input.vaultName);
   query.set("connection", scoped);

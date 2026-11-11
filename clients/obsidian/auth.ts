@@ -40,7 +40,7 @@ export function connectionUrl(input: string, allowLoopback = false) {
     !/^[A-Za-z0-9_-]{1,64}$/u.test(connection) ||
     url.searchParams.getAll("connection").length !== 1
   )
-    throw new Error("Use the app-scoped connection link from Basalt");
+    throw new Error("Use the app-scoped connection link from Signalbox");
   const query = new URLSearchParams({ connection, elicitation_mode: "native" });
   return `${url.origin}/mcp?${query}`;
 }
@@ -64,7 +64,7 @@ export async function beginConnection(
     !Array.isArray(discovery.authorization_servers) ||
     typeof discovery.authorization_servers[0] !== "string"
   )
-    throw new Error("Basalt returned discovery for a different connection");
+    throw new Error("Signalbox returned discovery for a different connection");
   const issuerValue = discovery.authorization_servers[0],
     issuer = endpoint(issuerValue, allowLoopback);
   const metadata = object(
@@ -93,7 +93,7 @@ export async function beginConnection(
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      client_name: "Basalt Obsidian Sync",
+      client_name: "Signalbox Obsidian Sync",
       token_endpoint_auth_method: "none",
       grant_types: [grant, "refresh_token"],
       response_types: [],
@@ -101,7 +101,7 @@ export async function beginConnection(
     }),
   });
   if (registered.status < 200 || registered.status >= 300)
-    throw new Error("Basalt could not register this device");
+    throw new Error("Signalbox could not register this device");
   const clientId = text(object(json(registered)), "client_id"),
     verifier = base64url(crypto.getRandomValues(new Uint8Array(32)));
   const challenge = base64url(
@@ -117,7 +117,7 @@ export async function beginConnection(
       code_challenge_method: "S256",
     }),
   );
-  if (reply.status !== 200) throw new Error("Basalt could not start device authorization");
+  if (reply.status !== 200) throw new Error("Signalbox could not start device authorization");
   const data = object(json(reply)),
     verificationUrl = endpoint(
       typeof data.verification_uri_complete === "string"
@@ -206,13 +206,13 @@ export async function refreshSession(
     }),
   );
   if (reply.status !== 200)
-    throw new Error("Device access was removed or expired. Reconnect in Basalt.");
+    throw new Error("Device access was removed or expired. Reconnect in Signalbox.");
   return token(object(json(reply)), session, now);
 }
 
 export async function revokeSession(http: Http, session: Session): Promise<void> {
   if (!session.revocationEndpoint)
-    throw new Error("This server requires removing this device in Basalt Connections.");
+    throw new Error("This server requires removing this device in Signalbox Connections.");
   const tokens = [
     ...(session.refreshToken
       ? [{ token: session.refreshToken, token_type_hint: "refresh_token" }]

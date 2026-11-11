@@ -300,8 +300,11 @@ jobs:
           [ "$seen" = "Clients release main workflow_dispatch success" ] ||
             fail "Run $RUN isn't a successful manual Clients release build on main (saw: $seen)."
           gh run download "$RUN" --repo "$GITHUB_REPOSITORY" --name signalbox-clients --dir "$RUNNER_TEMP/walked"
+          # The artifact keeps assemble's layout: the files and their sums under release/, the
+          # version and commit beside it.
           cd "$RUNNER_TEMP/walked"
-          sha256sum -c SHA256SUMS.txt || fail "Run $RUN's files don't match their recorded SHA256SUMS.txt."
+          [ -f release/SHA256SUMS.txt ] || fail "Run $RUN's signalbox-clients artifact has no release/SHA256SUMS.txt. It holds: $(find . -type f | sort | tr '\n' ' ')"
+          (cd release && sha256sum -c SHA256SUMS.txt) || fail "Run $RUN's files don't match their recorded SHA256SUMS.txt."
           echo "VERSION=$(cat version.txt)" >> "$GITHUB_ENV"
           echo "COMMIT=$(cat commit.txt)" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
@@ -311,7 +314,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN: ${{ inputs.publish_run }}
-          WALKED: ${{ runner.temp }}/walked
+          WALKED: ${{ runner.temp }}/walked/release
         run: |
           fail() {
             echo "::error::$1"

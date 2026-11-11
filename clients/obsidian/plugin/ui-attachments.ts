@@ -89,7 +89,7 @@ export class AttachmentControls {
     const row = new Setting(container)
       .setName("Attachments on this device")
       .setDesc(
-        `${local.length.toLocaleString("en-US")} of ${entries.length.toLocaleString("en-US")} downloaded · ${formatBytes(used)}. Basalt keeps every file, so a removed copy downloads again when you open its note.`,
+        `${local.length.toLocaleString("en-US")} of ${entries.length.toLocaleString("en-US")} downloaded · ${formatBytes(used)}. Signalbox keeps every file, so a removed copy downloads again when you open its note.`,
       );
     if (port.download)
       row.addButton((button) =>
@@ -159,7 +159,7 @@ export class AttachmentControls {
       {
         placeholder: "Choose a downloaded copy to remove from this device",
         empty:
-          "Nothing to remove. Files in pinned folders and files not yet in Basalt stay on this device.",
+          "Nothing to remove. Files in pinned folders and files not yet in Signalbox stay on this device.",
         action: "to remove this copy",
       },
       (entry) => void this.evict(entry.path),
@@ -203,7 +203,7 @@ export class AttachmentControls {
           : entry.pinned
             ? "It is in a pinned folder. Unpin the folder first."
             : this.blocked().has(path)
-              ? "Basalt doesn't have this file yet, so this copy is the only one."
+              ? "Signalbox doesn't have this file yet, so this copy is the only one."
               : null;
     this.failures.delete(path);
     if (refusal) this.failures.set(path, refusal);

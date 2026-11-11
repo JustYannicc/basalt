@@ -4,7 +4,7 @@ import { buildConnectLink, parseConnectLink, protocolAction } from "./link.ts";
 
 const connection = "https://basalt.example/mcp?connection=conn_123";
 
-test("a link built in Basalt opens as the same scoped connection in Obsidian", () => {
+test("a link built in Signalbox opens as the same scoped connection in Obsidian", () => {
   const link = buildConnectLink({
     connection,
     appId: "app_1",

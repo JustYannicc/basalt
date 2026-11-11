@@ -1,9 +1,9 @@
 {
   "id": "signalbox-sync",
   "name": "Signalbox Sync",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "minAppVersion": "1.12.3",
-  "description": "Keep your vault in Basalt so your agents can read, search and edit notes while your devices are off.",
-  "author": "Basalt",
+  "description": "Keep your vault in Signalbox so your agents can read, search and edit notes while your devices are off.",
+  "author": "Signalbox",
   "isDesktopOnly": false
 }

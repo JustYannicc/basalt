@@ -96,12 +96,12 @@ export class ConflictModal extends Modal {
     contentEl.empty();
     const conflicts = this.host.controller?.conflicts() ?? [];
     if (!conflicts.length) {
-      contentEl.createEl("p", { text: "Nothing needs a choice. Every version is in Basalt." });
+      contentEl.createEl("p", { text: "Nothing needs a choice. Every version is in Signalbox." });
       return;
     }
     contentEl.createEl("p", {
       cls: "basalt-sync-muted",
-      text: "Both versions stay in Basalt's history whatever you choose. Pick one for every file, then apply.",
+      text: "Both versions stay in Signalbox's history whatever you choose. Pick one for every file, then apply.",
     });
     for (const conflict of conflicts) this.renderConflict(conflict);
   }
@@ -119,7 +119,7 @@ export class ConflictModal extends Modal {
     if (binary && !mixed)
       group.createDiv({
         cls: "basalt-sync-callout is-warn",
-        text: "This change includes attachments. Both versions are kept in Basalt; choosing between attachment versions becomes available once attachment sync is on this device.",
+        text: "This change includes attachments. Both versions are kept in Signalbox; choosing between attachment versions becomes available once attachment sync is on this device.",
       });
     const failure = this.failures.get(conflict.ref);
     if (failure) group.createDiv({ cls: "basalt-sync-callout is-error", text: failure });
@@ -149,7 +149,7 @@ export class ConflictModal extends Modal {
     }
     const panes = box.createDiv({ cls: "basalt-sync-panes" });
     this.renderSide(panes, "This device", file.device);
-    this.renderSide(panes, "In Basalt", file.cloud);
+    this.renderSide(panes, "In Signalbox", file.cloud);
 
     const choices = box.createDiv({
       cls: "basalt-sync-choices",
@@ -157,7 +157,7 @@ export class ConflictModal extends Modal {
     });
     const options: [Pick, string][] = [
       ["device", "Keep this device's"],
-      ["cloud", "Keep Basalt's"],
+      ["cloud", "Keep Signalbox's"],
     ];
     if (!file.binary) options.push(["combined", "Write a combined version"]);
     for (const [pick, label] of options) {

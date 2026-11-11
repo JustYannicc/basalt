@@ -5,6 +5,9 @@
 // Account changes require the pool owner. Legacy sign-in endpoints refuse acquisition even
 // for the owner; provider apps own new connections.
 
+import type { CollectionDiagnostic, CollectionRequest } from "./collection-diagnostic-contract.ts";
+export type { CollectionDiagnostic, QuotaFieldPresence } from "./collection-diagnostic-contract.ts";
+
 export const controlBasePath = "/pool/v1";
 export const callerHeader = "x-signalbox-caller";
 
@@ -53,23 +56,6 @@ export interface BankedResets {
   readonly nextExpiresAt: string | null;
 }
 
-export interface QuotaFieldPresence {
-  readonly present: boolean;
-  readonly null: boolean;
-  readonly quantityNull: boolean;
-  readonly quantityValid: boolean;
-  readonly fiveHour: boolean;
-}
-export interface CollectionDiagnostic {
-  readonly attemptedAt: string;
-  readonly provider: "claude" | "codex";
-  readonly responseReceived: boolean;
-  readonly jsonValid: boolean;
-  readonly fiveHour?: QuotaFieldPresence;
-  readonly primaryWindow?: QuotaFieldPresence;
-  readonly secondaryWindow?: QuotaFieldPresence;
-}
-
 export interface Account {
   readonly id: string;
   readonly provider: string;
@@ -95,6 +81,7 @@ export interface Account {
     readonly errorCode: string | null;
     readonly lastAttemptAt: string | null;
     readonly diagnostic?: CollectionDiagnostic;
+    readonly request?: CollectionRequest;
   };
   /** ISO time the backend reads it again, or null. */
   readonly nextReadAt: string | null;
