@@ -439,7 +439,7 @@ test("Google recovery provisions Chromium before its bounded offline verificatio
     "Browser acquisition belongs to preparation",
   );
   assert.equal(job.steps[verification]["timeout-minutes"], 1);
-  assert.equal(job.steps[preparation]["timeout-minutes"], 2);
+  assert.equal(job.steps[preparation]["timeout-minutes"], 5);
   assert.equal(job["timeout-minutes"], 10);
   assert.doesNotMatch(job.steps[verification].run, /install|curl|wget|bunx/);
 });
