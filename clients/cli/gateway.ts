@@ -164,6 +164,7 @@ export async function startGateway(options: GatewayOptions) {
     });
   });
   tcp.on("upgrade", (request, socket, head) => {
+    socket.on("error", () => socket.destroy());
     const forward = async () => {
       if (
         !localRequest(request, authority) ||
