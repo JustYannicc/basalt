@@ -131,6 +131,15 @@
             "mode": "manual",
             "requires": "Retire after pinned Home accepts valid monthly and weekly quota omissions as healthy unmetered collections, never invents measured amounts, rejects present invalid values and real request errors, and an authoritative omission replaces old measurements and clears earlier collection failures. Pass persisted-collector, public-health, period, alias, malformed-field, explicit-zero and failure-recovery regressions without changing Home database models or versions."
           }
+        },
+        {
+          "identity": "cliproxy-home-xai-grok-pro-entitlement",
+          "file": "0511-home-xai-grok-pro-entitlement.patch",
+          "sha256": "17fbf4f1dc81fec76e52ffec8da1fa4ab90a2518e2bb70d98e27a0966279f419",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after pinned Home recognizes the GrokPro paid subscription tier, preserves explicitly reported numeric weekly and product percentages, and passes the real-collector, unknown-profile and free-profile regressions without changing Home database models or versions."
+          }
         }
       ]
     },
@@ -166,9 +175,7 @@
       "tag": "v1.0.5",
       "commit": "19d9868ffa24e94a2919ea1d1a761afa634de669",
       "sha256": "79b6ae8702b0ace76c10102d42a1401259e7dc772baacce2d47c90c33c6b25e7",
-      "auth_providers": [
-        "gemini-cli"
-      ]
+      "auth_providers": ["gemini-cli"]
     }
   }
 }

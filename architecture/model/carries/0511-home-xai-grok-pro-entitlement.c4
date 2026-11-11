@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "GrokPro is a recognized paid xAI subscription tier. Explicit numeric weekly and product percentages remain measured values; absent amounts stay unreported. Unknown and free profiles keep their existing failure semantics. The collector persists successful readings through the existing snapshot path without changing Home database models, versions or retry eligibility."
+    }
+  }
+}

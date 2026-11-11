@@ -1,0 +1,61 @@
+diff --git a/internal/quota/xai.go b/internal/quota/xai.go
+--- a/internal/quota/xai.go
++++ b/internal/quota/xai.go
+@@ -115,6 +115,8 @@
+ 		plan = &cluster.QuotaPlan{Name: "SuperGrok"}
+ 	case "supergrokplus":
+ 		plan = &cluster.QuotaPlan{Name: "SuperGrok Plus", Premium: true}
++	case "grokpro":
++		plan = &cluster.QuotaPlan{Name: "Grok Pro", Premium: true}
+ 	case "supergrokpro":
+ 		plan = &cluster.QuotaPlan{Name: "SuperGrok Pro", Premium: true}
+ 	case "supergrokheavy":
+diff --git a/internal/quota/xai_grok_pro_test.go b/internal/quota/xai_grok_pro_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/quota/xai_grok_pro_test.go
+@@ -0,0 +1,44 @@
++package quota
++
++import (
++	"context"
++	"testing"
++	"time"
++
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++)
++
++func TestXAIGrokProNumericWeeklyCollection(t *testing.T) {
++	now := time.Date(2026, 11, 11, 18, 46, 1, 0, time.UTC)
++	fixture := xaiProbeFixture{
++		profile: `{"subscriptionTier":"GrokPro"}`,
++		monthly: `{"config":{"monthlyLimit":0,"used":0,"onDemandCap":0}}`,
++		weekly:  `{"config":{"creditUsagePercent":3,"currentPeriod":{"type":"weekly","end":"2026-11-18T18:00:00Z"},"productUsage":[{"product":"GrokChat","usagePercent":4}]}}`,
++	}
++	server := serveXAIProbeFixture(t, func() xaiProbeFixture { return fixture })
++	repo := newCollectorTestRepository(t)
++	seedCollectorProviderAuth(t, repo, "grok-pro", "xai", map[string]any{"type": "xai", "access_token": "synthetic"})
++	collector := NewCollector(repo, Options{Owner: "grok-pro", XAIBillingURL: server.URL + "/v1/billing", Now: func() time.Time { return now }})
++	collector.collectCredential(context.Background(), &coreauth.Auth{ID: "grok-pro", Provider: "xai"}, true)
++	item, errGet := repo.GetQuotaCredential(context.Background(), "grok-pro", now)
++	if errGet != nil || item.CollectionStatus != "success" || item.Error != nil {
++		t.Fatalf("valid GrokPro numeric reading failed: status=%s failure=%+v read=%v", item.CollectionStatus, item.Error, errGet)
++	}
++	if item.Plan == nil || item.Plan.Name != "Grok Pro" {
++		t.Fatalf("lost vendor plan: %+v", item.Plan)
++	}
++	if len(item.Windows) != 2 {
++		t.Fatalf("expected only reported weekly/product windows: %+v", item.Windows)
++	}
++	for _, w := range item.Windows {
++		want := float64(3)
++		if w.ID == "xai-product-grokchat" {
++			want = 4
++		} else if w.ID != "xai-weekly-usage" {
++			t.Fatalf("invented window: %+v", w)
++		}
++		if w.Used == nil || *w.Used != want || w.Limit == nil || *w.Limit != 100 || w.Remaining == nil || *w.Remaining != 100-want || w.ResetAt == nil {
++			t.Fatalf("numeric percentage was not preserved: %+v", w)
++		}
++	}
++}
