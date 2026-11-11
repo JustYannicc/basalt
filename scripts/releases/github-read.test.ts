@@ -154,3 +154,68 @@ test("does not retry mutations after an uncertain response", async () => {
   await assert.rejects(api.request("POST", "repos/owner/repository/issues", {}), /GitHub API 503/);
   assert.equal(calls, 1);
 });
+
+test("retries a transport failure while reading a successful response body", async () => {
+  let calls = 0;
+  const waits: number[] = [];
+  const api = new GitHubApi(
+    "",
+    async () =>
+      calls++ === 0
+        ? new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.error(new TypeError("private body transport details"));
+              },
+            }),
+          )
+        : Response.json({ ok: true }),
+    {
+      sleep: async (ms) => {
+        waits.push(ms);
+      },
+    },
+  );
+  assert.deepEqual(await api.get("repos/owner/repository"), { ok: true });
+  assert.equal(calls, 2);
+  assert.deepEqual(waits, [1000]);
+});
+
+test("malformed JSON fails without retrying or exposing response bytes", async () => {
+  let calls = 0;
+  const api = new GitHubApi("", async () => {
+    calls++;
+    return new Response("private invalid response bytes");
+  });
+  await assert.rejects(api.get("repos/owner/repository"), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /GitHub API returned invalid JSON/);
+    assert.doesNotMatch(error.message, /private invalid response bytes/);
+    return true;
+  });
+  assert.equal(calls, 1);
+});
+
+test("transport retries also obey the remaining rate-limit wait budget", async () => {
+  let calls = 0;
+  const waits: number[] = [];
+  const api = new GitHubApi(
+    "",
+    async () => {
+      if (calls++ === 0)
+        return new Response("limited", { status: 429, headers: { "retry-after": "120" } });
+      throw new TypeError("transport failure");
+    },
+    {
+      sleep: async (ms) => {
+        waits.push(ms);
+      },
+    },
+  );
+  await assert.rejects(
+    api.get("repos/owner/repository"),
+    /GitHub API unavailable.*transport failure after 2 attempt/,
+  );
+  assert.deepEqual(waits, [120_000]);
+  assert.equal(calls, 2);
+});

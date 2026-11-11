@@ -22,7 +22,16 @@ export async function readGitHubJson<T>(
     let response: Response;
     try {
       response = await fetchImpl(url, { ...init, signal: AbortSignal.timeout(15_000) });
-    } catch {
+      if (response.ok) {
+        try {
+          return (await response.json()) as T;
+        } catch (error) {
+          if (error instanceof SyntaxError) throw new InvalidGitHubJson(path);
+          throw error;
+        }
+      }
+    } catch (error) {
+      if (error instanceof InvalidGitHubJson) throw error;
       const delay = 1000 * 2 ** (attempt - 1);
       if (attempt === attempts || delay > waitBudget - waited)
         throw unavailable(path, attempt, "transport failure");
@@ -30,7 +39,6 @@ export async function readGitHubJson<T>(
       waited += delay;
       continue;
     }
-    if (response.ok) return (await response.json()) as T;
     const rateLimited =
       response.status === 429 ||
       (response.status === 403 &&
@@ -77,4 +85,10 @@ function unavailable(path: string, attempts: number, reason: string, status?: nu
     ),
     status === undefined ? {} : { status },
   );
+}
+
+class InvalidGitHubJson extends Error {
+  constructor(path: string) {
+    super(`GitHub API returned invalid JSON for ${path}; source verification could not complete.`);
+  }
 }
