@@ -169,7 +169,7 @@
         {
           "identity": "cliproxy-node-usage-credit-routing",
           "file": "0507-node-usage-credit-routing.patch",
-          "sha256": "dc92745b5ce279f57a771f28261bfd95d9c25350c2d121638d7c071d99eece09",
+          "sha256": "4c5935844c7130f55a230fa134423a73cbc30c8edd0ca07992dea611f9ed94dc",
           "retirement": {
             "mode": "manual",
             "requires": "Retire only after the pinned source preserves credit observations, pool-owned policy and plan-before-affinity selection, passes the never-policy and retained WebSocket turn proofs, and preserves existing schema rows through additive upgrades."

@@ -49,7 +49,7 @@ index 0000000..1ead41b
 +}
 diff --git a/internal/home/usage_credits_test.go b/internal/home/usage_credits_test.go
 new file mode 100644
-index 0000000..4289afa
+index 0000000..75dbfd2
 --- /dev/null
 +++ b/internal/home/usage_credits_test.go
 @@ -0,0 +1,32 @@
@@ -80,7 +80,7 @@ index 0000000..4289afa
 +			t.Fatal("invalid check acknowledged")
 +		}
 +		last := commands.Last()
-+		if len(last) != 2 || last[0] != "RPOP" || ojson.Get(last[1], "type").String() != "usage-credit-check" || ojson.Get(last[1], "pinned_auth_id").String() != "account" {
++		if len(last) != 2 || !strings.EqualFold(last[0], "RPOP") || ojson.Get(last[1], "type").String() != "usage-credit-check" || ojson.Get(last[1], "pinned_auth_id").String() != "account" {
 +			t.Fatal("check used a dispatch request")
 +		}
 +	}
