@@ -204,9 +204,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Resolve the guard comparison commit
+        id: comparison
+        env:
+          PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
+          BASE_REF: ${{ github.base_ref || 'main' }}
+          BATCH_PUSH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/batch/') }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          base="$BASE_SHA"
+          if [ "$PULL_REQUEST" = true ] || [ "$BATCH_PUSH" = true ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            target="${BASE_REF:-main}"
+            git fetch --no-tags origin "+refs/heads/$target:refs/remotes/origin/$target"
+            base="$(git merge-base HEAD "refs/remotes/origin/$target")"
+          fi
+          base="$(git rev-parse --verify "$base^{commit}")"
+          echo "base_sha=$base" >> "$GITHUB_OUTPUT"
       - name: Verify CPA updater and pipeline boundary
         env:
-          BASE_SHA: ${{ needs.select.outputs.base_sha }}
+          BASE_SHA: ${{ steps.comparison.outputs.base_sha }}
         run: |
           python3 -m unittest discover -s scripts/cpa-tests
           python3 scripts/cpa-pipeline-guard.py --base "$BASE_SHA"
