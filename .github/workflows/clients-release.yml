@@ -49,6 +49,13 @@ jobs:
           desktop="$(node -p 'require("./clients/desktop/package.json").version')"
           mobile="$(node -p 'require("./clients/mobile/package.json").version')"
           phone="$(node -p '/\bversion: "([^"]+)"/.exec(require("node:fs").readFileSync("clients/mobile/app.config.ts", "utf8"))?.[1] ?? "missing"')"
+          # Release tags and the published notes need a plain major.minor.patch version.
+          if ! [[ "$clients" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            message="Clients release needs a major.minor.patch version; clients/package.json has $clients."
+            echo "::error::$message"
+            echo "$message" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           if [ "$clients" != "$desktop" ] || [ "$clients" != "$mobile" ] || [ "$clients" != "$phone" ]; then
             message="Clients release needs one version: clients/package.json is $clients, clients/desktop/package.json is $desktop, clients/mobile/package.json is $mobile and clients/mobile/app.config.ts is $phone."
             echo "::error::$message"
@@ -296,12 +303,15 @@ jobs:
             exit 1
           }
           [[ "$RUN" =~ ^[0-9]+$ ]] || fail "publish_run must be a run id, not '$RUN'."
-          seen="$(gh run view "$RUN" --repo "$GITHUB_REPOSITORY" --json workflowName,headBranch,event,conclusion --jq '[.workflowName, .headBranch, .event, .conclusion] | join(" ")')"
+          run="$(gh run view "$RUN" --repo "$GITHUB_REPOSITORY" --json workflowName,headBranch,event,conclusion,headSha \
+            --jq '[.workflowName, .headBranch, .event, .conclusion, .headSha] | join(" ")')" ||
+            fail "GitHub didn't return run $RUN; gh's error is above."
+          head="${run##* }"
+          seen="${run% *}"
           [ "$seen" = "Clients release main workflow_dispatch success" ] ||
             fail "Run $RUN isn't a successful manual Clients release build on main (saw: $seen)."
-          head="$(gh run view "$RUN" --repo "$GITHUB_REPOSITORY" --json headSha --jq .headSha)"
           gh run download "$RUN" --repo "$GITHUB_REPOSITORY" --name signalbox-clients --dir "$RUNNER_TEMP/walked" ||
-            fail "Run $RUN has no downloadable signalbox-clients artifact: it expired after 90 days, or $RUN is a publish run rather than the walked build."
+            fail "Run $RUN's signalbox-clients artifact couldn't be downloaded; gh's error is above. Usually it's past the repository's artifact retention, or $RUN is a publish run rather than the walked build."
           # upload-artifact roots its paths at their common parent, so assemble's files and their
           # sums arrive under release/ with version.txt and commit.txt beside it.
           cd "$RUNNER_TEMP/walked"
