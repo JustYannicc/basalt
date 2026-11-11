@@ -177,7 +177,9 @@ test("AWS device sign-in accepts only exact AWS pages in the connection's region
     platform.replace("eu-west-1.signin.aws", "evil.eu-west-1.signin.aws"),
     platform.replace("eu-west-1.signin.aws", "eu-west-1.signin.aws.evil.com"),
     platform.replace("eu-west-1.signin.aws", "eu-west-1.signin.awsx"),
-    platform.replace("https://", "https://eu-west-1.signin.aws@evil.com/").replace("@evil.com/eu-west-1.signin.aws", "@evil.com"),
+    platform
+      .replace("https://", "https://eu-west-1.signin.aws@evil.com/")
+      .replace("@evil.com/eu-west-1.signin.aws", "@evil.com"),
     platform.replace("/platform/authorize", "/platform/other"),
     platform.replace("request_uri=urn", "request_uri=https"),
     `${platform}#fragment`,
