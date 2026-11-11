@@ -176,6 +176,7 @@ export async function startGateway(options: GatewayOptions) {
           "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
         );
       const profile = await options.profile();
+      if (socket.destroyed) return;
       if (!findAgent(request, profile.agents, "models"))
         return socket.end(
           "HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
