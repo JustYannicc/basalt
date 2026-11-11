@@ -1,7 +1,7 @@
 model {
   extend basalt.clientConnection {
     metadata {
-      constraint "The local gateway limits simultaneous connection starts, not active model or tool streams. Up to 1,024 authenticated starts wait in arrival order for at most thirty seconds before dispatch; overflow refuses with retryable unavailability. HTTP response headers, WebSocket upgrades and refused handshakes release start capacity on both direct and native tunnel transports. Cancellation removes queued work; connection controls and shutdown still stop every queued and active operation. A failure before dispatch remains retryable without replaying an uncertain model request. Deployment instance count and provider account capacity remain independent."
+      constraint "The local gateway limits simultaneous connection starts, not active model or tool streams. Up to 1,024 authenticated starts wait in arrival order for at most thirty seconds before dispatch; overflow refuses with retryable unavailability. HTTP response headers, WebSocket upgrades and refused handshakes release start capacity on both direct and native tunnel transports. Cancellation removes queued work; connection controls and shutdown still stop every queued and active operation. A failure before dispatch remains retryable without replaying an uncertain model request. Listeners request a backlog of 511 pending connections; the operating system can clamp it, including the default macOS limit of 128. This is a connection burst limit, not an active-stream limit; the client never changes the system setting. Deployment instance count and provider account capacity remain independent."
     }
   }
 }

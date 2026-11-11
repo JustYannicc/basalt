@@ -248,7 +248,8 @@ export async function startGateway(options: GatewayOptions) {
   const listen = (server: typeof tcp, target: { host: string; port: number } | { path: string }) =>
     new Promise<void>((resolve, reject) => {
       server.once("error", reject);
-      server.listen(target, () => {
+      // macOS still clamps this to kern.ipc.somaxconn, which defaults to 128.
+      server.listen({ ...target, backlog: 511 }, () => {
         server.off("error", reject);
         resolve();
       });
