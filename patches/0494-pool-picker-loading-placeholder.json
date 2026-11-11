@@ -1,0 +1,9 @@
+{
+  "identity": "pool-picker-loading-placeholder",
+  "file": "0494-pool-picker-loading-placeholder.patch",
+  "content_sha256": "577e24a632ea9243c8d1cb15a0b393f04143ac76d199d4b90b69eaa261203683",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
