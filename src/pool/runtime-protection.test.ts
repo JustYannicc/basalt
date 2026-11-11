@@ -80,6 +80,105 @@ function fixture(check: (call: number) => Promise<PoolStatus>) {
   };
 }
 
+test("fresh same-boot readiness recovers admission while active streams stay protected", async () => {
+  const f = fixture(async () => {
+    throw new PoolRuntimeUnhealthy();
+  });
+  f.clock.advance(500);
+  await f.clock.scheduled(1_000);
+  assert.deepEqual(f.failures, [1]);
+  try {
+    assert.doesNotThrow(() => f.protection.admit({ ...f.status, policyLeaseUntil: 2_000 }));
+    assert.equal(f.socket.signal.aborted, false);
+  } finally {
+    f.socket.release();
+    f.clock.advance(1_000);
+    await f.background[0];
+  }
+});
+
+test("admission refuses a changed boot and closes the old streams", async () => {
+  const f = fixture(async () => {
+    throw new PoolRuntimeUnhealthy();
+  });
+  f.clock.advance(500);
+  await f.clock.scheduled(1_000);
+  try {
+    assert.throws(
+      () => f.protection.admit({ ...f.status, boot_id: "new-boot", policyLeaseUntil: 2_000 }),
+      PoolRuntimeUnhealthy,
+    );
+    assert.equal(f.socket.signal.aborted, true);
+  } finally {
+    f.socket.release();
+    f.clock.advance(1_000);
+    await f.background[0];
+  }
+});
+
+test("recovery refuses invalid or short leases and accepts exactly 250 milliseconds", async () => {
+  const f = fixture(async () => {
+    throw new PoolRuntimeUnhealthy();
+  });
+  f.clock.advance(500);
+  await f.clock.scheduled(1_000);
+  try {
+    for (const [deadline, reason] of [
+      [undefined, "lease_invalid"],
+      [NaN, "lease_invalid"],
+      [Infinity, "lease_invalid"],
+      [500, "lease_expired"],
+      [499, "lease_expired"],
+      [749, "lease_too_short"],
+    ] as const)
+      assert.throws(() => f.protection.admit({ ...f.status, policyLeaseUntil: deadline }), {
+        reason,
+      });
+    assert.equal(f.socket.signal.aborted, false);
+    assert.doesNotThrow(() => f.protection.admit({ ...f.status, policyLeaseUntil: 750 }));
+  } finally {
+    f.socket.release();
+    f.clock.advance(1_000);
+    await f.background[0];
+  }
+});
+
+test("six active sessions admit 240 fresh requests across 40 failed probes without refusals", async () => {
+  const f = fixture(async () => {
+    throw new PoolRuntimeUnhealthy();
+  });
+  const others = Array.from({ length: 5 }, (_, index) =>
+    f.streams.acquire(`http-${index}`, "pool-a", new AbortController().signal),
+  );
+  let refusals = 0;
+  try {
+    for (let round = 1; round <= 40; round++) {
+      f.clock.advance(round * 500);
+      await f.clock.scheduled((round + 1) * 500);
+      await Promise.all(
+        Array.from({ length: 6 }, async () => {
+          try {
+            f.protection.admit({ ...f.status, policyLeaseUntil: f.clock.time + 1_500 });
+          } catch (error) {
+            if (!(error instanceof PoolRuntimeUnhealthy)) throw error;
+            refusals++;
+          }
+        }),
+      );
+      assert.equal(f.streams.active, 6);
+    }
+    assert.equal(refusals, 0);
+    assert.equal(f.calls(), 40);
+    assert.equal(f.closes(), 0);
+    assert.ok(others.every((stream) => !stream.signal.aborted));
+  } finally {
+    f.socket.release();
+    for (const stream of others) stream.release();
+    f.clock.advance(20_500);
+    await f.background[0];
+  }
+});
+
 test("six active streams survive lease expiry while new admission stops and probes continue", async () => {
   const f = fixture(() => new Promise(() => {}));
   const others = Array.from({ length: 5 }, (_, index) =>
@@ -108,7 +207,7 @@ test("six active streams survive lease expiry while new admission stops and prob
     },
   ]);
   assert.throws(
-    () => f.protection.admit({ ...f.status, policyLeaseUntil: 3_000 }),
+    () => f.protection.admit({ ...f.status, policyLeaseUntil: 1_749 }),
     PoolRuntimeUnhealthy,
   );
   assert.equal(f.calls(), 2);
@@ -167,7 +266,7 @@ test("unhealthy readiness preserves HTTP and WebSocket streams, refuses admissio
     },
   ]);
   assert.throws(
-    () => f.protection.admit({ ...f.status, policyLeaseUntil: 2_500 }),
+    () => f.protection.admit({ ...f.status, policyLeaseUntil: 749 }),
     PoolRuntimeUnhealthy,
   );
   f.clock.advance(1_000);
