@@ -104,6 +104,9 @@ export function createArtifactsStores(input: {
         return stored;
       }
       // Only a blob can be missing from a complete clone; trees and commits arrive with their head.
+      // The Git engine asks for every object it is about to write; a new one is named by no
+      // stored tree, so it can't be in the repository and costs no remote read.
+      if (!cache.referenced(oid)) return null;
       const content = await repository.readBlob(oid);
       if (!content) return null;
       const [blob] = await verified([{ oid, type: "blob", content: new Uint8Array(content) }]);
