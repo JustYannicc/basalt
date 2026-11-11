@@ -4,11 +4,25 @@ import {
   type GitHubSourceReader,
 } from "./catalog-source-github.ts";
 export type { SourceFile, GitHubSourceReader } from "./catalog-source-github.ts";
-import { createHash, randomUUID } from "node:crypto";
-import { readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { appendFile, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { GitHubApi } from "./releases/github.ts";
+
+import {
+  createSourceArtifacts,
+  updateSourceProvenance,
+  isRecord,
+  isSafeSourcePath,
+} from "./catalog-source-artifacts.ts";
+export {
+  createSourceArtifacts,
+  updateSourceProvenance,
+  type SourceArtifacts,
+} from "./catalog-source-artifacts.ts";
+import { checkCatalogSources, provenanceChanges } from "./catalog-source-check.ts";
+import { sourcesNeedingVerification } from "./catalog-source-trust.ts";
 
 const sourceRepositories = {
   aws: "JustYannicc/signalbox-app-aws",
@@ -28,12 +42,6 @@ export type CatalogSourceApp = {
 export type CatalogSourceManifest = {
   schema: 1;
   apps: CatalogSourceApp[];
-};
-
-export type SourceArtifacts = {
-  snapshot: Buffer;
-  snapshotSha256: string;
-  fileSha256: Record<string, string>;
 };
 
 export function parseCatalogSourceManifest(value: unknown): CatalogSourceManifest {
@@ -90,20 +98,6 @@ export function parseCatalogSourceManifest(value: unknown): CatalogSourceManifes
   return { schema: 1, apps };
 }
 
-function isSafeSourcePath(value: unknown): value is string {
-  if (
-    typeof value !== "string" ||
-    value.length === 0 ||
-    value !== value.trim() ||
-    value.includes("\\") ||
-    value.includes("\0") ||
-    value.startsWith("/")
-  )
-    return false;
-  const segments = value.split("/");
-  return segments.every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
-}
-
 export async function fetchPinnedSource(
   app: CatalogSourceApp,
   github: GitHubSourceReader,
@@ -133,61 +127,10 @@ export async function fetchPinnedSource(
   return files;
 }
 
-export function createSourceArtifacts(
-  packageName: CatalogPackage,
-  files: readonly SourceFile[],
-): SourceArtifacts {
-  if (!files.some((file) => file.path === "package.json"))
-    throw new Error(`${packageName} source snapshot requires package.json`);
-  const ordered = [...files].sort((left, right) =>
-    left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
-  );
-  if (new Set(ordered.map((file) => file.path)).size !== ordered.length)
-    throw new Error(`${packageName} source snapshot contains duplicate paths`);
-  if (ordered.some((file) => !isSafeSourcePath(file.path)))
-    throw new Error(`${packageName} source snapshot only accepts safe relative paths`);
-  let packageManifest: unknown;
-  try {
-    packageManifest = JSON.parse(ordered.find((file) => file.path === "package.json")!.content);
-  } catch {
-    throw new Error(`${packageName} source package.json is not valid JSON`);
-  }
-  if (!isRecord(packageManifest) || packageManifest.name !== packageName)
-    throw new Error(`${packageName} source package.json must keep the package name ${packageName}`);
-  const fileSha256 = Object.fromEntries(
-    ordered.map((file) => [file.path, sha256(Buffer.from(file.content, "utf8"))]),
-  );
-  const snapshot = Buffer.from(
-    `${JSON.stringify({ package: packageName, files: ordered }, null, 2)}\n`,
-    "utf8",
-  );
-  return { snapshot, snapshotSha256: sha256(snapshot), fileSha256 };
-}
-
-export function updateSourceProvenance(
-  current: Record<string, unknown>,
-  app: CatalogSourceApp,
-  artifacts: SourceArtifacts,
-): Buffer {
-  const provenance: Record<string, unknown> = { ...current };
-  if ("sourceSha256" in provenance) provenance.sourceSha256 = artifacts.snapshotSha256;
-  if ("snapshotSha256" in provenance) provenance.snapshotSha256 = artifacts.snapshotSha256;
-  if ("catalogFileSha256" in provenance) provenance.catalogFileSha256 = artifacts.fileSha256;
-
-  const previousCatalogSource = isRecord(provenance.catalogSource) ? provenance.catalogSource : {};
-  provenance.catalogSource = {
-    ...previousCatalogSource,
-    repository: `https://github.com/${app.repository}`,
-    commit: app.commit,
-    fileSha256: artifacts.fileSha256,
-    snapshotSha256: artifacts.snapshotSha256,
-  };
-  return Buffer.from(`${JSON.stringify(provenance, null, 2)}\n`, "utf8");
-}
-
 export async function runCatalogSources(options: {
   root: string;
   manifestPath?: string;
+  baseRef?: string;
   write?: boolean;
   github?: GitHubSourceReader;
 }): Promise<void> {
@@ -196,9 +139,15 @@ export async function runCatalogSources(options: {
   const manifest = parseCatalogSourceManifest(
     JSON.parse(await readFile(manifestPath, "utf8")) as unknown,
   );
+  let apps = manifest.apps;
+  if (!options.write) {
+    await checkCatalogSources(root, manifest);
+    apps = await sourcesNeedingVerification(root, apps, options.baseRef ?? "origin/main");
+    if (!apps.length) return;
+  }
   const github = options.github ?? new GitHubApi();
   const updates = await Promise.all(
-    manifest.apps.map(async (app) => {
+    apps.map(async (app) => {
       const sourceFiles = await fetchPinnedSource(app, github);
       const artifacts = createSourceArtifacts(app.package, sourceFiles);
       const sourcePath = join(root, "src/catalog", app.package, "source.json");
@@ -218,16 +167,16 @@ export async function runCatalogSources(options: {
   );
 
   if (!options.write) {
-    const stale = [] as string[];
+    const problems: string[] = [];
     for (const update of updates) {
-      if (!(await readFile(update.sourcePath)).equals(update.source)) stale.push(update.sourcePath);
-      if (!(await readFile(update.provenancePath)).equals(update.provenance))
-        stale.push(update.provenancePath);
+      const current = JSON.parse(await readFile(update.provenancePath, "utf8"));
+      const changes = provenanceChanges(current, JSON.parse(update.provenance.toString("utf8")));
+      if (changes.length || !(await readFile(update.sourcePath)).equals(update.source))
+        problems.push(
+          `Catalog source drift for ${update.packageName}: pinned source differs from verified repository content: ${changes.join(", ")}`,
+        );
     }
-    if (stale.length)
-      throw new Error(
-        `Catalog source snapshots are stale: ${stale.join(", ")}. Run with --write to update them.`,
-      );
+    if (problems.length) throw new Error(problems.join("\n"));
     return;
   }
 
@@ -254,38 +203,48 @@ function isGitSha(value: unknown): value is string {
   return typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
 }
 
-function sha256(bytes: Buffer): string {
-  return createHash("sha256").update(bytes).digest("hex");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function parseArgs(argv: string[]): { manifestPath?: string; write: boolean } {
+function parseArgs(argv: string[]): {
+  manifestPath?: string;
+  baseRef?: string;
+  summaryPath?: string;
+  write: boolean;
+} {
   let manifestPath: string | undefined;
+  let baseRef: string | undefined;
+  let summaryPath: string | undefined;
   let write = false;
   for (let index = 0; index < argv.length; index++) {
     const argument = argv[index];
     if (argument === "--write") write = true;
     else if (argument === "--check") write = false;
-    else if (argument === "--manifest") {
-      const path = argv[++index];
-      if (!path) throw new Error("--manifest requires a path");
-      manifestPath = path;
+    else if (["--manifest", "--base", "--summary"].includes(argument!)) {
+      const value = argv[++index];
+      if (!value) throw new Error(`${argument} requires a value`);
+      if (argument === "--manifest") manifestPath = value;
+      else if (argument === "--base") baseRef = value;
+      else summaryPath = value;
     } else throw new Error(`Unknown catalog source argument: ${argument}`);
   }
-  return { manifestPath, write };
+  return { manifestPath, baseRef, summaryPath, write };
 }
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  await runCatalogSources({ root, ...args });
+  try {
+    await runCatalogSources({ root, ...args });
+  } catch (error) {
+    if (args.summaryPath)
+      await appendFile(
+        resolve(root, args.summaryPath),
+        `## Catalog source verification failed\n\n${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    throw error;
+  }
   console.log(
     args.write
       ? "Catalog source snapshots updated."
-      : "Catalog source snapshots match their pinned repositories.",
+      : "Catalog source snapshots match their verified pins and hashes.",
   );
 }
 
