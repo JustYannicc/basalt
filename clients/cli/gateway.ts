@@ -61,6 +61,8 @@ export async function startGateway(options: GatewayOptions) {
         response.once("close", cancel);
         active.add(controller);
         try {
+          // A reconnect or sign-out in progress finishes before the read uses the grant.
+          await transition;
           const summary = await options.source.apps(
             AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]),
           );

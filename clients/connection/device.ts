@@ -192,7 +192,7 @@ export function deviceConnection(
       }
       const inventory = readInventory(await response.json());
       // A sign-out or disconnect during the read leaves nothing for the panel to show.
-      if (generation !== epoch) throw new Error("Connection state changed.");
+      if (generation !== epoch || current !== saved) throw new Error("Connection state changed.");
       const counts = new Map(inventory.accountCounts?.map(({ app, count }) => [app, count]));
       // Without server counts, only the caller's own links are known.
       const linked = new Map<string, Set<string>>();
