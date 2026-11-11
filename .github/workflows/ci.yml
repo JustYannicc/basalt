@@ -314,6 +314,14 @@ jobs:
             .generated/native-mobile-*/result.json
             .generated/native-mobile-*/failure*.txt
           if-no-files-found: warn
+      - name: Retain native product server logs on failure
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: native-client-product-server-logs
+          include-hidden-files: true
+          path: .upstream/.local/testing/**/server.log
+          if-no-files-found: warn
   clerk-sign-in:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'clerk-sign-in')
