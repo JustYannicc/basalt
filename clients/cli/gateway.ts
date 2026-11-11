@@ -119,9 +119,13 @@ export async function startGateway(options: GatewayOptions) {
         failure.headers.forEach((value, name) => response.setHeader(name, value));
         response.writeHead(failure.status);
         response.end(await failure.text());
-      } else answer(response, capability === "models" ? 503 : 502, {
-        error: capability === "models" ? "Model access is unavailable." : "The request was interrupted. Its outcome may be unknown; it was not replayed.",
-      });
+      } else
+        answer(response, capability === "models" ? 503 : 502, {
+          error:
+            capability === "models"
+              ? "Model access is unavailable."
+              : "The request was interrupted. Its outcome may be unknown; it was not replayed.",
+        });
     } finally {
       active.delete(controller);
       response.off("close", cancel);
