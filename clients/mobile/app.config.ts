@@ -9,7 +9,7 @@ const identifier = release ? "run.signalbox.client" : "run.signalbox.client.deve
 const config: ExpoConfig = {
   name: release ? brand.name : `${brand.name} Client Dev`,
   slug: "signalbox-client",
-  version: "0.1.0",
+  version: "0.1.1",
   scheme: release ? "signalbox-client" : "signalbox-client-dev",
   orientation: "default",
   userInterfaceStyle: "automatic",
@@ -38,5 +38,18 @@ const config: ExpoConfig = {
     serverOrigin: process.env.EXPO_PUBLIC_CLIENT_SERVER_ORIGIN ?? `https://${brand.host}`,
   },
 };
+
+// Android installs a release over another only when its versionCode is higher, so it follows the
+// clients version: 0.1.1 is 101 and the first release, 0.1.0, shipped Expo's default of 1.
+const [major, minor, patch] = config.version!.split(".").map(Number);
+if (
+  ![major, minor, patch].every((part) => Number.isInteger(part)) ||
+  minor! >= 100 ||
+  patch! >= 100
+)
+  throw new Error(
+    `Clients version ${config.version} must be major.minor.patch with minor and patch below 100.`,
+  );
+config.android!.versionCode = major! * 10000 + minor! * 100 + patch!;
 
 export default config;

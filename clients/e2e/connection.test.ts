@@ -317,7 +317,8 @@ test(
     await chmod(profileFile, 0o600);
     await command(["sign-out"], profile.home);
     const response = await fetch(`${runtime.origin}/v1/models`, { headers: headers() });
-    assert.equal(response.status, 503);
+    assert.equal(response.status, 401);
+    assert.equal(response.headers.get("retry-after"), null);
     assert.equal(response.headers.get("x-should-retry"), null);
     await response.body?.cancel();
     assert.equal(

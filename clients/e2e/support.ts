@@ -52,8 +52,8 @@ export async function fixtureHome(origin: string) {
     await command(["agent", "add", id, ...permissions], home);
   const secret = async (id: string): Promise<string> =>
     JSON.parse(await readFile(join(home, `agent-${id}.json`), "utf8")).token;
-  const start = async () => {
-    const runtime = launch(["run"], home);
+  const start = async (execArgv: readonly string[] = []) => {
+    const runtime = launch(["run"], home, execArgv);
     const ready = () =>
       /Connection ready at http:\/\/127\.0\.0\.1:\d+\./u.exec(runtime.stderr())?.[0];
     if (!ready())

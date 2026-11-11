@@ -204,9 +204,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Resolve the guard comparison commit
+        id: comparison
+        env:
+          PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
+          BASE_REF: ${{ github.base_ref || 'main' }}
+          BATCH_PUSH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/batch/') }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          base="$BASE_SHA"
+          if [ "$PULL_REQUEST" = true ] || [ "$BATCH_PUSH" = true ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            target="${BASE_REF:-main}"
+            git fetch --no-tags origin "+refs/heads/$target:refs/remotes/origin/$target"
+            base="$(git merge-base HEAD "refs/remotes/origin/$target")"
+          fi
+          base="$(git rev-parse --verify "$base^{commit}")"
+          echo "base_sha=$base" >> "$GITHUB_OUTPUT"
       - name: Verify CPA updater and pipeline boundary
         env:
-          BASE_SHA: ${{ needs.select.outputs.base_sha }}
+          BASE_SHA: ${{ steps.comparison.outputs.base_sha }}
         run: |
           python3 -m unittest discover -s scripts/cpa-tests
           python3 scripts/cpa-pipeline-guard.py --base "$BASE_SHA"
@@ -341,8 +357,8 @@ jobs:
           bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
       - run: bun run --cwd .upstream e2e:prepare
-      - run: bunx playwright install --with-deps chromium
-        working-directory: .upstream
+      - uses: ./.github/actions/setup-browser
+        timeout-minutes: 5
       - name: Verify Clerk sign-in, cancellation, refusal and retained API keys
         run: bun e2e/clerk-sign-in.mjs .generated/clerk-sign-in/ci
       - name: Collect sanitized connector diagnostics
@@ -370,8 +386,8 @@ jobs:
           bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
       - run: bun run --cwd .upstream e2e:prepare
-      - run: bunx playwright install --with-deps chromium
-        working-directory: .upstream
+      - uses: ./.github/actions/setup-browser
+        timeout-minutes: 5
       - name: Verify WorkOS sign-in, cancellation, refusal and retained API keys
         run: bun e2e/workos-sign-in.mjs .generated/workos-sign-in/ci
       - name: Collect sanitized connector diagnostics
@@ -399,8 +415,8 @@ jobs:
           bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
       - run: bun run --cwd .upstream e2e:prepare
-      - run: bunx playwright install --with-deps chromium
-        working-directory: .upstream
+      - uses: ./.github/actions/setup-browser
+        timeout-minutes: 5
       - name: Verify GitLab MCP sign-in, instance setup guidance and full REST access
         run: bun e2e/gitlab-sign-in.mjs .generated/gitlab-sign-in/ci
       - name: Collect sanitized connector diagnostics
@@ -428,8 +444,8 @@ jobs:
           bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
       - run: bun run --cwd .upstream e2e:prepare
-      - run: bunx playwright install --with-deps chromium
-        working-directory: .upstream
+      - uses: ./.github/actions/setup-browser
+        timeout-minutes: 5
       - name: Verify fixture certificate trust and the unrelated-certificate rejection
         run: node --test e2e/browser-fixture-certificate-trust.test.ts
       - name: Verify hosted PlanetScale sign-in asks for the full reviewed permissions

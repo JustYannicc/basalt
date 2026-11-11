@@ -53,9 +53,15 @@
     }
   },
   "runs": {
-    "nativeGrantLifecycle": ["declared:self-host"],
-    "nativeGrantRefreshRefusal": ["declared:self-host"],
-    "nativeGrantModelsOnly": ["declared:self-host"]
+    "nativeGrantLifecycle": [
+      "declared:self-host"
+    ],
+    "nativeGrantRefreshRefusal": [
+      "declared:self-host"
+    ],
+    "nativeGrantModelsOnly": [
+      "declared:self-host"
+    ]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/implementation/auth-options.ts",
@@ -69,6 +75,7 @@
     ".upstream/apps/hosted/server/src/implementation/native-grant-host.ts",
     ".upstream/packages/mcp-auth/src/contracts/native-display.ts",
     ".upstream/packages/mcp-auth/src/implementation/device-authorization.ts",
+    ".upstream/packages/mcp-auth/src/implementation/native-access-budget.ts",
     ".upstream/packages/mcp-auth/src/implementation/native-grants.ts",
     ".upstream/packages/mcp-auth/src/implementation/oauth.ts"
   ]

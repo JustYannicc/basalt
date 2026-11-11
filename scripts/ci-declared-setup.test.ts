@@ -37,6 +37,28 @@ test("declared matrices use the bounded browser setup within their existing dead
   }
 });
 
+test("sign-in jobs prepare the runtime before bounded browser setup and run independently", () => {
+  for (const id of ["clerk-sign-in", "workos-sign-in", "gitlab-sign-in", "planetscale-sign-in"]) {
+    const job = workflow.jobs[id];
+    assert.equal(job.needs, "select", id);
+    assert.equal(job.strategy, undefined, id);
+    assert.equal(job["timeout-minutes"], id === "planetscale-sign-in" ? 20 : 10, id);
+    assert.deepEqual(
+      job.steps.slice(3, 6),
+      [
+        { run: "npm run prepare:upstream" },
+        { run: "bun run --cwd .upstream e2e:prepare" },
+        { uses: "./.github/actions/setup-browser", "timeout-minutes": 5 },
+      ],
+      id,
+    );
+    assert.ok(
+      !job.steps.some((step: { run?: string }) => step.run?.includes("playwright install")),
+      id,
+    );
+  }
+});
+
 test("HITL partitions retain every target scenario exactly once behind required jobs", () => {
   const declarations = readDeclarations();
   const counts = new Map<string, number>();
@@ -69,7 +91,7 @@ test("HITL partitions retain every target scenario exactly once behind required 
       }
     }
   }
-  assert.equal(counts.size, 64);
+  assert.equal(counts.size, 65);
   assert.ok([...counts.values()].every((count) => count === 1));
   for (const target of ["self-host", "cloud"])
     for (const scenario of [

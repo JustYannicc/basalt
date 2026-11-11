@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -86,6 +86,100 @@ test("PR comparison excludes merged compatibility changes despite stale event an
       }),
     );
     assert.equal(readFileSync(output, "utf8"), "");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the pipeline guard excludes a merged release bump from an older PR's merged checkout", () => {
+  const workflow = parse(
+    readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
+  );
+  const steps = workflow.jobs["cpa-pipeline"].steps;
+  const comparison = steps.find((entry: { id?: string }) => entry.id === "comparison");
+  const guard = steps.find((entry: { run?: string }) =>
+    entry.run?.includes("cpa-pipeline-guard.py"),
+  );
+  const root = mkdtempSync(join(tmpdir(), "basalt-guard-merge-base-"));
+  const git = (...args: string[]) =>
+    execFileSync("git", args, {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  const sources = join(root, "containers/pool/sources.json");
+  const pin = (commit: string) =>
+    writeFileSync(
+      sources,
+      JSON.stringify({ artifacts: { node: { repository: "fixture/node", commit, patches: [] } } }),
+    );
+  try {
+    git("init", "-q", "--initial-branch=main");
+    git("config", "user.name", "CI fixture");
+    git("config", "user.email", "ci@example.invalid");
+    mkdirSync(join(root, "containers/pool/patches"), { recursive: true });
+    mkdirSync(join(root, "scripts"));
+    copyFileSync(
+      new URL("./cpa-pipeline-guard.py", import.meta.url),
+      join(root, "scripts/cpa-pipeline-guard.py"),
+    );
+    pin("old-release");
+    writeFileSync(join(root, "client"), "original client");
+    git("add", ".");
+    git("commit", "-qm", "old release");
+    const stale = git("rev-parse", "HEAD");
+    git("branch", "pr");
+    pin("merged-release");
+    writeFileSync(
+      join(root, "containers/pool/patches/home-compatibility.patch"),
+      "merged Home carry",
+    );
+    git("add", ".");
+    git("commit", "-qm", "release bump and Home compatibility");
+    const current = git("rev-parse", "HEAD");
+    git("remote", "add", "origin", root);
+    git("update-ref", "refs/remotes/origin/main", stale);
+    git("switch", "-q", "pr");
+    writeFileSync(join(root, "client"), "new client");
+    git("commit", "-qam", "client change");
+    const head = git("rev-parse", "HEAD");
+    git("merge", "--no-ff", "-m", "PR merge ref", "main");
+    const output = join(root, "comparison");
+    writeFileSync(output, "");
+    const environment = {
+      ...process.env,
+      PULL_REQUEST: "true",
+      BASE_REF: "main",
+      BATCH_PUSH: "false",
+      BASE_SHA: stale,
+      HEAD_SHA: head,
+      GITHUB_OUTPUT: output,
+    };
+    if (comparison)
+      execFileSync("bash", ["-e", "-c", comparison.run], { cwd: root, env: environment });
+    const resolved = readFileSync(output, "utf8").trim().split("=")[1];
+    const base =
+      guard.env.BASE_SHA === "${{ steps.comparison.outputs.base_sha }}" ? resolved : stale;
+    const command = guard.run
+      .split("\n")
+      .find((line: string) => line.includes("cpa-pipeline-guard.py"));
+    const check = () =>
+      spawnSync("bash", ["-e", "-c", command], {
+        cwd: root,
+        env: { ...environment, BASE_SHA: base },
+        encoding: "utf8",
+      });
+    const result = check();
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(base, current);
+    assert.equal(result.stdout.trim(), "CPA source pin unchanged");
+
+    pin("new-bump-in-this-PR");
+    writeFileSync(join(root, "containers/pool/runtime.py"), "unrelated runtime change");
+    git("add", ".");
+    const combined = check();
+    assert.notEqual(combined.status, 0);
+    assert.match(combined.stderr, /CPA bump changes runtime code: containers\/pool\/runtime.py/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
