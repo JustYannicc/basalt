@@ -62,6 +62,7 @@ export async function forwardHttp(
   service: NonNullable<ServiceCredentials[Capability]>,
   capability: Capability,
   signal: AbortSignal,
+  ready: () => void,
 ): Promise<void> {
   const target = new URL(
     capability === "tools" && "path" in service ? service.path : (incoming.url ?? "/"),
@@ -83,12 +84,15 @@ export async function forwardHttp(
     let responseArrived = false;
     const fail = (error: unknown) => {
       // DNS lookup and connection refusal establish that no HTTP request reached the service.
-      const notSent = error instanceof Error && "code" in error
-        && ["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED"].includes(String(error.code));
+      const notSent =
+        error instanceof Error &&
+        "code" in error &&
+        ["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED"].includes(String(error.code));
       reject(notSent ? new ModelRequestNotSent("The connection failed before dispatch.") : error);
     };
     const remote = transport(target, { method: incoming.method, headers, signal }, (response) => {
       responseArrived = true;
+      ready();
       remote.setTimeout(0);
       outgoing.statusCode = response.statusCode ?? 502;
       for (const [name, value] of forwardedResponseHeaders(response.headers))
