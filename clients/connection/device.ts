@@ -7,6 +7,7 @@ import {
 } from "../contracts/device.ts";
 import { tunnelPath } from "../contracts/tunnel.ts";
 import { authRequest, tokenRequest } from "./device-oauth.ts";
+import { nativeAccess } from "./native-access.ts";
 import { openTunnel } from "./tunnel.ts";
 import type { SocketFactory } from "../contracts/transport.ts";
 
@@ -71,16 +72,11 @@ export function deviceConnection(
       const next = saved;
       if (generation !== epoch || state !== "connected" || !next)
         throw new Error("Connection state changed.");
-      const response = await authRequest(
-        next.origin,
-        "/api/auth/native/access",
-        {
-          headers: { authorization: `Bearer ${next.accessToken}` },
-        },
-        signal,
-      );
+      const response = await nativeAccess(next.origin, next.accessToken, signal);
       if (!response.ok) {
-        if (response.status === 401 || response.status === 403) state = "sign-in-required";
+        if (generation === epoch && (response.status === 401 || response.status === 403))
+          state = "sign-in-required";
+        await response.body?.cancel();
         throw new Error("Native access is unavailable.");
       }
       const checked = readNativeAccess(await response.json());
@@ -95,7 +91,6 @@ export function deviceConnection(
       display = checked.display;
     } catch (error) {
       if (state === "connected" && saved?.refreshPending && !pending) state = "sign-in-required";
-      else if (state === "connected" && !signal.aborted) state = "disconnected";
       if (!signal.aborted || state !== "connected") access = undefined;
       throw error;
     }
