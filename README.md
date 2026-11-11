@@ -8,7 +8,7 @@ Signalbox pools AI subscriptions like ChatGPT and Claude so you and your team ca
 
 ## Get the apps
 
-Download Signalbox for [Mac](https://github.com/JustYannicc/basalt/releases/latest/download/Signalbox-mac-arm64.dmg) or [Android](https://github.com/JustYannicc/basalt/releases/latest/download/Signalbox-android.apk). Windows, Linux and the command line connection are on the [latest release](https://github.com/JustYannicc/basalt/releases/latest), with steps for opening each app the first time. For Obsidian, use Connect Obsidian in Signalbox.
+Download Signalbox for [Mac with Apple silicon](https://github.com/JustYannicc/basalt/releases/latest/download/Signalbox-mac-arm64.dmg) or [Android](https://github.com/JustYannicc/basalt/releases/latest/download/Signalbox-android.apk). Windows, Linux and the command line are on the [latest release](https://github.com/JustYannicc/basalt/releases/latest), with steps for opening each app the first time. iPhone and iPad aren't available yet; the latest release explains how to install from source. For Obsidian, use Connect Obsidian in Signalbox.
 
 ## What's inside
 
