@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { diagnosePoolFailure, failureResponse, type PoolFailureDiagnostic } from "./json.ts";
+import {
+  diagnosePoolFailure,
+  failureResponse,
+  poolFailureDiagnostic,
+  type PoolFailureDiagnostic,
+} from "./json.ts";
 import { poolGuard } from "./guard-failure.ts";
 
 test("the diagnostic boundary drops extra properties and snapshots only validated fields", (t) => {
@@ -117,4 +122,48 @@ test("lease-window telemetry keeps signed bounds only for native policy failures
     failureResponse(error);
     assert.ok(!JSON.stringify(reports.at(-1)).includes("leaseMs"));
   }
+});
+
+test("native install observations admit only closed phases, bounded integers and booleans", () => {
+  for (const phase of ["request", "acknowledgement"] as const)
+    for (const elapsedMs of [0, 60_000]) {
+      const observation = { phase, elapsedMs, deadlineAborted: elapsedMs > 0 };
+      const error = new Error("private exception");
+      diagnosePoolFailure(error, {
+        guard: "native_policy_install",
+        failure: "transport",
+        ...observation,
+      });
+      assert.deepEqual(poolFailureDiagnostic(error), {
+        guard: "native_policy_install",
+        failure: "transport",
+        ...observation,
+      });
+    }
+  for (const elapsedMs of [-1, 60_001, 0.5, NaN, Infinity]) {
+    const error = new Error();
+    diagnosePoolFailure(error, {
+      guard: "native_policy_install",
+      failure: "transport",
+      phase: "private phase",
+      elapsedMs,
+      deadlineAborted: "private status",
+    } as unknown as PoolFailureDiagnostic);
+    assert.deepEqual(poolFailureDiagnostic(error), {
+      guard: "native_policy_install",
+      failure: "transport",
+    });
+  }
+  const error = new Error();
+  diagnosePoolFailure(error, {
+    guard: "membership_read",
+    failure: "transport",
+    phase: "request",
+    elapsedMs: 1,
+    deadlineAborted: true,
+  });
+  assert.deepEqual(poolFailureDiagnostic(error), {
+    guard: "membership_read",
+    failure: "transport",
+  });
 });
