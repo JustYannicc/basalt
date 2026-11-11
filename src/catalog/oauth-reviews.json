@@ -355,7 +355,7 @@
     {
       "entry": "aws",
       "package": "aws",
-      "sourceSha256": "6451975a201a06f30ce9db93839e5bf79147cd65a7303188ca9c64440cf6b171",
+      "sourceSha256": "ac4fbc99b36dd44eef062ea8dc74d4fddf11fcd3bf3d462d9a6a8ae86dff09fa",
       "methods": {
         "oauth": {
           "kind": "automatic",

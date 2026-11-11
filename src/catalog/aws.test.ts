@@ -184,6 +184,7 @@ test("AWS device sign-in accepts only exact AWS pages in the connection's region
     platform.replace("request_uri=urn", "request_uri=https"),
     `${platform}#fragment`,
     "https://eu-west-1.signin.aws/platform/authorize?identitystore_id=d-0123456789",
+    "https://eu-west-1.signin.aws/platform/authorize?request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3A&identitystore_id=d-0123456789",
   ])
     assert.equal(accepts(lookalike), undefined, lookalike);
 

@@ -1,7 +1,7 @@
 {
   "kind": "new-app-contribution",
   "upstreamIssue": "https://github.com/UsefulSoftwareCo/executor/issues/2372",
-  "sourceSha256": "c579e92601b612ba845f61f9e85fa089b88e09b3cba0e36b49526a11cac763d3",
+  "sourceSha256": "51efe523ab57118cd33ac7c0b1a7a2e441bb1617d2cf9b10037c2c8fe32ef9be",
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",
     "apps": "0.0.1-beta.104-basalt.12"
@@ -25,11 +25,11 @@
   },
   "catalogSource": {
     "repository": "https://github.com/JustYannicc/signalbox-app-aws",
-    "commit": "eeb7010d4d4de8ab0268f96955f395064a2a3f02",
+    "commit": "134485b21f0e3d467c1363ba0bb88122508f1ed9",
     "fileSha256": {
       "README.md": "4a7f9eff7991585abf3176a103790d729b8af5862c4df8b3c1d90f6e99bb2f61",
       "connection.ts": "c79f17b3854d380d7cf55ccaf1b297880f383606a20e3a728f19e488bc838ccc",
-      "device-url.ts": "1e82b484a2b7db41ce22666afceac5007185bb41119dac3d5c0c568b20be6c44",
+      "device-url.ts": "42a9db152da7d079091ab7831712a5b9375ea5207b57b1b242871a0f94ba9f0f",
       "errors.ts": "0ef5be4f43f1131f87682772fae61df889d446c86c9ccf91dd3c6043d6debb11",
       "icon.ts": "738bc7fdb56c97bb5529b29249813839ed829b80893cd0ceb60a4cd800fba61c",
       "identity-client.ts": "4e5b6986d08cafdebdcf7b31c146ca279727a03adde5ad2528ed27729f629344",
@@ -53,6 +53,6 @@
       "vendor/aws4fetch.js": "aea0f8576a89a9afea973904bb92e98a642265eb5159ff940ede689ad8e910f0",
       "wire.ts": "b90fe097fdaad8fd83e974cb99fb68a9889b81eef8fbadf819e1535bfef8aa15"
     },
-    "snapshotSha256": "c579e92601b612ba845f61f9e85fa089b88e09b3cba0e36b49526a11cac763d3"
+    "snapshotSha256": "51efe523ab57118cd33ac7c0b1a7a2e441bb1617d2cf9b10037c2c8fe32ef9be"
   }
 }
