@@ -201,7 +201,19 @@ jobs:
           "$tools/apksigner" sign --ks "$keystore" --ks-pass env:KEYSTORE_PASSWORD --ks-key-alias signalbox \
             --out "$RUNNER_TEMP/apk/Signalbox-android.apk" "$RUNNER_TEMP/apk/aligned.apk"
           "$tools/zipalign" -c -P 16 4 "$RUNNER_TEMP/apk/Signalbox-android.apk"
-          "$tools/apksigner" verify --print-certs "$RUNNER_TEMP/apk/Signalbox-android.apk" | grep -E 'Signer #1 certificate (DN|SHA-256)'
+          # Compare fingerprints, not apksigner's wording: build-tools 37 prints "V3.0 Signer:
+          # certificate ..." where earlier versions printed "Signer #1 certificate ...".
+          want="$(keytool -list -v -keystore "$keystore" -storepass:env KEYSTORE_PASSWORD -alias signalbox |
+            sed -n 's/^.*SHA256: //p' | tr -d ':' | tr 'A-F' 'a-f')"
+          seen="$("$tools/apksigner" verify --print-certs "$RUNNER_TEMP/apk/Signalbox-android.apk" |
+            sed -n 's/^.*certificate SHA-256 digest: //p' | sort -u)"
+          if [ -z "$want" ] || [ "$seen" != "$want" ]; then
+            message="The signed APK's certificate SHA-256 is ${seen:-missing}, not the release key's ${want:-unreadable} (build-tools $(basename "$tools"))."
+            echo "::error::$message"
+            echo "$message" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "Signed with the release key, certificate SHA-256 $seen (build-tools $(basename "$tools"))." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: clients-android
