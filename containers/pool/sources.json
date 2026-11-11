@@ -117,7 +117,7 @@
         {
           "identity": "cliproxy-home-xai-optional-quota-fields",
           "file": "0497-home-xai-optional-quota-fields.patch",
-          "sha256": "670af136034ff56de2263f305e307634b1727676cf8ef237c745a2450b8bb20e",
+          "sha256": "7868b8a5d899ff4ce8b3c8c1379c3c0885c99fb6e45de0b7022515c79db268db",
           "retirement": {
             "mode": "manual",
             "requires": "Retire after pinned Home treats omitted weekly percentages and on-demand usage as not reported, never infers zero, preserves valid monthly readings and rejects present invalid optional values. Pass observed-shape, explicit-zero, alias, malformed-value, retained-window and real-collector regressions without changing Home database models or versions."
