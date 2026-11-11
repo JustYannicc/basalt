@@ -44,7 +44,7 @@ export async function createBinaryClient(input: {
   const ensure = async (path: string, signal?: AbortSignal) => {
     check();
     const record = state.files[path];
-    if (!record) throw new Error("This attachment is not in Basalt's file list yet");
+    if (!record) throw new Error("This attachment is not in Signalbox's file list yet");
     if (record.materialized && (await input.io.snapshot(path))) return true;
     let work = downloading.get(path);
     if (!work) {
@@ -299,7 +299,7 @@ export async function createBinaryClient(input: {
         snapshot.stamp !== record.stamp
       )
         throw new Error(
-          "This device has bytes Basalt may not hold yet. Sync before removing this copy.",
+          "This device has bytes Signalbox may not hold yet. Sync before removing this copy.",
         );
       const info = await input.remote.info({ path, at: record.at });
       if (info?.attachment?.oid !== pointerIdentity(record.pointer)?.oid)

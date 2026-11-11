@@ -193,7 +193,7 @@ export function createBinaryIo<F extends { path: string }>(input: {
         if (retained) await local.preserve(target);
         await ownership.remove(target);
         throw new Error(
-          "The downloaded copy could not be safely removed. Its bytes are kept in Basalt recovered.",
+          "The downloaded copy could not be safely removed. Its bytes are kept in Signalbox recovered.",
           { cause: failure },
         );
       }

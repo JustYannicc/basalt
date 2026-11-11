@@ -10,7 +10,7 @@ export function attachmentProxy(input: {
     };
   const connected = () => {
     const value = input.current();
-    if (!value) throw new Error("Connect this vault to Basalt first");
+    if (!value) throw new Error("Connect this vault to Signalbox first");
     return value;
   };
   const port: AttachmentPort = {

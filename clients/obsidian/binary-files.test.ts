@@ -125,7 +125,7 @@ function fixture() {
     vault,
     local,
     privateRoot: ".obsidian/plugins/signalbox-sync/cache/app",
-    transferRoot: "Basalt transfers/device/app",
+    transferRoot: "Signalbox transfers/device/app",
     ownership,
     id: () => String(++clock),
   });
@@ -167,10 +167,13 @@ test("public file APIs assemble bounded parts, recover a lost rename and keep or
   );
   assert.deepEqual(f.files.get("target.pdf")?.data, data);
   assert.ok(f.maxRead() <= 1048576);
-  assert.equal(await f.local.replace("Basalt recovered/from-agent.md", null, "agent file"), true);
-  assert.equal(await f.local.read("Basalt recovered/from-agent.md"), "agent file");
   assert.equal(
-    (await f.local.files()).some((file) => file.path.includes("Basalt transfers")),
+    await f.local.replace("Signalbox recovered/from-agent.md", null, "agent file"),
+    true,
+  );
+  assert.equal(await f.local.read("Signalbox recovered/from-agent.md"), "agent file");
+  assert.equal(
+    (await f.local.files()).some((file) => file.path.includes("Signalbox transfers")),
     false,
   );
   assert.equal(f.local.recovered().length, 1);

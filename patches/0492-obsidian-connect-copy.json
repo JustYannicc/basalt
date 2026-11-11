@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-obsidian-connect-copy",
+  "file": "0492-obsidian-connect-copy.patch",
+  "content_sha256": "bc0d4ae69f84d76aed384c3af88cd72c7cfd3da016bd63fac8da52f68e96b3eb",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

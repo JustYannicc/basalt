@@ -36,7 +36,7 @@ export function endpoint(input: string, allowLoopback = false) {
         ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))
     )
   )
-    throw new Error("Use an HTTPS Basalt connection link");
+    throw new Error("Use an HTTPS Signalbox connection link");
   return url;
 }
 export function json(reply: HttpReply, limit = 64 * 1024): unknown {

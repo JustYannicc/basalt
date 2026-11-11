@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Connect Obsidian names the product, Signalbox, as the holder of the vault's authoritative copy; user-visible Obsidian copy, in the dialog and in the Signalbox Sync plugin, never shows the internal Basalt name."
+    }
+  }
+}

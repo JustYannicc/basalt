@@ -1,7 +1,7 @@
 import { maximumFileBytes, type LocalFile, type LocalVault } from "./types.ts";
 
 /** Kept visible on purpose, and never synced: notes removed elsewhere land here instead of being deleted. */
-export const recoveryFolder = "Basalt recovered";
+export const recoveryFolder = "Signalbox recovered";
 
 interface FileLike {
   path: string;
