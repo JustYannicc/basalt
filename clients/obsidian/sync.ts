@@ -22,6 +22,8 @@ export async function createSync(input: {
   store: StateStore;
   id: () => string;
   signal?: AbortSignal;
+  /** Called whenever status moves mid-checkpoint, so a long import never looks frozen. */
+  progress?: () => void;
 }) {
   const { local, remote, store, id } = input;
   const state: SyncState = (await store.load()) ?? {
@@ -55,6 +57,7 @@ export async function createSync(input: {
     remote,
     save,
     ...(input.signal ? { signal: input.signal } : {}),
+    ...(input.progress ? { progress: input.progress } : {}),
   });
   const status = (): SyncStatus => ({
     ...(importing.progress() ? { initial: importing.progress()! } : {}),
@@ -76,6 +79,7 @@ export async function createSync(input: {
   });
   const finish = async (pending: Pending, receipt: Receipt) => {
     importing.acknowledge(pending.request.edits.map((edit) => edit.path));
+    input.progress?.();
     if (receipt.state === "conflict") {
       state.conflicts = state.conflicts.filter((conflict) => conflict.ref !== receipt.ref);
       state.conflicts.push(receipt);
@@ -86,14 +90,11 @@ export async function createSync(input: {
           await local.replace(edit.path, pending.before[edit.path] ?? null, edit.content, {
             at: receipt.oid,
           });
-        const cloud = await remote.read({ path: edit.path, at: receipt.oid, maxBytes: 4 });
-        await local.accept?.(edit.path, receipt.oid, cloud?.blob ?? null);
-        state.files[edit.path] = {
-          at:
-            cloud?.blob === sent || (!cloud && sent === null) ? receipt.oid : pending.request.base,
-          local: sent,
-          cloud: cloud?.blob ?? null,
-        };
+        // A landed commit holds exactly what was sent: a path that clashes comes back as a
+        // conflict receipt instead. Reading each path back cost two round trips per file, minutes
+        // on a first import; the next pull still brings down anything the cloud changed later.
+        await local.accept?.(edit.path, receipt.oid, sent);
+        state.files[edit.path] = { at: receipt.oid, local: sent, cloud: sent };
       }
       if (pending.kind === "resolve")
         state.conflicts = state.conflicts.filter(

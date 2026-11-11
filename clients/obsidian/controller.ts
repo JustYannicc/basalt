@@ -153,6 +153,7 @@ export async function createController(input: {
       store: input.states(current.config.appId),
       id: newDeviceId,
       signal: driveAbort.signal,
+      progress: changed,
     });
   };
   await open();
