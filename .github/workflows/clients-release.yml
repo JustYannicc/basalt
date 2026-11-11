@@ -49,6 +49,13 @@ jobs:
           desktop="$(node -p 'require("./clients/desktop/package.json").version')"
           mobile="$(node -p 'require("./clients/mobile/package.json").version')"
           phone="$(node -p '/\bversion: "([^"]+)"/.exec(require("node:fs").readFileSync("clients/mobile/app.config.ts", "utf8"))?.[1] ?? "missing"')"
+          # Release tags and the published notes need a plain major.minor.patch version.
+          if ! [[ "$clients" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            message="Clients release needs a major.minor.patch version; clients/package.json has $clients."
+            echo "::error::$message"
+            echo "$message" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           if [ "$clients" != "$desktop" ] || [ "$clients" != "$mobile" ] || [ "$clients" != "$phone" ]; then
             message="Clients release needs one version: clients/package.json is $clients, clients/desktop/package.json is $desktop, clients/mobile/package.json is $mobile and clients/mobile/app.config.ts is $phone."
             echo "::error::$message"
@@ -296,17 +303,36 @@ jobs:
             exit 1
           }
           [[ "$RUN" =~ ^[0-9]+$ ]] || fail "publish_run must be a run id, not '$RUN'."
-          seen="$(gh run view "$RUN" --repo "$GITHUB_REPOSITORY" --json workflowName,headBranch,event,conclusion --jq '[.workflowName, .headBranch, .event, .conclusion] | join(" ")')"
+          run="$(gh run view "$RUN" --repo "$GITHUB_REPOSITORY" --json workflowName,headBranch,event,conclusion,headSha \
+            --jq '[.workflowName, .headBranch, .event, .conclusion, .headSha] | join(" ")')" ||
+            fail "GitHub didn't return run $RUN; gh's error is above."
+          head="${run##* }"
+          seen="${run% *}"
           [ "$seen" = "Clients release main workflow_dispatch success" ] ||
             fail "Run $RUN isn't a successful manual Clients release build on main (saw: $seen)."
-          gh run download "$RUN" --repo "$GITHUB_REPOSITORY" --name signalbox-clients --dir "$RUNNER_TEMP/walked"
-          # The artifact keeps assemble's layout: the files and their sums under release/, the
-          # version and commit beside it.
+          gh run download "$RUN" --repo "$GITHUB_REPOSITORY" --name signalbox-clients --dir "$RUNNER_TEMP/walked" ||
+            fail "Run $RUN's signalbox-clients artifact couldn't be downloaded; gh's error is above. Usually it's past the repository's artifact retention, or $RUN is a publish run rather than the walked build."
+          # upload-artifact roots its paths at their common parent, so assemble's files and their
+          # sums arrive under release/ with version.txt and commit.txt beside it.
           cd "$RUNNER_TEMP/walked"
-          [ -f release/SHA256SUMS.txt ] || fail "Run $RUN's signalbox-clients artifact has no release/SHA256SUMS.txt. It holds: $(find . -type f | sort | tr '\n' ' ')"
-          (cd release && sha256sum -c SHA256SUMS.txt) || fail "Run $RUN's files don't match their recorded SHA256SUMS.txt."
-          echo "VERSION=$(cat version.txt)" >> "$GITHUB_ENV"
-          echo "COMMIT=$(cat commit.txt)" >> "$GITHUB_ENV"
+          held="$(find . -type f | sort | tr '\n' ' ')"
+          for file in release/SHA256SUMS.txt version.txt commit.txt; do
+            [ -f "$file" ] || fail "Run $RUN's signalbox-clients artifact has no $file. It holds: $held"
+          done
+          version="$(cat version.txt)"
+          commit="$(cat commit.txt)"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "Run $RUN recorded version '$version', not major.minor.patch."
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]] && [ "$commit" = "$head" ] ||
+            fail "Run $RUN recorded commit '$commit', but it built $head."
+          cd release
+          # Publish exactly the files the sums name: an extra file would go out unchecked.
+          listed="$(awk '{print $2}' SHA256SUMS.txt | sort | tr '\n' ' ')"
+          present="$(find . -type f ! -name SHA256SUMS.txt | sed 's|^\./||' | sort | tr '\n' ' ')"
+          [ -n "$listed" ] && [ "$listed" = "$present" ] ||
+            fail "Run $RUN's release/ holds $present but SHA256SUMS.txt lists $listed."
+          sha256sum --strict -c SHA256SUMS.txt || fail "Run $RUN's files don't match their recorded SHA256SUMS.txt."
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "COMMIT=$commit" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.COMMIT }}
@@ -333,7 +359,8 @@ jobs:
           [ -z "$existing" ] || [ "$existing" = "$COMMIT" ] ||
             fail "The tag $tag already points at $existing, not the walked commit $COMMIT. Delete that tag, or raise the clients version."
           sed -e "s/{version}/$VERSION/g" -e "s|{repository}|$GITHUB_REPOSITORY|g" clients/release-notes.md > "$RUNNER_TEMP/notes.md"
+          mapfile -t files < <(awk -v dir="$WALKED" '{print dir "/" $2}' "$WALKED/SHA256SUMS.txt")
           gh release create "$tag" --target "$COMMIT" --latest \
             --title "Signalbox apps $VERSION" --notes-file "$RUNNER_TEMP/notes.md" \
-            "$WALKED"/Signalbox-* "$WALKED"/signalbox-cli.tgz "$WALKED"/SHA256SUMS.txt
+            "${files[@]}" "$WALKED/SHA256SUMS.txt"
           echo "Published $tag from run $RUN at $COMMIT." >> "$GITHUB_STEP_SUMMARY"
