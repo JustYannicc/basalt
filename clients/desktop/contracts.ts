@@ -46,3 +46,13 @@ export const readDesktopReply = Schema.decodeUnknownSync(DesktopReply);
 export interface DesktopApi {
   request(value: DesktopRequest): Promise<DesktopReply>;
 }
+
+/** One line from the native Mac shell to host.ts. Only import-direct carries a chosen file. */
+export const HostMessage = Schema.Struct({
+  id: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  request: DesktopRequest,
+  file: Schema.optionalKey(Schema.String),
+});
+export const readHostMessage = Schema.decodeUnknownSync(HostMessage, {
+  onExcessProperty: "error",
+});

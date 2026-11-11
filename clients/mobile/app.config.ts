@@ -9,7 +9,7 @@ const identifier = release ? "run.signalbox.client" : "run.signalbox.client.deve
 const config: ExpoConfig = {
   name: release ? brand.name : `${brand.name} Client Dev`,
   slug: "signalbox-client",
-  version: "0.1.1",
+  version: "0.2.0",
   scheme: release ? "signalbox-client" : "signalbox-client-dev",
   orientation: "default",
   userInterfaceStyle: "automatic",
